@@ -10,7 +10,7 @@ Rust:
 
 ```sh
 cargo run -p tt-cli -- <args>       # run the CLI (binary is `ttr`, not `tt`)
-cargo run -p tt-cli -- doctor       # e.g. doctor, config show|validate|schema|reset
+cargo run -p tt-cli -- doctor       # e.g. doctor, config, journal, gh, install, graph
 cargo fmt --check                   # formatting (rustfmt, 100-col)
 cargo clippy --all -- -D warnings   # lint; warnings are errors
 cargo test --all                    # unit + assert_cmd black-box tests
@@ -40,8 +40,16 @@ Cargo workspace + npm workspace (`apps/client` only):
     (`#[serde(default)]` / no `deny_unknown_fields`) to avoid breaking the other
     tool.
   - `tt-exec` — process/command wrappers.
+  - `tt-journal` — journal/note filesystem logic and date-token path templating.
+  - `tt-git` — GitHub/git helpers: branch-name slugging, PR content, merged-branch
+    filtering, issue parsing, picker layout.
+  - `tt-graph` — session-JSONL token accounting, treemap/bar-chart building, and
+    JSON/CSV/HTML rendering.
 - `crates-cli/tt-cli` — `clap` 4 CLI, binary `ttr`. Commands:
-  `config show|validate|schema|reset`, `doctor [--json]`.
+  `config show|validate|schema|reset`, `doctor [--json --track --diff]`,
+  `journal daily-notes|note|meeting|list|search` (+ `today` alias),
+  `gh pr|branch|branch-clean` (+ `pr` alias), `install [-o]`,
+  `graph [-s --days -f html|json|csv --open/--no-open]`.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`,
   dev server on `:1420`.
 - `apps/client` — React 19 + Vite frontend (currently a hello-world).
