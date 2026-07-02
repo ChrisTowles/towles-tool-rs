@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "tt")]
+#[command(name = "ttr")]
 #[command(about = "towles-tool (Rust) - developer utilities, config, and diagnostics")]
 #[command(version)]
 #[command(disable_help_subcommand = true)]

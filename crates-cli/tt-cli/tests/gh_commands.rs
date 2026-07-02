@@ -41,8 +41,8 @@ fn repo_with_merged_branch() -> TempDir {
     dir
 }
 
-fn tt(dir: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("tt").expect("binary `tt` should build");
+fn ttr(dir: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("ttr").expect("binary `ttr` should build");
     cmd.current_dir(dir);
     cmd
 }
@@ -50,7 +50,7 @@ fn tt(dir: &Path) -> Command {
 #[test]
 fn branch_clean_dry_run_lists_without_deleting() {
     let repo = repo_with_merged_branch();
-    tt(repo.path())
+    ttr(repo.path())
         .args(["gh", "branch-clean", "--dry-run"])
         .assert()
         .success()
@@ -69,7 +69,7 @@ fn branch_clean_dry_run_lists_without_deleting() {
 #[test]
 fn branch_clean_force_deletes_merged_branch() {
     let repo = repo_with_merged_branch();
-    tt(repo.path())
+    ttr(repo.path())
         .args(["gh", "branch-clean", "--force"])
         .assert()
         .success()
@@ -96,7 +96,7 @@ fn branch_clean_reports_nothing_to_clean() {
     git(p, &["commit", "-q", "-m", "init"]);
     git(p, &["branch", "-M", "main"]);
 
-    tt(p)
+    ttr(p)
         .args(["gh", "branch-clean"])
         .assert()
         .success()
@@ -107,7 +107,7 @@ fn branch_clean_reports_nothing_to_clean() {
 fn branch_clean_non_tty_without_force_does_not_delete() {
     let repo = repo_with_merged_branch();
     // No --force and not a TTY: should cancel as a no-op, leaving the branch intact.
-    tt(repo.path())
+    ttr(repo.path())
         .args(["gh", "branch-clean"])
         .assert()
         .success()

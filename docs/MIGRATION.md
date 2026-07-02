@@ -163,11 +163,10 @@ cite the yaak or slot-1 source path in the commit.
   Source: slot-1 `packages/agentboard/` (live entry `src/server/main.ts`) +
   `src/commands/agentboard.ts`.
 
-- [x] **8 — Distribution + rename.** Distribution is local-first
-  (`cargo install --path crates-cli/tt-cli`; tauri bundle for the app;
-  registries/updaters deferred until the tool has other users — own
-  infrastructure only, never yaak's). **The `ttr` → `tt` cutover was executed
-  2026-07-02 on Chris's go-ahead** per [docs/CUTOVER.md](CUTOVER.md): binary
-  renamed, `~/.bun/bin/tt` removed, the `tt=towles-tool` shell alias retired
-  (toolbox `zshrc_local.sh`), Rust `tt` installed to `~/.cargo/bin` and
-  smoke-verified. The TS CLI remains reachable as `towles-tool` for rollback.
+- [~] **8 — Distribution + rename.** Prepared 2026-07-02: distribution is
+  local-first (`cargo install --path crates-cli/tt-cli`; tauri bundle for the
+  app; registries/updaters deferred until the tool has other users — own
+  infrastructure only, never yaak's). The `ttr` → `tt` flip is fully scripted
+  in [docs/CUTOVER.md](CUTOVER.md) with preconditions, steps, and rollback —
+  **the flip itself is gated on Chris's explicit go-ahead** (it swaps the
+  daily-driver binary and retires the tmux agentboard workflow).

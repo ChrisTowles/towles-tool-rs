@@ -1,4 +1,4 @@
-//! `tt graph`: token-accounting treemap over Claude Code session JSONL files.
+//! `ttr graph`: token-accounting treemap over Claude Code session JSONL files.
 //!
 //! Ports `src/commands/graph/index.ts`. All pure logic (parsing, analysis,
 //! treemap/bar-chart building, JSON/CSV/HTML rendering) lives in the Tauri-free

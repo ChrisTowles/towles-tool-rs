@@ -6,12 +6,12 @@ is built from the [Yaak](https://github.com/mountain-loop/yaak) golden template 
 a Cargo workspace with Tauri-free shared crates, a `clap` CLI, and a React + Vite
 frontend.
 
-The Rust binary owns the **`tt`** name (cutover 2026-07-02; the TypeScript CLI
-remains reachable as `towles-tool` for rollback — see
-[docs/CUTOVER.md](docs/CUTOVER.md)).
+During the migration the Rust binary is named **`ttr`**. Once it reaches feature
+parity with the TypeScript CLI, it takes over the `tt` name in a hard cutover.
 
-> **Status:** migration complete. All commands are ported and the desktop app
-> is the agentboard — see [docs/MIGRATION.md](docs/MIGRATION.md).
+> **Status:** in progress. The scaffold plus config, doctor, journal, GitHub
+> helpers, install, and graph are ported. Features land one at a time — see
+> [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ## Quick start
 
@@ -37,7 +37,7 @@ cargo run -p tt-cli -- doctor
 
 ## Commands
 
-The CLI binary is `tt`. Run any command with `--help` for its flags.
+The CLI binary is `ttr`. Run any command with `--help` for its flags.
 
 - `config show|validate|schema|reset` — inspect, validate, print the schema for, or reset settings.
 - `doctor [--json] [--track] [--diff]` — check dependencies/environment; optionally save a run and diff against the last.
@@ -55,7 +55,7 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-journal` — journal/note logic and date-token path templating.
 - `crates/tt-git` — git/GitHub helpers (branch names, PR content, issue parsing).
 - `crates/tt-graph` — session token accounting and treemap/JSON/CSV/HTML rendering.
-- `crates-cli/tt-cli` — the `clap` CLI (binary `tt`).
+- `crates-cli/tt-cli` — the `clap` CLI (binary `ttr`).
 - `crates-tauri/tt-app` — the Tauri 2 desktop shell; `apps/client` is its React + Vite frontend.
 
 ## More

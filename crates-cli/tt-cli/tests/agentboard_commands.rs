@@ -4,7 +4,7 @@ use common::cli_cmd;
 use std::path::Path;
 use tempfile::TempDir;
 
-/// A `tt agentboard` command with HOME redirected into the sandbox, so it reads
+/// A `ttr agentboard` command with HOME redirected into the sandbox, so it reads
 /// and writes the fixture `~/.config/towles-tool/agentboard/repos.json` instead of
 /// the real one.
 fn ab_cmd(temp: &Path) -> assert_cmd::Command {

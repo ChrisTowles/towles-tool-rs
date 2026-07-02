@@ -1,4 +1,4 @@
-//! `tt journal` subcommands: daily-notes, note, meeting, list, search.
+//! `ttr journal` subcommands: daily-notes, note, meeting, list, search.
 //!
 //! Ports `src/commands/journal/*.ts`. Library logic lives in `tt-journal`; this module
 //! is the CLI boundary — it loads settings, resolves the current date, calls the library,

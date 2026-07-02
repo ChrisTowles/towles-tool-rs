@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [[bin]]
-name = "tt"
+name = "ttr"
 path = "src/main.rs"
 
 [dependencies]

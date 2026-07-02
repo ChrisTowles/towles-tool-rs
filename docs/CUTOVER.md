@@ -1,16 +1,5 @@
 # Slice 8 — Distribution & the `ttr` → `tt` cutover
 
-> **EXECUTED 2026-07-02** on Chris's go-ahead. Flip details: binary renamed
-> (`Cargo.toml`/clap/tests/docs), `~/.bun/bin/tt` symlink removed (the
-> `towles-tool` symlink stays for rollback), the `tt="towles-tool"` alias
-> removed from toolbox `config/zshrc_local/zshrc_local.sh` (note left there:
-> `tt-update` would recreate the bun shadow — don't run it), Rust `tt`
-> installed via `cargo install --path crates-cli/tt-cli`, fresh-shell
-> `which tt` → `~/.cargo/bin/tt`, smoke tests green (doctor, ag repos,
-> journal list, config validate, graph csv). Remaining follow-ups: plugin
-> marketplace still ships from the live repo (unchanged, by design); archive
-> of the TS repo + this repo's rename stay deferred per below.
-
 The final migration item ([MIGRATION.md](MIGRATION.md) item 8). Everything here
 is prepared so the actual flip is one short, reversible-in-minutes session —
 but the flip itself is a breaking change to the daily workflow and **only

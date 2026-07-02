@@ -1,4 +1,4 @@
-//! `tt install`: configure Claude Code settings and ensure required plugins.
+//! `ttr install`: configure Claude Code settings and ensure required plugins.
 //!
 //! Ports `src/commands/install.ts`. The settings read/write is pure logic in
 //! [`crate::commands::claude_settings`]; this layer handles output styling, the
@@ -17,7 +17,7 @@ use console::style;
 use serde::Deserialize;
 use std::io::IsTerminal;
 
-/// A plugin `tt install` ensures is present.
+/// A plugin `ttr install` ensures is present.
 struct RequiredPlugin {
     /// Fully-qualified plugin id, e.g. `tt@towles-tool`.
     id: &'static str,

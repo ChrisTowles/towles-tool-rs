@@ -9,7 +9,7 @@ the [Yaak](https://github.com/mountain-loop/yaak) repo structure (see
 Rust:
 
 ```sh
-cargo run -p tt-cli -- <args>       # run the CLI (binary is `tt`)
+cargo run -p tt-cli -- <args>       # run the CLI (binary is `ttr`, not `tt`)
 cargo run -p tt-cli -- doctor       # e.g. doctor, config, journal, gh, install, graph
 cargo fmt --check                   # formatting (rustfmt, 100-col)
 cargo clippy --all -- -D warnings   # lint; warnings are errors
@@ -23,10 +23,9 @@ npm install                         # installs apps/client (npm workspaces)
 npm run dev                         # tauri dev — app + Vite frontend
 ```
 
-> The binary is **`tt`** — the hard cutover from the TypeScript CLI happened
-> 2026-07-02 (see [docs/CUTOVER.md](docs/CUTOVER.md)). The TS CLI stays
-> reachable as `towles-tool` for rollback only; never reintroduce a `ttr`
-> alias.
+> The binary is **`ttr`** during migration. Do not rename it to `tt` — the
+> TypeScript CLI keeps `tt` until the Rust port reaches feature parity, then we
+> hard-cut over (see [docs/MIGRATION.md](docs/MIGRATION.md), item 8).
 
 ## Architecture
 
@@ -46,19 +45,14 @@ Cargo workspace + npm workspace (`apps/client` only):
     filtering, issue parsing, picker layout.
   - `tt-graph` — session-JSONL token accounting, treemap/bar-chart building, and
     JSON/CSV/HTML rendering.
-  - `tt-agentboard` — the agentboard engine: agent watchers (claude-code, codex,
-    amp, opencode), tracker/prune state machine, git/port scanning, snapshot
-    assembly, repos + metadata stores (specs in `docs/AGENTBOARD-*.md`).
-- `crates-cli/tt-cli` — `clap` 4 CLI, binary `tt`. Commands:
+- `crates-cli/tt-cli` — `clap` 4 CLI, binary `ttr`. Commands:
   `config show|validate|schema|reset`, `doctor [--json --track --diff]`,
   `journal daily-notes|note|meeting|list|search` (+ `today` alias),
   `gh pr|branch|branch-clean` (+ `pr` alias), `install [-o]`,
-  `graph [-s --days -f html|json|csv --open/--no-open]`,
-  `agentboard repos [add|remove]` (+ `ag` alias).
-- `crates-tauri/tt-app` — Tauri 2.11 shell hosting the agentboard bridge
-  (engine + `ab_*` commands + `agentboard://state` event + `:4201` metadata
-  ingest). Identifier `dev.towles.tool`, dev server on `:1420`.
-- `apps/client` — React 19 + Vite frontend: the agentboard UI.
+  `graph [-s --days -f html|json|csv --open/--no-open]`.
+- `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`,
+  dev server on `:1420`.
+- `apps/client` — React 19 + Vite frontend (currently a hello-world).
 
 ## Migration
 
