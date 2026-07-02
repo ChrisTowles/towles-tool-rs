@@ -3995,6 +3995,7 @@ dependencies = [
  "chrono",
  "clap",
  "console",
+ "dirs",
  "env_logger",
  "inquire",
  "log",

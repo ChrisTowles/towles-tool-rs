@@ -29,6 +29,21 @@ pub enum Commands {
         /// Emit results as JSON
         #[arg(long)]
         json: bool,
+
+        /// Save check results to history
+        #[arg(long)]
+        track: bool,
+
+        /// Compare current run against the last tracked run
+        #[arg(long)]
+        diff: bool,
+    },
+
+    /// Configure Claude Code settings and ensure required plugins
+    Install {
+        /// Show OTEL observability setup instructions
+        #[arg(long, short = 'o')]
+        observability: bool,
     },
 
     /// Journal and note-taking commands

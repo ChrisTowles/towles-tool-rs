@@ -3,27 +3,77 @@ mod common;
 use common::cli_cmd;
 use tempfile::TempDir;
 
+/// A `ttr` command with HOME and XDG_CONFIG_HOME redirected into the sandbox, so
+/// doctor's history file and agentboard checks never touch the real home dir.
+fn doctor_cmd(temp: &std::path::Path) -> assert_cmd::Command {
+    let mut cmd = cli_cmd(temp);
+    cmd.env("HOME", temp).env("XDG_CONFIG_HOME", temp.join("config"));
+    cmd
+}
+
 #[test]
-fn doctor_json_emits_parseable_json() {
+fn doctor_json_emits_ts_run_result_shape() {
     let temp_dir = TempDir::new().expect("temp dir");
-    let assert = cli_cmd(temp_dir.path()).args(["doctor", "--json"]).assert().success();
+    let assert = doctor_cmd(temp_dir.path()).args(["doctor", "--json"]).assert().success();
 
     let stdout = &assert.get_output().stdout;
     let value: serde_json::Value =
         serde_json::from_slice(stdout).expect("doctor --json should emit valid JSON");
 
-    // The report always lists the tools it probed, regardless of what's installed.
+    // Matches the TS `DoctorRunResult` shape (camelCase).
+    assert!(value.get("timestamp").is_some());
+    assert!(value.get("ghAuth").is_some());
+    assert!(value["plugins"].is_array());
+    assert!(value["agentboard"].is_array());
+
     let tools = value["tools"].as_array().expect("tools should be an array");
     assert!(!tools.is_empty());
-    assert!(value.get("all_ok").is_some());
 
     // `cargo` is guaranteed present in a Rust test environment.
     let cargo = tools.iter().find(|t| t["name"] == "cargo").expect("cargo entry");
-    assert_eq!(cargo["found"], true);
+    assert_eq!(cargo["ok"], true);
+    assert!(cargo["version"].is_string());
 }
 
 #[test]
 fn doctor_text_runs() {
     let temp_dir = TempDir::new().expect("temp dir");
-    cli_cmd(temp_dir.path()).args(["doctor"]).assert().success();
+    doctor_cmd(temp_dir.path()).args(["doctor"]).assert().success();
+}
+
+#[test]
+fn doctor_diff_without_history_warns() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    doctor_cmd(temp_dir.path())
+        .args(["doctor", "--diff"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("No previous runs tracked"));
+}
+
+#[test]
+fn doctor_track_then_diff_round_trips() {
+    let temp_dir = TempDir::new().expect("temp dir");
+
+    // First tracked run writes the shared history file.
+    doctor_cmd(temp_dir.path())
+        .args(["doctor", "--track"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Results saved to history."));
+
+    let history_path = temp_dir.path().join("config").join("tt").join("doctor-history.json");
+    assert!(history_path.exists(), "history file should be created under XDG_CONFIG_HOME/tt");
+
+    // The history file is a JSON array of DoctorRunResult records.
+    let content = std::fs::read_to_string(&history_path).unwrap();
+    let runs: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(runs.as_array().unwrap().len(), 1);
+
+    // A subsequent diff against that run succeeds and reports the comparison header.
+    doctor_cmd(temp_dir.path())
+        .args(["doctor", "--diff"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Changes since last tracked run"));
 }

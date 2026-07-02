@@ -55,11 +55,42 @@ cite the yaak or slot-1 source path in the commit.
       verified against the TS test suite and a live luxon/JS cross-check.
     - The per-command `--debug` flag is dropped in favor of the global `-v/--verbose`.
 
-- [ ] **3 — Install + Claude settings; doctor history/diff.** The `install`
-  command and the `claude-settings` writer, plus extending `doctor` with run
-  history and diffing.
+- [x] **3 — Install + Claude settings; doctor history/diff.** `ttr install` plus
+  the `claude-settings` writer, and `doctor` extended with `--track`/`--diff` run
+  history. The settings read/write is a pure `claude_settings` module (models
+  Claude Code's real `~/.claude/settings.json` as an open `serde_json::Map` so
+  every unknown key survives). Doctor is restructured into
+  `commands/doctor/{mod,history}.rs`: `mod` runs the checks (tools, gh auth,
+  required Claude plugins, AgentBoard) into a `DoctorRunResult` whose serde shape
+  matches the TS record exactly; `history` holds the pure history/diff logic
+  (fully unit-tested).
   Source: `src/commands/install.ts`, `src/commands/claude-settings.ts`,
-  `src/commands/doctor/history.ts`, `src/commands/doctor/checks.ts`.
+  `src/commands/doctor.ts`, `src/commands/doctor/history.ts`,
+  `src/commands/doctor/checks.ts`, `src/commands/doctor/format.ts`.
+  Behavior deviations from the TS CLI:
+    - The doctor run-history file is SHARED with the TS CLI at
+      `$XDG_CONFIG_HOME/tt/doctor-history.json` (default
+      `~/.config/tt/doctor-history.json` — note the path uses `tt`, **not**
+      `towles-tool`; this quirk is replicated faithfully). The Rust
+      `DoctorRunResult` serializes to the exact TS shape (camelCase `ghAuth`,
+      `version: string | null`, optional `warning`) so both tools read each
+      other's records. History-path resolution honors `XDG_CONFIG_HOME`.
+    - Doctor's output format is selected with a `--json` bool flag, not the TS
+      `--format json` string option. `--json` emits the full `DoctorRunResult`
+      (matching the TS `formatDoctorJson`), replacing milestone-0's ad-hoc
+      `{tools, all_ok}` payload.
+    - An extra `cargo` tool check is kept from milestone 0 (git gh node bun claude
+      tmux ttyd otherwise match the TS names/patterns, with ttyd optional →
+      `ok=true` + "optional, not installed" when missing). `diff` tolerates
+      added/removed tools, so the extra check never breaks a comparison.
+    - `ttr install` skips the interactive plugin install when stdin is not a TTY,
+      printing a dim "skipped (non-interactive)" note instead of prompting — so
+      CI/tests never hang and never run a real `claude plugin install` (same
+      TTY-guard pattern as the journal/gh commands). The `claude plugin
+      list`/`marketplace add` probes still run but degrade gracefully when
+      `claude` is absent.
+    - The per-command `--debug` flag is dropped in favor of the global
+      `-v/--verbose` flag.
 
 - [ ] **4 — Graph.** JSONL token accounting and treemap rendering. Consider
   simplifying the TS design during the port rather than reproducing it 1:1.

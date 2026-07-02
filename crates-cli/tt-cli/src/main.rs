@@ -12,7 +12,8 @@ fn main() {
 
     let exit_code = match command {
         Commands::Config(args) => commands::config::run(args.command, config_dir.as_deref()),
-        Commands::Doctor { json } => commands::doctor::run(json),
+        Commands::Doctor { json, track, diff } => commands::doctor::run(json, track, diff),
+        Commands::Install { observability } => commands::install::run(observability),
         Commands::Journal(args) => commands::journal::run(args.command, config_dir.as_deref()),
         Commands::Today { no_open } => {
             commands::journal::run(JournalCommands::DailyNotes { no_open }, config_dir.as_deref())
