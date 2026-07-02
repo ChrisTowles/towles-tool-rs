@@ -40,6 +40,65 @@ pub enum Commands {
         #[arg(long)]
         no_open: bool,
     },
+
+    /// GitHub utilities
+    Gh(GhArgs),
+
+    /// Create a pull request from the current branch (alias for `gh pr`)
+    Pr(PrArgs),
+}
+
+#[derive(Args)]
+#[command(disable_help_subcommand = true)]
+pub struct GhArgs {
+    #[command(subcommand)]
+    pub command: GhCommands,
+}
+
+#[derive(Subcommand)]
+pub enum GhCommands {
+    /// Create a git branch from a GitHub issue
+    Branch {
+        /// Only show issues assigned to me
+        #[arg(long, short = 'a')]
+        assigned_to_me: bool,
+    },
+
+    /// Delete local branches that have been merged into main
+    BranchClean(BranchCleanArgs),
+
+    /// Create a pull request from the current branch
+    Pr(PrArgs),
+}
+
+#[derive(Args)]
+pub struct BranchCleanArgs {
+    /// Skip confirmation prompt
+    #[arg(long, short = 'f')]
+    pub force: bool,
+
+    /// Preview branches without deleting
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Base branch to check against
+    #[arg(long, short = 'b', default_value = "main")]
+    pub base: String,
+}
+
+#[derive(Args)]
+pub struct PrArgs {
+    /// Create as draft PR
+    #[arg(long, short = 'D')]
+    pub draft: bool,
+
+    /// Base branch for the PR
+    #[arg(long, short = 'b', default_value = "main")]
+    pub base: String,
+
+    /// Skip confirmation prompt
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 #[derive(Args)]

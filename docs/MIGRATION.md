@@ -36,10 +36,24 @@ cite the yaak or slot-1 source path in the commit.
       that the on-disk default templates do not; this quirk is preserved
       verbatim (the fallback is only reached if the template dir is unwritable).
 
-- [ ] **2 — GitHub helpers.** First `gh pr` and `gh branch-clean`, then `gh
-  branch` with an interactive issue picker (evaluate `inquire` or `nucleo` for
-  the fuzzy UI).
-  Source: `src/commands/gh/` (`pr.ts`, `branch-clean.ts`, `branch.ts`).
+- [x] **2 — GitHub helpers.** `gh pr` / `gh branch-clean` / `gh branch` (interactive
+  issue picker), plus a top-level `pr` alias. Pure logic ported to the `tt-gh` crate
+  (`branch_name`, `pr`, `branch_clean`, `issues`, `picker` modules), fully unit-tested
+  without `gh`/`git`/a terminal; the CLI layer shells out via `tt-exec` and prompts with
+  `inquire` (chosen over `nucleo` — inquire's `Select` gives fuzzy filtering out of the box).
+  Source: `src/commands/gh/` (`pr.ts`, `branch-clean.ts`, `branch.ts`) +
+  `src/lib/git/{gh-cli-wrapper,branch-name}.ts` + `src/lib/render.ts`.
+  Behavior deviations from the TS CLI:
+    - Confirmation prompts require a TTY. `pr` refuses to run without `--yes` when
+      stdin is not a terminal (clear error); `branch-clean` treats a non-TTY without
+      `--force`/`--dry-run` as a no-op cancel. This keeps CI/tests from hanging.
+    - `gh branch` uses an `inquire::Select` fuzzy picker instead of the TS
+      `prompts` + `fzf` autocomplete. Column-layout/label rendering is ported
+      verbatim (including the 24-bit hex label colors and dimmed-ellipsis truncation).
+    - Branch-name/PR-title slugging matches the TS byte-for-byte, including its
+      ASCII-only `\w`/`[^0-9a-zA-Z_-]` semantics (non-ASCII letters become `-`),
+      verified against the TS test suite and a live luxon/JS cross-check.
+    - The per-command `--debug` flag is dropped in favor of the global `-v/--verbose`.
 
 - [ ] **3 — Install + Claude settings; doctor history/diff.** The `install`
   command and the `claude-settings` writer, plus extending `doctor` with run

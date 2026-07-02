@@ -3,7 +3,7 @@ mod commands;
 mod ui;
 
 use clap::Parser;
-use cli::{Cli, Commands, JournalCommands};
+use cli::{Cli, Commands, GhCommands, JournalCommands};
 
 fn main() {
     let Cli { verbose, config_dir, command } = Cli::parse();
@@ -17,6 +17,8 @@ fn main() {
         Commands::Today { no_open } => {
             commands::journal::run(JournalCommands::DailyNotes { no_open }, config_dir.as_deref())
         }
+        Commands::Gh(args) => commands::gh::run(args.command),
+        Commands::Pr(args) => commands::gh::run(GhCommands::Pr(args)),
     };
 
     if exit_code != 0 {

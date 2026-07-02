@@ -4004,6 +4004,7 @@ dependencies = [
  "tempfile",
  "tt-config",
  "tt-exec",
+ "tt-gh",
  "tt-journal",
 ]
 
@@ -4024,6 +4025,15 @@ name = "tt-exec"
 version = "0.1.0"
 dependencies = [
  "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tt-gh"
+version = "0.1.0"
+dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
