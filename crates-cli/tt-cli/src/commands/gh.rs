@@ -1,7 +1,7 @@
 //! `ttr gh` subcommands: branch, branch-clean, pr (also reachable as `ttr pr`).
 //!
 //! Ports `src/commands/gh/*.ts`. Pure logic (branch names, PR content, merged-branch
-//! filtering, issue parsing, picker layout) lives in `tt-gh`; this module shells out via
+//! filtering, issue parsing, picker layout) lives in `tt-git`; this module shells out via
 //! `tt-exec` and drives the interactive prompts with `inquire`.
 //!
 //! Deviations from the TS CLI (see docs/MIGRATION.md):
@@ -14,10 +14,10 @@ use crate::cli::{BranchCleanArgs, GhCommands, PrArgs};
 use crate::ui;
 use std::fmt;
 use std::io::IsTerminal;
-use tt_gh::branch_name::create_branch_name_from_issue;
-use tt_gh::picker::{ChoiceValue, build_issue_choices, compute_column_layout};
-use tt_gh::pr::generate_pr_content;
-use tt_gh::{Issue, branch_clean, issues};
+use tt_git::branch_name::create_branch_name_from_issue;
+use tt_git::picker::{ChoiceValue, build_issue_choices, compute_column_layout};
+use tt_git::pr::generate_pr_content;
+use tt_git::{Issue, branch_clean, issues};
 
 pub fn run(command: GhCommands) -> i32 {
     match command {

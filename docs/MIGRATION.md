@@ -37,7 +37,7 @@ cite the yaak or slot-1 source path in the commit.
       verbatim (the fallback is only reached if the template dir is unwritable).
 
 - [x] **2 — GitHub helpers.** `gh pr` / `gh branch-clean` / `gh branch` (interactive
-  issue picker), plus a top-level `pr` alias. Pure logic ported to the `tt-gh` crate
+  issue picker), plus a top-level `pr` alias. Pure logic ported to the `tt-git` crate
   (`branch_name`, `pr`, `branch_clean`, `issues`, `picker` modules), fully unit-tested
   without `gh`/`git`/a terminal; the CLI layer shells out via `tt-exec` and prompts with
   `inquire` (chosen over `nucleo` — inquire's `Select` gives fuzzy filtering out of the box).

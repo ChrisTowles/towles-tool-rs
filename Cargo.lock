@@ -4004,7 +4004,7 @@ dependencies = [
  "tempfile",
  "tt-config",
  "tt-exec",
- "tt-gh",
+ "tt-git",
  "tt-journal",
 ]
 
@@ -4031,7 +4031,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tt-gh"
+name = "tt-git"
 version = "0.1.0"
 dependencies = [
  "serde",

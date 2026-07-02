@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 tt-config = { workspace = true }
 tt-exec = { workspace = true }
-tt-gh = { workspace = true }
+tt-git = { workspace = true }
 tt-journal = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }

@@ -31,7 +31,7 @@ tokio = "1.48.0"
 # Internal crates - shared
 tt-config = { path = "crates/tt-config" }
 tt-exec = { path = "crates/tt-exec" }
-tt-gh = { path = "crates/tt-gh" }
+tt-git = { path = "crates/tt-git" }
 tt-journal = { path = "crates/tt-journal" }
 
 [profile.release]
