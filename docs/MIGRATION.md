@@ -130,20 +130,29 @@ cite the yaak or slot-1 source path in the commit.
   existing users and post-cutover). The root `.claude-plugin/marketplace.json`
   lives at the *repo root* in slot-1, outside `packages/core`, so it is not part
   of this scoped carry-over.
-  Distribution is **not yet decided** — see
-  [docs/PLUGIN-DISTRIBUTION.md](PLUGIN-DISTRIBUTION.md) for the options analysis
-  (keep shipping from the live repo until cutover / move the marketplace here /
-  dedicated plugin repo). Chris decides.
+  Distribution: **working default is option (a)** — keep shipping from the live
+  ChrisTowles/towles-tool repo until the `ttr`→`tt` cutover; this copy is a
+  mirror, not the source of truth, until then. Adopted as the only zero-breakage
+  option (marketplaces are URL-keyed); see
+  [docs/PLUGIN-DISTRIBUTION.md](PLUGIN-DISTRIBUTION.md). Chris can override.
   Source: `packages/core/` (`.claude-plugin/plugin.json`, `hooks/`, `skills/`,
   `README.md`).
 
-- [ ] **6 — Tauri app feature direction.** Decide what the desktop app *is*.
-  Leading candidate: agentboard-as-desktop.
+- [x] **6 — Tauri app feature direction: agentboard-as-desktop.** The desktop
+  app *is* agentboard. This was the leading candidate throughout; adopted
+  2026-07-02 under the "continue all slices" directive. Consequence for item 7:
+  the rewrite targets the Tauri app (Rust backend + React frontend), not a
+  `ratatui` TUI — the terminal TUI is superseded, though the CLI keeps an
+  `agentboard`/`ag` command to launch/manage the app-side pieces.
 
-- [ ] **7 — Agentboard Rust rewrite.** The hardest item: a `ratatui` TUI over
-  `tokio-tungstenite` (websockets), `notify` (fs watching), and `tmux`. May be
-  superseded by item 6 if the desktop app absorbs this role.
-  Source: `src/commands/agentboard.ts`.
+- [ ] **7 — Agentboard rewrite inside the Tauri app.** The hardest item,
+  reshaped by item 6: port the agentboard core (repo scanning, git status,
+  Claude-session watching, tmux integration, persistence) to a Tauri-free
+  `tt-agentboard` crate, expose it through Tauri commands/events in `tt-app`,
+  and rebuild the UI in the React client. Phasing per the port plan derived
+  from the source inventory.
+  Source: slot-1 `packages/agentboard/` (live entry `src/server/main.ts`) +
+  `src/commands/agentboard.ts`.
 
 - [ ] **8 — Distribution + rename.** Ship it via `cargo-dist` / npm / a self-
   hosted updater (own infrastructure only), and perform the `ttr` → `tt` hard
