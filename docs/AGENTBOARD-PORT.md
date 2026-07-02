@@ -156,3 +156,15 @@ session, tmux hooks POSTing to the server). The *data engine* underneath:
      startup) so CLI edits are picked up live without an app restart.
    - ⏳ **Still pending** (next, decision after the e2e demo): the codex / amp /
      opencode watchers and open-in-editor.
+
+## End-to-end demo — VERIFIED (2026-07-02)
+
+`tauri dev` with two real repos in `repos.json`: the window rendered both
+SessionCards with live git stats (`3f +2 -1` matching the dirty tree), and the
+claude-code watcher tracked the live Claude Code session in real time —
+thread name from the first prompt, `fable-5 · ⟶ Bash` model/tool line,
+cache countdown, unseen second session, `2s ⚡1 ●1` StatusBar counts, theme
+catppuccin-mocha. One integration bug surfaced and fixed: the app shipped
+without a Tauri capabilities file, so the webview's `listen()` was denied by
+the ACL and the UI stayed on the empty state (`capabilities/default.json`
+granting `core:default` to the `main` window fixes it — commit b0582fd).
