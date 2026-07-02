@@ -101,13 +101,43 @@ session, tmux hooks POSTing to the server). The *data engine* underneath:
        The `scanning` re-entrancy guard is unneeded (synchronous scan) and dropped.
        `thread_name` capped at 80 Unicode scalars (not UTF-16 units).
      - New deps: `notify` (fs accelerant, isolated) and `chrono` (timestamp parse).
-3. **Tauri bridge + minimal React UI.** WS `state` broadcast becomes a Tauri
-   event carrying the SessionData snapshot; ClientCommands become Tauri
-   commands. React renders StatusBar + SessionCard list; themes.ts carried
-   over as data. **Demo milestone: live repo list with git stats and
-   claude-code agent status updating in the Tauri window.**
-4. **Repo source config.** Explicit `repoPaths` (new config, replacing tmux
-   session discovery as the desktop repo source).
+3. **Tauri bridge + minimal React UI.** ✅ **Rust half DONE (2026-07-02)** (React
+   UI handled separately). Ported the composition/broadcast half of
+   `server/index.ts` per docs/AGENTBOARD-BRIDGE-SPEC.md. Pure snapshot assembly
+   (`bridge::assemble_state` + `synthesize_waiting`/`merge_agents_waiting`) lives
+   in `tt-agentboard` (unit-tested); `crates-tauri/tt-app/src/agentboard.rs` owns
+   the `Engine` (tracker + metadata + session-order + git cache + claude-code
+   watcher; ports left unused per BRIDGE-SPEC) behind a `Mutex` and the tokio
+   tasks (tauri runtime): watcher scan every 2s (+ eager on the `notify`
+   accelerant), git refresh every 1.5s, and a 200ms-debounced emitter. Each
+   rebuild pins by pid-liveness → runs the §4 prune schedule → assembles the
+   trimmed snapshot → emits the `agentboard://state` Tauri event with
+   `{sessions, theme, preferredEditor, ts}`.
+   Tauri commands (registered in `lib.rs`): `ab_get_state`, `ab_mark_seen`
+   (fast-path: patch `unseen` on the cached snapshot + re-emit, no rebuild),
+   `ab_dismiss_agent`, `ab_reorder_session`, `ab_set_theme` (persists to shared
+   settings `agentboard.theme` via tt-config), `ab_add_repo`, `ab_remove_repo`,
+   `ab_refresh`, and the four metadata mutations `ab_set_status`/`ab_set_progress`
+   /`ab_log`/`ab_clear_log` (§5 validation: non-empty session/message, tone
+   whitelist→undefined, caps enforced by the store). The old `greet` command was
+   removed (hard cutover). `apps/client` untouched (frontend agent owns it).
+   Deviations: `waiting` synthesis + prune pinning driven by pid-liveness, not
+   pane presence (§6); dropped payload/`SessionData` fields (`sidebarWidth`,
+   `createdAt`, `panes`, `windows`, `uptime`, `isWorktree`, `ports`,
+   `eventTimestamps`) carry default/zero values in the snapshot; the git poll
+   holds the engine lock across git subprocesses (brief, acceptable for the poll);
+   dropped tmux routing commands and `session-viewed`/`re-identify`/`resize`
+   messages. New tt-app deps: `tt-agentboard`, `tt-config`, `tokio`
+   (time/sync/rt/macros), `dirs`.
+4. **Repo source config.** ✅ **DONE (2026-07-02).** `repos` module in
+   `tt-agentboard`: repo-path list persisted to its own
+   `~/.config/towles-tool/agentboard/repos.json` (`{"repoPaths":[...]}`) — NOT the
+   shared settings file (the TS CLI's zod round-trip could strip unknown keys;
+   sits beside `session-order.json`). Path-parameterized load/save + add/remove
+   helpers; session name = dir basename, disambiguated by the parent-dir basename
+   on collision; `resolve_session_name` matches Claude's encoded project dir
+   encoded↔encoded (adopted fix #3). Wired to `ab_add_repo`/`ab_remove_repo`
+   (remove drops the name → next `computeState`/`pruneSessions` cleans metadata).
 5. **Parity extras.** Localhost HTTP metadata ingest (external agents keep
    POSTing status/progress/log), remaining watchers, open-in-editor,
    CLI `agentboard` command to launch/manage the app.
