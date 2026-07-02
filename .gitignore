@@ -1,0 +1,7 @@
+/target
+node_modules/
+dist/
+/apps/client/dist
+.claude/settings.local.json
+*.local
+.DS_Store

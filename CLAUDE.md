@@ -1,0 +1,64 @@
+# CLAUDE.md
+
+Rust rewrite of the `towles-tool` CLI plus a Tauri 2 desktop shell. Modeled on
+the [Yaak](https://github.com/mountain-loop/yaak) repo structure (see
+[ATTRIBUTION.md](ATTRIBUTION.md)).
+
+## Commands
+
+Rust:
+
+```sh
+cargo run -p tt-cli -- <args>       # run the CLI (binary is `ttr`, not `tt`)
+cargo run -p tt-cli -- doctor       # e.g. doctor, config show|validate|schema|reset
+cargo fmt --check                   # formatting (rustfmt, 100-col)
+cargo clippy --all -- -D warnings   # lint; warnings are errors
+cargo test --all                    # unit + assert_cmd black-box tests
+```
+
+Desktop app / frontend:
+
+```sh
+npm install                         # installs apps/client (npm workspaces)
+npm run dev                         # tauri dev — app + Vite frontend
+```
+
+> The binary is **`ttr`** during migration. Do not rename it to `tt` — the
+> TypeScript CLI keeps `tt` until the Rust port reaches feature parity, then we
+> hard-cut over (see [docs/MIGRATION.md](docs/MIGRATION.md), item 8).
+
+## Architecture
+
+Cargo workspace + npm workspace (`apps/client` only):
+
+- `crates/` — **Tauri-free** shared libraries. This is a hard rule (Yaak's
+  shared-crate pattern): nothing here may depend on `tauri`, so both the CLI and
+  the app can use these crates.
+  - `tt-config` — settings, stored at
+    `~/.config/towles-tool/towles-tool.settings.json`. **This file is shared
+    with the TypeScript CLI**, so serde types must tolerate unknown fields
+    (`#[serde(default)]` / no `deny_unknown_fields`) to avoid breaking the other
+    tool.
+  - `tt-exec` — process/command wrappers.
+- `crates-cli/tt-cli` — `clap` 4 CLI, binary `ttr`. Commands:
+  `config show|validate|schema|reset`, `doctor [--json]`.
+- `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`,
+  dev server on `:1420`.
+- `apps/client` — React 19 + Vite frontend (currently a hello-world).
+
+## Migration
+
+Features are ported from the TypeScript CLI at
+`~/code/p/towles-tool-repos/towles-tool-slot-1` per
+[docs/MIGRATION.md](docs/MIGRATION.md). When deriving code, the commit message
+should cite the upstream source path (yaak `path/to/file` or slot-1
+`src/commands/...`).
+
+## Conventions
+
+- **Errors:** `thiserror` in library crates; flatten to exit codes at the CLI
+  boundary (in `tt-cli`), not deep in the libs.
+- **Tests:** black-box CLI tests with `assert_cmd`; unit tests alongside logic.
+- **Formatting:** rustfmt, 100-column width.
+- **Hard cutover, no back-compat shims** — replace, don't wrap. (No compat
+  layers, no dual-name aliases beyond the deliberate `ttr`→`tt` rename.)
