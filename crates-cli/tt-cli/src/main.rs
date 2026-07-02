@@ -21,6 +21,7 @@ fn main() {
         Commands::Graph(args) => commands::graph::run(args),
         Commands::Gh(args) => commands::gh::run(args.command),
         Commands::Pr(args) => commands::gh::run(GhCommands::Pr(args)),
+        Commands::Agentboard(args) => commands::agentboard::run(args.command),
     };
 
     if exit_code != 0 {

@@ -15,6 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter, State};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 
 use tt_agentboard::fs_notify::DirNotifier;
@@ -22,10 +24,11 @@ use tt_agentboard::metadata::{LogInput, ProgressInput, StatusInput};
 use tt_agentboard::session_order::ReorderDelta;
 use tt_agentboard::types::{AgentEvent, MetadataTone};
 use tt_agentboard::{
-    AgentTracker, AgentWatcher, ClaudeCodeAgentWatcher, ClaudePidLookup, GitInfoCache, RepoEntry,
-    SessionMetadataStore, SessionOrder, StatePayload, WatcherContext, add_repo, assemble_state,
-    default_repos_path, instance_key, load_repos, remove_repo_by_name, repo_entries,
-    resolve_session_name, save_repos,
+    AgentTracker, AgentWatcher, ClaudeCodeAgentWatcher, ClaudePidLookup, GitInfoCache,
+    MetadataMutation, RepoEntry, SessionMetadataStore, SessionOrder, StatePayload, WatcherContext,
+    add_repo, assemble_state, default_repos_path, handle_request, instance_key, load_repos,
+    parse_request_head, remove_repo_by_name, repo_entries, resolve_session_name, response_bytes,
+    save_repos,
 };
 
 /// Tauri event carrying the state snapshot.
@@ -108,9 +111,16 @@ impl Engine {
         self.projects_dir.clone()
     }
 
+    /// Re-read `repos.json` so changes made by the `ttr agentboard` CLI (which
+    /// writes the same file) are picked up without restarting the app.
+    fn reload_repos(&mut self) {
+        self.repo_paths = load_repos(&self.repos_path);
+    }
+
     /// One watcher scan: collect emits and feed them to the tracker (first scan's
     /// emits are seeded → marked unseen).
     pub fn scan_once(&mut self, now: i64) {
+        self.reload_repos();
         let mut ctx = CollectCtx { entries: repo_entries(&self.repo_paths), events: Vec::new() };
         self.watcher.scan(&mut ctx, now);
         let seed = !self.seeded_once;
@@ -129,6 +139,7 @@ impl Engine {
 
     /// Full recompute: pid-liveness pin → prune schedule → assemble snapshot.
     pub fn compute_payload(&mut self, now: i64) -> StatePayload {
+        self.reload_repos();
         let entries = repo_entries(&self.repo_paths);
 
         // pid-liveness drives both pruning pins and the `waiting` synthesis (§4/§6).
@@ -416,4 +427,122 @@ pub fn ab_clear_log(state: State<Ab>, session: String) -> Result<(), String> {
     state.engine.lock().unwrap().clear_logs(&session);
     state.emit.notify_one();
     Ok(())
+}
+
+// --- Localhost metadata HTTP ingest (phase 5) ---
+
+/// Host/port for the metadata listener, honoring `TT_AGENTBOARD_HOST`/
+/// `TT_AGENTBOARD_PORT` (defaults `127.0.0.1:4201`), matching the TS server.
+pub fn ingest_addr() -> (String, u16) {
+    let host = std::env::var("TT_AGENTBOARD_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port =
+        std::env::var("TT_AGENTBOARD_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(4201);
+    (host, port)
+}
+
+/// Apply a validated metadata mutation to the engine.
+fn apply_mutation(engine: &mut Engine, mutation: MetadataMutation, now: i64) {
+    match mutation {
+        MetadataMutation::SetStatus { session, text, tone } => {
+            engine.set_status(&session, text.map(|t| StatusInput { text: t, tone }), now);
+        }
+        MetadataMutation::SetProgress { session, progress } => {
+            engine.set_progress(&session, progress, now);
+        }
+        MetadataMutation::AppendLog { session, log } => {
+            engine.append_log(&session, log, now);
+        }
+        MetadataMutation::ClearLogs { session } => {
+            engine.clear_logs(&session);
+        }
+    }
+}
+
+/// Run the localhost metadata listener. Binds `TT_AGENTBOARD_HOST:PORT`; if the
+/// port is in use (e.g. the TS server is still running), logs a warning and
+/// returns without a listener — the app must not crash. Ports the agent-facing
+/// HTTP API (§5); request parsing/validation is pure in `tt-agentboard`.
+pub async fn serve_metadata(
+    engine: Arc<Mutex<Engine>>,
+    emit: Arc<Notify>,
+    host: String,
+    port: u16,
+) {
+    let listener = match TcpListener::bind((host.as_str(), port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("agentboard: metadata listener disabled on {host}:{port} ({e})");
+            return;
+        }
+    };
+    loop {
+        let Ok((socket, _)) = listener.accept().await else {
+            continue;
+        };
+        let engine = engine.clone();
+        let emit = emit.clone();
+        tauri::async_runtime::spawn(async move {
+            handle_connection(socket, engine, emit).await;
+        });
+    }
+}
+
+/// Read one HTTP/1.1 request (headers + Content-Length body), apply any mutation,
+/// and write the response. Best-effort: gives up quietly on malformed input.
+async fn handle_connection(mut socket: TcpStream, engine: Arc<Mutex<Engine>>, emit: Arc<Notify>) {
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 2048];
+
+    // Read until the end of headers.
+    let head_end = loop {
+        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
+            break pos + 4;
+        }
+        match socket.read(&mut tmp).await {
+            Ok(0) => return,
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Err(_) => return,
+        }
+        if buf.len() > 64 * 1024 {
+            return; // oversized header — bail
+        }
+    };
+
+    let head_str = String::from_utf8_lossy(&buf[..head_end]).to_string();
+    let Some(head) = parse_request_head(&head_str) else {
+        let _ = socket.write_all(response_bytes(400, "bad request").as_bytes()).await;
+        return;
+    };
+
+    // Read the body up to Content-Length.
+    while buf.len() - head_end < head.content_length {
+        match socket.read(&mut tmp).await {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Err(_) => break,
+        }
+        if buf.len() > 8 * 1024 * 1024 {
+            break; // cap body size
+        }
+    }
+    let body_end = (head_end + head.content_length).min(buf.len());
+    let body = String::from_utf8_lossy(&buf[head_end..body_end]).to_string();
+
+    let outcome = handle_request(&head.method, &head.path, &body);
+    if let Some(mutation) = outcome.mutation {
+        {
+            let mut engine = engine.lock().unwrap();
+            apply_mutation(&mut engine, mutation, now_ms());
+        }
+        emit.notify_one();
+    }
+    let _ = socket.write_all(response_bytes(outcome.status, &outcome.body).as_bytes()).await;
+}
+
+/// First index of `needle` in `haystack`, if present.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
 }

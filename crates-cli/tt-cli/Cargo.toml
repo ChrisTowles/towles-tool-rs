@@ -9,6 +9,7 @@ name = "ttr"
 path = "src/main.rs"
 
 [dependencies]
+tt-agentboard = { workspace = true }
 tt-config = { workspace = true }
 tt-exec = { workspace = true }
 tt-git = { workspace = true }

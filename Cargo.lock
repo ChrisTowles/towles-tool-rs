@@ -4112,6 +4112,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tt-agentboard",
  "tt-config",
  "tt-exec",
  "tt-git",

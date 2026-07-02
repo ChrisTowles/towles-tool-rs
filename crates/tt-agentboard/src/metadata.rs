@@ -15,12 +15,14 @@ const MAX_LOGS: usize = 50;
 const MAX_MESSAGE_LENGTH: usize = 500;
 
 /// A status update pushed by an agent/script (before a timestamp is stamped).
+#[derive(Debug, Clone, PartialEq)]
 pub struct StatusInput {
     pub text: String,
     pub tone: Option<MetadataTone>,
 }
 
 /// A progress update pushed by an agent/script.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProgressInput {
     pub current: Option<i64>,
     pub total: Option<i64>,
@@ -29,6 +31,7 @@ pub struct ProgressInput {
 }
 
 /// A log line pushed by an agent/script.
+#[derive(Debug, Clone, PartialEq)]
 pub struct LogInput {
     pub message: String,
     pub tone: Option<MetadataTone>,

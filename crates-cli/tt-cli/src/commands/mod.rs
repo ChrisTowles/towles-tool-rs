@@ -1,3 +1,4 @@
+pub mod agentboard;
 pub mod claude_settings;
 pub mod config;
 pub mod doctor;

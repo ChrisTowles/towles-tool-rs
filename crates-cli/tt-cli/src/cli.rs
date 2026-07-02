@@ -64,6 +64,45 @@ pub enum Commands {
 
     /// Create a pull request from the current branch (alias for `gh pr`)
     Pr(PrArgs),
+
+    /// Manage the agentboard desktop app's watched repos
+    #[command(alias = "ag")]
+    Agentboard(AgentboardArgs),
+}
+
+#[derive(Args)]
+#[command(disable_help_subcommand = true)]
+pub struct AgentboardArgs {
+    #[command(subcommand)]
+    pub command: AgentboardCommands,
+}
+
+#[derive(Subcommand)]
+pub enum AgentboardCommands {
+    /// Manage the watched-repo list (repos.json)
+    Repos(ReposArgs),
+}
+
+#[derive(Args)]
+#[command(disable_help_subcommand = true)]
+pub struct ReposArgs {
+    #[command(subcommand)]
+    pub command: Option<ReposCommands>,
+}
+
+#[derive(Subcommand)]
+pub enum ReposCommands {
+    /// Add a repo directory to the watch list
+    Add {
+        /// Path to the repo (must exist; a warning is printed if it isn't a git repo)
+        path: String,
+    },
+
+    /// Remove a repo from the watch list by session name or path
+    Remove {
+        /// Session name (dir basename) or the exact configured path
+        target: String,
+    },
 }
 
 #[derive(Args)]

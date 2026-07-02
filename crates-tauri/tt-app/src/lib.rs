@@ -90,6 +90,14 @@ pub fn run() {
                 });
             }
 
+            // Localhost metadata HTTP ingest (external agents/scripts POST here).
+            {
+                let engine = engine.clone();
+                let emit = emit.clone();
+                let (host, port) = agentboard::ingest_addr();
+                tauri::async_runtime::spawn(agentboard::serve_metadata(engine, emit, host, port));
+            }
+
             // Kick an initial scan so the first snapshot has data.
             scan.notify_one();
             Ok(())

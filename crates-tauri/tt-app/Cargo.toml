@@ -19,4 +19,4 @@ tt-config = { workspace = true }
 dirs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["time", "sync", "rt", "macros"] }
+tokio = { workspace = true, features = ["time", "sync", "rt", "macros", "net", "io-util"] }

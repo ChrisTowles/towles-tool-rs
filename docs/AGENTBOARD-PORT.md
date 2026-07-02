@@ -138,6 +138,21 @@ session, tmux hooks POSTing to the server). The *data engine* underneath:
    on collision; `resolve_session_name` matches Claude's encoded project dir
    encoded↔encoded (adopted fix #3). Wired to `ab_add_repo`/`ab_remove_repo`
    (remove drops the name → next `computeState`/`pruneSessions` cleans metadata).
-5. **Parity extras.** Localhost HTTP metadata ingest (external agents keep
-   POSTing status/progress/log), remaining watchers, open-in-editor,
-   CLI `agentboard` command to launch/manage the app.
+5. **Parity extras.** ⏳ **Partially DONE (2026-07-02).**
+   - ✅ **Localhost metadata HTTP ingest.** `metadata_http` module in
+     `tt-agentboard` (pure request-head parse + §5 validation → `MetadataMutation`
+     + status/body, unit-tested on raw strings); `tt-app` binds a hand-rolled
+     HTTP/1.1 responder (tokio `TcpListener`, no HTTP-framework dep) on
+     `TT_AGENTBOARD_HOST:TT_AGENTBOARD_PORT` (default `127.0.0.1:4201`) with
+     POST `/set-status` `/set-progress` `/log` `/clear-log` (204 ok; 400 on
+     invalid JSON / empty session / non-string text / empty message; tone
+     whitelist→none; caps via the store) and `GET /` health route list.
+     Port-in-use → warn + run without the listener (never crashes if the TS
+     server is up). Mutations feed the same engine + debounced emit.
+   - ✅ **`ttr agentboard` CLI (alias `ag`).** `repos` (list), `repos add <path>`
+     (canonicalizes, requires an existing dir, warns if not a git repo but still
+     adds), `repos remove <name-or-path>`. Operates on the same `repos.json`; the
+     engine now re-reads `repos.json` on every scan/rebuild (was cached at
+     startup) so CLI edits are picked up live without an app restart.
+   - ⏳ **Still pending** (next, decision after the e2e demo): the codex / amp /
+     opencode watchers and open-in-editor.
