@@ -145,13 +145,21 @@ cite the yaak or slot-1 source path in the commit.
   `ratatui` TUI — the terminal TUI is superseded, though the CLI keeps an
   `agentboard`/`ag` command to launch/manage the app-side pieces.
 
-- [ ] **7 — Agentboard rewrite inside the Tauri app.** The hardest item,
-  reshaped by item 6: port the agentboard core (repo scanning, git status,
-  Claude-session watching, tmux integration, persistence) to a Tauri-free
-  `tt-agentboard` crate, expose it through Tauri commands/events in `tt-app`,
-  and rebuild the UI in the React client. Phasing and inventory:
-  [docs/AGENTBOARD-PORT.md](AGENTBOARD-PORT.md) (5 phases; demo milestone at
-  phase 3 — live repo list + claude-code agent status in the Tauri window).
+- [x] **7 — Agentboard rewrite inside the Tauri app.** Done across the 5 phases
+  in [docs/AGENTBOARD-PORT.md](AGENTBOARD-PORT.md): the Tauri-free
+  `tt-agentboard` crate (types, tracker, metadata, session-order, git-info,
+  ports, all four watchers — claude-code/amp/codex/opencode, bridge assembly,
+  repos config, metadata-HTTP validation), the `tt-app` bridge (engine + tokio
+  scan/git tasks + `agentboard://state` event + `ab_*` commands + localhost
+  metadata ingest), the React UI, and the `ttr agentboard`/`ag` repos CLI. The
+  end-to-end demo verified live repos with git stats and a live Claude session
+  updating in the Tauri window. Open questions / deferred: the pane-based
+  "waiting" synthesis + prune pinning are driven by pid-liveness (only
+  claude-code has a process-liveness signal; amp/codex/opencode are
+  status/DB-derived and thus never pinned — a very long-idle-but-live
+  codex/opencode "running" session could be pruned by the 3-min stuck rule); the
+  `ports` column is unused (no tmux to attribute ps-tree ports); codex reads
+  `session_index.jsonl` (JSONL), not sqlite, in the current slot-1 version.
   Source: slot-1 `packages/agentboard/` (live entry `src/server/main.ts`) +
   `src/commands/agentboard.ts`.
 

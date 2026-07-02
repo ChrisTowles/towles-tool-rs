@@ -108,17 +108,21 @@ pub fn repo_entries(repo_paths: &[String]) -> Vec<RepoEntry> {
         .collect()
 }
 
-/// Resolve a raw *encoded* project-dir name (Claude's `/`→`-` folder name) to a
-/// session name by re-encoding each repo dir and taking the longest prefix match
-/// (adopted fix #3 — sidesteps the lossy decode).
-pub fn resolve_session_name(encoded_dir: &str, entries: &[RepoEntry]) -> Option<String> {
+/// Resolve a watcher's project dir to a session name (longest prefix match).
+///
+/// Handles both forms the watchers produce: claude-code passes Claude's *encoded*
+/// folder name (`/`→`-`, adopted fix #3 — matched encoded↔encoded to sidestep the
+/// lossy decode); amp/codex/opencode pass a real absolute path (matched directly
+/// against repo dirs). An input starting with `/` is treated as a real path.
+pub fn resolve_session_name(dir: &str, entries: &[RepoEntry]) -> Option<String> {
+    let real_path = dir.starts_with('/');
+    let sep = if real_path { '/' } else { '-' };
     let mut best: Option<(&RepoEntry, usize)> = None;
     for entry in entries {
-        let encoded_repo = entry.dir.replace('/', "-");
-        let matches =
-            encoded_dir == encoded_repo || encoded_dir.starts_with(&format!("{encoded_repo}-"));
+        let candidate = if real_path { entry.dir.clone() } else { entry.dir.replace('/', "-") };
+        let matches = dir == candidate || dir.starts_with(&format!("{candidate}{sep}"));
         if matches {
-            let len = encoded_repo.len();
+            let len = candidate.len();
             if best.is_none_or(|(_, best_len)| len > best_len) {
                 best = Some((entry, len));
             }
@@ -199,6 +203,19 @@ mod tests {
         );
         // Unrelated dir → None.
         assert_eq!(resolve_session_name("-var-tmp-x", &entries), None);
+    }
+
+    #[test]
+    fn resolve_real_path_for_amp_codex_opencode() {
+        let entries = repo_entries(&paths(&["/home/u/proj"]));
+        // Exact real path (amp uri / codex cwd / opencode directory).
+        assert_eq!(resolve_session_name("/home/u/proj", &entries).as_deref(), Some("proj"));
+        // A cwd under the repo.
+        assert_eq!(resolve_session_name("/home/u/proj/src", &entries).as_deref(), Some("proj"));
+        // Unrelated real path.
+        assert_eq!(resolve_session_name("/var/tmp", &entries), None);
+        // A sibling that only shares a prefix segment must not match.
+        assert_eq!(resolve_session_name("/home/u/project-x", &entries), None);
     }
 
     #[test]

@@ -154,8 +154,38 @@ session, tmux hooks POSTing to the server). The *data engine* underneath:
      adds), `repos remove <name-or-path>`. Operates on the same `repos.json`; the
      engine now re-reads `repos.json` on every scan/rebuild (was cached at
      startup) so CLI edits are picked up live without an app restart.
-   - ⏳ **Still pending** (next, decision after the e2e demo): the codex / amp /
-     opencode watchers and open-in-editor.
+   - ✅ **codex / amp / opencode watchers** (2026-07-02). Ported to
+     `watchers/{amp, codex, opencode}` following the claude-code architecture
+     (externally-driven `scan(ctx, now_ms)`, path/DB-parameterized roots, tolerant
+     parsing, fixture-tested) and registered in the engine's `watchers` vec (all
+     scanned on the same 2s tick). Status vocabularies + liveness:
+       - **amp** (`~/.local/share/amp/threads/T-*.json`, whole-file JSON): emits
+         running/done/error/interrupted/waiting/idle from the last message's
+         `state`; no process liveness (status is message-derived); the
+         `session.json` `lastThreadId` focus signal emits `idle` for a terminal
+         thread the user re-opened (ported as a per-scan check rather than an
+         fs.watch on session.json).
+       - **codex** (`$CODEX_HOME/sessions/**/*.jsonl` + `session_index.jsonl` for
+         thread names — JSONL, **not** sqlite in this slot-1 version): emits
+         running/done/error/interrupted from transcript event/response-item types;
+         no process liveness. Incremental byte-offset reads ported faithfully
+         (offset → full size, same partial-line-split caveat as the TS).
+       - **opencode** (SQLite `~/.local/share/opencode/opencode.db`, or
+         `$OPENCODE_DB_PATH`): emits running/done/idle from the latest message +
+         parts; `time_updated` is the activity signal (emit only on change). No
+         process liveness.
+     None of the three has a pid/process-liveness signal (unlike claude-code's
+     `~/.claude/sessions/<pid>.json`), so none are pinned by the bridge and none
+     get pid-driven `waiting` synthesis — they emit their own terminal statuses
+     directly, faithful to the TS (which pinned by tmux pane presence, also
+     unavailable on the desktop).
+   - ✅ **rusqlite** (bundled, workspace pin `0.32.1`) — first SQLite dep, only
+     for opencode. Opened **read-only** (`SQLITE_OPEN_READ_ONLY`), never written,
+     never exclusive-locked; missing/locked/failed opens and queries are tolerated
+     (return no events). Fixture DBs are created in-test with rusqlite.
+   - ✅ **open-in-editor**: `ab_open_in_editor(name)` Tauri command spawns
+     `<preferredEditor> <repo-dir>` (TS TMUX-env stripping skipped — desktop
+     irrelevant). `apps/client` untouched (frontend owns the `e` keybinding).
 
 ## End-to-end demo — VERIFIED (2026-07-02)
 

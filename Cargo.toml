@@ -23,6 +23,7 @@ env_logger = "0.11.8"
 indexmap = "2.7.1"
 inquire = "0.7.5"
 notify = "6.1.1"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 log = "0.4.29"
 regex = "1.11.1"
 schemars = { version = "0.8.22", features = ["chrono"] }

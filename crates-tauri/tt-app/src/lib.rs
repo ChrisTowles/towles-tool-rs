@@ -115,6 +115,7 @@ pub fn run() {
             agentboard::ab_set_progress,
             agentboard::ab_log,
             agentboard::ab_clear_log,
+            agentboard::ab_open_in_editor,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Towles Tool application");

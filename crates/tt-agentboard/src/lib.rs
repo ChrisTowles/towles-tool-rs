@@ -74,5 +74,8 @@ pub use types::{
     SubagentInfo,
 };
 pub use watcher::{AgentWatcher, WatcherContext};
+pub use watchers::amp::AmpAgentWatcher;
 pub use watchers::claude_code::ClaudeCodeAgentWatcher;
 pub use watchers::claude_pid::ClaudePidLookup;
+pub use watchers::codex::CodexAgentWatcher;
+pub use watchers::opencode::OpenCodeAgentWatcher;

@@ -15,6 +15,10 @@ dirs = { workspace = true }
 # journal writes. Polling stays the reliable path; this is an optional supplement,
 # isolated in `fs_notify` and not used by the deterministic scan core.
 notify = { workspace = true }
+# rusqlite (bundled): read-only access to OpenCode's live SQLite DB. Bundled
+# compiles SQLite from source — no system libsqlite3 dependency or version skew
+# across dev/CI. First (and only) SQLite dep in the workspace.
+rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

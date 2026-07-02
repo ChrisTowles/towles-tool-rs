@@ -24,11 +24,11 @@ use tt_agentboard::metadata::{LogInput, ProgressInput, StatusInput};
 use tt_agentboard::session_order::ReorderDelta;
 use tt_agentboard::types::{AgentEvent, MetadataTone};
 use tt_agentboard::{
-    AgentTracker, AgentWatcher, ClaudeCodeAgentWatcher, ClaudePidLookup, GitInfoCache,
-    MetadataMutation, RepoEntry, SessionMetadataStore, SessionOrder, StatePayload, WatcherContext,
-    add_repo, assemble_state, default_repos_path, handle_request, instance_key, load_repos,
-    parse_request_head, remove_repo_by_name, repo_entries, resolve_session_name, response_bytes,
-    save_repos,
+    AgentTracker, AgentWatcher, AmpAgentWatcher, ClaudeCodeAgentWatcher, ClaudePidLookup,
+    CodexAgentWatcher, GitInfoCache, MetadataMutation, OpenCodeAgentWatcher, RepoEntry,
+    SessionMetadataStore, SessionOrder, StatePayload, WatcherContext, add_repo, assemble_state,
+    default_repos_path, handle_request, instance_key, load_repos, parse_request_head,
+    remove_repo_by_name, repo_entries, resolve_session_name, response_bytes, save_repos,
 };
 
 /// Tauri event carrying the state snapshot.
@@ -70,7 +70,7 @@ pub struct Engine {
     order: SessionOrder,
     git_cache: GitInfoCache,
     pid_lookup: ClaudePidLookup,
-    watcher: ClaudeCodeAgentWatcher,
+    watchers: Vec<Box<dyn AgentWatcher + Send>>,
     theme: Option<String>,
     preferred_editor: String,
     seeded_once: bool,
@@ -99,7 +99,15 @@ impl Engine {
             order: SessionOrder::new(Some(order_path)),
             git_cache: GitInfoCache::new(),
             pid_lookup: ClaudePidLookup::new(sessions_dir.clone()),
-            watcher: ClaudeCodeAgentWatcher::new(projects_dir, ClaudePidLookup::new(sessions_dir)),
+            watchers: vec![
+                Box::new(ClaudeCodeAgentWatcher::new(
+                    projects_dir,
+                    ClaudePidLookup::new(sessions_dir),
+                )),
+                Box::new(AmpAgentWatcher::with_defaults()),
+                Box::new(CodexAgentWatcher::with_defaults()),
+                Box::new(OpenCodeAgentWatcher::with_defaults()),
+            ],
             theme,
             preferred_editor,
             seeded_once: false,
@@ -117,17 +125,30 @@ impl Engine {
         self.repo_paths = load_repos(&self.repos_path);
     }
 
-    /// One watcher scan: collect emits and feed them to the tracker (first scan's
-    /// emits are seeded → marked unseen).
+    /// One scan of every watcher: collect emits and feed them to the tracker
+    /// (first scan's emits are seeded → marked unseen).
     pub fn scan_once(&mut self, now: i64) {
         self.reload_repos();
         let mut ctx = CollectCtx { entries: repo_entries(&self.repo_paths), events: Vec::new() };
-        self.watcher.scan(&mut ctx, now);
+        for watcher in &mut self.watchers {
+            watcher.scan(&mut ctx, now);
+        }
         let seed = !self.seeded_once;
         for event in ctx.events {
             self.tracker.apply_event(event, seed);
         }
         self.seeded_once = true;
+    }
+
+    /// The absolute dir for a session name, if configured (for open-in-editor).
+    pub fn repo_dir_for(&mut self, name: &str) -> Option<String> {
+        self.reload_repos();
+        repo_entries(&self.repo_paths).into_iter().find(|e| e.name == name).map(|e| e.dir)
+    }
+
+    /// The configured preferred editor command.
+    pub fn preferred_editor(&self) -> String {
+        self.preferred_editor.clone()
     }
 
     /// Refresh git info for each watched repo (runs git subprocesses).
@@ -426,6 +447,28 @@ pub fn ab_clear_log(state: State<Ab>, session: String) -> Result<(), String> {
     }
     state.engine.lock().unwrap().clear_logs(&session);
     state.emit.notify_one();
+    Ok(())
+}
+
+/// Open a session's repo directory in the preferred editor. Ports the TS
+/// open-in-editor (spawns `<preferredEditor> <dir>`; the TS TMUX-env stripping is
+/// desktop-irrelevant and skipped).
+#[tauri::command]
+pub fn ab_open_in_editor(state: State<Ab>, name: String) -> Result<(), String> {
+    let (editor, dir) = {
+        let mut engine = state.engine.lock().unwrap();
+        (engine.preferred_editor(), engine.repo_dir_for(&name))
+    };
+    let Some(dir) = dir else {
+        return Err(format!("No repo named {name}"));
+    };
+    if editor.trim().is_empty() {
+        return Err("No preferred editor configured".into());
+    }
+    std::process::Command::new(&editor)
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| format!("Failed to launch {editor}: {e}"))?;
     Ok(())
 }
 
