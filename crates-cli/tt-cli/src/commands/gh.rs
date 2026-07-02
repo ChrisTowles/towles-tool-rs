@@ -1,4 +1,4 @@
-//! `ttr gh` subcommands: branch, branch-clean, pr (also reachable as `ttr pr`).
+//! `tt gh` subcommands: branch, branch-clean, pr (also reachable as `tt pr`).
 //!
 //! Ports `src/commands/gh/*.ts`. Pure logic (branch names, PR content, merged-branch
 //! filtering, issue parsing, picker layout) lives in `tt-git`; this module shells out via

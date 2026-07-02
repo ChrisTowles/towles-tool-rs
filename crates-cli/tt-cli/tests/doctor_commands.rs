@@ -3,7 +3,7 @@ mod common;
 use common::cli_cmd;
 use tempfile::TempDir;
 
-/// A `ttr` command with HOME and XDG_CONFIG_HOME redirected into the sandbox, so
+/// A `tt` command with HOME and XDG_CONFIG_HOME redirected into the sandbox, so
 /// doctor's history file and agentboard checks never touch the real home dir.
 fn doctor_cmd(temp: &std::path::Path) -> assert_cmd::Command {
     let mut cmd = cli_cmd(temp);

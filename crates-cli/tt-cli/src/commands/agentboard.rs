@@ -1,4 +1,4 @@
-//! `ttr agentboard` (alias `ag`): manage the agentboard desktop app's watched
+//! `tt agentboard` (alias `ag`): manage the agentboard desktop app's watched
 //! repos. Operates on the same `~/.config/towles-tool/agentboard/repos.json` the
 //! app reads; the app re-reads it on every scan, so changes here are picked up
 //! live (no restart).
@@ -23,7 +23,7 @@ fn list_repos() -> i32 {
     let path = default_repos_path();
     let repos = load_repos(&path);
     if repos.is_empty() {
-        ui::info("No repos configured. Add one with `ttr agentboard repos add <path>`.");
+        ui::info("No repos configured. Add one with `tt agentboard repos add <path>`.");
         return 0;
     }
     for entry in repo_entries(&repos) {

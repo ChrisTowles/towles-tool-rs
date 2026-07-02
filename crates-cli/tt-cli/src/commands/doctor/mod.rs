@@ -1,4 +1,4 @@
-//! `ttr doctor`: check the developer tools towles-tool relies on, plus gh auth,
+//! `tt doctor`: check the developer tools towles-tool relies on, plus gh auth,
 //! required Claude plugins, and AgentBoard state.
 //!
 //! Ports `src/commands/doctor.ts` + `doctor/checks.ts` + `doctor/history.ts`.

@@ -4,7 +4,7 @@ use common::cli_cmd;
 use predicates::prelude::PredicateBooleanExt;
 use tempfile::TempDir;
 
-/// A `ttr install` command sandboxed so it can't touch the real `~/.claude` or run
+/// A `tt install` command sandboxed so it can't touch the real `~/.claude` or run
 /// real `claude` subcommands: HOME points into a tempdir, and PATH is emptied so the
 /// `claude` binary isn't found (list/marketplace fail gracefully, and the non-TTY
 /// guard skips the interactive install).

@@ -1,4 +1,4 @@
-//! `ttr config` subcommands: show, validate, schema, reset.
+//! `tt config` subcommands: show, validate, schema, reset.
 //!
 //! Library crates (`tt-config`) return typed errors; this CLI boundary flattens
 //! them to process exit codes and human/JSON output (the yaak pattern).
