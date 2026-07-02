@@ -1,0 +1,315 @@
+:root {
+  --ab-font-mono: "JetBrains Mono", "Fira Code", "SF Mono", "Cascadia Code", Menlo,
+    Consolas, monospace;
+  --ab-font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: #11111b;
+}
+
+.ab-theme-root {
+  height: 100%;
+}
+
+/* Layout ------------------------------------------------------------------ */
+
+.ab-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--pal-crust);
+  color: var(--pal-text);
+  font-family: var(--ab-font-mono);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ab-statusbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--pal-surface0);
+  flex-shrink: 0;
+}
+
+.ab-title {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.ab-counts {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.ab-theme-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-family: var(--ab-font-ui);
+}
+
+.ab-theme-picker select {
+  font-family: var(--ab-font-mono);
+  font-size: 11px;
+  padding: 3px 6px;
+  border: 1px solid;
+  border-radius: 5px;
+  outline: none;
+}
+
+.ab-main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+}
+
+.ab-footer {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border-top: 1px solid var(--pal-surface0);
+  color: var(--pal-overlay0);
+  font-size: 12px;
+}
+
+/* Cards ------------------------------------------------------------------- */
+
+.ab-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ab-card {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  padding: 2px 8px 2px 4px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: pre;
+}
+
+.ab-accent {
+  flex-shrink: 0;
+  width: 0.7em;
+  text-align: center;
+  user-select: none;
+}
+
+.ab-card-body {
+  flex: 1;
+  min-width: 0;
+  padding-left: 4px;
+}
+
+.ab-card-header {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0;
+  height: 1.45em;
+}
+
+.ab-card-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ab-diffstats {
+  flex-shrink: 0;
+  padding-left: 8px;
+  font-size: 12px;
+}
+
+.ab-status-cell {
+  flex-shrink: 0;
+  min-width: 2.4em;
+  text-align: right;
+}
+
+.ab-branch,
+.ab-meta-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ab-meta-summary {
+  font-size: 12px;
+}
+
+/* Agent rows -------------------------------------------------------------- */
+
+.ab-agent-row {
+  border-radius: 4px;
+  padding: 1px 2px;
+}
+
+.ab-agent-line {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ab-agent-header {
+  align-items: baseline;
+}
+
+.ab-agent-icon {
+  flex-shrink: 0;
+  width: 1.2em;
+  text-align: center;
+}
+
+.ab-agent-thread {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-left: 4px;
+}
+
+.ab-agent-elapsed {
+  flex-shrink: 0;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.ab-agent-dismiss {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 0 2px;
+}
+
+.ab-dim {
+  opacity: 0.82;
+}
+
+/* Empty state ------------------------------------------------------------- */
+
+.ab-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  font-family: var(--ab-font-ui);
+}
+
+.ab-empty-title {
+  font-size: 15px;
+}
+
+.ab-add-repo,
+.ab-btn {
+  font-family: var(--ab-font-ui);
+  font-size: 13px;
+  padding: 6px 14px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ab-empty-hint {
+  font-size: 11px;
+}
+
+/* Modals + toast ---------------------------------------------------------- */
+
+.ab-modal-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.ab-modal {
+  min-width: 320px;
+  max-width: 440px;
+  border: 1px solid;
+  border-radius: 10px;
+  padding: 18px 20px;
+  font-family: var(--ab-font-ui);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.ab-modal-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.ab-modal-body {
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.ab-modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.ab-help-list {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 18px;
+  font-family: var(--ab-font-mono);
+  font-size: 12px;
+}
+
+.ab-help-row {
+  display: contents;
+}
+
+.ab-help-row dt {
+  white-space: nowrap;
+}
+
+.ab-help-row dd {
+  margin: 0;
+}
+
+.ab-toast {
+  position: fixed;
+  bottom: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  border: 1px solid;
+  border-radius: 8px;
+  font-family: var(--ab-font-ui);
+  font-size: 13px;
+  z-index: 20;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
