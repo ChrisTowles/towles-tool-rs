@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Core permissions for the main window (event listen/emit, core APIs)","local":true,"windows":["main"],"permissions":["core:default"]}}
