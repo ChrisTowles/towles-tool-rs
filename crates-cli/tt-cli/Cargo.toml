@@ -11,14 +11,18 @@ path = "src/main.rs"
 [dependencies]
 tt-config = { workspace = true }
 tt-exec = { workspace = true }
+tt-journal = { workspace = true }
+chrono = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }
 env_logger = { workspace = true }
+inquire = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2.0.16"
+chrono = { workspace = true }
 predicates = "3.1.3"
 tempfile = "3.14.0"

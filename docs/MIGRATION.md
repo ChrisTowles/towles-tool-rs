@@ -12,11 +12,29 @@ cite the yaak or slot-1 source path in the commit.
   shared crates, `tt-cli` (`config`, `doctor`), Tauri shell, React client. *This
   repo.*
 
-- [ ] **1 — Journal commands.** Filesystem note management with `chrono`-based
+- [x] **1 — Journal commands.** Filesystem note management with `chrono`-based
   templating (`{yyyy}`, `{monday}` and related date tokens); daily notes,
-  meeting notes, list, search.
+  meeting notes, list, search. Ported to the `tt-journal` crate (`tokens` +
+  `entries` modules) and wired into `tt-cli` as `journal daily-notes|note|meeting|list|search`
+  plus a top-level `today` alias.
   Source: `src/commands/journal/` (`fs.ts`, `templates.ts`, `daily-notes.ts`,
   `meeting.ts`, `note.ts`, `list.ts`, `search.ts`, `paths.ts`, `editor.ts`).
+  Behavior deviations from the TS CLI:
+    - Path templates support only the Luxon tokens the defaults actually use —
+      `{yyyy}`, `{MM}`, `{dd}`, `{title}`, and their `{monday:...}` forms
+      (e.g. `{monday:yyyy-MM-dd}`). Other Luxon tokens are emitted literally
+      rather than formatted (the full Luxon vocabulary is not reimplemented).
+    - The editor auto-open (`<editor> <folder> <file>`) is suppressed by a new
+      `--no-open` flag, and is also skipped whenever stdout is not a TTY, so
+      tests/CI never spawn an editor.
+    - Note/meeting still prompt for a missing title interactively (via `inquire`,
+      matching the TS `consola.prompt`), but when stdin is not a TTY they fail
+      with a clear "title is required" error instead of hanging.
+    - The per-command `--debug` flag is dropped in favor of the global
+      `-v/--verbose` flag.
+    - The TS built-in fallback strings for meetings carry a few trailing spaces
+      that the on-disk default templates do not; this quirk is preserved
+      verbatim (the fallback is only reached if the template dir is unwritable).
 
 - [ ] **2 — GitHub helpers.** First `gh pr` and `gh branch-clean`, then `gh
   branch` with an interactive issue picker (evaluate `inquire` or `nucleo` for

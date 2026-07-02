@@ -3,7 +3,7 @@ mod commands;
 mod ui;
 
 use clap::Parser;
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, JournalCommands};
 
 fn main() {
     let Cli { verbose, config_dir, command } = Cli::parse();
@@ -13,6 +13,10 @@ fn main() {
     let exit_code = match command {
         Commands::Config(args) => commands::config::run(args.command, config_dir.as_deref()),
         Commands::Doctor { json } => commands::doctor::run(json),
+        Commands::Journal(args) => commands::journal::run(args.command, config_dir.as_deref()),
+        Commands::Today { no_open } => {
+            commands::journal::run(JournalCommands::DailyNotes { no_open }, config_dir.as_deref())
+        }
     };
 
     if exit_code != 0 {

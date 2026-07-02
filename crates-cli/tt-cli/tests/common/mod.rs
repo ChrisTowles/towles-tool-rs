@@ -10,3 +10,18 @@ pub fn cli_cmd(config_dir: &Path) -> Command {
     cmd.arg("--config-dir").arg(config_dir);
     cmd
 }
+
+/// Write a settings file into `config_dir` whose journal `baseFolder` and `templateDir`
+/// point inside the sandbox, so journal tests never touch the real home directory.
+pub fn write_journal_settings(config_dir: &Path, base_folder: &Path, template_dir: &Path) {
+    std::fs::create_dir_all(config_dir).unwrap();
+    let settings = serde_json::json!({
+        "preferredEditor": "true",
+        "journalSettings": {
+            "baseFolder": base_folder.to_string_lossy(),
+            "templateDir": template_dir.to_string_lossy(),
+        },
+    });
+    let path = config_dir.join(format!("{}.settings.json", tt_config::TOOL_NAME));
+    std::fs::write(path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+}

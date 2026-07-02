@@ -1,0 +1,13 @@
+[package]
+name = "tt-journal"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tt-config = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.14.0"
