@@ -12,6 +12,7 @@ path = "src/main.rs"
 tt-config = { workspace = true }
 tt-exec = { workspace = true }
 tt-git = { workspace = true }
+tt-graph = { workspace = true }
 tt-journal = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }

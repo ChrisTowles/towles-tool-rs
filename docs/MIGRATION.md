@@ -92,10 +92,36 @@ cite the yaak or slot-1 source path in the commit.
     - The per-command `--debug` flag is dropped in favor of the global
       `-v/--verbose` flag.
 
-- [ ] **4 — Graph.** JSONL token accounting and treemap rendering. Consider
-  simplifying the TS design during the port rather than reproducing it 1:1.
-  Source: `src/commands/graph/` (`parser.ts`, `analyzer.ts`, `treemap.ts`,
-  `render.ts`, `sessions.ts`, `tools.ts`, `graph-template.html`).
+- [x] **4 — Graph.** JSONL token accounting and treemap rendering. Ported in two
+  slices: **phase 1** the pure logic to the Tauri-free `tt-graph` crate (`types`,
+  `parser`, `tools`, `labels`, `analyzer`, `sessions`, `treemap`, `format`,
+  `render` — 80 unit tests), **phase 2** the `ttr graph` CLI wiring in
+  `tt-cli` (`commands/graph.rs`). Flags: `-s/--session`, `--days` (default 7,
+  0 = no limit), `-f/--format html|json|csv` (default html), `--open`/`--no-open`
+  (default open). `~/.claude/projects` and `~/.claude/reports` resolve via `$HOME`
+  so tests use a fixture project dir.
+  Source: `src/commands/graph/` (`index.ts`, `parser.ts`, `analyzer.ts`,
+  `treemap.ts`, `render.ts`, `sessions.ts`, `tools.ts`, `labels.ts`, `format.ts`,
+  `graph-template.html`); `server.ts` intentionally *not* ported.
+  Behavior deviations from the TS CLI:
+    - **The local HTTP server is dropped** (approved simplification): no
+      `--serve`/`--port` flags and no `server.ts` port. `ttr graph` (html format)
+      only writes the report file under `~/.claude/reports/` and opens it in a
+      browser — it never starts a server or blocks on Ctrl+C.
+    - Auto-open is skipped when stdout is not a TTY (so tests/CI never launch a
+      browser), in addition to the explicit `--no-open` flag.
+    - Invalid `--format` values are validated in-command with the TS message
+      (`Invalid format "x". Use: html, json, csv`) rather than by clap's own
+      value-enum error, so the wording matches the TS CLI.
+    - The per-command `--debug` flag is dropped in favor of the global
+      `-v/--verbose` flag.
+    - Report-filename timestamp: the TS luxon `yyyy-MM-dd'T'HH-mmZZZ` renders
+      `ZZZ` as a techie offset (e.g. `-0400`); chrono's `%z` produces the
+      identical `±HHMM` token, so filenames match byte-for-byte.
+    - Carried over from the phase-1 crate port (already committed): `now_ms` is
+      passed explicitly into `find_recent_sessions`/`calculate_cutoff_ms` instead
+      of reading the clock internally (deterministic tests); session `startTime`
+      is emitted locale-free; JSON key order follows the struct field order.
 
 - [ ] **5 — Claude plugin carry-over.** Bring `packages/core` markdown across
   as-is (hooks + skills) and decide how the marketplace distribution works.

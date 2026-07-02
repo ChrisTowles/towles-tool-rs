@@ -4006,6 +4006,7 @@ dependencies = [
  "tt-config",
  "tt-exec",
  "tt-git",
+ "tt-graph",
  "tt-journal",
 ]
 

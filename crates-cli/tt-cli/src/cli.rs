@@ -56,11 +56,37 @@ pub enum Commands {
         no_open: bool,
     },
 
+    /// Generate an interactive HTML treemap from session token data
+    Graph(GraphArgs),
+
     /// GitHub utilities
     Gh(GhArgs),
 
     /// Create a pull request from the current branch (alias for `gh pr`)
     Pr(PrArgs),
+}
+
+#[derive(Args)]
+pub struct GraphArgs {
+    /// Session ID to analyze (shows all sessions if not provided)
+    #[arg(long, short = 's')]
+    pub session: Option<String>,
+
+    /// Filter to sessions from the last N days (0 = no limit)
+    #[arg(long, default_value_t = 7)]
+    pub days: i64,
+
+    /// Output format: html, json, or csv
+    #[arg(long, short = 'f', default_value = "html")]
+    pub format: String,
+
+    /// Open the report in a browser after generating (the default)
+    #[arg(long, short = 'o')]
+    pub open: bool,
+
+    /// Do not open the report in a browser
+    #[arg(long, conflicts_with = "open")]
+    pub no_open: bool,
 }
 
 #[derive(Args)]

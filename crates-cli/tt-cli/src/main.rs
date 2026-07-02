@@ -18,6 +18,7 @@ fn main() {
         Commands::Today { no_open } => {
             commands::journal::run(JournalCommands::DailyNotes { no_open }, config_dir.as_deref())
         }
+        Commands::Graph(args) => commands::graph::run(args),
         Commands::Gh(args) => commands::gh::run(args.command),
         Commands::Pr(args) => commands::gh::run(GhCommands::Pr(args)),
     };
