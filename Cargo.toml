@@ -5,6 +5,7 @@ members = [
   "crates/tt-config",
   "crates/tt-exec",
   "crates/tt-git",
+  "crates/tt-graph",
   "crates/tt-journal",
   # CLI crates
   "crates-cli/tt-cli",
@@ -20,6 +21,7 @@ dirs = "6.0.0"
 env_logger = "0.11.8"
 inquire = "0.7.5"
 log = "0.4.29"
+regex = "1.11.1"
 schemars = { version = "0.8.22", features = ["chrono"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -32,6 +34,7 @@ tokio = "1.48.0"
 tt-config = { path = "crates/tt-config" }
 tt-exec = { path = "crates/tt-exec" }
 tt-git = { path = "crates/tt-git" }
+tt-graph = { path = "crates/tt-graph" }
 tt-journal = { path = "crates/tt-journal" }
 
 [profile.release]
