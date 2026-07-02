@@ -123,9 +123,19 @@ cite the yaak or slot-1 source path in the commit.
       of reading the clock internally (deterministic tests); session `startTime`
       is emitted locale-free; JSON key order follows the struct field order.
 
-- [ ] **5 — Claude plugin carry-over.** Bring `packages/core` markdown across
-  as-is (hooks + skills) and decide how the marketplace distribution works.
-  Source: `packages/core/` (`hooks/`, `skills/`, `README.md`).
+- [~] **5 — Claude plugin carry-over.** `packages/core/` (plugin manifest, hooks,
+  skills, README) is copied across **verbatim** from slot-1 — pure markdown/JSON,
+  byte-identical (`diff -r` clean), file modes preserved. Content still references
+  the `tt` binary and the `tt@towles-tool` plugin id, left as-is (correct for
+  existing users and post-cutover). The root `.claude-plugin/marketplace.json`
+  lives at the *repo root* in slot-1, outside `packages/core`, so it is not part
+  of this scoped carry-over.
+  Distribution is **not yet decided** — see
+  [docs/PLUGIN-DISTRIBUTION.md](PLUGIN-DISTRIBUTION.md) for the options analysis
+  (keep shipping from the live repo until cutover / move the marketplace here /
+  dedicated plugin repo). Chris decides.
+  Source: `packages/core/` (`.claude-plugin/plugin.json`, `hooks/`, `skills/`,
+  `README.md`).
 
 - [ ] **6 — Tauri app feature direction.** Decide what the desktop app *is*.
   Leading candidate: agentboard-as-desktop.
