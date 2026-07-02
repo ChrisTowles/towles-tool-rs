@@ -3,13 +3,19 @@ import "./styles.css";
 import { AppShell } from "./components/AppShell";
 import type { Commands, StateSource } from "./data/StateSource";
 import { MockBackend } from "./data/mock";
+import { TauriCommands, TauriStateSource } from "./data/TauriStateSource";
 
-// The Rust/Tauri bridge does not exist yet (phase 5). Until it does, the whole
-// board is driven by an in-memory mock that emits an evolving demo snapshot.
-// When the bridge lands, select TauriStateSource/TauriCommands here while
-// `__TAURI_INTERNALS__` is present — the interfaces are identical.
+// Tauri injects `__TAURI_INTERNALS__` on window inside the desktop shell. When
+// present, drive the board from the real Rust bridge; otherwise use the mock so
+// `npm run client:dev` in a bare browser stays a living demo. The interfaces
+// are identical, so nothing downstream changes.
+const isTauri = "__TAURI_INTERNALS__" in window;
+
 export function App() {
   const { source, commands } = useMemo<{ source: StateSource; commands: Commands }>(() => {
+    if (isTauri) {
+      return { source: new TauriStateSource(), commands: new TauriCommands() };
+    }
     const mock = new MockBackend();
     return { source: mock, commands: mock };
   }, []);

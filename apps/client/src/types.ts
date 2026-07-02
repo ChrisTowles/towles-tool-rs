@@ -108,10 +108,15 @@ export interface SessionData {
   metadata?: SessionMetadata | null;
 }
 
-/** The full state snapshot the bridge emits on the `agentboard://state` event. */
+/**
+ * The full state snapshot the bridge emits on the `agentboard://state` event
+ * and returns from `ab_get_state`. `preferredEditor` is carried for contract
+ * fidelity but not yet consumed by the UI.
+ */
 export interface AgentBoardState {
   sessions: SessionData[];
   theme: string | undefined;
+  preferredEditor?: string;
   ts: number;
 }
 

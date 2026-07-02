@@ -8,11 +8,16 @@ import { ThemeProvider } from "../theme/ThemeProvider";
 import { StatusBar } from "./StatusBar";
 import { SessionList } from "./SessionList";
 import { KillConfirmDialog } from "./KillConfirmDialog";
+import { AddRepoDialog } from "./AddRepoDialog";
 import { HelpSheet } from "./HelpSheet";
 import { Toast } from "./Toast";
 import type { ToastData, ToastKind } from "./Toast";
 
-type Modal = { kind: "kill"; repoName: string } | { kind: "help" } | null;
+type Modal =
+  | { kind: "kill"; repoName: string }
+  | { kind: "addRepo" }
+  | { kind: "help" }
+  | null;
 
 export interface AppShellProps {
   source: StateSource;
@@ -57,6 +62,10 @@ export function AppShell({ source, commands }: AppShellProps) {
     setToast({ id: toastId.current, kind, message });
   }, []);
 
+  // Surface command rejections (a failed ab_* invoke) as error toasts instead
+  // of silent console noise.
+  useEffect(() => commands.onError((msg) => pushToast("error", msg)), [commands, pushToast]);
+
   const selectIndex = useCallback(
     (i: number) => {
       const s = sessions[i];
@@ -93,6 +102,15 @@ export function AppShell({ source, commands }: AppShellProps) {
       commands.removeRepo(name);
       setModal(null);
       pushToast("info", `Removed ${name}`);
+    },
+    [commands, pushToast],
+  );
+
+  const addRepo = useCallback(
+    (path: string) => {
+      commands.addRepo(path);
+      setModal(null);
+      pushToast("info", `Adding ${path}`);
     },
     [commands, pushToast],
   );
@@ -180,6 +198,7 @@ export function AppShell({ source, commands }: AppShellProps) {
           counts={counts}
           themeName={themeName}
           onThemeChange={(t) => commands.setTheme(t)}
+          onAddRepo={() => setModal({ kind: "addRepo" })}
         />
 
         <main className="ab-main">
@@ -193,7 +212,7 @@ export function AppShell({ source, commands }: AppShellProps) {
             onSelect={selectIndex}
             onDismissAgent={dismissAgent}
             onFocusAgent={(s, _a, idx) => enterAgents(sessions.indexOf(s), idx)}
-            onAddRepo={() => pushToast("info", "Add-repo is a phase-5 placeholder")}
+            onAddRepo={addRepo}
           />
         </main>
 
@@ -211,6 +230,9 @@ export function AppShell({ source, commands }: AppShellProps) {
             onConfirm={() => removeRepo(modal.repoName)}
             onCancel={() => setModal(null)}
           />
+        )}
+        {modal?.kind === "addRepo" && (
+          <AddRepoDialog onSubmit={addRepo} onCancel={() => setModal(null)} />
         )}
         {modal?.kind === "help" && <HelpSheet onClose={() => setModal(null)} />}
       </div>

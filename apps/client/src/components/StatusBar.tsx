@@ -6,10 +6,11 @@ export interface StatusBarProps {
   counts: BoardCounts;
   themeName: string;
   onThemeChange: (theme: string) => void;
+  onAddRepo: () => void;
 }
 
-/** Header + board counts (UI-SPEC §2) plus the theme picker. */
-export function StatusBar({ counts, themeName, onThemeChange }: StatusBarProps) {
+/** Header + board counts (UI-SPEC §2) plus the add-repo + theme controls. */
+export function StatusBar({ counts, themeName, onThemeChange, onAddRepo }: StatusBarProps) {
   const { palette: P } = useTheme();
   return (
     <header className="ab-statusbar">
@@ -26,20 +27,32 @@ export function StatusBar({ counts, themeName, onThemeChange }: StatusBarProps) 
           {counts.unseenCount > 0 && <span style={{ color: P.teal }}> ●{counts.unseenCount}</span>}
         </div>
       </div>
-      <label className="ab-theme-picker" style={{ color: P.overlay0 }}>
-        theme
-        <select
-          value={themeName}
-          onChange={(e) => onThemeChange(e.target.value)}
+      <div className="ab-statusbar-controls">
+        <button
+          type="button"
+          className="ab-add-btn"
+          title="Add repo"
+          aria-label="Add repo"
+          onClick={onAddRepo}
           style={{ color: P.text, backgroundColor: P.surface0, borderColor: P.surface2 }}
         >
-          {THEME_NAMES.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
-      </label>
+          +
+        </button>
+        <label className="ab-theme-picker" style={{ color: P.overlay0 }}>
+          theme
+          <select
+            value={themeName}
+            onChange={(e) => onThemeChange(e.target.value)}
+            style={{ color: P.text, backgroundColor: P.surface0, borderColor: P.surface2 }}
+          >
+            {THEME_NAMES.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
     </header>
   );
 }

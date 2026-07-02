@@ -15,6 +15,12 @@ function agentKey(session: string, agent: string, threadId?: string): string {
   return `${session}::${agent}::${threadId ?? ""}`;
 }
 
+/** Last path segment of an absolute dir (the repo's display name). */
+function basename(path: string): string {
+  const parts = path.replace(/\/+$/, "").split("/");
+  return parts[parts.length - 1] || path;
+}
+
 /**
  * An in-memory AgentBoard backend that both emits an evolving demo snapshot on
  * a timer AND accepts client commands (mutating the same store). It implements
@@ -32,7 +38,9 @@ export class MockBackend implements StateSource, Commands {
   private removedRepos = new Set<string>();
   private seenSessions = new Set<string>();
   private dismissedAgents = new Set<string>();
+  private addedRepos: string[] = [];
   private order: string[] = [];
+  private errorListeners = new Set<(m: string) => void>();
 
   private latest: AgentBoardState | null = null;
 
@@ -88,8 +96,19 @@ export class MockBackend implements StateSource, Commands {
     this.emit();
   }
 
+  addRepo(path: string): void {
+    const name = basename(path);
+    // Un-remove if it was previously removed; otherwise append.
+    this.removedRepos.delete(name);
+    if (!this.addedRepos.includes(path) && !this.scenario().some((s) => s.name === name)) {
+      this.addedRepos.push(path);
+    }
+    this.emit();
+  }
+
   removeRepo(name: string): void {
     this.removedRepos.add(name);
+    this.addedRepos = this.addedRepos.filter((p) => basename(p) !== name);
     this.emit();
   }
 
@@ -97,10 +116,32 @@ export class MockBackend implements StateSource, Commands {
     this.emit();
   }
 
+  onError(listener: (m: string) => void): () => void {
+    this.errorListeners.add(listener);
+    return () => this.errorListeners.delete(listener);
+  }
+
   // --- Snapshot assembly ---
 
+  /** Minimal cards for repos added at runtime via `addRepo`. */
+  private addedSessions(): SessionData[] {
+    return this.addedRepos.map((path) => ({
+      name: basename(path),
+      dir: path,
+      branch: "main",
+      filesChanged: 0,
+      linesAdded: 0,
+      linesRemoved: 0,
+      commitsDelta: 0,
+      unseen: false,
+      agentState: null,
+      agents: [],
+      metadata: null,
+    }));
+  }
+
   private currentOrder(): string[] {
-    const base = this.scenario().map((s) => s.name);
+    const base = [...this.scenario(), ...this.addedSessions()].map((s) => s.name);
     if (this.order.length === 0) return base;
     const known = this.order.filter((n) => base.includes(n));
     const rest = base.filter((n) => !this.order.includes(n));
@@ -109,7 +150,7 @@ export class MockBackend implements StateSource, Commands {
 
   private emit(): void {
     const now = Date.now();
-    let sessions = this.scenario();
+    let sessions = [...this.scenario(), ...this.addedSessions()];
 
     // Overlays: removed repos, dismissed agents, mark-seen.
     sessions = sessions

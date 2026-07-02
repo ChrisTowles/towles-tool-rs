@@ -2,9 +2,10 @@ import type { AgentBoardState, ReorderDelta } from "../types";
 
 /**
  * A source of AgentBoard state snapshots. The mock emits an evolving demo on a
- * timer; the Tauri source (phase 5) will listen to the `agentboard://state`
- * event. `subscribe` returns an unsubscribe fn and should replay the latest
- * snapshot synchronously to a new subscriber if one exists.
+ * timer; the Tauri source listens to the `agentboard://state` event (and seeds
+ * from `ab_get_state` on start). `subscribe` returns an unsubscribe fn and
+ * should replay the latest snapshot synchronously to a new subscriber if one
+ * exists.
  */
 export interface StateSource {
   subscribe(listener: (state: AgentBoardState) => void): () => void;
@@ -14,9 +15,10 @@ export interface StateSource {
 
 /**
  * Client → bridge commands. The mock impl mutates the mock state in place; the
- * Tauri impl (phase 5) will `invoke` the matching Tauri commands. Names mirror
- * BRIDGE-SPEC §3 with the tmux routing dropped and kill/new-session replaced by
- * remove/add-repo.
+ * Tauri impl `invoke`s the matching `ab_*` commands. Names mirror BRIDGE-SPEC
+ * §3 with the tmux routing dropped and kill/new-session replaced by
+ * remove/add-repo. Every `ab_*` command returns a `Result`; a rejection is
+ * delivered to `onError` subscribers (the mock never errors).
  */
 export interface Commands {
   /** Clear the unseen flag for a session (mark-seen). */
@@ -27,8 +29,12 @@ export interface Commands {
   reorderSession(name: string, delta: ReorderDelta): void;
   /** Persist + broadcast the theme (set-theme). */
   setTheme(theme: string): void;
+  /** Add a repo to the board by absolute path (ab_add_repo). */
+  addRepo(path: string): void;
   /** Remove a repo from config (was kill-session). */
   removeRepo(name: string): void;
   /** Force a rebuild/broadcast (refresh). */
   refresh(): void;
+  /** Subscribe to command errors (a rejected invoke). Returns unsubscribe. */
+  onError(listener: (message: string) => void): () => void;
 }

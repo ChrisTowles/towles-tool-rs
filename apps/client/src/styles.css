@@ -55,6 +55,23 @@ body {
   font-size: 12px;
 }
 
+.ab-statusbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ab-add-btn {
+  font-family: var(--ab-font-mono);
+  font-size: 15px;
+  line-height: 1;
+  width: 26px;
+  height: 26px;
+  border: 1px solid;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
 .ab-theme-picker {
   display: flex;
   align-items: center;
@@ -234,6 +251,28 @@ body {
   border: 1px solid transparent;
   border-radius: 6px;
   cursor: pointer;
+}
+
+.ab-add-repo:disabled,
+.ab-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ab-add-repo-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ab-input {
+  font-family: var(--ab-font-mono);
+  font-size: 13px;
+  padding: 6px 10px;
+  min-width: 260px;
+  border: 1px solid;
+  border-radius: 6px;
+  outline: none;
 }
 
 .ab-empty-hint {
