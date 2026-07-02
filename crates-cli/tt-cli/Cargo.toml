@@ -1,0 +1,24 @@
+[package]
+name = "tt-cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "ttr"
+path = "src/main.rs"
+
+[dependencies]
+tt-config = { workspace = true }
+tt-exec = { workspace = true }
+clap = { workspace = true }
+console = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2.0.16"
+predicates = "3.1.3"
+tempfile = "3.14.0"
