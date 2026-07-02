@@ -149,8 +149,9 @@ cite the yaak or slot-1 source path in the commit.
   reshaped by item 6: port the agentboard core (repo scanning, git status,
   Claude-session watching, tmux integration, persistence) to a Tauri-free
   `tt-agentboard` crate, expose it through Tauri commands/events in `tt-app`,
-  and rebuild the UI in the React client. Phasing per the port plan derived
-  from the source inventory.
+  and rebuild the UI in the React client. Phasing and inventory:
+  [docs/AGENTBOARD-PORT.md](AGENTBOARD-PORT.md) (5 phases; demo milestone at
+  phase 3 — live repo list + claude-code agent status in the Tauri window).
   Source: slot-1 `packages/agentboard/` (live entry `src/server/main.ts`) +
   `src/commands/agentboard.ts`.
 
