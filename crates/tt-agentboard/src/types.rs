@@ -82,7 +82,7 @@ pub struct LoopInfo {
 }
 
 /// A sub-agent spawned by the parent session. Ports `SubagentInfo`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubagentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]

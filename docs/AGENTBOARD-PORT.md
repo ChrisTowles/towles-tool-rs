@@ -72,10 +72,35 @@ session, tmux hooks POSTing to the server). The *data engine* underneath:
        Unicode scalars, not UTF-16 units (matches for BMP text).
      - Env-derived `SERVER_PORT`/`SERVER_HOST` (transport config) not ported;
        the `DEFAULT_*` + timeout constants are.
-2. **AgentWatcher trait + claude-code watcher.** Trait feeding AgentEvents
-   into the tracker; claude-code implementation first (`notify` + poll
-   fallback, incremental JSONL, `~/.claude` parsing). codex/amp/opencode
-   later (rusqlite where needed).
+2. **AgentWatcher trait + claude-code watcher.** ✅ **DONE (2026-07-02).**
+   `watcher` module (`AgentWatcher`/`WatcherContext` traits, constants) +
+   `watchers/{claude_code, claude_usage, claude_pid}` + isolated `fs_notify`
+   accelerant. Ported per docs/AGENTBOARD-WATCHER-SPEC.md with all three adopted
+   fixes; 86 unit tests (55 pre-existing + 31 new). codex/amp/opencode later.
+   Deviations / decisions:
+     - **Scan is driven externally**: the `AgentWatcher` trait exposes
+       `scan(ctx, now_ms)` instead of TS `start`/`stop` + `setInterval`. The
+       bridge owns scheduling; no tokio in the crate. `now_ms` is injected
+       everywhere the TS read `Date.now()`, so the watcher is deterministic and
+       unit-testable without timers. The `notify` fs-watch is an optional,
+       isolated accelerant (`fs_notify::DirNotifier`), not part of the scan core;
+       the TS per-dir `fs.watch`/`setupWatchers`/lazy-watch wiring is not ported.
+     - **Adopted fix #1** (offset at last-newline boundary + re-read tail;
+       shrink → reset offset 0 & re-seed), **#2** (usage delta added to the
+       Branch-C emit gate), **#3** (encoded↔encoded project-dir match — the raw
+       encoded dir is carried through to `resolve_session`; the lossy
+       `decodeProjectDir` is dropped). Kept faithful: §3 status table (incl.
+       thinking-only→done), 4-status vocabulary {running,done,question,idle}
+       (`waiting`/`error`/`interrupted` remain server/other-watcher concerns),
+       subagent 2-min window + order-independent signature, pid-liveness
+       demotions, seed/emit sites, subagent-change re-emit.
+     - Default pid liveness uses Linux `/proc/<pid>` (deployment target) rather
+       than `kill(pid, 0)`; `is_alive` is an injectable `fn(i32)->bool` so tests
+       and other platforms substitute their own probe. Timestamps parse via
+       chrono RFC3339 (`Date.parse` equivalent for the ISO-8601 journal stamps).
+       The `scanning` re-entrancy guard is unneeded (synchronous scan) and dropped.
+       `thread_name` capped at 80 Unicode scalars (not UTF-16 units).
+     - New deps: `notify` (fs accelerant, isolated) and `chrono` (timestamp parse).
 3. **Tauri bridge + minimal React UI.** WS `state` broadcast becomes a Tauri
    event carrying the SessionData snapshot; ClientCommands become Tauri
    commands. React renders StatusBar + SessionCard list; themes.ts carried

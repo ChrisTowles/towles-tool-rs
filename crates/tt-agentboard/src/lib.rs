@@ -25,6 +25,7 @@
 
 use thiserror::Error;
 
+pub mod fs_notify;
 pub mod git_info;
 pub mod metadata;
 pub mod ports;
@@ -32,6 +33,8 @@ pub mod session_order;
 pub mod text;
 pub mod tracker;
 pub mod types;
+pub mod watcher;
+pub mod watchers;
 
 /// Errors surfaced by the agentboard core. Filesystem access (session-order
 /// persistence) is the only fallible surface; parse/subprocess failures are
@@ -58,3 +61,6 @@ pub use types::{
     MetadataProgress, MetadataStatus, MetadataTone, ServerMessage, SessionData, SessionMetadata,
     SubagentInfo,
 };
+pub use watcher::{AgentWatcher, WatcherContext};
+pub use watchers::claude_code::ClaudeCodeAgentWatcher;
+pub use watchers::claude_pid::ClaudePidLookup;

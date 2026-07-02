@@ -9,7 +9,12 @@ publish = false
 # priority tie-break in getState, and getAgents/getUnseen ordering). std HashMap
 # is randomized and BTreeMap reorders by key; IndexMap preserves insertion order.
 indexmap = { workspace = true }
+chrono = { workspace = true }
 dirs = { workspace = true }
+# notify: fs-change accelerant so the bridge can trigger a low-latency rescan on
+# journal writes. Polling stays the reliable path; this is an optional supplement,
+# isolated in `fs_notify` and not used by the deterministic scan core.
+notify = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
