@@ -49,10 +49,29 @@ session, tmux hooks POSTing to the server). The *data engine* underneath:
 
 ## Phases
 
-1. **`crates/tt-agentboard` core engine (Tauri-free).** Shared types,
-   AgentTracker + pruning, SessionMetadataStore, session-order, git-info,
-   port-scanner. Process spawns via std/tokio. Fully unit-tested; no tmux,
-   no UI.
+1. **`crates/tt-agentboard` core engine (Tauri-free).** ✅ **DONE (2026-07-02).**
+   Shared types, AgentTracker + pruning, SessionMetadataStore, session-order,
+   git-info, port-scanner. Process spawns via `tt-exec`. Fully unit-tested
+   (55 tests); no tmux, no UI, no transport. Modules: `types`, `tracker`,
+   `metadata`, `session_order`, `git_info`, `ports`, `text`.
+   Deviations / transport cuts (transport & watchers deferred to phase 3):
+     - Clock is injected as an explicit `now_ms` param (the `tt-graph` pattern)
+       instead of `Date.now()`, so prunes/caches/timestamps are deterministic.
+     - Cut from each source, logic kept: `startGitPoll`/`startPortPoll`/`poll.ts`
+       (the `setInterval` loops), `syncGitWatchers` (`fs.watch` on `.git/HEAD`),
+       and all WS-broadcast callbacks. git-info cache misses compute
+       *synchronously* rather than TS's async background refresh + in-flight
+       de-dup; `refresh` is exposed for the future poll loop to drive.
+     - `tmux`/`ps`/`lsof`/`git` calls are isolated in thin, un-unit-tested
+       functions; the ps-tree/lsof attribution and porcelain/numstat/ahead-behind
+       parsing are pure and tested on fixture strings.
+     - Insertion-order-sensitive structures use `indexmap` (JS `Map`/`Set`
+       semantics that `AgentTracker::get_state`'s tie-break relies on).
+     - `SessionOrder::sync` orders with Rust's lexicographic `Ord`, not JS
+       `localeCompare` (matches for ASCII session names). `truncate` counts
+       Unicode scalars, not UTF-16 units (matches for BMP text).
+     - Env-derived `SERVER_PORT`/`SERVER_HOST` (transport config) not ported;
+       the `DEFAULT_*` + timeout constants are.
 2. **AgentWatcher trait + claude-code watcher.** Trait feeding AgentEvents
    into the tracker; claude-code implementation first (`notify` + poll
    fallback, incremental JSONL, `~/.claude` parsing). codex/amp/opencode

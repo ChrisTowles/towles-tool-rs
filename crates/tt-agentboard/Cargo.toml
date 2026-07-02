@@ -1,0 +1,19 @@
+[package]
+name = "tt-agentboard"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# indexmap: the TS engine relies on JS `Map` insertion order (AgentTracker's
+# priority tie-break in getState, and getAgents/getUnseen ordering). std HashMap
+# is randomized and BTreeMap reorders by key; IndexMap preserves insertion order.
+indexmap = { workspace = true }
+dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tt-exec = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.14.0"
