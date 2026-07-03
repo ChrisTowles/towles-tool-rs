@@ -378,11 +378,13 @@ pub fn merge_agents_with_pane_presence(
 
 // --- Thin I/O wrappers (un-unit-tested by design) ---
 
-/// All panes across every tmux session.
-pub fn list_all_panes() -> Vec<PaneEntry> {
+/// All panes across every tmux session, or `None` when tmux itself failed —
+/// callers must distinguish "no panes" from "scan failed" so a transient tmux
+/// error doesn't get stored as an empty (agent-erasing) snapshot.
+pub fn list_all_panes() -> Option<Vec<PaneEntry>> {
     match tt_exec::run("tmux", &["list-panes", "-a", "-F", PANE_SCAN_FORMAT]) {
-        Ok(out) if out.ok() => parse_pane_lines(&out.stdout),
-        _ => Vec::new(),
+        Ok(out) if out.ok() => Some(parse_pane_lines(&out.stdout)),
+        _ => None,
     }
 }
 
@@ -525,10 +527,15 @@ pub fn resolve_agent_pane_id(
 
 /// Scan all panes across all tmux sessions and identify running agents.
 /// One `list-panes -a`, one `ps`, one `claude agents` call per scan.
-pub fn scan_all_tmux_pane_agents(sidebar_pane_ids: &HashSet<String>, now_ms: i64) -> PaneAgentMap {
-    let panes = list_all_panes();
+/// Returns `None` when the tmux scan failed, so callers keep the last-good
+/// snapshot instead of wiping live agents off the board.
+pub fn scan_all_tmux_pane_agents(
+    sidebar_pane_ids: &HashSet<String>,
+    now_ms: i64,
+) -> Option<PaneAgentMap> {
+    let panes = list_all_panes()?;
     if panes.is_empty() {
-        return IndexMap::new();
+        return Some(IndexMap::new());
     }
     let tree = ps_tree();
     let claude_by_pid = claude_agents_by_pid();
@@ -540,7 +547,7 @@ pub fn scan_all_tmux_pane_agents(sidebar_pane_ids: &HashSet<String>, now_ms: i64
         },
         codex: &codex_thread_for_pid,
     };
-    assemble_presences(&panes, &tree, sidebar_pane_ids, &resolvers, now_ms)
+    Some(assemble_presences(&panes, &tree, sidebar_pane_ids, &resolvers, now_ms))
 }
 
 #[cfg(test)]

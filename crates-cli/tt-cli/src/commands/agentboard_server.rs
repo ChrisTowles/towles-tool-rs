@@ -356,6 +356,7 @@ fn scan_once(shared: &Shared) {
     // session whose pane runs them, so shared dirs (slot clones) and odd
     // cwds resolve correctly; the dir map remains the fallback.
     let session_by_pane_pid: std::collections::HashMap<i32, String> = list_all_panes()
+        .unwrap_or_default()
         .into_iter()
         .filter(|p| p.session != tt_agentboard::tmux::STASH_SESSION)
         .map(|p| (p.pid, p.session))
@@ -443,10 +444,14 @@ fn publish_session_viewed(shared: &Shared, name: &str, select: Option<SessionVie
 }
 
 /// Rescan pane agents; on change, store + notify (ports `refreshPaneAgents`).
+/// A failed tmux scan keeps the last-good snapshot — storing an empty map
+/// would make every live agent vanish from the board until the next tick.
 fn refresh_pane_agents(shared: &Shared) {
     let sidebar_ids: std::collections::HashSet<String> =
         shared.provider.list_sidebar_panes(None).into_iter().map(|p| p.pane_id).collect();
-    let next = scan_all_tmux_pane_agents(&sidebar_ids, now_ms());
+    let Some(next) = scan_all_tmux_pane_agents(&sidebar_ids, now_ms()) else {
+        return;
+    };
     let changed = {
         let mut current = shared.pane_agents.lock().unwrap();
         let changed = pane_agent_sets_differ(&current, &next);
