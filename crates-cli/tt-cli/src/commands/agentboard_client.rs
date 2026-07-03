@@ -154,11 +154,8 @@ pub fn sse_subscribe(tx: Sender<ServerMessage>) -> Result<(), String> {
     match reader.read_line(&mut status_line) {
         Ok(0) => return Err("server closed the SSE stream during headers".into()),
         Ok(_) => {
-            let status: u16 = status_line
-                .split_whitespace()
-                .nth(1)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
+            let status: u16 =
+                status_line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
             if status != 200 {
                 return Err(format!(
                     "GET /events returned HTTP {status} — {host}:{port} is not an \
