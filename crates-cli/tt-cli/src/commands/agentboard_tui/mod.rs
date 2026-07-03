@@ -6,17 +6,21 @@
 //! commands go out as `POST /command` with a `fromSession` envelope (replaces
 //! the TS WebSocket + per-socket `identify-pane`).
 //!
-//! Deviations: no mouse support (keyboard-first; OpenTUI's click/hover
-//! handlers are dropped); no terminal-capability wait before the main-pane
-//! refocus (crossterm issues no capability queries, so the leak the TS
-//! guarded against cannot happen — refocus runs immediately).
+//! Deviations: no terminal-capability wait before the main-pane refocus
+//! (crossterm issues no capability queries, so the leak the TS guarded
+//! against cannot happen — refocus runs immediately). Mouse: click a card to
+//! switch, click an agent row to focus its pane, wheel to move focus (the
+//! hover/✕-click affordances are keyboard-only: `d` dismisses).
 
 mod view;
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEventKind,
+};
 use serde_json::json;
 
 use tt_agentboard::themes::{Theme, resolve_theme};
@@ -29,6 +33,14 @@ use crate::ui;
 pub const SPINNERS: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TOAST_MS: u64 = 4000;
 const SESSIONIZER_SCRIPT: &str = include_str!("sessionizer.sh");
+
+/// What a rendered list line resolves to for mouse hit-testing.
+#[derive(Clone, PartialEq)]
+pub enum LineTarget {
+    None,
+    Session(String),
+    Agent { session: String, idx: usize },
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum PanelFocus {
@@ -71,6 +83,10 @@ pub struct App {
     pub spin_idx: usize,
     pub scroll: u16,
     pub now_ms: i64,
+    /// Per-line click targets for the last rendered session list.
+    pub hit_map: Vec<LineTarget>,
+    /// Screen area of the last rendered session list.
+    pub list_area: ratatui::layout::Rect,
     exit: bool,
 }
 
@@ -92,6 +108,8 @@ impl App {
             spin_idx: 0,
             scroll: 0,
             now_ms: 0,
+            hit_map: Vec::new(),
+            list_area: ratatui::layout::Rect::default(),
             exit: false,
         }
     }
@@ -460,6 +478,54 @@ impl App {
     }
 }
 
+impl App {
+    fn handle_mouse(&mut self, mouse: event::MouseEvent) {
+        // Any click closes the help overlay; confirm-kill stays keyboard-only.
+        if self.modal == Modal::Help {
+            if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                self.modal = Modal::None;
+            }
+            return;
+        }
+        if self.modal != Modal::None {
+            return;
+        }
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.move_local_focus(-1),
+            MouseEventKind::ScrollDown => self.move_local_focus(1),
+            MouseEventKind::Down(MouseButton::Left) => {
+                let area = self.list_area;
+                if mouse.row < area.y
+                    || mouse.row >= area.y + area.height
+                    || mouse.column < area.x
+                    || mouse.column >= area.x + area.width
+                {
+                    return;
+                }
+                let idx = (mouse.row - area.y) as usize + self.scroll as usize;
+                match self.hit_map.get(idx).cloned() {
+                    Some(LineTarget::Session(name)) => {
+                        // Ports SessionCard onSelect: select + switch.
+                        self.focused_session = Some(name.clone());
+                        self.switch_to_session(name);
+                    }
+                    Some(LineTarget::Agent { session, idx }) => {
+                        // Ports AgentRow onFocusPane: move selection with the
+                        // click and focus the agent's pane.
+                        self.focused_session = Some(session.clone());
+                        self.panel_focus = PanelFocus::Agents;
+                        self.focused_agent_idx = idx;
+                        self.activate_focused_agent();
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Refocus the main (non-sidebar) pane. Ports `refocusMainPane`: run from the
 /// TUI process right after startup so the sidebar spawn doesn't steal focus.
 fn refocus_main_pane() {
@@ -512,6 +578,7 @@ pub fn run() -> i32 {
     app.now_ms = wall_ms();
 
     let mut terminal = ratatui::init();
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture);
     refocus_main_pane();
 
     let mut last_spin = Instant::now();
@@ -550,6 +617,7 @@ pub fn run() -> i32 {
         match event::poll(Duration::from_millis(100)) {
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) => app.handle_key(key),
+                Ok(Event::Mouse(mouse)) => app.handle_mouse(mouse),
                 Ok(_) => {}
                 Err(e) => break Err(e.to_string()),
             },
@@ -558,6 +626,7 @@ pub fn run() -> i32 {
         }
     };
 
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     match result {
         Ok(()) => 0,

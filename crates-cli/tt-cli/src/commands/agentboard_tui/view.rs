@@ -12,7 +12,7 @@ use tt_agentboard::text::truncate;
 use tt_agentboard::themes::ThemePalette;
 use tt_agentboard::types::{AgentEvent, AgentStatus, MetadataTone, SessionData};
 
-use super::{App, Modal, PanelFocus, SPINNERS, ToastTone};
+use super::{App, LineTarget, Modal, PanelFocus, SPINNERS, ToastTone};
 
 const UNSEEN_ICON: &str = "●";
 
@@ -203,6 +203,7 @@ fn divider(width: u16, color: &str) -> Line<'static> {
 fn draw_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let p = &app.theme.palette;
     let mut lines: Vec<Line> = vec![divider(area.width, p.overlay0)];
+    let mut targets: Vec<LineTarget> = vec![LineTarget::None];
     let mut focused_range: Option<(usize, usize)> = None;
 
     let current = app.current_session().map(str::to_string);
@@ -211,6 +212,7 @@ fn draw_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
     for (i, session) in app.sessions.iter().enumerate() {
         if i > 0 {
             lines.push(divider(area.width, p.surface2));
+            targets.push(LineTarget::None);
         }
         let start = lines.len();
         let is_focused = focused.as_deref() == Some(session.name.as_str());
@@ -226,6 +228,7 @@ fn draw_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
             current.as_deref() == Some(session.name.as_str()),
             agent_focus,
             &mut lines,
+            &mut targets,
         );
         if is_focused {
             focused_range = Some((start, lines.len()));
@@ -245,6 +248,10 @@ fn draw_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_scroll = lines.len().saturating_sub(area.height as usize) as u16;
     app.scroll = app.scroll.min(max_scroll);
 
+    // Publish the hit map for mouse clicks.
+    app.hit_map = targets;
+    app.list_area = area;
+
     frame.render_widget(Paragraph::new(lines).scroll((app.scroll, 0)), area);
 }
 
@@ -257,6 +264,7 @@ fn session_card(
     is_current: bool,
     focused_agent_idx: i64,
     lines: &mut Vec<Line<'static>>,
+    targets: &mut Vec<LineTarget>,
 ) {
     let theme = app.theme;
     let p = &theme.palette;
@@ -409,9 +417,17 @@ fn session_card(
         }
     }
 
+    // Everything pushed so far belongs to the card itself.
+    while targets.len() < lines.len() {
+        targets.push(LineTarget::Session(session.name.clone()));
+    }
+
     // Agent rows.
     for (i, agent) in session.agents.iter().enumerate() {
         agent_rows(app, agent, i as i64 == focused_agent_idx, card_bg, lines);
+        while targets.len() < lines.len() {
+            targets.push(LineTarget::Agent { session: session.name.clone(), idx: i });
+        }
     }
 }
 
