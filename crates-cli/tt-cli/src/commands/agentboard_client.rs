@@ -21,16 +21,50 @@ fn is_process_alive(pid: i32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
-fn is_port_open(host: &str, port: u16, timeout: Duration) -> bool {
+/// What is actually listening on the configured address.
+#[derive(PartialEq)]
+enum Listener {
+    /// The agentboard server (identified by its `GET /` name field).
+    Agentboard,
+    /// Something else — e.g. the desktop app's metadata listener, which shares
+    /// the default port but speaks a different protocol.
+    Foreign,
+    /// Nothing accepted the connection.
+    Closed,
+}
+
+/// Identify the listener via `GET /`: the agentboard server answers with
+/// `{"name":"agentboard server",...}`; the metadata listener (and anything
+/// else) does not.
+fn probe_listener(host: &str, port: u16, timeout: Duration) -> Listener {
     let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host, port)) else {
-        return false;
+        return Listener::Closed;
     };
     for addr in addrs {
-        if TcpStream::connect_timeout(&addr, timeout).is_ok() {
-            return true;
+        let Ok(mut stream) = TcpStream::connect_timeout(&addr, timeout) else {
+            continue;
+        };
+        stream.set_read_timeout(Some(timeout)).ok();
+        let req = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        if stream.write_all(req.as_bytes()).is_err() {
+            return Listener::Foreign;
         }
+        let mut response = String::new();
+        let _ = std::io::Read::read_to_string(&mut BufReader::new(stream), &mut response);
+        return if response.contains("\"name\":\"agentboard server\"") {
+            Listener::Agentboard
+        } else {
+            Listener::Foreign
+        };
     }
-    false
+    Listener::Closed
+}
+
+fn foreign_listener_error(host: &str, port: u16) -> String {
+    format!(
+        "{host}:{port} is in use by a different server (likely the desktop app's \
+         metadata listener). Stop it or set TT_AGENTBOARD_PORT to a free port."
+    )
 }
 
 /// Make sure an agentboard server is running on the configured address,
@@ -42,15 +76,19 @@ pub fn ensure_server() -> Result<(), String> {
     if let Ok(content) = std::fs::read_to_string(PID_FILE) {
         if let Ok(pid) = content.trim().parse::<i32>()
             && is_process_alive(pid)
-            && is_port_open(&host, port, Duration::from_millis(200))
+            && probe_listener(&host, port, Duration::from_millis(200)) == Listener::Agentboard
         {
             return Ok(());
         }
         // Stale PID file — remove before spawning a new server.
         let _ = std::fs::remove_file(PID_FILE);
-    } else if is_port_open(&host, port, Duration::from_millis(200)) {
-        // No PID file but something is serving (e.g. the TS server) — use it.
-        return Ok(());
+    }
+    // A port can be open without being ours (e.g. the desktop app's metadata
+    // listener shares the default 4201) — only accept a verified server.
+    match probe_listener(&host, port, Duration::from_millis(200)) {
+        Listener::Agentboard => return Ok(()), // e.g. the TS server — use it.
+        Listener::Foreign => return Err(foreign_listener_error(&host, port)),
+        Listener::Closed => {}
     }
 
     let exe = std::env::current_exe().map_err(|e| format!("cannot resolve own binary: {e}"))?;
@@ -66,8 +104,11 @@ pub fn ensure_server() -> Result<(), String> {
 
     for _ in 0..60 {
         std::thread::sleep(Duration::from_millis(50));
-        if is_port_open(&host, port, Duration::from_millis(100)) {
-            return Ok(());
+        match probe_listener(&host, port, Duration::from_millis(100)) {
+            Listener::Agentboard => return Ok(()),
+            // Something else won the bind race — our server will have exited.
+            Listener::Foreign => return Err(foreign_listener_error(&host, port)),
+            Listener::Closed => {}
         }
     }
 
@@ -107,7 +148,28 @@ pub fn sse_subscribe(tx: Sender<ServerMessage>) -> Result<(), String> {
 
     let mut reader = BufReader::new(stream);
 
-    // Skip response headers.
+    // Check the status line: a non-200 means whatever is on this port is not
+    // the agentboard server's SSE endpoint (e.g. the metadata listener's 404).
+    let mut status_line = String::new();
+    match reader.read_line(&mut status_line) {
+        Ok(0) => return Err("server closed the SSE stream during headers".into()),
+        Ok(_) => {
+            let status: u16 = status_line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            if status != 200 {
+                return Err(format!(
+                    "GET /events returned HTTP {status} — {host}:{port} is not an \
+                     agentboard server"
+                ));
+            }
+        }
+        Err(e) => return Err(e.to_string()),
+    }
+
+    // Skip the remaining response headers.
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {

@@ -566,11 +566,10 @@ pub fn run() -> i32 {
     }
 
     let (tx, rx) = mpsc::channel::<ServerMessage>();
-    let (conn_tx, conn_rx) = mpsc::channel::<bool>();
+    let (conn_tx, conn_rx) = mpsc::channel::<Result<(), String>>();
     std::thread::spawn(move || {
-        let ok = sse_subscribe(tx).is_ok();
         // Signals both "failed to connect" and "connection dropped".
-        let _ = conn_tx.send(ok);
+        let _ = conn_tx.send(sse_subscribe(tx));
     });
 
     let mut app = App::new(local_session_name());
@@ -587,9 +586,12 @@ pub fn run() -> i32 {
         while let Ok(msg) = rx.try_recv() {
             app.apply_message(msg);
         }
-        // SSE thread ended → server is gone; exit like the TS onclose.
-        if conn_rx.try_recv().is_ok() {
-            break Ok(());
+        // SSE thread ended → server is gone; exit like the TS onclose,
+        // surfacing the reason when the subscription itself failed.
+        match conn_rx.try_recv() {
+            Ok(Ok(())) => break Ok(()),
+            Ok(Err(e)) => break Err(e),
+            Err(_) => {}
         }
         if app.exit {
             break Ok(());
