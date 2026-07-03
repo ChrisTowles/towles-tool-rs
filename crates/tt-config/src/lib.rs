@@ -3,7 +3,9 @@
 //! This mirrors the zod settings schema used by the TypeScript CLI and reads/writes
 //! the *same* file (`~/.config/towles-tool/towles-tool.settings.json`). Because the
 //! file is shared, the model deliberately tolerates unknown fields and fills missing
-//! ones from defaults via `#[serde(default)]` — never `deny_unknown_fields`.
+//! ones from defaults via `#[serde(default)]` — never `deny_unknown_fields` — and
+//! every struct carries a `#[serde(flatten)]` map so keys owned by the TS CLI
+//! survive a load → mutate → save round trip instead of being silently erased.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -56,6 +58,10 @@ pub struct JournalSettings {
 
     /// Directory holding external templates (falls back to built-ins when absent).
     pub template_dir: String,
+
+    /// Keys the TS CLI owns; preserved verbatim across load/save.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for JournalSettings {
@@ -69,6 +75,7 @@ impl Default for JournalSettings {
                 .to_string(),
             note_path_template: "journal/{yyyy}/{MM}/notes/{yyyy}-{MM}-{dd}-{title}.md".to_string(),
             template_dir: default_template_dir(),
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -98,6 +105,10 @@ pub struct AgentboardSettings {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail_panel_heights: Option<HashMap<String, f64>>,
+
+    /// Keys the TS CLI owns; preserved verbatim across load/save.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Top-level user settings, mirroring `UserSettingsSchema` in the TS CLI.
@@ -110,6 +121,10 @@ pub struct UserSettings {
     pub journal_settings: JournalSettings,
 
     pub agentboard: AgentboardSettings,
+
+    /// Keys the TS CLI owns; preserved verbatim across load/save.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for UserSettings {
@@ -118,6 +133,7 @@ impl Default for UserSettings {
             preferred_editor: "code".to_string(),
             journal_settings: JournalSettings::default(),
             agentboard: AgentboardSettings::default(),
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -244,6 +260,38 @@ mod tests {
         assert_eq!(loaded.journal_settings.base_folder, "/tmp/j");
         // Missing journal fields fall back to defaults.
         assert!(loaded.journal_settings.daily_path_template.contains("daily-notes"));
+        // Unknown keys are captured, not discarded.
+        assert_eq!(loaded.extra.get("futureFlag"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    #[test]
+    fn save_preserves_ts_owned_keys() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("towles-tool.settings.json");
+        // Unknown keys at every nesting level, as the TS CLI might write them.
+        std::fs::write(
+            &path,
+            r#"{
+                "preferredEditor": "vim",
+                "tsOnlyTopLevel": {"a": 1},
+                "journalSettings": {"baseFolder": "/tmp/j", "tsOnlyJournal": "x"},
+                "agentboard": {"port": 4201, "tsOnlyBoard": [1, 2]}
+            }"#,
+        )
+        .unwrap();
+
+        // Load → mutate a Rust-owned field → save, like the sidebar-drag persist path.
+        let mut settings = load_from(&path).unwrap();
+        settings.agentboard.sidebar_width = Some(42.0);
+        save_to(&path, &settings).unwrap();
+
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["tsOnlyTopLevel"]["a"], 1);
+        assert_eq!(raw["journalSettings"]["tsOnlyJournal"], "x");
+        assert_eq!(raw["agentboard"]["tsOnlyBoard"][0], 1);
+        assert_eq!(raw["agentboard"]["sidebarWidth"], 42.0);
+        assert_eq!(raw["agentboard"]["port"], 4201);
     }
 
     #[test]
