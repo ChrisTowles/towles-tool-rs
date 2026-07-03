@@ -26,13 +26,16 @@
 use thiserror::Error;
 
 pub mod bridge;
+pub mod engine;
 pub mod fs_notify;
 pub mod git_info;
+pub mod hook_http;
 pub mod metadata;
 pub mod metadata_http;
 pub mod ports;
 pub mod repos;
 pub mod session_order;
+pub mod session_resolve;
 pub mod sidebar_width_sync;
 pub mod text;
 pub mod themes;

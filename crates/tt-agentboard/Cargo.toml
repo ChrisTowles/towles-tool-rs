@@ -23,6 +23,9 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# tt-config: the engine loads theme/preferredEditor from (and persists theme to)
+# the shared settings file, identically for both hosts.
+tt-config = { workspace = true }
 tt-exec = { workspace = true }
 
 [dev-dependencies]

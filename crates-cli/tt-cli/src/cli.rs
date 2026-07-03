@@ -65,7 +65,7 @@ pub enum Commands {
     /// Create a pull request from the current branch (alias for `gh pr`)
     Pr(PrArgs),
 
-    /// Manage the agentboard desktop app's watched repos
+    /// Agentboard: tmux sidebar server + watched-repo management
     #[command(alias = "ag")]
     Agentboard(AgentboardArgs),
 }
@@ -81,6 +81,9 @@ pub struct AgentboardArgs {
 pub enum AgentboardCommands {
     /// Manage the watched-repo list (repos.json)
     Repos(ReposArgs),
+
+    /// Run the agentboard server in the foreground (HTTP on 127.0.0.1:4201)
+    Server,
 }
 
 #[derive(Args)]

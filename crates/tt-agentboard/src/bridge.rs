@@ -82,10 +82,11 @@ pub fn assemble_state(
     live_threads: &HashSet<String>,
     ts: i64,
 ) -> StatePayload {
-    // §1 ordering: createdAt is dropped, so the base order is by name, then the
-    // persisted custom order is synced and applied.
-    let mut names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
-    names.sort();
+    // §1 ordering: the caller owns the base order (the desktop engine passes
+    // name-sorted repo entries; the tmux server passes created-at-sorted live
+    // sessions, matching the TS). The persisted custom order is synced with and
+    // applied over that base.
+    let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
     order.sync(&names);
     let ordered = order.apply(&names);
 
