@@ -84,6 +84,10 @@ pub enum AgentboardCommands {
 
     /// Run the agentboard server in the foreground (HTTP on 127.0.0.1:4201)
     Server,
+
+    /// Run the sidebar TUI (normally spawned inside a tmux pane by the server)
+    #[command(alias = "start")]
+    Tui,
 }
 
 #[derive(Args)]

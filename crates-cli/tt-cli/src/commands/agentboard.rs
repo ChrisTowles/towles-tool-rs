@@ -12,6 +12,7 @@ use tt_agentboard::repos::{add_repo, default_repos_path, load_repos, repo_entrie
 pub fn run(command: AgentboardCommands) -> i32 {
     match command {
         AgentboardCommands::Server => crate::commands::agentboard_server::run(),
+        AgentboardCommands::Tui => crate::commands::agentboard_tui::run(),
         AgentboardCommands::Repos(args) => match args.command {
             None => list_repos(),
             Some(ReposCommands::Add { path }) => add(&path),

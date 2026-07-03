@@ -23,6 +23,8 @@ indexmap = { workspace = true }
 env_logger = { workspace = true }
 inquire = { workspace = true }
 log = { workspace = true }
+# ratatui: the agentboard sidebar TUI (`ttr agentboard tui`).
+ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # tokio: only for `ttr agentboard server` (HTTP listener + scan/git/emit tasks).
