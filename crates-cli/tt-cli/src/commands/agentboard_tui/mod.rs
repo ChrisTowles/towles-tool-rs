@@ -559,6 +559,25 @@ fn wall_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
+/// Disables mouse capture on drop — including during a panic unwind.
+/// ratatui's panic hook restores raw mode and the alternate screen, but mouse
+/// capture is our own opt-in on top of `ratatui::init()`, so without this
+/// guard a panic left the terminal spewing escape sequences on every click.
+struct MouseCaptureGuard;
+
+impl MouseCaptureGuard {
+    fn enable() -> Self {
+        let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+        Self
+    }
+}
+
+impl Drop for MouseCaptureGuard {
+    fn drop(&mut self) {
+        let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+    }
+}
+
 pub fn run() -> i32 {
     if let Err(e) = ensure_server() {
         ui::error(&e);
@@ -577,7 +596,7 @@ pub fn run() -> i32 {
     app.now_ms = wall_ms();
 
     let mut terminal = ratatui::init();
-    let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+    let _mouse = MouseCaptureGuard::enable();
     refocus_main_pane();
 
     let mut last_spin = Instant::now();
@@ -628,7 +647,7 @@ pub fn run() -> i32 {
         }
     };
 
-    let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+    drop(_mouse);
     ratatui::restore();
     match result {
         Ok(()) => 0,
