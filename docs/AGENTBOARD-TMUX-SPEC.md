@@ -76,7 +76,7 @@ a TS pain point) — sidebar orchestration just no-ops without tmux sessions.
    the 7 hooks), `restart` (kill `_ab_stash*`, stop via PID file or POST
    /shutdown, ensure up, POST /refresh + /ensure-sidebar per client),
    `run --toggle|--focus`, `keys`. No `ensureBun` equivalent needed.
-6. ⏳ **T6 — pane↔agent attribution** (NOT STARTED) (~600 LOC of server/index.ts):
+6. ✅ **T6 — pane↔agent attribution** (2026-07-03) (~600 LOC of server/index.ts):
    `scan_all_tmux_pane_agents` (single `list-panes -a` + ps-tree), per-watcher
    pane resolution (claude/codex/opencode/amp), pane-presence merge into
    state, `focus-agent-pane`/`kill-agent-pane` commands, pane highlight,
@@ -114,6 +114,24 @@ a TS pain point) — sidebar orchestration just no-ops without tmux sessions.
   running it while the TS agentboard is active steals (and on shutdown clears)
   the hooks; `tt agentboard init` restores the TS wiring.
 
-Status: T1–T5 give a fully usable tmux sidebar (`ttr agentboard setup` →
-prefix-a-t). T6 adds pane↔agent attribution (focus/kill agent panes,
-pane-presence waiting synthesis, ports column).
+## T6 deviations
+
+- **Claude Code pane resolution uses `claude agents --all --json`** (Chris's
+  call): one ~170ms CLI call per scan yields pid → {sessionId, name, status}
+  instead of reading `~/.claude/sessions/<pid>.json` per pane + re-parsing
+  journal JSONL. Status mapping: busy→running, waiting→question, idle→waiting.
+  The incremental journal watcher is untouched (it supplies model/tool/cache/
+  subagent detail the CLI doesn't expose).
+- The TS pane-scan "pinning" registered keys of the form `agent:pane:<id>`,
+  which can never match tracker instance keys (`agent:<threadId>`) — it was a
+  no-op. The Rust keeps the (working) pid-liveness pinning instead.
+- The TS attached pane ids to tracker instances by accidental JS reference
+  mutation inside `mergeAgentsWithPanePresence`; Rust does it explicitly via
+  `tracker.assign_pane_id` after each merge (drives the orphan-drop).
+- Pane highlight resets are fire-and-forget 300ms tasks (no timer cancel —
+  the reset commands are idempotent).
+
+Status: ALL PHASES COMPLETE. `ttr agentboard setup` → prefix-a-t gives the
+full tmux sidebar: live sessions, watcher agents with pane merge, Enter-to-
+focus an agent's pane (cross-session, with highlight flash), x-to-kill panes,
+ports column, sessionizer, theme parity with the desktop app.

@@ -312,6 +312,17 @@ impl Engine {
         self.tracker.set_active_sessions(sessions);
     }
 
+    /// Persist a pane assignment onto a tracked instance (pane merge, T6).
+    pub fn assign_pane_id(
+        &mut self,
+        session: &str,
+        agent: &str,
+        thread_id: Option<&str>,
+        pane_id: &str,
+    ) {
+        self.tracker.assign_pane_id(session, agent, thread_id, pane_id);
+    }
+
     pub fn dismiss(&mut self, session: &str, agent: &str, thread_id: Option<&str>) -> bool {
         self.tracker.dismiss(session, agent, thread_id)
     }

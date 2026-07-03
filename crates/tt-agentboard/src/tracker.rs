@@ -356,6 +356,26 @@ impl AgentTracker {
     pub fn is_pinned(&self, session: &str, key: &str) -> bool {
         self.pinned_keys.get(session).is_some_and(|s| s.contains(key))
     }
+
+    /// Record the tmux pane an instance was last seen in. The TS did this by
+    /// accidental reference mutation inside `mergeAgentsWithPanePresence`;
+    /// here the pane-merge reports assignments back explicitly. The stored
+    /// pane id drives the orphan-drop (a non-terminal instance whose pane
+    /// closed is removed from snapshots).
+    pub fn assign_pane_id(
+        &mut self,
+        session: &str,
+        agent: &str,
+        thread_id: Option<&str>,
+        pane_id: &str,
+    ) {
+        let key = instance_key(agent, thread_id);
+        if let Some(instances) = self.instances.get_mut(session)
+            && let Some(event) = instances.get_mut(&key)
+        {
+            event.pane_id = Some(pane_id.to_string());
+        }
+    }
 }
 
 #[cfg(test)]

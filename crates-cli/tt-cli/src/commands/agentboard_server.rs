@@ -30,6 +30,10 @@ use tokio::sync::{Notify, broadcast};
 
 use tt_agentboard::engine::{Engine, apply_mutation, ingest_addr, now_ms};
 use tt_agentboard::hook_http::{HookContext, parse_context, parse_resize_context};
+use tt_agentboard::pane_agents::{
+    PaneAgentMap, merge_agents_with_pane_presence, override_terminal_if_pane_alive,
+    pane_agent_sets_differ, resolve_agent_pane_id, scan_all_tmux_pane_agents,
+};
 use tt_agentboard::session_resolve::resolve_session_by_dir;
 use tt_agentboard::sidebar_width_sync::{
     SidebarResizeContext, SidebarResizeSuppression, SidebarWindowSnapshot,
@@ -37,8 +41,8 @@ use tt_agentboard::sidebar_width_sync::{
 };
 use tt_agentboard::text::format_uptime;
 use tt_agentboard::tmux::{MuxSessionInfo, SidebarPosition, SwitchTarget, TmuxProvider};
-use tt_agentboard::types::{ClientCommand, ServerMessage};
-use tt_agentboard::{RepoEntry, handle_request, parse_request_head, response_bytes};
+use tt_agentboard::types::{ClientCommand, SelectedAgent, ServerMessage, SessionViewedSelect};
+use tt_agentboard::{PortScanner, RepoEntry, handle_request, parse_request_head, response_bytes};
 
 use crate::ui;
 
@@ -61,6 +65,10 @@ struct Shared {
     client_count: AtomicUsize,
     idle_since_ms: Mutex<Option<i64>>,
     shutting_down: AtomicBool,
+    /// Pane-detected agents per session (T6), refreshed by the 3s scan.
+    pane_agents: Mutex<PaneAgentMap>,
+    /// Listening-port attribution per session (10s poll).
+    ports: Mutex<PortScanner>,
 }
 
 /// Sidebar orchestration state (ports the closure-captured locals of the TS
@@ -148,6 +156,8 @@ async fn serve() -> i32 {
         client_count: AtomicUsize::new(0),
         idle_since_ms: Mutex::new(None),
         shutting_down: AtomicBool::new(false),
+        pane_agents: Mutex::new(PaneAgentMap::new()),
+        ports: Mutex::new(PortScanner::new()),
     });
 
     // PID file.
@@ -230,6 +240,50 @@ async fn serve() -> i32 {
             loop {
                 interval.tick().await;
                 drain_pending_ensures(&shared);
+            }
+        });
+    }
+
+    // Pane-agent scan: every 3s while clients are connected (T6), plus the
+    // eager rescan /focus triggers.
+    {
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(3000));
+            loop {
+                interval.tick().await;
+                if shared.client_count.load(Ordering::SeqCst) == 0 {
+                    continue;
+                }
+                let shared = shared.clone();
+                // The scan shells out (tmux/ps/claude/sqlite) — keep it off
+                // the async workers.
+                tokio::task::spawn_blocking(move || refresh_pane_agents(&shared)).await.ok();
+            }
+        });
+    }
+
+    // Port poll: every 10s while clients are connected.
+    {
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(10_000));
+            loop {
+                interval.tick().await;
+                if shared.client_count.load(Ordering::SeqCst) == 0 {
+                    continue;
+                }
+                let shared = shared.clone();
+                tokio::task::spawn_blocking(move || {
+                    let names: Vec<String> =
+                        shared.provider.list_sessions().into_iter().map(|s| s.name).collect();
+                    let changed = shared.ports.lock().unwrap().refresh(&names);
+                    if changed {
+                        shared.emit.notify_one();
+                    }
+                })
+                .await
+                .ok();
             }
         });
     }
@@ -321,10 +375,12 @@ fn broadcast_state(shared: &Shared) {
         payload
     };
 
-    // Patch the tmux-only fields the desktop snapshot leaves at defaults.
+    // Patch the tmux-only fields the desktop snapshot leaves at defaults,
+    // and fold in pane presence (T6) + port attribution.
     let mut data = payload.sessions;
     let by_name: HashMap<&str, &MuxSessionInfo> =
         sessions.iter().map(|s| (s.name.as_str(), s)).collect();
+    let pane_agents = shared.pane_agents.lock().unwrap();
     for session in &mut data {
         if let Some(info) = by_name.get(session.name.as_str()) {
             session.created_at = info.created_at;
@@ -332,7 +388,28 @@ fn broadcast_state(shared: &Shared) {
             session.panes = pane_counts.get(&session.name).copied().unwrap_or(0) as i64;
             session.uptime = format_uptime(info.created_at, now / 1000);
         }
+        session.ports = shared.ports.lock().unwrap().get(&session.name);
+
+        let presences = pane_agents.get(&session.name);
+        session.agent_state =
+            override_terminal_if_pane_alive(session.agent_state.take(), presences);
+        let watcher_agents = std::mem::take(&mut session.agents);
+        session.agents = merge_agents_with_pane_presence(&session.name, watcher_agents, presences);
+        // Persist pane attachments so the orphan-drop works on later merges
+        // (the TS relied on mutating tracker objects by reference).
+        let assignments: Vec<(String, Option<String>, String)> = session
+            .agents
+            .iter()
+            .filter_map(|a| a.pane_id.clone().map(|p| (a.agent.clone(), a.thread_id.clone(), p)))
+            .collect();
+        if !assignments.is_empty() {
+            let mut engine = shared.engine.lock().unwrap();
+            for (agent, thread_id, pane_id) in assignments {
+                engine.assign_pane_id(&session.name, &agent, thread_id.as_deref(), &pane_id);
+            }
+        }
     }
+    drop(pane_agents);
 
     let msg = ServerMessage::State {
         sessions: data,
@@ -350,17 +427,34 @@ fn publish(shared: &Shared, msg: &ServerMessage) {
     }
 }
 
-fn publish_session_viewed(shared: &Shared, name: &str) {
-    publish(shared, &ServerMessage::SessionViewed { name: name.to_string(), select: None });
+fn publish_session_viewed(shared: &Shared, name: &str, select: Option<SessionViewedSelect>) {
+    publish(shared, &ServerMessage::SessionViewed { name: name.to_string(), select });
 }
 
-/// Focus handling: rescan is T6 (pane agents); clear unseen + notify TUIs.
+/// Rescan pane agents; on change, store + notify (ports `refreshPaneAgents`).
+fn refresh_pane_agents(shared: &Shared) {
+    let sidebar_ids: std::collections::HashSet<String> =
+        shared.provider.list_sidebar_panes(None).into_iter().map(|p| p.pane_id).collect();
+    let next = scan_all_tmux_pane_agents(&sidebar_ids, now_ms());
+    let changed = {
+        let mut current = shared.pane_agents.lock().unwrap();
+        let changed = pane_agent_sets_differ(&current, &next);
+        *current = next;
+        changed
+    };
+    if changed {
+        shared.emit.notify_one();
+    }
+}
+
+/// Focus handling: rescan pane agents, clear unseen, notify TUIs.
 fn handle_focus(shared: &Shared, name: &str) {
+    refresh_pane_agents(shared);
     let had_unseen = shared.engine.lock().unwrap().handle_focus(name);
     if had_unseen {
         shared.emit.notify_one();
     }
-    publish_session_viewed(shared, name);
+    publish_session_viewed(shared, name, None);
 }
 
 fn switch_to_visible_index(shared: &Shared, index: i64, target: Option<&SwitchTarget>) {
@@ -584,7 +678,8 @@ fn handle_command(shared: &Arc<Shared>, envelope: CommandEnvelope) {
             if had_unseen {
                 shared.emit.notify_one();
             }
-            publish_session_viewed(shared, &name);
+            let select = SessionViewedSelect { session: name.clone(), agent: None };
+            publish_session_viewed(shared, &name, Some(select));
         }
         ClientCommand::SwitchIndex { index } => {
             let target = SwitchTarget { client_tty: None, from_session };
@@ -627,11 +722,116 @@ fn handle_command(shared: &Arc<Shared>, envelope: CommandEnvelope) {
         ClientCommand::IdentifyPane { .. } => {
             // Per-socket identity replaced by fromSession on each request.
         }
-        ClientCommand::FocusAgentPane { .. } | ClientCommand::KillAgentPane { .. } => {
-            // Pane↔agent attribution lands in phase T6.
-            log::debug!("focus/kill-agent-pane not yet implemented (T6)");
+        ClientCommand::FocusAgentPane { session, agent, thread_id, thread_name } => {
+            let switched = focus_agent_pane(
+                shared,
+                &session,
+                &agent,
+                thread_id.as_deref(),
+                thread_name.as_deref(),
+                from_session.as_deref(),
+            );
+            // The viewer just landed on the agent session's sidebar — hand
+            // the clicked-agent selection over so it highlights there.
+            if switched {
+                let select = SessionViewedSelect {
+                    session: session.clone(),
+                    agent: Some(SelectedAgent { agent, thread_id }),
+                };
+                publish_session_viewed(shared, &session, Some(select));
+            }
+        }
+        ClientCommand::KillAgentPane { session, agent, thread_id, thread_name } => {
+            if let Some(pane_id) =
+                resolve_pane(shared, &session, &agent, thread_id.as_deref(), thread_name.as_deref())
+            {
+                shared.provider.client().kill_pane(&pane_id);
+            }
         }
     }
+}
+
+// --- Focus/kill agent pane (T6, ports focusAgentPane/killAgentPane) ---
+
+const PANE_HIGHLIGHT_BORDER: &str = "fg=#fab387,bold";
+const PANE_HIGHLIGHT_BG: &str = "bg=#2a2a4a";
+const PANE_HIGHLIGHT_MS: u64 = 300;
+
+fn resolve_pane(
+    shared: &Shared,
+    session: &str,
+    agent: &str,
+    thread_id: Option<&str>,
+    thread_name: Option<&str>,
+) -> Option<String> {
+    let sidebar_ids: std::collections::HashSet<String> =
+        shared.provider.list_sidebar_panes(None).into_iter().map(|p| p.pane_id).collect();
+    resolve_agent_pane_id(session, agent, thread_id, thread_name, &sidebar_ids)
+}
+
+/// Returns true when a pane was resolved and the viewer switched to it.
+fn focus_agent_pane(
+    shared: &Arc<Shared>,
+    session: &str,
+    agent: &str,
+    thread_id: Option<&str>,
+    thread_name: Option<&str>,
+    from_session: Option<&str>,
+) -> bool {
+    let Some(pane_id) = resolve_pane(shared, session, agent, thread_id, thread_name) else {
+        return false;
+    };
+    let tmux = shared.provider.client();
+
+    // The agent's pane may live in another session/window. Switch the
+    // client(s) attached to the sidebar's own session — resolved at action
+    // time, so a multi-terminal setup moves the terminal that was used, not
+    // whichever client happens to be most-recently-active.
+    let ttys: Vec<String> = match from_session {
+        Some(from) => {
+            let clients = shared.provider.client().list_clients();
+            tt_agentboard::tmux::resolve_switch_targets(
+                clients.iter().map(|c| (c.tty.as_str(), c.session_name.as_str())),
+                Some(from),
+            )
+        }
+        None => Vec::new(),
+    };
+    if ttys.is_empty() {
+        tmux.switch_client(session, None);
+    } else {
+        for tty in &ttys {
+            tmux.switch_client(session, Some(tty));
+        }
+    }
+    tmux.run(&["select-window", "-t", &pane_id]);
+    tmux.select_pane(&pane_id);
+
+    // Flash the pane so the eye lands on it, then reset.
+    tmux.run(&[
+        "set-option",
+        "-p",
+        "-t",
+        &pane_id,
+        "pane-active-border-style",
+        PANE_HIGHLIGHT_BORDER,
+    ]);
+    tmux.set_pane_style(&pane_id, PANE_HIGHLIGHT_BG);
+    let shared = shared.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(PANE_HIGHLIGHT_MS)).await;
+        let tmux = shared.provider.client();
+        tmux.run(&[
+            "set-option",
+            "-p",
+            "-t",
+            &pane_id,
+            "-u",
+            "pane-active-border-style",
+        ]);
+        tmux.set_pane_style(&pane_id, "");
+    });
+    true
 }
 
 // --- HTTP ---

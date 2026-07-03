@@ -32,6 +32,7 @@ pub mod git_info;
 pub mod hook_http;
 pub mod metadata;
 pub mod metadata_http;
+pub mod pane_agents;
 pub mod ports;
 pub mod repos;
 pub mod session_order;
