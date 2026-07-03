@@ -34,6 +34,7 @@ pub mod ports;
 pub mod repos;
 pub mod session_order;
 pub mod text;
+pub mod tmux;
 pub mod tracker;
 pub mod types;
 pub mod watcher;

@@ -4141,6 +4141,7 @@ dependencies = [
  "chrono",
  "dirs",
  "indexmap 2.14.0",
+ "log",
  "notify",
  "rusqlite",
  "serde",
