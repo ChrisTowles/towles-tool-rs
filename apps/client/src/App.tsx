@@ -1,70 +1,126 @@
-import { useState } from "react";
-import { ThemeToggle } from "@/components/theme-toggle";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { useEffect } from "react";
+import { Terminal } from "lucide-react";
+import { AppHeader } from "@/components/app-header";
+import { AppSidebar } from "@/components/app-sidebar";
+import { CommandPalette } from "@/components/command-palette";
+import { SettingsDialog } from "@/components/settings-dialog";
+import { StatusBar } from "@/components/status-bar";
+import { TabStrip } from "@/components/tab-strip";
+import { Kbd } from "@/components/ui/kbd";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { WorkspaceProvider, useWorkspace } from "@/lib/workspace";
+import { SCREEN_COMPONENTS } from "@/screens";
 
-// Tauri injects `__TAURI_INTERNALS__` on window inside the desktop shell.
-const isTauri = "__TAURI_INTERNALS__" in window;
+function EmptyState() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+      <Terminal className="size-10" />
+      <p className="text-sm">No open tabs.</p>
+      <p className="text-sm">
+        Press <Kbd>⌘K</Kbd> to search, or pick a screen from the sidebar.
+      </p>
+    </div>
+  );
+}
 
-/**
- * Pipeline-proof shell: one screen exercising Tailwind utilities, shadcn's
- * Button/Card/Dialog, the Radix portal, and the light/dark toggle. Replace
- * with real screens as they're designed.
- */
-export function App() {
-  const [count, setCount] = useState(0);
+function Shortcuts() {
+  const { setPaletteOpen, setSettingsOpen, toggleSidebar, closeTab, activeTab, paletteOpen } =
+    useWorkspace();
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      switch (e.key) {
+        case "k":
+          e.preventDefault();
+          setPaletteOpen(!paletteOpen);
+          break;
+        case ",":
+          e.preventDefault();
+          setSettingsOpen(true);
+          break;
+        case "b":
+          e.preventDefault();
+          toggleSidebar();
+          break;
+        case "w":
+          if (activeTab) {
+            e.preventDefault();
+            closeTab(activeTab);
+          }
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [setPaletteOpen, setSettingsOpen, toggleSidebar, closeTab, activeTab, paletteOpen]);
+
+  return null;
+}
+
+function Workspace() {
+  const { tabs, activeTab, sidebarVisible } = useWorkspace();
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <header className="flex items-center justify-between border-b px-6 py-3">
-        <h1 className="font-heading text-lg font-semibold">Towles Tool</h1>
-        <ThemeToggle />
-      </header>
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      <AppHeader />
 
-      <main className="mx-auto flex max-w-xl flex-col gap-6 p-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Environment</CardTitle>
-            <CardDescription>
-              Running in {isTauri ? "the Tauri desktop shell" : "a bare browser"}.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex items-center gap-4">
-            <Button onClick={() => setCount((c) => c + 1)}>Clicked {count} times</Button>
+      <ResizablePanelGroup
+        key={sidebarVisible ? "with-sidebar" : "no-sidebar"}
+        orientation="horizontal"
+        className="min-h-0 flex-1"
+      >
+        {sidebarVisible && (
+          <>
+            <ResizablePanel defaultSize="220px" minSize="160px" maxSize="400px">
+              <AppSidebar />
+            </ResizablePanel>
+            <ResizableHandle />
+          </>
+        )}
+        <ResizablePanel>
+          <div className="flex h-full flex-col">
+            <TabStrip />
+            <div className="min-h-0 flex-1">
+              {activeTab ? (
+                <ScrollArea className="h-full">
+                  {tabs.map((id) => {
+                    const Screen = SCREEN_COMPONENTS[id];
+                    // Keep inactive tabs mounted so their local state survives switching.
+                    return (
+                      <div key={id} hidden={id !== activeTab} className="mx-auto max-w-3xl p-6">
+                        <Screen />
+                      </div>
+                    );
+                  })}
+                </ScrollArea>
+              ) : (
+                <EmptyState />
+              )}
+            </div>
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
 
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button variant="outline">Open dialog</Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>It works</DialogTitle>
-                  <DialogDescription>
-                    Radix portal, focus trap, and Escape/overlay dismissal — all inside the{" "}
-                    {isTauri ? "Tauri WebView" : "browser"}.
-                  </DialogDescription>
-                </DialogHeader>
-                <DialogFooter showCloseButton />
-              </DialogContent>
-            </Dialog>
-          </CardContent>
-        </Card>
-      </main>
+      <StatusBar />
+
+      <Shortcuts />
+      <CommandPalette />
+      <SettingsDialog />
+      <Toaster />
     </div>
+  );
+}
+
+export function App() {
+  return (
+    <WorkspaceProvider>
+      <TooltipProvider>
+        <Workspace />
+      </TooltipProvider>
+    </WorkspaceProvider>
   );
 }

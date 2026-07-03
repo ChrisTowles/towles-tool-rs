@@ -55,9 +55,14 @@ Cargo workspace + npm workspace (`apps/client` only):
   dev server on `:1420`.
 - `apps/client` — React 19 + Vite frontend styled with Tailwind CSS v4 +
   shadcn/ui (`@/*` → `src/*` alias, components vendored into
-  `src/components/ui/`, light/dark via the `.dark` class). The old AgentBoard
-  React UI was removed (superseded by the tmux-mode `ttr agentboard` CLI);
-  concrete screens are TBD — currently a pipeline-proof shell.
+  `src/components/ui/`, light/dark via the `.dark` class). Yaak-style app
+  shell: resizable sidebar + closable tabs (`src/lib/workspace.tsx` context),
+  command palette (⌘K), settings dialog, status bar, keyboard shortcuts
+  (⌘K/⌘,/⌘B/⌘W). Screens live in `src/screens/` (registry in
+  `src/lib/screens.ts`) and render **mock data** from `src/lib/mock-data.ts`,
+  shaped like the real CLI output so Tauri commands can be wired in later.
+  The old AgentBoard React UI was removed (superseded by the tmux-mode
+  `ttr agentboard` CLI).
 
 ## Migration
 
