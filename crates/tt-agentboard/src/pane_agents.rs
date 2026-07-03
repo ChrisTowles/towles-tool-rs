@@ -281,7 +281,7 @@ pub fn pane_agent_sets_differ(prev: &PaneAgentMap, next: &PaneAgentMap) -> bool 
 // --- Snapshot merge (ports mergeAgentsWithPanePresence / overrideTerminalIfPaneAlive) ---
 
 /// If the session's top-line state is terminal but a pane still runs that
-/// agent instance, rewrite it to `waiting`.
+/// agent instance, rewrite it to `idle` (alive at the prompt).
 pub fn override_terminal_if_pane_alive(
     state: Option<AgentEvent>,
     pane_agents: Option<&IndexMap<String, PaneAgentPresence>>,
@@ -295,7 +295,7 @@ pub fn override_terminal_if_pane_alive(
     };
     for presence in pane_agents.values() {
         if presence.agent == state.agent && presence.thread_id == state.thread_id {
-            state.status = AgentStatus::Waiting;
+            state.status = AgentStatus::Idle;
             break;
         }
     }
@@ -348,7 +348,7 @@ pub fn merge_agents_with_pane_presence(
             // alive, so a terminal journal status means waiting for input.
             let tracked = &mut result[idx];
             if tracked.status.is_terminal() {
-                tracked.status = AgentStatus::Waiting;
+                tracked.status = AgentStatus::Idle;
                 tracked.pane_id = Some(presence.pane_id.clone());
             }
             continue;
@@ -628,9 +628,8 @@ mod tests {
         let t = tree(&[(150, 100, "amp"), (250, 200, "claude")]);
         let resolvers = PaneResolvers {
             claude: &|pid| {
-                (pid == 250).then(|| {
-                    ("tid-1".to_string(), Some("t".to_string()), Some(AgentStatus::Running))
-                })
+                (pid == 250)
+                    .then(|| ("tid-1".to_string(), Some("t".to_string()), Some(AgentStatus::Busy)))
             },
             codex: &|_| None,
         };
@@ -639,7 +638,7 @@ mod tests {
         assert_eq!(agents.len(), 2);
         assert_eq!(agents["amp:pane:%1"].agent, "amp");
         assert_eq!(agents["claude-code:pane:%2"].thread_id.as_deref(), Some("tid-1"));
-        assert_eq!(agents["claude-code:pane:%2"].status, Some(AgentStatus::Running));
+        assert_eq!(agents["claude-code:pane:%2"].status, Some(AgentStatus::Busy));
         // No claude presence in %1 despite "Claude" in the title.
         assert!(!agents.contains_key("claude-code:pane:%1"));
     }
@@ -670,18 +669,18 @@ mod tests {
     fn override_rewrites_terminal_to_waiting_when_pane_alive() {
         let pa = pane_map(vec![presence("claude-code", "%1", Some("tid"))]);
         let out = override_terminal_if_pane_alive(
-            Some(ev("claude-code", AgentStatus::Done, Some("tid"))),
+            Some(ev("claude-code", AgentStatus::Complete, Some("tid"))),
             Some(&pa),
         )
         .unwrap();
-        assert_eq!(out.status, AgentStatus::Waiting);
+        assert_eq!(out.status, AgentStatus::Idle);
         // Different thread: untouched.
         let out = override_terminal_if_pane_alive(
-            Some(ev("claude-code", AgentStatus::Done, Some("other"))),
+            Some(ev("claude-code", AgentStatus::Complete, Some("other"))),
             Some(&pa),
         )
         .unwrap();
-        assert_eq!(out.status, AgentStatus::Done);
+        assert_eq!(out.status, AgentStatus::Complete);
     }
 
     #[test]
@@ -689,23 +688,23 @@ mod tests {
         let pa = pane_map(vec![presence("claude-code", "%1", Some("tid"))]);
         let merged = merge_agents_with_pane_presence(
             "s",
-            vec![ev("claude-code", AgentStatus::Done, Some("tid"))],
+            vec![ev("claude-code", AgentStatus::Complete, Some("tid"))],
             Some(&pa),
         );
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].status, AgentStatus::Waiting);
+        assert_eq!(merged[0].status, AgentStatus::Idle);
         assert_eq!(merged[0].pane_id.as_deref(), Some("%1"));
     }
 
     #[test]
     fn merge_adds_synthetic_for_untracked_pane_agent() {
         let mut p = presence("codex", "%3", Some("codex-tid"));
-        p.status = Some(AgentStatus::Running);
+        p.status = Some(AgentStatus::Busy);
         let pa = pane_map(vec![p]);
         let merged = merge_agents_with_pane_presence("s", vec![], Some(&pa));
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].agent, "codex");
-        assert_eq!(merged[0].status, AgentStatus::Running);
+        assert_eq!(merged[0].status, AgentStatus::Busy);
         assert_eq!(merged[0].pane_id.as_deref(), Some("%3"));
     }
 
@@ -714,7 +713,7 @@ mod tests {
         let pa = pane_map(vec![presence("amp", "%1", None)]);
         let merged = merge_agents_with_pane_presence(
             "s",
-            vec![ev("amp", AgentStatus::Running, Some("amp-tid"))],
+            vec![ev("amp", AgentStatus::Busy, Some("amp-tid"))],
             Some(&pa),
         );
         // No synthetic amp row: the watcher already tracks an amp instance.
@@ -726,12 +725,12 @@ mod tests {
     fn merge_drops_orphaned_non_terminal_pane_agents() {
         // A watcher agent that previously got a pane attached, whose pane is
         // now gone, and is non-terminal → dropped.
-        let mut orphan = ev("claude-code", AgentStatus::Waiting, Some("tid"));
+        let mut orphan = ev("claude-code", AgentStatus::Idle, Some("tid"));
         orphan.pane_id = Some("%dead".into());
         let merged = merge_agents_with_pane_presence("s", vec![orphan.clone()], None);
         assert!(merged.is_empty());
         // Terminal orphans are kept.
-        orphan.status = AgentStatus::Done;
+        orphan.status = AgentStatus::Complete;
         let merged = merge_agents_with_pane_presence("s", vec![orphan], None);
         assert_eq!(merged.len(), 1);
     }

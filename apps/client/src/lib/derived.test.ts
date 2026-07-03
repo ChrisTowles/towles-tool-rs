@@ -11,7 +11,7 @@ import {
   hasDiff,
   isUnseenTerminal,
   metaSummary,
-  runningCount,
+  busyCount,
   sessionStatus,
   statusColor,
   statusIcon,
@@ -43,13 +43,13 @@ function session(over: Partial<SessionData> = {}): SessionData {
   };
 }
 
-describe("sessionStatus / runningCount", () => {
+describe("sessionStatus / busyCount", () => {
   it("defaults to idle without an agentState", () => {
     expect(sessionStatus(session())).toBe("idle");
   });
   it("counts running agents", () => {
-    const s = session({ agents: [agent({ status: "running" }), agent({ status: "done" })] });
-    expect(runningCount(s)).toBe(1);
+    const s = session({ agents: [agent({ status: "busy" }), agent({ status: "complete" })] });
+    expect(busyCount(s)).toBe(1);
   });
 });
 
@@ -62,9 +62,9 @@ describe("accentColor precedence", () => {
     const s = session({ agentState: agent({ status: "error" }), unseen: true });
     expect(accentColor(s, P, { isCurrent: false, isFocused: false })).toBe(P.red);
   });
-  it("running→yellow, waiting→blue, question→green", () => {
+  it("busy→yellow, waiting→blue", () => {
     expect(
-      accentColor(session({ agentState: agent({ status: "running" }) }), P, {
+      accentColor(session({ agentState: agent({ status: "busy" }) }), P, {
         isCurrent: false,
         isFocused: false,
       }),
@@ -75,12 +75,6 @@ describe("accentColor precedence", () => {
         isFocused: false,
       }),
     ).toBe(P.blue);
-    expect(
-      accentColor(session({ agentState: agent({ status: "question" }) }), P, {
-        isCurrent: false,
-        isFocused: false,
-      }),
-    ).toBe(P.green);
   });
   it("focused idle→lavender, unfocused idle→transparent", () => {
     expect(accentColor(session(), P, { isCurrent: false, isFocused: true })).toBe(P.lavender);
@@ -90,26 +84,26 @@ describe("accentColor precedence", () => {
 
 describe("statusIcon / statusColor", () => {
   it("shows spinner frame while running", () => {
-    expect(statusIcon(session({ agentState: agent({ status: "running" }) }), 2)).toBe(SPINNERS[2]);
+    expect(statusIcon(session({ agentState: agent({ status: "busy" }) }), 2)).toBe(SPINNERS[2]);
   });
   it("shows the unseen dot for an unseen terminal session", () => {
-    const s = session({ agentState: agent({ status: "done" }), unseen: true });
+    const s = session({ agentState: agent({ status: "complete" }), unseen: true });
     expect(statusIcon(s, 0)).toBe(UNSEEN_ICON);
     expect(statusColor(s, P, SC)).toBe(P.teal);
   });
   it("is empty for a seen idle session", () => {
     expect(statusIcon(session(), 0)).toBe("");
   });
-  it("uses the theme status color for a seen running session", () => {
-    expect(statusColor(session({ agentState: agent({ status: "running" }) }), P, SC)).toBe(
-      SC.running,
+  it("uses the theme status color for a seen busy session", () => {
+    expect(statusColor(session({ agentState: agent({ status: "busy" }) }), P, SC)).toBe(
+      SC.busy,
     );
   });
 });
 
 describe("isUnseenTerminal / hasDiff", () => {
   it("is false when unseen but status is non-terminal", () => {
-    expect(isUnseenTerminal(session({ agentState: agent({ status: "running" }), unseen: true }))).toBe(
+    expect(isUnseenTerminal(session({ agentState: agent({ status: "busy" }), unseen: true }))).toBe(
       false,
     );
   });
@@ -153,17 +147,17 @@ describe("agentIcon / agentColor", () => {
     expect(agentColor(a, P, SC)).toBe(P.red);
   });
   it("uses ✓ / ✗ / ⚠ for seen terminal agents", () => {
-    expect(agentIcon(agent({ status: "done" }), 0)).toBe("✓");
+    expect(agentIcon(agent({ status: "complete" }), 0)).toBe("✓");
     expect(agentIcon(agent({ status: "error" }), 0)).toBe("✗");
     expect(agentIcon(agent({ status: "interrupted" }), 0)).toBe("⚠");
-    expect(agentColor(agent({ status: "done" }), P, SC)).toBe(P.green);
+    expect(agentColor(agent({ status: "complete" }), P, SC)).toBe(P.green);
     expect(agentColor(agent({ status: "interrupted" }), P, SC)).toBe(P.peach);
   });
   it("falls back to ○ for idle", () => {
     expect(agentIcon(agent({ status: "idle" }), 0)).toBe("○");
   });
   it("shows the spinner for a running agent", () => {
-    expect(agentIcon(agent({ status: "running" }), 5)).toBe(SPINNERS[5]);
+    expect(agentIcon(agent({ status: "busy" }), 5)).toBe(SPINNERS[5]);
   });
 });
 
@@ -192,20 +186,20 @@ describe("cacheLabel", () => {
 
 describe("boardCounts / anyAgentRunning", () => {
   const sessions = [
-    session({ agents: [agent({ status: "running" }), agent({ status: "error" })], unseen: true }),
-    session({ agents: [agent({ status: "running" })] }),
-    session({ agents: [agent({ status: "done" })], unseen: true }),
+    session({ agents: [agent({ status: "busy" }), agent({ status: "error" })], unseen: true }),
+    session({ agents: [agent({ status: "busy" })] }),
+    session({ agents: [agent({ status: "complete" })], unseen: true }),
   ];
   it("sums running/error over agents and counts unseen sessions", () => {
     expect(boardCounts(sessions)).toEqual({
       sessionCount: 3,
-      runningCount: 2,
+      busyCount: 2,
       errorCount: 1,
       unseenCount: 2,
     });
   });
   it("detects any running agent", () => {
     expect(anyAgentRunning(sessions)).toBe(true);
-    expect(anyAgentRunning([session({ agents: [agent({ status: "done" })] })])).toBe(false);
+    expect(anyAgentRunning([session({ agents: [agent({ status: "complete" })] })])).toBe(false);
   });
 });

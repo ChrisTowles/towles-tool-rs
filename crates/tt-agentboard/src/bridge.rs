@@ -2,13 +2,13 @@
 //! the data-composition half of slot-1 `server/index.ts` `computeState`, per
 //! docs/AGENTBOARD-BRIDGE-SPEC.md §1/§6.
 //!
-//! Everything here is pure (no tmux, no tauri, no I/O): the tt-app layer gathers
-//! the inputs (repos, git infos, tracker, metadata, order, pid-liveness) and
-//! wires tokio/tauri around [`assemble_state`]. The pane-presence "waiting"
-//! synthesis is replaced by pid-liveness (§6): a terminal journal status with a
-//! live process becomes `waiting`.
+//! Everything here is pure (no tmux, no tauri, no I/O): the host gathers the
+//! inputs (repos, git infos, tracker, metadata, order) and wires its runtime
+//! around [`assemble_state`]. The TS "waiting synthesis" (terminal status +
+//! live process → waiting) is gone: since T7 the claude-code watcher emits
+//! CLI-authoritative statuses, so no post-hoc rewrite is needed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde::Serialize;
 
@@ -17,7 +17,7 @@ use crate::metadata::SessionMetadataStore;
 use crate::repos::RepoEntry;
 use crate::session_order::SessionOrder;
 use crate::tracker::AgentTracker;
-use crate::types::{AgentEvent, AgentStatus, SessionData};
+use crate::types::SessionData;
 
 /// The state snapshot emitted to the client. Trimmed from the TS `ServerState`
 /// per §6: no `sidebarWidth` (the app window owns layout).
@@ -30,46 +30,12 @@ pub struct StatePayload {
     pub ts: i64,
 }
 
-/// If `state` is a terminal status backed by a live process, rewrite it to
-/// `waiting`. Ports `overrideTerminalIfPaneAlive`, pid-liveness edition (§6).
-pub fn synthesize_waiting(
-    state: Option<AgentEvent>,
-    is_live: &dyn Fn(&AgentEvent) -> bool,
-) -> Option<AgentEvent> {
-    state.map(|mut ev| {
-        if ev.status.is_terminal() && is_live(&ev) {
-            ev.status = AgentStatus::Waiting;
-        }
-        ev
-    })
-}
-
-/// Per-agent waiting synthesis. Ports the per-agent half of
-/// `mergeAgentsWithPanePresence`; the pane orphan-drop / synthetic-add branches
-/// are dropped (§6 — no panes in the desktop app).
-pub fn merge_agents_waiting(
-    agents: Vec<AgentEvent>,
-    is_live: &dyn Fn(&AgentEvent) -> bool,
-) -> Vec<AgentEvent> {
-    agents
-        .into_iter()
-        .map(|mut ev| {
-            if ev.status.is_terminal() && is_live(&ev) {
-                ev.status = AgentStatus::Waiting;
-            }
-            ev
-        })
-        .collect()
-}
-
 /// Assemble the trimmed [`StatePayload`] from the current inputs. Ports
 /// `computeState` (§1) minus the dropped fields (§6). Pure: reads the tracker /
 /// metadata, syncs+applies the custom order, and maps each repo to a
 /// [`SessionData`]. Dropped fields (`createdAt`, `panes`, `windows`, `uptime`,
 /// `isWorktree`, `ports`, `eventTimestamps`) carry default/zero values.
 ///
-/// `live_threads` holds the thread ids whose OS process is alive (computed by the
-/// bridge via claude-pid), used for the `waiting` synthesis.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_state(
     entries: &[RepoEntry],
@@ -79,7 +45,6 @@ pub fn assemble_state(
     order: &mut SessionOrder,
     theme: Option<String>,
     preferred_editor: &str,
-    live_threads: &HashSet<String>,
     ts: i64,
 ) -> StatePayload {
     // §1 ordering: the caller owns the base order (the desktop engine passes
@@ -90,18 +55,14 @@ pub fn assemble_state(
     order.sync(&names);
     let ordered = order.apply(&names);
 
-    let is_live = |ev: &AgentEvent| -> bool {
-        ev.thread_id.as_deref().is_some_and(|t| live_threads.contains(t))
-    };
-
     let mut sessions = Vec::with_capacity(ordered.len());
     for name in &ordered {
         let Some(entry) = entries.iter().find(|e| &e.name == name) else {
             continue;
         };
         let git = git_infos.get(&entry.dir).cloned().unwrap_or_default();
-        let agent_state = synthesize_waiting(tracker.get_state(name), &is_live);
-        let agents = merge_agents_waiting(tracker.get_agents(name), &is_live);
+        let agent_state = tracker.get_state(name);
+        let agents = tracker.get_agents(name);
 
         sessions.push(SessionData {
             name: name.clone(),
@@ -131,7 +92,7 @@ pub fn assemble_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::AgentEvent;
+    use crate::types::{AgentEvent, AgentStatus};
 
     fn ev(session: &str, status: AgentStatus, thread: &str) -> AgentEvent {
         AgentEvent {
@@ -155,25 +116,9 @@ mod tests {
     }
 
     #[test]
-    fn waiting_synthesis_only_for_live_terminal() {
-        let live: HashSet<String> = ["t1".to_string()].into_iter().collect();
-        let is_live = |e: &AgentEvent| e.thread_id.as_deref().is_some_and(|t| live.contains(t));
-
-        // terminal + live → waiting
-        let done_live = synthesize_waiting(Some(ev("s", AgentStatus::Done, "t1")), &is_live);
-        assert_eq!(done_live.unwrap().status, AgentStatus::Waiting);
-        // terminal + dead → unchanged
-        let done_dead = synthesize_waiting(Some(ev("s", AgentStatus::Done, "t2")), &is_live);
-        assert_eq!(done_dead.unwrap().status, AgentStatus::Done);
-        // non-terminal + live → unchanged
-        let run_live = synthesize_waiting(Some(ev("s", AgentStatus::Running, "t1")), &is_live);
-        assert_eq!(run_live.unwrap().status, AgentStatus::Running);
-    }
-
-    #[test]
     fn assemble_orders_and_maps_fields() {
         let mut tracker = AgentTracker::new();
-        tracker.apply_event(ev("alpha", AgentStatus::Running, "ta"), false);
+        tracker.apply_event(ev("alpha", AgentStatus::Busy, "ta"), false);
         let metadata = SessionMetadataStore::new();
         let mut order = SessionOrder::new(None);
         let mut git = HashMap::new();
@@ -188,8 +133,6 @@ mod tests {
                 ..Default::default()
             },
         );
-        let live = HashSet::new();
-
         let payload = assemble_state(
             &entries(),
             &git,
@@ -198,7 +141,6 @@ mod tests {
             &mut order,
             Some("mocha".into()),
             "code",
-            &live,
             999,
         );
         assert_eq!(payload.ts, 999);
@@ -208,7 +150,7 @@ mod tests {
         assert_eq!(payload.sessions[0].name, "alpha");
         assert_eq!(payload.sessions[0].branch, "main");
         assert_eq!(payload.sessions[0].files_changed, 3);
-        assert_eq!(payload.sessions[0].agent_state.as_ref().unwrap().status, AgentStatus::Running);
+        assert_eq!(payload.sessions[0].agent_state.as_ref().unwrap().status, AgentStatus::Busy);
         assert_eq!(payload.sessions[1].name, "beta");
         // beta has no git info → defaults.
         assert_eq!(payload.sessions[1].branch, "");
@@ -229,32 +171,9 @@ mod tests {
             &mut order,
             None,
             "code",
-            &HashSet::new(),
             0,
         );
         assert_eq!(payload.sessions[0].name, "beta");
         assert_eq!(payload.sessions[1].name, "alpha");
-    }
-
-    #[test]
-    fn assemble_waiting_from_live_pid() {
-        let mut tracker = AgentTracker::new();
-        tracker.apply_event(ev("alpha", AgentStatus::Done, "ta"), false);
-        let metadata = SessionMetadataStore::new();
-        let mut order = SessionOrder::new(None);
-        let live: HashSet<String> = ["ta".to_string()].into_iter().collect();
-        let payload = assemble_state(
-            &entries(),
-            &HashMap::new(),
-            &tracker,
-            &metadata,
-            &mut order,
-            None,
-            "code",
-            &live,
-            0,
-        );
-        // alpha's done agent is backed by a live pid → waiting.
-        assert_eq!(payload.sessions[0].agent_state.as_ref().unwrap().status, AgentStatus::Waiting);
     }
 }

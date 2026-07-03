@@ -221,8 +221,9 @@ impl Engine {
     /// schedule → assemble snapshot. The tmux server passes entries derived
     /// from live tmux sessions.
     pub fn compute_payload_for_entries(&mut self, entries: &[RepoEntry], now: i64) -> StatePayload {
-        // CLI-derived liveness drives both pruning pins and the `waiting`
-        // synthesis (§4/§6; T7 replaced the ~/.claude/sessions pid files).
+        // CLI-derived liveness drives the pruning pins (§4; T7 replaced the
+        // ~/.claude/sessions pid files; the waiting synthesis is gone — the
+        // claude watcher emits CLI-authoritative statuses directly).
         let live_threads: HashSet<String> = crate::claude_cli::fetch_agents_cached(
             std::time::Duration::from_millis(crate::watchers::claude_code::CLI_CACHE_TTL_MS),
         )
@@ -267,7 +268,6 @@ impl Engine {
             &mut self.order,
             theme,
             &editor,
-            &live_threads,
             now,
         );
 

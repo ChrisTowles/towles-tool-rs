@@ -13,9 +13,9 @@
 //! 1. list live agents from the CLI;
 //! 2. resolve each to a session — `resolve_session_by_pid` first (the tmux
 //!    server walks the pid's ancestry to a pane), then the cwd;
-//! 3. status: `busy` → running, `waiting` → question, `idle` → the journal's
-//!    view if it is done/question (preserving the unseen-✓ flow), else
-//!    waiting;
+//! 3. status: `busy`/`waiting` pass straight through (the vocabulary now
+//!    follows the CLI); `idle` takes the journal's view when it is
+//!    complete/waiting (preserving the unseen-✓ flow), else stays idle;
 //! 4. enrich from the journal tail (offset at the last newline boundary —
 //!    adopted fix #1 — with shrink-reset);
 //! 5. sessions that disappeared from the CLI get one final journal read and a
@@ -122,12 +122,12 @@ pub fn determine_status(entry: &RawEntry) -> Option<AgentStatus> {
             let tool_uses: Vec<&RawContentItem> =
                 items.iter().filter(|c| c.item_type.as_deref() == Some("tool_use")).collect();
             if tool_uses.is_empty() {
-                return Some(AgentStatus::Done);
+                return Some(AgentStatus::Complete);
             }
             let all_asking = tool_uses.iter().all(|c| c.name.as_deref() == Some("AskUserQuestion"));
-            Some(if all_asking { AgentStatus::Question } else { AgentStatus::Running })
+            Some(if all_asking { AgentStatus::Waiting } else { AgentStatus::Busy })
         }
-        "user" => Some(AgentStatus::Running),
+        "user" => Some(AgentStatus::Busy),
         _ => None,
     }
 }
@@ -333,23 +333,21 @@ fn build_details(
 }
 
 /// Refine a CLI `idle` into the journal's view when that view is one the UI
-/// treats specially: a completed turn stays `done` (unseen-✓ flow) and an
-/// open question stays `question`; anything else is `waiting` (alive at the
-/// prompt).
+/// treats specially: a completed turn stays `complete` (unseen-✓ flow) and
+/// an open question stays `waiting`; anything else is plain `idle`.
 pub fn refine_idle(journal_status: AgentStatus) -> AgentStatus {
     match journal_status {
-        AgentStatus::Done => AgentStatus::Done,
-        AgentStatus::Question => AgentStatus::Question,
-        _ => AgentStatus::Waiting,
+        AgentStatus::Complete => AgentStatus::Complete,
+        AgentStatus::Waiting => AgentStatus::Waiting,
+        _ => AgentStatus::Idle,
     }
 }
 
-/// Terminal status when a session disappears from the CLI list: `done` if its
-/// journal completed, `interrupted` if it still looked mid-run.
+/// Terminal status when a session disappears from the CLI list: `complete` if
+/// its journal finished, `interrupted` if it still looked mid-run.
 pub fn exit_status(journal_status: AgentStatus) -> AgentStatus {
     match journal_status {
-        AgentStatus::Done => AgentStatus::Done,
-        AgentStatus::Question => AgentStatus::Done,
+        AgentStatus::Complete | AgentStatus::Waiting => AgentStatus::Complete,
         _ => AgentStatus::Interrupted,
     }
 }
@@ -585,9 +583,8 @@ impl AgentWatcher for ClaudeCodeAgentWatcher {
             state.cli_name = agent.name.clone();
 
             let status = match agent.agent_status() {
-                Some(AgentStatus::Waiting) => refine_idle(state.journal_status),
+                Some(AgentStatus::Idle) | None => refine_idle(state.journal_status),
                 Some(s) => s,
-                None => refine_idle(state.journal_status),
             };
 
             // Emit gate: status change, or a details change (sub-agent set,
@@ -718,7 +715,7 @@ mod tests {
         assert_eq!(ctx.events.len(), 1);
         let ev = &ctx.events[0];
         assert_eq!(ev.session, "proj");
-        assert_eq!(ev.status, AgentStatus::Running);
+        assert_eq!(ev.status, AgentStatus::Busy);
         assert_eq!(ev.thread_id.as_deref(), Some("sid-1"));
         // Journal first prompt beats the CLI slug.
         assert_eq!(ev.thread_name.as_deref(), Some("fix the flaky test"));
@@ -746,9 +743,9 @@ mod tests {
         f.watcher.scan(&mut ctx, 1_000);
         let by_thread: std::collections::HashMap<&str, AgentStatus> =
             ctx.events.iter().map(|e| (e.thread_id.as_deref().unwrap(), e.status)).collect();
-        assert_eq!(by_thread["sid-done"], AgentStatus::Done);
-        assert_eq!(by_thread["sid-mid"], AgentStatus::Waiting);
-        assert_eq!(by_thread["sid-perm"], AgentStatus::Question);
+        assert_eq!(by_thread["sid-done"], AgentStatus::Complete);
+        assert_eq!(by_thread["sid-mid"], AgentStatus::Idle);
+        assert_eq!(by_thread["sid-perm"], AgentStatus::Waiting);
     }
 
     #[test]
@@ -785,7 +782,7 @@ mod tests {
 
         f.watcher.scan(&mut ctx, 5_000);
         assert_eq!(ctx.events.len(), 2);
-        assert_eq!(ctx.events[1].status, AgentStatus::Running);
+        assert_eq!(ctx.events[1].status, AgentStatus::Busy);
         assert_eq!(ctx.events[1].details.as_ref().unwrap().last_tool.as_deref(), Some("Read"));
     }
 
@@ -815,7 +812,7 @@ mod tests {
         f.watcher.scan(&mut ctx, 5_000);
         let by_thread: std::collections::HashMap<&str, AgentStatus> =
             ctx.events.iter().map(|e| (e.thread_id.as_deref().unwrap(), e.status)).collect();
-        assert_eq!(by_thread["sid-done"], AgentStatus::Done);
+        assert_eq!(by_thread["sid-done"], AgentStatus::Complete);
         assert_eq!(by_thread["sid-mid"], AgentStatus::Interrupted);
         // Gone for good: nothing further on later scans.
         ctx.events.clear();

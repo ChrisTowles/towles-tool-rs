@@ -192,7 +192,7 @@ export class MockBackend implements StateSource, Commands {
       ? {
           agent: "claude",
           session: "towles-tool-primary",
-          status: "done",
+          status: "complete",
           ts: now,
           threadId: "t-main",
           threadName: "port the agentboard TUI to React",
@@ -201,7 +201,7 @@ export class MockBackend implements StateSource, Commands {
       : {
           agent: "claude",
           session: "towles-tool-primary",
-          status: "running",
+          status: "busy",
           ts: now,
           threadId: "t-main",
           threadName: "port the agentboard TUI to React",
@@ -225,7 +225,7 @@ export class MockBackend implements StateSource, Commands {
     const r2Agent: AgentDisplay = {
       agent: "claude",
       session: "towles-tool-slot-1",
-      status: "waiting",
+      status: "idle",
       ts: now,
       threadId: "t-slot1",
       threadName: "run the vitest suite and report failures",
@@ -236,7 +236,7 @@ export class MockBackend implements StateSource, Commands {
     const r3Agent: AgentDisplay = {
       agent: "claude",
       session: "dotfiles",
-      status: "running",
+      status: "busy",
       ts: now,
       threadId: "t-loop",
       threadName: "babysit the CI run until green",

@@ -103,9 +103,8 @@ fn tone_color(tone: Option<MetadataTone>, p: &ThemePalette) -> &str {
 /// `status-visuals.ts` liveStatusIcon.
 fn live_status_icon(status: AgentStatus, spin_idx: usize) -> &'static str {
     match status {
-        AgentStatus::Running => SPINNERS[spin_idx % SPINNERS.len()],
-        AgentStatus::Waiting => "◉",
-        AgentStatus::Question => "?",
+        AgentStatus::Busy => SPINNERS[spin_idx % SPINNERS.len()],
+        AgentStatus::Waiting => "?",
         _ => "",
     }
 }
@@ -119,7 +118,7 @@ fn unseen_terminal_color(status: AgentStatus, p: &ThemePalette) -> &str {
 }
 
 fn is_terminal(status: AgentStatus) -> bool {
-    matches!(status, AgentStatus::Done | AgentStatus::Error | AgentStatus::Interrupted)
+    matches!(status, AgentStatus::Complete | AgentStatus::Error | AgentStatus::Interrupted)
 }
 
 // --- Frame layout ---
@@ -163,10 +162,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let p = &app.theme.palette;
-    let running: usize = app
+    let busy: usize = app
         .sessions
         .iter()
-        .map(|s| s.agents.iter().filter(|a| a.status == AgentStatus::Running).count())
+        .map(|s| s.agents.iter().filter(|a| a.status == AgentStatus::Busy).count())
         .sum();
     let errors: usize = app
         .sessions
@@ -179,8 +178,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         format!("  {}s", app.sessions.len()),
         fg(p.overlay0),
     )];
-    if running > 0 {
-        counts.push(Span::styled(format!(" ⚡{running}"), fg(p.yellow)));
+    if busy > 0 {
+        counts.push(Span::styled(format!(" ⚡{busy}"), fg(p.yellow)));
     }
     if errors > 0 {
         counts.push(Span::styled(format!(" ✗{errors}"), fg(p.red)));
@@ -263,7 +262,7 @@ fn session_card(
     let p = &theme.palette;
     let status = session.agent_state.as_ref().map(|a| a.status).unwrap_or(AgentStatus::Idle);
     let unseen_terminal = session.unseen && is_terminal(status);
-    let running_agents = session.agents.iter().filter(|a| a.status == AgentStatus::Running).count();
+    let busy_agents = session.agents.iter().filter(|a| a.status == AgentStatus::Busy).count();
 
     let accent: Option<&str> = if is_current {
         Some(p.green)
@@ -273,9 +272,8 @@ fn session_card(
         match status {
             AgentStatus::Error => Some(p.red),
             AgentStatus::Interrupted => Some(p.peach),
-            AgentStatus::Running => Some(p.yellow),
+            AgentStatus::Busy => Some(p.yellow),
             AgentStatus::Waiting => Some(p.blue),
-            AgentStatus::Question => Some(p.green),
             _ if is_focused => Some(p.lavender),
             _ => None,
         }
@@ -360,7 +358,7 @@ fn session_card(
         } else {
             theme.status_color(status)
         };
-        let count = if running_agents > 1 { running_agents.to_string() } else { String::new() };
+        let count = if busy_agents > 1 { busy_agents.to_string() } else { String::new() };
         header.push(Span::styled(format!(" {status_icon}{count}"), fg(color).patch(bg_style)));
     }
     lines.push(Line::from(header).style(bg_style));
@@ -438,7 +436,7 @@ fn agent_rows(
         UNSEEN_ICON
     } else if terminal {
         match agent.status {
-            AgentStatus::Done => "✓",
+            AgentStatus::Complete => "✓",
             AgentStatus::Error => "✗",
             _ => "⚠",
         }
@@ -472,7 +470,7 @@ fn agent_rows(
             fg(name_color).patch(bg_style),
         ));
     }
-    if agent.status == AgentStatus::Running
+    if agent.status == AgentStatus::Busy
         && let Some(last) = agent.details.as_ref().and_then(|d| d.last_activity_at)
     {
         let color = if is_keyboard_focused { p.subtext0 } else { p.overlay1 };
@@ -488,7 +486,7 @@ fn agent_rows(
     };
 
     // model · ⟶ tool
-    if agent.status == AgentStatus::Running {
+    if agent.status == AgentStatus::Busy {
         let model = details.model.as_deref().map(short_model).unwrap_or_default();
         let tool = details.last_tool.as_deref().unwrap_or("");
         if !model.is_empty() || !tool.is_empty() {

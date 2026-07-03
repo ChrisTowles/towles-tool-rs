@@ -67,11 +67,10 @@ const CATPPUCCIN_MOCHA: Theme = {
   },
   status: {
     idle: "#585b70",
-    running: "#f9e2af",
-    done: "#a6e3a1",
+    busy: "#f9e2af",
+    complete: "#a6e3a1",
     error: "#f38ba8",
     waiting: "#89b4fa",
-    question: "#a6e3a1",
     interrupted: "#fab387",
   },
 };
@@ -102,11 +101,10 @@ const CATPPUCCIN_LATTE: Theme = {
   },
   status: {
     idle: "#acb0be",
-    running: "#df8e1d",
-    done: "#40a02b",
+    busy: "#df8e1d",
+    complete: "#40a02b",
     error: "#d20f39",
     waiting: "#1e66f5",
-    question: "#40a02b",
     interrupted: "#fe640b",
   },
 };
@@ -137,11 +135,10 @@ const CATPPUCCIN_FRAPPE: Theme = {
   },
   status: {
     idle: "#626880",
-    running: "#e5c890",
-    done: "#a6d189",
+    busy: "#e5c890",
+    complete: "#a6d189",
     error: "#e78284",
     waiting: "#8da4e2",
-    question: "#a6d189",
     interrupted: "#ef9f76",
   },
 };
@@ -172,11 +169,10 @@ const CATPPUCCIN_MACCHIATO: Theme = {
   },
   status: {
     idle: "#5b6078",
-    running: "#eed49f",
-    done: "#a6da95",
+    busy: "#eed49f",
+    complete: "#a6da95",
     error: "#ed8796",
     waiting: "#8aadf4",
-    question: "#a6da95",
     interrupted: "#f5a97f",
   },
 };
@@ -207,11 +203,10 @@ const TOKYO_NIGHT: Theme = {
   },
   status: {
     idle: "#343a52",
-    running: "#e0af68",
-    done: "#9ece6a",
+    busy: "#e0af68",
+    complete: "#9ece6a",
     error: "#f7768e",
     waiting: "#7aa2f7",
-    question: "#9ece6a",
     interrupted: "#ff9e64",
   },
 };
@@ -242,11 +237,10 @@ const GRUVBOX_DARK: Theme = {
   },
   status: {
     idle: "#665c54",
-    running: "#fabd2f",
-    done: "#b8bb26",
+    busy: "#fabd2f",
+    complete: "#b8bb26",
     error: "#fb4934",
     waiting: "#83a598",
-    question: "#b8bb26",
     interrupted: "#fe8019",
   },
 };
@@ -277,11 +271,10 @@ const NORD: Theme = {
   },
   status: {
     idle: "#4c566a",
-    running: "#ebcb8b",
-    done: "#a3be8c",
+    busy: "#ebcb8b",
+    complete: "#a3be8c",
     error: "#bf616a",
     waiting: "#81a1c1",
-    question: "#a3be8c",
     interrupted: "#d08770",
   },
 };
@@ -312,11 +305,10 @@ const DRACULA: Theme = {
   },
   status: {
     idle: "#6272a4",
-    running: "#f1fa8c",
-    done: "#50fa7b",
+    busy: "#f1fa8c",
+    complete: "#50fa7b",
     error: "#ff5555",
     waiting: "#8be9fd",
-    question: "#50fa7b",
     interrupted: "#ffb86c",
   },
 };
@@ -347,11 +339,10 @@ const GITHUB_DARK: Theme = {
   },
   status: {
     idle: "#484f58",
-    running: "#e3b341",
-    done: "#3fb950",
+    busy: "#e3b341",
+    complete: "#3fb950",
     error: "#f85149",
     waiting: "#58a6ff",
-    question: "#3fb950",
     interrupted: "#d29922",
   },
 };
@@ -382,11 +373,10 @@ const ONE_DARK: Theme = {
   },
   status: {
     idle: "#5c6370",
-    running: "#e5c07b",
-    done: "#98c379",
+    busy: "#e5c07b",
+    complete: "#98c379",
     error: "#e06c75",
     waiting: "#61afef",
-    question: "#98c379",
     interrupted: "#d19a66",
   },
 };
@@ -417,11 +407,10 @@ const KANAGAWA: Theme = {
   },
   status: {
     idle: "#54546D",
-    running: "#D7A657",
-    done: "#98BB6C",
+    busy: "#D7A657",
+    complete: "#98BB6C",
     error: "#E82424",
     waiting: "#7E9CD8",
-    question: "#98BB6C",
     interrupted: "#FFA066",
   },
 };
@@ -452,11 +441,10 @@ const EVERFOREST: Theme = {
   },
   status: {
     idle: "#7a8478",
-    running: "#dbbc7f",
-    done: "#a7c080",
+    busy: "#dbbc7f",
+    complete: "#a7c080",
     error: "#e67e80",
     waiting: "#7fbbb3",
-    question: "#a7c080",
     interrupted: "#e69875",
   },
 };
@@ -487,11 +475,10 @@ const MATERIAL: Theme = {
   },
   status: {
     idle: "#546e7a",
-    running: "#ffcb6b",
-    done: "#c3e88d",
+    busy: "#ffcb6b",
+    complete: "#c3e88d",
     error: "#f07178",
     waiting: "#82aaff",
-    question: "#c3e88d",
     interrupted: "#f78c6c",
   },
 };
@@ -522,11 +509,10 @@ const COBALT2: Theme = {
   },
   status: {
     idle: "#2d5a7b",
-    running: "#ffc600",
-    done: "#9eff80",
+    busy: "#ffc600",
+    complete: "#9eff80",
     error: "#ff0088",
     waiting: "#0088ff",
-    question: "#9eff80",
     interrupted: "#ff628c",
   },
 };
@@ -557,11 +543,10 @@ const FLEXOKI: Theme = {
   },
   status: {
     idle: "#575653",
-    running: "#D0A215",
-    done: "#879A39",
+    busy: "#D0A215",
+    complete: "#879A39",
     error: "#D14D41",
     waiting: "#4385BE",
-    question: "#879A39",
     interrupted: "#DA702C",
   },
 };
@@ -592,11 +577,10 @@ const AYU: Theme = {
   },
   status: {
     idle: "#565B66",
-    running: "#E6B450",
-    done: "#7FD962",
+    busy: "#E6B450",
+    complete: "#7FD962",
     error: "#D95757",
     waiting: "#59C2FF",
-    question: "#7FD962",
     interrupted: "#FF8F40",
   },
 };
@@ -627,11 +611,10 @@ const AURA: Theme = {
   },
   status: {
     idle: "#6d6d6d",
-    running: "#ffca85",
-    done: "#61ffca",
+    busy: "#ffca85",
+    complete: "#61ffca",
     error: "#ff6767",
     waiting: "#a277ff",
-    question: "#61ffca",
     interrupted: "#ffca85",
   },
 };
@@ -662,11 +645,10 @@ const MATRIX: Theme = {
   },
   status: {
     idle: "#2e4a37",
-    running: "#e6ff57",
-    done: "#62ff94",
+    busy: "#e6ff57",
+    complete: "#62ff94",
     error: "#ff4b4b",
     waiting: "#30b3ff",
-    question: "#62ff94",
     interrupted: "#ffa83d",
   },
 };

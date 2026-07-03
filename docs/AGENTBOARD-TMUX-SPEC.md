@@ -151,6 +151,20 @@ no longer read anywhere: `ClaudePidLookup` is deleted, engine pinning uses
 the CLI live-set. Dropped deliberately: sessions that exited before the
 server started never appear (the CLI lists live processes only).
 
+## T8 — status vocabulary follows the Claude CLI (2026-07-03, Chris)
+
+`AgentStatus` renamed across the stack (Rust crates, ratatui TUI, React
+client): `running`→`busy`, `question`→`waiting` (blocked on the user, like
+the CLI's waitingFor), `done`→`complete`, and the old at-prompt `waiting`
+folded into `idle` (what the CLI calls it). Vocabulary is now
+`idle · busy · waiting · complete · error · interrupted`; `waiting` renders
+blue with the `?` glyph, `idle` has no live glyph. amp's needs-user state
+keeps the `waiting` token (semantics already matched). The TS terminal→
+waiting synthesis (bridge synthesize_waiting/merge_agents_waiting and the
+engine's live-thread pass) is deleted — obsolete since T7's CLI-authoritative
+statuses. Breaking for anything reading the SSE/Tauri payloads with the old
+strings.
+
 Status: ALL PHASES COMPLETE. `ttr agentboard setup` → prefix-a-t gives the
 full tmux sidebar: live sessions, watcher agents with pane merge, Enter-to-
 focus an agent's pane (cross-session, with highlight flash), x-to-kill panes,

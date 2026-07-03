@@ -7,11 +7,11 @@
 
 export type AgentStatus =
   | "idle"
-  | "running"
-  | "done"
+  | "busy"
+  | "complete"
   | "error"
+  | "idle"
   | "waiting"
-  | "question"
   | "interrupted";
 
 /** Self-paced `/loop` state — the session scheduled its own next wake-up. */

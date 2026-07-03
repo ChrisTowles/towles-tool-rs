@@ -37,7 +37,7 @@ export function AgentRow({ agent, spinIdx, now, isKeyboardFocused, onDismiss, on
   const iconColor = agentColor(agent, P, theme.status);
   const unseen = agentIsUnseen(agent);
   const details = agent.details;
-  const running = agent.status === "running";
+  const running = agent.status === "busy";
   const model = running && details?.model ? shortModel(details.model) : "";
   const tool = running ? details?.lastTool : undefined;
   const subagents = running ? details?.subagents ?? [] : [];

@@ -529,9 +529,10 @@ pub fn run() -> i32 {
         }
 
         app.now_ms = wall_ms();
-        let has_running = app.sessions.iter().any(|s| {
-            s.agents.iter().any(|a| a.status == tt_agentboard::types::AgentStatus::Running)
-        });
+        let has_running = app
+            .sessions
+            .iter()
+            .any(|s| s.agents.iter().any(|a| a.status == tt_agentboard::types::AgentStatus::Busy));
         if has_running && last_spin.elapsed() >= Duration::from_millis(120) {
             app.spin_idx = (app.spin_idx + 1) % SPINNERS.len();
             last_spin = Instant::now();

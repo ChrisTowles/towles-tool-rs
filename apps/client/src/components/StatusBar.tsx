@@ -20,8 +20,8 @@ export function StatusBar({ counts, themeName, onThemeChange, onAddRepo }: Statu
         </div>
         <div className="ab-counts">
           <span style={{ color: P.overlay0 }}>{counts.sessionCount}s</span>
-          {counts.runningCount > 0 && (
-            <span style={{ color: P.yellow }}> ⚡{counts.runningCount}</span>
+          {counts.busyCount > 0 && (
+            <span style={{ color: P.yellow }}> ⚡{counts.busyCount}</span>
           )}
           {counts.errorCount > 0 && <span style={{ color: P.red }}> ✗{counts.errorCount}</span>}
           {counts.unseenCount > 0 && <span style={{ color: P.teal }}> ●{counts.unseenCount}</span>}

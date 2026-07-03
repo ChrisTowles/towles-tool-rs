@@ -7,9 +7,8 @@ import { SPINNERS } from "./constants";
 
 /** Icon for a live (non-terminal) status. Returns "" for statuses without a glyph. */
 export function liveStatusIcon(status: AgentStatus, spinIdx: number): string {
-  if (status === "running") return SPINNERS[spinIdx % SPINNERS.length];
-  if (status === "waiting") return "◉";
-  if (status === "question") return "?";
+  if (status === "busy") return SPINNERS[spinIdx % SPINNERS.length];
+  if (status === "waiting") return "?";
   return "";
 }
 

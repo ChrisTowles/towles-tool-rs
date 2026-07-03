@@ -14,7 +14,7 @@ import {
 } from "./constants";
 import { liveStatusIcon, unseenTerminalColor } from "./statusVisuals";
 
-const TERMINAL: AgentStatus[] = ["done", "error", "interrupted"];
+const TERMINAL: AgentStatus[] = ["complete", "error", "interrupted"];
 
 export function isTerminalStatus(status: AgentStatus): boolean {
   return TERMINAL.includes(status);
@@ -28,8 +28,8 @@ export function sessionStatus(session: SessionData): AgentStatus {
 }
 
 /** How many of the session's agents are currently running. */
-export function runningCount(session: SessionData): number {
-  return session.agents?.filter((a) => a.status === "running").length ?? 0;
+export function busyCount(session: SessionData): number {
+  return session.agents?.filter((a) => a.status === "busy").length ?? 0;
 }
 
 /** True when the session is flagged unseen AND its headline status is terminal. */
@@ -45,7 +45,7 @@ export interface SessionFlags {
 /**
  * Accent-bar color. Precedence (UI-SPEC §1A): isCurrent→green ·
  * unseenTerminal→unseenTerminalColor · error→red · interrupted→peach ·
- * running→yellow · waiting→blue · question→green · isFocused→lavender · else
+ * busy→yellow · waiting→blue · isFocused→lavender · else
  * transparent.
  */
 export function accentColor(
@@ -58,14 +58,13 @@ export function accentColor(
   const s = sessionStatus(session);
   if (s === "error") return palette.red;
   if (s === "interrupted") return palette.peach;
-  if (s === "running") return palette.yellow;
+  if (s === "busy") return palette.yellow;
   if (s === "waiting") return palette.blue;
-  if (s === "question") return palette.green;
   if (flags.isFocused) return palette.lavender;
   return "transparent";
 }
 
-/** The status-cell glyph (spinner/waiting/question, or unseen dot, or ""). */
+/** The status-cell glyph (spinner/waiting, or unseen dot, or ""). */
 export function statusIcon(session: SessionData, spinIdx: number): string {
   const live = liveStatusIcon(sessionStatus(session), spinIdx);
   if (live) return live;
@@ -123,7 +122,7 @@ export function agentIsUnseen(agent: AgentDisplay): boolean {
 export function agentIcon(agent: AgentDisplay, spinIdx: number): string {
   if (agentIsUnseen(agent)) return UNSEEN_ICON;
   if (agentIsTerminal(agent)) {
-    if (agent.status === "done") return DONE_ICON;
+    if (agent.status === "complete") return DONE_ICON;
     if (agent.status === "error") return ERROR_ICON;
     return INTERRUPTED_ICON;
   }
@@ -166,7 +165,7 @@ export function cacheLabel(agent: AgentDisplay, now: number): string | null {
 
 export interface BoardCounts {
   sessionCount: number;
-  runningCount: number;
+  busyCount: number;
   errorCount: number;
   unseenCount: number;
 }
@@ -177,14 +176,14 @@ export function boardCounts(sessions: SessionData[]): BoardCounts {
   let unseen = 0;
   for (const s of sessions) {
     for (const a of s.agents ?? []) {
-      if (a.status === "running") running++;
+      if (a.status === "busy") running++;
       if (a.status === "error") error++;
     }
     if (s.unseen) unseen++;
   }
   return {
     sessionCount: sessions.length,
-    runningCount: running,
+    busyCount: running,
     errorCount: error,
     unseenCount: unseen,
   };
@@ -192,5 +191,5 @@ export function boardCounts(sessions: SessionData[]): BoardCounts {
 
 /** Whether any agent anywhere is running (drives the spinner tick). */
 export function anyAgentRunning(sessions: SessionData[]): boolean {
-  return sessions.some((s) => (s.agents ?? []).some((a) => a.status === "running"));
+  return sessions.some((s) => (s.agents ?? []).some((a) => a.status === "busy"));
 }

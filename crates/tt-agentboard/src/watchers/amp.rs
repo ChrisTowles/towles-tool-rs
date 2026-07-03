@@ -73,15 +73,15 @@ pub fn determine_status(
 ) -> AgentStatus {
     match role {
         None => AgentStatus::Idle,
-        Some("user") => AgentStatus::Running,
+        Some("user") => AgentStatus::Busy,
         Some("assistant") => match state_type {
-            None => AgentStatus::Running,
-            Some("streaming") => AgentStatus::Running,
+            None => AgentStatus::Busy,
+            Some("streaming") => AgentStatus::Busy,
             Some("cancelled") | Some("aborted") | Some("interrupted") => AgentStatus::Interrupted,
             Some("error") | Some("errored") | Some("failed") => AgentStatus::Error,
             Some("complete") => match stop_reason {
-                Some("tool_use") => AgentStatus::Running,
-                Some("end_turn") => AgentStatus::Done,
+                Some("tool_use") => AgentStatus::Busy,
+                Some("end_turn") => AgentStatus::Complete,
                 // Amp uses other stop reasons (e.g. max_tokens) for terminal failures.
                 _ => AgentStatus::Error,
             },
@@ -343,12 +343,9 @@ mod tests {
     #[test]
     fn status_table() {
         assert_eq!(determine_status(None, None, None), AgentStatus::Idle);
-        assert_eq!(determine_status(Some("user"), None, None), AgentStatus::Running);
-        assert_eq!(determine_status(Some("assistant"), None, None), AgentStatus::Running);
-        assert_eq!(
-            determine_status(Some("assistant"), Some("streaming"), None),
-            AgentStatus::Running
-        );
+        assert_eq!(determine_status(Some("user"), None, None), AgentStatus::Busy);
+        assert_eq!(determine_status(Some("assistant"), None, None), AgentStatus::Busy);
+        assert_eq!(determine_status(Some("assistant"), Some("streaming"), None), AgentStatus::Busy);
         assert_eq!(
             determine_status(Some("assistant"), Some("aborted"), None),
             AgentStatus::Interrupted
@@ -356,11 +353,11 @@ mod tests {
         assert_eq!(determine_status(Some("assistant"), Some("failed"), None), AgentStatus::Error);
         assert_eq!(
             determine_status(Some("assistant"), Some("complete"), Some("end_turn")),
-            AgentStatus::Done
+            AgentStatus::Complete
         );
         assert_eq!(
             determine_status(Some("assistant"), Some("complete"), Some("tool_use")),
-            AgentStatus::Running
+            AgentStatus::Busy
         );
         assert_eq!(
             determine_status(Some("assistant"), Some("complete"), Some("max_tokens")),
@@ -422,7 +419,7 @@ mod tests {
         let now = now_real_ms();
         w.scan(&mut c, now); // seed → running emitted
         assert_eq!(c.events.len(), 1);
-        assert_eq!(c.events[0].status, AgentStatus::Running);
+        assert_eq!(c.events[0].status, AgentStatus::Busy);
         assert_eq!(c.events[0].thread_name.as_deref(), Some("work"));
         c.events.clear();
 
@@ -435,7 +432,7 @@ mod tests {
         );
         w.scan(&mut c, now + 1);
         assert_eq!(c.events.len(), 1);
-        assert_eq!(c.events[0].status, AgentStatus::Done);
+        assert_eq!(c.events[0].status, AgentStatus::Complete);
     }
 
     #[test]
@@ -456,7 +453,7 @@ mod tests {
         let now = now_real_ms();
         w.scan(&mut c, now);
         // seed emits done; focus check emits idle for the just-viewed terminal thread.
-        assert!(c.events.iter().any(|e| e.status == AgentStatus::Done));
+        assert!(c.events.iter().any(|e| e.status == AgentStatus::Complete));
         assert!(c.events.iter().any(|e| e.status == AgentStatus::Idle));
     }
 

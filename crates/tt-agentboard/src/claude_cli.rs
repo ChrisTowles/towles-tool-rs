@@ -34,15 +34,14 @@ pub struct CliAgent {
 }
 
 impl CliAgent {
-    /// Map the CLI status to the agentboard vocabulary: `busy` → running,
-    /// `waiting` → question (needs the user), `idle` → waiting (alive at a
-    /// prompt — the synthesis the TS applied to live-process + terminal
-    /// journal). `idle` callers may refine with journal knowledge.
+    /// The CLI status in the agentboard vocabulary — a 1:1 mapping now that
+    /// the vocabulary follows the CLI's own naming. `idle` callers may
+    /// refine with journal knowledge (a completed turn shows `complete`).
     pub fn agent_status(&self) -> Option<AgentStatus> {
         match self.status.as_deref() {
-            Some("busy") => Some(AgentStatus::Running),
-            Some("waiting") => Some(AgentStatus::Question),
-            Some("idle") => Some(AgentStatus::Waiting),
+            Some("busy") => Some(AgentStatus::Busy),
+            Some("waiting") => Some(AgentStatus::Waiting),
+            Some("idle") => Some(AgentStatus::Idle),
             _ => None,
         }
     }
@@ -130,9 +129,9 @@ mod tests {
     #[test]
     fn status_mapping() {
         let agents = parse_agents(FIXTURE);
-        assert_eq!(agents[0].agent_status(), Some(AgentStatus::Running));
-        assert_eq!(agents[1].agent_status(), Some(AgentStatus::Question));
-        assert_eq!(agents[2].agent_status(), Some(AgentStatus::Waiting));
+        assert_eq!(agents[0].agent_status(), Some(AgentStatus::Busy));
+        assert_eq!(agents[1].agent_status(), Some(AgentStatus::Waiting));
+        assert_eq!(agents[2].agent_status(), Some(AgentStatus::Idle));
     }
 
     #[test]

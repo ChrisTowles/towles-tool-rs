@@ -62,7 +62,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 // Re-export the public surface.
-pub use bridge::{StatePayload, assemble_state, merge_agents_waiting, synthesize_waiting};
+pub use bridge::{StatePayload, assemble_state};
 pub use git_info::{GitInfo, GitInfoCache, compute_git_info};
 pub use metadata::SessionMetadataStore;
 pub use metadata_http::{

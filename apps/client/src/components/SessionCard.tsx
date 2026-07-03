@@ -9,7 +9,7 @@ import {
   hasDiff,
   metaSummary,
   metaTone,
-  runningCount,
+  busyCount,
   statusColor,
   statusIcon,
 } from "../lib/derived";
@@ -38,7 +38,7 @@ export function SessionCard(props: SessionCardProps) {
   const accent = accentColor(session, P, { isCurrent, isFocused });
   const family = familyColor(session.name, P);
   const icon = statusIcon(session, spinIdx);
-  const running = runningCount(session);
+  const running = busyCount(session);
 
   const nameColor = isFocused ? P.text : isCurrent ? P.subtext1 : family;
   const bold = isFocused || isCurrent;

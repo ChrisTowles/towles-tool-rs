@@ -19,12 +19,11 @@ const TERMINAL_PRUNE_MS: i64 = 5 * 60 * 1000;
 fn status_priority(status: crate::types::AgentStatus) -> i32 {
     use crate::types::AgentStatus::*;
     match status {
-        Running => 5,
-        Question => 4,
+        Busy => 5,
+        Waiting => 4,
         Error => 4,
         Interrupted => 3,
-        Waiting => 2,
-        Done => 1,
+        Complete => 1,
         Idle => 0,
     }
 }
@@ -180,7 +179,7 @@ impl AgentTracker {
             let removable: Vec<String> = self.instances[&session]
                 .iter()
                 .filter(|(key, event)| {
-                    event.status == crate::types::AgentStatus::Running
+                    event.status == crate::types::AgentStatus::Busy
                         && now_ms - event.ts > timeout_ms
                         && !self.is_pinned(&session, key)
                 })
@@ -407,9 +406,9 @@ mod tests {
     fn get_state_picks_highest_priority() {
         let mut t = AgentTracker::new();
         t.apply_event(ev("s", "a", AgentStatus::Idle, 1), false);
-        t.apply_event(ev("s", "b", AgentStatus::Running, 2), false);
-        t.apply_event(ev("s", "c", AgentStatus::Done, 3), false);
-        assert_eq!(t.get_state("s").unwrap().status, AgentStatus::Running);
+        t.apply_event(ev("s", "b", AgentStatus::Busy, 2), false);
+        t.apply_event(ev("s", "c", AgentStatus::Complete, 3), false);
+        assert_eq!(t.get_state("s").unwrap().status, AgentStatus::Busy);
     }
 
     #[test]
@@ -425,8 +424,8 @@ mod tests {
     fn get_agents_sorted_newest_first_with_unseen_stamp() {
         let mut t = AgentTracker::new();
         // seed=true → terminal marked unseen.
-        t.apply_event(ev("s", "old", AgentStatus::Done, 10), true);
-        t.apply_event(ev("s", "new", AgentStatus::Running, 20), false);
+        t.apply_event(ev("s", "old", AgentStatus::Complete, 10), true);
+        t.apply_event(ev("s", "new", AgentStatus::Busy, 20), false);
         let agents = t.get_agents("s");
         assert_eq!(agents[0].agent, "new");
         assert_eq!(agents[1].agent, "old");
@@ -438,8 +437,8 @@ mod tests {
     fn active_session_terminal_is_seen_but_inactive_is_unseen() {
         let mut t = AgentTracker::new();
         t.set_active_sessions(&["active".into()]);
-        t.apply_event(ev("active", "a", AgentStatus::Done, 1), false);
-        t.apply_event(ev("idlebg", "b", AgentStatus::Done, 1), false);
+        t.apply_event(ev("active", "a", AgentStatus::Complete, 1), false);
+        t.apply_event(ev("idlebg", "b", AgentStatus::Complete, 1), false);
         assert!(!t.is_unseen("active"));
         assert!(t.is_unseen("idlebg"));
     }
@@ -447,17 +446,17 @@ mod tests {
     #[test]
     fn non_terminal_event_clears_unseen() {
         let mut t = AgentTracker::new();
-        t.apply_event(ev("s", "a", AgentStatus::Done, 1), true);
+        t.apply_event(ev("s", "a", AgentStatus::Complete, 1), true);
         assert!(t.is_unseen("s"));
         // Same instance goes back to running → seen again.
-        t.apply_event(ev("s", "a", AgentStatus::Running, 2), false);
+        t.apply_event(ev("s", "a", AgentStatus::Busy, 2), false);
         assert!(!t.is_unseen("s"));
     }
 
     #[test]
     fn mark_seen_and_get_unseen() {
         let mut t = AgentTracker::new();
-        t.apply_event(ev("s1", "a", AgentStatus::Done, 1), true);
+        t.apply_event(ev("s1", "a", AgentStatus::Complete, 1), true);
         t.apply_event(ev("s2", "b", AgentStatus::Error, 1), true);
         let mut unseen = t.get_unseen();
         unseen.sort();
@@ -470,7 +469,7 @@ mod tests {
     #[test]
     fn dismiss_removes_instance_and_empty_session() {
         let mut t = AgentTracker::new();
-        t.apply_event(ev("s", "a", AgentStatus::Running, 1), false);
+        t.apply_event(ev("s", "a", AgentStatus::Busy, 1), false);
         assert!(t.dismiss("s", "a", None));
         assert!(!t.dismiss("s", "a", None));
         assert!(t.get_state("s").is_none());
@@ -479,7 +478,7 @@ mod tests {
     #[test]
     fn handle_focus_clears_unseen_and_sets_active() {
         let mut t = AgentTracker::new();
-        t.apply_event(ev("s", "a", AgentStatus::Done, 1), true);
+        t.apply_event(ev("s", "a", AgentStatus::Complete, 1), true);
         assert!(t.handle_focus("s"));
         assert!(!t.is_unseen("s"));
         // A new terminal event while active is seen.
@@ -490,8 +489,8 @@ mod tests {
     #[test]
     fn prune_stuck_removes_old_running_unless_pinned() {
         let mut t = AgentTracker::new();
-        t.apply_event(ev("s", "a", AgentStatus::Running, 0), false);
-        t.apply_event(ev("s", "b", AgentStatus::Running, 0), false);
+        t.apply_event(ev("s", "a", AgentStatus::Busy, 0), false);
+        t.apply_event(ev("s", "b", AgentStatus::Busy, 0), false);
         t.set_pinned_instances(Some("s"), &["b".into()]);
         t.prune_stuck(1000, 5000); // both are 5000ms old > 1000
         assert!(t.dismiss("s", "b", None)); // b survived (pinned)
@@ -502,8 +501,8 @@ mod tests {
     fn prune_terminal_keeps_unseen_and_pinned() {
         let mut t = AgentTracker::new();
         t.set_active_sessions(&["s".into()]); // so terminal isn't auto-unseen
-        t.apply_event(ev("s", "seen", AgentStatus::Done, 0), false);
-        t.apply_event(ev("s", "unseen", AgentStatus::Done, 0), true);
+        t.apply_event(ev("s", "seen", AgentStatus::Complete, 0), false);
+        t.apply_event(ev("s", "unseen", AgentStatus::Complete, 0), true);
         t.prune_terminal(10 * 60 * 1000); // > TERMINAL_PRUNE_MS
         assert!(!t.dismiss("s", "seen", None)); // seen terminal pruned
         assert!(t.dismiss("s", "unseen", None)); // unseen kept
@@ -513,7 +512,7 @@ mod tests {
     fn prune_idle_only_targets_idle() {
         let mut t = AgentTracker::new();
         t.apply_event(ev("s", "idle", AgentStatus::Idle, 0), false);
-        t.apply_event(ev("s", "run", AgentStatus::Running, 0), false);
+        t.apply_event(ev("s", "run", AgentStatus::Busy, 0), false);
         t.prune_idle(1000, 5000);
         assert!(!t.dismiss("s", "idle", None)); // idle pruned
         assert!(t.dismiss("s", "run", None)); // running kept
@@ -522,7 +521,7 @@ mod tests {
     #[test]
     fn prune_by_age_uses_last_activity_when_present() {
         let mut t = AgentTracker::new();
-        let mut e = ev("s", "a", AgentStatus::Running, 0);
+        let mut e = ev("s", "a", AgentStatus::Busy, 0);
         e.details = Some(AgentEventDetails { last_activity_at: Some(4500), ..Default::default() });
         t.apply_event(e, false);
         // event ts is 0 (very old) but lastActivityAt is recent → not stale.
@@ -536,7 +535,7 @@ mod tests {
         let mut a = ev("s", "claude", AgentStatus::Idle, 1);
         a.thread_id = Some("old".into());
         a.pane_id = Some("%1".into());
-        let mut b = ev("s", "claude", AgentStatus::Running, 2);
+        let mut b = ev("s", "claude", AgentStatus::Busy, 2);
         b.thread_id = Some("new".into());
         b.pane_id = Some("%1".into());
         t.apply_event(a, false);
@@ -551,7 +550,7 @@ mod tests {
     fn event_timestamps_capped() {
         let mut t = AgentTracker::new();
         for i in 0..40 {
-            t.apply_event(ev("s", "a", AgentStatus::Running, i), false);
+            t.apply_event(ev("s", "a", AgentStatus::Busy, i), false);
         }
         let ts = t.get_event_timestamps("s");
         assert_eq!(ts.len(), MAX_EVENT_TIMESTAMPS);

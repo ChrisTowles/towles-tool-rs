@@ -8,11 +8,11 @@ const ThemeContext = createContext<Theme | null>(null);
 
 const STATUS_KEYS: AgentStatus[] = [
   "idle",
-  "running",
-  "done",
+  "busy",
+  "complete",
   "error",
+  "idle",
   "waiting",
-  "question",
   "interrupted",
 ];
 
