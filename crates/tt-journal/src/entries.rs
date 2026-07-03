@@ -250,15 +250,18 @@ pub fn infer_type_from_path(path: &Path) -> Option<JournalType> {
 pub fn extract_date_from_filename(path: &Path) -> Option<NaiveDate> {
     let name = path.file_name()?.to_str()?;
     let bytes = name.as_bytes();
-    // Expect at least `YYYY-MM-DD` (10 chars) with dashes at indices 4 and 7.
+    // Expect at least `YYYY-MM-DD` (10 bytes) with dashes at indices 4 and 7.
+    // Validate every byte before slicing the &str: a multibyte char straddling
+    // a slice boundary (e.g. `2026-07-1é.md`) would otherwise panic.
     if bytes.len() < 10 || bytes[4] != b'-' || bytes[7] != b'-' {
         return None;
     }
-    let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
-    let (y, m, d) = (&name[0..4], &name[5..7], &name[8..10]);
-    if !digits(y) || !digits(m) || !digits(d) {
+    let digits = |r: std::ops::Range<usize>| bytes[r].iter().all(u8::is_ascii_digit);
+    if !digits(0..4) || !digits(5..7) || !digits(8..10) {
         return None;
     }
+    // All 10 leading bytes are ASCII, so these str slices are char-boundary safe.
+    let (y, m, d) = (&name[0..4], &name[5..7], &name[8..10]);
     NaiveDate::from_ymd_opt(y.parse().ok()?, m.parse().ok()?, d.parse().ok()?)
 }
 
@@ -521,6 +524,13 @@ mod tests {
             Some(ymd(2026, 3, 15))
         );
         assert_eq!(extract_date_from_filename(Path::new("/x/no-date.md")), None);
+        // Multibyte char straddling byte offset 10 must not panic (was a crash).
+        assert_eq!(extract_date_from_filename(Path::new("/x/2026-07-1é.md")), None);
+        // Multibyte char elsewhere in an otherwise-valid prefix is fine.
+        assert_eq!(
+            extract_date_from_filename(Path::new("/x/2026-03-15-café.md")),
+            Some(ymd(2026, 3, 15))
+        );
     }
 
     #[test]
