@@ -21,6 +21,7 @@ Desktop app / frontend:
 ```sh
 npm install                         # installs apps/client (npm workspaces)
 npm run dev                         # tauri dev — app + Vite frontend
+cd apps/client && npx shadcn@latest add <name>   # vendor a shadcn/ui component
 ```
 
 > The binary is **`ttr`** during migration. Do not rename it to `tt` — the
@@ -52,7 +53,11 @@ Cargo workspace + npm workspace (`apps/client` only):
   `graph [-s --days -f html|json|csv --open/--no-open]`.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`,
   dev server on `:1420`.
-- `apps/client` — React 19 + Vite frontend (currently a hello-world).
+- `apps/client` — React 19 + Vite frontend styled with Tailwind CSS v4 +
+  shadcn/ui (`@/*` → `src/*` alias, components vendored into
+  `src/components/ui/`, light/dark via the `.dark` class). The old AgentBoard
+  React UI was removed (superseded by the tmux-mode `ttr agentboard` CLI);
+  concrete screens are TBD — currently a pipeline-proof shell.
 
 ## Migration
 
@@ -68,5 +73,8 @@ should cite the upstream source path (yaak `path/to/file` or slot-1
   boundary (in `tt-cli`), not deep in the libs.
 - **Tests:** black-box CLI tests with `assert_cmd`; unit tests alongside logic.
 - **Formatting:** rustfmt, 100-column width.
+- **Frontend styling:** Tailwind + shadcn/ui only — no CSS modules, no
+  hand-rolled stylesheets, no CSS-in-JS. Add components with
+  `npx shadcn@latest add <name>`, don't hand-write Radix wrappers.
 - **Hard cutover, no back-compat shims** — replace, don't wrap. (No compat
   layers, no dual-name aliases beyond the deliberate `ttr`→`tt` rename.)
