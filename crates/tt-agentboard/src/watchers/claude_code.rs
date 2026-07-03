@@ -499,16 +499,14 @@ impl ClaudeCodeAgentWatcher {
             return;
         }
 
-        let Ok(bytes) = std::fs::read(&path) else {
+        let Ok(tail) = super::read_from_offset(&path, state.file_offset) else {
             return;
         };
-        let start = (state.file_offset as usize).min(bytes.len());
-        let slice = &bytes[start..];
-        let consumed = consumed_len(slice);
+        let consumed = consumed_len(&tail);
         if consumed == 0 {
             return;
         }
-        let text = String::from_utf8_lossy(&slice[..consumed]);
+        let text = String::from_utf8_lossy(&tail[..consumed]);
         let parsed = parse_journal_lines(&text);
         state.file_offset += consumed as u64;
 

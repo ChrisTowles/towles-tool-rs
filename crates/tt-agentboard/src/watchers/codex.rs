@@ -269,11 +269,10 @@ impl CodexAgentWatcher {
         let indexed_thread_name = self.thread_names.get(&thread_id).cloned();
         let next = match &prev {
             Some(prev) if size > prev.file_size => {
-                let Ok(bytes) = std::fs::read(file_path) else {
+                let Ok(tail) = super::read_from_offset(file_path, prev.file_size) else {
                     return;
                 };
-                let start = (prev.file_size as usize).min(bytes.len());
-                let text = String::from_utf8_lossy(&bytes[start..]);
+                let text = String::from_utf8_lossy(&tail);
                 apply_entries(
                     &text,
                     SessionSnapshot { file_size: size, ..prev.clone() },
