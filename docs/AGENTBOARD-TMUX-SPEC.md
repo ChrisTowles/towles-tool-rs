@@ -50,33 +50,33 @@ a TS pain point) — sidebar orchestration just no-ops without tmux sessions.
 
 ## Phases
 
-1. **T1 — tmux client + provider** in `tt-agentboard` (new `tmux` module).
+1. ✅ **T1 — tmux client + provider** (2026-07-03) in `tt-agentboard` (new `tmux` module).
    Command construction + output parsing pure and fixture-tested; subprocess
    calls isolated thin. Provider: `spawn_sidebar` (edge-pane split or stash
    restore; no select-pane after spawn — terminal-capability-response leak),
    `hide_sidebar` (resize stash window 200x200 first), `kill/resize_sidebar_pane`,
    `list_sidebar_panes` (+windowWidth), `setup_hooks`/`cleanup_hooks` (the 7
    global hooks), session list/switch/create/kill, `display_popup`.
-2. **T2 — themes** (`themes.rs`, pure data) + `sidebar_width_sync.rs` (pure).
-3. **T3 — engine extraction + server.** Move `Engine` + scan/git/debounce
+2. ✅ **T2 — themes** (2026-07-03) (`themes.rs`, pure data) + `sidebar_width_sync.rs` (pure).
+3. ✅ **T3 — engine extraction + server** (2026-07-03). Move `Engine` + scan/git/debounce
    scheduling from `tt-app/src/agentboard.rs` into `tt-agentboard::engine`
    (state watch channel; hosts own their emit). Rewire `tt-app` (behavior
    unchanged). New `ttr agentboard server`: tokio HTTP with all routes,
    sidebar orchestration (`ensure_sidebar_in_window`, `toggle_sidebar`,
    `resize_sidebars` + width-sync, debounces), PID file, SIGINT/SIGTERM
    cleanup (unset hooks, stash-or-keep sidebars per TS `cleanup()`).
-4. **T4 — ratatui TUI** (`ttr agentboard tui`): SSE subscriber thread →
+4. ✅ **T4 — ratatui TUI** (2026-07-03) (`ttr agentboard tui`): SSE subscriber thread →
    event loop; session list + SessionCard (name, status icons, agent lines,
    model/tool, diff stats, unseen, progress/log) + StatusBar; keys
    `Tab j k ↑ ↓ Enter l 1-9 d x r ? q`; sessionizer via `display-popup -E`
    (port `tui/scripts/sessionizer.sh`); `REFOCUS_WINDOW` refocus after start.
-5. **T5 — CLI wiring**: `setup`/`uninstall` (tmux.conf `run-shell 'ttr
+5. ✅ **T5 — CLI wiring** (2026-07-03): `setup`/`uninstall` (tmux.conf `run-shell 'ttr
    agentboard init'` line, TPM-aware insertion, `# agentboard` marker),
    `init` (set-environment, `@agentboard-key` prefix table binds, digits 1-9,
    the 7 hooks), `restart` (kill `_ab_stash*`, stop via PID file or POST
    /shutdown, ensure up, POST /refresh + /ensure-sidebar per client),
    `run --toggle|--focus`, `keys`. No `ensureBun` equivalent needed.
-6. **T6 — pane↔agent attribution** (~600 LOC of server/index.ts):
+6. ⏳ **T6 — pane↔agent attribution** (NOT STARTED) (~600 LOC of server/index.ts):
    `scan_all_tmux_pane_agents` (single `list-panes -a` + ps-tree), per-watcher
    pane resolution (claude/codex/opencode/amp), pane-presence merge into
    state, `focus-agent-pane`/`kill-agent-pane` commands, pane highlight,
@@ -92,3 +92,28 @@ a TS pain point) — sidebar orchestration just no-ops without tmux sessions.
 - Launcher spawns `current_exe()`, not `"tt"` from PATH.
 - Server runs without `$TMUX` (degrades to engine+metadata only).
 - Clock injection (`now_ms`) continues everywhere in pure code.
+
+## Deviations discovered during implementation (T1–T5)
+
+- TUI has **no mouse support** (keyboard-first); OpenTUI click/hover/dismiss-✕
+  handlers dropped. Revisit if missed in daily use.
+- The TUI's `fromSession` request envelope replaces the TS per-socket
+  `identify-pane` identity; `re-identify` is a no-op.
+- The 300ms sidebar-pane list cache was dropped (ensure/resize are debounced).
+- The server-side `resize` follow-up always fires (no timer cancel) — resize
+  enforcement is idempotent.
+- `themes::status_icon` is a single fn (every TS builtin shared one icon set);
+  the `PartialTheme` inline-object override is cut (tt-config types
+  `agentboard.theme` as a string).
+- tmux-mode sessions come from live tmux sessions sorted createdAt-then-name;
+  `bridge::assemble_state` base order is now caller-owned (desktop passes
+  name-sorted repo entries, unchanged behavior).
+- `ttr agentboard init`'s hooks come from the same `hook_definitions` the
+  server registers (the TS kept two hand-written copies).
+- Watch out: the server registers/unsets **global** tmux hooks on start/stop —
+  running it while the TS agentboard is active steals (and on shutdown clears)
+  the hooks; `tt agentboard init` restores the TS wiring.
+
+Status: T1–T5 give a fully usable tmux sidebar (`ttr agentboard setup` →
+prefix-a-t). T6 adds pane↔agent attribution (focus/kill agent panes,
+pane-presence waiting synthesis, ports column).
