@@ -26,14 +26,22 @@
 use thiserror::Error;
 
 pub mod bridge;
+pub mod claude_cli;
+pub mod engine;
 pub mod fs_notify;
 pub mod git_info;
+pub mod hook_http;
 pub mod metadata;
 pub mod metadata_http;
+pub mod pane_agents;
 pub mod ports;
 pub mod repos;
 pub mod session_order;
+pub mod session_resolve;
+pub mod sidebar_width_sync;
 pub mod text;
+pub mod themes;
+pub mod tmux;
 pub mod tracker;
 pub mod types;
 pub mod watcher;
@@ -54,7 +62,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 // Re-export the public surface.
-pub use bridge::{StatePayload, assemble_state, merge_agents_waiting, synthesize_waiting};
+pub use bridge::{StatePayload, assemble_state};
 pub use git_info::{GitInfo, GitInfoCache, compute_git_info};
 pub use metadata::SessionMetadataStore;
 pub use metadata_http::{
@@ -76,6 +84,5 @@ pub use types::{
 pub use watcher::{AgentWatcher, WatcherContext};
 pub use watchers::amp::AmpAgentWatcher;
 pub use watchers::claude_code::ClaudeCodeAgentWatcher;
-pub use watchers::claude_pid::ClaudePidLookup;
 pub use watchers::codex::CodexAgentWatcher;
 pub use watchers::opencode::OpenCodeAgentWatcher;

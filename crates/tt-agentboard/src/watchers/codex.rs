@@ -55,7 +55,7 @@ struct RawContentItem {
 }
 
 fn assistant_status(phase: Option<&str>) -> AgentStatus {
-    if phase == Some("commentary") { AgentStatus::Running } else { AgentStatus::Done }
+    if phase == Some("commentary") { AgentStatus::Busy } else { AgentStatus::Complete }
 }
 
 /// Derive a status from one transcript entry, or `None` (keeps prior). Ports
@@ -64,21 +64,21 @@ pub fn determine_status(entry: &RawEntry) -> Option<AgentStatus> {
     let payload = entry.payload.as_ref()?;
     match entry.entry_type.as_deref() {
         Some("event_msg") => match payload.payload_type.as_deref() {
-            Some("task_complete") => Some(AgentStatus::Done),
+            Some("task_complete") => Some(AgentStatus::Complete),
             Some("turn_aborted") => Some(AgentStatus::Interrupted),
-            Some("user_message") => Some(AgentStatus::Running),
+            Some("user_message") => Some(AgentStatus::Busy),
             Some("agent_message") => Some(assistant_status(payload.phase.as_deref())),
             Some("error") => Some(AgentStatus::Error),
             _ => None,
         },
         Some("response_item") => match payload.payload_type.as_deref() {
             Some("message") => match payload.role.as_deref() {
-                Some("user") => Some(AgentStatus::Running),
+                Some("user") => Some(AgentStatus::Busy),
                 Some("assistant") => Some(assistant_status(payload.phase.as_deref())),
                 _ => None,
             },
             Some("function_call") | Some("function_call_output") | Some("reasoning") => {
-                Some(AgentStatus::Running)
+                Some(AgentStatus::Busy)
             }
             _ => None,
         },
@@ -399,7 +399,7 @@ mod tests {
             determine_status(&entry(
                 serde_json::json!({"type":"event_msg","payload":{"type":"task_complete"}})
             )),
-            Some(AgentStatus::Done)
+            Some(AgentStatus::Complete)
         );
         assert_eq!(
             determine_status(&entry(
@@ -417,25 +417,25 @@ mod tests {
             determine_status(&entry(
                 serde_json::json!({"type":"event_msg","payload":{"type":"agent_message","phase":"commentary"}})
             )),
-            Some(AgentStatus::Running)
+            Some(AgentStatus::Busy)
         );
         assert_eq!(
             determine_status(&entry(
                 serde_json::json!({"type":"event_msg","payload":{"type":"agent_message"}})
             )),
-            Some(AgentStatus::Done)
+            Some(AgentStatus::Complete)
         );
         assert_eq!(
             determine_status(&entry(
                 serde_json::json!({"type":"response_item","payload":{"type":"function_call"}})
             )),
-            Some(AgentStatus::Running)
+            Some(AgentStatus::Busy)
         );
         assert_eq!(
             determine_status(&entry(
                 serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user"}})
             )),
-            Some(AgentStatus::Running)
+            Some(AgentStatus::Busy)
         );
         assert_eq!(
             determine_status(&entry(serde_json::json!({"type":"other","payload":{}}))),
@@ -510,7 +510,7 @@ mod tests {
         let now = now_real_ms();
         w.scan(&mut c, now); // seed → running emitted
         assert_eq!(c.events.len(), 1);
-        assert_eq!(c.events[0].status, AgentStatus::Running);
+        assert_eq!(c.events[0].status, AgentStatus::Busy);
         assert_eq!(c.events[0].thread_id.as_deref(), Some(uuid));
         assert_eq!(c.events[0].thread_name.as_deref(), Some("do it"));
         c.events.clear();
@@ -527,7 +527,7 @@ mod tests {
         );
         w.scan(&mut c, now + 1);
         assert_eq!(c.events.len(), 1);
-        assert_eq!(c.events[0].status, AgentStatus::Done);
+        assert_eq!(c.events[0].status, AgentStatus::Complete);
     }
 
     #[test]

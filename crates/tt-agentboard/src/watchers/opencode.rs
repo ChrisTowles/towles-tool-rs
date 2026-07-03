@@ -41,14 +41,14 @@ pub fn determine_status(msg: Option<&MessageData>, parts: &[PartData]) -> AgentS
     match msg.role.as_deref() {
         Some("assistant") => {
             if msg.finish.as_deref() == Some("tool-calls") {
-                return AgentStatus::Running;
+                return AgentStatus::Busy;
             }
             if parts.iter().any(|p| p.part_type.as_deref() == Some("tool")) {
-                return AgentStatus::Running;
+                return AgentStatus::Busy;
             }
-            AgentStatus::Done
+            AgentStatus::Complete
         }
-        Some("user") => AgentStatus::Running,
+        Some("user") => AgentStatus::Busy,
         _ => AgentStatus::Idle,
     }
 }
@@ -245,14 +245,14 @@ mod tests {
     fn status_table() {
         assert_eq!(determine_status(None, &[]), AgentStatus::Idle);
         let user = MessageData { role: Some("user".into()), finish: None };
-        assert_eq!(determine_status(Some(&user), &[]), AgentStatus::Running);
+        assert_eq!(determine_status(Some(&user), &[]), AgentStatus::Busy);
         let asst_done = MessageData { role: Some("assistant".into()), finish: Some("stop".into()) };
-        assert_eq!(determine_status(Some(&asst_done), &[]), AgentStatus::Done);
+        assert_eq!(determine_status(Some(&asst_done), &[]), AgentStatus::Complete);
         let asst_tool =
             MessageData { role: Some("assistant".into()), finish: Some("tool-calls".into()) };
-        assert_eq!(determine_status(Some(&asst_tool), &[]), AgentStatus::Running);
+        assert_eq!(determine_status(Some(&asst_tool), &[]), AgentStatus::Busy);
         let parts = vec![PartData { part_type: Some("tool".into()) }];
-        assert_eq!(determine_status(Some(&asst_done), &parts), AgentStatus::Running);
+        assert_eq!(determine_status(Some(&asst_done), &parts), AgentStatus::Busy);
     }
 
     /// Create a fixture opencode.db with the schema the watcher reads.
@@ -316,7 +316,7 @@ mod tests {
         let mut c = ctx();
         w.scan(&mut c, now); // seed → running
         assert_eq!(c.events.len(), 1);
-        assert_eq!(c.events[0].status, AgentStatus::Running);
+        assert_eq!(c.events[0].status, AgentStatus::Busy);
         assert_eq!(c.events[0].thread_id.as_deref(), Some("s1"));
         assert_eq!(c.events[0].thread_name.as_deref(), Some("My Session"));
         c.events.clear();
@@ -334,7 +334,7 @@ mod tests {
         }
         w.scan(&mut c, now + 10);
         assert_eq!(c.events.len(), 1);
-        assert_eq!(c.events[0].status, AgentStatus::Done);
+        assert_eq!(c.events[0].status, AgentStatus::Complete);
     }
 
     #[test]

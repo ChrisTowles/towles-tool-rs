@@ -24,16 +24,18 @@ pub const JOURNAL_IDLE_TIMEOUT_MS: i64 = 120_000;
 
 // --- Agent contract (ports `contracts/agent.ts`) ---
 
-/// Lifecycle status of an agent instance.
+/// Lifecycle status of an agent instance. Names follow the Claude Code CLI
+/// conventions (`claude agents`): `busy` = working, `waiting` = blocked on
+/// the user (questions/permission prompts), `idle` = alive at the prompt.
+/// The terminals (`done`/`error`/`interrupted`) have no CLI equivalent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
     Idle,
-    Running,
-    Done,
+    Busy,
+    Complete,
     Error,
     Waiting,
-    Question,
     Interrupted,
 }
 
@@ -41,18 +43,17 @@ impl AgentStatus {
     /// The "terminal" statuses (`TERMINAL_STATUSES` in TS): the agent finished a
     /// turn and is awaiting user acknowledgement.
     pub fn is_terminal(self) -> bool {
-        matches!(self, AgentStatus::Done | AgentStatus::Error | AgentStatus::Interrupted)
+        matches!(self, AgentStatus::Complete | AgentStatus::Error | AgentStatus::Interrupted)
     }
 
     /// Catppuccin status color (`STATUS_COLORS`).
     pub fn color(self) -> &'static str {
         match self {
             AgentStatus::Idle => palette::SURFACE2,
-            AgentStatus::Running => palette::YELLOW,
-            AgentStatus::Done => palette::GREEN,
+            AgentStatus::Busy => palette::YELLOW,
+            AgentStatus::Complete => palette::GREEN,
             AgentStatus::Error => palette::RED,
             AgentStatus::Waiting => palette::BLUE,
-            AgentStatus::Question => palette::SKY,
             AgentStatus::Interrupted => palette::PEACH,
         }
     }
@@ -61,11 +62,10 @@ impl AgentStatus {
     pub fn icon(self) -> &'static str {
         match self {
             AgentStatus::Idle => "○",
-            AgentStatus::Running => "●",
-            AgentStatus::Done => "✓",
+            AgentStatus::Busy => "●",
+            AgentStatus::Complete => "✓",
             AgentStatus::Error => "✗",
-            AgentStatus::Waiting => "◉",
-            AgentStatus::Question => "?",
+            AgentStatus::Waiting => "?",
             AgentStatus::Interrupted => "⚠",
         }
     }
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn agent_status_serializes_lowercase() {
-        assert_eq!(serde_json::to_value(AgentStatus::Running).unwrap(), json!("running"));
+        assert_eq!(serde_json::to_value(AgentStatus::Busy).unwrap(), json!("busy"));
         assert_eq!(
             serde_json::from_value::<AgentStatus>(json!("interrupted")).unwrap(),
             AgentStatus::Interrupted
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn terminal_statuses_match_ts() {
         for s in [
-            AgentStatus::Done,
+            AgentStatus::Complete,
             AgentStatus::Error,
             AgentStatus::Interrupted,
         ] {
@@ -381,9 +381,9 @@ mod tests {
         }
         for s in [
             AgentStatus::Idle,
-            AgentStatus::Running,
+            AgentStatus::Busy,
+            AgentStatus::Idle,
             AgentStatus::Waiting,
-            AgentStatus::Question,
         ] {
             assert!(!s.is_terminal());
         }
@@ -394,7 +394,7 @@ mod tests {
         let ev = AgentEvent {
             agent: "claude".into(),
             session: "proj".into(),
-            status: AgentStatus::Running,
+            status: AgentStatus::Busy,
             ts: 1000,
             thread_id: None,
             thread_name: None,
@@ -403,7 +403,7 @@ mod tests {
             details: None,
         };
         let v = serde_json::to_value(&ev).unwrap();
-        assert_eq!(v, json!({"agent":"claude","session":"proj","status":"running","ts":1000}));
+        assert_eq!(v, json!({"agent":"claude","session":"proj","status":"busy","ts":1000}));
     }
 
     #[test]

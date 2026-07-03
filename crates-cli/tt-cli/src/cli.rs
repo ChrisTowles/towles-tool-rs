@@ -65,7 +65,7 @@ pub enum Commands {
     /// Create a pull request from the current branch (alias for `gh pr`)
     Pr(PrArgs),
 
-    /// Manage the agentboard desktop app's watched repos
+    /// Agentboard: tmux sidebar server + watched-repo management
     #[command(alias = "ag")]
     Agentboard(AgentboardArgs),
 }
@@ -81,6 +81,39 @@ pub struct AgentboardArgs {
 pub enum AgentboardCommands {
     /// Manage the watched-repo list (repos.json)
     Repos(ReposArgs),
+
+    /// Run the agentboard server in the foreground (HTTP on 127.0.0.1:4201)
+    Server,
+
+    /// Run the sidebar TUI (normally spawned inside a tmux pane by the server)
+    #[command(alias = "start")]
+    Tui,
+
+    /// Add the agentboard init line to tmux.conf and reload
+    Setup,
+
+    /// Remove the agentboard init line from tmux.conf and reload
+    Uninstall,
+
+    /// Register tmux env, keybindings, and hooks (run from tmux.conf)
+    Init,
+
+    /// Restart the server and re-ensure sidebars for all attached clients
+    Restart,
+
+    /// Keybinding-invoked actions
+    Run {
+        /// Toggle the sidebar in the current window
+        #[arg(long)]
+        toggle: bool,
+
+        /// Focus (spawning if needed) the sidebar in the current window
+        #[arg(long)]
+        focus: bool,
+    },
+
+    /// Show agentboard keybindings
+    Keys,
 }
 
 #[derive(Args)]
