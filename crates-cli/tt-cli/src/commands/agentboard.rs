@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use crate::cli::{AgentboardCommands, ReposCommands};
+use crate::commands::agentboard_setup;
 use crate::ui;
 use tt_agentboard::repos::{add_repo, default_repos_path, load_repos, repo_entries, save_repos};
 
@@ -13,6 +14,21 @@ pub fn run(command: AgentboardCommands) -> i32 {
     match command {
         AgentboardCommands::Server => crate::commands::agentboard_server::run(),
         AgentboardCommands::Tui => crate::commands::agentboard_tui::run(),
+        AgentboardCommands::Setup => agentboard_setup::setup(),
+        AgentboardCommands::Uninstall => agentboard_setup::uninstall(),
+        AgentboardCommands::Init => agentboard_setup::init(),
+        AgentboardCommands::Restart => agentboard_setup::restart(),
+        AgentboardCommands::Run { toggle, focus } => {
+            if toggle {
+                agentboard_setup::run_toggle()
+            } else if focus {
+                agentboard_setup::run_focus()
+            } else {
+                crate::ui::error("Usage: ttr agentboard run --toggle | --focus");
+                1
+            }
+        }
+        AgentboardCommands::Keys => agentboard_setup::keys(),
         AgentboardCommands::Repos(args) => match args.command {
             None => list_repos(),
             Some(ReposCommands::Add { path }) => add(&path),

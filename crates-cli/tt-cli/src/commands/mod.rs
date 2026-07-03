@@ -1,6 +1,7 @@
 pub mod agentboard;
 pub mod agentboard_client;
 pub mod agentboard_server;
+pub mod agentboard_setup;
 pub mod agentboard_tui;
 pub mod claude_settings;
 pub mod config;
