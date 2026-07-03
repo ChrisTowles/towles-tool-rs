@@ -12,11 +12,13 @@ import { AddRepoDialog } from "./AddRepoDialog";
 import { HelpSheet } from "./HelpSheet";
 import { Toast } from "./Toast";
 import type { ToastData, ToastKind } from "./Toast";
+import { ZellijTokenDialog } from "./ZellijTokenDialog";
 
 type Modal =
   | { kind: "kill"; repoName: string }
   | { kind: "addRepo" }
   | { kind: "help" }
+  | { kind: "zellijToken"; token: string }
   | null;
 
 export interface AppShellProps {
@@ -115,6 +117,13 @@ export function AppShell({ source, commands }: AppShellProps) {
     [commands, pushToast],
   );
 
+  // Opens the zellij terminal window; a token comes back only on first-ever
+  // open (freshly created) and must be shown once for the login form.
+  const openTerminal = useCallback(async () => {
+    const token = await commands.openZellij();
+    if (token) setModal({ kind: "zellijToken", token });
+  }, [commands]);
+
   // Global keymap. Modals attach their own capture-phase handlers, so skip when
   // one is open.
   useEffect(() => {
@@ -168,6 +177,10 @@ export function AppShell({ source, commands }: AppShellProps) {
           commands.refresh();
           pushToast("info", "Refreshed");
           break;
+        case "t":
+          e.preventDefault();
+          void openTerminal();
+          break;
         case "?":
           e.preventDefault();
           setModal({ kind: "help" });
@@ -187,6 +200,7 @@ export function AppShell({ source, commands }: AppShellProps) {
     selectIndex,
     enterAgents,
     dismissAgent,
+    openTerminal,
     commands,
     pushToast,
   ]);
@@ -199,6 +213,7 @@ export function AppShell({ source, commands }: AppShellProps) {
           themeName={themeName}
           onThemeChange={(t) => commands.setTheme(t)}
           onAddRepo={() => setModal({ kind: "addRepo" })}
+          onOpenTerminal={() => void openTerminal()}
         />
 
         <main className="ab-main">
@@ -235,6 +250,9 @@ export function AppShell({ source, commands }: AppShellProps) {
           <AddRepoDialog onSubmit={addRepo} onCancel={() => setModal(null)} />
         )}
         {modal?.kind === "help" && <HelpSheet onClose={() => setModal(null)} />}
+        {modal?.kind === "zellijToken" && (
+          <ZellijTokenDialog token={modal.token} onClose={() => setModal(null)} />
+        )}
       </div>
     </ThemeProvider>
   );

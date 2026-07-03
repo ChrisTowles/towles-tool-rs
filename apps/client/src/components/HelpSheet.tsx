@@ -9,6 +9,7 @@ const KEYS: [string, string][] = [
   ["d", "dismiss focused agent"],
   ["x", "remove repo (confirm)"],
   ["r", "refresh"],
+  ["t", "open terminal (zellij)"],
   ["?", "toggle this help"],
   ["click card", "select · mark seen"],
   ["click ✕", "dismiss agent"],

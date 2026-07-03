@@ -116,6 +116,11 @@ export class MockBackend implements StateSource, Commands {
     this.emit();
   }
 
+  // No zellij in the bare-browser demo; pretend a token already exists.
+  openZellij(): Promise<string | null> {
+    return Promise.resolve(null);
+  }
+
   onError(listener: (m: string) => void): () => void {
     this.errorListeners.add(listener);
     return () => this.errorListeners.delete(listener);

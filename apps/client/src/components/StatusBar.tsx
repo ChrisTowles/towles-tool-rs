@@ -7,10 +7,17 @@ export interface StatusBarProps {
   themeName: string;
   onThemeChange: (theme: string) => void;
   onAddRepo: () => void;
+  onOpenTerminal: () => void;
 }
 
-/** Header + board counts (UI-SPEC §2) plus the add-repo + theme controls. */
-export function StatusBar({ counts, themeName, onThemeChange, onAddRepo }: StatusBarProps) {
+/** Header + board counts (UI-SPEC §2) plus the add-repo, terminal + theme controls. */
+export function StatusBar({
+  counts,
+  themeName,
+  onThemeChange,
+  onAddRepo,
+  onOpenTerminal,
+}: StatusBarProps) {
   const { palette: P } = useTheme();
   return (
     <header className="ab-statusbar">
@@ -37,6 +44,16 @@ export function StatusBar({ counts, themeName, onThemeChange, onAddRepo }: Statu
           style={{ color: P.text, backgroundColor: P.surface0, borderColor: P.surface2 }}
         >
           +
+        </button>
+        <button
+          type="button"
+          className="ab-add-btn"
+          title="Open terminal (zellij)"
+          aria-label="Open terminal"
+          onClick={onOpenTerminal}
+          style={{ color: P.text, backgroundColor: P.surface0, borderColor: P.surface2 }}
+        >
+          {">_"}
         </button>
         <label className="ab-theme-picker" style={{ color: P.overlay0 }}>
           theme

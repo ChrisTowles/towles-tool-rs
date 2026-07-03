@@ -3,6 +3,7 @@
 //! snapshots as the `agentboard://state` event and exposes client commands.
 
 mod agentboard;
+mod zellij;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -116,6 +117,7 @@ pub fn run() {
             agentboard::ab_log,
             agentboard::ab_clear_log,
             agentboard::ab_open_in_editor,
+            zellij::zellij_open,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Towles Tool application");

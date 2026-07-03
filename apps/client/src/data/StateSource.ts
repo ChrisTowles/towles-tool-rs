@@ -35,6 +35,12 @@ export interface Commands {
   removeRepo(name: string): void;
   /** Force a rebuild/broadcast (refresh). */
   refresh(): void;
+  /**
+   * Open the zellij terminal window (zellij_open). Resolves with a login
+   * token only when the bridge had to create the first one — zellij shows a
+   * token exactly once, so the UI must display it for the login form.
+   */
+  openZellij(): Promise<string | null>;
   /** Subscribe to command errors (a rejected invoke). Returns unsubscribe. */
   onError(listener: (message: string) => void): () => void;
 }

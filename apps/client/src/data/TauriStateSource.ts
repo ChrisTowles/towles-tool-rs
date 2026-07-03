@@ -87,4 +87,14 @@ export class TauriCommands implements Commands {
   refresh(): void {
     void this.call("ab_refresh");
   }
+  async openZellij(): Promise<string | null> {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return (await invoke<string | null>("zellij_open")) ?? null;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      for (const l of this.errorListeners) l(message);
+      return null;
+    }
+  }
 }
