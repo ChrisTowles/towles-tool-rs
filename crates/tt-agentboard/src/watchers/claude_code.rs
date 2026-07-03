@@ -1,34 +1,48 @@
-//! Claude Code agent watcher. Ports slot-1
-//! `runtime/agents/watchers/claude-code.ts` per docs/AGENTBOARD-WATCHER-SPEC.md.
+//! Claude Code agent watcher — hybrid edition (phase T7 of
+//! docs/AGENTBOARD-TMUX-SPEC.md; rewrites the journal-first port of slot-1
+//! `runtime/agents/watchers/claude-code.ts`).
 //!
-//! Watches `~/.claude/projects/<encoded-dir>/<thread>.jsonl`, derives status from
-//! journal entries, and emits [`AgentEvent`]s. The 2s scan is driven externally
-//! (`scan(ctx, now_ms)`); fs-notify is an optional accelerant ([`crate::fs_notify`]).
+//! **Discovery, liveness, and status come from `claude agents --all --json`**
+//! ([`crate::claude_cli`]) — the supported CLI surface — instead of scanning
+//! `~/.claude/projects/**/*.jsonl` and inferring status from message roles.
+//! **Journals are enrichment only**: incremental tail reads supply what the
+//! CLI doesn't expose (model, last tool, token usage → cache countdown,
+//! sub-agents, `/loop` wakeups, and the first-prompt thread name).
 //!
-//! Three adopted fixes over the TS (see the spec's "Port decisions"):
-//! 1. Offset tracked at the last newline boundary (re-reads an incomplete tail
-//!    next tick); a shrunk file resets offset to 0 and re-seeds the thread.
-//! 2. A usage delta is part of the Branch-C emit gate (token/model updates
-//!    broadcast without needing a status change).
-//! 3. Project dirs are matched encoded↔encoded: the raw encoded dir is carried
-//!    through and handed to `resolve_session` (which re-encodes known paths),
-//!    instead of the lossy decode.
+//! Per scan:
+//! 1. list live agents from the CLI;
+//! 2. resolve each to a session — `resolve_session_by_pid` first (the tmux
+//!    server walks the pid's ancestry to a pane), then the cwd;
+//! 3. status: `busy` → running, `waiting` → question, `idle` → the journal's
+//!    view if it is done/question (preserving the unseen-✓ flow), else
+//!    waiting;
+//! 4. enrich from the journal tail (offset at the last newline boundary —
+//!    adopted fix #1 — with shrink-reset);
+//! 5. sessions that disappeared from the CLI get one final journal read and a
+//!    terminal emit: done if the journal completed, interrupted if it still
+//!    looked mid-run.
+//!
+//! What this drops vs. the journal-first watcher (deliberate): sessions that
+//! exited before the server started never appear (the CLI only lists live
+//! processes), and the `~/.claude/sessions/<pid>.json` liveness files are no
+//! longer read at all.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use serde::Deserialize;
 
+use crate::claude_cli::CliAgent;
 use crate::types::{AgentEvent, AgentEventDetails, AgentStatus, LoopInfo, SubagentInfo};
-use crate::watcher::{AgentWatcher, JSONL_SUFFIX, STALE_MS, WatcherContext};
-use crate::watchers::claude_pid::ClaudePidLookup;
+use crate::watcher::{AgentWatcher, JSONL_SUFFIX, WatcherContext};
 use crate::watchers::claude_usage::{ClaudeUsageSummary, RawUsage, extract_usage_summary};
 
 const NAME: &str = "claude-code";
-const JOURNAL_IDLE_TIMEOUT_MS: i64 = crate::types::JOURNAL_IDLE_TIMEOUT_MS;
+/// The shared CLI snapshot TTL (watcher 2s tick, pane scan 3s, engine rebuilds).
+pub const CLI_CACHE_TTL_MS: u64 = 1500;
 
-// --- Tolerant journal-entry types ---
+// --- Tolerant journal-entry types (unchanged from the journal-first port) ---
 
 /// One parsed journal line. Tolerant: every field optional, unknown fields ignored.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -93,9 +107,11 @@ pub fn parse_timestamp_ms(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp_millis())
 }
 
-// --- Pure status/metadata derivation (§3) ---
+// --- Pure journal derivation (§3 status table, kept for enrichment) ---
 
-/// Derive a status from one entry, or `None` (ignored) — see the §3 decision table.
+/// Derive a status from one entry, or `None` (ignored) — the §3 decision table.
+/// With CLI-driven liveness this only informs the `idle` refinement and the
+/// exit-time terminal emit.
 pub fn determine_status(entry: &RawEntry) -> Option<AgentStatus> {
     let msg = entry.message.as_ref()?;
     let role = msg.role.as_deref().filter(|r| !r.is_empty())?;
@@ -231,7 +247,7 @@ pub fn read_active_subagents(subagents_dir: &Path, now_ms: i64) -> Vec<SubagentI
         let Some(mtime) = mtime_ms(&path) else {
             continue;
         };
-        if now_ms - mtime > JOURNAL_IDLE_TIMEOUT_MS {
+        if now_ms - mtime > crate::types::JOURNAL_IDLE_TIMEOUT_MS {
             continue;
         }
         // Sibling `agent-<id>.meta.json`; missing/unreadable meta still counts (as `{}`).
@@ -260,27 +276,6 @@ pub fn parse_journal_lines(text: &str) -> Vec<RawEntry> {
         .collect()
 }
 
-/// Fold entries carrying forward latest status and first thread name. Ports `scanEntries`.
-fn scan_entries(
-    entries: &[RawEntry],
-    start_status: AgentStatus,
-    start_thread_name: Option<String>,
-) -> (AgentStatus, Option<String>) {
-    let mut status = start_status;
-    let mut thread_name = start_thread_name;
-    for entry in entries {
-        if thread_name.is_none()
-            && let Some(name) = extract_thread_name(entry)
-        {
-            thread_name = Some(name);
-        }
-        if let Some(s) = determine_status(entry) {
-            status = s;
-        }
-    }
-    (status, thread_name)
-}
-
 /// Byte length up to and including the last newline (0 if none) — the offset the
 /// next read resumes from (adopted fix #1: never consume a partial trailing line).
 fn consumed_len(bytes: &[u8]) -> usize {
@@ -292,17 +287,13 @@ fn consumed_len(bytes: &[u8]) -> usize {
 
 fn mtime_ms(path: &Path) -> Option<i64> {
     let meta = std::fs::metadata(path).ok()?;
-    mtime_ms_from_meta(&meta)
-}
-
-fn mtime_ms_from_meta(meta: &std::fs::Metadata) -> Option<i64> {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as i64)
 }
 
-// --- Details assembly (§6) ---
+// --- Details assembly (§6, unchanged) ---
 
 fn summary_to_details(s: &ClaudeUsageSummary) -> AgentEventDetails {
     AgentEventDetails {
@@ -341,299 +332,232 @@ fn build_details(
     Some(base)
 }
 
-// --- Per-thread state ---
+/// Refine a CLI `idle` into the journal's view when that view is one the UI
+/// treats specially: a completed turn stays `done` (unseen-✓ flow) and an
+/// open question stays `question`; anything else is `waiting` (alive at the
+/// prompt).
+pub fn refine_idle(journal_status: AgentStatus) -> AgentStatus {
+    match journal_status {
+        AgentStatus::Done => AgentStatus::Done,
+        AgentStatus::Question => AgentStatus::Question,
+        _ => AgentStatus::Waiting,
+    }
+}
+
+/// Terminal status when a session disappears from the CLI list: `done` if its
+/// journal completed, `interrupted` if it still looked mid-run.
+pub fn exit_status(journal_status: AgentStatus) -> AgentStatus {
+    match journal_status {
+        AgentStatus::Done => AgentStatus::Done,
+        AgentStatus::Question => AgentStatus::Done,
+        _ => AgentStatus::Interrupted,
+    }
+}
+
+// --- Per-session journal enrichment state ---
 
 #[derive(Debug, Clone)]
 struct SessionState {
-    status: AgentStatus,
+    /// Last status emitted for this session (the emit gate).
+    emitted_status: Option<AgentStatus>,
+    /// The journal's own status derivation (feeds `refine_idle`/`exit_status`).
+    journal_status: AgentStatus,
     /// Next read offset = last-newline byte boundary (adopted fix #1).
-    file_size: u64,
+    file_offset: u64,
+    journal_path: Option<PathBuf>,
     thread_name: Option<String>,
-    /// Raw *encoded* project-dir name (adopted fix #3).
-    project_dir: Option<String>,
     usage: Option<ClaudeUsageSummary>,
     last_tool: Option<String>,
     subagents: Vec<SubagentInfo>,
     subagent_sig: String,
     loop_state: Option<LoopInfo>,
+    /// Signature of the last emitted details (usage/subagents/loop) —
+    /// part of the emit gate (adopted fix #2: usage deltas broadcast
+    /// without a status change).
+    last_emit_sig: Option<String>,
+    /// CLI fields carried for emits.
+    session: Option<String>,
+    cli_name: Option<String>,
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        Self {
+            emitted_status: None,
+            journal_status: AgentStatus::Idle,
+            file_offset: 0,
+            journal_path: None,
+            thread_name: None,
+            usage: None,
+            last_tool: None,
+            subagents: Vec::new(),
+            subagent_sig: String::new(),
+            loop_state: None,
+            last_emit_sig: None,
+            session: None,
+            cli_name: None,
+        }
+    }
+}
+
+impl SessionState {
+    fn details(&self) -> Option<AgentEventDetails> {
+        build_details(
+            self.usage.as_ref(),
+            self.last_tool.as_deref(),
+            &self.subagents,
+            self.loop_state.as_ref(),
+        )
+    }
 }
 
 // --- Watcher ---
 
-/// The claude-code watcher. Ports `ClaudeCodeAgentWatcher`, minus the internal
-/// timer/fs-watch (the caller drives [`AgentWatcher::scan`]).
+/// The hybrid claude-code watcher: CLI discovery, journal enrichment.
 pub struct ClaudeCodeAgentWatcher {
     projects_dir: PathBuf,
     sessions: HashMap<String, SessionState>,
-    seeded: bool,
-    pid_lookup: ClaudePidLookup,
+    agents_source: Box<dyn Fn() -> Vec<CliAgent> + Send>,
 }
 
 impl ClaudeCodeAgentWatcher {
-    /// Create rooted at `projects_dir`, using `pid_lookup` for liveness.
-    pub fn new(projects_dir: PathBuf, pid_lookup: ClaudePidLookup) -> Self {
-        Self { projects_dir, sessions: HashMap::new(), seeded: false, pid_lookup }
+    /// Create rooted at `projects_dir` with an injectable CLI source (tests
+    /// pass fixtures; production uses the cached real CLI).
+    pub fn new(
+        projects_dir: PathBuf,
+        agents_source: Box<dyn Fn() -> Vec<CliAgent> + Send>,
+    ) -> Self {
+        Self { projects_dir, sessions: HashMap::new(), agents_source }
     }
 
-    /// Create using the real `~/.claude/projects` + `~/.claude/sessions` locations.
+    /// Create using the real `~/.claude/projects` + the shared cached CLI call.
     pub fn with_defaults() -> Self {
         let projects_dir =
             dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude").join("projects");
-        Self::new(projects_dir, ClaudePidLookup::new(ClaudePidLookup::default_dir()))
+        Self::new(
+            projects_dir,
+            Box::new(|| {
+                crate::claude_cli::fetch_agents_cached(std::time::Duration::from_millis(
+                    CLI_CACHE_TTL_MS,
+                ))
+            }),
+        )
     }
 
-    /// Whether the first full scan has completed.
-    pub fn is_seeded(&self) -> bool {
-        self.seeded
+    /// Locate `<projects>/<encoded cwd>/<session id>.jsonl`. The naive
+    /// `/`→`-` encoding guess covers most paths; dirs whose names contain
+    /// dots/underscores (also encoded to `-` by Claude) fall back to probing
+    /// every project dir for the session file.
+    fn find_journal(&self, cwd: &str, session_id: &str) -> Option<PathBuf> {
+        let file = format!("{session_id}{JSONL_SUFFIX}");
+        let guess = self.projects_dir.join(cwd.replace('/', "-")).join(&file);
+        if guess.exists() {
+            return Some(guess);
+        }
+        let entries = std::fs::read_dir(&self.projects_dir).ok()?;
+        for entry in entries.flatten() {
+            let candidate = entry.path().join(&file);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// Incrementally read the session's journal tail into its state.
+    fn enrich_from_journal(&mut self, session_id: &str, cwd: &str, now_ms: i64) {
+        let path = match self.sessions.get(session_id).and_then(|s| s.journal_path.clone()) {
+            Some(p) if p.exists() => Some(p),
+            _ => self.find_journal(cwd, session_id),
+        };
+        let state = self.sessions.entry(session_id.to_string()).or_default();
+        state.journal_path = path.clone();
+        let Some(path) = path else { return };
+
+        // Sub-agents live in a sibling dir; the parent journal can stay
+        // static for minutes — compute every scan.
+        if let Some(base) = path.to_str().and_then(|s| s.strip_suffix(JSONL_SUFFIX)) {
+            let subagents =
+                read_active_subagents(&PathBuf::from(format!("{base}/subagents")), now_ms);
+            state.subagent_sig = subagent_signature(&subagents);
+            state.subagents = subagents;
+        }
+
+        let Ok(meta) = std::fs::metadata(&path) else {
+            return;
+        };
+        let size = meta.len();
+        // Adopted fix #1: shrunk file → reset to 0 and re-derive from scratch
+        // (all journal-derived state is stale, not just the offset).
+        if size < state.file_offset {
+            state.file_offset = 0;
+            state.journal_status = AgentStatus::Idle;
+            state.thread_name = None;
+            state.usage = None;
+            state.last_tool = None;
+            state.loop_state = None;
+        }
+        if size == state.file_offset {
+            return;
+        }
+
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        let start = (state.file_offset as usize).min(bytes.len());
+        let slice = &bytes[start..];
+        let consumed = consumed_len(slice);
+        if consumed == 0 {
+            return;
+        }
+        let text = String::from_utf8_lossy(&slice[..consumed]);
+        let parsed = parse_journal_lines(&text);
+        state.file_offset += consumed as u64;
+
+        for entry in &parsed {
+            if state.thread_name.is_none()
+                && let Some(name) = extract_thread_name(entry)
+            {
+                state.thread_name = Some(name);
+            }
+            if let Some(s) = determine_status(entry) {
+                state.journal_status = s;
+            }
+        }
+        if let Some(usage) = extract_usage_summary(&parsed) {
+            state.usage = Some(usage);
+        }
+        if let Some(tool) = extract_last_tool(&parsed) {
+            state.last_tool = Some(tool);
+        }
+        if let Some(loop_state) = extract_loop_state(&parsed) {
+            state.loop_state = Some(loop_state);
+        }
     }
 
     fn emit(
         ctx: &mut dyn WatcherContext,
-        session: String,
+        state: &SessionState,
         status: AgentStatus,
+        session_id: &str,
         now_ms: i64,
-        thread_id: &str,
-        thread_name: Option<String>,
-        details: Option<AgentEventDetails>,
     ) {
+        let Some(session) = state.session.clone() else {
+            return;
+        };
         ctx.emit(AgentEvent {
             agent: NAME.to_string(),
             session,
             status,
             ts: now_ms,
-            thread_id: Some(thread_id.to_string()),
-            thread_name,
+            thread_id: Some(session_id.to_string()),
+            // Journal first-prompt text beats the CLI's interactive slugs
+            // (`proj-44`); background agents get descriptive CLI names.
+            thread_name: state.thread_name.clone().or_else(|| state.cli_name.clone()),
             unseen: None,
             pane_id: None,
-            details,
+            details: state.details(),
         });
-    }
-
-    fn process_file(
-        &mut self,
-        ctx: &mut dyn WatcherContext,
-        file_path: &Path,
-        encoded_dir: &str,
-        now_ms: i64,
-    ) {
-        let Ok(meta) = std::fs::metadata(file_path) else {
-            return;
-        };
-        let size = meta.len();
-        let file_mtime = mtime_ms_from_meta(&meta);
-        let thread_id = file_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-        let prev = self.sessions.get(&thread_id).cloned();
-
-        // Sub-agents write to a sibling dir while the parent journal can stay static
-        // for minutes — compute on every call, not just on growth.
-        let subagents_dir = file_path
-            .to_str()
-            .and_then(|s| s.strip_suffix(JSONL_SUFFIX))
-            .map(|base| PathBuf::from(format!("{base}/subagents")))
-            .unwrap_or_default();
-        let subagents = read_active_subagents(&subagents_dir, now_ms);
-        let subagent_sig = subagent_signature(&subagents);
-
-        // --- Branch A: no growth ---
-        if let Some(prev) = &prev
-            && size == prev.file_size
-        {
-            if self.seeded && prev.status == AgentStatus::Running {
-                let pid = self.pid_lookup.pid_for_thread(&thread_id);
-                let process_gone = pid.is_some_and(|p| !self.pid_lookup.is_alive(p));
-                let mtime_stale = file_mtime.is_some_and(|m| now_ms - m > JOURNAL_IDLE_TIMEOUT_MS);
-                if process_gone || mtime_stale {
-                    let session = prev.project_dir.as_deref().and_then(|d| ctx.resolve_session(d));
-                    let details = build_details(
-                        prev.usage.as_ref(),
-                        prev.last_tool.as_deref(),
-                        &subagents,
-                        prev.loop_state.as_ref(),
-                    );
-                    let thread_name = prev.thread_name.clone();
-                    let st = self.sessions.get_mut(&thread_id).unwrap();
-                    st.status = AgentStatus::Idle;
-                    st.subagents = subagents;
-                    st.subagent_sig = subagent_sig;
-                    if let Some(session) = session {
-                        Self::emit(
-                            ctx,
-                            session,
-                            AgentStatus::Idle,
-                            now_ms,
-                            &thread_id,
-                            thread_name,
-                            details,
-                        );
-                    }
-                    return;
-                }
-            }
-
-            // Journal static but the live sub-agent set may have shifted.
-            if subagent_sig != prev.subagent_sig {
-                let session = prev.project_dir.as_deref().and_then(|d| ctx.resolve_session(d));
-                let details = build_details(
-                    prev.usage.as_ref(),
-                    prev.last_tool.as_deref(),
-                    &subagents,
-                    prev.loop_state.as_ref(),
-                );
-                let status = prev.status;
-                let thread_name = prev.thread_name.clone();
-                let st = self.sessions.get_mut(&thread_id).unwrap();
-                st.subagents = subagents;
-                st.subagent_sig = subagent_sig;
-                if let Some(session) = session {
-                    Self::emit(ctx, session, status, now_ms, &thread_id, thread_name, details);
-                }
-            }
-            return;
-        }
-
-        // --- Branch B: seed mode (whole file, no emit) ---
-        if !self.seeded {
-            let Ok(bytes) = std::fs::read(file_path) else {
-                return;
-            };
-            let consumed = consumed_len(&bytes);
-            let text = String::from_utf8_lossy(&bytes[..consumed]);
-            let parsed = parse_journal_lines(&text);
-            let (mut status, thread_name) = scan_entries(&parsed, AgentStatus::Idle, None);
-            let usage = extract_usage_summary(&parsed);
-            let last_tool = extract_last_tool(&parsed);
-            let loop_state = extract_loop_state(&parsed);
-            if status == AgentStatus::Running
-                && file_mtime.is_some_and(|m| now_ms - m > JOURNAL_IDLE_TIMEOUT_MS)
-            {
-                status = AgentStatus::Idle;
-            }
-            self.sessions.insert(
-                thread_id,
-                SessionState {
-                    status,
-                    file_size: consumed as u64,
-                    thread_name,
-                    project_dir: Some(encoded_dir.to_string()),
-                    usage,
-                    last_tool,
-                    subagents,
-                    subagent_sig,
-                    loop_state,
-                },
-            );
-            return;
-        }
-
-        // --- Branch C: seeded & size changed ---
-        let prev = prev.as_ref();
-        // Adopted fix #1: a shrunk file (or a brand-new post-seed file) reads from 0
-        // and re-seeds fresh; otherwise resume from the stored newline boundary.
-        let (offset, reset) = match prev {
-            Some(p) if size >= p.file_size => (p.file_size, false),
-            _ => (0u64, true),
-        };
-        if !reset && size <= offset {
-            return;
-        }
-
-        let Ok(bytes) = std::fs::read(file_path) else {
-            return;
-        };
-        let start = (offset as usize).min(bytes.len());
-        let end = (size as usize).min(bytes.len());
-        let slice = if start <= end { &bytes[start..end] } else { &[][..] };
-        let consumed = consumed_len(slice);
-        let text = String::from_utf8_lossy(&slice[..consumed]);
-        let parsed = parse_journal_lines(&text);
-
-        let start_status = if reset { AgentStatus::Idle } else { prev.unwrap().status };
-        let start_thread_name = if reset { None } else { prev.unwrap().thread_name.clone() };
-        let (mut status, thread_name) = scan_entries(&parsed, start_status, start_thread_name);
-
-        let usage = extract_usage_summary(&parsed).or_else(|| prev.and_then(|p| p.usage.clone()));
-        let last_tool =
-            extract_last_tool(&parsed).or_else(|| prev.and_then(|p| p.last_tool.clone()));
-        let loop_state =
-            extract_loop_state(&parsed).or_else(|| prev.and_then(|p| p.loop_state.clone()));
-
-        if status == AgentStatus::Running {
-            let pid = self.pid_lookup.pid_for_thread(&thread_id);
-            if pid.is_some_and(|p| !self.pid_lookup.is_alive(p)) {
-                status = AgentStatus::Idle;
-            }
-        }
-
-        let prev_status = prev.map(|p| p.status);
-        let prev_sig = prev.map(|p| p.subagent_sig.clone()).unwrap_or_default();
-        let prev_loop_wake = prev.and_then(|p| p.loop_state.as_ref().map(|l| l.next_wake_at));
-        let prev_usage = prev.and_then(|p| p.usage.clone());
-
-        self.sessions.insert(
-            thread_id.clone(),
-            SessionState {
-                status,
-                file_size: offset + consumed as u64,
-                thread_name: thread_name.clone(),
-                project_dir: Some(encoded_dir.to_string()),
-                usage: usage.clone(),
-                last_tool: last_tool.clone(),
-                subagents: subagents.clone(),
-                subagent_sig: subagent_sig.clone(),
-                loop_state: loop_state.clone(),
-            },
-        );
-
-        let cur_loop_wake = loop_state.as_ref().map(|l| l.next_wake_at);
-        let changed = Some(status) != prev_status
-            || subagent_sig != prev_sig
-            || cur_loop_wake != prev_loop_wake
-            || usage != prev_usage; // adopted fix #2
-
-        if changed && let Some(session) = ctx.resolve_session(encoded_dir) {
-            let details = build_details(
-                usage.as_ref(),
-                last_tool.as_deref(),
-                &subagents,
-                loop_state.as_ref(),
-            );
-            Self::emit(ctx, session, status, now_ms, &thread_id, thread_name, details);
-        }
-    }
-
-    /// On the first scan's completion, emit each stored non-idle session (re-checking
-    /// running-liveness). Ports the seed-finalize block. Emits land while the server's
-    /// `watchersSeeded` is false, so the bridge marks them unseen.
-    fn seed_finalize(&mut self, ctx: &mut dyn WatcherContext, now_ms: i64) {
-        let ids: Vec<String> = self.sessions.keys().cloned().collect();
-        for thread_id in ids {
-            let st = &self.sessions[&thread_id];
-            if st.status == AgentStatus::Idle || st.project_dir.is_none() {
-                continue;
-            }
-            let mut status = st.status;
-            let project_dir = st.project_dir.clone().unwrap();
-            let thread_name = st.thread_name.clone();
-            let details = build_details(
-                st.usage.as_ref(),
-                st.last_tool.as_deref(),
-                &st.subagents,
-                st.loop_state.as_ref(),
-            );
-
-            if status == AgentStatus::Running {
-                let pid = self.pid_lookup.pid_for_thread(&thread_id);
-                if pid.is_some_and(|p| !self.pid_lookup.is_alive(p)) {
-                    self.sessions.get_mut(&thread_id).unwrap().status = AgentStatus::Idle;
-                    continue;
-                }
-                status = AgentStatus::Running;
-            }
-
-            if let Some(session) = ctx.resolve_session(&project_dir) {
-                Self::emit(ctx, session, status, now_ms, &thread_id, thread_name, details);
-            }
-        }
     }
 }
 
@@ -643,40 +567,64 @@ impl AgentWatcher for ClaudeCodeAgentWatcher {
     }
 
     fn scan(&mut self, ctx: &mut dyn WatcherContext, now_ms: i64) {
-        self.pid_lookup.invalidate();
+        let agents = (self.agents_source)();
+        let live_ids: HashSet<String> = agents.iter().map(|a| a.session_id.clone()).collect();
 
-        if let Ok(entries) = std::fs::read_dir(&self.projects_dir) {
-            for entry in entries.flatten() {
-                let dir_path = entry.path();
-                match std::fs::metadata(&dir_path) {
-                    Ok(m) if m.is_dir() => {}
-                    _ => continue,
-                }
-                let encoded_dir = entry.file_name().to_string_lossy().to_string();
-                let Ok(files) = std::fs::read_dir(&dir_path) else {
-                    continue;
-                };
-                for file in files.flatten() {
-                    let file_path = file.path();
-                    if file_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                        continue;
-                    }
-                    let Some(mtime) = mtime_ms(&file_path) else {
-                        continue;
-                    };
-                    if now_ms - mtime > STALE_MS {
-                        continue;
-                    }
-                    self.process_file(ctx, &file_path, &encoded_dir, now_ms);
-                }
+        // Live sessions: resolve, enrich, emit on change.
+        for agent in &agents {
+            // pid → owning tmux pane's session first; cwd match as fallback.
+            let session =
+                ctx.resolve_session_by_pid(agent.pid).or_else(|| ctx.resolve_session(&agent.cwd));
+            let Some(session) = session else {
+                continue;
+            };
+
+            self.enrich_from_journal(&agent.session_id, &agent.cwd, now_ms);
+            let state = self.sessions.get_mut(&agent.session_id).unwrap();
+            state.session = Some(session);
+            state.cli_name = agent.name.clone();
+
+            let status = match agent.agent_status() {
+                Some(AgentStatus::Waiting) => refine_idle(state.journal_status),
+                Some(s) => s,
+                None => refine_idle(state.journal_status),
+            };
+
+            // Emit gate: status change, or a details change (sub-agent set,
+            // loop wake, usage — adopted fix #2) captured as a signature.
+            let status_changed = state.emitted_status != Some(status);
+            let sig = format!(
+                "{}|{:?}|{:?}|{:?}",
+                state.subagent_sig,
+                state.loop_state.as_ref().map(|l| l.next_wake_at),
+                state.usage.as_ref().map(|u| (u.context_used, u.cache_expires_at)),
+                state.thread_name,
+            );
+            let details_changed = state.last_emit_sig.as_deref() != Some(sig.as_str());
+
+            if status_changed || details_changed {
+                state.emitted_status = Some(status);
+                state.last_emit_sig = Some(sig);
+                let state = state.clone();
+                Self::emit(ctx, &state, status, &agent.session_id, now_ms);
             }
         }
 
-        // Seed finalize runs even if the projects dir was unreadable (matches the
-        // TS try/finally), flipping `seeded` after the first scan.
-        if !self.seeded {
-            self.seeded = true;
-            self.seed_finalize(ctx, now_ms);
+        // Exited sessions: one final journal read, then a terminal emit.
+        let gone: Vec<String> =
+            self.sessions.keys().filter(|id| !live_ids.contains(*id)).cloned().collect();
+        for session_id in gone {
+            let cwd = String::new();
+            self.enrich_from_journal(&session_id, &cwd, now_ms);
+            let Some(state) = self.sessions.remove(&session_id) else {
+                continue;
+            };
+            if state.session.is_none() || state.emitted_status.is_none() {
+                // Never resolved/emitted — nothing on the board to finalize.
+                continue;
+            }
+            let status = exit_status(state.journal_status);
+            Self::emit(ctx, &state, status, &session_id, now_ms);
         }
     }
 }
@@ -684,481 +632,254 @@ impl AgentWatcher for ClaudeCodeAgentWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
-    fn entry(json: serde_json::Value) -> RawEntry {
-        serde_json::from_value(json).unwrap()
-    }
-
-    fn now_real_ms() -> i64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
-    }
-
-    // --- §3 status decision table ---
-
-    #[test]
-    fn status_table() {
-        let user = entry(serde_json::json!({"message":{"role":"user","content":"hi"}}));
-        assert_eq!(determine_status(&user), Some(AgentStatus::Running));
-
-        let text_only = entry(
-            serde_json::json!({"message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}),
-        );
-        assert_eq!(determine_status(&text_only), Some(AgentStatus::Done));
-
-        let string_content =
-            entry(serde_json::json!({"message":{"role":"assistant","content":"done thinking"}}));
-        assert_eq!(determine_status(&string_content), Some(AgentStatus::Done));
-
-        let asking = entry(serde_json::json!({"message":{"role":"assistant","content":[
-            {"type":"tool_use","name":"AskUserQuestion"}]}}));
-        assert_eq!(determine_status(&asking), Some(AgentStatus::Question));
-
-        let mixed = entry(serde_json::json!({"message":{"role":"assistant","content":[
-            {"type":"tool_use","name":"AskUserQuestion"},{"type":"tool_use","name":"Bash"}]}}));
-        assert_eq!(determine_status(&mixed), Some(AgentStatus::Running));
-
-        let no_role = entry(serde_json::json!({"message":{"content":"x"}}));
-        assert_eq!(determine_status(&no_role), None);
-
-        let system = entry(serde_json::json!({"message":{"role":"system","content":"x"}}));
-        assert_eq!(determine_status(&system), None);
-    }
-
-    #[test]
-    fn thinking_only_reads_as_done() {
-        // A `thinking` content block has no tool_use and no text → done (§3 quirk kept).
-        let thinking = entry(
-            serde_json::json!({"message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"}]}}),
-        );
-        assert_eq!(determine_status(&thinking), Some(AgentStatus::Done));
-    }
-
-    #[test]
-    fn thread_name_skips_system_like_and_caps_80() {
-        let sys =
-            entry(serde_json::json!({"message":{"role":"user","content":"<command>x</command>"}}));
-        assert_eq!(extract_thread_name(&sys), None);
-        let braces =
-            entry(serde_json::json!({"message":{"role":"user","content":"{tool_result}"}}));
-        assert_eq!(extract_thread_name(&braces), None);
-        let long = "a".repeat(100);
-        let e = entry(serde_json::json!({"message":{"role":"user","content": long}}));
-        assert_eq!(extract_thread_name(&e).unwrap().chars().count(), 80);
-    }
-
-    #[test]
-    fn last_tool_newest_first_skipping_ask() {
-        let entries = vec![
-            entry(
-                serde_json::json!({"message":{"role":"assistant","content":[{"type":"tool_use","name":"Read"}]}}),
-            ),
-            entry(
-                serde_json::json!({"message":{"role":"assistant","content":[{"type":"tool_use","name":"AskUserQuestion"}]}}),
-            ),
-        ];
-        // Newest is AskUserQuestion (skipped) → falls back to Read.
-        assert_eq!(extract_last_tool(&entries).as_deref(), Some("Read"));
-    }
-
-    #[test]
-    fn loop_state_from_schedule_wakeup() {
-        let entries = vec![entry(serde_json::json!({
-            "timestamp": "2026-04-12T00:00:00Z",
-            "message": {"role":"assistant","content":[
-                {"type":"tool_use","name":"ScheduleWakeup","input":{"delaySeconds":90,"reason":"poll CI"}}]}
-        }))];
-        let loop_ = extract_loop_state(&entries).unwrap();
-        let base = parse_timestamp_ms("2026-04-12T00:00:00Z").unwrap();
-        assert_eq!(loop_.next_wake_at, base + 90_000);
-        assert_eq!(loop_.reason.as_deref(), Some("poll CI"));
-    }
-
-    #[test]
-    fn subagent_signature_is_order_independent() {
-        let a = SubagentInfo { agent_type: Some("Explore".into()), description: Some("x".into()) };
-        let b = SubagentInfo { agent_type: Some("Plan".into()), description: Some("y".into()) };
-        assert_eq!(subagent_signature(&[a.clone(), b.clone()]), subagent_signature(&[b, a]));
-    }
-
-    // --- §4 subagents ---
-
-    #[test]
-    fn read_active_subagents_window_meta_and_sort() {
-        let dir = TempDir::new().unwrap();
-        let sub = dir.path().join("subagents");
-        std::fs::create_dir_all(&sub).unwrap();
-        // active agent with meta
-        std::fs::write(sub.join("agent-1.jsonl"), "{}\n").unwrap();
-        std::fs::write(
-            sub.join("agent-1.meta.json"),
-            serde_json::json!({"agentType":"Explore","description":"search"}).to_string(),
-        )
-        .unwrap();
-        // active agent without meta (counts as {})
-        std::fs::write(sub.join("agent-2.jsonl"), "{}\n").unwrap();
-        // non-agent file ignored
-        std::fs::write(sub.join("notes.jsonl"), "{}\n").unwrap();
-
-        let now = now_real_ms();
-        let active = read_active_subagents(&sub, now);
-        assert_eq!(active.len(), 2);
-        assert!(active.iter().any(|s| s.agent_type.as_deref() == Some("Explore")));
-        assert!(active.iter().any(|s| s.agent_type.is_none()));
-
-        // Far-future now → all stale → skipped.
-        let stale = read_active_subagents(&sub, now + 3 * 60_000);
-        assert!(stale.is_empty());
-
-        // Missing dir → empty.
-        assert!(read_active_subagents(&dir.path().join("nope"), now).is_empty());
-    }
-
-    // --- Watcher scan flow ---
-
-    struct RecordingCtx {
+    struct Ctx {
+        by_dir: Vec<(String, String)>,
+        by_pid: Vec<(i32, String)>,
         events: Vec<AgentEvent>,
-        resolve: HashMap<String, String>,
     }
-    impl RecordingCtx {
-        fn new(encoded_dir: &str, session: &str) -> Self {
-            let mut resolve = HashMap::new();
-            resolve.insert(encoded_dir.to_string(), session.to_string());
-            Self { events: Vec::new(), resolve }
+
+    impl Ctx {
+        fn new() -> Self {
+            Self { by_dir: Vec::new(), by_pid: Vec::new(), events: Vec::new() }
         }
     }
-    impl WatcherContext for RecordingCtx {
+
+    impl WatcherContext for Ctx {
         fn resolve_session(&self, project_dir: &str) -> Option<String> {
-            self.resolve.get(project_dir).cloned()
+            self.by_dir.iter().find(|(d, _)| d == project_dir).map(|(_, s)| s.clone())
+        }
+        fn resolve_session_by_pid(&self, pid: i32) -> Option<String> {
+            self.by_pid.iter().find(|(p, _)| *p == pid).map(|(_, s)| s.clone())
         }
         fn emit(&mut self, event: AgentEvent) {
             self.events.push(event);
         }
     }
 
-    const ENC: &str = "-home-u-proj";
-    const THREAD: &str = "sess1";
-
-    fn write_journal(projects: &Path, lines: &[serde_json::Value]) {
-        let dir = projects.join(ENC);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut body = String::new();
-        for l in lines {
-            body.push_str(&l.to_string());
-            body.push('\n');
+    fn cli_agent(pid: i32, cwd: &str, sid: &str, status: &str) -> CliAgent {
+        CliAgent {
+            pid,
+            cwd: cwd.to_string(),
+            kind: Some("interactive".into()),
+            started_at: Some(1),
+            session_id: sid.to_string(),
+            name: Some(format!("slug-{pid}")),
+            status: Some(status.to_string()),
+            waiting_for: None,
         }
-        std::fs::write(dir.join(format!("{THREAD}.jsonl")), body).unwrap();
     }
 
-    fn new_watcher(
-        projects: &Path,
-        sessions: &Path,
-        alive: fn(i32) -> bool,
-    ) -> ClaudeCodeAgentWatcher {
-        ClaudeCodeAgentWatcher::new(
-            projects.to_path_buf(),
-            ClaudePidLookup::with_is_alive(sessions.to_path_buf(), alive),
-        )
+    struct Fixture {
+        _tmp: TempDir,
+        projects: PathBuf,
+        agents: Arc<Mutex<Vec<CliAgent>>>,
+        watcher: ClaudeCodeAgentWatcher,
     }
 
-    #[test]
-    fn empty_file_is_idle_no_emit() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        write_journal(projects.path(), &[]);
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| true);
-        let mut ctx = RecordingCtx::new(ENC, "my-session");
-        w.scan(&mut ctx, now_real_ms());
-        assert!(ctx.events.is_empty());
-    }
-
-    #[test]
-    fn seed_finalize_emits_non_idle() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        // assistant text-only → done.
-        write_journal(
-            projects.path(),
-            &[
-                serde_json::json!({"message":{"role":"assistant","content":[{"type":"text","text":"all done"}]}}),
-            ],
+    fn fixture() -> Fixture {
+        let tmp = TempDir::new().unwrap();
+        let projects = tmp.path().join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        let agents: Arc<Mutex<Vec<CliAgent>>> = Arc::new(Mutex::new(Vec::new()));
+        let source = agents.clone();
+        let watcher = ClaudeCodeAgentWatcher::new(
+            projects.clone(),
+            Box::new(move || source.lock().unwrap().clone()),
         );
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| true);
-        let mut ctx = RecordingCtx::new(ENC, "my-session");
-        w.scan(&mut ctx, now_real_ms());
-        assert_eq!(ctx.events.len(), 1);
-        assert_eq!(ctx.events[0].status, AgentStatus::Done);
-        assert_eq!(ctx.events[0].session, "my-session");
-        assert_eq!(ctx.events[0].thread_id.as_deref(), Some(THREAD));
+        Fixture { _tmp: tmp, projects, agents, watcher }
     }
 
-    #[test]
-    fn branch_c_emits_on_status_change() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        // Seed: a user turn → running.
-        write_journal(
-            projects.path(),
-            &[serde_json::json!({"message":{"role":"user","content":"do it"}})],
-        );
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| true);
-        let mut ctx = RecordingCtx::new(ENC, "s");
-        let now = now_real_ms();
-        w.scan(&mut ctx, now); // seed + finalize (running emitted by seed finalize)
-        ctx.events.clear();
-        // Append an assistant done turn.
-        write_journal(
-            projects.path(),
-            &[
-                serde_json::json!({"message":{"role":"user","content":"do it"}}),
-                serde_json::json!({"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}),
-            ],
-        );
-        w.scan(&mut ctx, now);
-        assert_eq!(ctx.events.len(), 1);
-        assert_eq!(ctx.events[0].status, AgentStatus::Done);
-    }
-
-    #[test]
-    fn partial_line_across_reads_is_not_lost() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        let dir = projects.path().join(ENC);
+    fn write_journal(projects: &Path, cwd: &str, sid: &str, lines: &[&str]) -> PathBuf {
+        let dir = projects.join(cwd.replace('/', "-"));
         std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join(format!("{THREAD}.jsonl"));
-        // Seed with a complete user line.
-        std::fs::write(&file, "{\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n").unwrap();
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| true);
-        let mut ctx = RecordingCtx::new(ENC, "s");
-        let now = now_real_ms();
-        w.scan(&mut ctx, now);
+        let path = dir.join(format!("{sid}.jsonl"));
+        let mut text = lines.join("\n");
+        text.push('\n');
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    const USER_LINE: &str = r#"{"timestamp":"2026-07-03T10:00:00.000Z","message":{"role":"user","content":"fix the flaky test"}}"#;
+    const RUNNING_LINE: &str = r#"{"timestamp":"2026-07-03T10:00:05.000Z","message":{"role":"assistant","model":"claude-sonnet-5","content":[{"type":"tool_use","name":"Bash"}],"usage":{"input_tokens":10,"output_tokens":5}}}"#;
+    const DONE_LINE: &str = r#"{"timestamp":"2026-07-03T10:00:10.000Z","message":{"role":"assistant","content":[{"type":"text","text":"all done"}]}}"#;
+
+    #[test]
+    fn busy_agent_emits_running_with_journal_enrichment() {
+        let mut f = fixture();
+        write_journal(&f.projects, "/home/u/proj", "sid-1", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(100, "/home/u/proj", "sid-1", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/proj".into(), "proj".into()));
+
+        f.watcher.scan(&mut ctx, 1_000);
+        assert_eq!(ctx.events.len(), 1);
+        let ev = &ctx.events[0];
+        assert_eq!(ev.session, "proj");
+        assert_eq!(ev.status, AgentStatus::Running);
+        assert_eq!(ev.thread_id.as_deref(), Some("sid-1"));
+        // Journal first prompt beats the CLI slug.
+        assert_eq!(ev.thread_name.as_deref(), Some("fix the flaky test"));
+        let details = ev.details.as_ref().unwrap();
+        assert_eq!(details.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(details.last_tool.as_deref(), Some("Bash"));
+    }
+
+    #[test]
+    fn idle_refines_by_journal_and_waiting_maps_to_question() {
+        let mut f = fixture();
+        // Journal ends done → idle process shows Done (unseen-✓ flow).
+        write_journal(&f.projects, "/home/u/a", "sid-done", &[USER_LINE, DONE_LINE]);
+        // Journal mid-run → idle process shows Waiting.
+        write_journal(&f.projects, "/home/u/b", "sid-mid", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![
+            cli_agent(1, "/home/u/a", "sid-done", "idle"),
+            cli_agent(2, "/home/u/b", "sid-mid", "idle"),
+            cli_agent(3, "/home/u/a", "sid-perm", "waiting"),
+        ];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/a".into(), "a".into()));
+        ctx.by_dir.push(("/home/u/b".into(), "b".into()));
+
+        f.watcher.scan(&mut ctx, 1_000);
+        let by_thread: std::collections::HashMap<&str, AgentStatus> =
+            ctx.events.iter().map(|e| (e.thread_id.as_deref().unwrap(), e.status)).collect();
+        assert_eq!(by_thread["sid-done"], AgentStatus::Done);
+        assert_eq!(by_thread["sid-mid"], AgentStatus::Waiting);
+        assert_eq!(by_thread["sid-perm"], AgentStatus::Question);
+    }
+
+    #[test]
+    fn pid_resolution_beats_cwd() {
+        let mut f = fixture();
+        write_journal(&f.projects, "/home/u/proj", "sid-1", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(100, "/home/u/proj", "sid-1", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/proj".into(), "by-cwd".into()));
+        ctx.by_pid.push((100, "by-pane".into()));
+
+        f.watcher.scan(&mut ctx, 1_000);
+        assert_eq!(ctx.events[0].session, "by-pane");
+    }
+
+    #[test]
+    fn no_reemit_without_change_but_usage_delta_reemits() {
+        let mut f = fixture();
+        let path = write_journal(&f.projects, "/home/u/p", "sid-1", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(9, "/home/u/p", "sid-1", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/p".into(), "p".into()));
+
+        f.watcher.scan(&mut ctx, 1_000);
+        f.watcher.scan(&mut ctx, 3_000);
+        assert_eq!(ctx.events.len(), 1, "steady state must not re-emit");
+
+        // Usage growth without a status change re-emits (adopted fix #2).
+        let more = r#"{"timestamp":"2026-07-03T10:00:20.000Z","message":{"role":"assistant","model":"claude-sonnet-5","content":[{"type":"tool_use","name":"Read"}],"usage":{"input_tokens":900,"output_tokens":50}}}"#;
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(more);
+        text.push('\n');
+        std::fs::write(&path, text).unwrap();
+
+        f.watcher.scan(&mut ctx, 5_000);
+        assert_eq!(ctx.events.len(), 2);
+        assert_eq!(ctx.events[1].status, AgentStatus::Running);
+        assert_eq!(ctx.events[1].details.as_ref().unwrap().last_tool.as_deref(), Some("Read"));
+    }
+
+    #[test]
+    fn exit_emits_done_or_interrupted_from_final_journal() {
+        let mut f = fixture();
+        let done_path =
+            write_journal(&f.projects, "/home/u/a", "sid-done", &[USER_LINE, RUNNING_LINE]);
+        write_journal(&f.projects, "/home/u/b", "sid-mid", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![
+            cli_agent(1, "/home/u/a", "sid-done", "busy"),
+            cli_agent(2, "/home/u/b", "sid-mid", "busy"),
+        ];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/a".into(), "a".into()));
+        ctx.by_dir.push(("/home/u/b".into(), "b".into()));
+        f.watcher.scan(&mut ctx, 1_000);
         ctx.events.clear();
 
-        // Append a PARTIAL assistant line (no trailing newline yet).
-        let partial = "{\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"tex";
-        std::fs::write(
-            &file,
-            format!("{{\"message\":{{\"role\":\"user\",\"content\":\"go\"}}}}\n{partial}"),
-        )
-        .unwrap();
-        w.scan(&mut ctx, now);
-        assert!(ctx.events.is_empty(), "partial line must not be processed yet");
+        // sid-done's journal completes before it exits; sid-mid dies mid-run.
+        let mut text = std::fs::read_to_string(&done_path).unwrap();
+        text.push_str(DONE_LINE);
+        text.push('\n');
+        std::fs::write(&done_path, text).unwrap();
+        f.agents.lock().unwrap().clear();
 
-        // Complete the line.
-        let full_second = "{\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}";
-        std::fs::write(
-            &file,
-            format!("{{\"message\":{{\"role\":\"user\",\"content\":\"go\"}}}}\n{full_second}\n"),
-        )
-        .unwrap();
-        w.scan(&mut ctx, now);
-        assert_eq!(ctx.events.len(), 1);
-        assert_eq!(ctx.events[0].status, AgentStatus::Done);
-    }
-
-    #[test]
-    fn truncation_resets_and_recovers() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        // Seed with a long assistant-done journal.
-        write_journal(
-            projects.path(),
-            &[
-                serde_json::json!({"message":{"role":"user","content":"go"}}),
-                serde_json::json!({"message":{"role":"assistant","content":[{"type":"text","text":"a very long completed answer here"}]}}),
-            ],
-        );
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| true);
-        let mut ctx = RecordingCtx::new(ENC, "s");
-        let now = now_real_ms();
-        w.scan(&mut ctx, now);
+        f.watcher.scan(&mut ctx, 5_000);
+        let by_thread: std::collections::HashMap<&str, AgentStatus> =
+            ctx.events.iter().map(|e| (e.thread_id.as_deref().unwrap(), e.status)).collect();
+        assert_eq!(by_thread["sid-done"], AgentStatus::Done);
+        assert_eq!(by_thread["sid-mid"], AgentStatus::Interrupted);
+        // Gone for good: nothing further on later scans.
         ctx.events.clear();
-        // Truncate to a shorter file with a single running user turn.
-        write_journal(
-            projects.path(),
-            &[serde_json::json!({"message":{"role":"user","content":"x"}})],
-        );
-        w.scan(&mut ctx, now);
-        assert_eq!(ctx.events.len(), 1, "should re-seed and emit after truncation");
-        assert_eq!(ctx.events[0].status, AgentStatus::Running);
-    }
-
-    #[test]
-    fn question_status_emitted() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        write_journal(
-            projects.path(),
-            &[
-                serde_json::json!({"message":{"role":"assistant","content":[{"type":"tool_use","name":"AskUserQuestion"}]}}),
-            ],
-        );
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| true);
-        let mut ctx = RecordingCtx::new(ENC, "s");
-        w.scan(&mut ctx, now_real_ms());
-        assert_eq!(ctx.events.len(), 1);
-        assert_eq!(ctx.events[0].status, AgentStatus::Question);
-    }
-
-    #[test]
-    fn loop_details_ride_along_on_emit() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        write_journal(
-            projects.path(),
-            &[serde_json::json!({
-                "timestamp":"2026-04-12T00:00:00Z",
-                "message":{"role":"assistant","content":[
-                    {"type":"tool_use","name":"ScheduleWakeup","input":{"delaySeconds":120,"reason":"wait"}}]}
-            })],
-        );
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| true);
-        let mut ctx = RecordingCtx::new(ENC, "s");
-        w.scan(&mut ctx, now_real_ms());
-        assert_eq!(ctx.events.len(), 1);
-        let details = ctx.events[0].details.as_ref().unwrap();
-        let base = parse_timestamp_ms("2026-04-12T00:00:00Z").unwrap();
-        assert_eq!(details.r#loop.as_ref().unwrap().next_wake_at, base + 120_000);
-    }
-
-    #[test]
-    fn subagents_reflected_in_details() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        write_journal(
-            projects.path(),
-            &[
-                serde_json::json!({"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}),
-            ],
-        );
-        // Add an active subagent alongside the thread journal.
-        let sub = projects.path().join(ENC).join(THREAD).join("subagents");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(sub.join("agent-1.jsonl"), "{}\n").unwrap();
-        std::fs::write(
-            sub.join("agent-1.meta.json"),
-            serde_json::json!({"agentType":"Explore","description":"scan"}).to_string(),
-        )
-        .unwrap();
-
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| true);
-        let mut ctx = RecordingCtx::new(ENC, "s");
-        w.scan(&mut ctx, now_real_ms());
-        let details = ctx.events[0].details.as_ref().unwrap();
-        let subs = details.subagents.as_ref().unwrap();
-        assert_eq!(subs.len(), 1);
-        assert_eq!(subs[0].agent_type.as_deref(), Some("Explore"));
-    }
-
-    #[test]
-    fn pid_dead_demotes_running_to_idle_branch_c() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        // Map the thread to a pid, and make everything "dead".
-        std::fs::write(
-            sessions.path().join("4242.json"),
-            serde_json::json!({"pid":4242,"sessionId":THREAD}).to_string(),
-        )
-        .unwrap();
-        // Seed: assistant done (a terminal status, not demoted at seed).
-        write_journal(
-            projects.path(),
-            &[
-                serde_json::json!({"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}),
-            ],
-        );
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| false);
-        let mut ctx = RecordingCtx::new(ENC, "s");
-        let now = now_real_ms();
-        w.scan(&mut ctx, now); // seed stores done; finalize emits done
-        ctx.events.clear();
-        // Grow with a user turn (→ running), but the mapped pid is dead → idle.
-        write_journal(
-            projects.path(),
-            &[
-                serde_json::json!({"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}),
-                serde_json::json!({"message":{"role":"user","content":"more"}}),
-            ],
-        );
-        w.scan(&mut ctx, now);
-        assert_eq!(ctx.events.len(), 1);
-        assert_eq!(ctx.events[0].status, AgentStatus::Idle);
-    }
-
-    #[test]
-    fn branch_a_mtime_stale_demotes_running() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        write_journal(
-            projects.path(),
-            &[serde_json::json!({"message":{"role":"user","content":"go"}})],
-        );
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| true);
-        let mut ctx = RecordingCtx::new(ENC, "s");
-        let now = now_real_ms();
-        w.scan(&mut ctx, now); // seed → running stored; finalize emits running
-        ctx.events.clear();
-        // Same file (no growth), but now far in the future → journal mtime stale.
-        w.scan(&mut ctx, now + 3 * 60_000);
-        assert_eq!(ctx.events.len(), 1);
-        assert_eq!(ctx.events[0].status, AgentStatus::Idle);
-    }
-
-    #[test]
-    fn usage_delta_emits_without_status_change() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        // Seed: assistant done with usage A.
-        write_journal(
-            projects.path(),
-            &[serde_json::json!({
-                "timestamp":"2026-04-12T00:00:00Z",
-                "message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"a"}],
-                    "usage":{"input_tokens":10,"output_tokens":5}}
-            })],
-        );
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| true);
-        let mut ctx = RecordingCtx::new(ENC, "s");
-        let now = now_real_ms();
-        w.scan(&mut ctx, now);
-        ctx.events.clear();
-        // Append another done turn (status stays done) but with different usage.
-        write_journal(
-            projects.path(),
-            &[
-                serde_json::json!({
-                    "timestamp":"2026-04-12T00:00:00Z",
-                    "message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"a"}],
-                        "usage":{"input_tokens":10,"output_tokens":5}}
-                }),
-                serde_json::json!({
-                    "timestamp":"2026-04-12T00:05:00Z",
-                    "message":{"role":"assistant","model":"claude-opus-4-6","content":[{"type":"text","text":"b"}],
-                        "usage":{"input_tokens":999,"output_tokens":42}}
-                }),
-            ],
-        );
-        w.scan(&mut ctx, now);
-        assert_eq!(ctx.events.len(), 1, "usage delta alone should emit (adopted fix #2)");
-        assert_eq!(ctx.events[0].status, AgentStatus::Done);
-        assert_eq!(ctx.events[0].details.as_ref().unwrap().context_used, Some(1041));
-    }
-
-    #[test]
-    fn stale_file_skipped_entirely() {
-        let projects = TempDir::new().unwrap();
-        let sessions = TempDir::new().unwrap();
-        write_journal(
-            projects.path(),
-            &[
-                serde_json::json!({"message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}),
-            ],
-        );
-        let mut w = new_watcher(projects.path(), sessions.path(), |_| true);
-        let mut ctx = RecordingCtx::new(ENC, "s");
-        // now far ahead of the file mtime → older than STALE_MS (5min) → skipped.
-        w.scan(&mut ctx, now_real_ms() + 10 * 60_000);
+        f.watcher.scan(&mut ctx, 7_000);
         assert!(ctx.events.is_empty());
+    }
+
+    #[test]
+    fn unresolved_agents_never_emit_even_on_exit() {
+        let mut f = fixture();
+        write_journal(&f.projects, "/home/u/x", "sid-x", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(1, "/home/u/x", "sid-x", "busy")];
+        let mut ctx = Ctx::new(); // resolves nothing
+        f.watcher.scan(&mut ctx, 1_000);
+        f.agents.lock().unwrap().clear();
+        f.watcher.scan(&mut ctx, 3_000);
+        assert!(ctx.events.is_empty());
+    }
+
+    #[test]
+    fn cli_name_is_fallback_when_journal_has_no_prompt() {
+        let mut f = fixture();
+        // Journal whose only user line is system-like (skipped by the name rule).
+        write_journal(
+            &f.projects,
+            "/home/u/p",
+            "sid-1",
+            &[r#"{"message":{"role":"user","content":"<system>boot</system>"}}"#],
+        );
+        *f.agents.lock().unwrap() = vec![cli_agent(7, "/home/u/p", "sid-1", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/p".into(), "p".into()));
+        f.watcher.scan(&mut ctx, 1_000);
+        assert_eq!(ctx.events[0].thread_name.as_deref(), Some("slug-7"));
+    }
+
+    #[test]
+    fn shrunk_journal_resets_and_rederives() {
+        let mut f = fixture();
+        let path = write_journal(&f.projects, "/home/u/p", "sid-1", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(7, "/home/u/p", "sid-1", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/p".into(), "p".into()));
+        f.watcher.scan(&mut ctx, 1_000);
+
+        // Truncate + rewrite with a different prompt: state re-derives.
+        let replacement = r#"{"message":{"role":"user","content":"a brand new thread"}}"#;
+        std::fs::write(&path, format!("{replacement}\n")).unwrap();
+        f.watcher.scan(&mut ctx, 3_000);
+        let last = ctx.events.last().unwrap();
+        assert_eq!(last.thread_name.as_deref(), Some("a brand new thread"));
+    }
+
+    #[test]
+    fn journal_found_by_probe_when_encoding_guess_misses() {
+        let mut f = fixture();
+        // Dir name Claude-encoded from a path with a dot: guess `/`→`-` misses.
+        let dir = f.projects.join("-home-u-my-app"); // actual dir for /home/u/my.app
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("sid-1.jsonl"), format!("{USER_LINE}\n")).unwrap();
+        *f.agents.lock().unwrap() = vec![cli_agent(7, "/home/u/my.app", "sid-1", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/my.app".into(), "p".into()));
+        f.watcher.scan(&mut ctx, 1_000);
+        assert_eq!(ctx.events[0].thread_name.as_deref(), Some("fix the flaky test"));
     }
 }

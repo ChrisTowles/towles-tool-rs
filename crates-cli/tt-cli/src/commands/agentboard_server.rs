@@ -31,8 +31,9 @@ use tokio::sync::{Notify, broadcast};
 use tt_agentboard::engine::{Engine, apply_mutation, ingest_addr, now_ms};
 use tt_agentboard::hook_http::{HookContext, parse_context, parse_resize_context};
 use tt_agentboard::pane_agents::{
-    PaneAgentMap, merge_agents_with_pane_presence, override_terminal_if_pane_alive,
-    pane_agent_sets_differ, resolve_agent_pane_id, scan_all_tmux_pane_agents,
+    PaneAgentMap, ancestor_pane_session, list_all_panes, merge_agents_with_pane_presence,
+    override_terminal_if_pane_alive, pane_agent_sets_differ, ps_tree, resolve_agent_pane_id,
+    scan_all_tmux_pane_agents,
 };
 use tt_agentboard::session_resolve::resolve_session_by_dir;
 use tt_agentboard::sidebar_width_sync::{
@@ -351,9 +352,19 @@ fn sorted_sessions(provider: &TmuxProvider) -> Vec<MuxSessionInfo> {
 fn scan_once(shared: &Shared) {
     let dir_map: Vec<(String, String)> =
         shared.provider.list_sessions().into_iter().map(|s| (s.dir, s.name)).collect();
+    // pid → owning pane's session (T7): agents are attributed to the tmux
+    // session whose pane runs them, so shared dirs (slot clones) and odd
+    // cwds resolve correctly; the dir map remains the fallback.
+    let session_by_pane_pid: std::collections::HashMap<i32, String> = list_all_panes()
+        .into_iter()
+        .filter(|p| p.session != tt_agentboard::tmux::STASH_SESSION)
+        .map(|p| (p.pid, p.session))
+        .collect();
+    let tree = ps_tree();
     let mut engine = shared.engine.lock().unwrap();
-    engine.scan_once_with_resolver(
+    engine.scan_once_with_resolvers(
         &|project_dir| resolve_session_by_dir(project_dir, &dir_map),
+        &|pid| ancestor_pane_session(pid, &session_by_pane_pid, &tree),
         now_ms(),
     );
 }

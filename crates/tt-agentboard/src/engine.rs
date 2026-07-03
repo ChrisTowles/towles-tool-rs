@@ -19,11 +19,10 @@ use crate::metadata::{LogInput, ProgressInput, StatusInput};
 use crate::session_order::ReorderDelta;
 use crate::types::{AgentEvent, MetadataTone};
 use crate::{
-    AgentTracker, AgentWatcher, AmpAgentWatcher, ClaudeCodeAgentWatcher, ClaudePidLookup,
-    CodexAgentWatcher, GitInfoCache, MetadataMutation, OpenCodeAgentWatcher, RepoEntry,
-    SessionMetadataStore, SessionOrder, StatePayload, WatcherContext, add_repo, assemble_state,
-    default_repos_path, instance_key, load_repos, remove_repo_by_name, repo_entries,
-    resolve_session_name, save_repos,
+    AgentTracker, AgentWatcher, AmpAgentWatcher, ClaudeCodeAgentWatcher, CodexAgentWatcher,
+    GitInfoCache, MetadataMutation, OpenCodeAgentWatcher, RepoEntry, SessionMetadataStore,
+    SessionOrder, StatePayload, WatcherContext, add_repo, assemble_state, default_repos_path,
+    instance_key, load_repos, remove_repo_by_name, repo_entries, resolve_session_name, save_repos,
 };
 
 // Prune schedule constants (BRIDGE-SPEC §4).
@@ -74,16 +73,20 @@ pub fn apply_mutation(engine: &mut Engine, mutation: MetadataMutation, now: i64)
     }
 }
 
-/// Collects watcher emits during a scan, resolving project dirs to session
-/// names through the injected resolver.
+/// Collects watcher emits during a scan, resolving project dirs (and, in
+/// tmux mode, agent pids) to session names through injected resolvers.
 struct CollectCtx<'a> {
     resolve: &'a dyn Fn(&str) -> Option<String>,
+    resolve_pid: &'a dyn Fn(i32) -> Option<String>,
     events: Vec<AgentEvent>,
 }
 
 impl WatcherContext for CollectCtx<'_> {
     fn resolve_session(&self, project_dir: &str) -> Option<String> {
         (self.resolve)(project_dir)
+    }
+    fn resolve_session_by_pid(&self, pid: i32) -> Option<String> {
+        (self.resolve_pid)(pid)
     }
     fn emit(&mut self, event: AgentEvent) {
         self.events.push(event);
@@ -99,7 +102,6 @@ pub struct Engine {
     metadata: SessionMetadataStore,
     order: SessionOrder,
     git_cache: GitInfoCache,
-    pid_lookup: ClaudePidLookup,
     watchers: Vec<Box<dyn AgentWatcher + Send>>,
     theme: Option<String>,
     preferred_editor: String,
@@ -112,7 +114,6 @@ impl Engine {
     pub fn new() -> Self {
         let projects_dir =
             dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude").join("projects");
-        let sessions_dir = ClaudePidLookup::default_dir();
         let repos_path = default_repos_path();
         let order_path = crate::default_session_order_path();
 
@@ -128,12 +129,8 @@ impl Engine {
             metadata: SessionMetadataStore::new(),
             order: SessionOrder::new(Some(order_path)),
             git_cache: GitInfoCache::new(),
-            pid_lookup: ClaudePidLookup::new(sessions_dir.clone()),
             watchers: vec![
-                Box::new(ClaudeCodeAgentWatcher::new(
-                    projects_dir,
-                    ClaudePidLookup::new(sessions_dir),
-                )),
+                Box::new(ClaudeCodeAgentWatcher::with_defaults()),
                 Box::new(AmpAgentWatcher::with_defaults()),
                 Box::new(CodexAgentWatcher::with_defaults()),
                 Box::new(OpenCodeAgentWatcher::with_defaults()),
@@ -160,13 +157,18 @@ impl Engine {
     pub fn scan_once(&mut self, now: i64) {
         self.reload_repos();
         let entries = repo_entries(&self.repo_paths);
-        self.scan_once_with_resolver(&|dir| resolve_session_name(dir, &entries), now);
+        self.scan_once_with_resolvers(&|dir| resolve_session_name(dir, &entries), &|_| None, now);
     }
 
-    /// One scan of every watcher: collect emits through `resolve` and feed
+    /// One scan of every watcher: collect emits through the resolvers and feed
     /// them to the tracker (first scan's emits are seeded → marked unseen).
-    pub fn scan_once_with_resolver(&mut self, resolve: &dyn Fn(&str) -> Option<String>, now: i64) {
-        let mut ctx = CollectCtx { resolve, events: Vec::new() };
+    pub fn scan_once_with_resolvers(
+        &mut self,
+        resolve: &dyn Fn(&str) -> Option<String>,
+        resolve_pid: &dyn Fn(i32) -> Option<String>,
+        now: i64,
+    ) {
+        let mut ctx = CollectCtx { resolve, resolve_pid, events: Vec::new() };
         for watcher in &mut self.watchers {
             watcher.scan(&mut ctx, now);
         }
@@ -219,21 +221,21 @@ impl Engine {
     /// schedule → assemble snapshot. The tmux server passes entries derived
     /// from live tmux sessions.
     pub fn compute_payload_for_entries(&mut self, entries: &[RepoEntry], now: i64) -> StatePayload {
-        // pid-liveness drives both pruning pins and the `waiting` synthesis (§4/§6).
-        self.pid_lookup.invalidate();
+        // CLI-derived liveness drives both pruning pins and the `waiting`
+        // synthesis (§4/§6; T7 replaced the ~/.claude/sessions pid files).
+        let live_threads: HashSet<String> = crate::claude_cli::fetch_agents_cached(
+            std::time::Duration::from_millis(crate::watchers::claude_code::CLI_CACHE_TTL_MS),
+        )
+        .into_iter()
+        .map(|a| a.session_id)
+        .collect();
         let mut pinned: HashMap<String, Vec<String>> = HashMap::new();
-        let mut live_threads: HashSet<String> = HashSet::new();
         for entry in entries {
             for agent in self.tracker.get_agents(&entry.name) {
                 let Some(tid) = agent.thread_id.clone() else {
                     continue;
                 };
-                let alive = self
-                    .pid_lookup
-                    .pid_for_thread(&tid)
-                    .is_some_and(|p| self.pid_lookup.is_alive(p));
-                if alive {
-                    live_threads.insert(tid.clone());
+                if live_threads.contains(&tid) {
                     pinned
                         .entry(entry.name.clone())
                         .or_default()

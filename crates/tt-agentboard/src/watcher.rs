@@ -24,6 +24,14 @@ pub trait WatcherContext {
     /// the implementation re-encodes known repo paths and prefix-matches.
     fn resolve_session(&self, project_dir: &str) -> Option<String>;
 
+    /// Resolve an agent's OS pid to the tmux session whose pane owns it
+    /// (T7): the tmux server walks the pid's ancestry to a pane pid. Hosts
+    /// without pane knowledge (the desktop app) keep the default `None`,
+    /// falling back to [`WatcherContext::resolve_session`] on the cwd.
+    fn resolve_session_by_pid(&self, _pid: i32) -> Option<String> {
+        None
+    }
+
     /// Emit an event (the bridge applies it to the tracker and broadcasts).
     fn emit(&mut self, event: AgentEvent);
 }

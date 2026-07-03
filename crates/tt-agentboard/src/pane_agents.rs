@@ -16,6 +16,7 @@
 //! subprocess/sqlite/lsof access lives in thin, un-unit-tested functions.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use indexmap::IndexMap;
 
@@ -88,6 +89,7 @@ pub fn parse_pane_lines(raw: &str) -> Vec<PaneEntry> {
 #[derive(Debug, Default)]
 pub struct ProcessTree {
     pub children_of: HashMap<i32, Vec<i32>>,
+    pub parent_of: HashMap<i32, i32>,
     pub comm_of: HashMap<i32, String>,
 }
 
@@ -107,6 +109,7 @@ pub fn parse_process_tree(raw: &str) -> ProcessTree {
             continue;
         }
         tree.comm_of.insert(pid, comm);
+        tree.parent_of.insert(pid, ppid);
         tree.children_of.entry(ppid).or_default().push(pid);
     }
     tree
@@ -131,6 +134,23 @@ pub fn match_process_tree(pid: i32, patterns: &[&str], tree: &ProcessTree, depth
         }
     }
     false
+}
+
+/// Walk `pid`'s ancestry until a pid that is a tmux pane pid, returning that
+/// pane's session (T7: attribute an agent to the tmux session owning it).
+pub fn ancestor_pane_session(
+    pid: i32,
+    session_by_pane_pid: &HashMap<i32, String>,
+    tree: &ProcessTree,
+) -> Option<String> {
+    let mut current = pid;
+    for _ in 0..32 {
+        if let Some(session) = session_by_pane_pid.get(&current) {
+            return Some(session.clone());
+        }
+        current = *tree.parent_of.get(&current)?;
+    }
+    None
 }
 
 /// First child pid (≤3 levels deep) whose comm contains `name`.
@@ -163,49 +183,6 @@ pub fn resolve_amp_pane_info(title: &str) -> Option<String> {
         _ => rest,
     };
     (!thread_name.is_empty()).then(|| thread_name.to_string())
-}
-
-/// One live Claude Code process from `claude agents --all --json`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClaudeAgentInfo {
-    pub session_id: String,
-    pub name: Option<String>,
-    pub status: Option<AgentStatus>,
-}
-
-/// Parse `claude agents --all --json` into pid → info. Status mapping:
-/// `busy` → running; `waiting` (permission prompt etc.) → question;
-/// `idle` → waiting (the process is alive at a prompt — agentboard's
-/// "waiting for user" state, same synthesis the TS applied to a live
-/// process with a terminal journal status).
-pub fn parse_claude_agents(json: &str) -> HashMap<i32, ClaudeAgentInfo> {
-    let mut by_pid = HashMap::new();
-    let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {
-        return by_pid;
-    };
-    for entry in entries {
-        let Some(pid) = entry.get("pid").and_then(|v| v.as_i64()) else {
-            continue;
-        };
-        let Some(session_id) = entry.get("sessionId").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let status = match entry.get("status").and_then(|v| v.as_str()) {
-            Some("busy") => Some(AgentStatus::Running),
-            Some("waiting") => Some(AgentStatus::Question),
-            Some("idle") => Some(AgentStatus::Waiting),
-            _ => None,
-        };
-        by_pid.insert(
-            pid as i32,
-            ClaudeAgentInfo {
-                session_id: session_id.to_string(),
-                name: entry.get("name").and_then(|v| v.as_str()).map(str::to_string),
-                status,
-            },
-        );
-    }
-    by_pid
 }
 
 // --- Presence assembly (pure; per-agent I/O injected) ---
@@ -425,12 +402,14 @@ pub fn ps_tree() -> ProcessTree {
     }
 }
 
-/// pid → live Claude info via `claude agents --all --json`.
-pub fn claude_agents_by_pid() -> HashMap<i32, ClaudeAgentInfo> {
-    match tt_exec::run("claude", &["agents", "--all", "--json"]) {
-        Ok(out) if out.ok() => parse_claude_agents(&out.stdout),
-        _ => HashMap::new(),
-    }
+/// pid → live Claude info via the shared cached CLI snapshot.
+pub fn claude_agents_by_pid() -> HashMap<i32, crate::claude_cli::CliAgent> {
+    crate::claude_cli::fetch_agents_cached(Duration::from_millis(
+        crate::watchers::claude_code::CLI_CACHE_TTL_MS,
+    ))
+    .into_iter()
+    .map(|a| (a.pid, a))
+    .collect()
 }
 
 /// Codex: latest thread_id for an agent pid from `$CODEX_HOME/logs_1.sqlite`.
@@ -499,7 +478,7 @@ pub fn resolve_agent_pane_id(
         let by_pid = claude_agents_by_pid();
         for pane in &non_sidebar {
             if let Some(agent_pid) = find_child_pid(pane.pid, "claude", &tree, 0)
-                && by_pid.get(&agent_pid).is_some_and(|info| info.session_id == tid)
+                && by_pid.get(&agent_pid).is_some_and(|a| a.session_id == tid)
             {
                 return Some(pane.id.clone());
             }
@@ -557,7 +536,7 @@ pub fn scan_all_tmux_pane_agents(sidebar_pane_ids: &HashSet<String>, now_ms: i64
         claude: &|pid| {
             claude_by_pid
                 .get(&pid)
-                .map(|info| (info.session_id.clone(), info.name.clone(), info.status))
+                .map(|a| (a.session_id.clone(), a.name.clone(), a.agent_status()))
         },
         codex: &codex_thread_for_pid,
     };
@@ -609,23 +588,6 @@ mod tests {
         );
         assert_eq!(resolve_amp_pane_info("amp - just-a-name").as_deref(), Some("just-a-name"));
         assert_eq!(resolve_amp_pane_info("vim"), None);
-    }
-
-    #[test]
-    fn claude_agents_json_parses_and_maps_status() {
-        let json = r#"[
-            {"pid": 100, "sessionId": "aaa", "name": "fix bug", "status": "busy"},
-            {"pid": 200, "sessionId": "bbb", "status": "idle"},
-            {"pid": 300, "sessionId": "ccc", "status": "waiting", "waitingFor": "permission prompt"},
-            {"pid": 400, "status": "busy"}
-        ]"#;
-        let by_pid = parse_claude_agents(json);
-        assert_eq!(by_pid.len(), 3); // 400 has no sessionId
-        assert_eq!(by_pid[&100].status, Some(AgentStatus::Running));
-        assert_eq!(by_pid[&100].name.as_deref(), Some("fix bug"));
-        assert_eq!(by_pid[&200].status, Some(AgentStatus::Waiting));
-        assert_eq!(by_pid[&300].status, Some(AgentStatus::Question));
-        assert!(parse_claude_agents("not json").is_empty());
     }
 
     fn presence(agent: &str, pane: &str, thread: Option<&str>) -> PaneAgentPresence {

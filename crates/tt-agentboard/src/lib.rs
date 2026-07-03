@@ -26,6 +26,7 @@
 use thiserror::Error;
 
 pub mod bridge;
+pub mod claude_cli;
 pub mod engine;
 pub mod fs_notify;
 pub mod git_info;
@@ -83,6 +84,5 @@ pub use types::{
 pub use watcher::{AgentWatcher, WatcherContext};
 pub use watchers::amp::AmpAgentWatcher;
 pub use watchers::claude_code::ClaudeCodeAgentWatcher;
-pub use watchers::claude_pid::ClaudePidLookup;
 pub use watchers::codex::CodexAgentWatcher;
 pub use watchers::opencode::OpenCodeAgentWatcher;

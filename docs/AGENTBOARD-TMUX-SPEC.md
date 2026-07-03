@@ -131,6 +131,26 @@ a TS pain point) — sidebar orchestration just no-ops without tmux sessions.
 - Pane highlight resets are fire-and-forget 300ms tasks (no timer cancel —
   the reset commands are idempotent).
 
+## T7 — hybrid claude-code watcher (2026-07-03, Chris's direction)
+
+`claude agents --all --json` is now the authoritative source for Claude Code
+discovery, liveness, and status (`claude_cli` module; one cached CLI call
+~170ms shared by the watcher's 2s tick, engine pinning, and the 3s pane
+scan). Journals are demoted to enrichment: incremental tail reads supply
+model/tool/usage→cache/subagents//loop and the first-prompt thread name (CLI
+interactive names are slugs). Status: busy→running, waiting→question,
+idle→journal-refined (done/question preserved for the unseen-✓ flow, else
+waiting). Sessions that vanish from the CLI get one final journal read and a
+terminal emit (done, or interrupted if mid-run).
+
+Session attribution: new `WatcherContext::resolve_session_by_pid` — the tmux
+server walks the agent pid's ancestry to a pane pid and uses that pane's
+session (fixes shared-dir/slot ambiguity); cwd matching is the fallback (and
+the desktop's only path). The `~/.claude/sessions/<pid>.json` pid files are
+no longer read anywhere: `ClaudePidLookup` is deleted, engine pinning uses
+the CLI live-set. Dropped deliberately: sessions that exited before the
+server started never appear (the CLI lists live processes only).
+
 Status: ALL PHASES COMPLETE. `ttr agentboard setup` → prefix-a-t gives the
 full tmux sidebar: live sessions, watcher agents with pane merge, Enter-to-
 focus an agent's pane (cross-session, with highlight flash), x-to-kill panes,
