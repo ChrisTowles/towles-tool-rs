@@ -149,24 +149,87 @@ fn start_time(entries: &[JournalEntry]) -> Option<String> {
 }
 
 /// Build the treemap for all sessions, grouped by project then date. Ports
-/// `buildAllSessionsTreemap`. Reads each session's JSONL from disk.
-pub fn build_all_sessions_treemap(sessions: &[SessionResult]) -> Result<TreemapNode> {
-    // Group by project (extracted name), preserving first-seen order.
+/// `buildAllSessionsTreemap`.
+///
+/// Parses each session's JSONL exactly once and writes the token total back
+/// into `session.tokens` (discovery no longer pre-counts — that doubled the
+/// I/O and parse cost of every `graph` run), so callers can build the bar
+/// chart from the same pass.
+pub fn build_all_sessions_treemap(sessions: &mut [SessionResult]) -> Result<TreemapNode> {
+    // Pass 1: one read + parse per session — build the leaf node and the token
+    // total that the project sort, leaf value, and bar chart all derive from.
+    struct SessionLeaf {
+        node: TreemapNode,
+        project: String,
+        date: String,
+        tokens: i64,
+    }
+
+    let mut leaves: Vec<SessionLeaf> = Vec::with_capacity(sessions.len());
+    for session in sessions.iter_mut() {
+        let entries = read_jsonl(&session.path);
+        let analysis = analyze_session(&entries);
+        session.tokens = analysis.input_tokens + analysis.output_tokens;
+
+        let project_name = extract_project_name(&session.project);
+        let label = extract_session_label(&entries, &session.session_id);
+        let tools = aggregate_session_tools(&entries);
+        let start = start_time(&entries);
+        let turn_children = build_turn_nodes(&session.session_id, &entries, Some(&session.path));
+
+        let has_turns = !turn_children.is_empty();
+        leaves.push(SessionLeaf {
+            node: TreemapNode {
+                name: label,
+                value: if has_turns { None } else { Some(session.tokens) },
+                children: if has_turns { Some(turn_children) } else { None },
+                session_id: Some(short_id(&session.session_id)),
+                full_session_id: Some(session.session_id.clone()),
+                file_path: Some(session.path.to_string_lossy().to_string()),
+                start_time: start,
+                model: Some(
+                    get_primary_model(
+                        analysis.opus_tokens,
+                        analysis.sonnet_tokens,
+                        analysis.haiku_tokens,
+                    )
+                    .to_string(),
+                ),
+                input_tokens: Some(analysis.input_tokens),
+                output_tokens: Some(analysis.output_tokens),
+                ratio: Some(if analysis.output_tokens > 0 {
+                    analysis.input_tokens as f64 / analysis.output_tokens as f64
+                } else {
+                    0.0
+                }),
+                date: Some(session.date.clone()),
+                project: Some(project_name.clone()),
+                repeated_reads: Some(analysis.repeated_reads),
+                model_efficiency: Some(analysis.model_efficiency),
+                tools: if tools.is_empty() { None } else { Some(tools) },
+                ..Default::default()
+            },
+            project: project_name,
+            date: session.date.clone(),
+            tokens: session.tokens,
+        });
+    }
+
+    // Pass 2: group by project (extracted name), preserving first-seen order.
     let mut project_order: Vec<String> = Vec::new();
-    let mut by_project: BTreeMap<String, Vec<&SessionResult>> = BTreeMap::new();
-    for session in sessions {
-        let name = extract_project_name(&session.project);
+    let mut by_project: BTreeMap<String, Vec<SessionLeaf>> = BTreeMap::new();
+    for leaf in leaves {
         by_project
-            .entry(name.clone())
+            .entry(leaf.project.clone())
             .or_insert_with(|| {
-                project_order.push(name.clone());
+                project_order.push(leaf.project.clone());
                 Vec::new()
             })
-            .push(session);
+            .push(leaf);
     }
 
     // Sort projects by total tokens (descending), stable on first-seen order.
-    let mut project_totals: Vec<(String, Vec<&SessionResult>)> = project_order
+    let mut project_totals: Vec<(String, Vec<SessionLeaf>)> = project_order
         .into_iter()
         .map(|name| {
             let sess = by_project.remove(&name).unwrap();
@@ -181,73 +244,23 @@ pub fn build_all_sessions_treemap(sessions: &[SessionResult]) -> Result<TreemapN
 
     let mut project_children: Vec<TreemapNode> = Vec::new();
 
-    for (project_name, project_sessions) in project_totals {
-        // Group by date within the project.
-        let mut by_date: BTreeMap<String, Vec<&SessionResult>> = BTreeMap::new();
-        for session in &project_sessions {
-            by_date.entry(session.date.clone()).or_default().push(session);
+    for (project_name, project_leaves) in project_totals {
+        // Group by date within the project; BTreeMap reversed = most-recent first.
+        let mut by_date: BTreeMap<String, Vec<TreemapNode>> = BTreeMap::new();
+        for leaf in project_leaves {
+            by_date.entry(leaf.date).or_default().push(leaf.node);
         }
 
-        // Dates most-recent first.
-        let mut dates: Vec<String> = by_date.keys().cloned().collect();
-        dates.sort();
-        dates.reverse();
-
-        let mut date_children: Vec<TreemapNode> = Vec::new();
-
-        for date in dates {
-            let date_sessions = &by_date[&date];
-            let mut session_children: Vec<TreemapNode> = Vec::new();
-
-            for session in date_sessions {
-                let entries = read_jsonl(&session.path);
-                let analysis = analyze_session(&entries);
-                let label = extract_session_label(&entries, &session.session_id);
-                let tools = aggregate_session_tools(&entries);
-                let start = start_time(&entries);
-                let turn_children =
-                    build_turn_nodes(&session.session_id, &entries, Some(&session.path));
-
-                let has_turns = !turn_children.is_empty();
-                session_children.push(TreemapNode {
-                    name: label,
-                    value: if has_turns { None } else { Some(session.tokens) },
-                    children: if has_turns { Some(turn_children) } else { None },
-                    session_id: Some(short_id(&session.session_id)),
-                    full_session_id: Some(session.session_id.clone()),
-                    file_path: Some(session.path.to_string_lossy().to_string()),
-                    start_time: start,
-                    model: Some(
-                        get_primary_model(
-                            analysis.opus_tokens,
-                            analysis.sonnet_tokens,
-                            analysis.haiku_tokens,
-                        )
-                        .to_string(),
-                    ),
-                    input_tokens: Some(analysis.input_tokens),
-                    output_tokens: Some(analysis.output_tokens),
-                    ratio: Some(if analysis.output_tokens > 0 {
-                        analysis.input_tokens as f64 / analysis.output_tokens as f64
-                    } else {
-                        0.0
-                    }),
-                    date: Some(session.date.clone()),
-                    project: Some(project_name.clone()),
-                    repeated_reads: Some(analysis.repeated_reads),
-                    model_efficiency: Some(analysis.model_efficiency),
-                    tools: if tools.is_empty() { None } else { Some(tools) },
-                    ..Default::default()
-                });
-            }
-
-            date_children.push(TreemapNode {
+        let date_children: Vec<TreemapNode> = by_date
+            .into_iter()
+            .rev()
+            .map(|(date, session_children)| TreemapNode {
                 name: date.clone(),
                 children: Some(session_children),
                 date: Some(date),
                 ..Default::default()
-            });
-        }
+            })
+            .collect();
 
         project_children.push(TreemapNode {
             name: project_name.clone(),
@@ -362,16 +375,18 @@ mod tests {
         )
         .unwrap();
 
-        let sessions = [SessionResult {
+        let mut sessions = [SessionResult {
             session_id: "s1session".to_string(),
             path,
             date: "2025-06-15".to_string(),
-            tokens: 150,
+            tokens: 0,
             project: "-home-code-demo".to_string(),
             mtime: 1,
         }];
 
-        let root = build_all_sessions_treemap(&sessions).unwrap();
+        let root = build_all_sessions_treemap(&mut sessions).unwrap();
+        // The parse pass fills the token total discovery no longer computes.
+        assert_eq!(sessions[0].tokens, 150);
         assert_eq!(root.name, "All Sessions");
         let projects = root.children.as_ref().unwrap();
         assert_eq!(projects.len(), 1);

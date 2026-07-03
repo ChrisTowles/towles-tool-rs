@@ -118,7 +118,8 @@ fn run_html(
 
     let treemap = match args.session.as_deref() {
         None => {
-            let sessions = match find_recent_sessions(projects_dir, SESSION_LIMIT, days, now_ms) {
+            let mut sessions = match find_recent_sessions(projects_dir, SESSION_LIMIT, days, now_ms)
+            {
                 Ok(sessions) => sessions,
                 Err(e) => {
                     ui::error(&format!("Failed to scan sessions: {e}"));
@@ -135,14 +136,17 @@ fn run_html(
                 "📊 Generating treemap for {} sessions{days_msg}...",
                 sessions.len()
             ));
-            bar_chart = build_bar_chart_data(&sessions);
-            match build_all_sessions_treemap(&sessions) {
+            // The treemap's parse pass fills session.tokens; build the bar
+            // chart afterward so it sees the real totals.
+            let treemap = match build_all_sessions_treemap(&mut sessions) {
                 Ok(treemap) => treemap,
                 Err(e) => {
                     ui::error(&format!("Failed to build treemap: {e}"));
                     return 1;
                 }
-            }
+            };
+            bar_chart = build_bar_chart_data(&sessions);
+            treemap
         }
         Some(id) => {
             let path = match find_session_path(projects_dir, id) {

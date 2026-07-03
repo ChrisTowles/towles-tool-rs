@@ -11,7 +11,7 @@ use std::time::UNIX_EPOCH;
 use chrono::{DateTime, Local};
 
 use crate::analyzer::extract_project_name;
-use crate::parser::{calculate_cutoff_ms, quick_token_count};
+use crate::parser::calculate_cutoff_ms;
 use crate::types::{BarChartData, BarChartDay, ProjectBar, SessionResult};
 use crate::{Error, Result};
 
@@ -33,6 +33,10 @@ fn local_date(mtime_ms: i64) -> String {
 
 /// Find recent sessions from the projects directory, most-recent first, limited
 /// to `limit` and (optionally) the last `days`. Ports `findRecentSessions`.
+///
+/// Discovery is metadata-only: `tokens` starts at 0 and is filled by
+/// [`crate::treemap::build_all_sessions_treemap`]'s single parse pass, so each
+/// JSONL is read once per run instead of twice.
 pub fn find_recent_sessions(
     projects_dir: &Path,
     limit: usize,
@@ -65,13 +69,12 @@ pub fn find_recent_sessions(
             }
 
             let session_id = name.trim_end_matches(".jsonl").to_string();
-            let tokens = quick_token_count(&file_path);
 
             sessions.push(SessionResult {
                 session_id,
                 path: file_path,
                 date: local_date(mtime),
-                tokens,
+                tokens: 0,
                 project: project.clone(),
                 mtime,
             });
@@ -197,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn find_recent_reads_dir_and_counts_tokens() {
+    fn find_recent_reads_dir_metadata_only() {
         let tmp = tempfile::tempdir().unwrap();
         let proj = tmp.path().join("-home-code-demo");
         std::fs::create_dir(&proj).unwrap();
@@ -212,7 +215,8 @@ mod tests {
         let sessions = find_recent_sessions(tmp.path(), 500, 0.0, 1_700_000_000_000).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "abc123");
-        assert_eq!(sessions[0].tokens, 15);
+        // Tokens are filled by the treemap's parse pass, not discovery.
+        assert_eq!(sessions[0].tokens, 0);
         assert_eq!(sessions[0].project, "-home-code-demo");
     }
 
