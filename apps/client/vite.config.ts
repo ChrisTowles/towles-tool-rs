@@ -2,6 +2,12 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { defineConfig } from "vite";
+import { slotBasePort } from "../../scripts/slot-port.mjs";
+
+// `dev-port.mjs` normally pins TT_DEV_PORT before launching us. If vite is run
+// directly (no TT_DEV_PORT), fall back to this slot's deterministic base port
+// rather than a hardcoded 1420, so slots don't squat on each other's port.
+const devPort = Number(process.env.TT_DEV_PORT) || slotBasePort(path.resolve(__dirname, "../.."));
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -14,9 +20,7 @@ export default defineConfig({
   // Prevent Vite from obscuring Rust errors
   clearScreen: false,
   server: {
-    // Port comes from TT_DEV_PORT (scripts/dev-port.mjs resolves/pins it and
-    // passes it through; also settable directly for a bare `vite` run).
-    port: Number(process.env.TT_DEV_PORT) || 1420,
+    port: devPort,
     strictPort: true,
   },
   // Env variables starting with these prefixes are exposed to the client

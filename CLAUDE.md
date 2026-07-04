@@ -67,10 +67,13 @@ Cargo workspace + npm workspace (`apps/client` only):
   `collect calendar|issues|prs|all`, `mcp serve`.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
   `npm run dev` (root) picks a free dev-server port automatically
-  (`scripts/dev-port.mjs`, scans up from 1420) instead of a hardcoded one, so
-  multiple worktree slots can run the app concurrently without colliding. Pin a
-  slot to a fixed port with `TT_DEV_PORT` in a gitignored root `.env.local`
-  (dev-port reads it and passes it through to vite).
+  (`scripts/dev-port.mjs`), scanning up from a per-slot base port derived from
+  the slot's directory name (`scripts/slot-port.mjs`) instead of a hardcoded
+  1420, so multiple worktree slots run the app concurrently without colliding.
+  Pin a slot to a fixed port with `TT_DEV_PORT` in a gitignored root
+  `.env.local` (dev-port reads it and passes it through to vite). Each window is
+  labeled by slot: the title bar reads `Towles Tool — <slot>` and the app
+  header shows a colored slot badge (`app_slot` command).
 - `apps/client` — React 19 + Vite frontend styled with Tailwind CSS v4 +
   shadcn/ui (`@/*` → `src/*` alias, components vendored into
   `src/components/ui/`, light/dark via the `.dark` class). Yaak-style app
