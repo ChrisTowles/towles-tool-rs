@@ -70,6 +70,10 @@ struct Shared {
     pane_agents: Mutex<PaneAgentMap>,
     /// Listening-port attribution per session (10s poll).
     ports: Mutex<PortScanner>,
+    /// pid → owning pane's session (T7), last-good snapshot. A failed tmux
+    /// scan keeps this instead of going empty — an empty map would silently
+    /// fall back to dir-based resolution for every agent until the next scan.
+    session_by_pane_pid: Mutex<HashMap<i32, String>>,
 }
 
 /// Sidebar orchestration state (ports the closure-captured locals of the TS
@@ -159,6 +163,7 @@ async fn serve() -> i32 {
         shutting_down: AtomicBool::new(false),
         pane_agents: Mutex::new(PaneAgentMap::new()),
         ports: Mutex::new(PortScanner::new()),
+        session_by_pane_pid: Mutex::new(HashMap::new()),
     });
 
     // PID file.
@@ -354,13 +359,18 @@ fn scan_once(shared: &Shared) {
         shared.provider.list_sessions().into_iter().map(|s| (s.dir, s.name)).collect();
     // pid → owning pane's session (T7): agents are attributed to the tmux
     // session whose pane runs them, so shared dirs (slot clones) and odd
-    // cwds resolve correctly; the dir map remains the fallback.
-    let session_by_pane_pid: std::collections::HashMap<i32, String> = list_all_panes()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|p| p.session != tt_agentboard::tmux::STASH_SESSION)
-        .map(|p| (p.pid, p.session))
-        .collect();
+    // cwds resolve correctly; the dir map remains the fallback. A failed tmux
+    // scan keeps the last-good snapshot — an empty map would silently
+    // misattribute every agent to the dir-map fallback until the next scan.
+    if let Some(panes) = list_all_panes() {
+        let fresh: HashMap<i32, String> = panes
+            .into_iter()
+            .filter(|p| p.session != tt_agentboard::tmux::STASH_SESSION)
+            .map(|p| (p.pid, p.session))
+            .collect();
+        *shared.session_by_pane_pid.lock().unwrap() = fresh;
+    }
+    let session_by_pane_pid = shared.session_by_pane_pid.lock().unwrap().clone();
     let tree = ps_tree();
     let mut engine = shared.engine.lock().unwrap();
     engine.scan_once_with_resolvers(
