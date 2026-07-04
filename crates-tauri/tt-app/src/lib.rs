@@ -1,13 +1,16 @@
 //! Towles Tool desktop app (Tauri 2). Hosts the agentboard bridge: an engine
 //! (tracker/metadata/order/git/watcher) driven by tokio tasks that emits state
 //! snapshots as the `agentboard://state` event and exposes client commands.
+//! Also owns the embedded terminals (`terminal`): PTYs the app spawns directly
+//! (not tmux), rendered by xterm.js in the agentboard screen.
 
 mod agentboard;
+mod terminal;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, WindowEvent};
 use tokio::sync::Notify;
 
 use agentboard::{Ab, Engine, STATE_EVENT, now_ms};
@@ -102,6 +105,12 @@ pub fn run() {
             scan.notify_one();
             Ok(())
         })
+        .manage(terminal::TermState::default())
+        .on_window_event(|window, event| {
+            if let WindowEvent::Destroyed = event {
+                terminal::on_window_destroyed(window.app_handle(), window.label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             agentboard::ab_get_state,
             agentboard::ab_mark_seen,
@@ -116,6 +125,10 @@ pub fn run() {
             agentboard::ab_log,
             agentboard::ab_clear_log,
             agentboard::ab_open_in_editor,
+            terminal::term_start,
+            terminal::term_write,
+            terminal::term_resize,
+            terminal::term_kill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Towles Tool application");

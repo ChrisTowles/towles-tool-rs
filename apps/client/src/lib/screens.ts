@@ -5,11 +5,13 @@ import {
   GitPullRequest,
   Settings2,
   Stethoscope,
+  TerminalSquare,
   Users,
   type LucideIcon,
 } from "lucide-react";
 
 export type ScreenId =
+  | "agentboard"
   | "journal-today"
   | "journal-notes"
   | "journal-meetings"
@@ -24,9 +26,18 @@ export type ScreenMeta = {
   icon: LucideIcon;
   /** Extra terms the command palette matches on. */
   keywords: string[];
+  /** Render without the centered/scrolling content wrapper (e.g. terminals). */
+  fullBleed?: boolean;
 };
 
 export const SCREENS: Record<ScreenId, ScreenMeta> = {
+  agentboard: {
+    id: "agentboard",
+    title: "Agentboard",
+    icon: TerminalSquare,
+    keywords: ["agents", "terminal", "tmux", "sessions", "shell"],
+    fullBleed: true,
+  },
   "journal-today": {
     id: "journal-today",
     title: "Today",
@@ -72,6 +83,7 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
 };
 
 export const NAV_SECTIONS: { label: string; screens: ScreenId[] }[] = [
+  { label: "Agents", screens: ["agentboard"] },
   { label: "Journal", screens: ["journal-today", "journal-notes", "journal-meetings"] },
   { label: "Tools", screens: ["doctor", "graph", "gh-prs"] },
   { label: "App", screens: ["config"] },
