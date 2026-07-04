@@ -1,5 +1,5 @@
 //! SQLite-backed store for the towles-tool "personal dashboard" data: calendar
-//! events, tasks, emails, PR status, and collector run bookkeeping.
+//! events, kanban todos, issues, PR status, and collector run bookkeeping.
 //!
 //! This crate is deliberately Tauri-free (the shared-crate rule): both the CLI and
 //! the Tauri app depend on it. All timestamps are epoch milliseconds (`i64`); clocks
@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -34,6 +34,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Current on-disk schema version, stored in the `meta` table.
 const SCHEMA_VERSION: i64 = 1;
 
+/// Kanban columns a todo can live in, in board order.
+pub const TASK_STATUSES: [&str; 5] = ["backlog", "next", "doing", "review", "done"];
+
 /// Schema v1. Every statement is `IF NOT EXISTS` so `migrate` is idempotent.
 const SCHEMA_V1: &str = "\
 CREATE TABLE IF NOT EXISTS meta (
@@ -53,24 +56,25 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source TEXT NOT NULL,
-    source_ref TEXT,
     text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'backlog',
+    position INTEGER NOT NULL DEFAULT 0,
     due_ts INTEGER,
-    done INTEGER NOT NULL DEFAULT 0,
+    repo TEXT,
+    issue_number INTEGER,
+    issue_url TEXT,
     created_at INTEGER NOT NULL,
     completed_at INTEGER
 );
-CREATE TABLE IF NOT EXISTS emails (
-    id INTEGER PRIMARY KEY,
-    external_id TEXT NOT NULL UNIQUE,
-    from_name TEXT NOT NULL,
-    from_addr TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    tag TEXT NOT NULL,
-    received_ts INTEGER NOT NULL,
-    archived INTEGER NOT NULL DEFAULT 0
+CREATE TABLE IF NOT EXISTS issues (
+    repo TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    labels TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL,
+    url TEXT NOT NULL,
+    updated_ts INTEGER NOT NULL,
+    PRIMARY KEY (repo, number)
 );
 CREATE TABLE IF NOT EXISTS pr_status (
     repo TEXT NOT NULL,
@@ -94,11 +98,18 @@ CREATE TABLE IF NOT EXISTS collect_runs (
 
 // Column lists, kept in sync with the row-mapping closures below.
 const EVENT_COLS: &str = "id, external_id, title, start_ts, end_ts, attendees, location, join_url";
-const TASK_COLS: &str = "id, source, source_ref, text, due_ts, done, created_at, completed_at";
-const EMAIL_COLS: &str =
-    "id, external_id, from_name, from_addr, subject, summary, tag, received_ts, archived";
+const TASK_COLS: &str =
+    "id, text, status, position, due_ts, repo, issue_number, issue_url, created_at, completed_at";
+const ISSUE_COLS: &str = "repo, number, title, labels, state, url, updated_ts";
 const PR_COLS: &str = "repo, number, title, branch, state, checks, review_state, url, updated_ts";
 const RUN_COLS: &str = "collector, ran_at, ok, message";
+
+/// Kanban ordering used across queries: board column, then manual position, then age.
+const TASK_ORDER: &str = "\
+ORDER BY CASE status
+    WHEN 'backlog' THEN 0 WHEN 'next' THEN 1 WHEN 'doing' THEN 2
+    WHEN 'review' THEN 3 WHEN 'done' THEN 4 ELSE 5 END,
+  position ASC, created_at ASC";
 
 // ---------------------------------------------------------------------------
 // Output structs (camelCase, matching the TypeScript contract).
@@ -120,17 +131,23 @@ pub struct CalEvent {
     pub join_url: Option<String>,
 }
 
+/// A kanban todo. Local by default; `repo`/`issue_number`/`issue_url` are set once a
+/// todo is promoted to (or linked with) a GitHub issue.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskItem {
     pub id: i64,
-    pub source: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_ref: Option<String>,
     pub text: String,
+    pub status: String,
+    pub position: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_ts: Option<i64>,
-    pub done: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_number: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_url: Option<String>,
     pub created_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<i64>,
@@ -138,16 +155,14 @@ pub struct TaskItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EmailItem {
-    pub id: i64,
-    pub external_id: String,
-    pub from_name: String,
-    pub from_addr: String,
-    pub subject: String,
-    pub summary: String,
-    pub tag: String,
-    pub received_ts: i64,
-    pub archived: bool,
+pub struct IssueItem {
+    pub repo: String,
+    pub number: i64,
+    pub title: String,
+    pub labels: Vec<String>,
+    pub state: String,
+    pub url: String,
+    pub updated_ts: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -180,7 +195,7 @@ pub struct CollectRun {
 pub struct Snapshot {
     pub events: Vec<CalEvent>,
     pub tasks: Vec<TaskItem>,
-    pub emails: Vec<EmailItem>,
+    pub issues: Vec<IssueItem>,
     pub prs: Vec<PrItem>,
     pub runs: Vec<CollectRun>,
 }
@@ -207,25 +222,15 @@ pub struct EventInput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TaskInput {
-    pub source: String,
+pub struct IssueInput {
+    pub repo: String,
+    pub number: i64,
+    pub title: String,
     #[serde(default)]
-    pub source_ref: Option<String>,
-    pub text: String,
-    #[serde(default)]
-    pub due_ts: Option<i64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EmailInput {
-    pub external_id: String,
-    pub from_name: String,
-    pub from_addr: String,
-    pub subject: String,
-    pub summary: String,
-    pub tag: String,
-    pub received_ts: i64,
+    pub labels: Vec<String>,
+    pub state: String,
+    pub url: String,
+    pub updated_ts: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -323,119 +328,68 @@ impl Store {
         Ok(events.len())
     }
 
-    /// Reconcile emails: delete rows whose `external_id` is not in the new set, and
-    /// upsert the rest. The `archived` flag of an existing matching row is preserved.
-    pub fn replace_emails(&self, emails: &[EmailInput]) -> Result<usize> {
+    /// Full-snapshot replace of issue rows.
+    pub fn replace_issues(&self, issues: &[IssueInput]) -> Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
-        let keep: Vec<&str> = emails.iter().map(|e| e.external_id.as_str()).collect();
-        {
-            let mut existing: Vec<String> = Vec::new();
-            let mut stmt = tx.prepare("SELECT external_id FROM emails")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-            for r in rows {
-                existing.push(r?);
-            }
-            for id in &existing {
-                if !keep.contains(&id.as_str()) {
-                    tx.execute("DELETE FROM emails WHERE external_id = ?1", [id])?;
-                }
-            }
-        }
+        tx.execute("DELETE FROM issues", [])?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO emails
-                   (external_id, from_name, from_addr, subject, summary, tag, received_ts, archived)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
-                 ON CONFLICT(external_id) DO UPDATE SET
-                   from_name = excluded.from_name,
-                   from_addr = excluded.from_addr,
-                   subject = excluded.subject,
-                   summary = excluded.summary,
-                   tag = excluded.tag,
-                   received_ts = excluded.received_ts",
+                "INSERT INTO issues (repo, number, title, labels, state, url, updated_ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
-            for e in emails {
+            for i in issues {
                 stmt.execute(params![
-                    e.external_id,
-                    e.from_name,
-                    e.from_addr,
-                    e.subject,
-                    e.summary,
-                    e.tag,
-                    e.received_ts,
+                    i.repo,
+                    i.number,
+                    i.title,
+                    serde_json::to_string(&i.labels)?,
+                    i.state,
+                    i.url,
+                    i.updated_ts,
                 ])?;
             }
         }
         tx.commit()?;
-        Ok(emails.len())
+        Ok(issues.len())
     }
 
-    /// Merge tasks by `(source, source_ref)`: matching rows have their `text`/`due_ts`
-    /// refreshed (keeping `done`/`completed_at`); non-matching rows are inserted.
-    pub fn upsert_tasks(&self, tasks: &[TaskInput], now_ms: i64) -> Result<usize> {
-        let tx = self.conn.unchecked_transaction()?;
-        for t in tasks {
-            let existing: Option<i64> = match &t.source_ref {
-                Some(sr) => tx
-                    .query_row(
-                        "SELECT id FROM tasks WHERE source = ?1 AND source_ref = ?2",
-                        params![t.source, sr],
-                        |r| r.get(0),
-                    )
-                    .optional()?,
-                None => tx
-                    .query_row(
-                        "SELECT id FROM tasks WHERE source = ?1 AND source_ref IS NULL",
-                        params![t.source],
-                        |r| r.get(0),
-                    )
-                    .optional()?,
-            };
-            match existing {
-                Some(id) => {
-                    tx.execute(
-                        "UPDATE tasks SET text = ?1, due_ts = ?2 WHERE id = ?3",
-                        params![t.text, t.due_ts, id],
-                    )?;
-                }
-                None => {
-                    tx.execute(
-                        "INSERT INTO tasks
-                           (source, source_ref, text, due_ts, done, created_at, completed_at)
-                         VALUES (?1, ?2, ?3, ?4, 0, ?5, NULL)",
-                        params![t.source, t.source_ref, t.text, t.due_ts, now_ms],
-                    )?;
-                }
-            }
-        }
-        tx.commit()?;
-        Ok(tasks.len())
-    }
-
-    /// Add a manually-entered task (`source = "manual"`, no `source_ref`).
+    /// Add a manually-entered todo. Lands in the `backlog` column at the end.
     pub fn add_task(&self, text: &str, due_ts: Option<i64>, now_ms: i64) -> Result<TaskItem> {
+        let position: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE status = 'backlog'",
+            [],
+            |r| r.get(0),
+        )?;
         self.conn.execute(
-            "INSERT INTO tasks
-               (source, source_ref, text, due_ts, done, created_at, completed_at)
-             VALUES ('manual', NULL, ?1, ?2, 0, ?3, NULL)",
-            params![text, due_ts, now_ms],
+            "INSERT INTO tasks (text, status, position, due_ts, created_at, completed_at)
+             VALUES (?1, 'backlog', ?2, ?3, ?4, NULL)",
+            params![text, position, due_ts, now_ms],
         )?;
         self.task_by_id(self.conn.last_insert_rowid())
     }
 
-    /// Mark a task done/undone; sets `completed_at` to `now_ms` when done, clears it otherwise.
-    pub fn set_task_done(&self, id: i64, done: bool, now_ms: i64) -> Result<()> {
-        let completed_at: Option<i64> = if done { Some(now_ms) } else { None };
+    /// Move a todo to a kanban column. Sets `completed_at` when entering `done`,
+    /// clears it otherwise. Unknown statuses are rejected.
+    pub fn set_task_status(&self, id: i64, status: &str, now_ms: i64) -> Result<()> {
+        if !TASK_STATUSES.contains(&status) {
+            return Err(Error::Sqlite(rusqlite::Error::InvalidParameterName(format!(
+                "unknown task status: {status}"
+            ))));
+        }
+        let completed_at: Option<i64> = if status == "done" { Some(now_ms) } else { None };
         self.conn.execute(
-            "UPDATE tasks SET done = ?1, completed_at = ?2 WHERE id = ?3",
-            params![done, completed_at, id],
+            "UPDATE tasks SET status = ?1, completed_at = ?2 WHERE id = ?3",
+            params![status, completed_at, id],
         )?;
         Ok(())
     }
 
-    /// Archive an email by row id.
-    pub fn archive_email(&self, id: i64) -> Result<()> {
-        self.conn.execute("UPDATE emails SET archived = 1 WHERE id = ?1", [id])?;
+    /// Link a todo to a GitHub issue (after promoting it via `gh issue create`).
+    pub fn link_task_issue(&self, id: i64, repo: &str, number: i64, url: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET repo = ?1, issue_number = ?2, issue_url = ?3 WHERE id = ?4",
+            params![repo, number, url, id],
+        )?;
         Ok(())
     }
 
@@ -511,29 +465,25 @@ impl Store {
             .next())
     }
 
-    /// Open (not-done) tasks, due-soonest first (null due dates last), then oldest first.
+    /// Open (not-done) todos in kanban order.
     pub fn open_tasks(&self) -> Result<Vec<TaskItem>> {
         self.query_tasks(
-            &format!(
-                "SELECT {TASK_COLS} FROM tasks WHERE done = 0
-                 ORDER BY due_ts IS NULL, due_ts ASC, created_at ASC"
-            ),
+            &format!("SELECT {TASK_COLS} FROM tasks WHERE status != 'done' {TASK_ORDER}"),
             [],
         )
     }
 
-    /// Active (non-archived) emails, tag-priority first (needs_reply, invite, fyi),
-    /// then newest first.
-    pub fn emails_active(&self) -> Result<Vec<EmailItem>> {
-        self.query_emails(
-            &format!(
-                "SELECT {EMAIL_COLS} FROM emails WHERE archived = 0
-                 ORDER BY CASE tag
-                   WHEN 'needs_reply' THEN 0 WHEN 'invite' THEN 1 WHEN 'fyi' THEN 2 ELSE 3 END,
-                   received_ts DESC"
-            ),
-            [],
-        )
+    /// A single todo by id, if it exists.
+    pub fn get_task(&self, id: i64) -> Result<Option<TaskItem>> {
+        Ok(self
+            .query_tasks(&format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"), [id])?
+            .into_iter()
+            .next())
+    }
+
+    /// All issue rows, newest update first.
+    pub fn issues(&self) -> Result<Vec<IssueItem>> {
+        self.query_issues(&format!("SELECT {ISSUE_COLS} FROM issues ORDER BY updated_ts DESC"), [])
     }
 
     /// All PR status rows, newest update first.
@@ -550,18 +500,11 @@ impl Store {
     pub fn snapshot(&self) -> Result<Snapshot> {
         let events = self
             .query_events(&format!("SELECT {EVENT_COLS} FROM events ORDER BY start_ts ASC"), [])?;
-        // All tasks (incl. done): open first, due-soonest, oldest first.
-        let tasks = self.query_tasks(
-            &format!(
-                "SELECT {TASK_COLS} FROM tasks
-                 ORDER BY done ASC, due_ts IS NULL, due_ts ASC, created_at ASC"
-            ),
-            [],
-        )?;
-        let emails = self.emails_active()?;
+        let tasks = self.query_tasks(&format!("SELECT {TASK_COLS} FROM tasks {TASK_ORDER}"), [])?;
+        let issues = self.issues()?;
         let prs = self.prs()?;
         let runs = self.runs()?;
-        Ok(Snapshot { events, tasks, emails, prs, runs })
+        Ok(Snapshot { events, tasks, issues, prs, runs })
     }
 
     // --- Row-mapping helpers ---------------------------------------------
@@ -611,34 +554,40 @@ impl Store {
         let rows = stmt.query_map(params, |r| {
             Ok(TaskItem {
                 id: r.get(0)?,
-                source: r.get(1)?,
-                source_ref: r.get(2)?,
-                text: r.get(3)?,
+                text: r.get(1)?,
+                status: r.get(2)?,
+                position: r.get(3)?,
                 due_ts: r.get(4)?,
-                done: r.get(5)?,
-                created_at: r.get(6)?,
-                completed_at: r.get(7)?,
+                repo: r.get(5)?,
+                issue_number: r.get(6)?,
+                issue_url: r.get(7)?,
+                created_at: r.get(8)?,
+                completed_at: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    fn query_emails(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<EmailItem>> {
+    fn query_issues(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<IssueItem>> {
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map(params, |r| {
-            Ok(EmailItem {
-                id: r.get(0)?,
-                external_id: r.get(1)?,
-                from_name: r.get(2)?,
-                from_addr: r.get(3)?,
-                subject: r.get(4)?,
-                summary: r.get(5)?,
-                tag: r.get(6)?,
-                received_ts: r.get(7)?,
-                archived: r.get(8)?,
-            })
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, i64>(6)?,
+            ))
         })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let mut out = Vec::new();
+        for row in rows {
+            let (repo, number, title, labels_json, state, url, updated_ts) = row?;
+            let labels: Vec<String> = serde_json::from_str(&labels_json)?;
+            out.push(IssueItem { repo, number, title, labels, state, url, updated_ts });
+        }
+        Ok(out)
     }
 
     fn query_prs(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<PrItem>> {
@@ -689,24 +638,15 @@ mod tests {
         }
     }
 
-    fn email(ext: &str, tag: &str, received: i64) -> EmailInput {
-        EmailInput {
-            external_id: ext.to_string(),
-            from_name: "Sender".to_string(),
-            from_addr: "sender@example.com".to_string(),
-            subject: format!("Subject {ext}"),
-            summary: "summary".to_string(),
-            tag: tag.to_string(),
-            received_ts: received,
-        }
-    }
-
-    fn task(source: &str, source_ref: Option<&str>, text: &str, due: Option<i64>) -> TaskInput {
-        TaskInput {
-            source: source.to_string(),
-            source_ref: source_ref.map(str::to_string),
-            text: text.to_string(),
-            due_ts: due,
+    fn issue(repo: &str, number: i64, updated: i64) -> IssueInput {
+        IssueInput {
+            repo: repo.to_string(),
+            number,
+            title: format!("Issue {number}"),
+            labels: vec!["bug".to_string()],
+            state: "open".to_string(),
+            url: format!("https://github.com/{repo}/issues/{number}"),
+            updated_ts: updated,
         }
     }
 
@@ -741,88 +681,71 @@ mod tests {
     }
 
     #[test]
-    fn replace_emails_preserves_archived_and_deletes_missing() {
+    fn replace_issues_is_full_swap_and_decodes_labels() {
         let s = Store::open_in_memory().unwrap();
-        s.replace_emails(&[email("e1", "needs_reply", 100)]).unwrap();
-        let id = s.emails_active().unwrap()[0].id;
-        s.archive_email(id).unwrap();
-        assert!(s.emails_active().unwrap().is_empty());
-
-        // e1 re-appears (tag changed) and a new e2 arrives.
-        s.replace_emails(&[email("e1", "fyi", 150), email("e2", "invite", 120)]).unwrap();
-        let active = s.emails_active().unwrap();
-        // e1 stays archived (flag preserved), so only e2 is active.
-        assert_eq!(active.len(), 1);
-        assert_eq!(active[0].external_id, "e2");
-
-        // Dropping e2 from the set deletes it.
-        s.replace_emails(&[email("e1", "fyi", 150)]).unwrap();
-        assert!(s.emails_active().unwrap().is_empty());
+        s.replace_issues(&[issue("o/r", 1, 100), issue("o/r", 2, 200)]).unwrap();
+        assert_eq!(s.issues().unwrap().len(), 2);
+        // Newest update first.
+        assert_eq!(s.issues().unwrap()[0].number, 2);
+        assert_eq!(s.issues().unwrap()[0].labels, vec!["bug".to_string()]);
+        let n = s.replace_issues(&[issue("o/r", 3, 300)]).unwrap();
+        assert_eq!(n, 1);
+        let issues = s.issues().unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].number, 3);
     }
 
     #[test]
-    fn upsert_tasks_merge_keeps_done_state() {
+    fn add_task_lands_in_backlog_and_orders_by_position() {
         let s = Store::open_in_memory().unwrap();
-        s.upsert_tasks(&[task("jira", Some("J-1"), "old text", None)], 1).unwrap();
-        let id = s.open_tasks().unwrap()[0].id;
-        s.set_task_done(id, true, 5).unwrap();
-        assert!(s.open_tasks().unwrap().is_empty());
-
-        // Same (source, source_ref): text/due refreshed, done/completed_at preserved.
-        s.upsert_tasks(&[task("jira", Some("J-1"), "new text", Some(999))], 10).unwrap();
-        let snap = s.snapshot().unwrap();
-        let t = snap.tasks.iter().find(|t| t.source_ref.as_deref() == Some("J-1")).unwrap();
-        assert!(t.done);
-        assert_eq!(t.text, "new text");
-        assert_eq!(t.due_ts, Some(999));
-        assert_eq!(t.completed_at, Some(5));
-        assert_eq!(snap.tasks.len(), 1);
-    }
-
-    #[test]
-    fn add_and_toggle_task_done() {
-        let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("buy milk", Some(500), 1).unwrap();
-        assert_eq!(t.source, "manual");
-        assert_eq!(t.source_ref, None);
-        assert!(!t.done);
-        assert_eq!(t.due_ts, Some(500));
-
-        s.set_task_done(t.id, true, 20).unwrap();
-        let done = s.snapshot().unwrap().tasks.into_iter().find(|x| x.id == t.id).unwrap();
-        assert!(done.done);
-        assert_eq!(done.completed_at, Some(20));
-
-        s.set_task_done(t.id, false, 30).unwrap();
-        let open = s.open_tasks().unwrap();
-        assert_eq!(open.len(), 1);
-        assert_eq!(open[0].completed_at, None);
-    }
-
-    #[test]
-    fn open_tasks_ordering_due_then_created() {
-        let s = Store::open_in_memory().unwrap();
-        s.add_task("no due, created first", None, 100).unwrap();
-        s.add_task("due soon", Some(50), 200).unwrap();
-        s.add_task("due later", Some(80), 150).unwrap();
+        let a = s.add_task("first", None, 100).unwrap();
+        let b = s.add_task("second", None, 200).unwrap();
+        assert_eq!(a.status, "backlog");
+        assert_eq!(a.position, 0);
+        assert_eq!(b.position, 1);
         let open = s.open_tasks().unwrap();
         let texts: Vec<&str> = open.iter().map(|t| t.text.as_str()).collect();
-        assert_eq!(texts, vec!["due soon", "due later", "no due, created first"]);
+        assert_eq!(texts, vec!["first", "second"]);
     }
 
     #[test]
-    fn emails_active_ordering_by_tag_then_recency() {
+    fn set_task_status_moves_columns_and_stamps_done() {
         let s = Store::open_in_memory().unwrap();
-        s.replace_emails(&[
-            email("a", "fyi", 100),
-            email("b", "needs_reply", 50),
-            email("c", "invite", 70),
-            email("d", "needs_reply", 90),
-        ])
-        .unwrap();
-        let active = s.emails_active().unwrap();
-        let ids: Vec<&str> = active.iter().map(|e| e.external_id.as_str()).collect();
-        assert_eq!(ids, vec!["d", "b", "c", "a"]);
+        let t = s.add_task("ship it", None, 1).unwrap();
+        s.set_task_status(t.id, "doing", 5).unwrap();
+        let doing = s.open_tasks().unwrap();
+        assert_eq!(doing[0].status, "doing");
+        assert_eq!(doing[0].completed_at, None);
+
+        s.set_task_status(t.id, "done", 20).unwrap();
+        assert!(s.open_tasks().unwrap().is_empty());
+        let done = s.snapshot().unwrap().tasks.into_iter().find(|x| x.id == t.id).unwrap();
+        assert_eq!(done.status, "done");
+        assert_eq!(done.completed_at, Some(20));
+
+        // Re-opening clears completed_at.
+        s.set_task_status(t.id, "next", 30).unwrap();
+        let reopened = s.open_tasks().unwrap();
+        assert_eq!(reopened[0].status, "next");
+        assert_eq!(reopened[0].completed_at, None);
+    }
+
+    #[test]
+    fn set_task_status_rejects_unknown() {
+        let s = Store::open_in_memory().unwrap();
+        let t = s.add_task("x", None, 1).unwrap();
+        assert!(s.set_task_status(t.id, "bogus", 2).is_err());
+    }
+
+    #[test]
+    fn link_task_issue_stores_reference() {
+        let s = Store::open_in_memory().unwrap();
+        let t = s.add_task("wire up board", None, 1).unwrap();
+        s.link_task_issue(t.id, "o/r", 42, "https://github.com/o/r/issues/42").unwrap();
+        let linked = s.open_tasks().unwrap()[0].clone();
+        assert_eq!(linked.repo.as_deref(), Some("o/r"));
+        assert_eq!(linked.issue_number, Some(42));
+        assert_eq!(linked.issue_url.as_deref(), Some("https://github.com/o/r/issues/42"));
     }
 
     #[test]
@@ -864,7 +787,7 @@ mod tests {
         )
         .unwrap();
         s.add_task("do thing", Some(9), 1).unwrap();
-        s.replace_emails(&[email("e1", "needs_reply", 5)]).unwrap();
+        s.replace_issues(&[issue("o/r", 5, 6)]).unwrap();
         s.replace_prs(&[PrInput {
             repo: "o/r".to_string(),
             number: 7,
@@ -886,11 +809,8 @@ mod tests {
             "\"joinUrl\"",
             "\"dueTs\"",
             "\"createdAt\"",
-            "\"fromName\"",
-            "\"fromAddr\"",
-            "\"receivedTs\"",
-            "\"reviewState\"",
             "\"updatedTs\"",
+            "\"reviewState\"",
             "\"ranAt\"",
         ] {
             assert!(json.contains(key), "expected {key} in snapshot JSON: {json}");

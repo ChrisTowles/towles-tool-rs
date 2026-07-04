@@ -20,27 +20,41 @@ export type CalEvent = {
   joinUrl?: string;
 };
 
+/** Kanban columns a todo can live in, in board order. */
+export const TASK_STATUSES = ["backlog", "next", "doing", "review", "done"] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+/** Human labels for each kanban column. */
+export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
+  backlog: "Backlog",
+  next: "Up next",
+  doing: "In progress",
+  review: "In review",
+  done: "Done",
+};
+
 export type TaskItem = {
   id: number;
-  source: string;
-  sourceRef?: string;
   text: string;
+  status: TaskStatus;
+  position: number;
   dueTs?: number;
-  done: boolean;
+  /** Set once the todo is promoted to / linked with a GitHub issue. */
+  repo?: string;
+  issueNumber?: number;
+  issueUrl?: string;
   createdAt: number;
   completedAt?: number;
 };
 
-export type EmailItem = {
-  id: number;
-  externalId: string;
-  fromName: string;
-  fromAddr: string;
-  subject: string;
-  summary: string;
-  tag: "needs_reply" | "invite" | "fyi";
-  receivedTs: number;
-  archived: boolean;
+export type IssueItem = {
+  repo: string;
+  number: number;
+  title: string;
+  labels: string[];
+  state: string;
+  url: string;
+  updatedTs: number;
 };
 
 export type PrItem = {
@@ -65,7 +79,7 @@ export type CollectRun = {
 export type StoreSnapshot = {
   events: CalEvent[];
   tasks: TaskItem[];
-  emails: EmailItem[];
+  issues: IssueItem[];
   prs: PrItem[];
   runs: CollectRun[];
 };
@@ -78,9 +92,6 @@ const HOUR = 60 * MINUTE;
 /** Rich fake snapshot, computed at module load so ages/countdowns read live. */
 function buildMockSnapshot(): StoreSnapshot {
   const now = Date.now();
-  const startOfTomorrow = new Date(now);
-  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
-  startOfTomorrow.setHours(9, 30, 0, 0);
 
   return {
     events: [
@@ -98,178 +109,138 @@ function buildMockSnapshot(): StoreSnapshot {
         id: 2,
         externalId: "cal-platform-sync",
         title: "Platform sync",
-        startTs: now + 22 * MINUTE,
-        endTs: now + 22 * MINUTE + 30 * MINUTE,
+        startTs: now + 12 * MINUTE,
+        endTs: now + 12 * MINUTE + 30 * MINUTE,
         attendees: ["Chris", "Dana K.", "Marcus", "Lee"],
         location: "Meet",
         joinUrl: "https://example.com/j/platform-sync",
       },
       {
         id: 3,
-        externalId: "cal-design-review",
-        title: "Design review: session storage",
-        startTs: now + 2 * HOUR + 10 * MINUTE,
-        endTs: now + 2 * HOUR + 55 * MINUTE,
-        attendees: ["Chris", "Sam", "Dana K."],
-        location: "Meet",
-        joinUrl: "https://example.com/j/design-review",
-      },
-      {
-        id: 4,
         externalId: "cal-1on1",
-        title: "1:1 with Priya",
-        startTs: now + 4 * HOUR,
-        endTs: now + 4 * HOUR + 30 * MINUTE,
-        attendees: ["Chris", "Priya"],
-      },
-      {
-        id: 5,
-        externalId: "cal-oncall",
-        title: "On-call handoff",
-        startTs: startOfTomorrow.getTime(),
-        endTs: startOfTomorrow.getTime() + 30 * MINUTE,
-        attendees: ["Chris", "Priya"],
+        title: "1:1 with Dana",
+        startTs: now + 3 * HOUR,
+        endTs: now + 3 * HOUR + 30 * MINUTE,
+        attendees: ["Chris", "Dana K."],
+        location: "Zoom",
+        joinUrl: "https://example.com/j/1on1",
       },
     ],
     tasks: [
       {
         id: 1,
-        source: "manual",
-        text: "Draft platform-sync talking points",
-        dueTs: now + 15 * MINUTE,
-        done: false,
-        createdAt: now - 3 * HOUR,
-      },
-      {
-        id: 2,
-        source: "github",
-        sourceRef: "ChrisTowles/towles-tool-rs#4",
-        text: "Fix failing checks on feat/app-shell",
-        dueTs: now + 3 * HOUR,
-        done: false,
+        text: "Refunds double-charge on retry",
+        status: "doing",
+        position: 0,
+        repo: "w/acme-billing",
+        issueNumber: 390,
+        issueUrl: "https://github.com/w/acme-billing/issues/390",
         createdAt: now - 5 * HOUR,
       },
       {
+        id: 2,
+        text: "Kanban backed by issues",
+        status: "next",
+        position: 0,
+        repo: "p/towles-tool",
+        issueNumber: 61,
+        issueUrl: "https://github.com/p/towles-tool/issues/61",
+        createdAt: now - 3 * HOUR,
+      },
+      {
         id: 3,
-        source: "manual",
-        text: "Reply to Dana about the agenda",
-        done: false,
+        text: "Draft platform-sync talking points",
+        status: "backlog",
+        position: 0,
+        dueTs: now + 15 * MINUTE,
         createdAt: now - 90 * MINUTE,
       },
       {
         id: 4,
-        source: "email",
-        sourceRef: "invite-brownbag",
-        text: "Decide on Friday brown-bag slot",
-        dueTs: now + 26 * HOUR,
-        done: false,
+        text: "a11y: focus traps in modal",
+        status: "backlog",
+        position: 1,
+        repo: "w/acme-web",
+        issueNumber: 255,
+        issueUrl: "https://github.com/w/acme-web/issues/255",
         createdAt: now - 20 * HOUR,
       },
       {
         id: 5,
-        source: "manual",
-        text: "Merge the Tailwind v4 cutover",
-        done: true,
+        text: "Split zsh aliases per-OS",
+        status: "done",
+        position: 0,
         createdAt: now - 26 * HOUR,
         completedAt: now - 2 * HOUR,
       },
     ],
-    emails: [
+    issues: [
       {
-        id: 1,
-        externalId: "mail-dana-agenda",
-        fromName: "Dana K.",
-        fromAddr: "dana@example.com",
-        subject: "Agenda for today's platform sync",
-        summary: "Wants your take on the session-storage rollout before we meet.",
-        tag: "needs_reply",
-        receivedTs: now - 35 * MINUTE,
-        archived: false,
+        repo: "w/acme-billing",
+        number: 390,
+        title: "Refunds double-charge on retry",
+        labels: ["bug", "P1"],
+        state: "open",
+        url: "https://github.com/w/acme-billing/issues/390",
+        updatedTs: now - 40 * MINUTE,
       },
       {
-        id: 2,
-        externalId: "mail-gh-issue",
-        fromName: "GitHub",
-        fromAddr: "notifications@github.com",
-        subject: "[towles-tool-rs] Terminal panes leak PTYs on close (#12)",
-        summary: "New issue assigned to you; repro attached, needs triage.",
-        tag: "needs_reply",
-        receivedTs: now - 2 * HOUR,
-        archived: false,
+        repo: "p/towles-tool",
+        number: 61,
+        title: "Kanban backed by issues",
+        labels: ["feature"],
+        state: "open",
+        url: "https://github.com/p/towles-tool/issues/61",
+        updatedTs: now - 3 * HOUR,
       },
       {
-        id: 3,
-        externalId: "mail-brownbag",
-        fromName: "Sam Ortiz",
-        fromAddr: "sam@example.com",
-        subject: "Invite: Friday brown-bag on Tauri",
-        summary: "Proposes 12:00 Friday; asks if that works for you to present.",
-        tag: "invite",
-        receivedTs: now - 5 * HOUR,
-        archived: false,
-      },
-      {
-        id: 4,
-        externalId: "mail-digest",
-        fromName: "Rust Weekly",
-        fromAddr: "digest@this-week-in-rust.org",
-        subject: "This Week in Rust 601",
-        summary: "Cargo workspace feature-unification RFC lands; async gen notes.",
-        tag: "fyi",
-        receivedTs: now - 7 * HOUR,
-        archived: false,
-      },
-      {
-        id: 5,
-        externalId: "mail-ci",
-        fromName: "CI",
-        fromAddr: "ci@example.com",
-        subject: "Nightly build succeeded",
-        summary: "All targets green on main; artifacts uploaded.",
-        tag: "fyi",
-        receivedTs: now - 9 * HOUR,
-        archived: false,
+        repo: "w/acme-web",
+        number: 255,
+        title: "a11y: focus traps in modal",
+        labels: ["a11y"],
+        state: "open",
+        url: "https://github.com/w/acme-web/issues/255",
+        updatedTs: now - 20 * HOUR,
       },
     ],
     prs: [
       {
-        repo: "ChrisTowles/towles-tool-rs",
-        number: 4,
-        title: "feat: Yaak-style app shell for the desktop UI",
-        branch: "feat/app-shell",
+        repo: "w/acme-billing",
+        number: 412,
+        title: "Fix invoice rounding",
+        branch: "fix/invoice-rounding",
         state: "open",
         checks: "failing",
         reviewState: "changes_requested",
-        url: "https://github.com/ChrisTowles/towles-tool-rs/pull/4",
+        url: "https://github.com/w/acme-billing/pull/412",
         updatedTs: now - 30 * MINUTE,
       },
       {
-        repo: "ChrisTowles/towles-tool-rs",
-        number: 3,
-        title: "feat: agentboard tmux mode follow-ups",
-        branch: "feat/agentboard-tmux-2",
-        state: "open",
-        checks: "passing",
-        reviewState: "approved",
-        url: "https://github.com/ChrisTowles/towles-tool-rs/pull/3",
-        updatedTs: now - 3 * HOUR,
-      },
-      {
-        repo: "ChrisTowles/dotfiles",
-        number: 88,
-        title: "chore: sync zsh plugin pins",
-        branch: "chore/zsh-pins",
+        repo: "w/acme-web",
+        number: 203,
+        title: "Upgrade to React 19",
+        branch: "chore/react-19",
         state: "open",
         checks: "passing",
         reviewState: "review_requested",
-        url: "https://github.com/ChrisTowles/dotfiles/pull/88",
+        url: "https://github.com/w/acme-web/pull/203",
+        updatedTs: now - 3 * HOUR,
+      },
+      {
+        repo: "p/dotfiles",
+        number: 88,
+        title: "zsh: faster prompt",
+        branch: "feat/fast-prompt",
+        state: "open",
+        checks: "pending",
+        reviewState: "",
+        url: "https://github.com/p/dotfiles/pull/88",
         updatedTs: now - 6 * HOUR,
       },
     ],
     runs: [
-      { collector: "claude:email", ranAt: now - 12 * MINUTE, ok: true },
       { collector: "claude:calendar", ranAt: now - 12 * MINUTE, ok: true },
-      { collector: "claude:tasks", ranAt: now - 12 * MINUTE, ok: true },
+      { collector: "issues", ranAt: now - 4 * MINUTE, ok: true },
       { collector: "prs", ranAt: now - 1 * MINUTE, ok: true },
     ],
   };
@@ -370,8 +341,8 @@ async function storeInvoke(command: string, args: Record<string, unknown>): Prom
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke(command, args);
     return true;
-  } catch {
-    toast.info("not wired in browser");
+  } catch (e) {
+    toast.error(String(e));
     return false;
   }
 }
@@ -379,9 +350,10 @@ async function storeInvoke(command: string, args: Record<string, unknown>): Prom
 export const storeAddTask = (text: string, dueTs?: number) =>
   storeInvoke("store_add_task", { text, dueTs });
 
-export const storeSetTaskDone = (id: number, done: boolean) =>
-  storeInvoke("store_set_task_done", { id, done });
+export const storeSetTaskStatus = (id: number, status: TaskStatus) =>
+  storeInvoke("store_set_task_status", { id, status });
 
-export const storeArchiveEmail = (id: number) => storeInvoke("store_archive_email", { id });
+export const storePromoteTaskToIssue = (id: number, repo: string) =>
+  storeInvoke("store_promote_task_to_issue", { id, repo });
 
 export const journalLog = (text: string) => storeInvoke("journal_log", { text });

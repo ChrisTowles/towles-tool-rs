@@ -163,7 +163,7 @@ export function AgentboardScreen() {
                 item={item}
                 now={now}
                 onSelect={selectSession}
-                openCalendar={() => openTab("email-calendar")}
+                openCalendar={() => openTab("cockpit")}
               />
             ))}
 

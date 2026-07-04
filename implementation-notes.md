@@ -1,5 +1,17 @@
 # Implementation notes — tt-app data hub + screens
 
+> **Superseded in part by the day-screens pivot (2026-07-04, same day).**
+> Email was removed entirely (collector, `emails` table, MCP
+> `email_needs_reply`, the Email + Calendar screen). Calendar is now
+> next-meeting-only. `tasks` became a local kanban (`status`/`position` +
+> optional issue link; no `done` bool). New `issues` collector; collector keys
+> are `claude:calendar`, `issues`, `prs`. Collectors are config-driven
+> (`settings.collectors`, calendar `provider` = google|outlook). New screens
+> **Cockpit** (day home) + **Board** (kanban); Agentboard unchanged. MCP tool
+> `email_needs_reply` → `issues_open`. Store commands `store_set_task_done`/
+> `store_archive_email` → `store_set_task_status`/`store_promote_task_to_issue`.
+> The notes below describe the pre-pivot build; read them with that in mind.
+
 Working notes for the 2026-07-04 build-out (plan:
 https://claude.ai/code/artifact/ — "tt-app build plan"). Direction: Agentboard
 (attention inbox) + Email/Calendar screen + day bar in the Tauri app, backed by

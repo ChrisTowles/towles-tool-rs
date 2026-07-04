@@ -1,9 +1,10 @@
 import {
-  CalendarDays,
   ChartColumn,
   FileText,
   GitPullRequest,
-  Inbox,
+  Gauge,
+  KanbanSquare,
+  CalendarDays,
   Settings2,
   Stethoscope,
   TerminalSquare,
@@ -12,8 +13,9 @@ import {
 } from "lucide-react";
 
 export type ScreenId =
+  | "cockpit"
+  | "board"
   | "agentboard"
-  | "email-calendar"
   | "journal-today"
   | "journal-notes"
   | "journal-meetings"
@@ -33,18 +35,25 @@ export type ScreenMeta = {
 };
 
 export const SCREENS: Record<ScreenId, ScreenMeta> = {
+  cockpit: {
+    id: "cockpit",
+    title: "Cockpit",
+    icon: Gauge,
+    keywords: ["home", "day", "next meeting", "prs", "issues", "focus", "zone"],
+    fullBleed: true,
+  },
+  board: {
+    id: "board",
+    title: "Board",
+    icon: KanbanSquare,
+    keywords: ["kanban", "todos", "tasks", "issues", "backlog"],
+    fullBleed: true,
+  },
   agentboard: {
     id: "agentboard",
     title: "Agentboard",
     icon: TerminalSquare,
     keywords: ["agents", "terminal", "tmux", "sessions", "shell"],
-    fullBleed: true,
-  },
-  "email-calendar": {
-    id: "email-calendar",
-    title: "Email + Calendar",
-    icon: Inbox,
-    keywords: ["email", "calendar", "inbox", "schedule", "tasks", "day"],
     fullBleed: true,
   },
   "journal-today": {
@@ -87,13 +96,12 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     id: "config",
     title: "Config",
     icon: Settings2,
-    keywords: ["settings", "json"],
+    keywords: ["settings", "json", "collectors"],
   },
 };
 
 export const NAV_SECTIONS: { label: string; screens: ScreenId[] }[] = [
-  { label: "Agents", screens: ["agentboard"] },
-  { label: "Day", screens: ["email-calendar"] },
+  { label: "Focus", screens: ["cockpit", "board", "agentboard"] },
   { label: "Journal", screens: ["journal-today", "journal-notes", "journal-meetings"] },
   { label: "Tools", screens: ["doctor", "graph", "gh-prs"] },
   { label: "App", screens: ["config"] },

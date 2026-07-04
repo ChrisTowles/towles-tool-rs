@@ -65,11 +65,11 @@ pub enum Commands {
     /// Create a pull request from the current branch (alias for `gh pr`)
     Pr(PrArgs),
 
-    /// Agentboard: tmux sidebar server + watched-repo management
+    /// Agentboard: manage the watched-repo list (app + collectors read it)
     #[command(alias = "ag")]
     Agentboard(AgentboardArgs),
 
-    /// Collect dashboard data into the local store (calendar, email, tasks, PRs)
+    /// Collect dashboard data into the local store (calendar, issues, PRs)
     Collect(CollectArgs),
 
     /// MCP server exposing the local store and agent sessions to claude
@@ -102,16 +102,16 @@ pub struct CollectArgs {
 
 #[derive(Subcommand)]
 pub enum CollectCommands {
-    /// Collect today's and the next 7 days' calendar events via `claude -p`
+    /// Collect today's calendar events via `claude -p` (next-meeting countdown)
     Calendar,
 
-    /// Collect actionable inbox emails and their action items via `claude -p`
-    Email,
+    /// Collect open issues assigned to me across tracked repos via `gh`
+    Issues,
 
     /// Collect open and review-requested pull requests via `gh`
     Prs,
 
-    /// Run every collector (calendar, email, tasks, PRs)
+    /// Run every collector (calendar, issues, PRs)
     All,
 }
 
@@ -124,41 +124,8 @@ pub struct AgentboardArgs {
 
 #[derive(Subcommand)]
 pub enum AgentboardCommands {
-    /// Manage the watched-repo list (repos.json)
+    /// Manage the watched-repo list (repos.json) that feeds the app + collectors
     Repos(ReposArgs),
-
-    /// Run the agentboard server in the foreground (HTTP on 127.0.0.1:4201)
-    Server,
-
-    /// Run the sidebar TUI (normally spawned inside a tmux pane by the server)
-    #[command(alias = "start")]
-    Tui,
-
-    /// Add the agentboard init line to tmux.conf and reload
-    Setup,
-
-    /// Remove the agentboard init line from tmux.conf and reload
-    Uninstall,
-
-    /// Register tmux env, keybindings, and hooks (run from tmux.conf)
-    Init,
-
-    /// Restart the server and re-ensure sidebars for all attached clients
-    Restart,
-
-    /// Keybinding-invoked actions
-    Run {
-        /// Toggle the sidebar in the current window
-        #[arg(long)]
-        toggle: bool,
-
-        /// Focus (spawning if needed) the sidebar in the current window
-        #[arg(long)]
-        focus: bool,
-    },
-
-    /// Show agentboard keybindings
-    Keys,
 }
 
 #[derive(Args)]

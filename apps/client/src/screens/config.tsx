@@ -29,7 +29,10 @@ export function ConfigScreen() {
 
       <p className="text-sm text-muted-foreground">
         This file is shared with the TypeScript CLI — showing mock values until the Tauri command
-        that reads it lands.
+        that reads it lands. Each collector under <span className="font-mono">collectors</span> has
+        its own enable flag and refresh cadence; the calendar collector's{" "}
+        <span className="font-mono">provider</span> switches between the Google (home) and Outlook
+        (work) prompt so the same app works in both places.
       </p>
     </div>
   );
