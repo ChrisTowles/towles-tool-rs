@@ -10,11 +10,14 @@ path = "src/main.rs"
 
 [dependencies]
 tt-agentboard = { workspace = true }
+tt-collect = { workspace = true }
 tt-config = { workspace = true }
 tt-exec = { workspace = true }
 tt-git = { workspace = true }
 tt-graph = { workspace = true }
 tt-journal = { workspace = true }
+tt-mcp = { workspace = true }
+tt-store = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }

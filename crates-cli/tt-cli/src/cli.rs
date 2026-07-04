@@ -68,6 +68,51 @@ pub enum Commands {
     /// Agentboard: tmux sidebar server + watched-repo management
     #[command(alias = "ag")]
     Agentboard(AgentboardArgs),
+
+    /// Collect dashboard data into the local store (calendar, email, tasks, PRs)
+    Collect(CollectArgs),
+
+    /// MCP server exposing the local store and agent sessions to claude
+    Mcp(McpArgs),
+}
+
+#[derive(Args)]
+#[command(disable_help_subcommand = true)]
+pub struct McpArgs {
+    #[command(subcommand)]
+    pub command: McpCommands,
+}
+
+#[derive(Subcommand)]
+pub enum McpCommands {
+    /// Serve MCP over stdio (register with: `claude mcp add tt -- ttr mcp serve`)
+    Serve {
+        /// Path to the store database (defaults to the standard tt.db location)
+        #[arg(long, value_name = "FILE")]
+        store: Option<PathBuf>,
+    },
+}
+
+#[derive(Args)]
+#[command(disable_help_subcommand = true)]
+pub struct CollectArgs {
+    #[command(subcommand)]
+    pub command: CollectCommands,
+}
+
+#[derive(Subcommand)]
+pub enum CollectCommands {
+    /// Collect today's and the next 7 days' calendar events via `claude -p`
+    Calendar,
+
+    /// Collect actionable inbox emails and their action items via `claude -p`
+    Email,
+
+    /// Collect open and review-requested pull requests via `gh`
+    Prs,
+
+    /// Run every collector (calendar, email, tasks, PRs)
+    All,
 }
 
 #[derive(Args)]
