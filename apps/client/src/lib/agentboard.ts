@@ -58,6 +58,10 @@ export function useAgentboardState(): StatePayload {
     let unlisten: (() => void) | undefined;
 
     void (async () => {
+      // Outside Tauri (bare-browser dev), `listen` throws on the missing IPC
+      // internals — stay on EMPTY instead of leaking unhandled rejections.
+      if (!("__TAURI_INTERNALS__" in window)) return;
+
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
 
@@ -74,7 +78,7 @@ export function useAgentboardState(): StatePayload {
         const initial = await invoke<StatePayload>("ab_get_state");
         if (!disposed) setState(initial);
       } catch {
-        // Bridge not ready / not running under Tauri — stay on EMPTY.
+        // Bridge not ready — stay on EMPTY.
       }
     })();
 

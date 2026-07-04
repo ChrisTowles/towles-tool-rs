@@ -3,6 +3,7 @@ import {
   ChartColumn,
   FileText,
   GitPullRequest,
+  Inbox,
   Settings2,
   Stethoscope,
   TerminalSquare,
@@ -12,6 +13,7 @@ import {
 
 export type ScreenId =
   | "agentboard"
+  | "email-calendar"
   | "journal-today"
   | "journal-notes"
   | "journal-meetings"
@@ -36,6 +38,13 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     title: "Agentboard",
     icon: TerminalSquare,
     keywords: ["agents", "terminal", "tmux", "sessions", "shell"],
+    fullBleed: true,
+  },
+  "email-calendar": {
+    id: "email-calendar",
+    title: "Email + Calendar",
+    icon: Inbox,
+    keywords: ["email", "calendar", "inbox", "schedule", "tasks", "day"],
     fullBleed: true,
   },
   "journal-today": {
@@ -84,6 +93,7 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
 
 export const NAV_SECTIONS: { label: string; screens: ScreenId[] }[] = [
   { label: "Agents", screens: ["agentboard"] },
+  { label: "Day", screens: ["email-calendar"] },
   { label: "Journal", screens: ["journal-today", "journal-notes", "journal-meetings"] },
   { label: "Tools", screens: ["doctor", "graph", "gh-prs"] },
   { label: "App", screens: ["config"] },

@@ -3,6 +3,8 @@ import { Terminal } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
+import { DayBar } from "@/components/day-bar";
+import { QuickLog } from "@/components/quick-log";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { StatusBar } from "@/components/status-bar";
 import { TabStrip } from "@/components/tab-strip";
@@ -53,6 +55,10 @@ function Shortcuts() {
             closeTab(activeTab);
           }
           break;
+        case "j":
+          e.preventDefault();
+          window.dispatchEvent(new Event("quicklog:open"));
+          break;
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -68,6 +74,7 @@ function Workspace() {
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
       <AppHeader />
+      <DayBar />
 
       <ResizablePanelGroup
         key={sidebarVisible ? "with-sidebar" : "no-sidebar"}
@@ -117,6 +124,7 @@ function Workspace() {
 
       <Shortcuts />
       <CommandPalette />
+      <QuickLog />
       <SettingsDialog />
       <Toaster />
     </div>
