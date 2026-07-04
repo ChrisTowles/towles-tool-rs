@@ -1,7 +1,7 @@
 {
   "name": "tt",
   "description": "Skills for discovering your unknowns across the map-vs-territory workflow (trq212, 'The map is not the territory'). Before implementation: blind-spot-pass, brainstorm, interviews, references, implementation-plan. During: implementation-notes. After: pitches-explainers, quizzes. Plus towles-tool and parallel-slots.",
-  "version": "0.0.155",
+  "version": "0.0.156",
   "author": {
     "name": "Chris Towles"
   }
