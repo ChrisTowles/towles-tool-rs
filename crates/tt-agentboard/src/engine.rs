@@ -21,8 +21,9 @@ use crate::types::{AgentEvent, MetadataTone};
 use crate::{
     AgentTracker, AgentWatcher, AmpAgentWatcher, ClaudeCodeAgentWatcher, CodexAgentWatcher,
     GitInfoCache, OpenCodeAgentWatcher, RepoEntry, SessionMetadataStore, SessionOrder,
-    StatePayload, WatcherContext, add_repo, assemble_state, default_repos_path, instance_key,
-    load_repos, remove_repo_by_name, repo_entries, resolve_session_name, save_repos,
+    SessionRecord, SessionStore, StatePayload, WatcherContext, add_repo, assemble_state,
+    default_repos_path, default_sessions_path, instance_key, load_repos, remove_repo_by_name,
+    repo_entries, resolve_session_name, save_repos,
 };
 
 // Prune schedule constants (BRIDGE-SPEC §4).
@@ -74,6 +75,7 @@ pub struct Engine {
     tracker: AgentTracker,
     metadata: SessionMetadataStore,
     order: SessionOrder,
+    sessions: SessionStore,
     git_cache: GitInfoCache,
     watchers: Vec<Box<dyn AgentWatcher + Send>>,
     theme: Option<String>,
@@ -101,6 +103,7 @@ impl Engine {
             tracker: AgentTracker::new(),
             metadata: SessionMetadataStore::new(),
             order: SessionOrder::new(Some(order_path)),
+            sessions: SessionStore::new(Some(default_sessions_path())),
             git_cache: GitInfoCache::new(),
             watchers: vec![
                 Box::new(ClaudeCodeAgentWatcher::with_defaults()),
@@ -183,10 +186,23 @@ impl Engine {
         self.reload_repos();
         let mut entries = repo_entries(&self.repo_paths);
         entries.sort_by(|a, b| a.name.cmp(&b.name));
+        // Every folder gets ≥1 PTY session; seed a default `shell 1` and persist
+        // once (ensure_default is a no-op after the first seed, so no churn).
+        let mut seeded = false;
+        for entry in &entries {
+            if self.sessions.ensure_default(&entry.dir, now) {
+                seeded = true;
+            }
+        }
+        if seeded {
+            let _ = self.sessions.save();
+        }
         let payload = self.compute_payload_for_entries(&entries, now);
-        // Drop metadata for repos no longer configured (§1 pruneSessions).
+        // Drop metadata + session records for repos no longer configured.
         let names: HashSet<String> = entries.iter().map(|e| e.name.clone()).collect();
+        let dirs: HashSet<String> = entries.iter().map(|e| e.dir.clone()).collect();
         self.metadata.prune_sessions(&names);
+        self.sessions.prune(&dirs);
         payload
     }
 
@@ -197,12 +213,22 @@ impl Engine {
         // CLI-derived liveness drives the pruning pins (§4; T7 replaced the
         // ~/.claude/sessions pid files; the waiting synthesis is gone — the
         // claude watcher emits CLI-authoritative statuses directly).
-        let live_threads: HashSet<String> = crate::claude_cli::fetch_agents_cached(
-            std::time::Duration::from_millis(crate::watchers::claude_code::CLI_CACHE_TTL_MS),
-        )
-        .into_iter()
-        .map(|a| a.session_id)
-        .collect();
+        let cli_agents = crate::claude_cli::fetch_agents_cached(std::time::Duration::from_millis(
+            crate::watchers::claude_code::CLI_CACHE_TTL_MS,
+        ));
+        let live_threads: HashSet<String> =
+            cli_agents.iter().map(|a| a.session_id.clone()).collect();
+        // Link each live agent to the PTY session it runs in: read `TT_SESSION_ID`
+        // from the agent's process env (/proc), keyed by its thread id (==
+        // sessionId). Agents with no injected id (e.g. started in an external
+        // terminal, or non-Claude kinds without a pid source) stay unmapped and
+        // fall back to their folder's default session in `assemble_state`.
+        let tt_session_by_thread: HashMap<String, String> = cli_agents
+            .iter()
+            .filter_map(|a| {
+                crate::procenv::read_session_id(a.pid).map(|sid| (a.session_id.clone(), sid))
+            })
+            .collect();
         let mut pinned: HashMap<String, Vec<String>> = HashMap::new();
         for entry in entries {
             for agent in self.tracker.get_agents(&entry.name) {
@@ -233,12 +259,19 @@ impl Engine {
 
         let theme = self.theme.clone();
         let editor = self.preferred_editor.clone();
+        // Attribute each agent event to the PTY session it ran in, joining the
+        // event's thread id (== the CLI sessionId) to the `TT_SESSION_ID` read
+        // from that agent's process. Unmatched → folder's default session.
+        let attribute = |event: &AgentEvent| {
+            event.thread_id.as_ref().and_then(|tid| tt_session_by_thread.get(tid).cloned())
+        };
         let payload = assemble_state(
             entries,
             &git_infos,
             &self.tracker,
             &self.metadata,
-            &mut self.order,
+            &self.sessions,
+            &attribute,
             theme,
             &editor,
             now,
@@ -254,19 +287,12 @@ impl Engine {
         self.metadata.prune_sessions(names);
     }
 
-    /// Mark-seen fast-path: patch `unseen` on the cached snapshot without a full
-    /// rebuild (BRIDGE-SPEC §2). Returns the patched payload only if something changed.
+    /// Mark a folder's agents seen. Returns a fresh payload only if something
+    /// changed. `unseen` now lives on individual sessions (derived from their
+    /// agent state), so we recompute rather than patch the cached snapshot.
     pub fn mark_seen_patch(&mut self, name: &str) -> Option<StatePayload> {
         if !self.tracker.mark_seen(name) {
             return None;
-        }
-        if let Some(payload) = &mut self.last_payload {
-            for session in &mut payload.sessions {
-                if session.name == name {
-                    session.unseen = false;
-                }
-            }
-            return Some(payload.clone());
         }
         Some(self.compute_payload(now_ms()))
     }
@@ -327,6 +353,32 @@ impl Engine {
         let removed = remove_repo_by_name(&mut self.repo_paths, name);
         if removed {
             let _ = save_repos(&self.repos_path, &self.repo_paths);
+        }
+        removed
+    }
+
+    /// Add a PTY session to a folder and persist. Returns the created record.
+    pub fn add_session(&mut self, dir: &str, name: Option<&str>, now: i64) -> SessionRecord {
+        let record = self.sessions.add(dir, name, now);
+        let _ = self.sessions.save();
+        record
+    }
+
+    /// Rename a PTY session by id. Returns whether it changed.
+    pub fn rename_session(&mut self, id: &str, name: &str) -> bool {
+        let changed = self.sessions.rename(id, name);
+        if changed {
+            let _ = self.sessions.save();
+        }
+        changed
+    }
+
+    /// Remove a PTY session by id. Returns whether it was removed. (A folder left
+    /// empty is re-seeded with a default shell on the next `compute_payload`.)
+    pub fn close_session(&mut self, id: &str) -> bool {
+        let removed = self.sessions.remove(id);
+        if removed {
+            let _ = self.sessions.save();
         }
         removed
     }

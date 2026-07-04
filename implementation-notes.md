@@ -142,3 +142,81 @@ Known follow-ups (not fixed, by design or deferred):
   the declared @xterm deps in this worktree — pre-existing, unrelated to the
   feature).
 
+---
+
+# Agentboard → Folder Rail (2026-07-04, `feat/agentboard-folder-rail`)
+
+Plan of record: `~/.claude/plans/federated-plotting-moonbeam.md`.
+
+Model in one line: **folder (repo) → 1..N sessions; a session is an xterm PTY;
+"agent" is a badge on a session where Claude is detected running.** Agent↔session
+link = `TT_SESSION_ID` env injected at PTY spawn, read back from the agent's
+`/proc/<pid>/environ` (Chris's idea — replaces fragile pid/cwd matching).
+
+This inverts the data model: today's `SessionData` *is* a repo (one per repo);
+it becomes `FolderData` that *contains* `Vec<SessionData>` (each = one PTY).
+
+## Progress log (Folder Rail)
+
+- Setup: branch, appended these notes, HTML plan artifact rendered.
+- Rust model (task 2, green): `RepoData`/`FolderData`/new `SessionData` in
+  `types.rs` (old one → `TmuxSessionData`); `GitInfo.origin_url`; new
+  `sessions.rs` (`SessionStore`, `sessions.json`); `bridge.rs` assembles folders
+  → repos grouped by origin URL; `engine.rs` seeds default shells + prunes;
+  `tt-mcp` `agent_sessions` flattens the tree. 109 tt-agentboard tests pass.
+- Agent↔session linkage (task 3, green): `terminal.rs` sets `TT_SESSION_ID`
+  env; new `procenv.rs` reads it back from `/proc/<pid>/environ`; engine joins
+  the CLI snapshot's pid to the tracked event via thread_id(==sessionId) and
+  attributes the agent to its session.
+- Session commands (task 4, green): engine `add/rename/close_session`; Tauri
+  `ab_add_session`/`ab_rename_session`/`ab_close_session` registered; CLI
+  `agentboard sessions add|rename|remove|list`. 12 CLI black-box tests pass.
+- Frontend (tasks 5+6, green): `agentboard.ts` new `RepoData`/`FolderData`/
+  `SessionData` + `isAgent`/`sessionNeeds`/`sessionStatusText`/`isSoloRepo`
+  helpers + browser-dev mock; `day-bar.tsx` uses `repos[].needs`;
+  `agentboard.tsx` rewritten as the Folder Rail (repo→folder→session tree,
+  solo-repo collapse, compact PR/calendar strip, tabbed right pane, ⌘D new /
+  ⌘W close / dbl-click rename, hidden-mount PTYs); `screens.ts` keywords.
+- **Verified (task 7):** `cargo fmt --check` + `cargo clippy --all` clean;
+  `cargo test --all` fully green; frontend `tsc -b && vite build` clean; live
+  browser render (mock) confirms the 3-level rail — towles-tool-rs (slot-0 +
+  slot-1 folders) grouped by origin, toolbox solo-collapsed, ✦/❯ glyphs, status
+  dots, needs ⚑ bubbling, attention strip, selection + tabbed right pane.
+
+## Deviations (Folder Rail)
+
+_Conservative option on edge cases; log what/why/impact and keep going._
+
+- Kept the existing `implementation-notes.md` (day-hub build log) and appended
+  this section instead of overwriting — the plan said "create" but a tracked
+  file already existed. Conservative: preserve history.
+- **Plan revised before coding (Chris):** structure is 3-level **Repo → Folder
+  → Session**, not flat folders. A repo can be checked out N times (worktrees /
+  slot clones); group folders by `git remote get-url origin` (no remote →
+  standalone). Solo-repo folders collapse to one header. `GitInfo` gains
+  `origin_url`; new `RepoData` wraps `Vec<FolderData>`. Old one-per-repo
+  `SessionData` + tmux `ServerMessage`/`ClientCommand` are tt-agentboard-internal
+  only → add new types, leave tmux code alone.
+- **`running` field dropped from the wire** (plan listed it on SessionData).
+  PTY liveness is owned by tt-app's `terminal.rs`, and threading a live-term-id
+  set from tt-app through the Tauri-free engine would break the crate boundary.
+  Conservative: the frontend derives "running" from its own mounted-PTY set.
+- **Agent→session attribution done in the engine, not on `AgentEvent`.** Adding
+  a field to `AgentEvent` would touch 12 construction sites; instead the engine
+  joins the live CLI snapshot's pid to the tracked event by `thread_id`
+  (== CLI `sessionId`) and reads `/proc`. No `AgentEvent` change.
+- **Non-Claude agents (amp/codex/opencode) attach to a folder's default
+  session**, not pid-linked — only the Claude CLI snapshot exposes pids to read
+  `TT_SESSION_ID` from. Acceptable for v1; multi-session folders running those
+  agents won't pinpoint the exact PTY.
+- **`SessionOrder` no longer applied in assembly** (was a tmux reorder feature).
+  The field/commands remain but don't affect the Folder Rail ordering (repos +
+  folders sort by name). Conservative: leave the machinery, drop the effect.
+- **`mark_seen_patch` now full-recomputes** instead of patching the cached
+  snapshot in place (unseen moved from folder to session granularity).
+
+## Open follow-ups (Folder Rail)
+
+- macOS: `read_process_env(pid)` needs a non-`/proc` path (`ps eww`/libproc).
+  Linux-only for this pass.
+

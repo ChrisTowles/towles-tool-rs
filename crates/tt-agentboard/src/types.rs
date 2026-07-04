@@ -129,12 +129,79 @@ pub struct AgentEvent {
     pub details: Option<AgentEventDetails>,
 }
 
-// --- Session snapshot (ports `SessionData`) ---
+// --- Folder Rail snapshot (Repo → Folder → Session) ---
+//
+// The desktop model is three levels: a `RepoData` groups the checkouts of one
+// logical repo (by `git remote get-url origin`), each `FolderData` is one
+// checkout on disk, and each `SessionData` is one PTY shell inside a folder.
+// "Agent" is not a separate object — it's a badge on a session where Claude is
+// detected running (`agent_state` populated). The legacy tmux one-per-repo
+// payload is [`TmuxSessionData`] below, kept only for the retired `ServerMessage`.
 
-/// A single session in the state snapshot broadcast to clients. Ports `SessionData`.
+/// One PTY shell inside a folder. The wire type the React client renders as a
+/// session row. `agent_state`/`agents` are populated when a Claude (or other)
+/// agent is detected running in this PTY (attributed via `TT_SESSION_ID`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionData {
+    /// Stable session id — equals the PTY `term_id`. Persisted in sessions.json.
+    pub id: String,
+    /// Display name: "shell 1" by default, user-renamable.
+    pub name: String,
+    pub created_at: i64,
+    /// True when the latest agent event is an unseen terminal state.
+    pub unseen: bool,
+    /// Latest/priority agent event attributed to this PTY, if any.
+    pub agent_state: Option<AgentEvent>,
+    /// All agent instances attributed to this PTY (newest-first).
+    pub agents: Vec<AgentEvent>,
+}
+
+/// One checkout of a repo on disk (a clone, a worktree, or a slot). Holds 1..N
+/// PTY sessions. Ports the git-stat fields of the old per-repo session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderData {
+    /// Basename (disambiguated on collision) — e.g. "slot-0".
+    pub name: String,
+    /// Absolute path to the checkout.
+    pub dir: String,
+    pub branch: String,
+    pub is_worktree: bool,
+    pub files_changed: i64,
+    pub lines_added: i64,
+    pub lines_removed: i64,
+    pub commits_delta: i64,
+    pub sessions: Vec<SessionData>,
+    /// Number of sessions whose agent is `waiting`/`error` (bubbles up to repo).
+    pub needs: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<SessionMetadata>,
+}
+
+/// A logical repo: the group of checkouts sharing a `git remote origin` URL.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoData {
+    /// Grouping key: the origin URL, or `"path:<dir>"` for a remoteless folder.
+    pub key: String,
+    /// Display name: the repo segment of `owner/repo`, else the folder basename.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_url: Option<String>,
+    pub folders: Vec<FolderData>,
+    /// Σ of `folder.needs` across this repo's checkouts.
+    pub needs: i64,
+}
+
+// --- Legacy tmux session snapshot (ports the original `SessionData`) ---
+
+/// A single session in the retired tmux `ServerMessage::State` snapshot. Kept
+/// only so the tmux message enum still compiles; the desktop Folder Rail uses
+/// [`SessionData`]/[`FolderData`]/[`RepoData`] above.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TmuxSessionData {
     pub name: String,
     pub created_at: i64,
     pub dir: String,
@@ -242,7 +309,7 @@ pub struct SelectedAgent {
 )]
 pub enum ServerMessage {
     State {
-        sessions: Vec<SessionData>,
+        sessions: Vec<TmuxSessionData>,
         theme: Option<String>,
         sidebar_width: f64,
         preferred_editor: String,

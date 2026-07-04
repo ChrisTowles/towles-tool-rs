@@ -53,7 +53,7 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     id: "agentboard",
     title: "Agentboard",
     icon: TerminalSquare,
-    keywords: ["agents", "terminal", "tmux", "sessions", "shell"],
+    keywords: ["agents", "terminal", "sessions", "shell", "folder", "repos", "rail"],
     fullBleed: true,
   },
   "journal-today": {

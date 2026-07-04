@@ -1,42 +1,43 @@
-import { useEffect, useMemo, useState } from "react";
-import {
-  CalendarClock,
-  Columns2,
-  GitPullRequest,
-  Inbox,
-  TerminalSquare,
-  X,
-} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { CalendarClock, ChevronDown, GitPullRequest, Plus, TerminalSquare } from "lucide-react";
 import { TerminalView } from "@/components/terminal-view";
-import { Button } from "@/components/ui/button";
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { statusColor, useAgentboardState, type SessionData } from "@/lib/agentboard";
-import { fmtAge, fmtCountdown, useStoreSnapshot, type CalEvent, type PrItem } from "@/lib/data";
+import {
+  isAgent,
+  isSoloRepo,
+  sessionNeeds,
+  sessionStatusText,
+  statusColor,
+  useAgentboardState,
+  type FolderData,
+  type RepoData,
+  type SessionData,
+} from "@/lib/agentboard";
+import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { useWorkspace } from "@/lib/workspace";
 
-const MAX_PANES = 4;
+/** Invoke a Tauri `ab_*` command; no-op (null) in bare-browser dev. */
+async function abInvoke<T>(cmd: string, args: Record<string, unknown>): Promise<T | null> {
+  if (!("__TAURI_INTERNALS__" in window)) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<T>(cmd, args);
+  } catch {
+    return null;
+  }
+}
 
-type FeedItem =
-  | { kind: "agent"; key: string; ts: number; session: SessionData; status: string }
-  | { kind: "pr"; key: string; ts: number; pr: PrItem; status: string }
-  | { kind: "event"; key: string; ts: number; event: CalEvent; status: string };
-
-const KIND_BORDER: Record<FeedItem["kind"], string> = {
-  agent: "border-l-amber-500",
-  pr: "border-l-red-500",
-  event: "border-l-blue-500",
-};
+type Selected = { folderDir: string; sessionId: string } | null;
 
 /**
- * Agentboard: attention inbox + split terminals. Left = a "Needs you" feed that
- * merges waiting/errored agent sessions (from the `agentboard://state` bridge),
- * failing/review-requested PRs and imminent calendar events (from the store
- * snapshot); agent state is REPORTED, never re-rendered — the real TUI lives in
- * the PTY. Right = side-by-side terminals for the selected session. Every
- * session's pane group stays mounted (toggled with `hidden`) so shells and
- * scrollback survive switching.
+ * Agentboard — the Folder Rail. Left: repos → folders (checkouts) → PTY sessions,
+ * with a compact needs-you strip (failing PRs + next meeting) pinned on top.
+ * Right: the selected session's terminal, with the folder's sessions as tabs.
+ * A session IS a PTY; "agent" (✦) is a badge on a session where Claude is
+ * detected running — status is reported, never re-rendered (the real TUI is the
+ * PTY). Every opened session's terminal stays mounted (toggled `hidden`) so
+ * scrollback survives switching. ⌘D = new session in the folder, ⌘W = close.
  */
 export function AgentboardScreen() {
   const state = useAgentboardState();
@@ -44,218 +45,208 @@ export function AgentboardScreen() {
   const { openTab } = useWorkspace();
   const now = Date.now();
 
-  const [selected, setSelected] = useState<string | null>(null);
-  // Ordered terminal pane ids per session (side-by-side splits).
-  const [panes, setPanes] = useState<Record<string, number[]>>({});
+  const [selected, setSelected] = useState<Selected>(null);
+  // Session ids whose PTY is mounted (kept alive for scrollback), + their cwd.
+  const [open, setOpen] = useState<string[]>([]);
+  const cwds = useRef<Record<string, string>>({});
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [renaming, setRenaming] = useState<string | null>(null);
 
-  const byName = useMemo(() => {
-    const m = new Map<string, SessionData>();
-    for (const s of state.sessions) m.set(s.name, s);
+  const repos = state.repos;
+
+  // Index every session by id → its folder dir, for cwd + validation.
+  const folderOf = useMemo(() => {
+    const m = new Map<string, FolderData>();
+    for (const r of repos) for (const f of r.folders) for (const s of f.sessions) m.set(s.id, f);
     return m;
-  }, [state.sessions]);
+  }, [repos]);
 
-  function selectSession(name: string) {
-    setSelected(name);
-    setPanes((prev) => (prev[name] ? prev : { ...prev, [name]: [0] }));
+  function selectSession(folderDir: string, sessionId: string) {
+    cwds.current[sessionId] = folderDir;
+    setSelected({ folderDir, sessionId });
+    setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
   }
 
-  function addPane(name: string) {
-    setPanes((prev) => {
-      const ids = prev[name] ?? [0];
-      if (ids.length >= MAX_PANES) return prev;
-      const next = ids.length ? Math.max(...ids) + 1 : 0;
-      return { ...prev, [name]: [...ids, next] };
-    });
+  async function newSession(folderDir: string) {
+    const rec = await abInvoke<SessionData>("ab_add_session", { dir: folderDir, name: null });
+    if (rec) selectSession(folderDir, rec.id);
   }
 
-  function closePane(name: string, id: number) {
-    setPanes((prev) => ({ ...prev, [name]: (prev[name] ?? []).filter((n) => n !== id) }));
+  async function closeSession(sessionId: string) {
+    await abInvoke("ab_close_session", { id: sessionId });
+    setOpen((prev) => prev.filter((id) => id !== sessionId));
+    setSelected((cur) => (cur?.sessionId === sessionId ? null : cur));
   }
 
-  // ⌘D splits the selected session (no-op when nothing is selected).
+  async function commitRename(sessionId: string, name: string) {
+    setRenaming(null);
+    const trimmed = name.trim();
+    if (trimmed) await abInvoke("ab_rename_session", { id: sessionId, name: trimmed });
+  }
+
+  // ⌘D = new session in the selected folder; ⌘W = close the selected session.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "d" && selected) {
+      if (!(e.metaKey || e.ctrlKey) || !selected) return;
+      if (e.key === "d") {
         e.preventDefault();
-        addPane(selected);
+        void newSession(selected.folderDir);
+      } else if (e.key === "w") {
+        e.preventDefault();
+        void closeSession(selected.sessionId);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selected]);
 
-  const feed = useMemo<FeedItem[]>(() => {
-    const items: FeedItem[] = [];
-    for (const s of state.sessions) {
-      const st = s.agentState?.status;
-      if (st === "waiting" || st === "error") {
-        items.push({
-          kind: "agent",
-          key: `agent:${s.name}`,
-          ts: s.agentState?.ts ?? 0,
-          session: s,
-          status: st === "waiting" ? "Waiting — needs your input" : "Errored — needs a look",
-        });
-      }
-    }
-    items.sort((a, b) => a.ts - b.ts); // oldest agent event first
+  // Compact attention strip: failing/review PRs + the next imminent meeting.
+  const attention = useMemo(() => {
+    const items: { key: string; kind: "pr" | "event"; title: string; sub: string; onClick: () => void }[] =
+      [];
     for (const p of snapshot.prs) {
       if (p.checks === "failing" || p.reviewState === "review_requested") {
         items.push({
-          kind: "pr",
           key: `pr:${p.repo}#${p.number}`,
-          ts: p.updatedTs,
-          pr: p,
-          status: p.checks === "failing" ? "Checks failing" : "Review requested",
+          kind: "pr",
+          title: `${p.repo.split("/").pop()} #${p.number}`,
+          sub: p.checks === "failing" ? "Checks failing" : "Review requested",
+          onClick: () => window.open(p.url, "_blank", "noopener"),
         });
       }
     }
-    for (const ev of snapshot.events) {
-      const until = ev.startTs - now;
-      if (until > 0 && until <= 30 * 60_000) {
-        items.push({
-          kind: "event",
-          key: `event:${ev.id}`,
-          ts: ev.startTs,
-          event: ev,
-          status: `Starts in ${fmtCountdown(until)}`,
-        });
-      }
+    const soon = snapshot.events
+      .filter((e) => e.startTs > now && e.startTs - now <= 30 * 60_000)
+      .sort((a, b) => a.startTs - b.startTs)[0];
+    if (soon) {
+      items.push({
+        key: `event:${soon.id}`,
+        kind: "event",
+        title: soon.title,
+        sub: `Starts in ${fmtCountdown(soon.startTs - now)}`,
+        onClick: () => openTab("cockpit"),
+      });
     }
     return items;
-  }, [state.sessions, snapshot.prs, snapshot.events, now]);
+  }, [snapshot.prs, snapshot.events, now, openTab]);
 
-  // Everything that isn't shouting for attention, as compact one-liners.
-  const quiet = useMemo(
-    () =>
-      state.sessions.filter(
-        (s) => s.agentState?.status !== "waiting" && s.agentState?.status !== "error",
-      ),
-    [state.sessions],
-  );
-
-  const selectedSession = selected ? byName.get(selected) : undefined;
-  const selectedPanes = selected ? (panes[selected] ?? []) : [];
+  const selectedFolder = selected ? folderOf.get(selected.sessionId) : undefined;
 
   return (
     <div className="flex h-full min-h-0">
-      {/* Needs-you feed + quiet sessions. */}
+      {/* Rail: attention strip + Repo → Folder → Session tree. */}
       <div className="flex w-80 shrink-0 flex-col border-r">
-        <div className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-muted-foreground">
-          <Inbox className="size-4" />
-          Needs you
-        </div>
+        {attention.length > 0 && (
+          <div className="flex flex-col gap-1 border-b p-2">
+            {attention.map((a) => (
+              <button
+                key={a.key}
+                type="button"
+                onClick={a.onClick}
+                className={cn(
+                  "flex items-center gap-2 rounded-md border border-l-2 px-2 py-1.5 text-left hover:bg-accent/50",
+                  a.kind === "pr" ? "border-l-red-500" : "border-l-blue-500",
+                )}
+              >
+                {a.kind === "pr" ? (
+                  <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
+                ) : (
+                  <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-medium">{a.title}</span>
+                  <span className="block truncate text-[11px] text-muted-foreground">{a.sub}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
         <ScrollArea className="flex-1">
-          <div className="flex flex-col gap-2 p-2">
-            {state.sessions.length === 0 && feed.length === 0 && (
-              <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-                No sessions yet. Start one with <span className="font-mono">ttr agentboard</span>.
+          <div className="flex flex-col">
+            {repos.length === 0 && (
+              <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+                No repos yet. Add one with{" "}
+                <span className="font-mono">ttr agentboard repos add</span>.
               </p>
             )}
-            {feed.length === 0 && state.sessions.length > 0 && (
-              <p className="px-2 py-4 text-center text-xs text-muted-foreground">
-                Nothing needs you right now.
-              </p>
-            )}
-            {feed.map((item) => (
-              <FeedCard
-                key={item.key}
-                item={item}
-                now={now}
+            {repos.map((repo) => (
+              <RepoGroup
+                key={repo.key}
+                repo={repo}
+                selected={selected}
+                collapsed={collapsed}
+                renaming={renaming}
+                onToggle={(k) => setCollapsed((c) => ({ ...c, [k]: !c[k] }))}
                 onSelect={selectSession}
-                openCalendar={() => openTab("cockpit")}
+                onNewSession={newSession}
+                onRenameStart={setRenaming}
+                onRenameCommit={commitRename}
               />
             ))}
-
-            {quiet.length > 0 && (
-              <div className="mt-2 flex flex-col gap-0.5 border-t pt-2">
-                <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
-                  Quiet
-                </div>
-                {quiet.map((s) => (
-                  <button
-                    key={s.name}
-                    type="button"
-                    onClick={() => selectSession(s.name)}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm",
-                      selected === s.name ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "size-2 shrink-0 rounded-full",
-                        s.agentState?.status
-                          ? statusColor(s.agentState.status)
-                          : "bg-muted-foreground/30",
-                      )}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{s.name}</span>
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
         </ScrollArea>
       </div>
 
       {/* Terminal area for the selected session. */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {selectedSession && (
-          <div className="flex items-center gap-2 border-b px-2 py-1">
-            <span className="truncate text-sm font-medium">{selectedSession.name}</span>
-            <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
-              {selectedSession.dir}
+        {selectedFolder && selected && (
+          <div className="flex items-center gap-2 border-b bg-card px-2 py-1">
+            <span className="shrink-0 truncate text-sm font-medium">
+              {selectedFolder.name}
             </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 shrink-0 px-2"
-              disabled={selectedPanes.length >= MAX_PANES}
-              onClick={() => addPane(selectedSession.name)}
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+              ⎇ {selectedFolder.branch}
+            </span>
+            <div className="ml-2 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+              {selectedFolder.sessions.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => selectSession(selectedFolder.dir, s.id)}
+                  className={cn(
+                    "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
+                    s.id === selected.sessionId
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:bg-accent/50",
+                  )}
+                >
+                  <Glyph agent={isAgent(s)} />
+                  {s.name}
+                  <Dot session={s} />
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => void newSession(selectedFolder.dir)}
+                className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
+              >
+                <Plus className="size-3" /> session
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => void closeSession(selected.sessionId)}
+              className="shrink-0 rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent/50"
+              title="Close session (⌘W)"
             >
-              <Columns2 className="size-3" /> Split
-            </Button>
+              Close ⌘W
+            </button>
           </div>
         )}
 
-        {/* Every session's pane group stays mounted; only the selected one shows. */}
-        <div className="relative min-h-0 flex-1">
-          {Object.entries(panes).map(([name, ids]) => {
-            const visible = selected === name && ids.length > 0;
-            const dir = byName.get(name)?.dir;
-            return (
-              <div key={name} hidden={!visible} className="absolute inset-0">
-                <ResizablePanelGroup orientation="horizontal" className="size-full">
-                  {ids.map((id, i) => (
-                    <PaneSlot key={id} first={i === 0}>
-                      <div className="flex h-full flex-col">
-                        <div className="flex h-6 shrink-0 items-center justify-between border-b px-2 text-xs text-muted-foreground">
-                          <span>shell {i + 1}</span>
-                          <button
-                            type="button"
-                            onClick={() => closePane(name, id)}
-                            className="rounded p-0.5 hover:bg-accent"
-                            aria-label="close pane"
-                          >
-                            <X className="size-3" />
-                          </button>
-                        </div>
-                        <div className="min-h-0 flex-1">
-                          <TerminalView
-                            termId={`${name}:${id}`}
-                            cwd={dir}
-                            onExit={() => closePane(name, id)}
-                          />
-                        </div>
-                      </div>
-                    </PaneSlot>
-                  ))}
-                </ResizablePanelGroup>
-              </div>
-            );
-          })}
-          {(!selectedSession || selectedPanes.length === 0) && (
+        {/* Every opened session's terminal stays mounted; only the selected shows. */}
+        <div className="relative min-h-0 flex-1 p-3.5">
+          {open.map((id) => (
+            <div
+              key={id}
+              hidden={selected?.sessionId !== id}
+              className="absolute inset-3.5 overflow-hidden rounded-lg border bg-[#07090c]"
+            >
+              <TerminalView termId={id} cwd={cwds.current[id]} onExit={() => closeSession(id)} />
+            </div>
+          ))}
+          {!selected && (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
               <TerminalSquare className="size-10" />
               <p className="text-sm">Select a session.</p>
@@ -267,67 +258,246 @@ export function AgentboardScreen() {
   );
 }
 
-/** A resizable pane plus the handle that precedes it (skipped for the first). */
-function PaneSlot({ first, children }: { first: boolean; children: React.ReactNode }) {
+/** ✦ for an agent session, ❯ for a plain shell. */
+function Glyph({ agent }: { agent: boolean }) {
   return (
-    <>
-      {!first && <ResizableHandle withHandle />}
-      <ResizablePanel>{children}</ResizablePanel>
-    </>
+    <span
+      className={cn(
+        "w-4 shrink-0 text-center font-mono text-xs",
+        agent ? "text-violet-500" : "text-muted-foreground",
+      )}
+    >
+      {agent ? "✦" : "❯"}
+    </span>
   );
 }
 
-function FeedCard({
-  item,
-  now,
-  onSelect,
-  openCalendar,
-}: {
-  item: FeedItem;
-  now: number;
-  onSelect: (name: string) => void;
-  openCalendar: () => void;
-}) {
-  const meta =
-    item.kind === "agent"
-      ? { label: "Agent", icon: TerminalSquare, title: item.session.name, age: fmtAge(item.ts, now) }
-      : item.kind === "pr"
-        ? {
-            label: "Pull request",
-            icon: GitPullRequest,
-            title: `${item.pr.repo.split("/").pop()} #${item.pr.number}`,
-            age: fmtAge(item.ts, now),
-          }
-        : {
-            label: "Calendar",
-            icon: CalendarClock,
-            title: item.event.title,
-            age: fmtCountdown(item.event.startTs - now),
-          };
-
-  const onClick = () => {
-    if (item.kind === "agent") onSelect(item.session.name);
-    else if (item.kind === "pr") window.open(item.pr.url, "_blank", "noopener");
-    else openCalendar();
-  };
-
-  const Icon = meta.icon;
+/** Status dot mirroring `statusColor`; pulses while busy. */
+function Dot({ session }: { session: SessionData }) {
+  const st = session.agentState?.status;
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <span
       className={cn(
-        "flex flex-col gap-1 rounded-md border border-l-2 px-2.5 py-2 text-left hover:bg-accent/50",
-        KIND_BORDER[item.kind],
+        "size-2 shrink-0 rounded-full",
+        st ? statusColor(st) : "bg-muted-foreground/40",
+        st === "busy" && "animate-pulse",
+      )}
+    />
+  );
+}
+
+function RepoGroup({
+  repo,
+  selected,
+  collapsed,
+  renaming,
+  onToggle,
+  onSelect,
+  onNewSession,
+  onRenameStart,
+  onRenameCommit,
+}: {
+  repo: RepoData;
+  selected: Selected;
+  collapsed: Record<string, boolean>;
+  renaming: string | null;
+  onToggle: (key: string) => void;
+  onSelect: (folderDir: string, sessionId: string) => void;
+  onNewSession: (folderDir: string) => void;
+  onRenameStart: (sessionId: string) => void;
+  onRenameCommit: (sessionId: string, name: string) => void;
+}) {
+  const solo = isSoloRepo(repo);
+
+  const sessionRows = (folder: FolderData) =>
+    folder.sessions.map((s) => (
+      <SessionRow
+        key={s.id}
+        session={s}
+        active={selected?.sessionId === s.id}
+        renaming={renaming === s.id}
+        onSelect={() => onSelect(folder.dir, s.id)}
+        onRenameStart={() => onRenameStart(s.id)}
+        onRenameCommit={(name) => onRenameCommit(s.id, name)}
+      />
+    ));
+
+  // Solo repo: collapse repo + folder into one header (repo · branch).
+  if (solo) {
+    const folder = repo.folders[0];
+    const isCollapsed = collapsed[repo.key];
+    return (
+      <div className="border-b">
+        <FolderHeader
+          scope="repo"
+          title={repo.name}
+          branch={folder.branch}
+          needs={repo.needs}
+          collapsed={isCollapsed}
+          onToggle={() => onToggle(repo.key)}
+          onNewSession={() => onNewSession(folder.dir)}
+        />
+        {!isCollapsed && <div className="pb-2">{sessionRows(folder)}</div>}
+      </div>
+    );
+  }
+
+  // Multi-checkout repo: repo header, then each folder as a sub-header.
+  const repoCollapsed = collapsed[repo.key];
+  return (
+    <div className="border-b">
+      <button
+        type="button"
+        onClick={() => onToggle(repo.key)}
+        className="sticky top-0 z-10 flex w-full items-center gap-2 bg-card px-3 py-2 hover:bg-accent/50"
+      >
+        <Chevron collapsed={repoCollapsed} />
+        <span className="truncate text-sm font-semibold">{repo.name}</span>
+        {repo.needs > 0 && <NeedsBadge n={repo.needs} className="ml-auto" />}
+      </button>
+      {!repoCollapsed &&
+        repo.folders.map((folder) => {
+          const key = `${repo.key}::${folder.dir}`;
+          const fCollapsed = collapsed[key];
+          return (
+            <div key={folder.dir}>
+              <FolderHeader
+                scope="folder"
+                title={folder.name}
+                branch={folder.branch}
+                needs={folder.needs}
+                collapsed={fCollapsed}
+                onToggle={() => onToggle(key)}
+                onNewSession={() => onNewSession(folder.dir)}
+              />
+              {!fCollapsed && <div className="pb-1">{sessionRows(folder)}</div>}
+            </div>
+          );
+        })}
+    </div>
+  );
+}
+
+function FolderHeader({
+  scope,
+  title,
+  branch,
+  needs,
+  collapsed,
+  onToggle,
+  onNewSession,
+}: {
+  scope: "repo" | "folder";
+  title: string;
+  branch: string;
+  needs: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  onNewSession: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "group flex items-center gap-2 bg-card px-3 py-2 hover:bg-accent/50",
+        scope === "repo" ? "sticky top-0 z-10" : "pl-6",
       )}
     >
-      <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-        <Icon className="size-3" />
-        {meta.label}
-        <span className="ml-auto tabular-nums">{meta.age}</span>
-      </div>
-      <div className="truncate text-sm font-medium">{meta.title}</div>
-      <div className="truncate text-xs text-muted-foreground">{item.status}</div>
-    </button>
+      <button type="button" onClick={onToggle} className="flex min-w-0 flex-1 items-center gap-2">
+        <Chevron collapsed={collapsed} />
+        <span className={cn("truncate", scope === "repo" ? "text-sm font-semibold" : "text-sm")}>
+          {title}
+        </span>
+        <span className="truncate font-mono text-[11px] text-muted-foreground">⎇ {branch}</span>
+      </button>
+      {needs > 0 && <NeedsBadge n={needs} />}
+      <button
+        type="button"
+        onClick={onNewSession}
+        className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 hover:text-violet-500 group-hover:opacity-100"
+        title="New session"
+      >
+        <Plus className="size-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function SessionRow({
+  session,
+  active,
+  renaming,
+  onSelect,
+  onRenameStart,
+  onRenameCommit,
+}: {
+  session: SessionData;
+  active: boolean;
+  renaming: boolean;
+  onSelect: () => void;
+  onRenameStart: () => void;
+  onRenameCommit: (name: string) => void;
+}) {
+  const needs = sessionNeeds(session);
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onDoubleClick={onRenameStart}
+      onKeyDown={(e) => e.key === "Enter" && onSelect()}
+      className={cn(
+        "ml-1.5 flex cursor-pointer items-center gap-2.5 border-l-2 border-transparent py-1.5 pr-3 pl-7 hover:bg-accent/50",
+        active && "border-l-violet-500 bg-accent",
+        needs && "border-l-amber-500",
+      )}
+    >
+      <Glyph agent={isAgent(session)} />
+      <Dot session={session} />
+      {renaming ? (
+        <input
+          autoFocus
+          defaultValue={session.name}
+          onClick={(e) => e.stopPropagation()}
+          onBlur={(e) => onRenameCommit(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onRenameCommit((e.target as HTMLInputElement).value);
+            if (e.key === "Escape") onRenameCommit(session.name);
+          }}
+          className="min-w-0 flex-1 rounded-sm border border-input bg-background px-1 text-sm outline-none"
+        />
+      ) : (
+        <>
+          <span className="truncate text-foreground">{session.name}</span>
+          <span className="ml-auto truncate text-[11px] text-muted-foreground">
+            {sessionStatusText(session)}
+          </span>
+          {needs && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
+        </>
+      )}
+    </div>
+  );
+}
+
+function NeedsBadge({ n, className }: { n: number; className?: string }) {
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-md border border-amber-500/50 bg-amber-500/10 px-1.5 font-mono text-[10.5px] text-amber-500",
+        className,
+      )}
+    >
+      {n} ⚑
+    </span>
+  );
+}
+
+function Chevron({ collapsed }: { collapsed: boolean }) {
+  return (
+    <ChevronDown
+      className={cn(
+        "size-3.5 shrink-0 text-muted-foreground transition-transform",
+        collapsed && "-rotate-90",
+      )}
+    />
   );
 }

@@ -84,6 +84,10 @@ pub fn term_start(
 
     let mut cmd = CommandBuilder::new(default_shell(std::env::var("SHELL").ok()));
     cmd.env("TERM", "xterm-256color");
+    // Stamp the PTY with its session id so a Claude agent launched inside inherits
+    // it; the agentboard engine reads it back from /proc to attribute the agent to
+    // this session (see tt_agentboard::procenv). `term_id` == the session id.
+    cmd.env("TT_SESSION_ID", &term_id);
     if let Some(dir) = start_dir(cwd) {
         cmd.cwd(dir);
     }
