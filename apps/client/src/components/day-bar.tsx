@@ -28,9 +28,8 @@ export function DayBar() {
     .filter((t) => t.status !== "done")
     .sort((a, b) => a.createdAt - b.createdAt)[0];
 
-  const waitingAgents = agentState.sessions.filter(
-    (s) => s.agentState?.status === "waiting" || s.agentState?.status === "error",
-  ).length;
+  // Sessions blocked on you, summed across every repo's folders (`needs`).
+  const waitingAgents = agentState.repos.reduce((sum, r) => sum + r.needs, 0);
   const failingPrs = snapshot.prs.filter(
     (p) => p.checks === "failing" || p.reviewState === "review_requested",
   ).length;

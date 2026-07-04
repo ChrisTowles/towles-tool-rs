@@ -126,6 +126,42 @@ pub struct AgentboardArgs {
 pub enum AgentboardCommands {
     /// Manage the watched-repo list (repos.json) that feeds the app + collectors
     Repos(ReposArgs),
+
+    /// Manage a folder's PTY sessions (sessions.json)
+    Sessions(SessionsArgs),
+}
+
+#[derive(Args)]
+#[command(disable_help_subcommand = true)]
+pub struct SessionsArgs {
+    #[command(subcommand)]
+    pub command: Option<SessionsCommands>,
+}
+
+#[derive(Subcommand)]
+pub enum SessionsCommands {
+    /// Add a PTY session to a folder (a watched checkout)
+    Add {
+        /// Path to the folder/checkout (must exist)
+        path: String,
+        /// Optional session name (defaults to "shell N")
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Rename a session by id
+    Rename {
+        /// Session id (from `sessions list`)
+        id: String,
+        /// New name
+        name: String,
+    },
+
+    /// Remove a session by id
+    Remove {
+        /// Session id (from `sessions list`)
+        id: String,
+    },
 }
 
 #[derive(Args)]

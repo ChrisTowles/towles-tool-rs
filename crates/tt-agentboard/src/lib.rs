@@ -30,8 +30,10 @@ pub mod engine;
 pub mod fs_notify;
 pub mod git_info;
 pub mod metadata;
+pub mod procenv;
 pub mod repos;
 pub mod session_order;
+pub mod sessions;
 pub mod text;
 pub mod themes;
 pub mod tracker;
@@ -62,11 +64,12 @@ pub use repos::{
     resolve_session_name, save_repos,
 };
 pub use session_order::{ReorderDelta, SessionOrder, default_session_order_path};
+pub use sessions::{SessionRecord, SessionStore, default_sessions_path};
 pub use tracker::{AgentTracker, instance_key};
 pub use types::{
-    AgentEvent, AgentEventDetails, AgentStatus, ClientCommand, LoopInfo, MetadataLogEntry,
-    MetadataProgress, MetadataStatus, MetadataTone, ServerMessage, SessionData, SessionMetadata,
-    SubagentInfo,
+    AgentEvent, AgentEventDetails, AgentStatus, ClientCommand, FolderData, LoopInfo,
+    MetadataLogEntry, MetadataProgress, MetadataStatus, MetadataTone, RepoData, ServerMessage,
+    SessionData, SessionMetadata, SubagentInfo, TmuxSessionData,
 };
 pub use watcher::{AgentWatcher, WatcherContext};
 pub use watchers::amp::AmpAgentWatcher;

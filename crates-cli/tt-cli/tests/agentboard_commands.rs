@@ -143,3 +143,85 @@ fn ag_alias_works() {
         .success()
         .stdout(predicates::str::contains("No repos configured"));
 }
+
+fn sessions_json(temp: &Path) -> std::path::PathBuf {
+    temp.join(".config").join("towles-tool").join("agentboard").join("sessions.json")
+}
+
+#[test]
+fn sessions_empty_reports_none() {
+    let temp = TempDir::new().unwrap();
+    ab_cmd(temp.path())
+        .args(["agentboard", "sessions"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("No sessions yet"));
+}
+
+#[test]
+fn sessions_add_default_name_and_list() {
+    let temp = TempDir::new().unwrap();
+    let repo = make_repo(temp.path(), "proj", true);
+
+    ab_cmd(temp.path())
+        .args(["agentboard", "sessions", "add", repo.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("shell 1"));
+
+    // Persisted under the folder dir.
+    let content = std::fs::read_to_string(sessions_json(temp.path())).unwrap();
+    assert!(content.contains("shell 1"));
+    assert!(content.contains("createdAt"));
+
+    // Listing shows the folder and its session.
+    ab_cmd(temp.path())
+        .args(["agentboard", "sessions"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("shell 1"));
+}
+
+#[test]
+fn sessions_add_named_then_rename_then_remove() {
+    let temp = TempDir::new().unwrap();
+    let repo = make_repo(temp.path(), "proj", true);
+    let dir = repo.to_str().unwrap();
+
+    ab_cmd(temp.path())
+        .args(["agentboard", "sessions", "add", dir, "--name", "build"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("build"));
+
+    // Extract the id from the persisted file.
+    let content = std::fs::read_to_string(sessions_json(temp.path())).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let id = value["folders"].as_object().unwrap().values().next().unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    ab_cmd(temp.path())
+        .args(["agentboard", "sessions", "rename", &id, "logs"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Renamed"));
+
+    ab_cmd(temp.path())
+        .args(["agentboard", "sessions", "remove", &id])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Removed session"));
+}
+
+#[test]
+fn sessions_remove_unknown_errors() {
+    let temp = TempDir::new().unwrap();
+    ab_cmd(temp.path())
+        .args(["agentboard", "sessions", "remove", "nope"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicates::str::contains("No session with id"));
+}

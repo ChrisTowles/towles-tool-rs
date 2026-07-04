@@ -31,6 +31,9 @@ pub struct GitInfo {
     pub lines_removed: i64,
     /// Positive = ahead of origin/main, negative = behind.
     pub commits_delta: i64,
+    /// `git remote get-url origin`, if the checkout has an origin remote. Used to
+    /// group folders (checkouts) of the same logical repo in the Folder Rail.
+    pub origin_url: Option<String>,
 }
 
 /// Must stay above the git poll interval so the poll keeps entries warm.
@@ -140,7 +143,11 @@ pub fn compute_git_info(dir: &str) -> GitInfo {
         ],
     );
 
-    compute_git_info_from_outputs(&branch, &git_dir, &status_out, &diff_out, &ahead_behind)
+    let mut info =
+        compute_git_info_from_outputs(&branch, &git_dir, &status_out, &diff_out, &ahead_behind);
+    let origin_url = git_out(dir, &["remote", "get-url", "origin"]);
+    info.origin_url = (!origin_url.is_empty()).then_some(origin_url);
+    info
 }
 
 /// origin/main, or origin/master if that's what the remote uses. Ports `resolveOriginMain`.
@@ -188,6 +195,8 @@ pub fn compute_git_info_from_outputs(
         lines_added,
         lines_removed,
         commits_delta: parse_ahead_behind(ahead_behind),
+        // The pure parser has no origin knowledge; `compute_git_info` fills it in.
+        origin_url: None,
     }
 }
 

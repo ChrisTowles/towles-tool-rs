@@ -92,6 +92,31 @@ pub fn ab_remove_repo(state: State<Ab>, name: String) {
     state.emit.notify_one();
 }
 
+/// Add a PTY session to a folder. Returns the new record so the client can
+/// select it immediately.
+#[tauri::command]
+pub fn ab_add_session(
+    state: State<Ab>,
+    dir: String,
+    name: Option<String>,
+) -> tt_agentboard::SessionRecord {
+    let record = state.engine.lock().unwrap().add_session(&dir, name.as_deref(), now_ms());
+    state.emit.notify_one();
+    record
+}
+
+#[tauri::command]
+pub fn ab_rename_session(state: State<Ab>, id: String, name: String) {
+    state.engine.lock().unwrap().rename_session(&id, &name);
+    state.emit.notify_one();
+}
+
+#[tauri::command]
+pub fn ab_close_session(state: State<Ab>, id: String) {
+    state.engine.lock().unwrap().close_session(&id);
+    state.emit.notify_one();
+}
+
 #[tauri::command]
 pub fn ab_refresh(state: State<Ab>) {
     state.emit.notify_one();

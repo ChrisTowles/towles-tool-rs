@@ -5,9 +5,11 @@
 
 use std::path::Path;
 
-use crate::cli::{AgentboardCommands, ReposCommands};
+use crate::cli::{AgentboardCommands, ReposCommands, SessionsCommands};
 use crate::ui;
+use tt_agentboard::engine::now_ms;
 use tt_agentboard::repos::{add_repo, default_repos_path, load_repos, repo_entries, save_repos};
+use tt_agentboard::sessions::{SessionStore, default_sessions_path};
 
 pub fn run(command: AgentboardCommands) -> i32 {
     match command {
@@ -15,6 +17,12 @@ pub fn run(command: AgentboardCommands) -> i32 {
             None => list_repos(),
             Some(ReposCommands::Add { path }) => add(&path),
             Some(ReposCommands::Remove { target }) => remove(&target),
+        },
+        AgentboardCommands::Sessions(args) => match args.command {
+            None => list_sessions(),
+            Some(SessionsCommands::Add { path, name }) => add_session(&path, name.as_deref()),
+            Some(SessionsCommands::Rename { id, name }) => rename_session(&id, &name),
+            Some(SessionsCommands::Remove { id }) => remove_session(&id),
         },
     }
 }
@@ -81,5 +89,70 @@ fn remove(target: &str) -> i32 {
         return 1;
     }
     ui::success(&format!("Removed {dir}"));
+    0
+}
+
+fn list_sessions() -> i32 {
+    let store = SessionStore::new(Some(default_sessions_path()));
+    let mut any = false;
+    for (dir, sessions) in store.iter() {
+        any = true;
+        println!("{dir}");
+        for s in sessions {
+            println!("  {}  {}", s.id, s.name);
+        }
+    }
+    if !any {
+        ui::info(
+            "No sessions yet. The app seeds a default shell per folder, or add one with `ttr agentboard sessions add <path>`.",
+        );
+    }
+    0
+}
+
+fn add_session(path: &str, name: Option<&str>) -> i32 {
+    let abs = match std::fs::canonicalize(path) {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) => {
+            ui::error(&format!("Path does not exist: {path}"));
+            return 1;
+        }
+    };
+    let sessions_path = default_sessions_path();
+    let mut store = SessionStore::new(Some(sessions_path));
+    let record = store.add(&abs, name, now_ms());
+    if let Err(e) = store.save() {
+        ui::error(&format!("Failed to save sessions: {e}"));
+        return 1;
+    }
+    ui::success(&format!("Added session {} ({}) to {abs}", record.name, record.id));
+    0
+}
+
+fn rename_session(id: &str, name: &str) -> i32 {
+    let mut store = SessionStore::new(Some(default_sessions_path()));
+    if !store.rename(id, name) {
+        ui::error(&format!("No session with id: {id}"));
+        return 1;
+    }
+    if let Err(e) = store.save() {
+        ui::error(&format!("Failed to save sessions: {e}"));
+        return 1;
+    }
+    ui::success(&format!("Renamed {id} to {name}"));
+    0
+}
+
+fn remove_session(id: &str) -> i32 {
+    let mut store = SessionStore::new(Some(default_sessions_path()));
+    if !store.remove(id) {
+        ui::error(&format!("No session with id: {id}"));
+        return 1;
+    }
+    if let Err(e) = store.save() {
+        ui::error(&format!("Failed to save sessions: {e}"));
+        return 1;
+    }
+    ui::success(&format!("Removed session {id}"));
     0
 }

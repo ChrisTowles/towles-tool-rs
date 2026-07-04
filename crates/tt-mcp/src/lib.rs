@@ -158,8 +158,23 @@ impl Dispatcher {
                 return Ok(json!({ "sessions": [], "message": "agentboard engine unavailable" }));
             }
         };
-        let sessions = serde_json::to_value(&payload.sessions).map_err(|e| e.to_string())?;
-        let sessions = sessions.as_array().cloned().unwrap_or_default();
+        // Flatten the Repo → Folder → Session tree into one list, enriching each
+        // session with its repo/folder/dir/branch context for callers.
+        let mut sessions: Vec<Value> = Vec::new();
+        for repo in &payload.repos {
+            for folder in &repo.folders {
+                for session in &folder.sessions {
+                    let mut entry = serde_json::to_value(session).map_err(|e| e.to_string())?;
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.insert("repo".into(), json!(repo.name));
+                        obj.insert("folder".into(), json!(folder.name));
+                        obj.insert("dir".into(), json!(folder.dir));
+                        obj.insert("branch".into(), json!(folder.branch));
+                    }
+                    sessions.push(entry);
+                }
+            }
+        }
         let filtered: Vec<Value> = match status_filter {
             Some(want) => sessions
                 .into_iter()

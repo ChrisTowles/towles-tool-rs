@@ -15,9 +15,19 @@ that layer, formalized. Match it when you touch anything under `apps/client`.
 of the canonical layout + a palette swatch strip. Open it in a browser before
 styling something new (`xdg-open` the file).
 
-The mental model everything serves: **a folder (repo) contains 1..N sessions;
-a session is either a `✦` Claude agent or a `❯` zsh shell.** Attention bubbles
-*up* from session → folder. Never flatten that hierarchy away.
+The mental model everything serves: **a repo is checked out into 1..N folders
+(clone / worktree / slot); a folder holds 1..N sessions; a session is either a
+`✦` Claude agent or a `❯` zsh shell.** Repo → Folder → Session. When a repo has
+a single checkout the repo+folder collapse into one header so solo repos stay
+clean. Attention bubbles *up* from session → folder → repo. Never flatten that
+hierarchy away.
+
+**Level markers (structure = gray icon, per §1):** a repo header leads with a
+`FolderGit2` glyph + `font-semibold text-foreground` name; a folder (checkout)
+sub-header is indented and leads with a plain `Folder` glyph (dimmer,
+`text-muted-foreground/70`) + a `text-muted-foreground` name. This is how a
+solo repo reads as a *repo*, not just another folder. Icons are
+`size-3.5 text-muted-foreground`.
 
 ---
 
