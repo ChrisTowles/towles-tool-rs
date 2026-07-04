@@ -26,16 +26,26 @@ fn is_process_alive(pid: i32) -> bool {
 enum Listener {
     /// The agentboard server (identified by its `GET /` name field).
     Agentboard,
-    /// Something else — e.g. the desktop app's metadata listener, which shares
-    /// the default port but speaks a different protocol.
+    /// Something else is bound to the port and completed the `GET /`
+    /// round-trip with a body that isn't ours — a definitively different
+    /// server.
     Foreign,
+    /// A connection was accepted but the probe couldn't complete (the write
+    /// failed, or the read timed out before a full response arrived) — this
+    /// does NOT mean a foreign server; a healthy server that is merely slow
+    /// to answer (e.g. still starting up) looks the same. Treat like
+    /// `Closed`: worth retrying, not worth failing on.
+    Unknown,
     /// Nothing accepted the connection.
     Closed,
 }
 
 /// Identify the listener via `GET /`: the agentboard server answers with
-/// `{"name":"agentboard server",...}`; the metadata listener (and anything
-/// else) does not.
+/// `{"name":"agentboard server",...}`; anything else does not. This route is
+/// new to the Rust server (not carried over from the TS launcher's simpler
+/// port-open check), so a non-matching response is expected whenever some
+/// other process — not necessarily a former agentboard listener — holds the
+/// port.
 fn probe_listener(host: &str, port: u16, timeout: Duration) -> Listener {
     let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host, port)) else {
         return Listener::Closed;
@@ -47,10 +57,12 @@ fn probe_listener(host: &str, port: u16, timeout: Duration) -> Listener {
         stream.set_read_timeout(Some(timeout)).ok();
         let req = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
         if stream.write_all(req.as_bytes()).is_err() {
-            return Listener::Foreign;
+            return Listener::Unknown;
         }
         let mut response = String::new();
-        let _ = std::io::Read::read_to_string(&mut BufReader::new(stream), &mut response);
+        if std::io::Read::read_to_string(&mut BufReader::new(stream), &mut response).is_err() {
+            return Listener::Unknown;
+        }
         return if response.contains("\"name\":\"agentboard server\"") {
             Listener::Agentboard
         } else {
@@ -62,8 +74,8 @@ fn probe_listener(host: &str, port: u16, timeout: Duration) -> Listener {
 
 fn foreign_listener_error(host: &str, port: u16) -> String {
     format!(
-        "{host}:{port} is in use by a different server (likely the desktop app's \
-         metadata listener). Stop it or set TT_AGENTBOARD_PORT to a free port."
+        "{host}:{port} is in use by a different server. Stop it or set \
+         TT_AGENTBOARD_PORT to a free port."
     )
 }
 
@@ -83,11 +95,10 @@ pub fn ensure_server() -> Result<(), String> {
         // Stale PID file — remove before spawning a new server.
         let _ = std::fs::remove_file(PID_FILE);
     }
-    // A port can be open without being ours (e.g. the desktop app's metadata
-    // listener shares the default 4201) — only accept a verified server.
+    // A port can be open without being ours — only accept a verified server.
     match probe_listener(&host, port, Duration::from_millis(200)) {
-        Listener::Agentboard => return Ok(()), // e.g. the TS server — use it.
-        Listener::Foreign => return Err(foreign_listener_error(&host, port)),
+        Listener::Agentboard => return Ok(()),
+        Listener::Foreign | Listener::Unknown => return Err(foreign_listener_error(&host, port)),
         Listener::Closed => {}
     }
 
@@ -106,9 +117,13 @@ pub fn ensure_server() -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(50));
         match probe_listener(&host, port, Duration::from_millis(100)) {
             Listener::Agentboard => return Ok(()),
-            // Something else won the bind race — our server will have exited.
+            // A completed, mismatched response means something else won the
+            // bind race — our server will have exited.
             Listener::Foreign => return Err(foreign_listener_error(&host, port)),
-            Listener::Closed => {}
+            // Nothing listening yet, or a connection that didn't finish the
+            // probe in time (our server may just be slow to start) — keep
+            // polling instead of failing on a single transient hiccup.
+            Listener::Closed | Listener::Unknown => {}
         }
     }
 
@@ -201,5 +216,69 @@ pub fn sse_subscribe(tx: Sender<ServerMessage>) -> Result<(), String> {
                 return Ok(());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    fn spawn_listener_that(handle: impl FnOnce(TcpStream) + Send + 'static) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                handle(stream);
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn probe_listener_matches_agentboard_response() {
+        let port = spawn_listener_that(|mut stream| {
+            let mut buf = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut buf);
+            let body = "{\"name\":\"agentboard server\"}";
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+            let _ = stream.write_all(resp.as_bytes());
+        });
+        assert!(
+            probe_listener("127.0.0.1", port, Duration::from_millis(500)) == Listener::Agentboard
+        );
+    }
+
+    #[test]
+    fn probe_listener_treats_completed_mismatch_as_foreign() {
+        let port = spawn_listener_that(|mut stream| {
+            let mut buf = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut buf);
+            let body = "not agentboard";
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+            let _ = stream.write_all(resp.as_bytes());
+        });
+        assert!(probe_listener("127.0.0.1", port, Duration::from_millis(500)) == Listener::Foreign);
+    }
+
+    #[test]
+    fn probe_listener_treats_read_timeout_as_unknown_not_foreign() {
+        // Accept the connection but never respond — the probe's read must
+        // time out. A slow-to-answer server must not be misclassified as a
+        // definitively different (`Foreign`) one.
+        let port = spawn_listener_that(|stream| {
+            std::thread::sleep(Duration::from_secs(2));
+            drop(stream);
+        });
+        assert!(probe_listener("127.0.0.1", port, Duration::from_millis(100)) == Listener::Unknown);
+    }
+
+    #[test]
+    fn probe_listener_reports_closed_when_nothing_listens() {
+        // Bind and immediately drop to get a port nothing is listening on.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(probe_listener("127.0.0.1", port, Duration::from_millis(200)) == Listener::Closed);
     }
 }
