@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 // Picks the port for the Vite dev server before launching `tauri dev`, so
-// running this repo from multiple worktree slots at once doesn't collide on the
-// hardcoded 1420 (see docs/UI-SCREENSHOTS.md).
+// running this repo from multiple worktree slots at once doesn't collide.
 //
 // Port resolution, in order:
 //   1. TT_DEV_PORT — an explicit override (shell env or `.env.local` at the
-//      repo root). Pins a deterministic per-slot port; used as-is.
-//   2. Otherwise scan upward from 1420 for a free port.
+//      repo root). Used as-is.
+//   2. Otherwise scan upward from this slot's deterministic base port (derived
+//      from the repo-root directory name) for a free port, so different slots
+//      start in different ranges instead of all racing for 1420.
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { slotBasePort } from "./slot-port.mjs";
 
-const BASE_PORT = 1420;
 const MAX_ATTEMPTS = 100;
 const PORT_ENV = "TT_DEV_PORT";
 
@@ -78,8 +79,11 @@ if (override !== undefined && override !== "") {
   }
   console.log(`[dev-port] using ${PORT_ENV}=${port}`);
 } else {
-  port = await findFreePort(BASE_PORT);
-  console.log(`[dev-port] using port ${port} (set ${PORT_ENV} in .env.local to pin one)`);
+  const base = slotBasePort(repoRoot);
+  port = await findFreePort(base);
+  console.log(
+    `[dev-port] using port ${port} (slot base ${base}; set ${PORT_ENV} in .env.local to pin one)`,
+  );
 }
 
 const child = spawn(

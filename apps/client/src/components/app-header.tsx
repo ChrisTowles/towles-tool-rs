@@ -7,11 +7,33 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useAppSlot } from "@/lib/data";
 import { useWorkspace } from "@/lib/workspace";
 
-/** Deterministic hue from the slot name so each window gets its own accent. */
-function slotHue(slot: string): number {
+/**
+ * Fixed palette of literal Tailwind classes (so the JIT sees them) — one per
+ * slot window, picked by hashing the slot name so a given checkout always keeps
+ * the same accent.
+ */
+const SLOT_COLORS = [
+  { badge: "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300", dot: "bg-blue-500" },
+  {
+    badge: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+    dot: "bg-emerald-500",
+  },
+  {
+    badge: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    dot: "bg-amber-500",
+  },
+  {
+    badge: "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+    dot: "bg-violet-500",
+  },
+  { badge: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300", dot: "bg-rose-500" },
+  { badge: "border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300", dot: "bg-cyan-500" },
+];
+
+function slotColor(slot: string) {
   let hash = 0;
   for (let i = 0; i < slot.length; i++) hash = (hash * 31 + slot.charCodeAt(i)) | 0;
-  return Math.abs(hash) % 360;
+  return SLOT_COLORS[Math.abs(hash) % SLOT_COLORS.length];
 }
 
 /** Strip the shared prefix so the badge reads "slot-2", not the whole repo name. */
@@ -23,17 +45,10 @@ function slotShortName(slot: string): string {
 function SlotBadge() {
   const slot = useAppSlot();
   if (!slot) return null;
-  const hue = slotHue(slot);
+  const color = slotColor(slot);
   return (
-    <Badge
-      variant="outline"
-      style={{
-        borderColor: `hsl(${hue} 60% 45% / 0.5)`,
-        backgroundColor: `hsl(${hue} 60% 45% / 0.12)`,
-      }}
-      title={slot}
-    >
-      <span className="size-2 rounded-full" style={{ backgroundColor: `hsl(${hue} 65% 50%)` }} />
+    <Badge variant="outline" className={color.badge} title={slot}>
+      <span className={`size-2 rounded-full ${color.dot}`} />
       {slotShortName(slot)}
     </Badge>
   );
