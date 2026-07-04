@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAppSlot } from "@/lib/data";
+import { openSettings } from "@/lib/open-settings";
 import { useWorkspace } from "@/lib/workspace";
 
 /**
@@ -55,7 +56,7 @@ function SlotBadge() {
 }
 
 export function AppHeader() {
-  const { toggleSidebar, setPaletteOpen, setSettingsOpen } = useWorkspace();
+  const { toggleSidebar, setPaletteOpen } = useWorkspace();
 
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b px-2">
@@ -97,7 +98,7 @@ export function AppHeader() {
             variant="ghost"
             size="icon-sm"
             aria-label="Open settings"
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => void openSettings()}
           >
             <Settings />
           </Button>

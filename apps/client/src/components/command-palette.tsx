@@ -11,11 +11,12 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { useTheme } from "@/components/theme-provider";
+import { openSettings } from "@/lib/open-settings";
 import { SCREENS } from "@/lib/screens";
 import { useWorkspace } from "@/lib/workspace";
 
 export function CommandPalette() {
-  const { paletteOpen, setPaletteOpen, openTab, toggleSidebar, setSettingsOpen } = useWorkspace();
+  const { paletteOpen, setPaletteOpen, openTab, toggleSidebar } = useWorkspace();
   const { theme, setTheme } = useTheme();
 
   const resolvedDark =
@@ -73,7 +74,7 @@ export function CommandPalette() {
           </CommandItem>
           <CommandItem
             keywords={["settings", "preferences"]}
-            onSelect={() => run(() => setSettingsOpen(true))}
+            onSelect={() => run(() => void openSettings())}
           >
             <Settings />
             Open settings

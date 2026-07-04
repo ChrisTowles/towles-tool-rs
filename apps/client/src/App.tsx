@@ -5,7 +5,6 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
 import { DayBar } from "@/components/day-bar";
 import { QuickLog } from "@/components/quick-log";
-import { SettingsDialog } from "@/components/settings-dialog";
 import { StatusBar } from "@/components/status-bar";
 import { TabStrip } from "@/components/tab-strip";
 import { Kbd } from "@/components/ui/kbd";
@@ -13,6 +12,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { openSettings } from "@/lib/open-settings";
 import { SCREENS } from "@/lib/screens";
 import { WorkspaceProvider, useWorkspace } from "@/lib/workspace";
 import { SCREEN_COMPONENTS } from "@/screens";
@@ -30,8 +30,7 @@ function EmptyState() {
 }
 
 function Shortcuts() {
-  const { setPaletteOpen, setSettingsOpen, toggleSidebar, closeTab, activeTab, paletteOpen } =
-    useWorkspace();
+  const { setPaletteOpen, toggleSidebar, closeTab, activeTab, paletteOpen } = useWorkspace();
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -43,7 +42,7 @@ function Shortcuts() {
           break;
         case ",":
           e.preventDefault();
-          setSettingsOpen(true);
+          void openSettings();
           break;
         case "b":
           e.preventDefault();
@@ -63,7 +62,7 @@ function Shortcuts() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [setPaletteOpen, setSettingsOpen, toggleSidebar, closeTab, activeTab, paletteOpen]);
+  }, [setPaletteOpen, toggleSidebar, closeTab, activeTab, paletteOpen]);
 
   return null;
 }
@@ -125,7 +124,6 @@ function Workspace() {
       <Shortcuts />
       <CommandPalette />
       <QuickLog />
-      <SettingsDialog />
       <Toaster />
     </div>
   );

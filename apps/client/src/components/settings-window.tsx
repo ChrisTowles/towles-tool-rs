@@ -1,13 +1,5 @@
 import { useState } from "react";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -15,8 +7,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
 import { useTheme, type Theme } from "@/components/theme-provider";
-import { useWorkspace } from "@/lib/workspace";
+import { closeCurrentWindow } from "@/lib/open-settings";
 
 function SettingRow({
   label,
@@ -38,25 +31,25 @@ function SettingRow({
   );
 }
 
-export function SettingsDialog() {
-  const { settingsOpen, setSettingsOpen } = useWorkspace();
+export function SettingsWindow() {
   const { theme, setTheme } = useTheme();
   // Local-only until settings read/write goes through a Tauri command.
   const [openJournalOnLaunch, setOpenJournalOnLaunch] = useState(true);
   const [showDoctorStatus, setShowDoctorStatus] = useState(true);
 
   return (
-    <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Settings</DialogTitle>
-          <DialogDescription>
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      <header className="flex items-center border-b border-border bg-card px-4 py-3">
+        <h1 className="font-heading text-sm font-semibold">Settings</h1>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="flex flex-col gap-5 p-4">
+          <p className="text-sm text-muted-foreground">
             Theme applies immediately. Other settings are placeholders until they persist to
             towles-tool.settings.json.
-          </DialogDescription>
-        </DialogHeader>
+          </p>
 
-        <div className="flex flex-col gap-5 py-2">
           <SettingRow label="Theme" description="Light, dark, or follow the system.">
             <Select value={theme} onValueChange={(v) => setTheme(v as Theme)}>
               <SelectTrigger className="w-32">
@@ -84,9 +77,13 @@ export function SettingsDialog() {
             <Switch checked={showDoctorStatus} onCheckedChange={setShowDoctorStatus} />
           </SettingRow>
         </div>
+      </div>
 
-        <DialogFooter showCloseButton />
-      </DialogContent>
-    </Dialog>
+      <footer className="flex justify-end border-t border-border bg-card px-4 py-3">
+        <Button variant="outline" size="sm" onClick={() => void closeCurrentWindow()}>
+          Done
+        </Button>
+      </footer>
+    </div>
   );
 }
