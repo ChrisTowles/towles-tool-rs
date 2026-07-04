@@ -170,3 +170,16 @@ cite the yaak or slot-1 source path in the commit.
   in [docs/CUTOVER.md](CUTOVER.md) with preconditions, steps, and rollback —
   **the flip itself is gated on Chris's explicit go-ahead** (it swaps the
   daily-driver binary and retires the tmux agentboard workflow).
+
+- [~] **9 — Data hub + day screens (new feature, not a TS port).** Built
+  2026-07-04 from the product-direction session (Agentboard = attention inbox ×
+  Daily Cockpit): `tt-store` (SQLite at `~/.local/share/towles-tool/tt.db`),
+  `tt-collect` (calendar/email/tasks via `claude -p`, PRs via `gh`;
+  `ttr collect calendar|email|prs|all`), `tt-mcp` (`ttr mcp serve`, stdio
+  JSON-RPC MCP server: calendar/tasks/email/prs/agent-sessions/journal_append/
+  collect_status tools), tt-app store commands + `store://snapshot` event +
+  collector scheduler, and the client's day bar, needs-you Agentboard rework
+  (split terminals), and Email + Calendar screen. Product rules: agent TUIs are
+  never re-rendered (status is read-only; interaction = real PTY), collectors
+  are the only tt.db writers, `assistant` settings block gates the token-costing
+  claude collectors. See `implementation-notes.md` for deviations.
