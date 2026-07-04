@@ -16,17 +16,17 @@ export async function openSettings() {
     const win = new WebviewWindow(SETTINGS_LABEL, {
       url: "settings.html",
       title: "Settings — Towles Tool",
-      width: 560,
-      height: 620,
-      minWidth: 420,
-      minHeight: 400,
+      width: 720,
+      height: 560,
+      minWidth: 600,
+      minHeight: 440,
       resizable: true,
     });
     win.once("tauri://error", (e) => console.error("failed to open settings window", e));
     return;
   }
 
-  window.open("/settings.html", SETTINGS_LABEL, "width=560,height=620");
+  window.open("/settings.html", SETTINGS_LABEL, "width=720,height=560");
 }
 
 // Close the current Settings window from within it (native OS chrome also works).
