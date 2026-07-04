@@ -20,9 +20,9 @@ use crate::session_order::ReorderDelta;
 use crate::types::{AgentEvent, MetadataTone};
 use crate::{
     AgentTracker, AgentWatcher, AmpAgentWatcher, ClaudeCodeAgentWatcher, CodexAgentWatcher,
-    GitInfoCache, MetadataMutation, OpenCodeAgentWatcher, RepoEntry, SessionMetadataStore,
-    SessionOrder, StatePayload, WatcherContext, add_repo, assemble_state, default_repos_path,
-    instance_key, load_repos, remove_repo_by_name, repo_entries, resolve_session_name, save_repos,
+    GitInfoCache, OpenCodeAgentWatcher, RepoEntry, SessionMetadataStore, SessionOrder,
+    StatePayload, WatcherContext, add_repo, assemble_state, default_repos_path, instance_key,
+    load_repos, remove_repo_by_name, repo_entries, resolve_session_name, save_repos,
 };
 
 // Prune schedule constants (BRIDGE-SPEC §4).
@@ -35,15 +35,6 @@ pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// Host/port for the agentboard HTTP listener, honoring `TT_AGENTBOARD_HOST`/
-/// `TT_AGENTBOARD_PORT` (defaults `127.0.0.1:4201`), matching the TS server.
-pub fn ingest_addr() -> (String, u16) {
-    let host = std::env::var("TT_AGENTBOARD_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port =
-        std::env::var("TT_AGENTBOARD_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(4201);
-    (host, port)
-}
-
 pub fn parse_tone(tone: Option<String>) -> Option<MetadataTone> {
     match tone.as_deref() {
         Some("neutral") => Some(MetadataTone::Neutral),
@@ -52,24 +43,6 @@ pub fn parse_tone(tone: Option<String>) -> Option<MetadataTone> {
         Some("warn") => Some(MetadataTone::Warn),
         Some("error") => Some(MetadataTone::Error),
         _ => None,
-    }
-}
-
-/// Apply a validated metadata mutation to the engine.
-pub fn apply_mutation(engine: &mut Engine, mutation: MetadataMutation, now: i64) {
-    match mutation {
-        MetadataMutation::SetStatus { session, text, tone } => {
-            engine.set_status(&session, text.map(|t| StatusInput { text: t, tone }), now);
-        }
-        MetadataMutation::SetProgress { session, progress } => {
-            engine.set_progress(&session, progress, now);
-        }
-        MetadataMutation::AppendLog { session, log } => {
-            engine.append_log(&session, log, now);
-        }
-        MetadataMutation::ClearLogs { session } => {
-            engine.clear_logs(&session);
-        }
     }
 }
 

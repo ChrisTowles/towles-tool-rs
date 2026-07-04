@@ -1,22 +1,20 @@
-//! Tauri bridge for agentboard (phases 3+4). The engine itself lives in
-//! `tt_agentboard::engine` (shared with the tmux-mode server, phase T3); this
-//! module owns the Tauri glue: the managed state, the `agentboard://state`
-//! event, the `ab_*` commands, and the localhost metadata listener.
+//! Tauri bridge for agentboard. The engine itself lives in
+//! `tt_agentboard::engine`; this module owns the Tauri glue: the managed state,
+//! the `agentboard://state` event, and the `ab_*` commands. Agent state is
+//! derived by scanning `~/.claude` (see `lib.rs`), not pushed over HTTP.
 
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, State};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 
-use tt_agentboard::engine::{apply_mutation, parse_tone};
+use tt_agentboard::StatePayload;
+use tt_agentboard::engine::parse_tone;
 use tt_agentboard::fs_notify::DirNotifier;
 use tt_agentboard::metadata::{LogInput, ProgressInput, StatusInput};
 use tt_agentboard::session_order::ReorderDelta;
-use tt_agentboard::{StatePayload, handle_request, parse_request_head, response_bytes};
 
-pub use tt_agentboard::engine::{Engine, ingest_addr, now_ms};
+pub use tt_agentboard::engine::{Engine, now_ms};
 
 /// Tauri event carrying the state snapshot.
 pub const STATE_EVENT: &str = "agentboard://state";
@@ -189,95 +187,4 @@ pub fn ab_open_in_editor(state: State<Ab>, name: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("Failed to launch {editor}: {e}"))?;
     Ok(())
-}
-
-// --- Localhost metadata HTTP ingest (phase 5) ---
-
-/// Run the localhost metadata listener. Binds `TT_AGENTBOARD_HOST:PORT`; if the
-/// port is in use (e.g. the tmux-mode server owns it), logs a warning and
-/// returns without a listener — the app must not crash. Ports the agent-facing
-/// HTTP API (§5); request parsing/validation is pure in `tt-agentboard`.
-pub async fn serve_metadata(
-    engine: Arc<Mutex<Engine>>,
-    emit: Arc<Notify>,
-    host: String,
-    port: u16,
-) {
-    let listener = match TcpListener::bind((host.as_str(), port)).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("agentboard: metadata listener disabled on {host}:{port} ({e})");
-            return;
-        }
-    };
-    loop {
-        let Ok((socket, _)) = listener.accept().await else {
-            continue;
-        };
-        let engine = engine.clone();
-        let emit = emit.clone();
-        tauri::async_runtime::spawn(async move {
-            handle_connection(socket, engine, emit).await;
-        });
-    }
-}
-
-/// Read one HTTP/1.1 request (headers + Content-Length body), apply any mutation,
-/// and write the response. Best-effort: gives up quietly on malformed input.
-async fn handle_connection(mut socket: TcpStream, engine: Arc<Mutex<Engine>>, emit: Arc<Notify>) {
-    let mut buf = Vec::new();
-    let mut tmp = [0u8; 2048];
-
-    // Read until the end of headers.
-    let head_end = loop {
-        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
-            break pos + 4;
-        }
-        match socket.read(&mut tmp).await {
-            Ok(0) => return,
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-            Err(_) => return,
-        }
-        if buf.len() > 64 * 1024 {
-            return; // oversized header — bail
-        }
-    };
-
-    let head_str = String::from_utf8_lossy(&buf[..head_end]).to_string();
-    let Some(head) = parse_request_head(&head_str) else {
-        let _ = socket.write_all(response_bytes(400, "bad request").as_bytes()).await;
-        return;
-    };
-
-    // Read the body up to Content-Length.
-    while buf.len() - head_end < head.content_length {
-        match socket.read(&mut tmp).await {
-            Ok(0) => break,
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-            Err(_) => break,
-        }
-        if buf.len() > 8 * 1024 * 1024 {
-            break; // cap body size
-        }
-    }
-    let body_end = (head_end + head.content_length).min(buf.len());
-    let body = String::from_utf8_lossy(&buf[head_end..body_end]).to_string();
-
-    let outcome = handle_request(&head.method, &head.path, &body);
-    if let Some(mutation) = outcome.mutation {
-        {
-            let mut engine = engine.lock().unwrap();
-            apply_mutation(&mut engine, mutation, now_ms());
-        }
-        emit.notify_one();
-    }
-    let _ = socket.write_all(response_bytes(outcome.status, &outcome.body).as_bytes()).await;
-}
-
-/// First index of `needle` in `haystack`, if present.
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack.windows(needle.len()).position(|w| w == needle)
 }
