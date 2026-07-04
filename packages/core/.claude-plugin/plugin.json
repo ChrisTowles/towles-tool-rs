@@ -1,6 +1,6 @@
 {
   "name": "tt",
-  "description": "Commands for discovering your unknowns across the map-vs-territory workflow (trq212, 'The map is not the territory'). Named by phase: /before-blindspot, /before-brainstorm, /before-interview, /before-references, /before-plan; /during-notes; /after-pitch, /after-comprehend. Plus skills towles-tool and parallel-slots.",
+  "description": "Commands for discovering your unknowns across the map-vs-territory workflow (trq212, 'The map is not the territory'). Named by phase: /before-blindspot, /before-brainstorm, /before-interview, /before-references, /before-plan (which also keeps implementation notes while building); /after-pitch, /after-comprehend. Plus skills towles-tool and parallel-slots.",
   "version": "0.0.156",
   "author": {
     "name": "Chris Towles"

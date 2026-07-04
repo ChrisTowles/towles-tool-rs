@@ -24,13 +24,7 @@ invoke; pass an optional target as an argument.
 | `/tt:before-brainstorm` | unknown knowns    | Explore approaches / prototype with fake data so you can react before wiring.    |
 | `/tt:before-interview`  | known unknowns    | Interview you one question at a time, architecture-changing questions first.     |
 | `/tt:before-references` | —                 | Convey intent with a reference (ideally source code); reimplement its semantics. |
-| `/tt:before-plan`       | tweakable choices | Plan that leads with what you'll change (data models, types, UX), buries chores. |
-
-### During implementation
-
-| Command            | Description                                                                          |
-| ------------------ | ----------------------------------------------------------------------------------- |
-| `/tt:during-notes` | Log decisions and deviations as unknowns surface — conservative option, keep going. |
+| `/tt:before-plan`       | tweakable choices | Plan that leads with what you'll change (data models, types, UX), buries chores; then keeps implementation-notes with deviations while building. |
 
 ### After implementation
 
