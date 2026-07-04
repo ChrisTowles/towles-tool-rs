@@ -5,6 +5,8 @@
 //! (not tmux), rendered by xterm.js in the agentboard screen.
 
 mod agentboard;
+mod scheduler;
+mod store;
 mod terminal;
 
 use std::sync::{Arc, Mutex};
@@ -101,6 +103,17 @@ pub fn run() {
                 tauri::async_runtime::spawn(agentboard::serve_metadata(engine, emit, host, port));
             }
 
+            // Personal-dashboard store + journal logging. Open the store once; if it
+            // fails, the app still runs and store commands return an error.
+            let store_state = store::StoreState::open();
+            // Emit the initial store snapshot for the dashboard's first mount.
+            store::emit_snapshot(&app.handle().clone(), &store_state);
+            app.manage(store_state);
+
+            // Collector scheduler: fills tt.db (PRs via gh, calendar/email/tasks
+            // via claude -p per settings.assistant) and re-emits the snapshot.
+            scheduler::spawn(app.handle().clone());
+
             // Kick an initial scan so the first snapshot has data.
             scan.notify_one();
             Ok(())
@@ -125,6 +138,11 @@ pub fn run() {
             agentboard::ab_log,
             agentboard::ab_clear_log,
             agentboard::ab_open_in_editor,
+            store::store_snapshot,
+            store::store_add_task,
+            store::store_set_task_done,
+            store::store_archive_email,
+            store::journal_log,
             terminal::term_start,
             terminal::term_write,
             terminal::term_resize,
