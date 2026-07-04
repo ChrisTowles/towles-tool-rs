@@ -11,6 +11,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { SCREENS } from "@/lib/screens";
 import { WorkspaceProvider, useWorkspace } from "@/lib/workspace";
 import { SCREEN_COMPONENTS } from "@/screens";
 
@@ -86,17 +87,24 @@ function Workspace() {
             <TabStrip />
             <div className="min-h-0 flex-1">
               {activeTab ? (
-                <ScrollArea className="h-full">
-                  {tabs.map((id) => {
-                    const Screen = SCREEN_COMPONENTS[id];
-                    // Keep inactive tabs mounted so their local state survives switching.
-                    return (
-                      <div key={id} hidden={id !== activeTab} className="mx-auto max-w-3xl p-6">
+                tabs.map((id) => {
+                  const Screen = SCREEN_COMPONENTS[id];
+                  const hidden = id !== activeTab;
+                  // Keep inactive tabs mounted so their local state survives switching.
+                  // Full-bleed screens (e.g. terminals) skip the centered, scrolling
+                  // content wrapper and own the whole content area.
+                  return SCREENS[id].fullBleed ? (
+                    <div key={id} hidden={hidden} className="h-full">
+                      <Screen />
+                    </div>
+                  ) : (
+                    <ScrollArea key={id} hidden={hidden} className="h-full">
+                      <div className="mx-auto max-w-3xl p-6">
                         <Screen />
                       </div>
-                    );
-                  })}
-                </ScrollArea>
+                    </ScrollArea>
+                  );
+                })
               ) : (
                 <EmptyState />
               )}
