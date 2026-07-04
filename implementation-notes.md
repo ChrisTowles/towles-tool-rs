@@ -220,3 +220,26 @@ _Conservative option on edge cases; log what/why/impact and keep going._
 - macOS: `read_process_env(pid)` needs a non-`/proc` path (`ps eww`/libproc).
   Linux-only for this pass.
 
+
+## Post-review tweaks ("this doesn't look different", Chris)
+
+Chris tested the running app and it read as a flat repo list. Root cause: all his
+real repos were single checkouts (solo-collapse hides the Repo→Folder nesting),
+and agent sessions showed as a bare "shell 1" so the agent's identity was
+invisible. Two changes, both requested:
+
+- **A — agent rows lead with the agent's task name.** New `sessionLabel(s)` in
+  `lib/agentboard.ts`: when `agentState.threadName` is set (the Claude watcher
+  already populates it — `claude_code.rs:554`, `bridge.rs:build_folder` preserves
+  it through into `agent_state`), the row/tab leads with that thread name and
+  tags the underlying `shell N` as a dim mono secondary; otherwise it's just the
+  shell name. No Rust change needed — the name already flowed on the wire, the UI
+  just wasn't surfacing it. `MOCK_STATE` updated so browser dev shows the new
+  shape (agent sessions are `shell 1` + a `threadName`).
+- **B — demonstrate the nesting with real data.** Added this checkout
+  (`towles-tool-rs-slot-1`) to `repos.json` alongside the already-watched
+  `slot-0`; both share origin `github.com/ChrisTowles/towles-tool-rs.git`, so the
+  app now groups them under one `towles-tool-rs` repo header with two folder
+  sub-headers (`…-slot-0`, `…-slot-1`) — the multi-checkout path the solo repos
+  never exercised. Live-picked-up (no restart); reversible via
+  `ttr agentboard repos remove`.

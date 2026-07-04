@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import {
   isAgent,
   isSoloRepo,
+  sessionLabel,
   sessionNeeds,
   sessionStatusText,
   statusColor,
@@ -212,7 +213,7 @@ export function AgentboardScreen() {
                   )}
                 >
                   <Glyph agent={isAgent(s)} />
-                  {s.name}
+                  {sessionLabel(s)}
                   <Dot session={s} />
                 </button>
               ))}
@@ -438,6 +439,7 @@ function SessionRow({
   onRenameCommit: (name: string) => void;
 }) {
   const needs = sessionNeeds(session);
+  const label = sessionLabel(session);
   return (
     <div
       role="button"
@@ -467,7 +469,12 @@ function SessionRow({
         />
       ) : (
         <>
-          <span className="truncate text-foreground">{session.name}</span>
+          <span className="truncate text-foreground">{label}</span>
+          {label !== session.name && (
+            <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70">
+              {session.name}
+            </span>
+          )}
           <span className="ml-auto truncate text-[11px] text-muted-foreground">
             {sessionStatusText(session)}
           </span>

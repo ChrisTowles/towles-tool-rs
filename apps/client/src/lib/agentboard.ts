@@ -75,6 +75,14 @@ export function sessionNeeds(s: SessionData): boolean {
   return s.agentState?.status === "waiting" || s.agentState?.status === "error";
 }
 
+/** The label a session row leads with: when an agent is running, its task/thread
+ * name (so the row reads as *the agent*, not a bare "shell 1"); otherwise the
+ * shell's own name. The shell name stays available as a secondary tag. */
+export function sessionLabel(s: SessionData): string {
+  const thread = s.agentState?.threadName?.trim();
+  return thread && thread.length > 0 ? thread : s.name;
+}
+
 /** A one-liner status message for a session row. */
 export function sessionStatusText(s: SessionData): string {
   const st = s.agentState;
@@ -126,13 +134,19 @@ const MOCK_STATE: StatePayload = {
           sessions: [
             {
               id: "s0",
-              name: "store-work",
+              name: "shell 1",
               createdAt: 0,
               unseen: false,
-              agentState: { agent: "claude", session: "slot-0", status: "busy", ts: 0 },
+              agentState: {
+                agent: "claude",
+                session: "slot-0",
+                status: "busy",
+                ts: 0,
+                threadName: "store snapshot wiring",
+              },
               agents: [],
             },
-            { id: "s1", name: "shell 1", createdAt: 0, unseen: false, agentState: null, agents: [] },
+            { id: "s1", name: "shell 2", createdAt: 0, unseen: false, agentState: null, agents: [] },
           ],
         },
         {
@@ -148,13 +162,19 @@ const MOCK_STATE: StatePayload = {
           sessions: [
             {
               id: "s2",
-              name: "webhook-fix",
+              name: "shell 1",
               createdAt: 0,
               unseen: true,
-              agentState: { agent: "claude", session: "slot-1", status: "waiting", ts: 0 },
+              agentState: {
+                agent: "claude",
+                session: "slot-1",
+                status: "waiting",
+                ts: 0,
+                threadName: "agentboard folder rail",
+              },
               agents: [],
             },
-            { id: "s3", name: "shell 1", createdAt: 0, unseen: false, agentState: null, agents: [] },
+            { id: "s3", name: "shell 2", createdAt: 0, unseen: false, agentState: null, agents: [] },
           ],
         },
       ],
@@ -178,10 +198,16 @@ const MOCK_STATE: StatePayload = {
           sessions: [
             {
               id: "s4",
-              name: "refactor",
+              name: "shell 1",
               createdAt: 0,
               unseen: false,
-              agentState: { agent: "claude", session: "toolbox", status: "busy", ts: 0 },
+              agentState: {
+                agent: "claude",
+                session: "toolbox",
+                status: "busy",
+                ts: 0,
+                threadName: "extract path helpers",
+              },
               agents: [],
             },
           ],
