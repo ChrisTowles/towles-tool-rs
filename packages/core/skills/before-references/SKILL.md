@@ -1,5 +1,5 @@
 ---
-name: references
+name: before-references
 description: Use a concrete reference — ideally source code — to convey what you want when describing it in words would be slow or imprecise. Use when the user points at a library, crate, module, component, file, or website they like and asks to reimplement or match its behavior, semantics, or design, even across languages.
 user_invocable: true
 ---

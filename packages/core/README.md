@@ -12,28 +12,31 @@ to fix.
 
 ## Skills
 
+Skills are named by phase (`before-` / `during-` / `after-`) so their place in
+the workflow is obvious at a glance.
+
 ### Before implementation
 
-| Skill                   | Finds…            | Description                                                                     |
-| ----------------------- | ----------------- | ------------------------------------------------------------------------------- |
-| `tt:blind-spot-pass`    | unknown unknowns  | Surface what you don't know you don't know in an unfamiliar area, and teach it. |
-| `tt:brainstorm`         | unknown knowns    | Explore approaches / prototype with fake data so you can react before wiring.   |
-| `tt:interviews`         | known unknowns    | Interview you one question at a time, architecture-changing questions first.    |
-| `tt:references`         | —                 | Convey intent with a reference (ideally source code); reimplement its semantics.|
-| `tt:implementation-plan`| tweakable choices | Plan that leads with what you'll change (data models, types, UX), buries chores.|
+| Skill                  | Finds…            | Description                                                                      |
+| ---------------------- | ----------------- | -------------------------------------------------------------------------------- |
+| `tt:before-blindspot`  | unknown unknowns  | Surface what you don't know you don't know in an unfamiliar area, and teach it.  |
+| `tt:before-brainstorm` | unknown knowns    | Explore approaches / prototype with fake data so you can react before wiring.    |
+| `tt:before-interview`  | known unknowns    | Interview you one question at a time, architecture-changing questions first.     |
+| `tt:before-references` | —                 | Convey intent with a reference (ideally source code); reimplement its semantics. |
+| `tt:before-plan`       | tweakable choices | Plan that leads with what you'll change (data models, types, UX), buries chores. |
 
 ### During implementation
 
-| Skill                    | Description                                                                     |
-| ------------------------ | ------------------------------------------------------------------------------- |
-| `tt:implementation-notes`| Log decisions and deviations as unknowns surface — conservative option, keep going.|
+| Skill             | Description                                                                          |
+| ----------------- | ----------------------------------------------------------------------------------- |
+| `tt:during-notes` | Log decisions and deviations as unknowns surface — conservative option, keep going. |
 
 ### After implementation
 
-| Skill                   | Description                                                                      |
-| ----------------------- | -------------------------------------------------------------------------------- |
-| `tt:pitches-explainers` | Package the work into one buy-in doc, demo first.                                |
-| `tt:quizzes`            | Report on the change + a quiz you must pass before merging.                       |
+| Skill                 | Description                                                          |
+| --------------------- | ------------------------------------------------------------------- |
+| `tt:after-pitch`      | Package the work into one buy-in doc, demo first.                   |
+| `tt:after-comprehend` | Report on the change + a quiz you must pass before merging.         |
 
 ### Utilities
 

@@ -1,5 +1,5 @@
 ---
-name: blind-spot-pass
+name: before-blindspot
 description: Surface the user's unknown unknowns before they start work — what they don't know they don't know about an unfamiliar area, so they can prompt better. Use when the user says "blindspot pass", "blind spot pass", "unknown unknowns", is entering an unfamiliar part of the codebase or a new domain, or asks you to teach them what they don't know they're missing.
 user_invocable: true
 ---

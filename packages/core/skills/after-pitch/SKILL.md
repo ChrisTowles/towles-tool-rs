@@ -1,5 +1,5 @@
 ---
-name: pitches-explainers
+name: after-pitch
 description: Package the work — prototype, spec, implementation notes — into a single pitch/explainer doc that gets buy-in and approvals, leading with the demo. Use when the user wants to explain a change to reviewers or stakeholders, get sign-off, "package this for Slack", "write a pitch", "make an explainer", or share what shipped.
 user_invocable: true
 ---

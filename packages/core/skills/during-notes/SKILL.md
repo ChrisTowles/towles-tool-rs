@@ -1,5 +1,5 @@
 ---
-name: implementation-notes
+name: during-notes
 description: Keep an implementation-notes file during a build, logging decisions and deviations from the plan as unknown unknowns surface mid-implementation — take the conservative option and keep going. Use when the user asks to "keep implementation notes", "log deviations", "track decisions as you build", or when starting a sizable implementation from a plan.
 user_invocable: true
 ---

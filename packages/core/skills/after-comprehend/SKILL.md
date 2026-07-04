@@ -1,10 +1,10 @@
 ---
-name: quizzes
+name: after-comprehend
 description: After a long working session, generate a report on the change plus a quiz the user must pass before merging — so they actually understand what happened, not just what the diff shows. Use when the user says "quiz me", "test my understanding", wants to verify they understand a change before merge, or after a big session where a lot happened.
 user_invocable: true
 ---
 
-# Quizzes
+# Comprehension Check
 
 After a long session, you may have accomplished more than the user realizes.
 Reading the diff gives only a shallow understanding — much of the real behavior

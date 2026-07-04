@@ -1,5 +1,5 @@
 ---
-name: brainstorm
+name: before-brainstorm
 description: Explore approaches and prototype before committing, to surface unknown knowns — the criteria you only know to define once you see them. Use when the user wants to brainstorm, explore design directions, see several UI variations, mock up a layout with fake data before wiring it up, or says "give me a few directions", "let me react to it", "what's possible here".
 user_invocable: true
 ---

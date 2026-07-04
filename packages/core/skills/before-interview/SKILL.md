@@ -1,5 +1,5 @@
 ---
-name: interviews
+name: before-interview
 description: Interview the user one question at a time to resolve ambiguities and known unknowns before implementing, prioritizing questions whose answers would change the architecture. Use when the user says "interview me", "ask me questions", "grill me", wants to harden a plan, or after brainstorming when unknowns remain.
 user_invocable: true
 ---

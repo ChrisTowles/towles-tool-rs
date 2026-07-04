@@ -1,5 +1,5 @@
 ---
-name: implementation-plan
+name: before-plan
 description: Write an implementation plan that leads with the decisions the user is most likely to change — data models, type interfaces, UX flows — and buries mechanical work at the bottom. Use when the user is ready to implement and wants a plan to review, says "write an implementation plan", "plan this out", or "show me the plan before you build".
 user_invocable: true
 ---
