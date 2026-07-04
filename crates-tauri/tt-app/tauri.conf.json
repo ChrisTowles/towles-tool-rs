@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Towles Tool",
         "width": 1100,
         "height": 750

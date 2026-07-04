@@ -18,9 +18,35 @@ use tokio::sync::Notify;
 use agentboard::{Ab, Engine, STATE_EVENT, now_ms};
 use tt_agentboard::fs_notify::DirNotifier;
 
+/// Human-readable name of the checkout this binary was built from — the repo-root
+/// directory (e.g. `towles-tool-rs-slot-2`). Baked in at compile time from
+/// `CARGO_MANIFEST_DIR` (`<root>/crates-tauri/tt-app`), so each slot's binary
+/// knows its own slot without any runtime cwd/env plumbing. Lets several slots'
+/// windows be told apart in the title bar, taskbar, and app header.
+fn slot_label() -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("towles-tool")
+        .to_string()
+}
+
+/// Slot name for the frontend header badge (see `slot_label`).
+#[tauri::command]
+fn app_slot() -> String {
+    slot_label()
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            // Distinguish concurrent slot windows in the title bar / taskbar.
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_title(&format!("Towles Tool — {}", slot_label()));
+            }
+
             let engine = Arc::new(Mutex::new(Engine::new()));
             let emit = Arc::new(Notify::new());
             let scan = Arc::new(Notify::new());
@@ -125,6 +151,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            app_slot,
             agentboard::ab_get_state,
             agentboard::ab_mark_seen,
             agentboard::ab_dismiss_agent,

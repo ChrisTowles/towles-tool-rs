@@ -357,6 +357,32 @@ export function fmtAge(ms: number, now: number): string {
 }
 
 /**
+ * Name of the checkout/slot this window is running (e.g. `towles-tool-rs-slot-2`),
+ * from the Rust `app_slot` command. `null` outside Tauri (plain-Vite browser dev)
+ * so the header badge is hidden there. Lets several slots' windows be told apart.
+ */
+export function useAppSlot(): string | null {
+  const [slot, setSlot] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let active = true;
+    void (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const s = await invoke<string>("app_slot");
+        if (active) setSlot(s);
+      } catch {
+        /* leave null — badge stays hidden */
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+  return slot;
+}
+
+/**
  * Run a store write command, degrading gracefully in the browser: outside Tauri
  * (or on any failure) show a toast and report failure so callers can revert an
  * optimistic update.
