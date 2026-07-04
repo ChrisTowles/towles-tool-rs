@@ -5,11 +5,12 @@
 //! external template file in `template_dir` (written on first run) takes precedence over
 //! the built-in fallback string.
 
-use crate::tokens::monday_of_week;
+use crate::tokens::{generate_journal_file_info, monday_of_week};
 use crate::{Error, JournalType, Result};
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tt_config::JournalSettings;
 
 // Default template file names (mirrors `TEMPLATE_FILES` in templates.ts).
 const TEMPLATE_FILE_DAILY: &str = "daily-notes.md";
@@ -154,6 +155,85 @@ fn weekday_vars(monday_date: NaiveDate) -> HashMap<&'static str, String> {
     vars.insert("thursday:yyyy-MM-dd", format_date(monday_date + Duration::days(3)));
     vars.insert("friday:yyyy-MM-dd", format_date(monday_date + Duration::days(4)));
     vars
+}
+
+/// Append a timestamped line (`- HH:MM text`) into the daily note for `date`.
+///
+/// Resolves the daily-note path exactly like the CLI daily-notes flow
+/// ([`generate_journal_file_info`] with [`JournalType::DailyNotes`]): ensures the
+/// external templates exist, creates parent dirs, and creates the file from the daily
+/// template if it does not yet exist. The line is inserted at the end of today's
+/// `## <date>` day section (before the next `## ` header or EOF); if that section does
+/// not exist, a fresh `## <date> <weekday>` header plus the line is appended at EOF.
+/// Returns the path written to.
+pub fn append_to_daily(
+    journal_settings: &JournalSettings,
+    date: NaiveDate,
+    time_hhmm: &str,
+    text: &str,
+) -> Result<PathBuf> {
+    let template_dir = Path::new(&journal_settings.template_dir);
+    ensure_templates_exist(template_dir)?;
+
+    let info = generate_journal_file_info(journal_settings, date, JournalType::DailyNotes, "");
+    if let Some(parent) = info.full_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if !info.full_path.exists() {
+        let content = create_journal_content(info.monday_date, Some(template_dir));
+        std::fs::write(&info.full_path, content)?;
+    }
+
+    let content = std::fs::read_to_string(&info.full_path)?;
+    let updated = insert_daily_line(&content, date, time_hhmm, text);
+    std::fs::write(&info.full_path, &updated)?;
+    Ok(info.full_path)
+}
+
+/// Insert `- HH:MM text` into `content` under today's `## <date>` day section.
+/// Pure string transformation, split out so it is trivially testable.
+fn insert_daily_line(content: &str, date: NaiveDate, time_hhmm: &str, text: &str) -> String {
+    let date_str = format_date(date);
+    let header_prefix = format!("## {date_str}");
+    let new_line = format!("- {time_hhmm} {text}");
+
+    let mut lines: Vec<String> = content.split('\n').map(|s| s.to_string()).collect();
+
+    match lines.iter().position(|l| l.starts_with(&header_prefix)) {
+        Some(i) => {
+            // End of the section: the next `## ` header, or EOF.
+            let end = lines
+                .iter()
+                .enumerate()
+                .skip(i + 1)
+                .find(|(_, l)| l.starts_with("## "))
+                .map(|(j, _)| j)
+                .unwrap_or(lines.len());
+            // Insert after the last non-blank line of the section (keeping any trailing
+            // blank line that separates it from the next header).
+            let mut at = end;
+            while at > i + 1 && lines[at - 1].trim().is_empty() {
+                at -= 1;
+            }
+            lines.insert(at, new_line);
+        }
+        None => {
+            // No section for today: drop trailing blank lines, then append a fresh
+            // header + line (with a blank separator) and a trailing newline.
+            while lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+                lines.pop();
+            }
+            let header = format!("## {date_str} {}", date.format("%A"));
+            if !lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines.push(header);
+            lines.push(new_line);
+            lines.push(String::new());
+        }
+    }
+
+    lines.join("\n")
 }
 
 /// Build meeting content. Ports `createMeetingContent`.
@@ -610,5 +690,71 @@ mod tests {
         assert_eq!(format_size(512), "512B");
         assert_eq!(format_size(2048), "2.0KB");
         assert_eq!(format_size(3 * 1024 * 1024), "3.0MB");
+    }
+
+    // --- append_to_daily --------------------------------------------------
+
+    fn daily_settings(base: &Path) -> JournalSettings {
+        JournalSettings {
+            base_folder: base.to_string_lossy().to_string(),
+            template_dir: base.join("templates").to_string_lossy().to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn append_creates_file_from_scratch() {
+        let dir = TempDir::new().unwrap();
+        let settings = daily_settings(dir.path());
+        // Wednesday 2026-07-01 is inside the Mon-Fri template week.
+        let path = append_to_daily(&settings, ymd(2026, 7, 1), "09:15", "first entry").unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("## 2026-07-01 Wednesday\n- 09:15 first entry\n"));
+    }
+
+    #[test]
+    fn append_into_existing_section() {
+        let dir = TempDir::new().unwrap();
+        let settings = daily_settings(dir.path());
+        let d = ymd(2026, 7, 1);
+        append_to_daily(&settings, d, "09:00", "one").unwrap();
+        let path = append_to_daily(&settings, d, "10:30", "two").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        // Both lines land under Wednesday, in order, before the Thursday header.
+        let wed = content.find("## 2026-07-01").unwrap();
+        let thu = content.find("## 2026-07-02").unwrap();
+        let one = content.find("- 09:00 one").unwrap();
+        let two = content.find("- 10:30 two").unwrap();
+        assert!(wed < one && one < two && two < thu);
+    }
+
+    #[test]
+    fn append_when_section_missing_adds_header() {
+        let dir = TempDir::new().unwrap();
+        let settings = daily_settings(dir.path());
+        // Saturday 2026-07-04 is in the same week file but not in the Mon-Fri template.
+        let path = append_to_daily(&settings, ymd(2026, 7, 4), "08:00", "weekend note").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("## 2026-07-04 Saturday\n- 08:00 weekend note\n"));
+        // The original Friday section is still present and precedes the new header.
+        let fri = content.find("## 2026-07-03").unwrap();
+        let sat = content.find("## 2026-07-04").unwrap();
+        assert!(fri < sat);
+    }
+
+    #[test]
+    fn append_twice_stays_ordered_in_missing_section() {
+        let dir = TempDir::new().unwrap();
+        let settings = daily_settings(dir.path());
+        let d = ymd(2026, 7, 4); // Saturday
+        append_to_daily(&settings, d, "08:00", "early").unwrap();
+        let path = append_to_daily(&settings, d, "12:00", "noon").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let early = content.find("- 08:00 early").unwrap();
+        let noon = content.find("- 12:00 noon").unwrap();
+        assert!(early < noon);
+        // Only one Saturday header exists (second append reused the section).
+        assert_eq!(content.matches("## 2026-07-04").count(), 1);
     }
 }
