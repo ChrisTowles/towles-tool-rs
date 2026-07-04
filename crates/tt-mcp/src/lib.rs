@@ -98,7 +98,7 @@ impl Dispatcher {
             "calendar_today" => self.calendar_today(now_ms),
             "calendar_next" => self.calendar_next(now_ms),
             "tasks_open" => self.tasks_open(),
-            "email_needs_reply" => self.email_needs_reply(),
+            "issues_open" => self.issues_open(),
             "prs_status" => self.prs_status(),
             "agent_sessions" => self.agent_sessions(args, now_ms),
             "journal_append" => self.journal_append(args, now_ms),
@@ -131,10 +131,9 @@ impl Dispatcher {
         Ok(json!({ "tasks": tasks }))
     }
 
-    fn email_needs_reply(&self) -> Result<Value, String> {
-        let emails = self.store.emails_active().map_err(|e| e.to_string())?;
-        let filtered: Vec<_> = emails.into_iter().filter(|e| e.tag == "needs_reply").collect();
-        Ok(json!({ "emails": filtered }))
+    fn issues_open(&self) -> Result<Value, String> {
+        let issues = self.store.issues().map_err(|e| e.to_string())?;
+        Ok(json!({ "issues": issues }))
     }
 
     fn prs_status(&self) -> Result<Value, String> {
@@ -343,8 +342,8 @@ fn tool_definitions() -> Value {
             "inputSchema": no_args(),
         },
         {
-            "name": "email_needs_reply",
-            "description": "Active emails tagged as needing a reply.",
+            "name": "issues_open",
+            "description": "Open GitHub issues assigned to me across tracked repos.",
             "inputSchema": no_args(),
         },
         {
@@ -389,7 +388,7 @@ fn tool_definitions() -> Value {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use tt_store::{EmailInput, EventInput, PrInput};
+    use tt_store::{EventInput, IssueInput, PrInput};
 
     const NOW: i64 = 1_700_000_000_000; // fixed epoch ms for deterministic tests
     const HOUR_MS: i64 = 3_600_000;
@@ -406,15 +405,15 @@ mod tests {
         }
     }
 
-    fn email(external_id: &str, tag: &str) -> EmailInput {
-        EmailInput {
-            external_id: external_id.to_string(),
-            from_name: "Sender".to_string(),
-            from_addr: "sender@example.com".to_string(),
-            subject: format!("Subject {external_id}"),
-            summary: "summary".to_string(),
-            tag: tag.to_string(),
-            received_ts: NOW,
+    fn issue(number: i64, title: &str) -> IssueInput {
+        IssueInput {
+            repo: "o/r".to_string(),
+            number,
+            title: title.to_string(),
+            labels: vec!["bug".to_string()],
+            state: "open".to_string(),
+            url: format!("https://github.com/o/r/issues/{number}"),
+            updated_ts: NOW,
         }
     }
 
@@ -432,7 +431,7 @@ mod tests {
             )
             .unwrap();
         store.add_task("open task", Some(NOW + HOUR_MS), NOW).unwrap();
-        store.replace_emails(&[email("e1", "needs_reply"), email("e2", "fyi")]).unwrap();
+        store.replace_issues(&[issue(390, "Refunds double-charge"), issue(391, "a11y")]).unwrap();
         store
             .replace_prs(&[PrInput {
                 repo: "o/r".to_string(),
@@ -532,7 +531,7 @@ mod tests {
             "calendar_today",
             "calendar_next",
             "tasks_open",
-            "email_needs_reply",
+            "issues_open",
             "prs_status",
             "agent_sessions",
             "journal_append",
@@ -578,13 +577,13 @@ mod tests {
     }
 
     #[test]
-    fn email_needs_reply_filters_by_tag() {
+    fn issues_open_returns_rows() {
         let mut dispatcher = dispatcher();
-        let result = call_tool(&mut dispatcher, "email_needs_reply", json!({}));
-        let emails = result["emails"].as_array().unwrap();
-        assert_eq!(emails.len(), 1);
-        assert_eq!(emails[0]["externalId"], "e1");
-        assert_eq!(emails[0]["tag"], "needs_reply");
+        let result = call_tool(&mut dispatcher, "issues_open", json!({}));
+        let issues = result["issues"].as_array().unwrap();
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0]["repo"], "o/r");
+        assert!(issues.iter().any(|i| i["number"] == 390));
     }
 
     #[test]

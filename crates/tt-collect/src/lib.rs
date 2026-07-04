@@ -1,9 +1,9 @@
 //! Data-hub collectors for the towles-tool personal dashboard.
 //!
-//! Each collector gathers one slice of state — calendar events, triaged inbox
-//! emails, action-item tasks, and pull-request status — and writes it into the
-//! shared [`tt_store::Store`]. The claude-backed collectors shell out to
-//! `claude -p` (via [`tt_exec`]); the PR collector shells out to `gh`.
+//! Each collector gathers one slice of state — calendar events, cross-repo
+//! issues, and pull-request status — and writes it into the shared
+//! [`tt_store::Store`]. The calendar collector shells out to `claude -p` (via
+//! [`tt_exec`]); the issue and PR collectors shell out to `gh`.
 //!
 //! Tauri-free (the shared-crate rule): both the CLI (`ttr collect`) and the
 //! desktop app's scheduler drive this crate against the same [`CollectSummary`]
@@ -15,15 +15,40 @@
 //! Every failure mode — a missing `claude`/`gh` binary, a non-zero exit,
 //! unparseable output — is captured as a [`CollectSummary`] with `ok = false`
 //! and a `message`, and is also recorded via [`tt_store::Store::record_run`]
-//! under a stable collector key: `claude:calendar`, `claude:email`,
-//! `claude:tasks`, or `prs`.
+//! under a stable collector key: `claude:calendar`, `issues`, or `prs`.
 
+mod issues;
 mod prompts;
 mod prs;
 
 use std::path::PathBuf;
 
-use tt_store::{EmailInput, EventInput, Store, TaskInput};
+use tt_store::{EventInput, Store};
+
+/// Which calendar backend the `claude -p` prompt should drive. Selected from
+/// config so the same app works at home (Google MCP) and work (Outlook MCP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalendarProvider {
+    Google,
+    Outlook,
+}
+
+impl CalendarProvider {
+    /// Parse a config string; defaults to Google for unknown values.
+    pub fn from_str_lenient(s: &str) -> CalendarProvider {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "outlook" => CalendarProvider::Outlook,
+            _ => CalendarProvider::Google,
+        }
+    }
+
+    fn prompt(self) -> &'static str {
+        match self {
+            CalendarProvider::Google => prompts::CALENDAR_GOOGLE,
+            CalendarProvider::Outlook => prompts::CALENDAR_OUTLOOK,
+        }
+    }
+}
 
 /// The outcome of a single collector run.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,11 +68,11 @@ pub struct CollectSummary {
 // Public collectors
 // ---------------------------------------------------------------------------
 
-/// Collect today's + next-7-days calendar events via `claude -p` and replace the
-/// stored event set. Records `claude:calendar`.
-pub fn collect_calendar(store: &Store, now_ms: i64) -> CollectSummary {
+/// Collect today's calendar events via `claude -p` (using the given provider's
+/// prompt) and replace the stored event set. Records `claude:calendar`.
+pub fn collect_calendar(store: &Store, provider: CalendarProvider, now_ms: i64) -> CollectSummary {
     const KEY: &str = "claude:calendar";
-    let events = match run_claude(prompts::CALENDAR).and_then(|v| {
+    let events = match run_claude(provider.prompt()).and_then(|v| {
         serde_json::from_value::<Vec<EventInput>>(v)
             .map_err(|e| format!("invalid calendar JSON: {e}"))
     }) {
@@ -60,34 +85,41 @@ pub fn collect_calendar(store: &Store, now_ms: i64) -> CollectSummary {
     }
 }
 
-/// Collect triaged inbox emails and their implied action items via a single
-/// `claude -p` call, replacing the stored email set and upserting the tasks
-/// (`source = "claude"`). Records **both** `claude:email` and `claude:tasks`,
-/// returning one summary for each.
-pub fn collect_email_and_tasks(store: &Store, now_ms: i64) -> Vec<CollectSummary> {
-    const EMAIL_KEY: &str = "claude:email";
-    const TASKS_KEY: &str = "claude:tasks";
+/// Collect open issues assigned to me across `repo_dirs` via `gh` and replace the
+/// stored issue set. Records `issues`. With no repo dirs this is a clean no-op.
+pub fn collect_issues(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> CollectSummary {
+    const KEY: &str = "issues";
+    if repo_dirs.is_empty() {
+        return finish(store, KEY, true, 0, Some("no repos configured".to_string()), now_ms);
+    }
 
-    let (emails, tasks) = match run_claude(prompts::EMAIL).and_then(parse_email_payload) {
-        Ok(parsed) => parsed,
-        Err(msg) => {
-            // A single upstream failure fails both derived collectors.
-            return vec![
-                finish(store, EMAIL_KEY, false, 0, Some(msg.clone()), now_ms),
-                finish(store, TASKS_KEY, false, 0, Some(msg), now_ms),
-            ];
+    let mut by_key: std::collections::HashMap<(String, i64), tt_store::IssueInput> =
+        std::collections::HashMap::new();
+    let mut errors: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for dir in repo_dirs {
+        if !dir.is_dir() {
+            skipped.push(format!("skipped missing repo dir {}", dir.display()));
+            continue;
         }
-    };
+        match issues::collect_repo_issues(dir) {
+            Ok(list) => {
+                for issue in list {
+                    by_key.insert((issue.repo.clone(), issue.number), issue);
+                }
+            }
+            Err(e) => errors.push(e),
+        }
+    }
 
-    let email_summary = match store.replace_emails(&emails) {
-        Ok(count) => finish(store, EMAIL_KEY, true, count, None, now_ms),
-        Err(e) => finish(store, EMAIL_KEY, false, 0, Some(e.to_string()), now_ms),
-    };
-    let task_summary = match store.upsert_tasks(&tasks, now_ms) {
-        Ok(count) => finish(store, TASKS_KEY, true, count, None, now_ms),
-        Err(e) => finish(store, TASKS_KEY, false, 0, Some(e.to_string()), now_ms),
-    };
-    vec![email_summary, task_summary]
+    let all: Vec<tt_store::IssueInput> = by_key.into_values().collect();
+    let count = all.len();
+    if let Err(e) = store.replace_issues(&all) {
+        return finish(store, KEY, false, count, Some(e.to_string()), now_ms);
+    }
+    let notes: Vec<String> = errors.iter().cloned().chain(skipped).collect();
+    let message = if notes.is_empty() { None } else { Some(notes.join("; ")) };
+    finish(store, KEY, errors.is_empty(), count, message, now_ms)
 }
 
 /// Collect open + review-requested PRs across `repo_dirs` via `gh` and replace
@@ -131,13 +163,18 @@ pub fn collect_prs(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> Collect
     finish(store, KEY, errors.is_empty(), count, message, now_ms)
 }
 
-/// Run every collector: calendar, email + tasks, then PRs.
-pub fn collect_all(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> Vec<CollectSummary> {
-    let mut out = Vec::with_capacity(4);
-    out.push(collect_calendar(store, now_ms));
-    out.extend(collect_email_and_tasks(store, now_ms));
-    out.push(collect_prs(store, repo_dirs, now_ms));
-    out
+/// Run every collector: calendar, issues, then PRs.
+pub fn collect_all(
+    store: &Store,
+    provider: CalendarProvider,
+    repo_dirs: &[PathBuf],
+    now_ms: i64,
+) -> Vec<CollectSummary> {
+    vec![
+        collect_calendar(store, provider, now_ms),
+        collect_issues(store, repo_dirs, now_ms),
+        collect_prs(store, repo_dirs, now_ms),
+    ]
 }
 
 /// The tracked repo directories from the agentboard repos config, or an empty
@@ -180,62 +217,6 @@ fn run_claude(prompt: &str) -> Result<serde_json::Value, String> {
         });
     }
     extract_json(&output.stdout).ok_or_else(|| "no parseable JSON in claude output".to_string())
-}
-
-/// Intermediate shape for the email prompt's `{"emails": [...], "tasks": [...]}`.
-#[derive(serde::Deserialize)]
-struct EmailPayload {
-    #[serde(default)]
-    emails: Vec<EmailInput>,
-    #[serde(default)]
-    tasks: Vec<RawTask>,
-}
-
-/// A task as emitted by the email prompt (no `source`; it is fixed to `claude`).
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawTask {
-    text: String,
-    #[serde(default)]
-    due_ts: Option<i64>,
-    #[serde(default)]
-    source_ref: Option<String>,
-}
-
-/// Parse the email payload into store inputs, sanitizing email tags and stamping
-/// `source = "claude"` on every task.
-fn parse_email_payload(
-    value: serde_json::Value,
-) -> Result<(Vec<EmailInput>, Vec<TaskInput>), String> {
-    let payload: EmailPayload =
-        serde_json::from_value(value).map_err(|e| format!("invalid email JSON: {e}"))?;
-    let emails = payload
-        .emails
-        .into_iter()
-        .map(|mut e| {
-            e.tag = sanitize_tag(&e.tag);
-            e
-        })
-        .collect();
-    let tasks = payload
-        .tasks
-        .into_iter()
-        .map(|t| TaskInput {
-            source: "claude".to_string(),
-            source_ref: t.source_ref,
-            text: t.text,
-            due_ts: t.due_ts,
-        })
-        .collect();
-    Ok((emails, tasks))
-}
-
-/// Coerce an email tag to the known set, defaulting unknown values to `"fyi"`.
-fn sanitize_tag(tag: &str) -> String {
-    match tag {
-        "needs_reply" | "invite" | "fyi" => tag.to_string(),
-        _ => "fyi".to_string(),
-    }
 }
 
 /// Leniently extract the first balanced JSON array or object from `raw`.
@@ -298,10 +279,9 @@ mod tests {
 
     #[test]
     fn extract_prose_wrapped_object() {
-        let raw = "Sure! Here is the data you asked for:\n{\"emails\": [], \"tasks\": []}\nHope that helps.";
+        let raw = "Sure! Here is the data you asked for:\n{\"events\": []}\nHope that helps.";
         let v = extract_json(raw).unwrap();
-        assert!(v.get("emails").is_some());
-        assert!(v.get("tasks").is_some());
+        assert!(v.get("events").is_some());
     }
 
     #[test]
@@ -323,35 +303,11 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_tag_defaults_unknown_to_fyi() {
-        assert_eq!(sanitize_tag("needs_reply"), "needs_reply");
-        assert_eq!(sanitize_tag("invite"), "invite");
-        assert_eq!(sanitize_tag("fyi"), "fyi");
-        assert_eq!(sanitize_tag("URGENT"), "fyi");
-        assert_eq!(sanitize_tag(""), "fyi");
-    }
-
-    #[test]
-    fn parse_email_payload_stamps_source_and_sanitizes_tags() {
-        let value = serde_json::json!({
-            "emails": [{
-                "externalId": "m1",
-                "fromName": "A",
-                "fromAddr": "a@example.com",
-                "subject": "Hi",
-                "summary": "one line",
-                "tag": "bogus",
-                "receivedTs": 100
-            }],
-            "tasks": [{"text": "do it", "dueTs": 200, "sourceRef": "m1"}]
-        });
-        let (emails, tasks) = parse_email_payload(value).unwrap();
-        assert_eq!(emails.len(), 1);
-        assert_eq!(emails[0].tag, "fyi"); // sanitized
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].source, "claude");
-        assert_eq!(tasks[0].source_ref.as_deref(), Some("m1"));
-        assert_eq!(tasks[0].due_ts, Some(200));
+    fn calendar_provider_parses_leniently() {
+        assert_eq!(CalendarProvider::from_str_lenient("outlook"), CalendarProvider::Outlook);
+        assert_eq!(CalendarProvider::from_str_lenient("Outlook"), CalendarProvider::Outlook);
+        assert_eq!(CalendarProvider::from_str_lenient("google"), CalendarProvider::Google);
+        assert_eq!(CalendarProvider::from_str_lenient("whatever"), CalendarProvider::Google);
     }
 
     #[test]
@@ -366,5 +322,16 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].collector, "prs");
         assert!(runs[0].ok);
+    }
+
+    #[test]
+    fn collect_issues_no_repos_is_clean_noop() {
+        let store = Store::open_in_memory().unwrap();
+        let summary = collect_issues(&store, &[], 1);
+        assert!(summary.ok);
+        assert_eq!(summary.count, 0);
+        assert_eq!(summary.message.as_deref(), Some("no repos configured"));
+        let runs = store.runs().unwrap();
+        assert_eq!(runs[0].collector, "issues");
     }
 }

@@ -1,5 +1,11 @@
 # Agentboard → Tauri Port Plan
 
+> **Update (2026-07-04).** The tmux sidebar (server + TUI + tmux.conf hooks) has
+> been **removed** — the Tauri app is the only agentboard frontend. The
+> transport-free core (engine, watchers, metadata, repos, bridge) described here
+> stays; tmux-specific sections are historical.
+
+
 Slice 7 of [MIGRATION.md](MIGRATION.md). Source of truth: slot-1
 `packages/agentboard/src` (~10k LOC TS; live entry `src/server/main.ts`) plus
 `src/commands/agentboard.ts`. Inventory taken 2026-07-02.

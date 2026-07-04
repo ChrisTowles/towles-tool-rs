@@ -1,18 +1,18 @@
-//! `ttr collect` subcommands: calendar, email, prs, all.
+//! `ttr collect` subcommands: calendar, issues, prs, all.
 //!
 //! Thin CLI boundary over the `tt-collect` crate: open the store, run the
 //! requested collector(s), print one line per [`CollectSummary`], and exit 0
 //! only if every collector succeeded. Non-interactive by design — no prompts,
 //! no TTY requirements.
 //!
-//! The claude-backed collectors (calendar, email) are gated on
-//! `assistant.enabled` in settings; the `gh` PR collector always runs.
+//! The claude-backed calendar collector is gated on `collectors.calendar.enabled`
+//! in settings (it costs tokens); the `gh` issue and PR collectors always run.
 
 use std::io::IsTerminal;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tt_collect::CollectSummary;
+use tt_collect::{CalendarProvider, CollectSummary};
 use tt_store::Store;
 
 use crate::cli::CollectCommands;
@@ -27,21 +27,23 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
         }
     };
     let now = now_ms();
+    let calendar = load_calendar_settings(config_dir);
+    let provider = CalendarProvider::from_str_lenient(&calendar.provider);
 
     let summaries = match command {
         CollectCommands::Calendar => {
-            if !assistant_enabled(config_dir) {
+            if !calendar.enabled {
                 note_disabled();
                 return 0;
             }
-            vec![tt_collect::collect_calendar(&store, now)]
+            vec![tt_collect::collect_calendar(&store, provider, now)]
         }
-        CollectCommands::Email => {
-            if !assistant_enabled(config_dir) {
-                note_disabled();
-                return 0;
-            }
-            tt_collect::collect_email_and_tasks(&store, now)
+        CollectCommands::Issues => {
+            vec![tt_collect::collect_issues(
+                &store,
+                &tt_collect::tracked_repo_dirs(),
+                now,
+            )]
         }
         CollectCommands::Prs => {
             vec![tt_collect::collect_prs(
@@ -52,13 +54,14 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
         }
         CollectCommands::All => {
             let mut summaries = Vec::new();
-            if assistant_enabled(config_dir) {
-                summaries.push(tt_collect::collect_calendar(&store, now));
-                summaries.extend(tt_collect::collect_email_and_tasks(&store, now));
+            if calendar.enabled {
+                summaries.push(tt_collect::collect_calendar(&store, provider, now));
             } else {
                 note_disabled();
             }
-            summaries.push(tt_collect::collect_prs(&store, &tt_collect::tracked_repo_dirs(), now));
+            let repos = tt_collect::tracked_repo_dirs();
+            summaries.push(tt_collect::collect_issues(&store, &repos, now));
+            summaries.push(tt_collect::collect_prs(&store, &repos, now));
             summaries
         }
     };
@@ -73,21 +76,21 @@ fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// Whether the claude-backed collectors are enabled. Defaults to enabled if the
+/// Load the calendar collector settings. Defaults (enabled, Google) if the
 /// settings file can't be resolved or read.
-fn assistant_enabled(config_dir: Option<&Path>) -> bool {
+fn load_calendar_settings(config_dir: Option<&Path>) -> tt_config::CalendarCollector {
     let path = match config_dir {
         Some(dir) => dir.join(format!("{}.settings.json", tt_config::TOOL_NAME)),
         None => match tt_config::config_path() {
             Ok(path) => path,
-            Err(_) => return true,
+            Err(_) => return tt_config::CalendarCollector::default(),
         },
     };
-    tt_config::load_from(&path).map(|s| s.assistant.enabled).unwrap_or(true)
+    tt_config::load_from(&path).map(|s| s.collectors.calendar).unwrap_or_default()
 }
 
 fn note_disabled() {
-    let msg = "assistant collectors disabled in settings";
+    let msg = "calendar collector disabled in settings";
     if std::io::stdout().is_terminal() {
         println!("{}", console::style(msg).dim());
     } else {

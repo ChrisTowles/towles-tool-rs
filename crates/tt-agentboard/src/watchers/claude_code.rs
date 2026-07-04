@@ -1,5 +1,5 @@
 //! Claude Code agent watcher — hybrid edition (phase T7 of
-//! docs/AGENTBOARD-TMUX-SPEC.md; rewrites the journal-first port of slot-1
+//! docs/AGENTBOARD-PORT.md; rewrites the journal-first port of slot-1
 //! `runtime/agents/watchers/claude-code.ts`).
 //!
 //! **Discovery, liveness, and status come from `claude agents --all --json`**

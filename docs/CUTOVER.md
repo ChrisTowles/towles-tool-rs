@@ -11,8 +11,8 @@ happens with Chris's explicit go-ahead**.
   the daily driver.
 - The Rust CLI ships as `ttr` from this repo; all TS commands are ported
   (config, doctor+history, journal, gh/pr, install, graph, agentboard repos).
-- The desktop app replaces the tmux agentboard; both read the same config
-  files, so they can coexist during the transition.
+- The desktop app is the agentboard now — the tmux sidebar was **removed**
+  (2026-07-04); `ttr agentboard` is just the `repos` watch-list the app reads.
 - The Claude plugin ships from the live repo (option (a),
   [PLUGIN-DISTRIBUTION.md](PLUGIN-DISTRIBUTION.md)); this repo's
   `packages/core` is a mirror until cutover.
@@ -35,8 +35,8 @@ Local-first (it's a personal tool):
 - [ ] All slot-N clones' in-flight branches merged or parked (the TS repo goes
       read-only for feature work).
 - [ ] Agentboard daily-driven from the desktop app for long enough to trust it
-      (the tmux sidebar is the one workflow the Rust port deliberately does not
-      reproduce — confirm the desktop replacement actually fits the workflow).
+      (the tmux sidebar has been removed — confirm the desktop app fully covers
+      the workflow before the rename).
 - [ ] `ttr doctor --json`, `ttr journal list`, `ttr gh branch-clean --dry-run`,
       `ttr graph -f csv` still parity-match their `tt` counterparts on real
       data (re-run the checks; they were byte-identical at port time).
@@ -64,8 +64,8 @@ direction.
 
 ## Why the flip is gated on a human
 
-`tt` is muscle memory and scripted in places (tmux binding runs
-`tt agentboard init`; shell habits; the Claude plugin's skills reference `tt`
-commands). The rename swaps the implementation under all of that at once.
+`tt` is muscle memory and scripted in places (shell habits; the Claude plugin's
+skills reference `tt` commands). The rename swaps the implementation under all
+of that at once.
 Everything is ported and parity-checked, but only the daily user can judge
 when the desktop agentboard has earned the switch.

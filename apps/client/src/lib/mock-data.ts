@@ -171,6 +171,11 @@ export const settingsJson = {
     port: 4201,
     sidebarPosition: "left",
   },
+  collectors: {
+    calendar: { enabled: true, provider: "google", refreshMinutes: 15 },
+    prs: { enabled: true, refreshSeconds: 120 },
+    issues: { enabled: true, refreshMinutes: 5 },
+  },
 };
 
 export const settingsPath = "~/.config/towles-tool/towles-tool.settings.json";

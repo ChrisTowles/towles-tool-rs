@@ -25,7 +25,7 @@ export function DayBar() {
     .filter((e) => e.startTs > now)
     .sort((a, b) => a.startTs - b.startTs)[0];
   const topTask = snapshot.tasks
-    .filter((t) => !t.done)
+    .filter((t) => t.status !== "done")
     .sort((a, b) => a.createdAt - b.createdAt)[0];
 
   const waitingAgents = agentState.sessions.filter(
@@ -54,7 +54,7 @@ export function DayBar() {
               "flex items-center gap-1.5 rounded-md px-1.5 py-0.5 hover:bg-accent/50",
               eventSoon && "text-amber-600 dark:text-amber-500",
             )}
-            onClick={() => openTab("email-calendar")}
+            onClick={() => openTab("cockpit")}
           >
             <CalendarClock className="size-3.5" />
             <span className="truncate">
@@ -69,7 +69,7 @@ export function DayBar() {
           <span className="text-muted-foreground/40">·</span>
           <button
             className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 hover:bg-accent/50"
-            onClick={() => openTab("email-calendar")}
+            onClick={() => openTab("cockpit")}
           >
             <ListTodo className="size-3.5" />
             <span className="max-w-56 truncate">{topTask.text}</span>

@@ -47,13 +47,16 @@ Cargo workspace + npm workspace (`apps/client` only):
   - `tt-graph` — session-JSONL token accounting, treemap/bar-chart building, and
     JSON/CSV/HTML rendering.
   - `tt-store` — the data-hub SQLite store (`~/.local/share/towles-tool/tt.db`):
-    events, tasks, emails, PR status, collector freshness. Collectors are the
-    only writers; the app UI and MCP server read. Timestamps are epoch ms,
-    passed in (`now_ms`) — never read the clock in logic.
-  - `tt-collect` — collectors that fill tt.db: calendar/email/tasks via
-    `claude -p` (strict-JSON prompts + lenient extraction), PRs via `gh`.
-    Collector keys are `claude:calendar`, `claude:email`, `claude:tasks`,
-    `prs` — the frontend day bar matches on them.
+    events, kanban todos (local, optionally issue-linked), issues, PR status,
+    collector freshness. Collectors write events/issues/PRs; todos are
+    user-created (and promotable to a `gh` issue). The app UI and MCP server
+    read. Timestamps are epoch ms, passed in (`now_ms`) — never read the clock
+    in logic.
+  - `tt-collect` — collectors that fill tt.db: calendar via `claude -p`
+    (strict-JSON prompt + lenient extraction; `CalendarProvider` picks the
+    Google/Outlook prompt+MCP), issues + PRs via `gh`. Collector keys are
+    `claude:calendar`, `issues`, `prs` — the frontend matches on them. Email
+    was removed in the day-screens pivot.
   - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`ttr mcp serve`) exposing
     the store + live agent sessions + `journal_append` to claude sessions.
 - `crates-cli/tt-cli` — `clap` 4 CLI, binary `ttr`. Commands:
@@ -61,11 +64,13 @@ Cargo workspace + npm workspace (`apps/client` only):
   `journal daily-notes|note|meeting|list|search` (+ `today` alias),
   `gh pr|branch|branch-clean` (+ `pr` alias), `install [-o]`,
   `graph [-s --days -f html|json|csv --open/--no-open]`,
-  `collect calendar|email|prs|all`, `mcp serve`.
+  `collect calendar|issues|prs|all`, `mcp serve`.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
   `npm run dev` (root) picks a free dev-server port automatically
-  (`scripts/dev-port.mjs`, defaults to 1420) instead of a hardcoded one, so
-  multiple worktree slots can run the app concurrently without colliding.
+  (`scripts/dev-port.mjs`, scans up from 1420) instead of a hardcoded one, so
+  multiple worktree slots can run the app concurrently without colliding. Pin a
+  slot to a fixed port with `TT_DEV_PORT` in a gitignored root `.env.local`
+  (dev-port reads it and passes it through to vite).
 - `apps/client` — React 19 + Vite frontend styled with Tailwind CSS v4 +
   shadcn/ui (`@/*` → `src/*` alias, components vendored into
   `src/components/ui/`, light/dark via the `.dark` class). Yaak-style app
@@ -76,7 +81,12 @@ Cargo workspace + npm workspace (`apps/client` only):
   (`useStoreSnapshot` → `store_snapshot` command + `store://snapshot` event)
   and `src/lib/agentboard.ts`; both fall back to mock data in plain-Vite
   browser dev. Older screens still render static mocks from
-  `src/lib/mock-data.ts`. Product rules: agent status is **reported, never
+  `src/lib/mock-data.ts`. The three "Focus" screens are **Cockpit** (default
+  day home — next-meeting countdown + PRs + issue queue), **Board** (cross-repo
+  kanban over local todos grouped by status, with promote-to-issue), and
+  **Agentboard** (repos + per-repo xterm terminals). Product rules: the app is
+  for getting in the zone — manage PRs and work issues across repos; calendar
+  is only *time until the next meeting*. Agent status is **reported, never
   re-rendered** (interaction happens in the real PTY via xterm.js); the day
   bar (`day-bar.tsx`) and the Agentboard needs-you feed unify agents, PRs, and
   calendar into one attention model.

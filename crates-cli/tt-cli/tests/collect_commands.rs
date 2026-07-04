@@ -11,7 +11,7 @@ fn collect_help_lists_subcommands() {
     let dir = TempDir::new().unwrap();
     cli_cmd(dir.path()).args(["collect", "--help"]).assert().success().stdout(
         predicate::str::contains("calendar")
-            .and(predicate::str::contains("email"))
+            .and(predicate::str::contains("issues"))
             .and(predicate::str::contains("prs"))
             .and(predicate::str::contains("all")),
     );
