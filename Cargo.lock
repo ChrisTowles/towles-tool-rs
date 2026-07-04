@@ -4443,6 +4443,7 @@ name = "tt-app"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "dirs",
  "portable-pty",
  "serde",
@@ -4451,7 +4452,10 @@ dependencies = [
  "tauri-build",
  "tokio",
  "tt-agentboard",
+ "tt-collect",
  "tt-config",
+ "tt-journal",
+ "tt-store",
 ]
 
 [[package]]
@@ -4474,11 +4478,27 @@ dependencies = [
  "tempfile",
  "tokio",
  "tt-agentboard",
+ "tt-collect",
  "tt-config",
  "tt-exec",
  "tt-git",
  "tt-graph",
  "tt-journal",
+ "tt-mcp",
+ "tt-store",
+]
+
+[[package]]
+name = "tt-collect"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "log",
+ "serde",
+ "serde_json",
+ "tt-agentboard",
+ "tt-exec",
+ "tt-store",
 ]
 
 [[package]]
@@ -4532,6 +4552,34 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tt-config",
+]
+
+[[package]]
+name = "tt-mcp"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tt-agentboard",
+ "tt-config",
+ "tt-journal",
+ "tt-store",
+]
+
+[[package]]
+name = "tt-store"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

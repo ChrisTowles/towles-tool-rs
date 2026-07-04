@@ -60,6 +60,35 @@ pub fn run(cmd: &str, args: &[&str]) -> Result<Output> {
     })
 }
 
+/// Run a command with the given string piped to its stdin, capturing output.
+/// Does not fail on a non-zero exit code.
+pub fn run_with_stdin(cmd: &str, args: &[&str], stdin: &str) -> Result<Output> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    log::debug!("exec (stdin {} bytes): {}", stdin.len(), display_cmd(cmd, args));
+    let mut child = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|source| Error::Spawn { cmd: cmd.to_string(), source })?;
+
+    if let Some(mut handle) = child.stdin.take() {
+        // A closed pipe (child exited early) is not fatal; we still collect output.
+        let _ = handle.write_all(stdin.as_bytes());
+    }
+    let output =
+        child.wait_with_output().map_err(|source| Error::Spawn { cmd: cmd.to_string(), source })?;
+
+    Ok(Output {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+    })
+}
+
 /// Run a command and fail if it exits with a non-zero status.
 pub fn run_ok(cmd: &str, args: &[&str]) -> Result<Output> {
     let output = run(cmd, args)?;
@@ -102,6 +131,19 @@ mod tests {
     fn run_reports_spawn_failure_for_missing_binary() {
         let err = run("definitely-not-a-real-binary-xyz", &[]).unwrap_err();
         assert!(matches!(err, Error::Spawn { .. }));
+    }
+
+    #[test]
+    fn run_with_stdin_pipes_input() {
+        let output = run_with_stdin("cat", &[], "piped input").unwrap();
+        assert_eq!(output.stdout, "piped input");
+        assert!(output.ok());
+    }
+
+    #[test]
+    fn run_with_stdin_survives_child_ignoring_stdin() {
+        let output = run_with_stdin("echo", &["ok"], "ignored").unwrap();
+        assert_eq!(output.stdout.trim(), "ok");
     }
 
     #[test]

@@ -1,0 +1,14 @@
+[package]
+name = "tt-collect"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tt-agentboard = { workspace = true }
+tt-exec = { workspace = true }
+tt-store = { workspace = true }
+chrono = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

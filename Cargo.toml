@@ -3,11 +3,14 @@ resolver = "2"
 members = [
   # Shared crates (no Tauri dependency)
   "crates/tt-agentboard",
+  "crates/tt-collect",
   "crates/tt-config",
   "crates/tt-exec",
   "crates/tt-git",
   "crates/tt-graph",
   "crates/tt-journal",
+  "crates/tt-mcp",
+  "crates/tt-store",
   # CLI crates
   "crates-cli/tt-cli",
   # Tauri-specific crates
@@ -39,11 +42,14 @@ ratatui = "0.29.0"
 
 # Internal crates - shared
 tt-agentboard = { path = "crates/tt-agentboard" }
+tt-collect = { path = "crates/tt-collect" }
 tt-config = { path = "crates/tt-config" }
 tt-exec = { path = "crates/tt-exec" }
 tt-git = { path = "crates/tt-git" }
 tt-graph = { path = "crates/tt-graph" }
 tt-journal = { path = "crates/tt-journal" }
+tt-mcp = { path = "crates/tt-mcp" }
+tt-store = { path = "crates/tt-store" }
 
 [profile.release]
 strip = false

@@ -57,6 +57,13 @@ export function TerminalView({
     const unlisteners: (() => void)[] = [];
 
     void (async () => {
+      // Outside Tauri there is no PTY bridge; show a note instead of throwing
+      // on the missing IPC internals.
+      if (!("__TAURI_INTERNALS__" in window)) {
+        term.write("terminals require the desktop app (browser dev mode)");
+        return;
+      }
+
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
 

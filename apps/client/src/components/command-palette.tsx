@@ -1,4 +1,4 @@
-import { Moon, PanelLeft, Settings, Sun } from "lucide-react";
+import { Moon, PanelLeft, PenLine, Settings, Sun } from "lucide-react";
 import {
   Command,
   CommandDialog,
@@ -48,6 +48,14 @@ export function CommandPalette() {
         </CommandGroup>
         <CommandSeparator />
         <CommandGroup heading="Actions">
+          <CommandItem
+            keywords={["journal", "log", "note", "today"]}
+            onSelect={() => run(() => window.dispatchEvent(new Event("quicklog:open")))}
+          >
+            <PenLine />
+            Journal: log a line
+            <CommandShortcut>⌘J</CommandShortcut>
+          </CommandItem>
           <CommandItem
             keywords={["theme", "dark", "light"]}
             onSelect={() => run(() => setTheme(resolvedDark ? "light" : "dark"))}

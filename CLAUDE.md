@@ -46,11 +46,22 @@ Cargo workspace + npm workspace (`apps/client` only):
     filtering, issue parsing, picker layout.
   - `tt-graph` — session-JSONL token accounting, treemap/bar-chart building, and
     JSON/CSV/HTML rendering.
+  - `tt-store` — the data-hub SQLite store (`~/.local/share/towles-tool/tt.db`):
+    events, tasks, emails, PR status, collector freshness. Collectors are the
+    only writers; the app UI and MCP server read. Timestamps are epoch ms,
+    passed in (`now_ms`) — never read the clock in logic.
+  - `tt-collect` — collectors that fill tt.db: calendar/email/tasks via
+    `claude -p` (strict-JSON prompts + lenient extraction), PRs via `gh`.
+    Collector keys are `claude:calendar`, `claude:email`, `claude:tasks`,
+    `prs` — the frontend day bar matches on them.
+  - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`ttr mcp serve`) exposing
+    the store + live agent sessions + `journal_append` to claude sessions.
 - `crates-cli/tt-cli` — `clap` 4 CLI, binary `ttr`. Commands:
   `config show|validate|schema|reset`, `doctor [--json --track --diff]`,
   `journal daily-notes|note|meeting|list|search` (+ `today` alias),
   `gh pr|branch|branch-clean` (+ `pr` alias), `install [-o]`,
-  `graph [-s --days -f html|json|csv --open/--no-open]`.
+  `graph [-s --days -f html|json|csv --open/--no-open]`,
+  `collect calendar|email|prs|all`, `mcp serve`.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
   `npm run dev` (root) picks a free dev-server port automatically
   (`scripts/dev-port.mjs`, defaults to 1420) instead of a hardcoded one, so
@@ -60,11 +71,15 @@ Cargo workspace + npm workspace (`apps/client` only):
   `src/components/ui/`, light/dark via the `.dark` class). Yaak-style app
   shell: resizable sidebar + closable tabs (`src/lib/workspace.tsx` context),
   command palette (⌘K), settings dialog, status bar, keyboard shortcuts
-  (⌘K/⌘,/⌘B/⌘W). Screens live in `src/screens/` (registry in
-  `src/lib/screens.ts`) and render **mock data** from `src/lib/mock-data.ts`,
-  shaped like the real CLI output so Tauri commands can be wired in later.
-  The old AgentBoard React UI was removed (superseded by the tmux-mode
-  `ttr agentboard` CLI).
+  (⌘K/⌘,/⌘B/⌘W/⌘J/⌘D). Screens live in `src/screens/` (registry in
+  `src/lib/screens.ts`). Live data flows through `src/lib/data.ts`
+  (`useStoreSnapshot` → `store_snapshot` command + `store://snapshot` event)
+  and `src/lib/agentboard.ts`; both fall back to mock data in plain-Vite
+  browser dev. Older screens still render static mocks from
+  `src/lib/mock-data.ts`. Product rules: agent status is **reported, never
+  re-rendered** (interaction happens in the real PTY via xterm.js); the day
+  bar (`day-bar.tsx`) and the Agentboard needs-you feed unify agents, PRs, and
+  calendar into one attention model.
 
 ## Migration
 

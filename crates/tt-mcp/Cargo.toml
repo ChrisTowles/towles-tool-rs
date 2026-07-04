@@ -1,0 +1,19 @@
+[package]
+name = "tt-mcp"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tt-store = { workspace = true }
+tt-journal = { workspace = true }
+tt-config = { workspace = true }
+tt-agentboard = { workspace = true }
+chrono = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.14.0"

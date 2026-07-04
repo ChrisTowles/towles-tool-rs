@@ -100,6 +100,28 @@ pub struct AgentboardSettings {
     pub detail_panel_heights: Option<HashMap<String, f64>>,
 }
 
+/// Data-hub collector settings (the Rust CLI/app's tt.db collectors; the TS CLI
+/// ignores this block).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AssistantSettings {
+    /// Master switch for the claude-backed collectors (calendar/email/tasks).
+    /// These shell out to `claude -p` and therefore cost tokens.
+    pub enabled: bool,
+
+    /// Refresh cadence for the claude-backed collectors, in minutes.
+    pub claude_refresh_minutes: u64,
+
+    /// Refresh cadence for the `gh` PR collector, in seconds.
+    pub pr_refresh_seconds: u64,
+}
+
+impl Default for AssistantSettings {
+    fn default() -> Self {
+        Self { enabled: true, claude_refresh_minutes: 15, pr_refresh_seconds: 120 }
+    }
+}
+
 /// Top-level user settings, mirroring `UserSettingsSchema` in the TS CLI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", default)]
@@ -110,6 +132,8 @@ pub struct UserSettings {
     pub journal_settings: JournalSettings,
 
     pub agentboard: AgentboardSettings,
+
+    pub assistant: AssistantSettings,
 }
 
 impl Default for UserSettings {
@@ -118,6 +142,7 @@ impl Default for UserSettings {
             preferred_editor: "code".to_string(),
             journal_settings: JournalSettings::default(),
             agentboard: AgentboardSettings::default(),
+            assistant: AssistantSettings::default(),
         }
     }
 }
@@ -252,6 +277,15 @@ mod tests {
         assert!(json.contains("\"preferredEditor\""));
         assert!(json.contains("\"journalSettings\""));
         assert!(json.contains("\"dailyPathTemplate\""));
+        assert!(json.contains("\"claudeRefreshMinutes\""));
+    }
+
+    #[test]
+    fn assistant_defaults() {
+        let settings = UserSettings::default();
+        assert!(settings.assistant.enabled);
+        assert_eq!(settings.assistant.claude_refresh_minutes, 15);
+        assert_eq!(settings.assistant.pr_refresh_seconds, 120);
     }
 
     #[test]
