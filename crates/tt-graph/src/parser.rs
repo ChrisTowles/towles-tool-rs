@@ -1,10 +1,9 @@
 //! JSONL parsing and day-based filtering. Ports `src/commands/graph/parser.ts`.
 //!
 //! The TS version injects a `readFile` function so tests can supply content
-//! without touching disk. Here the parsing logic ([`parse_jsonl`],
-//! [`quick_token_count_str`]) is split from the filesystem entry points
-//! ([`read_jsonl`], [`quick_token_count`]) so the pure logic is testable with
-//! plain strings and the fs functions take explicit paths.
+//! without touching disk. Here the parsing logic ([`parse_jsonl`]) is split
+//! from the filesystem entry point ([`read_jsonl`]) so the pure logic is
+//! testable with plain strings and the fs function takes an explicit path.
 
 use std::path::Path;
 
@@ -62,32 +61,6 @@ pub fn read_jsonl(path: &Path) -> Vec<JournalEntry> {
     match std::fs::read_to_string(path) {
         Ok(content) => parse_jsonl(&content),
         Err(_) => Vec::new(),
-    }
-}
-
-/// Sum input + output tokens across all entries with usage data, from raw
-/// content. Invalid lines are skipped.
-pub fn quick_token_count_str(content: &str) -> i64 {
-    let mut total = 0;
-    for line in content.split('\n') {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(entry) = serde_json::from_str::<JournalEntry>(line)
-            && let Some(usage) = entry.message.and_then(|m| m.usage)
-        {
-            total += usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0);
-        }
-    }
-    total
-}
-
-/// Quick token count from a JSONL file. Returns `0` if the file is unreadable
-/// or missing (matching `quickTokenCount` in `parser.ts`).
-pub fn quick_token_count(path: &Path) -> i64 {
-    match std::fs::read_to_string(path) {
-        Ok(content) => quick_token_count_str(&content),
-        Err(_) => 0,
     }
 }
 
@@ -219,37 +192,5 @@ mod tests {
     #[test]
     fn parse_empty_file() {
         assert_eq!(parse_jsonl("").len(), 0);
-    }
-
-    // ── quickTokenCount ──
-
-    #[test]
-    fn quick_sums_input_and_output() {
-        let content = "{\"message\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}}\n{\"message\":{\"usage\":{\"input_tokens\":200,\"output_tokens\":75}}}";
-        assert_eq!(quick_token_count_str(content), 425);
-    }
-
-    #[test]
-    fn quick_skips_entries_without_usage() {
-        let content = "{\"message\":{\"content\":\"text\"}}\n{\"message\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}}";
-        assert_eq!(quick_token_count_str(content), 150);
-    }
-
-    #[test]
-    fn quick_returns_zero_for_unreadable_file() {
-        assert_eq!(quick_token_count(Path::new("/no/such/file.jsonl")), 0);
-    }
-
-    #[test]
-    fn quick_handles_partial_usage() {
-        let content = "{\"message\":{\"usage\":{\"input_tokens\":100}}}";
-        assert_eq!(quick_token_count_str(content), 100);
-    }
-
-    #[test]
-    fn quick_skips_invalid_lines() {
-        let content =
-            "{\"message\":{\"usage\":{\"input_tokens\":50,\"output_tokens\":50}}}\nbadline\n";
-        assert_eq!(quick_token_count_str(content), 100);
     }
 }
