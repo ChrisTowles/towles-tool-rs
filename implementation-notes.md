@@ -243,3 +243,14 @@ invisible. Two changes, both requested:
   sub-headers (`…-slot-0`, `…-slot-1`) — the multi-checkout path the solo repos
   never exercised. Live-picked-up (no restart); reversible via
   `ttr agentboard repos remove`.
+
+## Solo repos visually distinct from folders (Chris)
+
+Solo-collapsed repo headers and folder (checkout) sub-headers both rendered as
+`chevron + name + branch`, so they blurred together. Added a structural level
+icon (gray = structure, per the folder-rail-ui skill §1): repo headers (solo +
+multi) lead with a `FolderGit2` glyph + semibold full-contrast name; folder
+sub-headers lead with a dimmer `Folder` glyph + muted name (on top of the
+existing `pl-6` indent). Now a solo repo reads unmistakably as a *repo*, and
+nested checkouts read as its children. Documented the convention in the
+`folder-rail-ui` skill (mental model updated to the 3-level Repo→Folder→Session).

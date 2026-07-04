@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CalendarClock, ChevronDown, GitPullRequest, Plus, TerminalSquare } from "lucide-react";
+import {
+  CalendarClock,
+  ChevronDown,
+  Folder,
+  FolderGit2,
+  GitPullRequest,
+  Plus,
+  TerminalSquare,
+} from "lucide-react";
 import { TerminalView } from "@/components/terminal-view";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -353,6 +361,7 @@ function RepoGroup({
         className="sticky top-0 z-10 flex w-full items-center gap-2 bg-card px-3 py-2 hover:bg-accent/50"
       >
         <Chevron collapsed={repoCollapsed} />
+        <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate text-sm font-semibold">{repo.name}</span>
         {repo.needs > 0 && <NeedsBadge n={repo.needs} className="ml-auto" />}
       </button>
@@ -405,7 +414,17 @@ function FolderHeader({
     >
       <button type="button" onClick={onToggle} className="flex min-w-0 flex-1 items-center gap-2">
         <Chevron collapsed={collapsed} />
-        <span className={cn("truncate", scope === "repo" ? "text-sm font-semibold" : "text-sm")}>
+        {scope === "repo" ? (
+          <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
+        )}
+        <span
+          className={cn(
+            "truncate",
+            scope === "repo" ? "text-sm font-semibold" : "text-sm text-muted-foreground",
+          )}
+        >
           {title}
         </span>
         <span className="truncate font-mono text-[11px] text-muted-foreground">⎇ {branch}</span>
