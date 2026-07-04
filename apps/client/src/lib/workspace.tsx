@@ -6,13 +6,11 @@ type WorkspaceState = {
   activeTab: ScreenId | null;
   sidebarVisible: boolean;
   paletteOpen: boolean;
-  settingsOpen: boolean;
   openTab: (id: ScreenId) => void;
   closeTab: (id: ScreenId) => void;
   setActiveTab: (id: ScreenId) => void;
   toggleSidebar: () => void;
   setPaletteOpen: (open: boolean) => void;
-  setSettingsOpen: (open: boolean) => void;
 };
 
 const WorkspaceContext = createContext<WorkspaceState | null>(null);
@@ -22,7 +20,6 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [activeTab, setActiveTab] = useState<ScreenId | null>("cockpit");
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const openTab = useCallback((id: ScreenId) => {
     setTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
@@ -49,15 +46,13 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       activeTab,
       sidebarVisible,
       paletteOpen,
-      settingsOpen,
       openTab,
       closeTab,
       setActiveTab,
       toggleSidebar,
       setPaletteOpen,
-      setSettingsOpen,
     }),
-    [tabs, activeTab, sidebarVisible, paletteOpen, settingsOpen, openTab, closeTab, toggleSidebar],
+    [tabs, activeTab, sidebarVisible, paletteOpen, openTab, closeTab, toggleSidebar],
   );
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
