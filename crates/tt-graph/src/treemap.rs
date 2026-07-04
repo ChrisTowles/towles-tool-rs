@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use chrono::{DateTime, Local};
+use rayon::prelude::*;
 
 use crate::Result;
 use crate::analyzer::{
@@ -165,55 +166,60 @@ pub fn build_all_sessions_treemap(sessions: &mut [SessionResult]) -> Result<Tree
         tokens: i64,
     }
 
-    let mut leaves: Vec<SessionLeaf> = Vec::with_capacity(sessions.len());
-    for session in sessions.iter_mut() {
-        let entries = read_jsonl(&session.path);
-        let analysis = analyze_session(&entries);
-        session.tokens = analysis.input_tokens + analysis.output_tokens;
+    // Each session's parse+analysis is independent I/O-then-CPU work, so run
+    // the pass across all cores instead of one file at a time.
+    let leaves: Vec<SessionLeaf> = sessions
+        .par_iter_mut()
+        .map(|session| {
+            let entries = read_jsonl(&session.path);
+            let analysis = analyze_session(&entries);
+            session.tokens = analysis.input_tokens + analysis.output_tokens;
 
-        let project_name = extract_project_name(&session.project);
-        let label = extract_session_label(&entries, &session.session_id);
-        let tools = aggregate_session_tools(&entries);
-        let start = start_time(&entries);
-        let turn_children = build_turn_nodes(&session.session_id, &entries, Some(&session.path));
+            let project_name = extract_project_name(&session.project);
+            let label = extract_session_label(&entries, &session.session_id);
+            let tools = aggregate_session_tools(&entries);
+            let start = start_time(&entries);
+            let turn_children =
+                build_turn_nodes(&session.session_id, &entries, Some(&session.path));
 
-        let has_turns = !turn_children.is_empty();
-        leaves.push(SessionLeaf {
-            node: TreemapNode {
-                name: label,
-                value: if has_turns { None } else { Some(session.tokens) },
-                children: if has_turns { Some(turn_children) } else { None },
-                session_id: Some(short_id(&session.session_id)),
-                full_session_id: Some(session.session_id.clone()),
-                file_path: Some(session.path.to_string_lossy().to_string()),
-                start_time: start,
-                model: Some(
-                    get_primary_model(
-                        analysis.opus_tokens,
-                        analysis.sonnet_tokens,
-                        analysis.haiku_tokens,
-                    )
-                    .to_string(),
-                ),
-                input_tokens: Some(analysis.input_tokens),
-                output_tokens: Some(analysis.output_tokens),
-                ratio: Some(if analysis.output_tokens > 0 {
-                    analysis.input_tokens as f64 / analysis.output_tokens as f64
-                } else {
-                    0.0
-                }),
-                date: Some(session.date.clone()),
-                project: Some(project_name.clone()),
-                repeated_reads: Some(analysis.repeated_reads),
-                model_efficiency: Some(analysis.model_efficiency),
-                tools: if tools.is_empty() { None } else { Some(tools) },
-                ..Default::default()
-            },
-            project: project_name,
-            date: session.date.clone(),
-            tokens: session.tokens,
-        });
-    }
+            let has_turns = !turn_children.is_empty();
+            SessionLeaf {
+                node: TreemapNode {
+                    name: label,
+                    value: if has_turns { None } else { Some(session.tokens) },
+                    children: if has_turns { Some(turn_children) } else { None },
+                    session_id: Some(short_id(&session.session_id)),
+                    full_session_id: Some(session.session_id.clone()),
+                    file_path: Some(session.path.to_string_lossy().to_string()),
+                    start_time: start,
+                    model: Some(
+                        get_primary_model(
+                            analysis.opus_tokens,
+                            analysis.sonnet_tokens,
+                            analysis.haiku_tokens,
+                        )
+                        .to_string(),
+                    ),
+                    input_tokens: Some(analysis.input_tokens),
+                    output_tokens: Some(analysis.output_tokens),
+                    ratio: Some(if analysis.output_tokens > 0 {
+                        analysis.input_tokens as f64 / analysis.output_tokens as f64
+                    } else {
+                        0.0
+                    }),
+                    date: Some(session.date.clone()),
+                    project: Some(project_name.clone()),
+                    repeated_reads: Some(analysis.repeated_reads),
+                    model_efficiency: Some(analysis.model_efficiency),
+                    tools: if tools.is_empty() { None } else { Some(tools) },
+                    ..Default::default()
+                },
+                project: project_name,
+                date: session.date.clone(),
+                tokens: session.tokens,
+            }
+        })
+        .collect();
 
     // Pass 2: group by project (extracted name), preserving first-seen order.
     let mut project_order: Vec<String> = Vec::new();
