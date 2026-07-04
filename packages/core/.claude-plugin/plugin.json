@@ -1,7 +1,7 @@
 {
   "name": "tt",
-  "description": "Core dev workflow skills: interview-me, write-prd, prd-to-issues, tdd, improve-architecture, refine-text, task, diagnose, triage, prototype, handoff, parallel-slots, yagni, yagni-review, towles-tool. Hooks track yagni mode across sessions (adapted from DietrichGebert/ponytail, MIT).",
-  "version": "0.0.155",
+  "description": "Commands for discovering your unknowns across the map-vs-territory workflow (trq212, 'The map is not the territory'). Named by phase: /before-blindspot, /before-brainstorm, /before-interview, /before-references, /before-plan (which also keeps implementation notes while building); /after-pitch, /after-comprehend. Plus skills towles-tool and parallel-slots.",
+  "version": "0.0.156",
   "author": {
     "name": "Chris Towles"
   }

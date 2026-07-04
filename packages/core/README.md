@@ -1,14 +1,37 @@
 # tt-core
 
-Core workflow automation commands for Claude Code.
+Skills for **discovering your unknowns** — Claude Code helpers built around the
+map-vs-territory workflow from
+[trq212, "The map is not the territory"](https://x.com/trq212/status/2073100352921215386).
+
+The map is what you give Claude (prompts, skills, context). The territory is where
+the work actually happens (the codebase, its real constraints). The gap between
+them is your **unknowns**, and reducing them is the skill of agentic coding. Each
+skill is a cheap way to find out what you didn't know — before it gets expensive
+to fix.
 
 ## Commands
 
-| Command       | Description                                   |
-| ------------- | --------------------------------------------- |
-| `/tt:plan`    | Interview user and create implementation plan |
-| `/tt:improve` | Explore codebase and suggest improvements     |
-| `/tt:refine`  | Fix grammar/spelling in files                 |
+One command per technique, named by phase (`before-` / `during-` / `after-`) so
+its place in the workflow is obvious at a glance. Each is a generic prompt you
+invoke; pass an optional target as an argument.
+
+### Before implementation
+
+| Command                | Finds…            | Description                                                                       |
+| ---------------------- | ----------------- | -------------------------------------------------------------------------------- |
+| `/tt:before-blindspot`  | unknown unknowns  | Surface what you don't know you don't know in an unfamiliar area, and teach it.  |
+| `/tt:before-brainstorm` | unknown knowns    | Explore approaches / prototype with fake data so you can react before wiring.    |
+| `/tt:before-interview`  | known unknowns    | Interview you one question at a time, architecture-changing questions first.     |
+| `/tt:before-references` | —                 | Convey intent with a reference (ideally source code); reimplement its semantics. |
+| `/tt:before-plan`       | tweakable choices | Plan that leads with what you'll change (data models, types, UX), buries chores; then keeps implementation-notes with deviations while building. |
+
+### After implementation
+
+| Command                | Description                                                          |
+| ---------------------- | ------------------------------------------------------------------- |
+| `/tt:after-pitch`      | Package the work into one buy-in doc, demo first.                   |
+| `/tt:after-comprehend` | Report on the change + a quiz you must pass before merging.         |
 
 ## Skills
 
