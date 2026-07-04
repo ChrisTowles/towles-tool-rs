@@ -9,14 +9,6 @@ use serde::{Deserialize, Serialize};
 
 // --- Constants (ports the `shared.ts` module constants) ---
 
-/// Default localhost port for the (future) agentboard server.
-pub const DEFAULT_SERVER_PORT: u16 = 4201;
-/// Default localhost host for the (future) agentboard server.
-pub const DEFAULT_SERVER_HOST: &str = "127.0.0.1";
-/// PID file path used by the (future) server.
-pub const PID_FILE: &str = "/tmp/agentboard.pid";
-pub const SERVER_IDLE_TIMEOUT_MS: i64 = 30_000;
-pub const STUCK_RUNNING_TIMEOUT_MS: i64 = 3 * 60 * 1000;
 pub const STALE_AGENT_TIMEOUT_MS: i64 = 12 * 60 * 60 * 1000;
 /// An unpinned idle instance is a dead session; prune it shortly after.
 pub const IDLE_PRUNE_MS: i64 = 30_000;

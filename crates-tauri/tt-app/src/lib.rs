@@ -95,14 +95,6 @@ pub fn run() {
                 });
             }
 
-            // Localhost metadata HTTP ingest (external agents/scripts POST here).
-            {
-                let engine = engine.clone();
-                let emit = emit.clone();
-                let (host, port) = agentboard::ingest_addr();
-                tauri::async_runtime::spawn(agentboard::serve_metadata(engine, emit, host, port));
-            }
-
             // Personal-dashboard store + journal logging. Open the store once; if it
             // fails, the app still runs and store commands return an error.
             let store_state = store::StoreState::open();
