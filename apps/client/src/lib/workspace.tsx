@@ -18,8 +18,8 @@ type WorkspaceState = {
 const WorkspaceContext = createContext<WorkspaceState | null>(null);
 
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
-  const [tabs, setTabs] = useState<ScreenId[]>(["journal-today"]);
-  const [activeTab, setActiveTab] = useState<ScreenId | null>("journal-today");
+  const [tabs, setTabs] = useState<ScreenId[]>(["cockpit"]);
+  const [activeTab, setActiveTab] = useState<ScreenId | null>("cockpit");
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);

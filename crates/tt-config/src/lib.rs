@@ -101,24 +101,59 @@ pub struct AgentboardSettings {
 }
 
 /// Data-hub collector settings (the Rust CLI/app's tt.db collectors; the TS CLI
-/// ignores this block).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+/// ignores this block). Each collector is configured independently — enable
+/// flag, refresh cadence, and (for the claude-backed calendar) which MCP
+/// provider to drive so the same app works at home (Google) and work (Outlook).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", default)]
-pub struct AssistantSettings {
-    /// Master switch for the claude-backed collectors (calendar/email/tasks).
-    /// These shell out to `claude -p` and therefore cost tokens.
-    pub enabled: bool,
-
-    /// Refresh cadence for the claude-backed collectors, in minutes.
-    pub claude_refresh_minutes: u64,
-
-    /// Refresh cadence for the `gh` PR collector, in seconds.
-    pub pr_refresh_seconds: u64,
+pub struct CollectorsSettings {
+    pub calendar: CalendarCollector,
+    pub prs: PrCollector,
+    pub issues: IssueCollector,
 }
 
-impl Default for AssistantSettings {
+/// Calendar collector: shells out to `claude -p` against an MCP calendar, so it
+/// costs tokens. `provider` selects the built-in prompt variant + MCP.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CalendarCollector {
+    pub enabled: bool,
+    /// `"google"` (home) or `"outlook"` (work). Unknown values fall back to Google.
+    pub provider: String,
+    pub refresh_minutes: u64,
+}
+
+impl Default for CalendarCollector {
     fn default() -> Self {
-        Self { enabled: true, claude_refresh_minutes: 15, pr_refresh_seconds: 120 }
+        Self { enabled: true, provider: "google".to_string(), refresh_minutes: 15 }
+    }
+}
+
+/// Pull-request collector (via `gh`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PrCollector {
+    pub enabled: bool,
+    pub refresh_seconds: u64,
+}
+
+impl Default for PrCollector {
+    fn default() -> Self {
+        Self { enabled: true, refresh_seconds: 120 }
+    }
+}
+
+/// Issue collector (via `gh`), feeding the cross-repo board.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct IssueCollector {
+    pub enabled: bool,
+    pub refresh_minutes: u64,
+}
+
+impl Default for IssueCollector {
+    fn default() -> Self {
+        Self { enabled: true, refresh_minutes: 5 }
     }
 }
 
@@ -133,7 +168,7 @@ pub struct UserSettings {
 
     pub agentboard: AgentboardSettings,
 
-    pub assistant: AssistantSettings,
+    pub collectors: CollectorsSettings,
 }
 
 impl Default for UserSettings {
@@ -142,7 +177,7 @@ impl Default for UserSettings {
             preferred_editor: "code".to_string(),
             journal_settings: JournalSettings::default(),
             agentboard: AgentboardSettings::default(),
-            assistant: AssistantSettings::default(),
+            collectors: CollectorsSettings::default(),
         }
     }
 }
@@ -277,15 +312,20 @@ mod tests {
         assert!(json.contains("\"preferredEditor\""));
         assert!(json.contains("\"journalSettings\""));
         assert!(json.contains("\"dailyPathTemplate\""));
-        assert!(json.contains("\"claudeRefreshMinutes\""));
+        assert!(json.contains("\"collectors\""));
+        assert!(json.contains("\"refreshMinutes\""));
     }
 
     #[test]
-    fn assistant_defaults() {
-        let settings = UserSettings::default();
-        assert!(settings.assistant.enabled);
-        assert_eq!(settings.assistant.claude_refresh_minutes, 15);
-        assert_eq!(settings.assistant.pr_refresh_seconds, 120);
+    fn collectors_defaults() {
+        let c = UserSettings::default().collectors;
+        assert!(c.calendar.enabled);
+        assert_eq!(c.calendar.provider, "google");
+        assert_eq!(c.calendar.refresh_minutes, 15);
+        assert!(c.prs.enabled);
+        assert_eq!(c.prs.refresh_seconds, 120);
+        assert!(c.issues.enabled);
+        assert_eq!(c.issues.refresh_minutes, 5);
     }
 
     #[test]

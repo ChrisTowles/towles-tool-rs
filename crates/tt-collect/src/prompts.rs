@@ -1,30 +1,29 @@
-//! Versioned `claude -p` prompt strings for the data-hub collectors.
+//! Built-in `claude -p` prompt strings for the calendar collector.
 //!
-//! Each prompt demands a bare JSON payload (no prose, no code fences) so the
-//! lenient extractor in [`crate::extract_json`] has the best chance of a clean
-//! parse. Bump the `v1`/`v2` markers when a prompt's contract changes.
+//! Calendar is reduced to a single purpose — *how long until my next meeting* —
+//! so each prompt asks only for **today's** events. The provider variants differ
+//! only in which MCP they drive (Google at home, Outlook at work); the JSON
+//! contract is identical so [`crate::extract_json`] and [`tt_store::EventInput`]
+//! stay the same. Bump the `v1` marker when a prompt's contract changes.
 
-/// Calendar collector (v1): today's + next-7-days events from connected
-/// calendar tools, as a JSON array.
-pub const CALENDAR: &str = "\
-Using your connected calendar tools, list my events for today and the next 7 \
-days. Respond with ONLY a JSON array, no prose, no code fences. Each element: \
-{\"externalId\": string (stable event id), \"title\": string, \"startTs\": \
-integer (epoch milliseconds), \"endTs\": integer (epoch milliseconds), \
-\"attendees\": array of attendee display-name strings, \"location\": string, \
-\"joinUrl\": string}. Use integer epoch-millisecond timestamps. Omit any field \
-whose value is null or unknown. If there are no events, respond with [].";
+/// Calendar collector (v1) — Google Calendar via MCP, today only.
+pub const CALENDAR_GOOGLE: &str = "\
+Using the Google Calendar MCP, list the events on my primary calendar for today \
+only, in my local timezone. Respond with ONLY a JSON array, no prose, no code \
+fences. Each element: {\"externalId\": string (stable event id), \"title\": \
+string, \"startTs\": integer (epoch milliseconds), \"endTs\": integer (epoch \
+milliseconds), \"attendees\": array of attendee display-name strings, \
+\"location\": string, \"joinUrl\": string}. Skip all-day events and events I \
+have declined. Omit any field whose value is null or unknown. If there are no \
+events, respond with [].";
 
-/// Email + tasks collector (v1): triaged inbox plus extracted action items,
-/// as a single JSON object with `emails` and `tasks` arrays.
-pub const EMAIL: &str = "\
-Using your connected email tools, review my ~25 most recent actionable inbox \
-emails and also extract any action items they imply. Respond with ONLY a JSON \
-object, no prose, no code fences, of the shape {\"emails\": [...], \"tasks\": \
-[...]}. Each emails element: {\"externalId\": string (stable message id), \
-\"fromName\": string, \"fromAddr\": string, \"subject\": string, \"summary\": \
-string (one line), \"tag\": one of \"needs_reply\", \"invite\", \"fyi\", \
-\"receivedTs\": integer (epoch milliseconds)}. Each tasks element: {\"text\": \
-string, \"dueTs\": integer (epoch milliseconds) or omitted, \"sourceRef\": \
-string (the related message id) or omitted}. If there is nothing to report, \
-respond with {\"emails\": [], \"tasks\": []}.";
+/// Calendar collector (v1) — Outlook / Microsoft 365 via MCP, today only.
+pub const CALENDAR_OUTLOOK: &str = "\
+Using the Outlook (Microsoft 365) MCP, list the events on my default calendar \
+for today only, in my local timezone. Respond with ONLY a JSON array, no prose, \
+no code fences. Each element: {\"externalId\": string (stable event id), \
+\"title\": string, \"startTs\": integer (epoch milliseconds), \"endTs\": \
+integer (epoch milliseconds), \"attendees\": array of attendee display-name \
+strings, \"location\": string, \"joinUrl\": string}. Skip all-day events and \
+events I have declined. Omit any field whose value is null or unknown. If there \
+are no events, respond with [].";

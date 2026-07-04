@@ -169,7 +169,9 @@ cite the yaak or slot-1 source path in the commit.
   infrastructure only, never yaak's). The `ttr` → `tt` flip is fully scripted
   in [docs/CUTOVER.md](CUTOVER.md) with preconditions, steps, and rollback —
   **the flip itself is gated on Chris's explicit go-ahead** (it swaps the
-  daily-driver binary and retires the tmux agentboard workflow).
+  daily-driver binary). The tmux agentboard workflow it once retired is
+  **already removed** (2026-07-04, dogfooding the Tauri app full-time) — the
+  `agentboard` command is now just the `repos` watch-list.
 
 - [~] **9 — Data hub + day screens (new feature, not a TS port).** Built
   2026-07-04 from the product-direction session (Agentboard = attention inbox ×
@@ -183,3 +185,18 @@ cite the yaak or slot-1 source path in the commit.
   never re-rendered (status is read-only; interaction = real PTY), collectors
   are the only tt.db writers, `assistant` settings block gates the token-costing
   claude collectors. See `implementation-notes.md` for deviations.
+
+  **Day-screens pivot (2026-07-04, same day).** The product refocused on
+  *getting in the zone*: PRs + cross-repo issues + a personal kanban. Changes:
+  **email removed** everywhere (collector, `emails` table, MCP
+  `email_needs_reply`, the Email + Calendar screen); **calendar reduced to the
+  next-meeting countdown** (today only). New **`issues` collector**
+  (`gh issue list --assignee @me`); collector keys are now `claude:calendar`,
+  `issues`, `prs`; CLI is `ttr collect calendar|issues|prs|all`. Collectors are
+  now **config-driven** via `settings.collectors` (per-collector enable +
+  cadence, replacing the `assistant` block), with a calendar `provider` field
+  (`google`|`outlook`) selecting a built-in prompt+MCP for home/work. `tasks`
+  became a **local kanban** (status/position + optional issue link;
+  `store_set_task_status`, `store_promote_task_to_issue` → `gh issue create`).
+  Frontend screens: **Cockpit** (default day home), **Board** (kanban),
+  Agentboard unchanged. MCP swapped `email_needs_reply` for `issues_open`.

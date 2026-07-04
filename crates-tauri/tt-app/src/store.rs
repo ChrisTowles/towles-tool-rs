@@ -94,39 +94,82 @@ pub fn store_add_task(
     Ok(())
 }
 
-/// Toggle a task's done flag, then re-emit the snapshot.
+/// Move a todo to a kanban column (backlog/next/doing/review/done), then re-emit.
 #[tauri::command]
-pub fn store_set_task_done(
+pub fn store_set_task_status(
     app: AppHandle,
     state: State<StoreState>,
     id: i64,
-    done: bool,
+    status: String,
 ) -> Result<(), String> {
     {
         let guard = state.store.lock().unwrap();
         let store = guard.as_ref().ok_or("store unavailable: no data directory")?;
         store
-            .set_task_done(id, done, now_ms())
-            .map_err(|e| format!("set_task_done failed: {e}"))?;
+            .set_task_status(id, &status, now_ms())
+            .map_err(|e| format!("set_task_status failed: {e}"))?;
     }
     emit_snapshot(&app, &state);
     Ok(())
 }
 
-/// Archive an email by row id, then re-emit the snapshot.
+/// Promote a local todo into a real GitHub issue in `repo` (owner/name), then
+/// link the resulting issue back to the todo and re-emit the snapshot.
+///
+/// Shells `gh issue create --repo <repo>` with the todo's text as the title.
+/// `gh` prints the new issue URL on stdout; the trailing path segment is its
+/// number.
 #[tauri::command]
-pub fn store_archive_email(
+pub fn store_promote_task_to_issue(
     app: AppHandle,
     state: State<StoreState>,
     id: i64,
+    repo: String,
 ) -> Result<(), String> {
+    let title = {
+        let guard = state.store.lock().unwrap();
+        let store = guard.as_ref().ok_or("store unavailable: no data directory")?;
+        store
+            .get_task(id)
+            .map_err(|e| format!("get_task failed: {e}"))?
+            .ok_or_else(|| format!("no todo with id {id}"))?
+            .text
+    };
+
+    let (number, url) = create_gh_issue(&repo, &title)?;
+
     {
         let guard = state.store.lock().unwrap();
         let store = guard.as_ref().ok_or("store unavailable: no data directory")?;
-        store.archive_email(id).map_err(|e| format!("archive_email failed: {e}"))?;
+        store
+            .link_task_issue(id, &repo, number, &url)
+            .map_err(|e| format!("link_task_issue failed: {e}"))?;
     }
     emit_snapshot(&app, &state);
     Ok(())
+}
+
+/// Run `gh issue create` and return the new issue's `(number, url)`.
+fn create_gh_issue(repo: &str, title: &str) -> Result<(i64, String), String> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "issue", "create", "--repo", repo, "--title", title, "--body", "",
+        ])
+        .output()
+        .map_err(|e| format!("failed to spawn gh: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "gh issue create failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let number = url
+        .rsplit('/')
+        .next()
+        .and_then(|n| n.parse::<i64>().ok())
+        .ok_or_else(|| format!("could not parse issue number from gh output: {url}"))?;
+    Ok((number, url))
 }
 
 /// Append a timestamped line to today's daily note. Independent of the store (writes a
@@ -164,7 +207,7 @@ mod tests {
         let snap = snapshot_of(&state).unwrap();
         assert!(snap.tasks.is_empty());
         assert!(snap.events.is_empty());
-        assert!(snap.emails.is_empty());
+        assert!(snap.issues.is_empty());
     }
 
     #[test]

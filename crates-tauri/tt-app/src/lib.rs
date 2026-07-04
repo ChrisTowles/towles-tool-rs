@@ -121,14 +121,6 @@ pub fn run() {
                 });
             }
 
-            // Localhost metadata HTTP ingest (external agents/scripts POST here).
-            {
-                let engine = engine.clone();
-                let emit = emit.clone();
-                let (host, port) = agentboard::ingest_addr();
-                tauri::async_runtime::spawn(agentboard::serve_metadata(engine, emit, host, port));
-            }
-
             // Personal-dashboard store + journal logging. Open the store once; if it
             // fails, the app still runs and store commands return an error.
             let store_state = store::StoreState::open();
@@ -136,8 +128,8 @@ pub fn run() {
             store::emit_snapshot(&app.handle().clone(), &store_state);
             app.manage(store_state);
 
-            // Collector scheduler: fills tt.db (PRs via gh, calendar/email/tasks
-            // via claude -p per settings.assistant) and re-emits the snapshot.
+            // Collector scheduler: fills tt.db (PRs + issues via gh, calendar via
+            // claude -p per settings.collectors) and re-emits the snapshot.
             scheduler::spawn(app.handle().clone());
 
             // Kick an initial scan so the first snapshot has data.
@@ -167,8 +159,8 @@ pub fn run() {
             agentboard::ab_open_in_editor,
             store::store_snapshot,
             store::store_add_task,
-            store::store_set_task_done,
-            store::store_archive_email,
+            store::store_set_task_status,
+            store::store_promote_task_to_issue,
             store::journal_log,
             terminal::term_start,
             terminal::term_write,

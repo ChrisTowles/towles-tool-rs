@@ -1,5 +1,10 @@
 # Porting spec — TUI rendering & interaction (agentboard phase 3 UI)
 
+> **Historical (2026-07-04).** The tmux sidebar TUI this spec describes was
+> **removed** — the Tauri desktop app (xterm.js terminals) is the only
+> agentboard frontend now. Kept for provenance only.
+
+
 Source: slot-1 `packages/agentboard/src/tui/` — `index.tsx` (797),
 `components/SessionCard.tsx` (397), `StatusBar.tsx` (49), `DiffStats.tsx`,
 formatters (`elapsed`, `short-model`, `status-visuals`, `family-color`),

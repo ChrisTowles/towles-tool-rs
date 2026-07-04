@@ -1,5 +1,9 @@
 # Porting spec — server state assembly & bridge (agentboard phase 3)
 
+> **Update (2026-07-04).** The tmux server is **removed**; the `bridge`/state
+> assembly core described here stays and now feeds only the Tauri app.
+
+
 Source: slot-1 `packages/agentboard/src/runtime/server/index.ts` (1827) +
 `shared.ts` types + tracker/metadata-store/session-order/git-info/port-scanner.
 Spec taken 2026-07-02; covers the data-composition layer with tmux inputs

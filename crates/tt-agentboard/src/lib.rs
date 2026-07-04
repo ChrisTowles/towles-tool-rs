@@ -21,7 +21,6 @@
 //! - [`metadata`] — [`metadata::SessionMetadataStore`], agent-pushed status/progress/log.
 //! - [`session_order`] — [`session_order::SessionOrder`], persisted custom ordering.
 //! - [`git_info`] — branch/worktree/diff-stat computation with a 5s cache.
-//! - [`ports`] — ps-tree + lsof port attribution.
 
 use thiserror::Error;
 
@@ -30,18 +29,11 @@ pub mod claude_cli;
 pub mod engine;
 pub mod fs_notify;
 pub mod git_info;
-pub mod hook_http;
 pub mod metadata;
-pub mod metadata_http;
-pub mod pane_agents;
-pub mod ports;
 pub mod repos;
 pub mod session_order;
-pub mod session_resolve;
-pub mod sidebar_width_sync;
 pub mod text;
 pub mod themes;
-pub mod tmux;
 pub mod tracker;
 pub mod types;
 pub mod watcher;
@@ -65,11 +57,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub use bridge::{StatePayload, assemble_state};
 pub use git_info::{GitInfo, GitInfoCache, compute_git_info};
 pub use metadata::SessionMetadataStore;
-pub use metadata_http::{
-    IngestOutcome, MetadataMutation, RequestHead, handle_request, parse_request_head,
-    response_bytes,
-};
-pub use ports::PortScanner;
 pub use repos::{
     RepoEntry, add_repo, default_repos_path, load_repos, remove_repo_by_name, repo_entries,
     resolve_session_name, save_repos,
