@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { Info, Keyboard, NotebookPen, Palette, RefreshCw, SlidersHorizontal } from "lucide-react";
 import {
   Select,
@@ -87,16 +86,11 @@ function TabHeading({ title, note }: { title: string; note: string }) {
 
 export function SettingsWindow() {
   const { theme, setTheme } = useTheme();
-  // Local-only until settings read/write goes through a Tauri command. Seeded
-  // from the shared towles-tool.settings.json shape so the UI reflects real
-  // defaults (tt-config's UserSettings).
-  const [openJournalOnLaunch, setOpenJournalOnLaunch] = useState(true);
-  const [showDoctorStatus, setShowDoctorStatus] = useState(true);
+  // Local-only placeholders until settings read/write goes through a Tauri
+  // command. Seeded uncontrolled from the shared towles-tool.settings.json shape
+  // (tt-config's UserSettings) so the UI reflects real defaults; Theme is the
+  // one exception below — it's wired to useTheme() and persists now.
   const c = settingsJson.collectors;
-  const [calendarOn, setCalendarOn] = useState(c.calendar.enabled);
-  const [calendarProvider, setCalendarProvider] = useState(c.calendar.provider);
-  const [prsOn, setPrsOn] = useState(c.prs.enabled);
-  const [issuesOn, setIssuesOn] = useState(c.issues.enabled);
   const j = settingsJson.journalSettings;
 
   return (
@@ -131,13 +125,13 @@ export function SettingsWindow() {
               label="Open journal on launch"
               description="Show today's note when the app starts."
             >
-              <Switch checked={openJournalOnLaunch} onCheckedChange={setOpenJournalOnLaunch} />
+              <Switch defaultChecked />
             </SettingRow>
             <SettingRow
               label="Doctor status in status bar"
               description="Show check results at the bottom of the window."
             >
-              <Switch checked={showDoctorStatus} onCheckedChange={setShowDoctorStatus} />
+              <Switch defaultChecked />
             </SettingRow>
           </TabsContent>
 
@@ -179,10 +173,7 @@ export function SettingsWindow() {
               description={`Via claude -p · every ${c.calendar.refreshMinutes} min`}
             >
               <div className="flex items-center gap-3">
-                <Select
-                  value={calendarProvider}
-                  onValueChange={(v) => setCalendarProvider(v as typeof calendarProvider)}
-                >
+                <Select defaultValue={c.calendar.provider}>
                   <SelectTrigger className="w-28">
                     <SelectValue />
                   </SelectTrigger>
@@ -191,17 +182,17 @@ export function SettingsWindow() {
                     <SelectItem value="outlook">Outlook</SelectItem>
                   </SelectContent>
                 </Select>
-                <Switch checked={calendarOn} onCheckedChange={setCalendarOn} />
+                <Switch defaultChecked={c.calendar.enabled} />
               </div>
             </SettingRow>
             <SettingRow
               label="Pull requests"
               description={`Via gh · every ${c.prs.refreshSeconds}s`}
             >
-              <Switch checked={prsOn} onCheckedChange={setPrsOn} />
+              <Switch defaultChecked={c.prs.enabled} />
             </SettingRow>
             <SettingRow label="Issues" description={`Via gh · every ${c.issues.refreshMinutes} min`}>
-              <Switch checked={issuesOn} onCheckedChange={setIssuesOn} />
+              <Switch defaultChecked={c.issues.enabled} />
             </SettingRow>
           </TabsContent>
 
