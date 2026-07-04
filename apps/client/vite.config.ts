@@ -14,7 +14,7 @@ export default defineConfig({
   // Prevent Vite from obscuring Rust errors
   clearScreen: false,
   server: {
-    port: 1420,
+    port: Number(process.env.TT_DEV_PORT) || 1420,
     strictPort: true,
   },
   // Env variables starting with these prefixes are exposed to the client

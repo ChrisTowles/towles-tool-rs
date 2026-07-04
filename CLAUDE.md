@@ -51,8 +51,10 @@ Cargo workspace + npm workspace (`apps/client` only):
   `journal daily-notes|note|meeting|list|search` (+ `today` alias),
   `gh pr|branch|branch-clean` (+ `pr` alias), `install [-o]`,
   `graph [-s --days -f html|json|csv --open/--no-open]`.
-- `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`,
-  dev server on `:1420`.
+- `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
+  `npm run dev` (root) picks a free dev-server port automatically
+  (`scripts/dev-port.mjs`, defaults to 1420) instead of a hardcoded one, so
+  multiple worktree slots can run the app concurrently without colliding.
 - `apps/client` — React 19 + Vite frontend styled with Tailwind CSS v4 +
   shadcn/ui (`@/*` → `src/*` alias, components vendored into
   `src/components/ui/`, light/dark via the `.dark` class). Yaak-style app

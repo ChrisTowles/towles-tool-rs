@@ -50,19 +50,22 @@ effect on re-render. Revert the edit when done — never commit it.
 
 ### 2. Bare browser via Chrome DevTools (for real interaction)
 
-The same frontend runs at `http://localhost:1420` in a normal browser
-(`npm run client:dev` if the Tauri app isn't already running the dev
-server). There, browser-automation tooling (Chrome DevTools MCP) can click,
-type, and screenshot the page normally. Caveat: the app renders the
-"bare browser" code path (`__TAURI_INTERNALS__` is absent), so
+The same frontend runs in a normal browser (`npm run client:dev` if the
+Tauri app isn't already running the dev server, defaults to
+`http://localhost:1420`). There, browser-automation tooling (Chrome DevTools
+MCP) can click, type, and screenshot the page normally. Caveat: the app
+renders the "bare browser" code path (`__TAURI_INTERNALS__` is absent), so
 Tauri-specific behavior (IPC commands, WebView quirks) is only observable in
 the real shell via approach 1.
 
 ## Misc
 
-- Port 1420 is `strictPort` — if `npm run dev` dies with "Port 1420 is
-  already in use", another worktree slot's dev server has it:
-  `lsof -i :1420` and kill the old `vite` process.
+- `npm run dev` (root) picks a free port automatically via
+  `scripts/dev-port.mjs` instead of hardcoding 1420, so running this repo
+  from multiple worktree slots at once no longer collides. Watch its
+  `[dev-port] using port N` log line to find which port a given slot's
+  WebView/browser target is on. `npm run client:dev` (bare Vite, no Tauri)
+  still defaults to 1420 since it isn't slot-aware.
 - If the tt-app build script fails reading plugin permissions from a *stale
   absolute path* (another checkout's `target/`), the cargo build cache was
   copied between worktrees: `rm -rf target/debug/build/tauri-* target/debug/build/tt-app-*`

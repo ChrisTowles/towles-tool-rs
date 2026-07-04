@@ -9,7 +9,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "node scripts/dev-port.mjs",
     "build": "tauri build",
     "tauri": "tauri",
     "client:dev": "npm run dev --workspace @towles-tool/client"
