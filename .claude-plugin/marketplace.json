@@ -1,0 +1,13 @@
+{
+  "name": "towles-tool",
+  "owner": {
+    "name": "Chris Towles"
+  },
+  "plugins": [
+    {
+      "name": "tt",
+      "source": "./packages/core",
+      "description": "Commands for discovering your unknowns across the map-vs-territory workflow (trq212, 'The map is not the territory'). Named by phase: /before-blindspot, /before-brainstorm, /before-interview, /before-references, /before-plan; /after-pitch, /after-comprehend. Plus skills towles-tool and parallel-slots."
+    }
+  ]
+}

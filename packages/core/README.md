@@ -43,6 +43,6 @@ invoke; pass an optional target as an argument.
 ## Installation
 
 ```bash
-claude plugin marketplace add ChrisTowles/towles-tool
+claude plugin marketplace add ChrisTowles/towles-tool-rs
 claude plugin enable tt@towles-tool
 ```
