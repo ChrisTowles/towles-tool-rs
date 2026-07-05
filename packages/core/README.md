@@ -37,6 +37,7 @@ generic prompt you invoke; pass an optional target as an argument.
 | ------------------- | ------------------------------------------------------------ |
 | `/tt:20-pitch`      | Package the work into one buy-in doc, demo first.            |
 | `/tt:21-comprehend` | Report on the change + a quiz you must pass before merging.  |
+| `/tt:22-memories`   | Review your memory files and recommend which to commit into CLAUDE.md. |
 
 ## Skills
 

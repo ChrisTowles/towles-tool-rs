@@ -118,3 +118,16 @@ etc.). The points below are repo-specific specializations of that doc.
   `npx shadcn@latest add <name>`, don't hand-write Radix wrappers.
 - **Hard cutover, no back-compat shims** — replace, don't wrap. (No compat
   layers, no dual-name aliases beyond the deliberate `ttr`→`tt` rename.)
+- **Dev tooling must not hardcode ports/paths.** Chris runs multiple worktree
+  slots of this repo concurrently (see [ATTRIBUTION.md](ATTRIBUTION.md) /
+  `tt:parallel-slots`), so a fixed port, lockfile path, or other singleton
+  resource makes copies collide. Default to dynamic allocation (e.g.
+  `scripts/dev-port.mjs` picks a free port derived from the slot dir name)
+  over a hardcoded value like `1420`.
+- **No planning/implementation-notes docs committed to the repo** (e.g.
+  `docs/<feature>/plan.html`, `implementation-notes.md`), even when a
+  planning skill calls for writing one during implementation. Write them to
+  the scratchpad directory instead — checked-in plans drift out of sync with
+  the code and it's unclear which is authoritative. Git history retains any
+  that were committed in the past; no need to preserve them elsewhere before
+  removing.
