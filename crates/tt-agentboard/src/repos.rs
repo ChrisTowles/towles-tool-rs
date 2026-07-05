@@ -23,6 +23,10 @@ pub struct RepoEntry {
 struct ReposConfig {
     #[serde(default, rename = "repoPaths")]
     repo_paths: Vec<String>,
+    /// Roots the add-repo picker scans for git repos. Empty ⇒ caller's default
+    /// (`~/code`). May contain a leading `~`; expansion is the caller's job.
+    #[serde(default, rename = "scanRoots")]
+    scan_roots: Vec<String>,
 }
 
 /// Default location: `~/.config/towles-tool/agentboard/repos.json`.
@@ -43,14 +47,70 @@ pub fn load_repos(path: &Path) -> Vec<String> {
     serde_json::from_str::<ReposConfig>(&text).map(|c| c.repo_paths).unwrap_or_default()
 }
 
+/// Load the configured scan roots (`scanRoots`). Empty on missing/corrupt file
+/// or when the key is absent — callers substitute their own default.
+pub fn load_scan_roots(path: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<ReposConfig>(&text).map(|c| c.scan_roots).unwrap_or_default()
+}
+
 /// Persist the repo-path list as `{"repoPaths":[...]}` (pretty + trailing newline).
+/// Any existing `scanRoots` (and other known keys) on disk are preserved.
 pub fn save_repos(path: &Path, repo_paths: &[String]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let config = ReposConfig { repo_paths: repo_paths.to_vec() };
+    let scan_roots = load_scan_roots(path);
+    let config = ReposConfig { repo_paths: repo_paths.to_vec(), scan_roots };
     let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
     std::fs::write(path, format!("{json}\n"))
+}
+
+/// Dirs skipped while scanning: hidden dirs plus common heavy build/dep dirs.
+fn is_skippable(name: &str) -> bool {
+    name.starts_with('.') || matches!(name, "node_modules" | "target" | "dist" | "build")
+}
+
+/// Scan `roots` for git repositories — a dir holding a `.git` entry (the `.git`
+/// dir of a normal clone, or the `.git` *file* a worktree uses). Descends at
+/// most `max_depth` levels, never into a repo once found, nor into hidden/heavy
+/// dirs. Returns absolute dirs, sorted and deduped. Missing roots are ignored,
+/// so this never fails — an unreadable dir just yields nothing.
+pub fn discover_git_repos(roots: &[PathBuf], max_depth: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for root in roots {
+        scan_git(root, 0, max_depth, &mut out);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn scan_git(dir: &Path, depth: usize, max_depth: usize, out: &mut Vec<String>) {
+    if dir.join(".git").exists() {
+        if let Some(s) = dir.to_str() {
+            out.push(s.to_string());
+        }
+        return; // a repo is a leaf — don't descend into it
+    }
+    if depth >= max_depth {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if is_skippable(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        scan_git(&path, depth + 1, max_depth, out);
+    }
 }
 
 /// Add `path` if not already present. Returns whether it was added.
@@ -180,6 +240,50 @@ mod tests {
         assert!(raw.contains("\"repoPaths\""));
         assert!(raw.ends_with('\n'));
         assert_eq!(load_repos(&path), paths(&["/a/x", "/b/y"]));
+    }
+
+    #[test]
+    fn save_preserves_scan_roots() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("repos.json");
+        std::fs::write(&path, r#"{"repoPaths":["/a/x"],"scanRoots":["~/code","/srv/work"]}"#)
+            .unwrap();
+        assert_eq!(load_scan_roots(&path), paths(&["~/code", "/srv/work"]));
+        // Adding a repo must not wipe the configured scan roots.
+        save_repos(&path, &paths(&["/a/x", "/a/y"])).unwrap();
+        assert_eq!(load_scan_roots(&path), paths(&["~/code", "/srv/work"]));
+        assert_eq!(load_repos(&path), paths(&["/a/x", "/a/y"]));
+    }
+
+    #[test]
+    fn discover_finds_repos_and_prunes() {
+        let root = TempDir::new().unwrap();
+        let base = root.path();
+        // A repo at depth 1 (normal clone).
+        std::fs::create_dir_all(base.join("p/proj/.git")).unwrap();
+        // A repo nested under a non-repo container at depth 2.
+        std::fs::create_dir_all(base.join("p/repos/slot/.git")).unwrap();
+        // A worktree whose `.git` is a file, not a dir.
+        std::fs::create_dir_all(base.join("w/wt")).unwrap();
+        std::fs::write(base.join("w/wt/.git"), "gitdir: /elsewhere").unwrap();
+        // Heavy/hidden dirs must be skipped, and repos aren't descended into.
+        std::fs::create_dir_all(base.join("p/proj/node_modules/pkg/.git")).unwrap();
+        std::fs::create_dir_all(base.join(".hidden/nope/.git")).unwrap();
+
+        let found = discover_git_repos(&[base.to_path_buf()], 4);
+        let rel: Vec<String> = found
+            .iter()
+            .map(|d| {
+                d.strip_prefix(base.to_str().unwrap()).unwrap().trim_start_matches('/').to_string()
+            })
+            .collect();
+        assert_eq!(rel, vec!["p/proj", "p/repos/slot", "w/wt"]);
+    }
+
+    #[test]
+    fn discover_missing_root_is_empty() {
+        let root = TempDir::new().unwrap();
+        assert!(discover_git_repos(&[root.path().join("nope")], 4).is_empty());
     }
 
     #[test]

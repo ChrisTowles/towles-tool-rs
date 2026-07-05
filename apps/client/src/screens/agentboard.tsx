@@ -4,11 +4,30 @@ import {
   ChevronDown,
   Folder,
   FolderGit2,
+  FolderPlus,
   GitPullRequest,
+  MoreVertical,
   Plus,
   TerminalSquare,
+  Trash2,
 } from "lucide-react";
 import { TerminalView } from "@/components/terminal-view";
+import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
@@ -28,7 +47,10 @@ import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { useWorkspace } from "@/lib/workspace";
 
 /** Invoke a Tauri `ab_*` command; no-op (null) in bare-browser dev. */
-async function abInvoke<T>(cmd: string, args: Record<string, unknown>): Promise<T | null> {
+async function abInvoke<T>(
+  cmd: string,
+  args: Record<string, unknown>,
+): Promise<T | null> {
   if (!("__TAURI_INTERNALS__" in window)) return null;
   const { invoke } = await import("@tauri-apps/api/core");
   try {
@@ -39,6 +61,9 @@ async function abInvoke<T>(cmd: string, args: Record<string, unknown>): Promise<
 }
 
 type Selected = { folderDir: string; sessionId: string } | null;
+
+/** A discoverable repo for the fuzzy add-repo picker (from `ab_discover_repos`). */
+type RepoCandidate = { name: string; dir: string };
 
 /**
  * Agentboard — the Folder Rail. Left: repos → folders (checkouts) → PTY sessions,
@@ -56,6 +81,10 @@ export function AgentboardScreen() {
   const now = Date.now();
 
   const [selected, setSelected] = useState<Selected>(null);
+  // Add-repo picker: discovered repos under ~/code, fuzzy-searched by `repoQuery`.
+  const [addRepoOpen, setAddRepoOpen] = useState(false);
+  const [repoQuery, setRepoQuery] = useState("");
+  const [candidates, setCandidates] = useState<RepoCandidate[]>([]);
   // Session ids whose PTY is mounted (kept alive for scrollback), + their cwd.
   const [open, setOpen] = useState<string[]>([]);
   const cwds = useRef<Record<string, string>>({});
@@ -68,14 +97,16 @@ export function AgentboardScreen() {
     setTitles((m) => (m[id] === title ? m : { ...m, [id]: title }));
   // The label to lead a session row/tab with: the live Claude terminal title
   // when present, else the backend-derived task/shell name.
-  const labelFor = (s: SessionData) => claudeTitleName(titles[s.id]) ?? sessionLabel(s);
+  const labelFor = (s: SessionData) =>
+    claudeTitleName(titles[s.id]) ?? sessionLabel(s);
 
   const repos = state.repos;
 
   // Index every session by id → its folder dir, for cwd + validation.
   const folderOf = useMemo(() => {
     const m = new Map<string, FolderData>();
-    for (const r of repos) for (const f of r.folders) for (const s of f.sessions) m.set(s.id, f);
+    for (const r of repos)
+      for (const f of r.folders) for (const s of f.sessions) m.set(s.id, f);
     return m;
   }, [repos]);
 
@@ -86,9 +117,40 @@ export function AgentboardScreen() {
   }
 
   async function newSession(folderDir: string) {
-    const rec = await abInvoke<SessionData>("ab_add_session", { dir: folderDir, name: null });
+    const rec = await abInvoke<SessionData>("ab_add_session", {
+      dir: folderDir,
+      name: null,
+    });
     if (rec) selectSession(folderDir, rec.id);
   }
+
+  // Add a repo to the rail; backend re-emits state so it appears. Mirrors
+  // `ttr agentboard repos add <path>`.
+  async function addRepo(dir: string) {
+    const path = dir.trim();
+    if (!path) return;
+    setAddRepoOpen(false);
+    await abInvoke("ab_add_repo", { path });
+  }
+
+  // Drop a repo from the watched list (non-destructive — leaves it on disk).
+  async function removeRepo(name: string) {
+    await abInvoke("ab_remove_repo", { name });
+  }
+
+  // On opening the picker, (re)load the discoverable repos under ~/code.
+  useEffect(() => {
+    if (!addRepoOpen) return;
+    setRepoQuery("");
+    let active = true;
+    void (async () => {
+      const found = await abInvoke<RepoCandidate[]>("ab_discover_repos", {});
+      if (active) setCandidates(found ?? []);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [addRepoOpen]);
 
   async function closeSession(sessionId: string) {
     await abInvoke("ab_close_session", { id: sessionId });
@@ -99,7 +161,8 @@ export function AgentboardScreen() {
   async function commitRename(sessionId: string, name: string) {
     setRenaming(null);
     const trimmed = name.trim();
-    if (trimmed) await abInvoke("ab_rename_session", { id: sessionId, name: trimmed });
+    if (trimmed)
+      await abInvoke("ab_rename_session", { id: sessionId, name: trimmed });
   }
 
   // ⌘D = new session in the selected folder; ⌘W = close the selected session.
@@ -120,8 +183,13 @@ export function AgentboardScreen() {
 
   // Compact attention strip: failing/review PRs + the next imminent meeting.
   const attention = useMemo(() => {
-    const items: { key: string; kind: "pr" | "event"; title: string; sub: string; onClick: () => void }[] =
-      [];
+    const items: {
+      key: string;
+      kind: "pr" | "event";
+      title: string;
+      sub: string;
+      onClick: () => void;
+    }[] = [];
     for (const p of snapshot.prs) {
       if (p.checks === "failing" || p.reviewState === "review_requested") {
         items.push({
@@ -148,12 +216,28 @@ export function AgentboardScreen() {
     return items;
   }, [snapshot.prs, snapshot.events, now, openTab]);
 
-  const selectedFolder = selected ? folderOf.get(selected.sessionId) : undefined;
+  const selectedFolder = selected
+    ? folderOf.get(selected.sessionId)
+    : undefined;
 
   return (
     <div className="flex h-full min-h-0">
-      {/* Rail: attention strip + Repo → Folder → Session tree. */}
+      {/* Rail: header + attention strip + Repo → Folder → Session tree. */}
       <div className="flex w-80 shrink-0 flex-col border-r">
+        <div className="flex items-center justify-between border-b px-3 py-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Repos
+          </span>
+          <button
+            type="button"
+            onClick={() => setAddRepoOpen(true)}
+            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-violet-500 hover:bg-accent/50"
+            title="Add a repo to the rail"
+          >
+            <FolderPlus className="size-3.5" /> Add repo
+          </button>
+        </div>
+
         {attention.length > 0 && (
           <div className="flex flex-col gap-1 border-b p-2">
             {attention.map((a) => (
@@ -172,8 +256,12 @@ export function AgentboardScreen() {
                   <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
                 )}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs font-medium">{a.title}</span>
-                  <span className="block truncate text-[11px] text-muted-foreground">{a.sub}</span>
+                  <span className="block truncate text-xs font-medium">
+                    {a.title}
+                  </span>
+                  <span className="block truncate text-[11px] text-muted-foreground">
+                    {a.sub}
+                  </span>
                 </span>
               </button>
             ))}
@@ -183,10 +271,19 @@ export function AgentboardScreen() {
         <ScrollArea className="flex-1">
           <div className="flex flex-col">
             {repos.length === 0 && (
-              <p className="px-3 py-6 text-center text-sm text-muted-foreground">
-                No repos yet. Add one with{" "}
-                <span className="font-mono">ttr agentboard repos add</span>.
-              </p>
+              <div className="flex flex-col items-center gap-3 px-3 py-10 text-center">
+                <FolderGit2 className="size-8 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">
+                  No repos on the rail yet.
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setAddRepoOpen(true)}
+                >
+                  <FolderPlus className="size-3.5" /> Add a repo
+                </Button>
+              </div>
             )}
             {repos.map((repo) => (
               <RepoGroup
@@ -199,6 +296,7 @@ export function AgentboardScreen() {
                 onToggle={(k) => setCollapsed((c) => ({ ...c, [k]: !c[k] }))}
                 onSelect={selectSession}
                 onNewSession={newSession}
+                onRemoveRepo={removeRepo}
                 onRenameStart={setRenaming}
                 onRenameCommit={commitRename}
               />
@@ -278,6 +376,61 @@ export function AgentboardScreen() {
           )}
         </div>
       </div>
+
+      <CommandDialog
+        open={addRepoOpen}
+        onOpenChange={setAddRepoOpen}
+        title="Add repo"
+        description="Fuzzy-search your git repos and add one to the rail."
+        className="sm:max-w-2xl"
+      >
+        <Command>
+          <CommandInput
+            autoFocus
+            value={repoQuery}
+            onValueChange={setRepoQuery}
+            placeholder="Search your git repos…"
+          />
+          <CommandList className="max-h-[60vh]">
+            <CommandEmpty>
+              {candidates.length === 0
+                ? "No git repos found. Type an absolute path to add one."
+                : "No match. Type an absolute path to add one."}
+            </CommandEmpty>
+            {candidates.length > 0 && (
+              <CommandGroup heading="Discovered repos">
+                {candidates.map((c) => (
+                  <CommandItem
+                    key={c.dir}
+                    value={`${c.name} ${c.dir}`}
+                    onSelect={() => void addRepo(c.dir)}
+                  >
+                    <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+                    <span className="flex-1 truncate">{c.name}</span>
+                    <span className="truncate font-mono text-[11px] text-muted-foreground">
+                      {c.dir}
+                    </span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
+            {repoQuery.startsWith("/") && (
+              <CommandGroup heading="Path">
+                <CommandItem
+                  value={repoQuery}
+                  onSelect={() => void addRepo(repoQuery)}
+                >
+                  <FolderPlus className="size-3.5 shrink-0 text-violet-500" />
+                  <span>Add path</span>
+                  <span className="truncate font-mono text-[11px] text-muted-foreground">
+                    {repoQuery}
+                  </span>
+                </CommandItem>
+              </CommandGroup>
+            )}
+          </CommandList>
+        </Command>
+      </CommandDialog>
     </div>
   );
 }
@@ -319,6 +472,7 @@ function RepoGroup({
   onToggle,
   onSelect,
   onNewSession,
+  onRemoveRepo,
   onRenameStart,
   onRenameCommit,
 }: {
@@ -330,6 +484,7 @@ function RepoGroup({
   onToggle: (key: string) => void;
   onSelect: (folderDir: string, sessionId: string) => void;
   onNewSession: (folderDir: string) => void;
+  onRemoveRepo: (name: string) => void;
   onRenameStart: (sessionId: string) => void;
   onRenameCommit: (sessionId: string, name: string) => void;
 }) {
@@ -363,6 +518,7 @@ function RepoGroup({
           collapsed={isCollapsed}
           onToggle={() => onToggle(repo.key)}
           onNewSession={() => onNewSession(folder.dir)}
+          onRemoveRepo={() => onRemoveRepo(repo.name)}
         />
         {!isCollapsed && <div className="pb-2">{sessionRows(folder)}</div>}
       </div>
@@ -373,16 +529,19 @@ function RepoGroup({
   const repoCollapsed = collapsed[repo.key];
   return (
     <div className="border-b">
-      <button
-        type="button"
-        onClick={() => onToggle(repo.key)}
-        className="sticky top-0 z-10 flex w-full items-center gap-2 bg-card px-3 py-2 hover:bg-accent/50"
-      >
-        <Chevron collapsed={repoCollapsed} />
-        <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="truncate text-sm font-semibold">{repo.name}</span>
-        {repo.needs > 0 && <NeedsBadge n={repo.needs} className="ml-auto" />}
-      </button>
+      <div className="sticky top-0 z-10 flex w-full items-center gap-2 bg-card px-3 py-2 hover:bg-accent/50">
+        <button
+          type="button"
+          onClick={() => onToggle(repo.key)}
+          className="flex min-w-0 flex-1 items-center gap-2"
+        >
+          <Chevron collapsed={repoCollapsed} />
+          <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate text-sm font-semibold">{repo.name}</span>
+          {repo.needs > 0 && <NeedsBadge n={repo.needs} className="ml-auto" />}
+        </button>
+        <RepoMenu onRemove={() => onRemoveRepo(repo.name)} />
+      </div>
       {!repoCollapsed &&
         repo.folders.map((folder) => {
           const key = `${repo.key}::${folder.dir}`;
@@ -414,6 +573,7 @@ function FolderHeader({
   collapsed,
   onToggle,
   onNewSession,
+  onRemoveRepo,
 }: {
   scope: "repo" | "folder";
   title: string;
@@ -422,15 +582,20 @@ function FolderHeader({
   collapsed: boolean;
   onToggle: () => void;
   onNewSession: () => void;
+  onRemoveRepo?: () => void;
 }) {
   return (
     <div
       className={cn(
-        "group flex items-center gap-2 bg-card px-3 py-2 hover:bg-accent/50",
+        "flex items-center gap-2 bg-card px-3 py-2 hover:bg-accent/50",
         scope === "repo" ? "sticky top-0 z-10" : "pl-6",
       )}
     >
-      <button type="button" onClick={onToggle} className="flex min-w-0 flex-1 items-center gap-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex min-w-0 flex-1 items-center gap-2"
+      >
         <Chevron collapsed={collapsed} />
         {scope === "repo" ? (
           <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
@@ -440,23 +605,47 @@ function FolderHeader({
         <span
           className={cn(
             "truncate",
-            scope === "repo" ? "text-sm font-semibold" : "text-sm text-muted-foreground",
+            scope === "repo"
+              ? "text-sm font-semibold"
+              : "text-sm text-muted-foreground",
           )}
         >
           {title}
         </span>
-        <span className="truncate font-mono text-[11px] text-muted-foreground">⎇ {branch}</span>
+        <span className="truncate font-mono text-[11px] text-muted-foreground">
+          ⎇ {branch}
+        </span>
       </button>
       {needs > 0 && <NeedsBadge n={needs} />}
       <button
         type="button"
         onClick={onNewSession}
-        className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 hover:text-violet-500 group-hover:opacity-100"
-        title="New session"
+        className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-violet-500"
+        title="New session (⌘D)"
       >
         <Plus className="size-3.5" />
       </button>
+      {onRemoveRepo && <RepoMenu onRemove={onRemoveRepo} />}
     </div>
+  );
+}
+
+/** Kebab menu on a repo header: currently just "Remove from rail". */
+function RepoMenu({ onRemove }: { onRemove: () => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+        title="Repo actions"
+      >
+        <MoreVertical className="size-3.5" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem variant="destructive" onSelect={onRemove}>
+          <Trash2 className="size-3.5" /> Remove from rail
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -502,7 +691,8 @@ function SessionRow({
           onClick={(e) => e.stopPropagation()}
           onBlur={(e) => onRenameCommit(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") onRenameCommit((e.target as HTMLInputElement).value);
+            if (e.key === "Enter")
+              onRenameCommit((e.target as HTMLInputElement).value);
             if (e.key === "Escape") onRenameCommit(session.name);
           }}
           className="min-w-0 flex-1 rounded-sm border border-input bg-background px-1 text-sm outline-none"
@@ -518,7 +708,9 @@ function SessionRow({
           <span className="ml-auto truncate text-[11px] text-muted-foreground">
             {sessionStatusText(session)}
           </span>
-          {needs && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
+          {needs && (
+            <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />
+          )}
         </>
       )}
     </div>

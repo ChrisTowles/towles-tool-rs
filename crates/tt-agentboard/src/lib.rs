@@ -60,8 +60,8 @@ pub use bridge::{StatePayload, assemble_state};
 pub use git_info::{GitInfo, GitInfoCache, compute_git_info};
 pub use metadata::SessionMetadataStore;
 pub use repos::{
-    RepoEntry, add_repo, default_repos_path, load_repos, remove_repo_by_name, repo_entries,
-    resolve_session_name, save_repos,
+    RepoEntry, add_repo, default_repos_path, load_repos, load_scan_roots, remove_repo_by_name,
+    repo_entries, resolve_session_name, save_repos,
 };
 pub use session_order::{ReorderDelta, SessionOrder, default_session_order_path};
 pub use sessions::{SessionRecord, SessionStore, default_sessions_path};
