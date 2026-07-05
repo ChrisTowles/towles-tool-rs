@@ -104,6 +104,11 @@ should cite the upstream source path (yaak `path/to/file` or slot-1
 
 ## Conventions
 
+See [docs/CODING-STANDARDS.md](docs/CODING-STANDARDS.md) for the full
+Rust/TypeScript coding standards (errors-as-values, parse-don't-validate,
+branded/newtype domain types, deep modules, testing through real seams,
+etc.). The points below are repo-specific specializations of that doc.
+
 - **Errors:** `thiserror` in library crates; flatten to exit codes at the CLI
   boundary (in `tt-cli`), not deep in the libs.
 - **Tests:** black-box CLI tests with `assert_cmd`; unit tests alongside logic.
