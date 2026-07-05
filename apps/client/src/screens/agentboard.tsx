@@ -17,6 +17,7 @@ import {
   agentRollup,
   claudeTitleName,
   ctxPct,
+  type AgentStatus,
   isAgent,
   isCold,
   isSoloRepo,
@@ -44,6 +45,51 @@ async function abInvoke<T>(cmd: string, args: Record<string, unknown>): Promise<
     return null;
   }
 }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Write raw bytes into a session's PTY. False when the PTY isn't running. */
+async function termWrite(termId: string, data: string): Promise<boolean> {
+  if (!("__TAURI_INTERNALS__" in window)) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke("term_write", { termId, data });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Write, retrying while the PTY spawns (a just-mounted terminal takes a beat
+ * before `term_start` registers it). Gives up after ~3s. */
+async function termWriteRetry(termId: string, data: string): Promise<boolean> {
+  for (let i = 0; i < 20; i++) {
+    if (await termWrite(termId, data)) return true;
+    await sleep(150);
+  }
+  return false;
+}
+
+/** The lifecycle actions a session row can trigger. All are PTY writes — the
+ * agent is whatever runs in the real shell, never a re-rendered proxy. */
+type SessionActions = {
+  /** Mount + spawn the session's shell (no Claude). */
+  start: (folderDir: string, s: SessionData) => void;
+  /** Ensure the shell is live, then launch Claude in it. */
+  startClaude: (folderDir: string, s: SessionData) => void;
+  /** Interrupt Claude (Ctrl-C) then exit it (Ctrl-D). The shell survives. */
+  stopClaude: (s: SessionData) => void;
+  /** Send `/compact` to a Claude sitting at its prompt. */
+  compactClaude: (s: SessionData) => void;
+  /** Stop Claude, then launch a fresh session in the same shell. */
+  restartClaude: (folderDir: string, s: SessionData) => void;
+  close: (sessionId: string) => void;
+  renameStart: (sessionId: string) => void;
+};
+
+/** Optimistic status shown for ~2.5s after a lifecycle action, until the
+ * watcher's ground truth catches up on its next scan. */
+type Overlay = { status: AgentStatus; until: number };
 
 type Selected = { folderDir: string; sessionId: string } | null;
 
@@ -119,6 +165,49 @@ export function AgentboardScreen() {
     const trimmed = name.trim();
     if (trimmed) await abInvoke("ab_rename_session", { id: sessionId, name: trimmed });
   }
+
+  // Optimistic lifecycle overlays (sessionId → forced status until ts). The
+  // 2s watcher scan re-renders with ground truth; overlays just cover the gap.
+  const [overlays, setOverlays] = useState<Record<string, Overlay>>({});
+  const setOverlay = (id: string, status: AgentStatus) =>
+    setOverlays((m) => ({ ...m, [id]: { status, until: Date.now() + 2_500 } }));
+
+  const actions: SessionActions = {
+    start: (folderDir, s) => {
+      // Selecting mounts the TerminalView, whose effect spawns the PTY.
+      selectSession(folderDir, s.id);
+    },
+    startClaude: (folderDir, s) => {
+      selectSession(folderDir, s.id);
+      setOverlay(s.id, "busy");
+      void termWriteRetry(s.id, "claude\r");
+    },
+    stopClaude: (s) => {
+      setOverlay(s.id, "interrupted");
+      void (async () => {
+        await termWrite(s.id, "\x03"); // interrupt the current turn
+        await sleep(150);
+        await termWrite(s.id, "\x04"); // Ctrl-D at the empty prompt exits Claude
+      })();
+    },
+    compactClaude: (s) => {
+      setOverlay(s.id, "busy");
+      void termWrite(s.id, "/compact\r");
+    },
+    restartClaude: (folderDir, s) => {
+      selectSession(folderDir, s.id);
+      setOverlay(s.id, "busy");
+      void (async () => {
+        await termWrite(s.id, "\x03");
+        await sleep(150);
+        await termWrite(s.id, "\x04");
+        await sleep(300);
+        await termWriteRetry(s.id, "claude\r"); // fresh session (not --continue)
+      })();
+    },
+    close: (sessionId) => void closeSession(sessionId),
+    renameStart: setRenaming,
+  };
 
   // ⌘D = new session in the selected folder; ⌘W = close the selected session.
   useEffect(() => {
@@ -217,10 +306,11 @@ export function AgentboardScreen() {
                 collapsed={collapsed}
                 renaming={renaming}
                 titles={titles}
+                overlays={overlays}
+                actions={actions}
                 onToggle={(k) => setCollapsed((c) => ({ ...c, [k]: !c[k] }))}
                 onSelect={selectSession}
                 onNewSession={newSession}
-                onRenameStart={setRenaming}
                 onRenameCommit={commitRename}
               />
             ))}
@@ -422,10 +512,11 @@ function RepoGroup({
   collapsed,
   renaming,
   titles,
+  overlays,
+  actions,
   onToggle,
   onSelect,
   onNewSession,
-  onRenameStart,
   onRenameCommit,
 }: {
   repo: RepoData;
@@ -435,10 +526,11 @@ function RepoGroup({
   collapsed: Record<string, boolean>;
   renaming: string | null;
   titles: Record<string, string>;
+  overlays: Record<string, Overlay>;
+  actions: SessionActions;
   onToggle: (key: string) => void;
   onSelect: (folderDir: string, sessionId: string) => void;
   onNewSession: (folderDir: string) => void;
-  onRenameStart: (sessionId: string) => void;
   onRenameCommit: (sessionId: string, name: string) => void;
 }) {
   const solo = isSoloRepo(repo);
@@ -460,13 +552,15 @@ function RepoGroup({
         <SessionRow
           key={s.id}
           session={s}
+          folderDir={folder.dir}
           now={now}
           compactPct={compactPct}
           title={titles[s.id]}
           active={selected?.sessionId === s.id}
           renaming={renaming === s.id}
+          overlay={overlays[s.id]}
+          actions={actions}
           onSelect={() => onSelect(folder.dir, s.id)}
-          onRenameStart={() => onRenameStart(s.id)}
           onRenameCommit={(name) => onRenameCommit(s.id, name)}
         />
       ))
@@ -645,43 +739,64 @@ function FolderHeader({
 
 function SessionRow({
   session,
+  folderDir,
   now,
   compactPct,
   title,
   active,
   renaming,
+  overlay,
+  actions,
   onSelect,
-  onRenameStart,
   onRenameCommit,
 }: {
   session: SessionData;
+  folderDir: string;
   now: number;
   compactPct: number;
   title?: string;
   active: boolean;
   renaming: boolean;
+  overlay?: Overlay;
+  actions: SessionActions;
   onSelect: () => void;
-  onRenameStart: () => void;
   onRenameCommit: (name: string) => void;
 }) {
-  const needs = sessionNeeds(session);
+  // Apply the optimistic lifecycle overlay (start/stop just happened) until
+  // the watcher's next scan delivers ground truth.
+  const eff: SessionData =
+    overlay && overlay.until > Date.now()
+      ? {
+          ...session,
+          live: true,
+          agentState: {
+            agent: "claude-code",
+            session: "",
+            ts: now,
+            ...session.agentState,
+            status: overlay.status,
+          },
+        }
+      : session;
+  const needs = sessionNeeds(eff);
+  const agent = isAgent(eff);
   // Prefer the live Claude terminal title (`✳ <title>`) when the PTY is open.
-  const label = claudeTitleName(title) ?? sessionLabel(session);
+  const label = claudeTitleName(title) ?? sessionLabel(eff);
   return (
     <div
       role="button"
       tabIndex={0}
       onClick={onSelect}
-      onDoubleClick={onRenameStart}
+      onDoubleClick={() => actions.renameStart(session.id)}
       onKeyDown={(e) => e.key === "Enter" && onSelect()}
       className={cn(
-        "ml-1.5 flex cursor-pointer items-center gap-2.5 border-l-2 border-transparent py-1.5 pr-3 pl-7 hover:bg-accent/50",
+        "group/row ml-1.5 flex cursor-pointer items-center gap-2.5 border-l-2 border-transparent py-1.5 pr-3 pl-7 hover:bg-accent/50",
         active && "border-l-violet-500 bg-accent",
         needs && "border-l-amber-500",
       )}
     >
-      <Glyph agent={isAgent(session)} />
-      <Dot session={session} />
+      <Glyph agent={agent} />
+      <Dot session={eff} />
       {renaming ? (
         <input
           autoFocus
@@ -696,7 +811,7 @@ function SessionRow({
         />
       ) : (
         <>
-          <span className={cn("truncate", session.live ? "text-foreground" : "text-muted-foreground")}>
+          <span className={cn("truncate", eff.live ? "text-foreground" : "text-muted-foreground")}>
             {label}
           </span>
           {label !== session.name && (
@@ -704,16 +819,76 @@ function SessionRow({
               {session.name}
             </span>
           )}
-          <span className="ml-auto flex shrink-0 items-center gap-2">
-            <CacheBadge session={session} now={now} compactPct={compactPct} />
+          {/* Resting: cache + status. Hover: the lifecycle controls. */}
+          <span className="ml-auto flex shrink-0 items-center gap-2 group-hover/row:hidden">
+            <CacheBadge session={eff} now={now} compactPct={compactPct} />
             <span className="truncate text-[11px] text-muted-foreground">
-              {sessionStatusText(session)}
+              {sessionStatusText(eff)}
             </span>
+          </span>
+          <span className="ml-auto hidden shrink-0 items-center gap-2 group-hover/row:flex">
+            <RowControls session={eff} folderDir={folderDir} actions={actions} />
           </span>
           {needs && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
         </>
       )}
     </div>
+  );
+}
+
+/** Hover-reveal lifecycle controls for a session row. Which buttons show
+ * depends on the session's state:
+ *   not started → ▶ shell · ✦ Claude
+ *   live shell  → ✦ Claude
+ *   live agent  → ■ stop · ⤿ compact (at prompt) · ↻ restart
+ * plus ✎ rename and ✕ close, always. */
+function RowControls({
+  session,
+  folderDir,
+  actions,
+}: {
+  session: SessionData;
+  folderDir: string;
+  actions: SessionActions;
+}) {
+  const agent = isAgent(session);
+  const st = session.agentState?.status;
+  // `/compact` only lands when Claude is at its prompt, not mid-turn.
+  const atPrompt = st === "waiting" || st === "idle" || st === "complete";
+  const btn = (
+    label: string,
+    title: string,
+    onClick: () => void,
+    className = "text-muted-foreground hover:text-foreground",
+  ) => (
+    <button
+      type="button"
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={cn("w-4 text-center font-mono text-xs", className)}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <>
+      {!session.live && btn("▶", "start shell", () => actions.start(folderDir, session), "text-muted-foreground hover:text-green-500")}
+      {(!session.live || !agent) &&
+        btn("✦", "start Claude here", () => actions.startClaude(folderDir, session), "text-violet-500 hover:text-violet-400")}
+      {session.live && agent && (
+        <>
+          {btn("■", "stop Claude (shell survives)", () => actions.stopClaude(session), "text-muted-foreground hover:text-red-500")}
+          {atPrompt && btn("⤿", "compact context (/compact)", () => actions.compactClaude(session), "text-muted-foreground hover:text-sky-500")}
+          {btn("↻", "start over — fresh Claude session", () => actions.restartClaude(folderDir, session), "text-muted-foreground hover:text-orange-500")}
+        </>
+      )}
+      {btn("✎", "rename", () => actions.renameStart(session.id))}
+      {btn("✕", "close session", () => actions.close(session.id), "text-muted-foreground hover:text-red-500")}
+    </>
   );
 }
 

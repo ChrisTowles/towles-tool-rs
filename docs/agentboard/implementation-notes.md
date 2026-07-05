@@ -15,7 +15,7 @@ going.
 | 1 | Session liveness + empty states | **done** — `SessionData.live` stamped in tt-app (`stamp_live`/`stamped_payload`); PTY start/exit/kill nudge the emitter; hollow ring + "not started" + zero-session folders |
 | 2 | Folder purpose | not started |
 | 3 | Cache health + settings | **done** — details (ctx/cache) were already on `AgentEventDetails`; added `compactRecommendPercent` (tt-config, StatePayload, `ab_set_compact_percent`), `ctxPct/isCold/needsCompact` selectors, CacheBadge rows, ❄ rollup buckets, ⚙ settings popover w/ slider |
-| 4 | Start / Stop / Compact / Restart | not started |
+| 4 | Start / Stop / Compact / Restart | **done** — PTY-write actions (`claude\r`, Ctrl-C→Ctrl-D, `/compact\r`, restart) + 2.5s optimistic overlay; hover-reveal RowControls (▶ ✦ ■ ⤿ ↻ ✎ ✕); compact gated to at-prompt statuses |
 | 5 | Windows / panes / grouping | not started |
 
 ## Decisions locked (from the plan review)
