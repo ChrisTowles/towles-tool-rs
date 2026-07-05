@@ -126,8 +126,11 @@ pub fn run() {
             app.manage(store_state);
 
             // Collector scheduler: fills tt.db (PRs + issues via gh, calendar via
-            // claude -p per settings.collectors) and re-emits the snapshot.
-            scheduler::spawn(app.handle().clone());
+            // claude -p per settings.collectors) and re-emits the snapshot. The
+            // shared signal lets `settings_set` make cadence edits take effect live.
+            let settings_reload = Arc::new(Notify::new());
+            app.manage(settings::SettingsSignal(settings_reload.clone()));
+            scheduler::spawn(app.handle().clone(), settings_reload);
 
             // Kick an initial scan so the first snapshot has data.
             scan.notify_one();
