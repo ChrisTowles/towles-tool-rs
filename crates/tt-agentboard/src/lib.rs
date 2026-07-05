@@ -27,6 +27,7 @@ use thiserror::Error;
 pub mod bridge;
 pub mod claude_cli;
 pub mod engine;
+pub mod folder_meta;
 pub mod fs_notify;
 pub mod git_info;
 pub mod metadata;
@@ -57,6 +58,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 // Re-export the public surface.
 pub use bridge::{StatePayload, assemble_state};
+pub use folder_meta::{FolderMeta, FolderMetaStore, default_folder_meta_path};
 pub use git_info::{GitInfo, GitInfoCache, compute_git_info};
 pub use metadata::SessionMetadataStore;
 pub use repos::{

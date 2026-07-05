@@ -98,7 +98,17 @@ pub struct AgentboardSettings {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail_panel_heights: Option<HashMap<String, f64>>,
+
+    /// Context-% at/above which a cold (cache-expired) Claude session gets the
+    /// "compact" nudge in the app. `None` = the built-in default (30). Only
+    /// written once the user changes it, so the shared settings file stays
+    /// clean for the TS CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compact_recommend_percent: Option<u8>,
 }
+
+/// Built-in default for [`AgentboardSettings::compact_recommend_percent`].
+pub const DEFAULT_COMPACT_RECOMMEND_PERCENT: u8 = 30;
 
 /// Data-hub collector settings (the Rust CLI/app's tt.db collectors; the TS CLI
 /// ignores this block). Each collector is configured independently — enable

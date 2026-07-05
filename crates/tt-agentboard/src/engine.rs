@@ -75,11 +75,13 @@ pub struct Engine {
     tracker: AgentTracker,
     metadata: SessionMetadataStore,
     order: SessionOrder,
+    folder_meta: crate::folder_meta::FolderMetaStore,
     sessions: SessionStore,
     git_cache: GitInfoCache,
     watchers: Vec<Box<dyn AgentWatcher + Send>>,
     theme: Option<String>,
     preferred_editor: String,
+    compact_recommend_percent: u8,
     seeded_once: bool,
     last_payload: Option<StatePayload>,
 }
@@ -95,6 +97,10 @@ impl Engine {
         let settings = tt_config::load().unwrap_or_default();
         let theme = settings.agentboard.theme.and_then(|v| v.as_str().map(str::to_string));
         let preferred_editor = settings.preferred_editor;
+        let compact_recommend_percent = settings
+            .agentboard
+            .compact_recommend_percent
+            .unwrap_or(tt_config::DEFAULT_COMPACT_RECOMMEND_PERCENT);
 
         Self {
             projects_dir: projects_dir.clone(),
@@ -104,6 +110,9 @@ impl Engine {
             metadata: SessionMetadataStore::new(),
             order: SessionOrder::new(Some(order_path)),
             sessions: SessionStore::new(Some(default_sessions_path())),
+            folder_meta: crate::folder_meta::FolderMetaStore::new(Some(
+                crate::folder_meta::default_folder_meta_path(),
+            )),
             git_cache: GitInfoCache::new(),
             watchers: vec![
                 Box::new(ClaudeCodeAgentWatcher::with_defaults()),
@@ -113,6 +122,7 @@ impl Engine {
             ],
             theme,
             preferred_editor,
+            compact_recommend_percent,
             seeded_once: false,
             last_payload: None,
         }
@@ -186,8 +196,8 @@ impl Engine {
         self.reload_repos();
         let mut entries = repo_entries(&self.repo_paths);
         entries.sort_by(|a, b| a.name.cmp(&b.name));
-        // Every folder gets ≥1 PTY session; seed a default `shell 1` and persist
-        // once (ensure_default is a no-op after the first seed, so no churn).
+        // New folders get a default `shell 1` seeded once; a folder whose
+        // sessions were all closed stays empty (rendered as "no sessions").
         let mut seeded = false;
         for entry in &entries {
             if self.sessions.ensure_default(&entry.dir, now) {
@@ -203,7 +213,37 @@ impl Engine {
         let dirs: HashSet<String> = entries.iter().map(|e| e.dir.clone()).collect();
         self.metadata.prune_sessions(&names);
         self.sessions.prune(&dirs);
+        self.folder_meta.prune(&dirs);
         payload
+    }
+
+    /// Set (or clear) a folder's user-authored purpose. Persists on change.
+    pub fn set_folder_purpose(&mut self, dir: &str, purpose: Option<&str>) -> bool {
+        let changed = self.folder_meta.set_purpose(dir, purpose);
+        if changed {
+            let _ = self.folder_meta.save();
+        }
+        changed
+    }
+
+    /// The current compact-nudge threshold (context-%).
+    pub fn compact_recommend_percent(&self) -> u8 {
+        self.compact_recommend_percent
+    }
+
+    /// Set the compact-nudge threshold and persist it to the shared settings
+    /// file (`agentboard.compactRecommendPercent`). Clamped to 1..=100.
+    pub fn set_compact_recommend_percent(&mut self, percent: u8) -> bool {
+        let percent = percent.clamp(1, 100);
+        if percent == self.compact_recommend_percent {
+            return false;
+        }
+        self.compact_recommend_percent = percent;
+        if let Ok(mut settings) = tt_config::load() {
+            settings.agentboard.compact_recommend_percent = Some(percent);
+            let _ = tt_config::save(&settings);
+        }
+        true
     }
 
     /// Full recompute for the given entries: pid-liveness pin → prune
@@ -300,10 +340,12 @@ impl Engine {
             &self.tracker,
             &self.metadata,
             &self.sessions,
+            &self.folder_meta,
             &attribute,
             &session_agents,
             theme,
             &editor,
+            self.compact_recommend_percent,
             now,
         );
 

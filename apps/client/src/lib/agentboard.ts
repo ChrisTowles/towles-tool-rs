@@ -30,6 +30,10 @@ export type SessionData = {
   id: string;
   name: string;
   createdAt: number;
+  /** True when a PTY is currently running for this session (stamped by the
+   * app from its terminal registry). False = the session record exists but
+   * hasn't been started. */
+  live: boolean;
   unseen: boolean;
   agentState?: AgentEvent | null;
   agents: AgentEvent[];
@@ -47,6 +51,8 @@ export type FolderData = {
   commitsDelta: number;
   sessions: SessionData[];
   needs: number;
+  /** User-authored "what am I working toward here" (persisted per folder). */
+  purpose?: string | null;
 };
 
 /** A logical repo: the group of checkouts sharing a `git remote origin` URL. */
@@ -97,6 +103,7 @@ export function claudeTitleName(raw: string | undefined): string | null {
 
 /** A one-liner status message for a session row. */
 export function sessionStatusText(s: SessionData): string {
+  if (!s.live) return "not started";
   const st = s.agentState;
   if (!st) return "idle";
   switch (st.status) {
@@ -120,6 +127,26 @@ export function isSoloRepo(r: RepoData): boolean {
   return r.folders.length === 1;
 }
 
+/** Board-wide tally of running agents, for the nav badge and rail header:
+ * "17 agents · 3 waiting · 1 busy" at a glance. Counts only sessions where an
+ * agent is detected running (`agentState` set); plain shells don't count. */
+export type AgentRollup = { total: number; busy: number; waiting: number; error: number };
+
+export function agentRollup(repos: RepoData[]): AgentRollup {
+  const r: AgentRollup = { total: 0, busy: 0, waiting: 0, error: 0 };
+  for (const repo of repos)
+    for (const f of repo.folders)
+      for (const s of f.sessions) {
+        const st = s.agentState?.status;
+        if (!st) continue;
+        r.total += 1;
+        if (st === "busy") r.busy += 1;
+        else if (st === "waiting") r.waiting += 1;
+        else if (st === "error") r.error += 1;
+      }
+  return r;
+}
+
 const EMPTY: StatePayload = { repos: [], preferredEditor: "", ts: 0 };
 
 /** Fake state for bare-browser dev (no Tauri), so the Folder Rail renders. */
@@ -137,6 +164,7 @@ const MOCK_STATE: StatePayload = {
           name: "slot-0",
           dir: "/home/ctowles/code/p/towles-tool-rs-slot-0",
           branch: "feat/data-hub",
+          purpose: "Wire the data-hub store snapshot into the app shell.",
           isWorktree: false,
           filesChanged: 6,
           linesAdded: 88,
@@ -148,6 +176,7 @@ const MOCK_STATE: StatePayload = {
               id: "s0",
               name: "shell 1",
               createdAt: 0,
+              live: true,
               unseen: false,
               agentState: {
                 agent: "claude",
@@ -158,7 +187,7 @@ const MOCK_STATE: StatePayload = {
               },
               agents: [],
             },
-            { id: "s1", name: "shell 2", createdAt: 0, unseen: false, agentState: null, agents: [] },
+            { id: "s1", name: "shell 2", createdAt: 0, live: false, unseen: false, agentState: null, agents: [] },
           ],
         },
         {
@@ -176,6 +205,7 @@ const MOCK_STATE: StatePayload = {
               id: "s2",
               name: "shell 1",
               createdAt: 0,
+              live: true,
               unseen: true,
               agentState: {
                 agent: "claude",
@@ -186,7 +216,7 @@ const MOCK_STATE: StatePayload = {
               },
               agents: [],
             },
-            { id: "s3", name: "shell 2", createdAt: 0, unseen: false, agentState: null, agents: [] },
+            { id: "s3", name: "shell 2", createdAt: 0, live: false, unseen: false, agentState: null, agents: [] },
           ],
         },
       ],
@@ -212,6 +242,7 @@ const MOCK_STATE: StatePayload = {
               id: "s4",
               name: "shell 1",
               createdAt: 0,
+              live: true,
               unseen: false,
               agentState: {
                 agent: "claude",

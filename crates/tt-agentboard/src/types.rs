@@ -149,6 +149,11 @@ pub struct SessionData {
     /// Display name: "shell 1" by default, user-renamable.
     pub name: String,
     pub created_at: i64,
+    /// True when a PTY is currently running for this session. Assembled as
+    /// `false` here (the Tauri-free engine can't see PTYs); the app stamps it
+    /// from its terminal registry before emitting.
+    #[serde(default)]
+    pub live: bool,
     /// True when the latest agent event is an unseen terminal state.
     pub unseen: bool,
     /// Latest/priority agent event attributed to this PTY, if any.
@@ -175,6 +180,9 @@ pub struct FolderData {
     pub sessions: Vec<SessionData>,
     /// Number of sessions whose agent is `waiting`/`error` (bubbles up to repo).
     pub needs: i64,
+    /// User-authored "what am I working toward here" (folder_meta.json).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<SessionMetadata>,
 }

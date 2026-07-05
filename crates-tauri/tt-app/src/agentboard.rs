@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Notify;
 
 use tt_agentboard::StatePayload;
@@ -30,13 +30,36 @@ pub struct Ab {
     pub _notifier: Mutex<Option<DirNotifier>>,
 }
 
+/// Stamp `SessionData.live` from the app's PTY registry. The engine assembles
+/// `live: false` (the Tauri-free crate can't see PTYs); every payload leaving
+/// the app — command return or event — passes through here first.
+pub fn stamp_live(payload: &mut StatePayload, live: &std::collections::HashSet<String>) {
+    for repo in &mut payload.repos {
+        for folder in &mut repo.folders {
+            for session in &mut folder.sessions {
+                session.live = live.contains(&session.id);
+            }
+        }
+    }
+}
+
+/// The stamped payload, recomputed now. Shared by `ab_get_state` and emitters.
+pub fn stamped_payload(app: &AppHandle) -> StatePayload {
+    let ab = app.state::<Ab>();
+    let mut payload = {
+        let mut engine = ab.engine.lock().unwrap();
+        engine.compute_payload(now_ms())
+    };
+    stamp_live(&mut payload, &app.state::<crate::terminal::TermState>().live_ids());
+    payload
+}
+
 // --- Tauri commands ---
 
 /// Pull the current snapshot (initial mount).
 #[tauri::command]
-pub fn ab_get_state(state: State<Ab>) -> StatePayload {
-    let mut engine = state.engine.lock().unwrap();
-    engine.compute_payload(now_ms())
+pub fn ab_get_state(app: AppHandle) -> StatePayload {
+    stamped_payload(&app)
 }
 
 /// Clear unseen for a session (fast-path: patch + re-emit, no full rebuild).
@@ -46,7 +69,8 @@ pub fn ab_mark_seen(state: State<Ab>, app: AppHandle, name: String) {
         let mut engine = state.engine.lock().unwrap();
         engine.mark_seen_patch(&name)
     };
-    if let Some(payload) = patched {
+    if let Some(mut payload) = patched {
+        stamp_live(&mut payload, &app.state::<crate::terminal::TermState>().live_ids());
         let _ = app.emit(STATE_EVENT, payload);
     }
 }
@@ -120,6 +144,24 @@ pub fn ab_close_session(state: State<Ab>, id: String) {
 #[tauri::command]
 pub fn ab_refresh(state: State<Ab>) {
     state.emit.notify_one();
+}
+
+/// Set (or clear with `None`/blank) a folder's user-authored purpose.
+#[tauri::command]
+pub fn ab_set_folder_purpose(state: State<Ab>, dir: String, text: Option<String>) {
+    let changed = state.engine.lock().unwrap().set_folder_purpose(&dir, text.as_deref());
+    if changed {
+        state.emit.notify_one();
+    }
+}
+
+/// Set the compact-nudge threshold (context-%), persisting to shared settings.
+#[tauri::command]
+pub fn ab_set_compact_percent(state: State<Ab>, percent: u8) {
+    let changed = state.engine.lock().unwrap().set_compact_recommend_percent(percent);
+    if changed {
+        state.emit.notify_one();
+    }
 }
 
 #[tauri::command]

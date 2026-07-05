@@ -12,6 +12,7 @@ import { TerminalView } from "@/components/terminal-view";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
+  agentRollup,
   claudeTitleName,
   isAgent,
   isSoloRepo,
@@ -152,8 +153,9 @@ export function AgentboardScreen() {
 
   return (
     <div className="flex h-full min-h-0">
-      {/* Rail: attention strip + Repo → Folder → Session tree. */}
+      {/* Rail: rollup tally + attention strip + Repo → Folder → Session tree. */}
       <div className="flex w-80 shrink-0 flex-col border-r">
+        <RollupChip repos={repos} />
         {attention.length > 0 && (
           <div className="flex flex-col gap-1 border-b p-2">
             {attention.map((a) => (
@@ -282,6 +284,37 @@ export function AgentboardScreen() {
   );
 }
 
+/** The board-wide agent tally pinned atop the rail: total + non-zero status
+ * buckets. Quiet ("no agents running") when the board is at rest. */
+function RollupChip({ repos }: { repos: RepoData[] }) {
+  const r = agentRollup(repos);
+  return (
+    <div className="flex items-center gap-2.5 border-b bg-card px-3 py-2 font-mono text-[11px]">
+      {r.total === 0 ? (
+        <span className="text-muted-foreground/60">no agents running</span>
+      ) : (
+        <>
+          <span className="text-foreground">
+            {r.total} agent{r.total !== 1 && "s"}
+          </span>
+          {r.busy > 0 && <RollupBucket className="bg-yellow-500" n={r.busy} />}
+          {r.waiting > 0 && <RollupBucket className="bg-blue-500" n={r.waiting} />}
+          {r.error > 0 && <RollupBucket className="bg-red-500" n={r.error} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+function RollupBucket({ className, n }: { className: string; n: number }) {
+  return (
+    <span className="flex items-center gap-1 text-muted-foreground">
+      <span className={cn("size-1.5 rounded-full", className)} />
+      {n}
+    </span>
+  );
+}
+
 /** ✦ for an agent session, ❯ for a plain shell. */
 function Glyph({ agent }: { agent: boolean }) {
   return (
@@ -296,8 +329,14 @@ function Glyph({ agent }: { agent: boolean }) {
   );
 }
 
-/** Status dot mirroring `statusColor`; pulses while busy. */
+/** Status dot mirroring `statusColor`; pulses while busy. A session with no
+ * live PTY shows a hollow ring — the record exists but nothing is running. */
 function Dot({ session }: { session: SessionData }) {
+  if (!session.live) {
+    return (
+      <span className="size-2 shrink-0 rounded-full border-[1.5px] border-muted-foreground/50 bg-transparent" />
+    );
+  }
   const st = session.agentState?.status;
   return (
     <span
@@ -336,25 +375,38 @@ function RepoGroup({
   const solo = isSoloRepo(repo);
 
   const sessionRows = (folder: FolderData) =>
-    folder.sessions.map((s) => (
-      <SessionRow
-        key={s.id}
-        session={s}
-        title={titles[s.id]}
-        active={selected?.sessionId === s.id}
-        renaming={renaming === s.id}
-        onSelect={() => onSelect(folder.dir, s.id)}
-        onRenameStart={() => onRenameStart(s.id)}
-        onRenameCommit={(name) => onRenameCommit(s.id, name)}
-      />
-    ));
+    folder.sessions.length === 0 ? (
+      <div className="flex items-center gap-2 py-1.5 pr-3 pl-9 text-[11px] italic text-muted-foreground/60">
+        no sessions
+        <button
+          type="button"
+          onClick={() => onNewSession(folder.dir)}
+          className="not-italic text-violet-500 hover:underline"
+        >
+          + session
+        </button>
+      </div>
+    ) : (
+      folder.sessions.map((s) => (
+        <SessionRow
+          key={s.id}
+          session={s}
+          title={titles[s.id]}
+          active={selected?.sessionId === s.id}
+          renaming={renaming === s.id}
+          onSelect={() => onSelect(folder.dir, s.id)}
+          onRenameStart={() => onRenameStart(s.id)}
+          onRenameCommit={(name) => onRenameCommit(s.id, name)}
+        />
+      ))
+    );
 
   // Solo repo: collapse repo + folder into one header (repo · branch).
   if (solo) {
     const folder = repo.folders[0];
     const isCollapsed = collapsed[repo.key];
     return (
-      <div className="border-b">
+      <div className="group/folder border-b">
         <FolderHeader
           scope="repo"
           title={repo.name}
@@ -364,7 +416,12 @@ function RepoGroup({
           onToggle={() => onToggle(repo.key)}
           onNewSession={() => onNewSession(folder.dir)}
         />
-        {!isCollapsed && <div className="pb-2">{sessionRows(folder)}</div>}
+        {!isCollapsed && (
+          <div className="pb-2">
+            <PurposeRow folder={folder} />
+            {sessionRows(folder)}
+          </div>
+        )}
       </div>
     );
   }
@@ -388,7 +445,7 @@ function RepoGroup({
           const key = `${repo.key}::${folder.dir}`;
           const fCollapsed = collapsed[key];
           return (
-            <div key={folder.dir}>
+            <div key={folder.dir} className="group/folder">
               <FolderHeader
                 scope="folder"
                 title={folder.name}
@@ -398,11 +455,66 @@ function RepoGroup({
                 onToggle={() => onToggle(key)}
                 onNewSession={() => onNewSession(folder.dir)}
               />
-              {!fCollapsed && <div className="pb-1">{sessionRows(folder)}</div>}
+              {!fCollapsed && (
+                <div className="pb-1">
+                  <PurposeRow folder={folder} />
+                  {sessionRows(folder)}
+                </div>
+              )}
             </div>
           );
         })}
     </div>
+  );
+}
+
+/** The folder's user-authored purpose: a faint one-liner under the header.
+ * Click to edit inline (Enter saves, Esc cancels; blank clears). When unset,
+ * a "+ purpose" hint appears only while hovering the folder group, so a
+ * resting rail stays quiet. */
+function PurposeRow({ folder }: { folder: FolderData }) {
+  const [editing, setEditing] = useState(false);
+  const purpose = folder.purpose?.trim() ?? "";
+
+  async function commit(text: string) {
+    setEditing(false);
+    const trimmed = text.trim();
+    if (trimmed === purpose) return;
+    await abInvoke("ab_set_folder_purpose", { dir: folder.dir, text: trimmed || null });
+  }
+
+  if (editing) {
+    return (
+      <div className="py-0.5 pr-3 pl-9">
+        <input
+          autoFocus
+          defaultValue={purpose}
+          placeholder="what are you working toward here?"
+          onBlur={(e) => void commit(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void commit((e.target as HTMLInputElement).value);
+            if (e.key === "Escape") setEditing(false);
+          }}
+          className="w-full rounded-sm border border-input bg-background px-1.5 py-0.5 text-[11px] outline-none"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      title="Edit folder purpose"
+      className={cn(
+        "block w-full truncate py-0.5 pr-3 pl-9 text-left text-[11px]",
+        purpose
+          ? "text-muted-foreground hover:text-foreground"
+          : "text-transparent group-hover/folder:text-muted-foreground/50",
+      )}
+    >
+      {purpose || "+ what are you working toward here?"}
+    </button>
   );
 }
 
@@ -509,7 +621,9 @@ function SessionRow({
         />
       ) : (
         <>
-          <span className="truncate text-foreground">{label}</span>
+          <span className={cn("truncate", session.live ? "text-foreground" : "text-muted-foreground")}>
+            {label}
+          </span>
           {label !== session.name && (
             <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70">
               {session.name}

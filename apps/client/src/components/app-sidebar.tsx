@@ -1,11 +1,13 @@
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { agentRollup, useAgentboardState } from "@/lib/agentboard";
 import { NAV_SECTIONS, SCREENS } from "@/lib/screens";
 import { useWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
 
 export function AppSidebar() {
   const { activeTab, openTab } = useWorkspace();
+  const rollup = agentRollup(useAgentboardState().repos);
 
   return (
     <ScrollArea className="h-full">
@@ -31,6 +33,14 @@ export function AppSidebar() {
                 >
                   <screen.icon className="text-muted-foreground" />
                   {screen.title}
+                  {id === "agentboard" && rollup.total > 0 && (
+                    <span className="ml-auto flex items-center gap-1.5 font-mono text-[10.5px] text-muted-foreground">
+                      {rollup.total}
+                      {rollup.busy > 0 && <MiniDot className="bg-yellow-500" n={rollup.busy} />}
+                      {rollup.waiting > 0 && <MiniDot className="bg-blue-500" n={rollup.waiting} />}
+                      {rollup.error > 0 && <MiniDot className="bg-red-500" n={rollup.error} />}
+                    </span>
+                  )}
                 </Button>
               );
             })}
@@ -38,5 +48,15 @@ export function AppSidebar() {
         ))}
       </nav>
     </ScrollArea>
+  );
+}
+
+/** A status-colored micro-dot + count, e.g. "●3", for the nav rollup. */
+function MiniDot({ className, n }: { className: string; n: number }) {
+  return (
+    <span className="flex items-center gap-0.5">
+      <span className={cn("size-1.5 rounded-full", className)} />
+      {n}
+    </span>
   );
 }
