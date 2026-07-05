@@ -1,7 +1,7 @@
 //! Per-session token analysis and project-name extraction. Ports
 //! `src/commands/graph/analyzer.ts`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -17,6 +17,10 @@ pub struct SessionAnalysis {
     pub sonnet_tokens: i64,
     pub haiku_tokens: i64,
     pub cache_hit_rate: f64,
+    /// Total cache-read tokens across the session.
+    pub cache_read_tokens: i64,
+    /// Total cache-creation (write) tokens across the session.
+    pub cache_creation_tokens: i64,
     pub repeated_reads: i64,
     /// Opus tokens / total tokens.
     pub model_efficiency: f64,
@@ -31,13 +35,23 @@ pub fn analyze_session(entries: &[JournalEntry]) -> SessionAnalysis {
     let mut sonnet_tokens = 0;
     let mut haiku_tokens = 0;
     let mut cache_read = 0;
+    let mut cache_creation = 0;
     let mut total_input = 0;
     let mut file_read_counts: HashMap<String, i64> = HashMap::new();
+    let mut seen: HashSet<String> = HashSet::new();
 
     for entry in entries {
         let Some(message) = &entry.message else {
             continue;
         };
+
+        // Skip streaming re-logs of an already-counted assistant message so
+        // tokens (and its tool_use blocks) aren't double-counted.
+        if let Some(key) = entry.dedup_key()
+            && !seen.insert(key)
+        {
+            continue;
+        }
 
         // Count file reads for the repeatedReads metric.
         if let Some(Content::Blocks(blocks)) = &message.content {
@@ -64,6 +78,7 @@ pub fn analyze_session(entries: &[JournalEntry]) -> SessionAnalysis {
         input_tokens += input;
         output_tokens += output;
         cache_read += usage.cache_read_input_tokens.unwrap_or(0);
+        cache_creation += usage.cache_creation_input_tokens.unwrap_or(0);
         total_input += input;
 
         if model.contains("opus") {
@@ -92,6 +107,8 @@ pub fn analyze_session(entries: &[JournalEntry]) -> SessionAnalysis {
         sonnet_tokens,
         haiku_tokens,
         cache_hit_rate: if total_input > 0 { cache_read as f64 / total_input as f64 } else { 0.0 },
+        cache_read_tokens: cache_read,
+        cache_creation_tokens: cache_creation,
         repeated_reads,
         model_efficiency: if total_tokens > 0 {
             opus_tokens as f64 / total_tokens as f64
@@ -238,11 +255,12 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: Some(input),
                     output_tokens: Some(output),
-                    cache_read_input_tokens: None,
+                    ..Default::default()
                 }),
                 content: Some(Content::Blocks(
                     content.unwrap_or_else(|| vec![text_block("response")]),
                 )),
+                ..Default::default()
             }),
             ..Default::default()
         }
@@ -289,12 +307,17 @@ mod tests {
                     input_tokens: Some(1000),
                     output_tokens: Some(0),
                     cache_read_input_tokens: Some(800),
+                    cache_creation_input_tokens: Some(200),
                 }),
                 content: Some(Content::Blocks(vec![text_block("hi")])),
+                ..Default::default()
             }),
             ..Default::default()
         }];
-        assert_eq!(analyze_session(&entries).cache_hit_rate, 0.8);
+        let r = analyze_session(&entries);
+        assert_eq!(r.cache_hit_rate, 0.8);
+        assert_eq!(r.cache_read_tokens, 800);
+        assert_eq!(r.cache_creation_tokens, 200);
     }
 
     #[test]
@@ -315,6 +338,47 @@ mod tests {
             assistant_entry("claude-sonnet-4", 400, 100, None),
         ];
         assert_eq!(analyze_session(&entries).model_efficiency, 0.5);
+    }
+
+    fn deduped_entry(id: &str, request_id: &str, input: i64, output: i64) -> JournalEntry {
+        JournalEntry {
+            entry_type: "assistant".to_string(),
+            request_id: Some(request_id.to_string()),
+            message: Some(Message {
+                id: Some(id.to_string()),
+                role: Some("assistant".to_string()),
+                model: Some("claude-opus-4".to_string()),
+                usage: Some(Usage {
+                    input_tokens: Some(input),
+                    output_tokens: Some(output),
+                    ..Default::default()
+                }),
+                content: Some(Content::Blocks(vec![text_block("hi")])),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn analyze_dedups_repeated_message_request_pair() {
+        // Same (message.id, requestId) re-logged 3x → counted once.
+        let e = deduped_entry("msg_1", "req_1", 100, 50);
+        let entries = [e.clone(), e.clone(), e];
+        let r = analyze_session(&entries);
+        assert_eq!(r.input_tokens, 100);
+        assert_eq!(r.output_tokens, 50);
+    }
+
+    #[test]
+    fn analyze_counts_distinct_and_id_less_entries() {
+        let entries = [
+            deduped_entry("msg_1", "req_1", 100, 0),
+            deduped_entry("msg_2", "req_2", 50, 0),
+            // No ids → each counted (assistant_entry sets neither id nor requestId).
+            assistant_entry("claude-opus-4", 10, 0, None),
+            assistant_entry("claude-opus-4", 10, 0, None),
+        ];
+        assert_eq!(analyze_session(&entries).input_tokens, 170);
     }
 
     #[test]

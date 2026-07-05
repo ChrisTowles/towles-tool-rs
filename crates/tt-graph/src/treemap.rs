@@ -202,7 +202,13 @@ pub fn build_all_sessions_treemap(sessions: &[SessionResult]) -> Result<TreemapN
             for session in date_sessions {
                 let entries = read_jsonl(&session.path);
                 let analysis = analyze_session(&entries);
-                let label = extract_session_label(&entries, &session.session_id);
+                // Prefer the explicit session title (custom-title > ai-title,
+                // already clean) over the heuristic label derived from message
+                // text. See `parse_session_title`.
+                let label = session
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| extract_session_label(&entries, &session.session_id));
                 let tools = aggregate_session_tools(&entries);
                 let start = start_time(&entries);
                 let turn_children =
@@ -283,9 +289,10 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: Some(input),
                     output_tokens: Some(output),
-                    cache_read_input_tokens: None,
+                    ..Default::default()
                 }),
                 content: Some(Content::Blocks(content)),
+                ..Default::default()
             }),
             ..Default::default()
         }
@@ -299,7 +306,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: Some(input),
                     output_tokens: Some(output),
-                    cache_read_input_tokens: None,
+                    ..Default::default()
                 }),
                 content: Some(Content::Text("hi".to_string())),
                 ..Default::default()
@@ -369,6 +376,7 @@ mod tests {
             tokens: 150,
             project: "-home-code-demo".to_string(),
             mtime: 1,
+            title: None,
         }];
 
         let root = build_all_sessions_treemap(&sessions).unwrap();
