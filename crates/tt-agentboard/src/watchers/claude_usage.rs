@@ -1,7 +1,7 @@
 //! Usage-token extraction for the claude-code watcher. Ports slot-1
 //! `runtime/agents/watchers/claude-usage.ts`.
 
-use super::claude_code::RawEntry;
+use tt_claude_code::{TranscriptEntry, Usage};
 
 const FIVE_MIN_MS: i64 = 5 * 60 * 1000;
 const ONE_HOUR_MS: i64 = 60 * 60 * 1000;
@@ -17,29 +17,6 @@ pub struct ClaudeUsageSummary {
     pub last_activity_at: i64,
 }
 
-/// Raw `message.usage` fields (all optional/tolerant).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct RawUsage {
-    #[serde(default)]
-    pub input_tokens: Option<i64>,
-    #[serde(default)]
-    pub output_tokens: Option<i64>,
-    #[serde(default)]
-    pub cache_read_input_tokens: Option<i64>,
-    #[serde(default)]
-    pub cache_creation_input_tokens: Option<i64>,
-    #[serde(default)]
-    pub cache_creation: Option<RawCacheCreation>,
-}
-
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct RawCacheCreation {
-    #[serde(default)]
-    pub ephemeral_5m_input_tokens: Option<i64>,
-    #[serde(default)]
-    pub ephemeral_1h_input_tokens: Option<i64>,
-}
-
 /// Context window size for a model: 1M when the name ends in `[1m]`, else 200K.
 /// Ports `contextMax`.
 pub fn context_max(model: &str) -> i64 {
@@ -47,7 +24,7 @@ pub fn context_max(model: &str) -> i64 {
 }
 
 /// Total context tokens = input + output + cache_read + cache_creation. Ports `contextUsed`.
-pub fn context_used(u: &RawUsage) -> i64 {
+pub fn context_used(u: &Usage) -> i64 {
     u.input_tokens.unwrap_or(0)
         + u.output_tokens.unwrap_or(0)
         + u.cache_read_input_tokens.unwrap_or(0)
@@ -56,7 +33,7 @@ pub fn context_used(u: &RawUsage) -> i64 {
 
 /// Cache TTL: 1h when any 1h ephemeral tokens, else 5m when 5m ephemeral or any
 /// cache reads, else none. Ports `cacheTtlMs`.
-pub fn cache_ttl_ms(u: &RawUsage) -> Option<i64> {
+pub fn cache_ttl_ms(u: &Usage) -> Option<i64> {
     let h = u.cache_creation.as_ref().and_then(|c| c.ephemeral_1h_input_tokens).unwrap_or(0);
     let m = u.cache_creation.as_ref().and_then(|c| c.ephemeral_5m_input_tokens).unwrap_or(0);
     let reads = u.cache_read_input_tokens.unwrap_or(0);
@@ -71,7 +48,7 @@ pub fn cache_ttl_ms(u: &RawUsage) -> Option<i64> {
 
 /// The usage summary from the newest assistant entry that has a `usage` block and
 /// a parseable timestamp. Ports `extractUsageSummary`.
-pub fn extract_usage_summary(entries: &[RawEntry]) -> Option<ClaudeUsageSummary> {
+pub fn extract_usage_summary(entries: &[TranscriptEntry]) -> Option<ClaudeUsageSummary> {
     for entry in entries.iter().rev() {
         let Some(msg) = &entry.message else {
             continue;
@@ -105,7 +82,7 @@ pub fn extract_usage_summary(entries: &[RawEntry]) -> Option<ClaudeUsageSummary>
 mod tests {
     use super::*;
 
-    fn usage(json: serde_json::Value) -> RawUsage {
+    fn usage(json: serde_json::Value) -> Usage {
         serde_json::from_value(json).unwrap()
     }
 
@@ -159,7 +136,7 @@ mod tests {
         );
     }
 
-    fn assistant(ts: &str, model: &str, usage: serde_json::Value) -> RawEntry {
+    fn assistant(ts: &str, model: &str, usage: serde_json::Value) -> TranscriptEntry {
         serde_json::from_value(serde_json::json!({
             "type": "assistant",
             "timestamp": ts,
@@ -171,7 +148,7 @@ mod tests {
     #[test]
     fn extract_returns_none_for_empty_or_no_usage() {
         assert!(extract_usage_summary(&[]).is_none());
-        let user: RawEntry = serde_json::from_value(serde_json::json!({
+        let user: TranscriptEntry = serde_json::from_value(serde_json::json!({
             "type": "user", "timestamp": "2026-04-12T00:00:00Z",
             "message": { "role": "user", "content": "hi" }
         }))

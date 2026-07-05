@@ -32,75 +32,20 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use serde::Deserialize;
+use tt_claude_code::{TranscriptEntry, parse_transcript};
 
 use crate::claude_cli::CliAgent;
 use crate::types::{AgentEvent, AgentEventDetails, AgentStatus, LoopInfo, SubagentInfo};
 use crate::watcher::{AgentWatcher, JSONL_SUFFIX, WatcherContext};
-use crate::watchers::claude_usage::{ClaudeUsageSummary, RawUsage, extract_usage_summary};
+use crate::watchers::claude_usage::{ClaudeUsageSummary, extract_usage_summary};
 
 const NAME: &str = "claude-code";
 /// The shared CLI snapshot TTL (watcher 2s tick, pane scan 3s, engine rebuilds).
 pub const CLI_CACHE_TTL_MS: u64 = 1500;
 
-// --- Tolerant journal-entry types (unchanged from the journal-first port) ---
-
-/// One parsed journal line. Tolerant: every field optional, unknown fields ignored.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RawEntry {
-    #[serde(default)]
-    pub timestamp: Option<String>,
-    #[serde(default)]
-    pub message: Option<RawMessage>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RawMessage {
-    #[serde(default)]
-    pub role: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub content: Option<RawContent>,
-    #[serde(default)]
-    pub usage: Option<RawUsage>,
-}
-
-/// Message content: a bare string or an array of content blocks.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum RawContent {
-    Text(String),
-    Items(Vec<RawContentItem>),
-}
-
-impl RawContent {
-    fn items(&self) -> &[RawContentItem] {
-        match self {
-            RawContent::Items(v) => v,
-            RawContent::Text(_) => &[],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RawContentItem {
-    #[serde(rename = "type", default)]
-    pub item_type: Option<String>,
-    #[serde(default)]
-    pub text: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub input: Option<RawToolInput>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RawToolInput {
-    #[serde(rename = "delaySeconds", default)]
-    pub delay_seconds: Option<f64>,
-    #[serde(default)]
-    pub reason: Option<String>,
-}
+// The transcript line schema ([`TranscriptEntry`], content accessors) now lives
+// in the shared `tt-claude-code` crate. This watcher keeps only the claude-code
+// *agent semantics* (status/thread/tool/loop derivation), built on those types.
 
 /// Parse an ISO-8601 / RFC3339 timestamp to epoch ms (JS `Date.parse` equivalent).
 pub fn parse_timestamp_ms(s: &str) -> Option<i64> {
@@ -112,19 +57,18 @@ pub fn parse_timestamp_ms(s: &str) -> Option<i64> {
 /// Derive a status from one entry, or `None` (ignored) — the §3 decision table.
 /// With CLI-driven liveness this only informs the `idle` refinement and the
 /// exit-time terminal emit.
-pub fn determine_status(entry: &RawEntry) -> Option<AgentStatus> {
+pub fn determine_status(entry: &TranscriptEntry) -> Option<AgentStatus> {
     let msg = entry.message.as_ref()?;
     let role = msg.role.as_deref().filter(|r| !r.is_empty())?;
-    let items = msg.content.as_ref().map(RawContent::items).unwrap_or(&[]);
 
     match role {
         "assistant" => {
-            let tool_uses: Vec<&RawContentItem> =
-                items.iter().filter(|c| c.item_type.as_deref() == Some("tool_use")).collect();
+            let tool_uses: Vec<_> =
+                msg.content.as_ref().map(|c| c.tool_uses().collect()).unwrap_or_default();
             if tool_uses.is_empty() {
                 return Some(AgentStatus::Complete);
             }
-            let all_asking = tool_uses.iter().all(|c| c.name.as_deref() == Some("AskUserQuestion"));
+            let all_asking = tool_uses.iter().all(|t| t.name() == Some("AskUserQuestion"));
             Some(if all_asking { AgentStatus::Waiting } else { AgentStatus::Busy })
         }
         "user" => Some(AgentStatus::Busy),
@@ -134,21 +78,12 @@ pub fn determine_status(entry: &RawEntry) -> Option<AgentStatus> {
 
 /// The thread name from the first qualifying user message (skips system-like
 /// `<…>`/`{…}` first lines). Ports `extractThreadName`.
-pub fn extract_thread_name(entry: &RawEntry) -> Option<String> {
+pub fn extract_thread_name(entry: &TranscriptEntry) -> Option<String> {
     let msg = entry.message.as_ref()?;
     if msg.role.as_deref() != Some("user") {
         return None;
     }
-    let text = match msg.content.as_ref()? {
-        RawContent::Text(s) => Some(s.as_str()),
-        RawContent::Items(items) => items
-            .iter()
-            .find(|c| {
-                c.item_type.as_deref() == Some("text")
-                    && c.text.as_deref().is_some_and(|t| !t.is_empty())
-            })
-            .and_then(|c| c.text.as_deref()),
-    }?;
+    let text = msg.content.as_ref()?.first_text()?;
     if text.is_empty() || text.starts_with('<') || text.starts_with('{') {
         return None;
     }
@@ -163,10 +98,10 @@ pub fn extract_thread_name(entry: &RawEntry) -> Option<String> {
 pub fn enrich_from_transcript(path: &Path) -> (Option<String>, AgentStatus) {
     const WINDOW: u64 = 128 * 1024;
     let head = read_window(path, 0, WINDOW);
-    let thread_name = parse_journal_lines(&head).iter().find_map(extract_thread_name);
+    let thread_name = parse_transcript(&head).iter().find_map(extract_thread_name);
     let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let tail = read_window(path, len.saturating_sub(WINDOW), WINDOW);
-    let status = parse_journal_lines(&tail)
+    let status = parse_transcript(&tail)
         .iter()
         .rev()
         .find_map(determine_status)
@@ -176,7 +111,7 @@ pub fn enrich_from_transcript(path: &Path) -> (Option<String>, AgentStatus) {
 
 /// Read up to `max` bytes of `path` from byte offset `start`, lossily decoded.
 /// Partial JSONL lines at either edge simply fail to parse and are dropped by
-/// `parse_journal_lines`, so no newline alignment is needed.
+/// `parse_transcript`, so no newline alignment is needed.
 fn read_window(path: &Path, start: u64, max: u64) -> String {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(path) else {
@@ -193,51 +128,48 @@ fn read_window(path: &Path, start: u64, max: u64) -> String {
 }
 
 /// The most recent non-AskUserQuestion tool name. Ports `extractLastTool`.
-pub fn extract_last_tool(entries: &[RawEntry]) -> Option<String> {
+pub fn extract_last_tool(entries: &[TranscriptEntry]) -> Option<String> {
     for entry in entries.iter().rev() {
         let Some(msg) = &entry.message else { continue };
         if msg.role.as_deref() != Some("assistant") {
             continue;
         }
-        let Some(RawContent::Items(items)) = &msg.content else {
+        let Some(content) = &msg.content else {
             continue;
         };
-        for item in items {
-            if item.item_type.as_deref() != Some("tool_use") {
-                continue;
-            }
-            let Some(name) = &item.name else { continue };
+        for tool in content.tool_uses() {
+            let Some(name) = tool.name() else { continue };
             if name == "AskUserQuestion" {
                 continue;
             }
-            return Some(name.clone());
+            return Some(name.to_string());
         }
     }
     None
 }
 
 /// `/loop` state from the most recent `ScheduleWakeup` tool call. Ports `extractLoopState`.
-pub fn extract_loop_state(entries: &[RawEntry]) -> Option<LoopInfo> {
+pub fn extract_loop_state(entries: &[TranscriptEntry]) -> Option<LoopInfo> {
     for entry in entries.iter().rev() {
         let Some(msg) = &entry.message else { continue };
         if msg.role.as_deref() != Some("assistant") {
             continue;
         }
-        let Some(RawContent::Items(items)) = &msg.content else {
+        let Some(content) = &msg.content else {
             continue;
         };
-        for item in items {
-            if item.item_type.as_deref() != Some("tool_use")
-                || item.name.as_deref() != Some("ScheduleWakeup")
-            {
+        for tool in content.tool_uses() {
+            if tool.name() != Some("ScheduleWakeup") {
                 continue;
             }
-            let delay = item.input.as_ref().and_then(|i| i.delay_seconds);
+            let input = tool.input();
+            let delay = input.and_then(|i| i.get("delaySeconds")).and_then(|v| v.as_f64());
             let scheduled_at = entry.timestamp.as_deref().and_then(parse_timestamp_ms);
             let (Some(delay), Some(ts)) = (delay, scheduled_at) else {
                 return None;
             };
-            let reason = item.input.as_ref().and_then(|i| i.reason.clone());
+            let reason =
+                input.and_then(|i| i.get("reason")).and_then(|v| v.as_str()).map(str::to_string);
             return Some(LoopInfo { next_wake_at: ts + (delay * 1000.0) as i64, reason });
         }
     }
@@ -303,14 +235,6 @@ fn meta_path(jsonl_path: &Path) -> Option<PathBuf> {
     let s = jsonl_path.to_str()?;
     let base = s.strip_suffix(JSONL_SUFFIX)?;
     Some(PathBuf::from(format!("{base}.meta.json")))
-}
-
-/// Parse newline-delimited JSON, skipping blank/malformed lines. Ports `parseJournalLines`.
-pub fn parse_journal_lines(text: &str) -> Vec<RawEntry> {
-    text.split('\n')
-        .filter(|l| !l.is_empty())
-        .filter_map(|l| serde_json::from_str::<RawEntry>(l).ok())
-        .collect()
 }
 
 /// Byte length up to and including the last newline (0 if none) — the offset the
@@ -546,7 +470,7 @@ impl ClaudeCodeAgentWatcher {
             return;
         }
         let text = String::from_utf8_lossy(&slice[..consumed]);
-        let parsed = parse_journal_lines(&text);
+        let parsed = parse_transcript(&text);
         state.file_offset += consumed as u64;
 
         for entry in &parsed {
