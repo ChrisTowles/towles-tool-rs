@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   # Shared crates (no Tauri dependency)
   "crates/tt-agentboard",
+  "crates/tt-claude-code",
   "crates/tt-collect",
   "crates/tt-config",
   "crates/tt-exec",
@@ -42,6 +43,7 @@ ratatui = "0.29.0"
 
 # Internal crates - shared
 tt-agentboard = { path = "crates/tt-agentboard" }
+tt-claude-code = { path = "crates/tt-claude-code" }
 tt-collect = { path = "crates/tt-collect" }
 tt-config = { path = "crates/tt-config" }
 tt-exec = { path = "crates/tt-exec" }
