@@ -1,7 +1,7 @@
 //! Usage-token extraction for the claude-code watcher. Ports slot-1
 //! `runtime/agents/watchers/claude-usage.ts`.
 
-use tt_claude_code::{TranscriptEntry, Usage};
+use tt_claude_code::{CONTEXT_1M, TranscriptEntry, Usage, context_window};
 
 const FIVE_MIN_MS: i64 = 5 * 60 * 1000;
 const ONE_HOUR_MS: i64 = 60 * 60 * 1000;
@@ -17,30 +17,26 @@ pub struct ClaudeUsageSummary {
     pub last_activity_at: i64,
 }
 
-/// The base 200K context window and the extended 1M tier.
-const BASE_CONTEXT: i64 = 200_000;
-const LARGE_CONTEXT: i64 = 1_000_000;
-
 /// Context window size for a session's usage.
 ///
-/// The model string is an unreliable signal — Claude Code often omits the `[1m]`
-/// marker even on a 1M session (observed: `claude-opus-4-8` with a 377K-token
-/// prompt). So we detect the tier two ways and take the larger:
-/// 1. the `[1m]` marker when present (fast path), and
-/// 2. **the observed prompt size**: `input + cache_read + cache_creation` is the
+/// Two signals, take the larger:
+/// 1. **The maintained model → window table** ([`context_window`]) — the base
+///    tier for the model (and platform, e.g. Bedrock caps at 200K). This is the
+///    source of truth for the common case; keep it updated as models ship.
+/// 2. **The observed prompt size** — `input + cache_read + cache_creation` is the
 ///    tokens actually sitting in the window at request time, and a prompt can't
-///    exceed the window — so seeing more than 200K *proves* the 1M tier.
+///    exceed its window. So a prompt beyond the table's base *proves* a larger
+///    tier than the table knew (e.g. a 1M session the table mapped to 200K, or a
+///    model too new to be in the table). Output tokens are excluded (generated,
+///    not context).
 ///
-/// Output tokens are excluded from the prompt measure (they're generated, not
-/// context). Ports `contextMax`, extended with the usage-based detection.
+/// Ports `contextMax`, extended with table lookup + usage-based detection.
 pub fn context_max(model: &str, usage: &Usage) -> i64 {
-    let by_name =
-        if model.to_ascii_lowercase().ends_with("[1m]") { LARGE_CONTEXT } else { BASE_CONTEXT };
+    let base = context_window(model);
     let prompt_tokens = usage.input_tokens.unwrap_or(0)
         + usage.cache_read_input_tokens.unwrap_or(0)
         + usage.cache_creation_input_tokens.unwrap_or(0);
-    let by_usage = if prompt_tokens > BASE_CONTEXT { LARGE_CONTEXT } else { BASE_CONTEXT };
-    by_name.max(by_usage)
+    if prompt_tokens > base { base.max(CONTEXT_1M) } else { base }
 }
 
 /// Total context tokens = input + output + cache_read + cache_creation. Ports `contextUsed`.
@@ -112,30 +108,34 @@ mod tests {
     }
 
     #[test]
-    fn context_max_detects_1m_suffix() {
-        assert_eq!(context_max("claude-sonnet-4-5[1m]", &small()), 1_000_000);
-        assert_eq!(context_max("claude-opus-4-6", &small()), 200_000);
+    fn context_max_uses_the_model_table() {
+        // 1M-native families come straight from the table (small prompt).
+        assert_eq!(context_max("claude-opus-4-8", &small()), 1_000_000);
+        assert_eq!(context_max("claude-sonnet-5", &small()), 1_000_000);
+        // 200K families / unknown / Bedrock.
         assert_eq!(context_max("claude-haiku-4-5", &small()), 200_000);
+        assert_eq!(context_max("anthropic.claude-opus-4-8", &small()), 200_000); // Bedrock
         assert_eq!(context_max("", &small()), 200_000);
-        assert_eq!(context_max("gpt-4", &small()), 200_000);
+        // Explicit [1m] marker forces 1M even on a 200K-native family.
+        assert_eq!(context_max("claude-sonnet-4-5[1m]", &small()), 1_000_000);
     }
 
     #[test]
-    fn context_max_detects_1m_from_prompt_size_without_marker() {
-        // Real case: opus-4-8 with no [1m] marker but a 377K cache-read prompt —
-        // the prompt can't fit a 200K window, so the tier is 1M.
+    fn context_max_bumps_when_prompt_exceeds_table_base() {
+        // A 200K-table model observed with a 377K prompt — the prompt can't fit a
+        // 200K window, so the observed floor overrides the table to 1M.
         let big = usage(serde_json::json!({
             "input_tokens": 2, "cache_creation_input_tokens": 3304,
             "cache_read_input_tokens": 377111, "output_tokens": 2093
         }));
-        assert_eq!(context_max("claude-opus-4-8", &big), 1_000_000);
+        assert_eq!(context_max("claude-opus-4-5", &big), 1_000_000);
     }
 
     #[test]
     fn context_max_ignores_output_tokens_for_tier() {
         // A huge *output* alone (generation, not context) must not bump the tier.
         let out_heavy = usage(serde_json::json!({ "input_tokens": 100, "output_tokens": 500_000 }));
-        assert_eq!(context_max("claude-opus-4-8", &out_heavy), 200_000);
+        assert_eq!(context_max("claude-opus-4-5", &out_heavy), 200_000);
     }
 
     #[test]
@@ -220,7 +220,7 @@ mod tests {
         let r = extract_usage_summary(&entries).unwrap();
         assert_eq!(r.model, "claude-opus-4-6");
         assert_eq!(r.context_used, 53159);
-        assert_eq!(r.context_max, 200_000);
+        assert_eq!(r.context_max, 1_000_000); // opus-4-6 is 1M-native (model table)
         assert_eq!(r.cache_ttl_ms, Some(ONE_HOUR_MS));
         let expected_ts =
             super::super::claude_code::parse_timestamp_ms("2026-04-12T00:05:00Z").unwrap();
