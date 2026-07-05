@@ -26,3 +26,14 @@ portable-pty = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["time", "sync", "rt", "macros", "net", "io-util"] }
+
+# WebdriverIO E2E testing plugins, gated behind the `wdio` feature so they are
+# fully excluded from normal/release builds (`tauri build`). Enable only when
+# building the app for E2E runs: `cargo build -p tt-app --features wdio`.
+# tauri-plugin-wdio exposes the execute/mock IPC surface; -webdriver runs the
+# in-app WebDriver server the @wdio/tauri-service embedded provider connects to.
+tauri-plugin-wdio = { version = "1", optional = true }
+tauri-plugin-wdio-webdriver = { version = "1", optional = true }
+
+[features]
+wdio = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]

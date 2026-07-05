@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": [
+      "node",
+      "@wdio/globals/types",
+      "@wdio/tauri-service",
+      "@wdio/mocha-framework",
+      "expect-webdriverio"
+    ],
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "noEmit": true
+  },
+  "include": ["**/*.ts"]
+}
