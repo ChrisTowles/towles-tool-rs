@@ -250,27 +250,23 @@ function CollectorsSettingsForm({
 }) {
   if (!settings) return <SettingsLoading />;
   const c = settings.collectors;
+  const setCollector = <K extends keyof UserSettings["collectors"]>(
+    key: K,
+    patch: Partial<UserSettings["collectors"][K]>,
+  ) =>
+    update((s) => ({
+      ...s,
+      collectors: {
+        ...s.collectors,
+        [key]: { ...s.collectors[key], ...patch },
+      },
+    }));
   const setCal = (patch: Partial<UserSettings["collectors"]["calendar"]>) =>
-    update((s) => ({
-      ...s,
-      collectors: {
-        ...s.collectors,
-        calendar: { ...s.collectors.calendar, ...patch },
-      },
-    }));
+    setCollector("calendar", patch);
   const setPrs = (patch: Partial<UserSettings["collectors"]["prs"]>) =>
-    update((s) => ({
-      ...s,
-      collectors: { ...s.collectors, prs: { ...s.collectors.prs, ...patch } },
-    }));
+    setCollector("prs", patch);
   const setIssues = (patch: Partial<UserSettings["collectors"]["issues"]>) =>
-    update((s) => ({
-      ...s,
-      collectors: {
-        ...s.collectors,
-        issues: { ...s.collectors.issues, ...patch },
-      },
-    }));
+    setCollector("issues", patch);
   return (
     <div className="flex flex-col gap-6">
       <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">

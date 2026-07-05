@@ -63,3 +63,13 @@ export function resolveDevPort(repoRoot) {
   }
   return slotBasePort(repoRoot);
 }
+
+/**
+ * The embedded WebDriver server's port for a given dev port: an explicit
+ * `TT_E2E_WEBDRIVER_PORT` (shell env or `.env.local`) wins, otherwise
+ * `devPort + 3000`. Shared so `dev:drive`/`drive`/`e2e` and `wdio.conf.ts`
+ * agree on one convention instead of each hardcoding the offset.
+ */
+export function resolveWebdriverPort(devPort) {
+  return Number(process.env.TT_E2E_WEBDRIVER_PORT) || devPort + 3000;
+}

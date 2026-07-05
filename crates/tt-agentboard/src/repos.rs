@@ -39,44 +39,47 @@ pub fn default_repos_path() -> PathBuf {
         .join("repos.json")
 }
 
+/// Load the full config. Defaulted (both fields empty) on missing/corrupt file.
+fn load_config(path: &Path) -> ReposConfig {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return ReposConfig::default();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
 /// Load the repo-path list. Empty on missing/corrupt file. Ports the loader half.
 pub fn load_repos(path: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    serde_json::from_str::<ReposConfig>(&text).map(|c| c.repo_paths).unwrap_or_default()
+    load_config(path).repo_paths
 }
 
 /// Load the configured scan roots (`scanRoots`). Empty on missing/corrupt file
 /// or when the key is absent — callers substitute their own default.
 pub fn load_scan_roots(path: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    serde_json::from_str::<ReposConfig>(&text).map(|c| c.scan_roots).unwrap_or_default()
+    load_config(path).scan_roots
 }
 
-/// Persist the repo-path list as `{"repoPaths":[...]}` (pretty + trailing newline).
-/// Any existing `scanRoots` (and other known keys) on disk are preserved.
-pub fn save_repos(path: &Path, repo_paths: &[String]) -> std::io::Result<()> {
+/// Persist `config` as pretty JSON with a trailing newline.
+fn save_config(path: &Path, config: &ReposConfig) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let scan_roots = load_scan_roots(path);
-    let config = ReposConfig { repo_paths: repo_paths.to_vec(), scan_roots };
-    let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
+    let json = serde_json::to_string_pretty(config).unwrap_or_else(|_| "{}".to_string());
     std::fs::write(path, format!("{json}\n"))
+}
+
+/// Persist the repo-path list as `{"repoPaths":[...]}`. Any existing `scanRoots`
+/// on disk is preserved.
+pub fn save_repos(path: &Path, repo_paths: &[String]) -> std::io::Result<()> {
+    let mut config = load_config(path);
+    config.repo_paths = repo_paths.to_vec();
+    save_config(path, &config)
 }
 
 /// Persist the scan roots (`scanRoots`), preserving the existing repo list.
 pub fn save_scan_roots(path: &Path, scan_roots: &[String]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let repo_paths = load_repos(path);
-    let config = ReposConfig { repo_paths, scan_roots: scan_roots.to_vec() };
-    let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
-    std::fs::write(path, format!("{json}\n"))
+    let mut config = load_config(path);
+    config.scan_roots = scan_roots.to_vec();
+    save_config(path, &config)
 }
 
 /// Dirs skipped while scanning: hidden dirs plus common heavy build/dep dirs.

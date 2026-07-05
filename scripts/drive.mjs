@@ -21,7 +21,7 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { resolveDevPort } from "./slot-port.mjs";
+import { resolveDevPort, resolveWebdriverPort } from "./slot-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf";
@@ -30,7 +30,7 @@ const devPort = resolveDevPort(repoRoot);
 if (!devPort) {
   fail(`TT_DEV_PORT=${process.env.TT_DEV_PORT} is not a valid port`);
 }
-const wdPort = Number(process.env.TT_E2E_WEBDRIVER_PORT) || devPort + 3000;
+const wdPort = resolveWebdriverPort(devPort);
 const base = `http://127.0.0.1:${wdPort}`;
 
 function fail(msg) {
