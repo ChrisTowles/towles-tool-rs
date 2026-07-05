@@ -246,6 +246,44 @@ pub fn save_to(path: &Path, settings: &UserSettings) -> Result<()> {
     Ok(())
 }
 
+/// Save to the standard location while preserving unknown keys already on disk.
+pub fn save_merge(settings: &UserSettings) -> Result<()> {
+    save_merge_to(&config_path()?, settings)
+}
+
+/// Save `settings` to `path`, **preserving any keys already in the file that this
+/// model doesn't capture** (keys the shared TypeScript CLI may own). Known fields
+/// win; unknown fields on disk survive. Use this for writes to the shared settings
+/// file — unlike [`save_to`], which serializes only the modeled fields and would
+/// silently drop anything the other tool wrote.
+pub fn save_merge_to(path: &Path, settings: &UserSettings) -> Result<()> {
+    let mut base = if path.exists() {
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path)?)
+            .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()))
+    } else {
+        serde_json::Value::Object(serde_json::Map::new())
+    };
+    merge_json(&mut base, &serde_json::to_value(settings)?);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&base)?)?;
+    Ok(())
+}
+
+/// Deep-merge `incoming` into `base`: objects merge key-by-key (recursively);
+/// every other value (scalars, arrays) is replaced wholesale by `incoming`.
+fn merge_json(base: &mut serde_json::Value, incoming: &serde_json::Value) {
+    match (base, incoming) {
+        (serde_json::Value::Object(b), serde_json::Value::Object(i)) => {
+            for (k, v) in i {
+                merge_json(b.entry(k.clone()).or_insert(serde_json::Value::Null), v);
+            }
+        }
+        (b, i) => *b = i.clone(),
+    }
+}
+
 /// JSON Schema for the settings file, as a `serde_json::Value`.
 pub fn json_schema() -> serde_json::Value {
     let schema = schemars::schema_for!(UserSettings);
@@ -304,6 +342,32 @@ mod tests {
         assert_eq!(loaded.journal_settings.base_folder, "/tmp/j");
         // Missing journal fields fall back to defaults.
         assert!(loaded.journal_settings.daily_path_template.contains("daily-notes"));
+    }
+
+    #[test]
+    fn save_merge_preserves_unknown_keys() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("towles-tool.settings.json");
+        // A file with keys this model doesn't capture — top-level and nested.
+        std::fs::write(
+            &path,
+            r#"{"preferredEditor":"vim","futureFlag":true,"journalSettings":{"baseFolder":"/old","tsOnly":42}}"#,
+        )
+        .unwrap();
+
+        let mut settings = load_from(&path).unwrap();
+        settings.preferred_editor = "code".to_string();
+        settings.journal_settings.base_folder = "/new".to_string();
+        save_merge_to(&path, &settings).unwrap();
+
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Known edits win.
+        assert_eq!(raw["preferredEditor"], "code");
+        assert_eq!(raw["journalSettings"]["baseFolder"], "/new");
+        // Unknown keys survive, at both levels.
+        assert_eq!(raw["futureFlag"], true);
+        assert_eq!(raw["journalSettings"]["tsOnly"], 42);
     }
 
     #[test]
