@@ -66,6 +66,9 @@ export type FolderData = {
   needs: number;
   /** User-authored "what am I working toward here" (persisted per folder). */
   purpose?: string | null;
+  /** Agent-pushed progress/status (`ab_set_progress`/`ab_set_status`). Only
+   * `progress.percent` is rendered today; the payload carries more. */
+  metadata?: { progress?: { percent?: number | null } | null } | null;
 };
 
 /** A logical repo: the group of checkouts sharing a `git remote origin` URL. */
@@ -172,6 +175,17 @@ export function sessionStatusText(s: SessionData): string {
 /** True when a repo's single folder should collapse into one rail header. */
 export function isSoloRepo(r: RepoData): boolean {
   return r.folders.length === 1;
+}
+
+/** `0:04` / `3:20` / `1:02:30` — elapsed duration since a session started. */
+export function fmtElapsed(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
+  const ss = String(s).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
 // --- Cache & context health (Tier 3) ---
