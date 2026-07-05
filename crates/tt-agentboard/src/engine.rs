@@ -76,6 +76,7 @@ pub struct Engine {
     metadata: SessionMetadataStore,
     order: SessionOrder,
     folder_meta: crate::folder_meta::FolderMetaStore,
+    windows: crate::windows::WindowsStore,
     sessions: SessionStore,
     git_cache: GitInfoCache,
     watchers: Vec<Box<dyn AgentWatcher + Send>>,
@@ -113,6 +114,7 @@ impl Engine {
             folder_meta: crate::folder_meta::FolderMetaStore::new(Some(
                 crate::folder_meta::default_folder_meta_path(),
             )),
+            windows: crate::windows::WindowsStore::new(Some(crate::default_windows_path())),
             git_cache: GitInfoCache::new(),
             watchers: vec![
                 Box::new(ClaudeCodeAgentWatcher::with_defaults()),
@@ -226,6 +228,16 @@ impl Engine {
         changed
     }
 
+    /// Replace the persisted window layout (frontend-owned blob). Persists on
+    /// change; returns whether it changed.
+    pub fn set_windows(&mut self, payload: crate::windows::WindowsPayload) -> bool {
+        let changed = self.windows.set(payload);
+        if changed {
+            let _ = self.windows.save();
+        }
+        changed
+    }
+
     /// The current compact-nudge threshold (context-%).
     pub fn compact_recommend_percent(&self) -> u8 {
         self.compact_recommend_percent
@@ -334,7 +346,7 @@ impl Engine {
                 },
             );
         }
-        let payload = assemble_state(
+        let mut payload = assemble_state(
             entries,
             &git_infos,
             &self.tracker,
@@ -349,6 +361,7 @@ impl Engine {
             now,
         );
 
+        payload.windows = self.windows.payload().clone();
         self.last_payload = Some(payload.clone());
         payload
     }

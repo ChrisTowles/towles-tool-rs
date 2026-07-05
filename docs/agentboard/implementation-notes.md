@@ -16,7 +16,7 @@ going.
 | 2 | Folder purpose | not started |
 | 3 | Cache health + settings | **done** — details (ctx/cache) were already on `AgentEventDetails`; added `compactRecommendPercent` (tt-config, StatePayload, `ab_set_compact_percent`), `ctxPct/isCold/needsCompact` selectors, CacheBadge rows, ❄ rollup buckets, ⚙ settings popover w/ slider |
 | 4 | Start / Stop / Compact / Restart | **done** — PTY-write actions (`claude\r`, Ctrl-C→Ctrl-D, `/compact\r`, restart) + 2.5s optimistic overlay; hover-reveal RowControls (▶ ✦ ■ ⤿ ↻ ✎ ✕); compact gated to at-prompt statuses |
-| 5 | Windows / panes / grouping | not started |
+| 5 | Windows / panes / grouping | **done** — WindowsStore (windows.json) + `ab_save_windows` + `StatePayload.windows`; window strip, percent-rect tiled panes in one flat mounted pool, placeholder panes for not-started restores, rail group-color tags + ⊟ ungroup |
 
 ## Decisions locked (from the plan review)
 
@@ -50,6 +50,18 @@ User approved all plan recommendations (2026-07-05).
 
 ## Deviations
 
+- **[Tier 5] panes positioned by percent-rects in one flat pool**, not nested
+  per-window containers — React remounting a `TerminalView` re-runs
+  `term_start`, which kills and respawns the shell. Terminals mount once and
+  are shown/hidden + repositioned; scrollback and the PTY survive window
+  switches and regrouping.
+- **[Tier 5] restored panes don't auto-spawn PTYs** — a pane hydrated from
+  windows.json renders a dashed placeholder (▶ shell / ✦ Claude / ⊟ remove)
+  until started, honoring the liveness semantics instead of silently spawning
+  shells at app launch.
+- **[Tier 5] no window rename in v1** — windows get auto names ("main",
+  "window N"); rename is a cheap follow-up if wanted.
+
 - **[Tier 3] no new `AgentUsage` struct** — the planned payload type already
   existed: `AgentEventDetails` carries `contextUsed/contextMax/cacheExpiresAt/
   cacheTtlMs/lastActivityAt` and the claude watcher populates it. Only the
@@ -63,6 +75,9 @@ User approved all plan recommendations (2026-07-05).
 
 ## Verification log
 
+- **Tier 4+5 (2026-07-05):** full `cargo test --workspace` 0 failures (121
+  tt-agentboard incl. 3 windows tests) · workspace clippy 0 warnings ·
+  `cargo fmt --check` clean · client tsc + vite build clean.
 - **Rebase (2026-07-05):** work moved to `feat/agentboard-lifecycle`, rebased
   onto origin/main (+6 commits incl. context-max 1M fix); 118 tests green after.
 - **Tier 2+3 (2026-07-05):** `cargo test -p tt-agentboard -p tt-config` 118+7

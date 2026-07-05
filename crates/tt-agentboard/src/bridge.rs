@@ -38,6 +38,8 @@ pub struct StatePayload {
     /// Context-% at/above which a cold session shows the "compact" nudge
     /// (settings `agentboard.compactRecommendPercent`, default 30).
     pub compact_recommend_percent: u8,
+    /// Persisted window layout (frontend-owned; attached by the engine).
+    pub windows: crate::windows::WindowsPayload,
     pub ts: i64,
 }
 
@@ -111,6 +113,7 @@ pub fn assemble_state(
         theme,
         preferred_editor: preferred_editor.to_string(),
         compact_recommend_percent,
+        windows: crate::windows::WindowsPayload::default(), // engine attaches
         ts,
     }
 }

@@ -164,6 +164,14 @@ pub fn ab_set_compact_percent(state: State<Ab>, percent: u8) {
     }
 }
 
+/// Persist the window layout (frontend-owned; saved debounced from the client).
+/// Deliberately does NOT re-emit — echoing the blob back would clobber
+/// rapid-fire local edits; the client's copy is the live truth.
+#[tauri::command]
+pub fn ab_save_windows(state: State<Ab>, payload: tt_agentboard::WindowsPayload) {
+    state.engine.lock().unwrap().set_windows(payload);
+}
+
 #[tauri::command]
 pub fn ab_set_status(
     state: State<Ab>,

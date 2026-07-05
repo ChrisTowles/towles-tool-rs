@@ -78,14 +78,44 @@ export type RepoData = {
   needs: number;
 };
 
+/** One in-app window: a named tiling of pane session-ids. */
+export type AgWindow = { id: string; name: string; panes: string[] };
+
+/** The whole window layout. Frontend-owned: mutated locally, saved debounced
+ * via `ab_save_windows`, hydrated once from `ab_get_state`. */
+export type WindowsPayload = { windows: AgWindow[]; activeWindow: string };
+
 export type StatePayload = {
   repos: RepoData[];
   theme?: string | null;
   preferredEditor: string;
   /** Context-% at/above which a cold session shows the compact nudge. */
   compactRecommendPercent: number;
+  /** Persisted window layout (hydration source only — see WindowsPayload). */
+  windows: WindowsPayload;
   ts: number;
 };
+
+/** Window identity colors for the rail group tags + window-strip squares.
+ * Deliberately distinct from the status hues (yellow/blue/red/green/orange)
+ * and accents (violet/amber/sky) so a group tag never reads as a state. */
+const WINDOW_COLORS = [
+  "bg-teal-500",
+  "bg-fuchsia-500",
+  "bg-lime-500",
+  "bg-rose-400",
+  "bg-indigo-400",
+];
+
+export function windowColor(wins: AgWindow[], windowId: string): string {
+  const i = wins.findIndex((w) => w.id === windowId);
+  return i < 0 ? "bg-muted-foreground/40" : WINDOW_COLORS[i % WINDOW_COLORS.length];
+}
+
+/** The window containing a session's pane, if any. */
+export function windowOf(wins: AgWindow[], sessionId: string): AgWindow | undefined {
+  return wins.find((w) => w.panes.includes(sessionId));
+}
 
 /** A session is an "agent" session iff Claude is running in it right now. */
 export function isAgent(s: SessionData): boolean {
@@ -198,7 +228,15 @@ export function agentRollup(
   return r;
 }
 
-const EMPTY: StatePayload = { repos: [], preferredEditor: "", compactRecommendPercent: 30, ts: 0 };
+const EMPTY_WINDOWS: WindowsPayload = { windows: [], activeWindow: "" };
+
+const EMPTY: StatePayload = {
+  repos: [],
+  preferredEditor: "",
+  compactRecommendPercent: 30,
+  windows: EMPTY_WINDOWS,
+  ts: 0,
+};
 
 /** Fake state for bare-browser dev (no Tauri), so the Folder Rail renders. */
 const MOCK_NOW = Date.now();
@@ -206,7 +244,11 @@ const MOCK_NOW = Date.now();
 const MOCK_STATE: StatePayload = {
   preferredEditor: "code",
   compactRecommendPercent: 30,
-  ts: 0,
+  windows: {
+    windows: [{ id: "w1", name: "focus", panes: ["s0", "s2"] }],
+    activeWindow: "w1",
+  },
+  ts: 1,
   repos: [
     {
       key: "https://github.com/ChrisTowles/towles-tool-rs.git",

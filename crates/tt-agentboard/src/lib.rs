@@ -41,6 +41,7 @@ pub mod tracker;
 pub mod types;
 pub mod watcher;
 pub mod watchers;
+pub mod windows;
 
 /// Errors surfaced by the agentboard core. Filesystem access (session-order
 /// persistence) is the only fallible surface; parse/subprocess failures are
@@ -78,3 +79,4 @@ pub use watchers::amp::AmpAgentWatcher;
 pub use watchers::claude_code::ClaudeCodeAgentWatcher;
 pub use watchers::codex::CodexAgentWatcher;
 pub use watchers::opencode::OpenCodeAgentWatcher;
+pub use windows::{AgWindow, WindowsPayload, WindowsStore, default_windows_path};
