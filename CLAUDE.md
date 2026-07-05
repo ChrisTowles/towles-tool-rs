@@ -21,8 +21,32 @@ Desktop app / frontend:
 ```sh
 npm install                         # installs apps/client (npm workspaces)
 npm run dev                         # tauri dev — app + Vite frontend
+npm run dev:drive                   # like dev, but the window is automatable (live-drive)
+npm run drive -- <verb>             # drive the dev:drive window (status|invoke|shot|click|…)
+npm run e2e                         # regression suite vs the real shell (see below)
 cd apps/client && npx shadcn@latest add <name>   # vendor a shadcn/ui component
 ```
+
+**Verifying UI/IPC changes — drive the real app.** Two ways, both hitting the
+*actual* Tauri shell (WebKitGTK WebView + real Rust IPC), never a bare browser or
+the mock dev server:
+
+- **Live drive** — `npm run dev:drive` opens one automatable window (HMR, you use
+  it normally); `node scripts/drive.mjs <verb>` drives *that same* window:
+  `status`, `invoke <cmd> [json]` (real IPC), `eval "<js>"`, `shot <name>` (→
+  `e2e/screenshots/<name>.png`, which you can `Read`), `click "<css>"`,
+  `type "<css>" <text>`, `url <path>`. This is the way to visually/behaviorally
+  debug a change and see the result. It's a plain-`fetch` client talking to the
+  app's in-process WebDriver server — no WebdriverIO.
+- **Regression suite** — `npm run e2e` runs WebdriverIO specs that spawn a fresh
+  window, run, and exit (CI pass/fail). Specs in `e2e/specs/*.e2e.ts` are
+  **read-only** (never write your real settings file); `npm run e2e:run` skips
+  the rebuild.
+
+Both are gated behind the `wdio` cargo feature + `VITE_WDIO` flag, so nothing
+ships in normal/release builds. Ports come from `.env.local` (`TT_DEV_PORT`;
+webdriver = `+3000`); `dev:drive` and `e2e` share a slot's ports, so don't run
+both at once in one slot. Full docs + Linux gotchas: [e2e/README.md](e2e/README.md).
 
 > The binary is **`ttr`** during migration. Do not rename it to `tt` — the
 > TypeScript CLI keeps `tt` until the Rust port reaches feature parity, then we
@@ -92,7 +116,9 @@ Cargo workspace + npm workspace (`apps/client` only):
   is only *time until the next meeting*. Agent status is **reported, never
   re-rendered** (interaction happens in the real PTY via xterm.js); the day
   bar (`day-bar.tsx`) and the Agentboard needs-you feed unify agents, PRs, and
-  calendar into one attention model.
+  calendar into one attention model. Verify frontend/IPC changes by driving the
+  real shell with `npm run e2e` (see the Commands section and
+  [e2e/README.md](e2e/README.md)) — not just the mock browser dev server.
 
 ## Migration
 

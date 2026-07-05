@@ -116,6 +116,71 @@ pub fn ab_remove_repo(state: State<Ab>, name: String) {
     state.emit.notify_one();
 }
 
+/// Read the add-repo picker's configured scan roots (`scanRoots` in repos.json).
+/// Empty ⇒ the picker falls back to `~/code`.
+#[tauri::command]
+pub fn ab_get_scan_roots(state: State<Ab>) -> Vec<String> {
+    state.engine.lock().unwrap().scan_roots()
+}
+
+/// Set the add-repo picker's scan roots. Blank entries are dropped; an empty
+/// list clears the key so the picker falls back to `~/code`.
+#[tauri::command]
+pub fn ab_set_scan_roots(state: State<Ab>, roots: Vec<String>) {
+    let cleaned: Vec<String> =
+        roots.into_iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
+    state.engine.lock().unwrap().set_scan_roots(cleaned);
+}
+
+/// A discovered git repo not yet on the rail, for the fuzzy add-repo picker.
+#[derive(serde::Serialize)]
+pub struct RepoCandidate {
+    /// Friendly label, e.g. `p/towles-tool` (path relative to the scan root).
+    pub name: String,
+    /// Absolute path, passed back verbatim to `ab_add_repo`.
+    pub dir: String,
+}
+
+/// Expand a leading `~`/`~/` in a configured scan root to the home dir.
+fn expand_tilde(raw: &str, home: Option<&std::path::Path>) -> std::path::PathBuf {
+    match (raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~")), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => std::path::PathBuf::from(raw),
+    }
+}
+
+/// Discover git repos under the configured scan roots (`scanRoots` in
+/// repos.json, defaulting to `~/code`) that aren't already on the rail, so the
+/// add-repo picker can fuzzy-search them. Each candidate's `name` is its path
+/// relative to whichever root it was found under.
+#[tauri::command]
+pub fn ab_discover_repos(state: State<Ab>) -> Vec<RepoCandidate> {
+    use std::collections::HashSet;
+    let (existing, configured): (HashSet<String>, Vec<String>) = {
+        let mut engine = state.engine.lock().unwrap();
+        (engine.repo_dirs().into_iter().collect(), engine.scan_roots())
+    };
+    let home = dirs::home_dir();
+    let roots: Vec<std::path::PathBuf> = if configured.is_empty() {
+        home.iter().map(|h| h.join("code")).collect()
+    } else {
+        configured.iter().map(|r| expand_tilde(r, home.as_deref())).collect()
+    };
+    tt_agentboard::repos::discover_git_repos(&roots, 4)
+        .into_iter()
+        .filter(|dir| !existing.contains(dir))
+        .map(|dir| {
+            let name = roots
+                .iter()
+                .find_map(|root| std::path::Path::new(&dir).strip_prefix(root).ok())
+                .and_then(|p| p.to_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| dir.clone());
+            RepoCandidate { name, dir }
+        })
+        .collect()
+}
+
 /// Add a PTY session to a folder. Returns the new record so the client can
 /// select it immediately.
 #[tauri::command]

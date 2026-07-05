@@ -6,6 +6,7 @@
 
 mod agentboard;
 mod scheduler;
+mod settings;
 mod store;
 mod terminal;
 
@@ -40,8 +41,23 @@ fn app_slot() -> String {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // WebdriverIO E2E plugins, only under `--features wdio` (see e2e/):
+    // tauri-plugin-wdio exposes the execute/mock IPC surface, and
+    // tauri-plugin-wdio-webdriver runs the in-app WebDriver server the
+    // @wdio/tauri-service embedded provider connects to.
+    #[cfg(feature = "wdio")]
+    let builder =
+        builder.plugin(tauri_plugin_wdio::init()).plugin(tauri_plugin_wdio_webdriver::init());
+
+    builder
         .setup(|app| {
+            // Register the wdio capability at runtime (feature-gated) so normal
+            // builds never reference the plugins' ACL and stay clean.
+            #[cfg(feature = "wdio")]
+            app.handle().add_capability(include_str!("../wdio-capability.json"))?;
+
             // Distinguish concurrent slot windows in the title bar / taskbar.
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.set_title(&format!("Towles Tool — {}", slot_label()));
@@ -125,8 +141,11 @@ pub fn run() {
             app.manage(store_state);
 
             // Collector scheduler: fills tt.db (PRs + issues via gh, calendar via
-            // claude -p per settings.collectors) and re-emits the snapshot.
-            scheduler::spawn(app.handle().clone());
+            // claude -p per settings.collectors) and re-emits the snapshot. The
+            // shared signal lets `settings_set` make cadence edits take effect live.
+            let settings_reload = Arc::new(Notify::new());
+            app.manage(settings::SettingsSignal(settings_reload.clone()));
+            scheduler::spawn(app.handle().clone(), settings_reload);
 
             // Kick an initial scan so the first snapshot has data.
             scan.notify_one();
@@ -147,6 +166,9 @@ pub fn run() {
             agentboard::ab_set_theme,
             agentboard::ab_add_repo,
             agentboard::ab_remove_repo,
+            agentboard::ab_discover_repos,
+            agentboard::ab_get_scan_roots,
+            agentboard::ab_set_scan_roots,
             agentboard::ab_add_session,
             agentboard::ab_rename_session,
             agentboard::ab_close_session,
@@ -164,6 +186,8 @@ pub fn run() {
             store::store_set_task_status,
             store::store_promote_task_to_issue,
             store::journal_log,
+            settings::settings_get,
+            settings::settings_set,
             terminal::term_start,
             terminal::term_write,
             terminal::term_resize,
