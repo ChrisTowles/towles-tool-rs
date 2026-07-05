@@ -6,6 +6,7 @@
 
 mod agentboard;
 mod scheduler;
+mod settings;
 mod store;
 mod terminal;
 
@@ -167,6 +168,8 @@ pub fn run() {
             store::store_set_task_status,
             store::store_promote_task_to_issue,
             store::journal_log,
+            settings::settings_get,
+            settings::settings_set,
             terminal::term_start,
             terminal::term_write,
             terminal::term_resize,

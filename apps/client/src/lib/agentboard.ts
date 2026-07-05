@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { invokeCmd } from "./tauri";
 
 /**
  * Client-side view of the agentboard bridge (`crates-tauri/tt-app/src/agentboard.rs`).
@@ -7,22 +8,8 @@ import { useEffect, useState } from "react";
  * Only the fields the screen renders are typed; the payload carries more.
  */
 
-/**
- * Invoke an `ab_*` Tauri command. Returns `null` in plain-Vite browser dev
- * (no Tauri host) or if the command errors, so callers degrade gracefully.
- */
-export async function abInvoke<T>(
-  cmd: string,
-  args: Record<string, unknown> = {},
-): Promise<T | null> {
-  if (!("__TAURI_INTERNALS__" in window)) return null;
-  const { invoke } = await import("@tauri-apps/api/core");
-  try {
-    return await invoke<T>(cmd, args);
-  } catch {
-    return null;
-  }
-}
+/** Invoke an `ab_*` Tauri command (thin alias over the shared invoker). */
+export const abInvoke = invokeCmd;
 
 export type AgentStatus =
   "idle" | "busy" | "complete" | "error" | "waiting" | "interrupted";
