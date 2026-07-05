@@ -38,6 +38,7 @@ import {
   claudeTitleName,
   ctxPct,
   type AgentStatus,
+  fmtElapsed,
   isAgent,
   isCold,
   isSoloRepo,
@@ -1102,6 +1103,12 @@ function RepoGroup({
           scope="repo"
           title={repo.name}
           branch={folder.branch}
+          isWorktree={folder.isWorktree}
+          filesChanged={folder.filesChanged}
+          linesAdded={folder.linesAdded}
+          linesRemoved={folder.linesRemoved}
+          commitsDelta={folder.commitsDelta}
+          progressPercent={folder.metadata?.progress?.percent}
           needs={repo.needs}
           collapsed={isCollapsed}
           onToggle={() => onToggle(repo.key)}
@@ -1145,6 +1152,12 @@ function RepoGroup({
                 scope="folder"
                 title={folder.name}
                 branch={folder.branch}
+                isWorktree={folder.isWorktree}
+                filesChanged={folder.filesChanged}
+                linesAdded={folder.linesAdded}
+                linesRemoved={folder.linesRemoved}
+                commitsDelta={folder.commitsDelta}
+                progressPercent={folder.metadata?.progress?.percent}
                 needs={folder.needs}
                 collapsed={fCollapsed}
                 onToggle={() => onToggle(key)}
@@ -1222,6 +1235,12 @@ function FolderHeader({
   scope,
   title,
   branch,
+  isWorktree,
+  filesChanged,
+  linesAdded,
+  linesRemoved,
+  commitsDelta,
+  progressPercent,
   needs,
   collapsed,
   onToggle,
@@ -1231,6 +1250,12 @@ function FolderHeader({
   scope: "repo" | "folder";
   title: string;
   branch: string;
+  isWorktree: boolean;
+  filesChanged: number;
+  linesAdded: number;
+  linesRemoved: number;
+  commitsDelta: number;
+  progressPercent?: number | null;
   needs: number;
   collapsed: boolean;
   onToggle: () => void;
@@ -1255,6 +1280,9 @@ function FolderHeader({
         ) : (
           <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
         )}
+        <span className="shrink-0 font-mono text-sm text-muted-foreground/60">
+          {isWorktree ? "w/" : "p/"}
+        </span>
         <span
           className={cn(
             "truncate",
@@ -1265,9 +1293,23 @@ function FolderHeader({
         >
           {title}
         </span>
-        <span className="truncate font-mono text-[11px] text-muted-foreground">
+        <span className="shrink-0 truncate font-mono text-[11px] text-muted-foreground">
           ⎇ {branch}
         </span>
+        {(linesAdded > 0 || linesRemoved > 0) && (
+          <span
+            className="flex shrink-0 items-center gap-1 font-mono text-[11px]"
+            title={`${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsDelta} commit${commitsDelta === 1 ? "" : "s"} ahead`}
+          >
+            {linesAdded > 0 && <span className="text-green-500">+{linesAdded}</span>}
+            {linesRemoved > 0 && <span className="text-red-500">−{linesRemoved}</span>}
+          </span>
+        )}
+        {typeof progressPercent === "number" && (
+          <span className="shrink-0 rounded-md border border-violet-500/40 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500">
+            {Math.round(progressPercent)}%
+          </span>
+        )}
       </button>
       {needs > 0 && <NeedsBadge n={needs} />}
       <button
@@ -1438,6 +1480,14 @@ function SessionRow({
               compactPct={compactPct}
               onCompact={() => actions.compactClaude(eff)}
             />
+            {eff.live && (
+              <span
+                className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70"
+                title="running for"
+              >
+                {fmtElapsed(now - eff.createdAt)}
+              </span>
+            )}
             <span className="min-w-0 truncate text-[11px] text-muted-foreground">
               {sessionStatusText(eff)}
             </span>
