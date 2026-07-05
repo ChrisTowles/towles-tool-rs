@@ -8,12 +8,7 @@ import { useEffect, useState } from "react";
  */
 
 export type AgentStatus =
-  | "idle"
-  | "busy"
-  | "complete"
-  | "error"
-  | "waiting"
-  | "interrupted";
+  "idle" | "busy" | "complete" | "error" | "waiting" | "interrupted";
 
 /** Per-agent live details from the transcript tail (tokens, cache, model).
  * Mirrors the Rust `AgentEventDetails`; only the fields the UI renders. */
@@ -238,140 +233,6 @@ const EMPTY: StatePayload = {
   ts: 0,
 };
 
-/** Fake state for bare-browser dev (no Tauri), so the Folder Rail renders. */
-const MOCK_NOW = Date.now();
-
-const MOCK_STATE: StatePayload = {
-  preferredEditor: "code",
-  compactRecommendPercent: 30,
-  windows: {
-    windows: [{ id: "w1", name: "focus", panes: ["s0", "s2"] }],
-    activeWindow: "w1",
-  },
-  ts: 1,
-  repos: [
-    {
-      key: "https://github.com/ChrisTowles/towles-tool-rs.git",
-      name: "towles-tool-rs",
-      originUrl: "https://github.com/ChrisTowles/towles-tool-rs.git",
-      needs: 1,
-      folders: [
-        {
-          name: "slot-0",
-          dir: "/home/ctowles/code/p/towles-tool-rs-slot-0",
-          branch: "feat/data-hub",
-          purpose: "Wire the data-hub store snapshot into the app shell.",
-          isWorktree: false,
-          filesChanged: 6,
-          linesAdded: 88,
-          linesRemoved: 20,
-          commitsDelta: 2,
-          needs: 0,
-          sessions: [
-            {
-              id: "s0",
-              name: "shell 1",
-              createdAt: 0,
-              live: true,
-              unseen: false,
-              agentState: {
-                agent: "claude",
-                session: "slot-0",
-                status: "busy",
-                ts: 0,
-                threadName: "store snapshot wiring",
-                details: {
-                  model: "claude-opus-4-8",
-                  contextUsed: 52_000,
-                  contextMax: 200_000,
-                  cacheExpiresAt: MOCK_NOW + 4 * 60_000,
-                  cacheTtlMs: 300_000,
-                  lastActivityAt: MOCK_NOW - 60_000,
-                },
-              },
-              agents: [],
-            },
-            { id: "s1", name: "shell 2", createdAt: 0, live: false, unseen: false, agentState: null, agents: [] },
-          ],
-        },
-        {
-          name: "slot-1",
-          dir: "/home/ctowles/code/p/towles-tool-rs-slot-1",
-          branch: "feat/agentboard-folder-rail",
-          isWorktree: false,
-          filesChanged: 12,
-          linesAdded: 340,
-          linesRemoved: 45,
-          commitsDelta: 1,
-          needs: 1,
-          sessions: [
-            {
-              id: "s2",
-              name: "shell 1",
-              createdAt: 0,
-              live: true,
-              unseen: true,
-              agentState: {
-                agent: "claude",
-                session: "slot-1",
-                status: "waiting",
-                ts: 0,
-                threadName: "agentboard folder rail",
-                details: {
-                  model: "claude-opus-4-8",
-                  contextUsed: 116_000,
-                  contextMax: 200_000,
-                  cacheExpiresAt: MOCK_NOW - 11 * 60_000,
-                  cacheTtlMs: 300_000,
-                  lastActivityAt: MOCK_NOW - 16 * 60_000,
-                },
-              },
-              agents: [],
-            },
-            { id: "s3", name: "shell 2", createdAt: 0, live: false, unseen: false, agentState: null, agents: [] },
-          ],
-        },
-      ],
-    },
-    {
-      key: "https://github.com/ChrisTowles/toolbox.git",
-      name: "toolbox",
-      originUrl: "https://github.com/ChrisTowles/toolbox.git",
-      needs: 0,
-      folders: [
-        {
-          name: "toolbox",
-          dir: "/home/ctowles/code/p/toolbox",
-          branch: "main",
-          isWorktree: false,
-          filesChanged: 1,
-          linesAdded: 3,
-          linesRemoved: 2,
-          commitsDelta: 0,
-          needs: 0,
-          sessions: [
-            {
-              id: "s4",
-              name: "shell 1",
-              createdAt: 0,
-              live: true,
-              unseen: false,
-              agentState: {
-                agent: "claude",
-                session: "toolbox",
-                status: "busy",
-                ts: 0,
-                threadName: "extract path helpers",
-              },
-              agents: [],
-            },
-          ],
-        },
-      ],
-    },
-  ],
-};
-
 /**
  * Subscribe to the live agentboard state: pull the initial snapshot via
  * `ab_get_state`, then track the debounced `agentboard://state` event. Returns
@@ -386,9 +247,10 @@ export function useAgentboardState(): StatePayload {
 
     void (async () => {
       // Outside Tauri (bare-browser dev), `listen` throws on the missing IPC
-      // internals — show mock data instead of leaking unhandled rejections.
+      // internals — stay on the empty state instead of leaking unhandled
+      // rejections.
       if (!("__TAURI_INTERNALS__" in window)) {
-        setState(MOCK_STATE);
+        setState(EMPTY);
         return;
       }
 
