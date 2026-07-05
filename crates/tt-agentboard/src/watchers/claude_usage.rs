@@ -17,10 +17,30 @@ pub struct ClaudeUsageSummary {
     pub last_activity_at: i64,
 }
 
-/// Context window size for a model: 1M when the name ends in `[1m]`, else 200K.
-/// Ports `contextMax`.
-pub fn context_max(model: &str) -> i64 {
-    if model.to_ascii_lowercase().ends_with("[1m]") { 1_000_000 } else { 200_000 }
+/// The base 200K context window and the extended 1M tier.
+const BASE_CONTEXT: i64 = 200_000;
+const LARGE_CONTEXT: i64 = 1_000_000;
+
+/// Context window size for a session's usage.
+///
+/// The model string is an unreliable signal — Claude Code often omits the `[1m]`
+/// marker even on a 1M session (observed: `claude-opus-4-8` with a 377K-token
+/// prompt). So we detect the tier two ways and take the larger:
+/// 1. the `[1m]` marker when present (fast path), and
+/// 2. **the observed prompt size**: `input + cache_read + cache_creation` is the
+///    tokens actually sitting in the window at request time, and a prompt can't
+///    exceed the window — so seeing more than 200K *proves* the 1M tier.
+///
+/// Output tokens are excluded from the prompt measure (they're generated, not
+/// context). Ports `contextMax`, extended with the usage-based detection.
+pub fn context_max(model: &str, usage: &Usage) -> i64 {
+    let by_name =
+        if model.to_ascii_lowercase().ends_with("[1m]") { LARGE_CONTEXT } else { BASE_CONTEXT };
+    let prompt_tokens = usage.input_tokens.unwrap_or(0)
+        + usage.cache_read_input_tokens.unwrap_or(0)
+        + usage.cache_creation_input_tokens.unwrap_or(0);
+    let by_usage = if prompt_tokens > BASE_CONTEXT { LARGE_CONTEXT } else { BASE_CONTEXT };
+    by_name.max(by_usage)
 }
 
 /// Total context tokens = input + output + cache_read + cache_creation. Ports `contextUsed`.
@@ -68,7 +88,7 @@ pub fn extract_usage_summary(entries: &[TranscriptEntry]) -> Option<ClaudeUsageS
         let ttl = cache_ttl_ms(usage);
         return Some(ClaudeUsageSummary {
             context_used: context_used(usage),
-            context_max: context_max(&model),
+            context_max: context_max(&model, usage),
             cache_ttl_ms: ttl,
             cache_expires_at: ttl.map(|t| ts + t),
             last_activity_at: ts,
@@ -86,13 +106,36 @@ mod tests {
         serde_json::from_value(json).unwrap()
     }
 
+    /// A small prompt that stays within the 200K base window.
+    fn small() -> Usage {
+        usage(serde_json::json!({ "input_tokens": 10, "cache_read_input_tokens": 50 }))
+    }
+
     #[test]
     fn context_max_detects_1m_suffix() {
-        assert_eq!(context_max("claude-sonnet-4-5[1m]"), 1_000_000);
-        assert_eq!(context_max("claude-opus-4-6"), 200_000);
-        assert_eq!(context_max("claude-haiku-4-5"), 200_000);
-        assert_eq!(context_max(""), 200_000);
-        assert_eq!(context_max("gpt-4"), 200_000);
+        assert_eq!(context_max("claude-sonnet-4-5[1m]", &small()), 1_000_000);
+        assert_eq!(context_max("claude-opus-4-6", &small()), 200_000);
+        assert_eq!(context_max("claude-haiku-4-5", &small()), 200_000);
+        assert_eq!(context_max("", &small()), 200_000);
+        assert_eq!(context_max("gpt-4", &small()), 200_000);
+    }
+
+    #[test]
+    fn context_max_detects_1m_from_prompt_size_without_marker() {
+        // Real case: opus-4-8 with no [1m] marker but a 377K cache-read prompt —
+        // the prompt can't fit a 200K window, so the tier is 1M.
+        let big = usage(serde_json::json!({
+            "input_tokens": 2, "cache_creation_input_tokens": 3304,
+            "cache_read_input_tokens": 377111, "output_tokens": 2093
+        }));
+        assert_eq!(context_max("claude-opus-4-8", &big), 1_000_000);
+    }
+
+    #[test]
+    fn context_max_ignores_output_tokens_for_tier() {
+        // A huge *output* alone (generation, not context) must not bump the tier.
+        let out_heavy = usage(serde_json::json!({ "input_tokens": 100, "output_tokens": 500_000 }));
+        assert_eq!(context_max("claude-opus-4-8", &out_heavy), 200_000);
     }
 
     #[test]
