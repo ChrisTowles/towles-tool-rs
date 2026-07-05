@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
+use crate::folder_meta::FolderMetaStore;
 use crate::git_info::GitInfo;
 use crate::metadata::SessionMetadataStore;
 use crate::repos::RepoEntry;
@@ -34,6 +35,11 @@ pub struct StatePayload {
     pub repos: Vec<RepoData>,
     pub theme: Option<String>,
     pub preferred_editor: String,
+    /// Context-% at/above which a cold session shows the "compact" nudge
+    /// (settings `agentboard.compactRecommendPercent`, default 30).
+    pub compact_recommend_percent: u8,
+    /// Persisted window layout (frontend-owned; attached by the engine).
+    pub windows: crate::windows::WindowsPayload,
     pub ts: i64,
 }
 
@@ -54,10 +60,12 @@ pub fn assemble_state(
     tracker: &AgentTracker,
     metadata: &SessionMetadataStore,
     sessions: &SessionStore,
+    folder_meta: &FolderMetaStore,
     attribute: &dyn Fn(&AgentEvent) -> Option<String>,
     session_agents: &HashMap<String, AgentEvent>,
     theme: Option<String>,
     preferred_editor: &str,
+    compact_recommend_percent: u8,
     ts: i64,
 ) -> StatePayload {
     let mut repos: Vec<RepoData> = Vec::new();
@@ -65,8 +73,16 @@ pub fn assemble_state(
 
     for entry in entries {
         let git = git_infos.get(&entry.dir).cloned().unwrap_or_default();
-        let folder =
-            build_folder(entry, &git, tracker, metadata, sessions, attribute, session_agents);
+        let folder = build_folder(
+            entry,
+            &git,
+            tracker,
+            metadata,
+            sessions,
+            folder_meta,
+            attribute,
+            session_agents,
+        );
 
         let origin = git.origin_url.clone();
         let key = origin.clone().unwrap_or_else(|| format!("path:{}", entry.dir));
@@ -92,17 +108,26 @@ pub fn assemble_state(
         }
     }
 
-    StatePayload { repos, theme, preferred_editor: preferred_editor.to_string(), ts }
+    StatePayload {
+        repos,
+        theme,
+        preferred_editor: preferred_editor.to_string(),
+        compact_recommend_percent,
+        windows: crate::windows::WindowsPayload::default(), // engine attaches
+        ts,
+    }
 }
 
 /// Build one folder: git stats + its persisted sessions with agents distributed
 /// by `attribute` (unattributed → default session), plus the `needs` count.
+#[allow(clippy::too_many_arguments)]
 fn build_folder(
     entry: &RepoEntry,
     git: &GitInfo,
     tracker: &AgentTracker,
     metadata: &SessionMetadataStore,
     sessions: &SessionStore,
+    folder_meta: &FolderMetaStore,
     attribute: &dyn Fn(&AgentEvent) -> Option<String>,
     session_agents: &HashMap<String, AgentEvent>,
 ) -> FolderData {
@@ -140,6 +165,7 @@ fn build_folder(
                 id: r.id.clone(),
                 name: r.name.clone(),
                 created_at: r.created_at,
+                live: false, // stamped by the app from its PTY registry
                 unseen,
                 agent_state,
                 agents,
@@ -160,6 +186,7 @@ fn build_folder(
         commits_delta: git.commits_delta,
         sessions: session_data,
         needs,
+        purpose: folder_meta.purpose_for(&entry.dir).map(str::to_string),
         metadata: metadata.get(&entry.name).cloned(),
     }
 }
@@ -257,10 +284,12 @@ mod tests {
             &tracker,
             &metadata,
             &store,
+            &FolderMetaStore::default(),
             &no_attr,
             &HashMap::new(),
             Some("mocha".into()),
             "code",
+            30,
             999,
         );
         assert_eq!(payload.ts, 999);
@@ -307,10 +336,12 @@ mod tests {
             &tracker,
             &metadata,
             &store,
+            &FolderMetaStore::default(),
             &no_attr,
             &HashMap::new(),
             None,
             "code",
+            30,
             0,
         );
         // One repo, two folders (the checkouts).
@@ -334,10 +365,12 @@ mod tests {
             &tracker,
             &metadata,
             &store,
+            &FolderMetaStore::default(),
             &no_attr,
             &HashMap::new(),
             None,
             "code",
+            30,
             0,
         );
         assert_eq!(payload.repos[0].folders[0].needs, 1);
@@ -363,10 +396,12 @@ mod tests {
             &tracker,
             &metadata,
             &store,
+            &FolderMetaStore::default(),
             &attribute,
             &HashMap::new(),
             None,
             "code",
+            30,
             0,
         );
         let folder = &payload.repos[0].folders[0];
@@ -407,10 +442,12 @@ mod tests {
             &tracker,
             &metadata,
             &store,
+            &FolderMetaStore::default(),
             &no_attr,
             &supplemental,
             None,
             "code",
+            30,
             0,
         );
         let s = &payload.repos[0].folders[0].sessions[0];
@@ -429,10 +466,12 @@ mod tests {
             &tracker2,
             &metadata,
             &store,
+            &FolderMetaStore::default(),
             &no_attr,
             &supplemental,
             None,
             "code",
+            30,
             0,
         );
         let s2 = &payload2.repos[0].folders[0].sessions[0];

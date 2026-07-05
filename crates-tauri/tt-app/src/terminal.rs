@@ -33,6 +33,12 @@ struct Session {
 pub struct TermState(Mutex<HashMap<String, Session>>);
 
 impl TermState {
+    /// Ids of every session with a live PTY right now. The agentboard bridge
+    /// stamps these onto the emitted snapshot as `SessionData.live`.
+    pub fn live_ids(&self) -> std::collections::HashSet<String> {
+        self.0.lock().unwrap().keys().cloned().collect()
+    }
+
     /// Kill and drop the session with `term_id`, if any.
     fn kill(&self, term_id: &str) {
         if let Some(mut session) = self.0.lock().unwrap().remove(term_id) {
@@ -99,6 +105,9 @@ pub fn term_start(
 
     state.0.lock().unwrap().insert(term_id.clone(), Session { master: pty.master, writer, child });
 
+    // Liveness changed (a PTY appeared) — refresh the agentboard snapshot.
+    notify_agentboard(&app);
+
     // Reader thread: pump PTY output to the frontend until EOF (shell exited).
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -113,9 +122,18 @@ pub fn term_start(
             }
         }
         let _ = app.emit_to(MAIN_WINDOW_LABEL, EXIT_EVENT, TermExit { term_id });
+        notify_agentboard(&app); // shell exited — session no longer live
     });
 
     Ok(())
+}
+
+/// Nudge the agentboard's debounced emitter so `SessionData.live` flips promptly
+/// when a PTY starts or exits (instead of waiting for the next 2s scan tick).
+fn notify_agentboard(app: &AppHandle) {
+    if let Some(ab) = app.try_state::<crate::agentboard::Ab>() {
+        ab.emit.notify_one();
+    }
 }
 
 /// Forward keyboard input (xterm.js `onData` UTF-8 text) to the shell.
@@ -144,8 +162,9 @@ pub fn term_resize(
 
 /// Kill one shell (the frontend calls this when a terminal unmounts).
 #[tauri::command]
-pub fn term_kill(state: State<TermState>, term_id: String) {
+pub fn term_kill(app: AppHandle, state: State<TermState>, term_id: String) {
     state.kill(&term_id);
+    notify_agentboard(&app);
 }
 
 /// Kill every shell when the main window goes away, so no orphan shells

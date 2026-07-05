@@ -27,6 +27,7 @@ use thiserror::Error;
 pub mod bridge;
 pub mod claude_cli;
 pub mod engine;
+pub mod folder_meta;
 pub mod fs_notify;
 pub mod git_info;
 pub mod metadata;
@@ -40,6 +41,7 @@ pub mod tracker;
 pub mod types;
 pub mod watcher;
 pub mod watchers;
+pub mod windows;
 
 /// Errors surfaced by the agentboard core. Filesystem access (session-order
 /// persistence) is the only fallible surface; parse/subprocess failures are
@@ -57,6 +59,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 // Re-export the public surface.
 pub use bridge::{StatePayload, assemble_state};
+pub use folder_meta::{FolderMeta, FolderMetaStore, default_folder_meta_path};
 pub use git_info::{GitInfo, GitInfoCache, compute_git_info};
 pub use metadata::SessionMetadataStore;
 pub use repos::{
@@ -76,3 +79,4 @@ pub use watchers::amp::AmpAgentWatcher;
 pub use watchers::claude_code::ClaudeCodeAgentWatcher;
 pub use watchers::codex::CodexAgentWatcher;
 pub use watchers::opencode::OpenCodeAgentWatcher;
+pub use windows::{AgWindow, WindowsPayload, WindowsStore, default_windows_path};

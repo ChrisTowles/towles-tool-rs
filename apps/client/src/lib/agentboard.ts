@@ -15,6 +15,19 @@ export type AgentStatus =
   | "waiting"
   | "interrupted";
 
+/** Per-agent live details from the transcript tail (tokens, cache, model).
+ * Mirrors the Rust `AgentEventDetails`; only the fields the UI renders. */
+export type AgentEventDetails = {
+  model?: string | null;
+  contextUsed?: number | null;
+  contextMax?: number | null;
+  /** Epoch ms when the prompt cache expires; null/absent = no cache activity. */
+  cacheExpiresAt?: number | null;
+  /** 300_000 (5m) or 3_600_000 (1h). */
+  cacheTtlMs?: number | null;
+  lastActivityAt?: number | null;
+};
+
 export type AgentEvent = {
   agent: string;
   session: string;
@@ -22,6 +35,7 @@ export type AgentEvent = {
   ts: number;
   threadName?: string;
   unseen?: boolean;
+  details?: AgentEventDetails | null;
 };
 
 /** One PTY shell inside a folder. "Agent" is a badge: `agentState` is set when
@@ -30,6 +44,10 @@ export type SessionData = {
   id: string;
   name: string;
   createdAt: number;
+  /** True when a PTY is currently running for this session (stamped by the
+   * app from its terminal registry). False = the session record exists but
+   * hasn't been started. */
+  live: boolean;
   unseen: boolean;
   agentState?: AgentEvent | null;
   agents: AgentEvent[];
@@ -47,6 +65,8 @@ export type FolderData = {
   commitsDelta: number;
   sessions: SessionData[];
   needs: number;
+  /** User-authored "what am I working toward here" (persisted per folder). */
+  purpose?: string | null;
 };
 
 /** A logical repo: the group of checkouts sharing a `git remote origin` URL. */
@@ -58,12 +78,44 @@ export type RepoData = {
   needs: number;
 };
 
+/** One in-app window: a named tiling of pane session-ids. */
+export type AgWindow = { id: string; name: string; panes: string[] };
+
+/** The whole window layout. Frontend-owned: mutated locally, saved debounced
+ * via `ab_save_windows`, hydrated once from `ab_get_state`. */
+export type WindowsPayload = { windows: AgWindow[]; activeWindow: string };
+
 export type StatePayload = {
   repos: RepoData[];
   theme?: string | null;
   preferredEditor: string;
+  /** Context-% at/above which a cold session shows the compact nudge. */
+  compactRecommendPercent: number;
+  /** Persisted window layout (hydration source only — see WindowsPayload). */
+  windows: WindowsPayload;
   ts: number;
 };
+
+/** Window identity colors for the rail group tags + window-strip squares.
+ * Deliberately distinct from the status hues (yellow/blue/red/green/orange)
+ * and accents (violet/amber/sky) so a group tag never reads as a state. */
+const WINDOW_COLORS = [
+  "bg-teal-500",
+  "bg-fuchsia-500",
+  "bg-lime-500",
+  "bg-rose-400",
+  "bg-indigo-400",
+];
+
+export function windowColor(wins: AgWindow[], windowId: string): string {
+  const i = wins.findIndex((w) => w.id === windowId);
+  return i < 0 ? "bg-muted-foreground/40" : WINDOW_COLORS[i % WINDOW_COLORS.length];
+}
+
+/** The window containing a session's pane, if any. */
+export function windowOf(wins: AgWindow[], sessionId: string): AgWindow | undefined {
+  return wins.find((w) => w.panes.includes(sessionId));
+}
 
 /** A session is an "agent" session iff Claude is running in it right now. */
 export function isAgent(s: SessionData): boolean {
@@ -97,6 +149,7 @@ export function claudeTitleName(raw: string | undefined): string | null {
 
 /** A one-liner status message for a session row. */
 export function sessionStatusText(s: SessionData): string {
+  if (!s.live) return "not started";
   const st = s.agentState;
   if (!st) return "idle";
   switch (st.status) {
@@ -120,12 +173,82 @@ export function isSoloRepo(r: RepoData): boolean {
   return r.folders.length === 1;
 }
 
-const EMPTY: StatePayload = { repos: [], preferredEditor: "", ts: 0 };
+// --- Cache & context health (Tier 3) ---
+
+/** Percent of the context window used (0 when unknown). */
+export function ctxPct(d: AgentEventDetails | null | undefined): number {
+  if (!d?.contextUsed || !d.contextMax) return 0;
+  return Math.round((d.contextUsed / d.contextMax) * 100);
+}
+
+/** A session is cache-cold when it never had cache activity or the TTL lapsed. */
+export function isCold(d: AgentEventDetails | null | undefined, now: number): boolean {
+  return !d?.cacheExpiresAt || now >= d.cacheExpiresAt;
+}
+
+/** The compact nudge: cold AND at/above the settings threshold. Warm-and-huge
+ * is fine to keep going — the cost only bites on a cold resume. */
+export function needsCompact(
+  d: AgentEventDetails | null | undefined,
+  now: number,
+  thresholdPct: number,
+): boolean {
+  return d != null && ctxPct(d) >= thresholdPct && isCold(d, now);
+}
+
+/** Board-wide tally of running agents, for the nav badge and rail header:
+ * "17 agents · 3 waiting · 1 busy · ❄2 to compact" at a glance. Counts only
+ * sessions where an agent is detected running (`agentState` set). */
+export type AgentRollup = {
+  total: number;
+  busy: number;
+  waiting: number;
+  error: number;
+  /** Running agents that are cold + over the compact threshold. */
+  compact: number;
+};
+
+export function agentRollup(
+  repos: RepoData[],
+  now: number,
+  compactThresholdPct: number,
+): AgentRollup {
+  const r: AgentRollup = { total: 0, busy: 0, waiting: 0, error: 0, compact: 0 };
+  for (const repo of repos)
+    for (const f of repo.folders)
+      for (const s of f.sessions) {
+        const st = s.agentState?.status;
+        if (!st) continue;
+        r.total += 1;
+        if (st === "busy") r.busy += 1;
+        else if (st === "waiting") r.waiting += 1;
+        else if (st === "error") r.error += 1;
+        if (needsCompact(s.agentState?.details, now, compactThresholdPct)) r.compact += 1;
+      }
+  return r;
+}
+
+const EMPTY_WINDOWS: WindowsPayload = { windows: [], activeWindow: "" };
+
+const EMPTY: StatePayload = {
+  repos: [],
+  preferredEditor: "",
+  compactRecommendPercent: 30,
+  windows: EMPTY_WINDOWS,
+  ts: 0,
+};
 
 /** Fake state for bare-browser dev (no Tauri), so the Folder Rail renders. */
+const MOCK_NOW = Date.now();
+
 const MOCK_STATE: StatePayload = {
   preferredEditor: "code",
-  ts: 0,
+  compactRecommendPercent: 30,
+  windows: {
+    windows: [{ id: "w1", name: "focus", panes: ["s0", "s2"] }],
+    activeWindow: "w1",
+  },
+  ts: 1,
   repos: [
     {
       key: "https://github.com/ChrisTowles/towles-tool-rs.git",
@@ -137,6 +260,7 @@ const MOCK_STATE: StatePayload = {
           name: "slot-0",
           dir: "/home/ctowles/code/p/towles-tool-rs-slot-0",
           branch: "feat/data-hub",
+          purpose: "Wire the data-hub store snapshot into the app shell.",
           isWorktree: false,
           filesChanged: 6,
           linesAdded: 88,
@@ -148,6 +272,7 @@ const MOCK_STATE: StatePayload = {
               id: "s0",
               name: "shell 1",
               createdAt: 0,
+              live: true,
               unseen: false,
               agentState: {
                 agent: "claude",
@@ -155,10 +280,18 @@ const MOCK_STATE: StatePayload = {
                 status: "busy",
                 ts: 0,
                 threadName: "store snapshot wiring",
+                details: {
+                  model: "claude-opus-4-8",
+                  contextUsed: 52_000,
+                  contextMax: 200_000,
+                  cacheExpiresAt: MOCK_NOW + 4 * 60_000,
+                  cacheTtlMs: 300_000,
+                  lastActivityAt: MOCK_NOW - 60_000,
+                },
               },
               agents: [],
             },
-            { id: "s1", name: "shell 2", createdAt: 0, unseen: false, agentState: null, agents: [] },
+            { id: "s1", name: "shell 2", createdAt: 0, live: false, unseen: false, agentState: null, agents: [] },
           ],
         },
         {
@@ -176,6 +309,7 @@ const MOCK_STATE: StatePayload = {
               id: "s2",
               name: "shell 1",
               createdAt: 0,
+              live: true,
               unseen: true,
               agentState: {
                 agent: "claude",
@@ -183,10 +317,18 @@ const MOCK_STATE: StatePayload = {
                 status: "waiting",
                 ts: 0,
                 threadName: "agentboard folder rail",
+                details: {
+                  model: "claude-opus-4-8",
+                  contextUsed: 116_000,
+                  contextMax: 200_000,
+                  cacheExpiresAt: MOCK_NOW - 11 * 60_000,
+                  cacheTtlMs: 300_000,
+                  lastActivityAt: MOCK_NOW - 16 * 60_000,
+                },
               },
               agents: [],
             },
-            { id: "s3", name: "shell 2", createdAt: 0, unseen: false, agentState: null, agents: [] },
+            { id: "s3", name: "shell 2", createdAt: 0, live: false, unseen: false, agentState: null, agents: [] },
           ],
         },
       ],
@@ -212,6 +354,7 @@ const MOCK_STATE: StatePayload = {
               id: "s4",
               name: "shell 1",
               createdAt: 0,
+              live: true,
               unseen: false,
               agentState: {
                 agent: "claude",

@@ -70,10 +70,13 @@ impl SessionStore {
         self.folders.iter().map(|(dir, list)| (dir.as_str(), list.as_slice()))
     }
 
-    /// Guarantee a folder has ≥1 session, seeding a default `shell 1` if empty.
-    /// Returns whether a record was created (caller persists on `true`).
+    /// Seed a default `shell 1` for a folder we've never seen before. A folder
+    /// whose sessions were all deliberately closed keeps its (empty) entry and
+    /// is NOT re-seeded — zero-session folders are a legitimate state the UI
+    /// renders as "no sessions". Returns whether a record was created (caller
+    /// persists on `true`).
     pub fn ensure_default(&mut self, dir: &str, now_ms: i64) -> bool {
-        if self.folders.get(dir).map(Vec::is_empty).unwrap_or(true) {
+        if !self.folders.contains_key(dir) {
             self.add(dir, None, now_ms);
             return true;
         }

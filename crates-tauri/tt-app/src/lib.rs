@@ -68,16 +68,12 @@ pub fn run() {
 
             // Debounced emitter: coalesce a burst of triggers into one rebuild + emit.
             {
-                let engine = engine.clone();
                 let emit = emit.clone();
                 tauri::async_runtime::spawn(async move {
                     loop {
                         emit.notified().await;
                         tokio::time::sleep(Duration::from_millis(200)).await;
-                        let payload = {
-                            let mut e = engine.lock().unwrap();
-                            e.compute_payload(now_ms())
-                        };
+                        let payload = agentboard::stamped_payload(&handle);
                         let _ = handle.emit(STATE_EVENT, payload);
                     }
                 });
@@ -155,6 +151,9 @@ pub fn run() {
             agentboard::ab_rename_session,
             agentboard::ab_close_session,
             agentboard::ab_refresh,
+            agentboard::ab_set_folder_purpose,
+            agentboard::ab_set_compact_percent,
+            agentboard::ab_save_windows,
             agentboard::ab_set_status,
             agentboard::ab_set_progress,
             agentboard::ab_log,
