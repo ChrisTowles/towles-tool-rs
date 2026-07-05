@@ -41,8 +41,23 @@ fn app_slot() -> String {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // WebdriverIO E2E plugins, only under `--features wdio` (see e2e/):
+    // tauri-plugin-wdio exposes the execute/mock IPC surface, and
+    // tauri-plugin-wdio-webdriver runs the in-app WebDriver server the
+    // @wdio/tauri-service embedded provider connects to.
+    #[cfg(feature = "wdio")]
+    let builder =
+        builder.plugin(tauri_plugin_wdio::init()).plugin(tauri_plugin_wdio_webdriver::init());
+
+    builder
         .setup(|app| {
+            // Register the wdio capability at runtime (feature-gated) so normal
+            // builds never reference the plugins' ACL and stay clean.
+            #[cfg(feature = "wdio")]
+            app.handle().add_capability(include_str!("../wdio-capability.json"))?;
+
             // Distinguish concurrent slot windows in the title bar / taskbar.
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.set_title(&format!("Towles Tool — {}", slot_label()));

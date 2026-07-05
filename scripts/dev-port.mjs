@@ -10,39 +10,17 @@
 //      start in different ranges instead of all racing for 1420.
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { slotBasePort } from "./slot-port.mjs";
+import { slotBasePort, loadEnvLocal } from "./slot-port.mjs";
 
 const MAX_ATTEMPTS = 100;
 const PORT_ENV = "TT_DEV_PORT";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-
-// Load `.env.local` (repo root) into process.env so a per-slot port can be
-// pinned without exporting it in the shell. Real env vars win over the file.
-function loadEnvLocal() {
-  let raw;
-  try {
-    raw = readFileSync(path.join(repoRoot, ".env.local"), "utf8");
-  } catch {
-    return; // no .env.local — fine.
-  }
-  for (const line of raw.split("\n")) {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (!match) continue;
-    const key = match[1];
-    let value = match[2];
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (!(key in process.env)) process.env[key] = value;
-  }
-}
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
 
 // A port is free only if BOTH loopback stacks are bindable: another slot may
 // hold it on IPv6 (::1) while IPv4 (127.0.0.1) looks open, and vite would still
@@ -64,17 +42,21 @@ async function findFreePort(start) {
   for (let port = start; port < start + MAX_ATTEMPTS; port++) {
     if (await isPortFree(port)) return port;
   }
-  throw new Error(`no free port found in range ${start}-${start + MAX_ATTEMPTS}`);
+  throw new Error(
+    `no free port found in range ${start}-${start + MAX_ATTEMPTS}`,
+  );
 }
 
-loadEnvLocal();
+loadEnvLocal(repoRoot);
 
 let port;
 const override = process.env[PORT_ENV];
 if (override !== undefined && override !== "") {
   port = Number(override);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-    console.error(`[dev-port] ${PORT_ENV}=${override} is not a valid port (1-65535)`);
+    console.error(
+      `[dev-port] ${PORT_ENV}=${override} is not a valid port (1-65535)`,
+    );
     process.exit(1);
   }
   console.log(`[dev-port] using ${PORT_ENV}=${port}`);
@@ -88,7 +70,11 @@ if (override !== undefined && override !== "") {
 
 const child = spawn(
   "tauri",
-  ["dev", "--config", JSON.stringify({ build: { devUrl: `http://localhost:${port}` } })],
+  [
+    "dev",
+    "--config",
+    JSON.stringify({ build: { devUrl: `http://localhost:${port}` } }),
+  ],
   {
     stdio: "inherit",
     env: { ...process.env, TT_DEV_PORT: String(port) },
