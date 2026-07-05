@@ -14,7 +14,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { resolveDevPort } from "./slot-port.mjs";
+import { resolveDevPort, resolveWebdriverPort } from "./slot-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -25,7 +25,7 @@ if (!devPort) {
   );
   process.exit(1);
 }
-const wdPort = Number(process.env.TT_E2E_WEBDRIVER_PORT) || devPort + 3000;
+const wdPort = resolveWebdriverPort(devPort);
 
 console.log(`[dev-drive] dev server ${devPort} · automation server ${wdPort}`);
 console.log(

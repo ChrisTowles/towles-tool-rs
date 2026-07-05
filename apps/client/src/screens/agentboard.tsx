@@ -296,7 +296,7 @@ export function AgentboardScreen() {
     setRepoQuery("");
     let active = true;
     void (async () => {
-      const found = await abInvoke<RepoCandidate[]>("ab_discover_repos", {});
+      const found = await abInvoke<RepoCandidate[]>("ab_discover_repos");
       if (active) setCandidates(found ?? []);
     })();
     return () => {

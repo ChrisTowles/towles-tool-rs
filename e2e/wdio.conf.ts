@@ -1,10 +1,11 @@
 import path from "node:path";
+import { resolveWebdriverPort } from "../scripts/slot-port.mjs";
 
 // Ports are injected by scripts/e2e.mjs (resolved from .env.local). The dev
 // server serves the wdio-enabled frontend; the embedded WebDriver server runs
 // inside the app on wdPort.
 const devPort = Number(process.env.TT_DEV_PORT) || 1420;
-const wdPort = Number(process.env.TT_E2E_WEBDRIVER_PORT) || devPort + 3000;
+const wdPort = resolveWebdriverPort(devPort);
 
 // Debug binary built with `--features wdio`. Run from repo root, so resolve cwd.
 const appBinary = path.resolve(process.cwd(), "target/debug/tt-app");

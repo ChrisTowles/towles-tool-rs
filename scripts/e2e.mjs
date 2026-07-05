@@ -17,7 +17,7 @@ import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveDevPort } from "./slot-port.mjs";
+import { resolveDevPort, resolveWebdriverPort } from "./slot-port.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -32,7 +32,7 @@ if (!devPort) {
   );
   process.exit(1);
 }
-const wdPort = Number(process.env.TT_E2E_WEBDRIVER_PORT) || devPort + 3000;
+const wdPort = resolveWebdriverPort(devPort);
 
 function tryConnect(port, host) {
   return new Promise((resolve) => {
