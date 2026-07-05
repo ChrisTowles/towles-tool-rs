@@ -1,120 +1,14 @@
-//! Data types for parsing Claude Code session JSONL files and building the
-//! treemap / bar-chart output. Ports `src/commands/graph/types.ts`.
+//! Output data types for building the treemap / bar-chart. Ports the output
+//! half of `src/commands/graph/types.ts`.
 //!
-//! The JSONL schema evolves, so input types ([`JournalEntry`], [`Message`],
-//! [`Usage`]) are modelled tolerantly: every field is optional, unknown fields
-//! are ignored, and content blocks are kept as raw [`serde_json::Value`] (the TS
-//! consumes them untyped). A malformed line is skipped rather than fatal.
-//!
-//! Output types ([`TreemapNode`], [`BarChartData`], etc.) serialize with
-//! camelCase keys and omit absent optional keys, matching the byte-shape the
-//! HTML template's JavaScript consumes.
+//! The Claude Code transcript **input** schema (`TranscriptEntry`, `Message`,
+//! `Usage`, `Content`) now lives in the shared [`tt_claude_code`] crate — the
+//! single quarantine for that internal, version-volatile format. This module
+//! keeps only tt-graph's own output types ([`TreemapNode`], [`BarChartData`],
+//! etc.), which serialize with camelCase keys and omit absent optional keys to
+//! match the byte-shape the HTML template's JavaScript consumes.
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-/// A single line from a session JSONL file. All fields tolerate absence.
-///
-/// The `custom-title` / `ai-title` line types and the `requestId` field are
-/// internal Claude Code transcript details and are version-volatile — Anthropic
-/// documents the entry format as internal. We parse them tolerantly (all fields
-/// optional, unknown fields ignored) and quarantine every schema assumption in
-/// this module; re-validate on a Claude Code upgrade whose changelog mentions
-/// session-title or transcript changes. (We evaluated the Agent SDK's
-/// `listSessions`/`getSessionMessages` instead: it's Node-only with no Rust
-/// binding, strips `requestId`, and conflates custom/ai titles — so direct
-/// JSONL parsing stays the source of truth. See issues #17/#18.)
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct JournalEntry {
-    #[serde(rename = "type", default)]
-    pub entry_type: String,
-    #[serde(rename = "sessionId", default)]
-    pub session_id: Option<String>,
-    #[serde(default)]
-    pub timestamp: Option<String>,
-    #[serde(default)]
-    pub message: Option<Message>,
-    #[serde(default)]
-    pub uuid: Option<String>,
-    /// Correlates streaming re-logs of the same assistant response; paired with
-    /// `message.id` it forms the dedup key ccusage/Claude-Code-Usage-Monitor use.
-    #[serde(rename = "requestId", default)]
-    pub request_id: Option<String>,
-    #[serde(rename = "gitBranch", default)]
-    pub git_branch: Option<String>,
-    #[serde(default)]
-    pub slug: Option<String>,
-    /// The user-set session title (from a `custom-title` line). Authoritative.
-    #[serde(rename = "customTitle", default)]
-    pub custom_title: Option<String>,
-    /// Claude Code's auto-generated title (from an `ai-title` line). Fallback.
-    #[serde(rename = "aiTitle", default)]
-    pub ai_title: Option<String>,
-}
-
-impl JournalEntry {
-    /// Dedup key `message.id:requestId`, present only when **both** ids exist.
-    ///
-    /// Claude Code re-logs the same assistant message's `usage` more than once
-    /// (streaming re-logs, compaction, sidechain copies); counting each line
-    /// inflates totals. Entries missing either id return `None` and are always
-    /// counted (never collapsed with other id-less entries).
-    pub fn dedup_key(&self) -> Option<String> {
-        let message_id = self.message.as_ref()?.id.as_deref()?;
-        let request_id = self.request_id.as_deref()?;
-        Some(format!("{message_id}:{request_id}"))
-    }
-}
-
-/// The `message` object on a [`JournalEntry`].
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Message {
-    /// The API message id (e.g. `msg_…`), half of the [`JournalEntry::dedup_key`].
-    #[serde(default)]
-    pub id: Option<String>,
-    #[serde(default)]
-    pub role: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub usage: Option<Usage>,
-    #[serde(default)]
-    pub content: Option<Content>,
-}
-
-/// Message content: either a bare string or an array of content blocks. Blocks
-/// are kept untyped (`serde_json::Value`) to tolerate the evolving schema.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum Content {
-    Text(String),
-    Blocks(Vec<Value>),
-}
-
-impl Content {
-    /// The content blocks, or `None` when the content is a bare string.
-    pub fn blocks(&self) -> Option<&[Value]> {
-        match self {
-            Content::Blocks(blocks) => Some(blocks),
-            Content::Text(_) => None,
-        }
-    }
-}
-
-/// Token-usage accounting attached to an assistant message.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Usage {
-    #[serde(default)]
-    pub input_tokens: Option<i64>,
-    #[serde(default)]
-    pub output_tokens: Option<i64>,
-    #[serde(default)]
-    pub cache_read_input_tokens: Option<i64>,
-    /// Tokens written into the prompt cache. The majority of tokens in practice,
-    /// so omitting it understates cache volume.
-    #[serde(default)]
-    pub cache_creation_input_tokens: Option<i64>,
-}
+use serde::Serialize;
 
 /// An individual tool call with token attribution, used in tooltips and
 /// treemap children. Ports `ToolData` from `types.ts`.

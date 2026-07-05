@@ -3,7 +3,8 @@
 
 use serde_json::Value;
 
-use crate::types::{Content, ToolData};
+use crate::types::ToolData;
+use tt_claude_code::Content;
 
 /// Replace runs of control characters (ASCII 0–31) with a single space and
 /// trim. Ports `sanitizeString`.

@@ -11,9 +11,9 @@ use crate::analyzer::{
     get_primary_model,
 };
 use crate::labels::extract_session_label;
-use crate::parser::read_jsonl;
 use crate::tools::extract_tool_data;
-use crate::types::{JournalEntry, SessionResult, TreemapNode};
+use crate::types::{SessionResult, TreemapNode};
+use tt_claude_code::{TranscriptEntry, parse_transcript_file};
 
 /// First 8 characters of a session ID.
 fn short_id(session_id: &str) -> String {
@@ -23,7 +23,7 @@ fn short_id(session_id: &str) -> String {
 /// Build turn-level nodes from session entries. Ports `buildTurnNodes`.
 pub fn build_turn_nodes(
     session_id: &str,
-    entries: &[JournalEntry],
+    entries: &[TranscriptEntry],
     file_path: Option<&Path>,
 ) -> Vec<TreemapNode> {
     let mut children = Vec::new();
@@ -129,7 +129,7 @@ pub fn build_turn_nodes(
 }
 
 /// Build the treemap for a single session. Ports `buildSessionTreemap`.
-pub fn build_session_treemap(session_id: &str, entries: &[JournalEntry]) -> TreemapNode {
+pub fn build_session_treemap(session_id: &str, entries: &[TranscriptEntry]) -> TreemapNode {
     TreemapNode {
         name: format!("Session {}", short_id(session_id)),
         children: Some(build_turn_nodes(session_id, entries, None)),
@@ -141,7 +141,7 @@ pub fn build_session_treemap(session_id: &str, entries: &[JournalEntry]) -> Tree
 ///
 /// Deviation: the TS uses `new Date(ts).toLocaleTimeString()`, whose exact
 /// format is locale-dependent. We emit a fixed `%H:%M:%S`.
-fn start_time(entries: &[JournalEntry]) -> Option<String> {
+fn start_time(entries: &[TranscriptEntry]) -> Option<String> {
     let ts = entries.first()?.timestamp.as_deref()?;
     let parsed = DateTime::parse_from_rfc3339(ts).ok()?;
     let local: DateTime<Local> = parsed.with_timezone(&Local);
@@ -200,7 +200,7 @@ pub fn build_all_sessions_treemap(sessions: &[SessionResult]) -> Result<TreemapN
             let mut session_children: Vec<TreemapNode> = Vec::new();
 
             for session in date_sessions {
-                let entries = read_jsonl(&session.path);
+                let entries = parse_transcript_file(&session.path);
                 let analysis = analyze_session(&entries);
                 // Prefer the explicit session title (custom-title > ai-title,
                 // already clean) over the heuristic label derived from message
@@ -273,15 +273,20 @@ pub fn build_all_sessions_treemap(sessions: &[SessionResult]) -> Result<TreemapN
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Content, Message, Usage};
     use serde_json::{Value, json};
+    use tt_claude_code::{Content, Message, Usage};
 
     fn tool_use_block(name: &str, input: Value) -> Value {
         json!({ "type": "tool_use", "id": "t", "name": name, "input": input })
     }
 
-    fn assistant_entry(model: &str, input: i64, output: i64, content: Vec<Value>) -> JournalEntry {
-        JournalEntry {
+    fn assistant_entry(
+        model: &str,
+        input: i64,
+        output: i64,
+        content: Vec<Value>,
+    ) -> TranscriptEntry {
+        TranscriptEntry {
             entry_type: "assistant".to_string(),
             message: Some(Message {
                 role: Some("assistant".to_string()),
@@ -298,8 +303,8 @@ mod tests {
         }
     }
 
-    fn user_entry(input: i64, output: i64) -> JournalEntry {
-        JournalEntry {
+    fn user_entry(input: i64, output: i64) -> TranscriptEntry {
+        TranscriptEntry {
             entry_type: "user".to_string(),
             message: Some(Message {
                 role: Some("user".to_string()),

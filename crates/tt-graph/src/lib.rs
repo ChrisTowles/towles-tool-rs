@@ -53,19 +53,19 @@ pub use analyzer::{
 };
 pub use format::{SessionRow, build_session_rows, format_csv, format_json};
 pub use labels::extract_session_label;
-pub use parser::{
-    HasMtime, calculate_cutoff_ms, filter_by_days, parse_jsonl, parse_session_title,
-    parse_session_title_str, quick_token_count, quick_token_count_str, read_jsonl,
-};
+pub use parser::{HasMtime, calculate_cutoff_ms, filter_by_days};
 pub use render::generate_treemap_html;
 pub use sessions::{
     build_bar_chart_data, find_recent_sessions, find_session_path, session_result_for_path,
 };
 pub use tools::{extract_tool_data, extract_tool_detail, sanitize_string, truncate_detail};
 pub use treemap::{build_all_sessions_treemap, build_session_treemap, build_turn_nodes};
-pub use types::{
-    BarChartData, BarChartDay, Content, JournalEntry, Message, ProjectBar, SessionResult, ToolData,
-    TreemapNode, Usage,
+pub use types::{BarChartData, BarChartDay, ProjectBar, SessionResult, ToolData, TreemapNode};
+// The Claude Code transcript schema + parse/title/usage projections now live in
+// the shared crate; re-export the pieces tt-graph's consumers (the CLI) use so
+// they need not depend on tt-claude-code directly.
+pub use tt_claude_code::{
+    Content, Message, TranscriptEntry, Usage, parse_transcript, parse_transcript_file,
 };
 
 /// Valid output formats for the `graph` command. Ports `OutputFormat`.
