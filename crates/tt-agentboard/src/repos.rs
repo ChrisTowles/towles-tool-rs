@@ -7,6 +7,7 @@
 //! never reads it — and it sits beside `session-order.json` which established
 //! the per-file pattern. Path-parameterized so tests use a tempdir.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -125,6 +126,42 @@ fn scan_git(dir: &Path, depth: usize, max_depth: usize, out: &mut Vec<String>) {
         }
         scan_git(&path, depth + 1, max_depth, out);
     }
+}
+
+/// Auto-discover slot siblings (`tt:parallel-slots` convention: a container
+/// dir named `<repo>-repos/` holding clones like `<repo>-slot-N`). For each
+/// configured path whose parent is such a container, add every sibling git
+/// checkout not already present. Purely additive and computed fresh on every
+/// call — never persisted to `repos.json`, so the configured list stays the
+/// source of truth for add/remove; a newly created slot just appears next
+/// scan with no "Add Repo" step.
+pub fn expand_slot_siblings(repo_paths: &[String]) -> Vec<String> {
+    let mut seen: HashSet<String> = repo_paths.iter().cloned().collect();
+    let mut out = repo_paths.to_vec();
+    for path in repo_paths {
+        let Some(parent) = Path::new(path).parent() else {
+            continue;
+        };
+        let is_slot_container =
+            parent.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with("-repos"));
+        if !is_slot_container {
+            continue;
+        }
+        let Ok(read_dir) = std::fs::read_dir(parent) else {
+            continue;
+        };
+        for entry in read_dir.flatten() {
+            let sibling = entry.path();
+            if !sibling.is_dir() || !sibling.join(".git").exists() {
+                continue;
+            }
+            let Some(s) = sibling.to_str() else { continue };
+            if seen.insert(s.to_string()) {
+                out.push(s.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Add `path` if not already present. Returns whether it was added.
@@ -345,5 +382,57 @@ mod tests {
         // A repo whose name contains a literal dash encodes unambiguously here.
         let entries = repo_entries(&paths(&["/home/u/my-proj"]));
         assert_eq!(resolve_session_name("-home-u-my-proj", &entries).as_deref(), Some("my-proj"));
+    }
+
+    fn git_repo(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(".git"), "gitdir: /elsewhere").unwrap();
+    }
+
+    #[test]
+    fn expand_slot_siblings_adds_unregistered_git_dirs_in_a_repos_container() {
+        let root = TempDir::new().unwrap();
+        let container = root.path().join("proj-repos");
+        git_repo(&container.join("proj-slot-1")); // registered
+        git_repo(&container.join("proj-slot-2")); // discovered
+        std::fs::create_dir_all(container.join("not-a-repo")).unwrap(); // no .git, skipped
+
+        let registered = paths(&[container.join("proj-slot-1").to_str().unwrap()]);
+        let expanded = expand_slot_siblings(&registered);
+        assert_eq!(expanded.len(), 2);
+        assert!(expanded.contains(&container.join("proj-slot-1").to_str().unwrap().to_string()));
+        assert!(expanded.contains(&container.join("proj-slot-2").to_str().unwrap().to_string()));
+    }
+
+    #[test]
+    fn expand_slot_siblings_ignores_non_container_parents() {
+        // Parent dir doesn't end in "-repos" → no expansion, even if it has git siblings.
+        let root = TempDir::new().unwrap();
+        let plain = root.path().join("code");
+        git_repo(&plain.join("alpha"));
+        git_repo(&plain.join("beta"));
+
+        let registered = paths(&[plain.join("alpha").to_str().unwrap()]);
+        assert_eq!(expand_slot_siblings(&registered), registered);
+    }
+
+    #[test]
+    fn expand_slot_siblings_dedupes_already_registered() {
+        let root = TempDir::new().unwrap();
+        let container = root.path().join("proj-repos");
+        git_repo(&container.join("proj-slot-1"));
+        git_repo(&container.join("proj-slot-2"));
+
+        let registered = paths(&[
+            container.join("proj-slot-1").to_str().unwrap(),
+            container.join("proj-slot-2").to_str().unwrap(),
+        ]);
+        assert_eq!(expand_slot_siblings(&registered).len(), 2);
+    }
+
+    #[test]
+    fn expand_slot_siblings_handles_missing_container() {
+        let registered = paths(&["/no/such/proj-repos/proj-slot-1"]);
+        assert_eq!(expand_slot_siblings(&registered), registered);
     }
 }
