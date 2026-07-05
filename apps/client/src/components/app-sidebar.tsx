@@ -7,7 +7,9 @@ import { cn } from "@/lib/utils";
 
 export function AppSidebar() {
   const { activeTab, openTab } = useWorkspace();
-  const rollup = agentRollup(useAgentboardState().repos);
+  const state = useAgentboardState();
+  // Coldness flips at most once per TTL; re-render on each state event is enough.
+  const rollup = agentRollup(state.repos, Date.now(), state.compactRecommendPercent);
 
   return (
     <ScrollArea className="h-full">
@@ -39,6 +41,11 @@ export function AppSidebar() {
                       {rollup.busy > 0 && <MiniDot className="bg-yellow-500" n={rollup.busy} />}
                       {rollup.waiting > 0 && <MiniDot className="bg-blue-500" n={rollup.waiting} />}
                       {rollup.error > 0 && <MiniDot className="bg-red-500" n={rollup.error} />}
+                      {rollup.compact > 0 && (
+                        <span className="text-sky-500" title="cold sessions worth compacting">
+                          ❄{rollup.compact}
+                        </span>
+                      )}
                     </span>
                   )}
                 </Button>

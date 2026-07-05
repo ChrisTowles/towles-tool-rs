@@ -14,7 +14,7 @@ going.
 | 0 | Rollup tally | **done** — `agentRollup()` selector; nav badge in app-sidebar; `RollupChip` atop the rail |
 | 1 | Session liveness + empty states | **done** — `SessionData.live` stamped in tt-app (`stamp_live`/`stamped_payload`); PTY start/exit/kill nudge the emitter; hollow ring + "not started" + zero-session folders |
 | 2 | Folder purpose | not started |
-| 3 | Cache health + settings | not started |
+| 3 | Cache health + settings | **done** — details (ctx/cache) were already on `AgentEventDetails`; added `compactRecommendPercent` (tt-config, StatePayload, `ab_set_compact_percent`), `ctxPct/isCold/needsCompact` selectors, CacheBadge rows, ❄ rollup buckets, ⚙ settings popover w/ slider |
 | 4 | Start / Stop / Compact / Restart | not started |
 | 5 | Windows / panes / grouping | not started |
 
@@ -50,6 +50,11 @@ User approved all plan recommendations (2026-07-05).
 
 ## Deviations
 
+- **[Tier 3] no new `AgentUsage` struct** — the planned payload type already
+  existed: `AgentEventDetails` carries `contextUsed/contextMax/cacheExpiresAt/
+  cacheTtlMs/lastActivityAt` and the claude watcher populates it. Only the
+  threshold setting + frontend selectors were new.
+
 - **[Tier 1] `ensure_default` seeds only never-seen folders** (key absent from
   sessions.json), not any empty folder. The old behavior re-seeded `shell 1` on
   every recompute, which would make "close the last session" impossible —
@@ -58,6 +63,10 @@ User approved all plan recommendations (2026-07-05).
 
 ## Verification log
 
+- **Rebase (2026-07-05):** work moved to `feat/agentboard-lifecycle`, rebased
+  onto origin/main (+6 commits incl. context-max 1M fix); 118 tests green after.
+- **Tier 2+3 (2026-07-05):** `cargo test -p tt-agentboard -p tt-config` 118+7
+  passed · workspace clippy 0 warnings · client tsc + vite build clean.
 - **Tier 0+1 (2026-07-05):** `cargo test -p tt-agentboard` 111 passed ·
   `cargo clippy -p tt-agentboard -p tt-app --all-targets` 0 warnings ·
   `apps/client npx tsc --noEmit` clean · `vite build` clean.

@@ -15,6 +15,19 @@ export type AgentStatus =
   | "waiting"
   | "interrupted";
 
+/** Per-agent live details from the transcript tail (tokens, cache, model).
+ * Mirrors the Rust `AgentEventDetails`; only the fields the UI renders. */
+export type AgentEventDetails = {
+  model?: string | null;
+  contextUsed?: number | null;
+  contextMax?: number | null;
+  /** Epoch ms when the prompt cache expires; null/absent = no cache activity. */
+  cacheExpiresAt?: number | null;
+  /** 300_000 (5m) or 3_600_000 (1h). */
+  cacheTtlMs?: number | null;
+  lastActivityAt?: number | null;
+};
+
 export type AgentEvent = {
   agent: string;
   session: string;
@@ -22,6 +35,7 @@ export type AgentEvent = {
   ts: number;
   threadName?: string;
   unseen?: boolean;
+  details?: AgentEventDetails | null;
 };
 
 /** One PTY shell inside a folder. "Agent" is a badge: `agentState` is set when
@@ -68,6 +82,8 @@ export type StatePayload = {
   repos: RepoData[];
   theme?: string | null;
   preferredEditor: string;
+  /** Context-% at/above which a cold session shows the compact nudge. */
+  compactRecommendPercent: number;
   ts: number;
 };
 
@@ -127,13 +143,47 @@ export function isSoloRepo(r: RepoData): boolean {
   return r.folders.length === 1;
 }
 
-/** Board-wide tally of running agents, for the nav badge and rail header:
- * "17 agents · 3 waiting · 1 busy" at a glance. Counts only sessions where an
- * agent is detected running (`agentState` set); plain shells don't count. */
-export type AgentRollup = { total: number; busy: number; waiting: number; error: number };
+// --- Cache & context health (Tier 3) ---
 
-export function agentRollup(repos: RepoData[]): AgentRollup {
-  const r: AgentRollup = { total: 0, busy: 0, waiting: 0, error: 0 };
+/** Percent of the context window used (0 when unknown). */
+export function ctxPct(d: AgentEventDetails | null | undefined): number {
+  if (!d?.contextUsed || !d.contextMax) return 0;
+  return Math.round((d.contextUsed / d.contextMax) * 100);
+}
+
+/** A session is cache-cold when it never had cache activity or the TTL lapsed. */
+export function isCold(d: AgentEventDetails | null | undefined, now: number): boolean {
+  return !d?.cacheExpiresAt || now >= d.cacheExpiresAt;
+}
+
+/** The compact nudge: cold AND at/above the settings threshold. Warm-and-huge
+ * is fine to keep going — the cost only bites on a cold resume. */
+export function needsCompact(
+  d: AgentEventDetails | null | undefined,
+  now: number,
+  thresholdPct: number,
+): boolean {
+  return d != null && ctxPct(d) >= thresholdPct && isCold(d, now);
+}
+
+/** Board-wide tally of running agents, for the nav badge and rail header:
+ * "17 agents · 3 waiting · 1 busy · ❄2 to compact" at a glance. Counts only
+ * sessions where an agent is detected running (`agentState` set). */
+export type AgentRollup = {
+  total: number;
+  busy: number;
+  waiting: number;
+  error: number;
+  /** Running agents that are cold + over the compact threshold. */
+  compact: number;
+};
+
+export function agentRollup(
+  repos: RepoData[],
+  now: number,
+  compactThresholdPct: number,
+): AgentRollup {
+  const r: AgentRollup = { total: 0, busy: 0, waiting: 0, error: 0, compact: 0 };
   for (const repo of repos)
     for (const f of repo.folders)
       for (const s of f.sessions) {
@@ -143,15 +193,19 @@ export function agentRollup(repos: RepoData[]): AgentRollup {
         if (st === "busy") r.busy += 1;
         else if (st === "waiting") r.waiting += 1;
         else if (st === "error") r.error += 1;
+        if (needsCompact(s.agentState?.details, now, compactThresholdPct)) r.compact += 1;
       }
   return r;
 }
 
-const EMPTY: StatePayload = { repos: [], preferredEditor: "", ts: 0 };
+const EMPTY: StatePayload = { repos: [], preferredEditor: "", compactRecommendPercent: 30, ts: 0 };
 
 /** Fake state for bare-browser dev (no Tauri), so the Folder Rail renders. */
+const MOCK_NOW = Date.now();
+
 const MOCK_STATE: StatePayload = {
   preferredEditor: "code",
+  compactRecommendPercent: 30,
   ts: 0,
   repos: [
     {
@@ -184,6 +238,14 @@ const MOCK_STATE: StatePayload = {
                 status: "busy",
                 ts: 0,
                 threadName: "store snapshot wiring",
+                details: {
+                  model: "claude-opus-4-8",
+                  contextUsed: 52_000,
+                  contextMax: 200_000,
+                  cacheExpiresAt: MOCK_NOW + 4 * 60_000,
+                  cacheTtlMs: 300_000,
+                  lastActivityAt: MOCK_NOW - 60_000,
+                },
               },
               agents: [],
             },
@@ -213,6 +275,14 @@ const MOCK_STATE: StatePayload = {
                 status: "waiting",
                 ts: 0,
                 threadName: "agentboard folder rail",
+                details: {
+                  model: "claude-opus-4-8",
+                  contextUsed: 116_000,
+                  contextMax: 200_000,
+                  cacheExpiresAt: MOCK_NOW - 11 * 60_000,
+                  cacheTtlMs: 300_000,
+                  lastActivityAt: MOCK_NOW - 16 * 60_000,
+                },
               },
               agents: [],
             },

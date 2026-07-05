@@ -11,11 +11,16 @@ import {
 import { TerminalView } from "@/components/terminal-view";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Slider } from "@/components/ui/slider";
 import {
   agentRollup,
   claudeTitleName,
+  ctxPct,
   isAgent,
+  isCold,
   isSoloRepo,
+  needsCompact,
   sessionLabel,
   sessionNeeds,
   sessionStatusText,
@@ -24,6 +29,7 @@ import {
   type FolderData,
   type RepoData,
   type SessionData,
+  type StatePayload,
 } from "@/lib/agentboard";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { useWorkspace } from "@/lib/workspace";
@@ -41,6 +47,17 @@ async function abInvoke<T>(cmd: string, args: Record<string, unknown>): Promise<
 
 type Selected = { folderDir: string; sessionId: string } | null;
 
+/** Wall clock ticking every `intervalMs` — drives cache-warmth countdowns.
+ * 30s granularity keeps the rail calm (badges show minutes, not seconds). */
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(t);
+  }, [intervalMs]);
+  return now;
+}
+
 /**
  * Agentboard — the Folder Rail. Left: repos → folders (checkouts) → PTY sessions,
  * with a compact needs-you strip (failing PRs + next meeting) pinned on top.
@@ -54,7 +71,7 @@ export function AgentboardScreen() {
   const state = useAgentboardState();
   const { snapshot } = useStoreSnapshot();
   const { openTab } = useWorkspace();
-  const now = Date.now();
+  const now = useNow(30_000);
 
   const [selected, setSelected] = useState<Selected>(null);
   // Session ids whose PTY is mounted (kept alive for scrollback), + their cwd.
@@ -155,7 +172,7 @@ export function AgentboardScreen() {
     <div className="flex h-full min-h-0">
       {/* Rail: rollup tally + attention strip + Repo → Folder → Session tree. */}
       <div className="flex w-80 shrink-0 flex-col border-r">
-        <RollupChip repos={repos} />
+        <RollupChip state={state} now={now} />
         {attention.length > 0 && (
           <div className="flex flex-col gap-1 border-b p-2">
             {attention.map((a) => (
@@ -194,6 +211,8 @@ export function AgentboardScreen() {
               <RepoGroup
                 key={repo.key}
                 repo={repo}
+                now={now}
+                compactPct={state.compactRecommendPercent}
                 selected={selected}
                 collapsed={collapsed}
                 renaming={renaming}
@@ -285,9 +304,15 @@ export function AgentboardScreen() {
 }
 
 /** The board-wide agent tally pinned atop the rail: total + non-zero status
- * buckets. Quiet ("no agents running") when the board is at rest. */
-function RollupChip({ repos }: { repos: RepoData[] }) {
-  const r = agentRollup(repos);
+ * buckets + a ❄ compact count, with the Agentboard settings (compact
+ * threshold) behind the trailing ⚙. Quiet when the board is at rest. */
+function RollupChip({ state, now }: { state: StatePayload; now: number }) {
+  const threshold = state.compactRecommendPercent;
+  const r = agentRollup(state.repos, now, threshold);
+  // Track the slider locally while dragging; commit on release.
+  const [draft, setDraft] = useState<number | null>(null);
+  const pct = draft ?? threshold;
+
   return (
     <div className="flex items-center gap-2.5 border-b bg-card px-3 py-2 font-mono text-[11px]">
       {r.total === 0 ? (
@@ -300,8 +325,48 @@ function RollupChip({ repos }: { repos: RepoData[] }) {
           {r.busy > 0 && <RollupBucket className="bg-yellow-500" n={r.busy} />}
           {r.waiting > 0 && <RollupBucket className="bg-blue-500" n={r.waiting} />}
           {r.error > 0 && <RollupBucket className="bg-red-500" n={r.error} />}
+          {r.compact > 0 && (
+            <span className="text-sky-500" title="cold sessions worth compacting">
+              ❄{r.compact}
+            </span>
+          )}
         </>
       )}
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            title="Agentboard settings"
+            className="ml-auto text-muted-foreground/60 hover:text-foreground"
+          >
+            ⚙
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-72">
+          <div className="flex flex-col gap-3">
+            <div className="text-sm font-medium">Agentboard settings</div>
+            <div className="text-xs text-muted-foreground">
+              Recommend compacting a cold session at or above{" "}
+              <span className="font-mono text-sky-500">{pct}%</span> context.
+            </div>
+            <Slider
+              min={10}
+              max={90}
+              step={5}
+              value={[pct]}
+              onValueChange={([v]) => setDraft(v)}
+              onValueCommit={([v]) => {
+                setDraft(null);
+                void abInvoke("ab_set_compact_percent", { percent: v });
+              }}
+            />
+            <div className="text-[11px] text-muted-foreground/70">
+              Past this threshold, a session whose prompt cache expired shows the ❄ compact
+              nudge. Stored in the shared towles-tool settings file.
+            </div>
+          </div>
+        </PopoverContent>
+      </Popover>
     </div>
   );
 }
@@ -351,6 +416,8 @@ function Dot({ session }: { session: SessionData }) {
 
 function RepoGroup({
   repo,
+  now,
+  compactPct,
   selected,
   collapsed,
   renaming,
@@ -362,6 +429,8 @@ function RepoGroup({
   onRenameCommit,
 }: {
   repo: RepoData;
+  now: number;
+  compactPct: number;
   selected: Selected;
   collapsed: Record<string, boolean>;
   renaming: string | null;
@@ -391,6 +460,8 @@ function RepoGroup({
         <SessionRow
           key={s.id}
           session={s}
+          now={now}
+          compactPct={compactPct}
           title={titles[s.id]}
           active={selected?.sessionId === s.id}
           renaming={renaming === s.id}
@@ -574,6 +645,8 @@ function FolderHeader({
 
 function SessionRow({
   session,
+  now,
+  compactPct,
   title,
   active,
   renaming,
@@ -582,6 +655,8 @@ function SessionRow({
   onRenameCommit,
 }: {
   session: SessionData;
+  now: number;
+  compactPct: number;
   title?: string;
   active: boolean;
   renaming: boolean;
@@ -629,14 +704,61 @@ function SessionRow({
               {session.name}
             </span>
           )}
-          <span className="ml-auto truncate text-[11px] text-muted-foreground">
-            {sessionStatusText(session)}
+          <span className="ml-auto flex shrink-0 items-center gap-2">
+            <CacheBadge session={session} now={now} compactPct={compactPct} />
+            <span className="truncate text-[11px] text-muted-foreground">
+              {sessionStatusText(session)}
+            </span>
           </span>
           {needs && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
         </>
       )}
     </div>
   );
+}
+
+/** Context/cache health for a live agent session, in the row's meta cluster.
+ * Quiet mono text: `41% ◔4m` while warm (⧗ for a 1h cache), `41% ❄` when cold,
+ * and an ice-washed `❄ 63% compact` pill when cold at/over the threshold. */
+function CacheBadge({
+  session,
+  now,
+  compactPct,
+}: {
+  session: SessionData;
+  now: number;
+  compactPct: number;
+}) {
+  const d = session.agentState?.details;
+  if (!session.live || !d?.contextUsed || !d.contextMax) return null;
+  const pct = ctxPct(d);
+  const cold = isCold(d, now);
+
+  if (needsCompact(d, now, compactPct)) {
+    return (
+      <span
+        title={`${pct}% of context used and the prompt cache expired — resuming re-reads everything. Consider /compact or a fresh session.`}
+        className="shrink-0 rounded-md border border-sky-500/50 bg-sky-500/10 px-1.5 font-mono text-[10.5px] text-sky-500"
+      >
+        ❄ {pct}% compact
+      </span>
+    );
+  }
+
+  const warmth = cold ? "❄" : `${d.cacheTtlMs === 3_600_000 ? "⧗" : "◔"}${fmtMins(d.cacheExpiresAt! - now)}`;
+  return (
+    <span
+      title={cold ? "prompt cache expired" : "prompt cache warm — time left"}
+      className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70"
+    >
+      {pct}% {warmth}
+    </span>
+  );
+}
+
+/** Millis → whole minutes for the cache countdown, floored at 1 ("<1m" ≈ 1m). */
+function fmtMins(ms: number): string {
+  return `${Math.max(1, Math.round(ms / 60_000))}m`;
 }
 
 function NeedsBadge({ n, className }: { n: number; className?: string }) {
