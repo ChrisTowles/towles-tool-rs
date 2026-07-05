@@ -4,13 +4,14 @@ A Rust rewrite of the [`towles-tool`](https://github.com/ChrisTowles/towles-tool
 CLI, paired with a [Tauri 2](https://v2.tauri.app/) desktop shell. The repository
 is built from the [Yaak](https://github.com/mountain-loop/yaak) golden template —
 a Cargo workspace with Tauri-free shared crates, a `clap` CLI, and a React + Vite
-frontend.
+frontend. It also ships the `tt` Claude Code plugin (see below).
 
 During the migration the Rust binary is named **`ttr`**. Once it reaches feature
 parity with the TypeScript CLI, it takes over the `tt` name in a hard cutover.
 
 > **Status:** in progress. The scaffold plus config, doctor, journal, GitHub
-> helpers, install, and graph are ported. Features land one at a time — see
+> helpers, install, graph, the data-hub store/collectors, the MCP server, and
+> the Agentboard app screens are ported. Features land one at a time — see
 > [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ## Quick start
@@ -29,11 +30,36 @@ npm install
 npm run dev      # tauri dev — launches the app with the Vite frontend
 ```
 
+The app is a day-focus shell: **Cockpit** (next-meeting countdown + PRs + issue
+queue), **Board** (cross-repo kanban over local todos), and **Agentboard**
+(watched repos with live per-repo terminals). Each worktree slot picks its own
+dev-server port automatically, so multiple slots run concurrently.
+
 **Run the CLI**
 
 ```sh
 cargo run -p tt-cli -- doctor
 ```
+
+## Claude Code plugin
+
+The repo doubles as a Claude Code plugin marketplace. The `tt` plugin (in
+[`packages/core`](packages/core/README.md)) packages the map-vs-territory
+workflow commands, numbered so they sort in workflow order — `0x` before
+implementation (`/tt:01-blindspot`, `/tt:02-brainstorm`, `/tt:03-interview`,
+`/tt:04-references`), `1x` plan/during (`/tt:10-plan`), `2x` after
+(`/tt:20-pitch`, `/tt:21-comprehend`) — plus the `towles-tool` and
+`parallel-slots` skills.
+
+Install it in Claude Code:
+
+```sh
+claude plugin marketplace add ChrisTowles/towles-tool-rs
+claude plugin enable tt@towles-tool
+```
+
+Already installed? Pull the latest version with
+`claude plugin marketplace update towles-tool`.
 
 ## Commands
 
@@ -45,6 +71,9 @@ The CLI binary is `ttr`. Run any command with `--help` for its flags.
 - `gh pr|branch|branch-clean` — open a PR from the current branch, create a branch from a GitHub issue, or delete merged branches (`pr` is an alias for `gh pr`).
 - `install [-o/--observability]` — apply recommended Claude Code settings and ensure required plugins.
 - `graph [-s/--session] [--days N] [-f html|json|csv] [--open/--no-open]` — token-usage treemap from session data; HTML report to `~/.claude/reports`, or JSON/CSV to stdout.
+- `agentboard repos|sessions` — manage the watched-repo list and per-folder PTY sessions the app and collectors read.
+- `collect calendar|issues|prs|all` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`.
+- `mcp serve` — stdio MCP server exposing the store, live agent sessions, and `journal_append` (register with `claude mcp add tt -- ttr mcp serve`).
 
 ## Crates
 
@@ -55,11 +84,17 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-journal` — journal/note logic and date-token path templating.
 - `crates/tt-git` — git/GitHub helpers (branch names, PR content, issue parsing).
 - `crates/tt-graph` — session token accounting and treemap/JSON/CSV/HTML rendering.
+- `crates/tt-claude-code` — shared Claude Code transcript parsing (session JSONL, titles, token usage, model table).
+- `crates/tt-store` — the data-hub SQLite store (events, kanban todos, issues, PR status, collector freshness).
+- `crates/tt-collect` — collectors that fill the store: calendar via `claude -p`, issues/PRs via `gh`.
+- `crates/tt-agentboard` — watched-repo and agent-session tracking behind the Agentboard screen.
+- `crates/tt-mcp` — stdio JSON-RPC MCP server over the store and live sessions.
 - `crates-cli/tt-cli` — the `clap` CLI (binary `ttr`).
 - `crates-tauri/tt-app` — the Tauri 2 desktop shell; `apps/client` is its React + Vite frontend.
 
 ## More
 
+- [packages/core/README.md](packages/core/README.md) — the `tt` Claude Code plugin in detail
 - [ATTRIBUTION.md](ATTRIBUTION.md) — derivation from Yaak and its MIT license
 - [docs/MIGRATION.md](docs/MIGRATION.md) — the feature-port backlog
 - [CLAUDE.md](CLAUDE.md) — project instructions and architecture
