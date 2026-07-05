@@ -47,6 +47,9 @@ export type SessionData = {
    * app from its terminal registry). False = the session record exists but
    * hasn't been started. */
   live: boolean;
+  /** The shell's display name ("zsh", "bash", …), resolved once at PTY spawn
+   * time (stamped by the app, same as `live`). Null until the session starts. */
+  shellKind?: string | null;
   unseen: boolean;
   agentState?: AgentEvent | null;
   agents: AgentEvent[];

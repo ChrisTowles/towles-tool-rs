@@ -165,7 +165,8 @@ fn build_folder(
                 id: r.id.clone(),
                 name: r.name.clone(),
                 created_at: r.created_at,
-                live: false, // stamped by the app from its PTY registry
+                live: false,      // stamped by the app from its PTY registry
+                shell_kind: None, // stamped by the app from its PTY registry
                 unseen,
                 agent_state,
                 agents,
