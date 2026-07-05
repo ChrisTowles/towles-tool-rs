@@ -152,6 +152,8 @@ pub fn run() {
             agentboard::ab_add_repo,
             agentboard::ab_remove_repo,
             agentboard::ab_discover_repos,
+            agentboard::ab_get_scan_roots,
+            agentboard::ab_set_scan_roots,
             agentboard::ab_add_session,
             agentboard::ab_rename_session,
             agentboard::ab_close_session,

@@ -31,6 +31,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
+  abInvoke,
   claudeTitleName,
   isAgent,
   isSoloRepo,
@@ -47,19 +48,6 @@ import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { useWorkspace } from "@/lib/workspace";
 
 /** Invoke a Tauri `ab_*` command; no-op (null) in bare-browser dev. */
-async function abInvoke<T>(
-  cmd: string,
-  args: Record<string, unknown>,
-): Promise<T | null> {
-  if (!("__TAURI_INTERNALS__" in window)) return null;
-  const { invoke } = await import("@tauri-apps/api/core");
-  try {
-    return await invoke<T>(cmd, args);
-  } catch {
-    return null;
-  }
-}
-
 type Selected = { folderDir: string; sessionId: string } | null;
 
 /** A discoverable repo for the fuzzy add-repo picker (from `ab_discover_repos`). */

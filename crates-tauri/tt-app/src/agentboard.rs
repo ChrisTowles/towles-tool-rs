@@ -92,6 +92,22 @@ pub fn ab_remove_repo(state: State<Ab>, name: String) {
     state.emit.notify_one();
 }
 
+/// Read the add-repo picker's configured scan roots (`scanRoots` in repos.json).
+/// Empty ⇒ the picker falls back to `~/code`.
+#[tauri::command]
+pub fn ab_get_scan_roots(state: State<Ab>) -> Vec<String> {
+    state.engine.lock().unwrap().scan_roots()
+}
+
+/// Set the add-repo picker's scan roots. Blank entries are dropped; an empty
+/// list clears the key so the picker falls back to `~/code`.
+#[tauri::command]
+pub fn ab_set_scan_roots(state: State<Ab>, roots: Vec<String>) {
+    let cleaned: Vec<String> =
+        roots.into_iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
+    state.engine.lock().unwrap().set_scan_roots(cleaned);
+}
+
 /// A discovered git repo not yet on the rail, for the fuzzy add-repo picker.
 #[derive(serde::Serialize)]
 pub struct RepoCandidate {
