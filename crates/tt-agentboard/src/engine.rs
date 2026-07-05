@@ -22,9 +22,8 @@ use crate::{
     AgentTracker, AgentWatcher, AmpAgentWatcher, ClaudeCodeAgentWatcher, CodexAgentWatcher,
     GitInfoCache, OpenCodeAgentWatcher, RepoEntry, SessionMetadataStore, SessionOrder,
     SessionRecord, SessionStore, StatePayload, WatcherContext, add_repo, assemble_state,
-    default_repos_path, default_sessions_path, expand_slot_siblings, instance_key, load_repos,
-    load_scan_roots, remove_repo_by_name, repo_entries, resolve_session_name, save_repos,
-    save_scan_roots,
+    default_repos_path, default_sessions_path, instance_key, load_repos, load_scan_roots,
+    remove_repo_by_name, repo_entries, resolve_session_name, save_repos, save_scan_roots,
 };
 
 // Prune schedule constants (BRIDGE-SPEC §4).
@@ -141,19 +140,11 @@ impl Engine {
         self.repo_paths = load_repos(&self.repos_path);
     }
 
-    /// The repo paths actually scanned/displayed: the persisted config plus
-    /// any auto-discovered slot siblings (`tt:parallel-slots` convention).
-    /// Computed fresh — `self.repo_paths` itself stays the raw, persisted
-    /// list so add/remove keep operating on what the user actually configured.
-    fn active_repo_paths(&self) -> Vec<String> {
-        expand_slot_siblings(&self.repo_paths)
-    }
-
     /// One scan of every watcher with the repos.json-derived resolver
     /// (desktop mode).
     pub fn scan_once(&mut self, now: i64) {
         self.reload_repos();
-        let entries = repo_entries(&self.active_repo_paths());
+        let entries = repo_entries(&self.repo_paths);
         self.scan_once_with_resolvers(&|dir| resolve_session_name(dir, &entries), &|_| None, now);
     }
 
@@ -179,7 +170,7 @@ impl Engine {
     /// The absolute dir for a session name, if configured (for open-in-editor).
     pub fn repo_dir_for(&mut self, name: &str) -> Option<String> {
         self.reload_repos();
-        repo_entries(&self.active_repo_paths()).into_iter().find(|e| e.name == name).map(|e| e.dir)
+        repo_entries(&self.repo_paths).into_iter().find(|e| e.name == name).map(|e| e.dir)
     }
 
     /// The configured preferred editor command.
@@ -189,7 +180,7 @@ impl Engine {
 
     /// Refresh git info for each watched repo (runs git subprocesses).
     pub fn refresh_git(&mut self, now: i64) {
-        for entry in repo_entries(&self.active_repo_paths()) {
+        for entry in repo_entries(&self.repo_paths) {
             self.git_cache.refresh(&entry.dir, now);
         }
     }
@@ -205,7 +196,7 @@ impl Engine {
     /// (createdAt is meaningless for configured repos).
     pub fn compute_payload(&mut self, now: i64) -> StatePayload {
         self.reload_repos();
-        let mut entries = repo_entries(&self.active_repo_paths());
+        let mut entries = repo_entries(&self.repo_paths);
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         // New folders get a default `shell 1` seeded once; a folder whose
         // sessions were all closed stays empty (rendered as "no sessions").
@@ -435,12 +426,11 @@ impl Engine {
         let _ = tt_config::save(&settings);
     }
 
-    /// Absolute dirs currently on the rail (freshly reloaded, including
-    /// auto-discovered slot siblings), so the add-repo picker can exclude
-    /// repos that are already shown.
+    /// Absolute dirs currently on the rail (freshly reloaded), so the add-repo
+    /// picker can exclude repos that are already added.
     pub fn repo_dirs(&mut self) -> Vec<String> {
         self.reload_repos();
-        self.active_repo_paths()
+        self.repo_paths.clone()
     }
 
     /// Configured scan roots for the add-repo picker (`scanRoots` in repos.json).
