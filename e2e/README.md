@@ -1,10 +1,64 @@
-# E2E UI tests (WebdriverIO + Tauri)
+# Driving & testing the real Tauri shell
 
-Real end-to-end tests that drive the **actual Tauri shell** — the WebKitGTK
-WebView, not a bare browser — so they exercise real Rust IPC commands
-(`app_slot`, `settings_get`, `ab_discover_repos`, …) and can mock IPC. This is
-the automated counterpart to the manual runbook in
+Two ways to drive the **actual Tauri shell** — the WebKitGTK WebView, not a bare
+browser — both exercising real Rust IPC (`app_slot`, `settings_get`,
+`ab_discover_repos`, …):
+
+- **Live drive** (`npm run dev:drive` + `scripts/drive.mjs`) — one window you keep
+  open that Claude drives *live* while you watch: screenshots, clicks, real IPC.
+  Interactive development/debugging. See **[Live drive](#live-drive)** below.
+- **Regression suite** (`npm run e2e`) — WebdriverIO specs that spawn a fresh
+  window, run, and exit. CI-style pass/fail. See **[Regression suite](#regression-suite-webdriverio)** below.
+
+Both are the automated counterpart to the manual runbook in
 [../docs/UI-SCREENSHOTS.md](../docs/UI-SCREENSHOTS.md).
+
+## Live drive
+
+Open a persistent, automatable window and leave it up:
+
+```sh
+npm run dev:drive     # like `npm run dev` (HMR) but the window is automatable
+```
+
+Then drive that same window from another shell — this is how Claude debugs a UI
+or IPC change against the app you're watching:
+
+```sh
+node scripts/drive.mjs status                     # is the automation server up?
+node scripts/drive.mjs invoke settings_get        # call a real Rust IPC command
+node scripts/drive.mjs invoke journal_log '{"text":"hi"}'
+node scripts/drive.mjs eval "document.title"      # run JS in the live window
+node scripts/drive.mjs shot cockpit               # → e2e/screenshots/cockpit.png
+node scripts/drive.mjs click "nav button"         # click an element (CSS selector)
+node scripts/drive.mjs type "input" "board"       # type into an element
+node scripts/drive.mjs url /                       # navigate the window
+```
+
+How it works: the app built with the `wdio` cargo feature runs an **in-process
+W3C WebDriver server** (`tauri-plugin-wdio-webdriver`) on `wdPort` for the whole
+lifetime of the window — no WebdriverIO involved. `drive.mjs` is a plain-`fetch`
+client (no `@wdio/*` at runtime): session-less `POST /wdio/eval` for `status` /
+`eval` / `invoke`, and a short-lived W3C session (created then deleted) for
+`shot` / `click` / `type` / `url`. IPC goes through
+`window.__TAURI_INTERNALS__.invoke`, so it doesn't depend on the frontend plugin.
+
+Notes:
+- **Ports come from `.env.local`** (same as `npm run dev`): `wdPort = TT_DEV_PORT
+  + 3000` (override `TT_E2E_WEBDRIVER_PORT`). Deterministic per slot so
+  `drive.mjs` finds the server without arguments; different slots don't collide.
+- **CSS selectors only** (`click`/`type` use W3C `POST /element`), which can't
+  match by text. For a text-only element, tag it first:
+  `drive.mjs eval "document.querySelectorAll('button')[i].setAttribute('data-drive','x')"`
+  then `drive.mjs click "[data-drive=x]"`.
+- `dev:drive` and `npm run e2e` **share a slot's ports**, so don't run both in the
+  same slot at once.
+- Automation mode: launched with `TAURI_WEBVIEW_AUTOMATION=true`, WebKitGTK may
+  show a small "controlled by automation" banner and use ephemeral web storage.
+
+## Regression suite (WebdriverIO)
+
+Committed specs that spawn a fresh window, drive it, and exit — CI-style pass/fail.
 
 Stack: [`@wdio/tauri-service`](https://github.com/webdriverio/desktop-mobile/tree/main/packages/tauri-service)
 with its **embedded** WebDriver provider (`tauri-plugin-wdio-webdriver` runs a

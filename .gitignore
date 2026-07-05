@@ -2,6 +2,7 @@
 node_modules/
 dist/
 /apps/client/dist
+/e2e/screenshots
 .claude/settings.local.json
 *.local
 .DS_Store

@@ -10,6 +10,8 @@
   },
   "scripts": {
     "dev": "node scripts/dev-port.mjs",
+    "dev:drive": "node scripts/dev-drive.mjs",
+    "drive": "node scripts/drive.mjs",
     "build": "tauri build",
     "tauri": "tauri",
     "client:dev": "npm run dev --workspace @towles-tool/client",
