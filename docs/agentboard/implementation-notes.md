@@ -48,6 +48,24 @@ User approved all plan recommendations (2026-07-05).
 - **[Tier 1] liveness merge point confirmed** — stamped in tt-app's debounced emit task,
   which owns both `TermState` and the engine handle; the Tauri-free crate stays clean.
 
+## Prototype-parity pass (post-Tier-5, 2026-07-05)
+
+User flagged gaps vs the Calm Rail mockup; closed in one pass and verified by
+driving the mock UI in Chrome (multi-pane tiling confirmed working):
+
+- Empty folders: `✦ start Claude · + shell` (creates the session, then launches).
+- Focused-agent **cache bar** under the window strip: ctx meter + %, warm
+  countdown / ❄ cold, and when over-threshold the warning pill + `⤿ compact` /
+  `↻ start over` buttons (the prototype's cachebar).
+- ❄ pill is now **clickable** (runs /compact); short `❄ N%` in the rail,
+  long `❄ N% compact` in pane headers.
+- Rail group tags show the **window name** next to the color square.
+- **Toasts** on every lifecycle action (start/stop/compact/restart).
+- **Window rename** via double-click on its strip tab.
+- `+ session` in the window strip (new shell in the focused folder).
+- Pane headers gained visible `■ stop` and `✕ kill` (kill = PTY + record).
+- Fixed rail-row overflow (meta cluster now shrinks/truncates).
+
 ## Deviations
 
 - **[Tier 5] panes positioned by percent-rects in one flat pool**, not nested

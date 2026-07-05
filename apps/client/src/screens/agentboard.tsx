@@ -35,6 +35,7 @@ import {
   windowColor,
   windowOf,
 } from "@/lib/agentboard";
+import { toast } from "sonner";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { useWorkspace } from "@/lib/workspace";
 
@@ -171,6 +172,7 @@ export function AgentboardScreen() {
   const cwds = useRef<Record<string, string>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [renamingWin, setRenamingWin] = useState<string | null>(null);
   // Live PTY window titles keyed by session id (Claude emits `✳ <title>`);
   // preferred over the backend label for sessions whose terminal is open.
   const [titles, setTitles] = useState<Record<string, string>>({});
@@ -245,9 +247,15 @@ export function AgentboardScreen() {
     addPaneToActive(sessionId);
   }
 
-  async function newSession(folderDir: string) {
+  async function newSession(folderDir: string, launchClaude = false) {
     const rec = await abInvoke<SessionData>("ab_add_session", { dir: folderDir, name: null });
-    if (rec) selectSession(folderDir, rec.id);
+    if (!rec) return;
+    selectSession(folderDir, rec.id);
+    if (launchClaude) {
+      setOverlay(rec.id, "busy");
+      toast(`✦ starting Claude in ${rec.name}`);
+      void termWriteRetry(rec.id, "claude\r");
+    }
   }
 
   async function closeSession(sessionId: string) {
@@ -277,10 +285,12 @@ export function AgentboardScreen() {
     startClaude: (folderDir, s) => {
       selectSession(folderDir, s.id);
       setOverlay(s.id, "busy");
+      toast(`✦ starting Claude in ${s.name}`);
       void termWriteRetry(s.id, "claude\r");
     },
     stopClaude: (s) => {
       setOverlay(s.id, "interrupted");
+      toast(`■ interrupting Claude — ${s.name}'s shell stays alive`);
       void (async () => {
         await termWrite(s.id, "\x03"); // interrupt the current turn
         await sleep(150);
@@ -289,11 +299,13 @@ export function AgentboardScreen() {
     },
     compactClaude: (s) => {
       setOverlay(s.id, "busy");
+      toast(`⤿ compacting ${s.name} — summarize & drop stale turns`);
       void termWrite(s.id, "/compact\r");
     },
     restartClaude: (folderDir, s) => {
       selectSession(folderDir, s.id);
       setOverlay(s.id, "busy");
+      toast(`↻ starting over — fresh Claude session in ${s.name}`);
       void (async () => {
         await termWrite(s.id, "\x03");
         await sleep(150);
@@ -425,6 +437,8 @@ export function AgentboardScreen() {
                 key={w.id}
                 type="button"
                 onClick={() => actions.focusWindow(w.id)}
+                onDoubleClick={() => setRenamingWin(w.id)}
+                title="double-click to rename"
                 className={cn(
                   "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
                   w.id === activeWin.id
@@ -433,7 +447,28 @@ export function AgentboardScreen() {
                 )}
               >
                 <span className={cn("size-2 rounded-[3px]", windowColor(wins.windows, w.id))} />
-                {w.name}
+                {renamingWin === w.id ? (
+                  <input
+                    autoFocus
+                    defaultValue={w.name}
+                    onClick={(e) => e.stopPropagation()}
+                    onBlur={(e) => {
+                      const name = e.target.value.trim() || w.name;
+                      setRenamingWin(null);
+                      updateWins((cur) => ({
+                        ...cur,
+                        windows: cur.windows.map((x) => (x.id === w.id ? { ...x, name } : x)),
+                      }));
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                      if (e.key === "Escape") setRenamingWin(null);
+                    }}
+                    className="w-24 rounded-sm border border-input bg-background px-1 text-[11px] outline-none"
+                  />
+                ) : (
+                  w.name
+                )}
                 <span className="font-mono text-[10px] text-muted-foreground/60">
                   {w.panes.length}⊞
                 </span>
@@ -476,6 +511,16 @@ export function AgentboardScreen() {
             {selected && (
               <button
                 type="button"
+                onClick={() => void newSession(selected.folderDir)}
+                className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
+                title="New session in the focused folder (⌘D)"
+              >
+                <Plus className="size-3" /> session
+              </button>
+            )}
+            {selected && (
+              <button
+                type="button"
                 onClick={() => void closeSession(selected.sessionId)}
                 className="ml-auto shrink-0 rounded-md px-2 py-1 font-mono text-[10.5px] text-muted-foreground hover:bg-accent/50"
                 title="Close session (⌘W)"
@@ -485,6 +530,60 @@ export function AgentboardScreen() {
             )}
           </div>
         )}
+
+        {/* Focused agent's cache bar: ctx meter + cache state + lifecycle
+            actions, prominent when it's time to compact (Calm Rail cachebar). */}
+        {selected && (() => {
+          const s = sessionById.get(selected.sessionId);
+          const d = s?.agentState?.details;
+          if (!s?.live || !isAgent(s) || !d?.contextUsed || !d.contextMax) return null;
+          const pct = ctxPct(d);
+          const cold = isCold(d, now);
+          const nudge = needsCompact(d, now, state.compactRecommendPercent);
+          const meterColor = nudge ? "bg-sky-500" : pct >= 70 ? "bg-yellow-500" : "bg-green-500";
+          return (
+            <div className="flex items-center gap-3 border-b bg-card/50 px-3 py-1.5 font-mono text-[11px] text-muted-foreground">
+              <span>ctx</span>
+              <span className="h-1.5 w-20 overflow-hidden rounded-full bg-accent">
+                <span
+                  className={cn("block h-full", meterColor)}
+                  style={{ width: `${Math.min(pct, 100)}%` }}
+                />
+              </span>
+              <span className={nudge ? "text-sky-500" : undefined}>{pct}%</span>
+              <span className="text-muted-foreground/40">·</span>
+              {cold ? (
+                <span className="text-sky-500">❄ cache cold</span>
+              ) : (
+                <span>
+                  {d.cacheTtlMs === 3_600_000 ? "⧗" : "◔"} cache warm ·{" "}
+                  {fmtMins(d.cacheExpiresAt! - now)} left
+                </span>
+              )}
+              {nudge && (
+                <span className="ml-auto flex items-center gap-2">
+                  <span className="rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-sky-500">
+                    {pct}% & cold — resuming re-reads everything
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => actions.compactClaude(s)}
+                    className="rounded-md border border-sky-500/40 px-2 py-0.5 text-sky-500 hover:bg-sky-500/10"
+                  >
+                    ⤿ compact
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => actions.restartClaude(selected.folderDir, s)}
+                    className="rounded-md border border-border px-2 py-0.5 hover:bg-accent/50"
+                  >
+                    ↻ start over
+                  </button>
+                </span>
+              )}
+            </div>
+          );
+        })()}
 
         {/* One flat pool of mounted terminals (never remounted — a remount
             would respawn the shell). The active window's pane order assigns
@@ -531,6 +630,7 @@ export function AgentboardScreen() {
                             label={labelFor(s)}
                             now={now}
                             compactPct={state.compactRecommendPercent}
+                            actions={actions}
                             onUngroup={() => actions.ungroup(id)}
                           />
                         )}
@@ -618,6 +718,7 @@ function PaneHeader({
   label,
   now,
   compactPct,
+  actions,
   onUngroup,
 }: {
   session: SessionData;
@@ -625,8 +726,23 @@ function PaneHeader({
   label: string;
   now: number;
   compactPct: number;
+  actions: SessionActions;
   onUngroup: () => void;
 }) {
+  const agent = isAgent(session) && session.live;
+  const iconBtn = (label: string, title: string, onClick: () => void, hover: string) => (
+    <button
+      type="button"
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={cn("font-mono text-xs text-muted-foreground/60", hover)}
+    >
+      {label}
+    </button>
+  );
   return (
     <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
       <Glyph agent={isAgent(session)} />
@@ -638,18 +754,16 @@ function PaneHeader({
         </span>
       )}
       <span className="ml-auto flex shrink-0 items-center gap-2">
-        <CacheBadge session={session} now={now} compactPct={compactPct} />
-        <button
-          type="button"
-          title="remove pane (session stays in the rail)"
-          onClick={(e) => {
-            e.stopPropagation();
-            onUngroup();
-          }}
-          className="font-mono text-xs text-muted-foreground/60 hover:text-red-500"
-        >
-          ⊟
-        </button>
+        <CacheBadge
+          session={session}
+          now={now}
+          compactPct={compactPct}
+          onCompact={() => actions.compactClaude(session)}
+          long
+        />
+        {agent && iconBtn("■", "stop Claude (shell survives)", () => actions.stopClaude(session), "hover:text-red-500")}
+        {iconBtn("⊟", "remove pane (session stays in the rail)", onUngroup, "hover:text-sky-500")}
+        {iconBtn("✕", "kill session (PTY + record)", () => actions.close(session.id), "hover:text-red-500")}
       </span>
     </div>
   );
@@ -794,21 +908,29 @@ function RepoGroup({
   actions: SessionActions;
   onToggle: (key: string) => void;
   onSelect: (folderDir: string, sessionId: string) => void;
-  onNewSession: (folderDir: string) => void;
+  onNewSession: (folderDir: string, launchClaude?: boolean) => void;
   onRenameCommit: (sessionId: string, name: string) => void;
 }) {
   const solo = isSoloRepo(repo);
 
   const sessionRows = (folder: FolderData) =>
     folder.sessions.length === 0 ? (
-      <div className="flex items-center gap-2 py-1.5 pr-3 pl-9 text-[11px] italic text-muted-foreground/60">
+      <div className="flex items-center gap-2.5 py-1.5 pr-3 pl-9 text-[11px] italic text-muted-foreground/60">
         no sessions
         <button
           type="button"
-          onClick={() => onNewSession(folder.dir)}
+          onClick={() => onNewSession(folder.dir, true)}
           className="not-italic text-violet-500 hover:underline"
         >
-          + session
+          ✦ start Claude
+        </button>
+        <span className="text-muted-foreground/40">·</span>
+        <button
+          type="button"
+          onClick={() => onNewSession(folder.dir, false)}
+          className="not-italic text-violet-500 hover:underline"
+        >
+          + shell
         </button>
       </div>
     ) : (
@@ -1095,16 +1217,28 @@ function SessionRow({
                 e.stopPropagation();
                 actions.focusWindow(grouped.id);
               }}
-              className={cn(
-                "size-2 shrink-0 rounded-[3px]",
-                windowColor(wins?.windows ?? [], grouped.id),
-              )}
-            />
+              className="flex min-w-0 shrink items-center gap-1 group-hover/row:hidden"
+            >
+              <span
+                className={cn(
+                  "size-2 shrink-0 rounded-[3px]",
+                  windowColor(wins?.windows ?? [], grouped.id),
+                )}
+              />
+              <span className="max-w-12 truncate font-mono text-[9.5px] text-muted-foreground/60">
+                {grouped.name}
+              </span>
+            </span>
           )}
           {/* Resting: cache + status. Hover: the lifecycle controls. */}
-          <span className="ml-auto flex shrink-0 items-center gap-2 group-hover/row:hidden">
-            <CacheBadge session={eff} now={now} compactPct={compactPct} />
-            <span className="truncate text-[11px] text-muted-foreground">
+          <span className="ml-auto flex min-w-0 shrink items-center gap-2 group-hover/row:hidden">
+            <CacheBadge
+              session={eff}
+              now={now}
+              compactPct={compactPct}
+              onCompact={() => actions.compactClaude(eff)}
+            />
+            <span className="min-w-0 truncate text-[11px] text-muted-foreground">
               {sessionStatusText(eff)}
             </span>
           </span>
@@ -1185,10 +1319,16 @@ function CacheBadge({
   session,
   now,
   compactPct,
+  onCompact,
+  long = false,
 }: {
   session: SessionData;
   now: number;
   compactPct: number;
+  /** When set, the ❄ compact pill is clickable and runs /compact directly. */
+  onCompact?: () => void;
+  /** Long form spells out "compact"; the rail uses the short `❄ N%`. */
+  long?: boolean;
 }) {
   const d = session.agentState?.details;
   if (!session.live || !d?.contextUsed || !d.contextMax) return null;
@@ -1196,12 +1336,23 @@ function CacheBadge({
   const cold = isCold(d, now);
 
   if (needsCompact(d, now, compactPct)) {
-    return (
-      <span
-        title={`${pct}% of context used and the prompt cache expired — resuming re-reads everything. Consider /compact or a fresh session.`}
-        className="shrink-0 rounded-md border border-sky-500/50 bg-sky-500/10 px-1.5 font-mono text-[10.5px] text-sky-500"
+    const pill = "shrink-0 rounded-md border border-sky-500/50 bg-sky-500/10 px-1.5 font-mono text-[10.5px] text-sky-500";
+    const hint = `${pct}% of context used and the prompt cache expired — resuming re-reads everything.`;
+    return onCompact ? (
+      <button
+        type="button"
+        title={`${hint} Click to /compact.`}
+        onClick={(e) => {
+          e.stopPropagation();
+          onCompact();
+        }}
+        className={cn(pill, "hover:bg-sky-500/20")}
       >
-        ❄ {pct}% compact
+        ❄ {pct}%{long && " compact"}
+      </button>
+    ) : (
+      <span title={`${hint} Consider /compact or a fresh session.`} className={pill}>
+        ❄ {pct}%{long && " compact"}
       </span>
     );
   }
