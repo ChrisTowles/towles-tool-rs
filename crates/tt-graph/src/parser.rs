@@ -6,6 +6,7 @@
 //! ([`read_jsonl`], [`quick_token_count`]) so the pure logic is testable with
 //! plain strings and the fs functions take explicit paths.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::types::JournalEntry;
@@ -67,19 +68,68 @@ pub fn read_jsonl(path: &Path) -> Vec<JournalEntry> {
 
 /// Sum input + output tokens across all entries with usage data, from raw
 /// content. Invalid lines are skipped.
+///
+/// Entries are deduplicated by [`JournalEntry::dedup_key`] (`message.id` +
+/// `requestId`): Claude Code re-logs the same assistant `usage` more than once,
+/// so counting every line inflates totals relative to ccusage. Entries lacking
+/// either id are each counted once.
 pub fn quick_token_count_str(content: &str) -> i64 {
     let mut total = 0;
+    let mut seen: HashSet<String> = HashSet::new();
     for line in content.split('\n') {
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(entry) = serde_json::from_str::<JournalEntry>(line)
-            && let Some(usage) = entry.message.and_then(|m| m.usage)
+        let Ok(entry) = serde_json::from_str::<JournalEntry>(line) else {
+            continue;
+        };
+        if let Some(key) = entry.dedup_key()
+            && !seen.insert(key)
         {
+            continue;
+        }
+        if let Some(usage) = entry.message.and_then(|m| m.usage) {
             total += usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0);
         }
     }
     total
+}
+
+/// Extract a session's human title from raw JSONL content: the **last**
+/// `custom-title` (user-set, authoritative), else the **last** `ai-title`
+/// (auto-generated fallback), else `None`. Titles are trimmed; empty is treated
+/// as absent. Malformed lines are skipped.
+pub fn parse_session_title_str(content: &str) -> Option<String> {
+    let mut custom: Option<String> = None;
+    let mut ai: Option<String> = None;
+    for line in content.split('\n') {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<JournalEntry>(line) else {
+            continue;
+        };
+        if let Some(t) = entry.custom_title {
+            let t = t.trim();
+            if !t.is_empty() {
+                custom = Some(t.to_string());
+            }
+        }
+        if let Some(t) = entry.ai_title {
+            let t = t.trim();
+            if !t.is_empty() {
+                ai = Some(t.to_string());
+            }
+        }
+    }
+    custom.or(ai)
+}
+
+/// Parse a session's human title from a JSONL file. Returns `None` when the file
+/// is unreadable/missing or carries no title line. See [`parse_session_title_str`].
+pub fn parse_session_title(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    parse_session_title_str(&content)
 }
 
 /// Quick token count from a JSONL file. Returns `0` if the file is unreadable
@@ -251,5 +301,67 @@ mod tests {
         let content =
             "{\"message\":{\"usage\":{\"input_tokens\":50,\"output_tokens\":50}}}\nbadline\n";
         assert_eq!(quick_token_count_str(content), 100);
+    }
+
+    // ── dedup by message.id + requestId ──
+
+    #[test]
+    fn quick_dedups_repeated_message_request_pair() {
+        // The same (message.id, requestId) re-logged 3x is counted once.
+        let line = "{\"requestId\":\"req_1\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}}";
+        let content = format!("{line}\n{line}\n{line}");
+        assert_eq!(quick_token_count_str(&content), 120);
+    }
+
+    #[test]
+    fn quick_counts_distinct_pairs_separately() {
+        let a = "{\"requestId\":\"req_1\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":100,\"output_tokens\":0}}}";
+        let b = "{\"requestId\":\"req_2\",\"message\":{\"id\":\"msg_2\",\"usage\":{\"input_tokens\":50,\"output_tokens\":0}}}";
+        assert_eq!(quick_token_count_str(&format!("{a}\n{b}")), 150);
+    }
+
+    #[test]
+    fn quick_counts_id_less_entries_each_once() {
+        // No message.id/requestId → no dedup key → every entry counted.
+        let line = "{\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}";
+        let content = format!("{line}\n{line}");
+        assert_eq!(quick_token_count_str(&content), 20);
+    }
+
+    // ── parse_session_title ──
+
+    #[test]
+    fn title_prefers_custom_over_ai() {
+        let content = "{\"type\":\"ai-title\",\"aiTitle\":\"Auto name\"}\n{\"type\":\"custom-title\",\"customTitle\":\"My name\"}";
+        assert_eq!(parse_session_title_str(content), Some("My name".to_string()));
+    }
+
+    #[test]
+    fn title_falls_back_to_ai_when_no_custom() {
+        let content = "{\"type\":\"ai-title\",\"aiTitle\":\"Auto name\"}";
+        assert_eq!(parse_session_title_str(content), Some("Auto name".to_string()));
+    }
+
+    #[test]
+    fn title_last_occurrence_wins() {
+        let content = "{\"type\":\"ai-title\",\"aiTitle\":\"First\"}\n{\"type\":\"ai-title\",\"aiTitle\":\"Second\"}";
+        assert_eq!(parse_session_title_str(content), Some("Second".to_string()));
+    }
+
+    #[test]
+    fn title_treats_empty_as_absent() {
+        let content = "{\"type\":\"custom-title\",\"customTitle\":\"   \"}\n{\"type\":\"ai-title\",\"aiTitle\":\"Real\"}";
+        assert_eq!(parse_session_title_str(content), Some("Real".to_string()));
+    }
+
+    #[test]
+    fn title_none_when_missing_and_skips_malformed() {
+        let content = "notjson\n{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}";
+        assert_eq!(parse_session_title_str(content), None);
+    }
+
+    #[test]
+    fn title_from_unreadable_file_is_none() {
+        assert_eq!(parse_session_title(Path::new("/no/such/file.jsonl")), None);
     }
 }

@@ -14,6 +14,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A single line from a session JSONL file. All fields tolerate absence.
+///
+/// The `custom-title` / `ai-title` line types and the `requestId` field are
+/// internal Claude Code transcript details and are version-volatile — Anthropic
+/// documents the entry format as internal. We parse them tolerantly (all fields
+/// optional, unknown fields ignored) and quarantine every schema assumption in
+/// this module; re-validate on a Claude Code upgrade whose changelog mentions
+/// session-title or transcript changes. (We evaluated the Agent SDK's
+/// `listSessions`/`getSessionMessages` instead: it's Node-only with no Rust
+/// binding, strips `requestId`, and conflates custom/ai titles — so direct
+/// JSONL parsing stays the source of truth. See issues #17/#18.)
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct JournalEntry {
     #[serde(rename = "type", default)]
@@ -26,15 +36,42 @@ pub struct JournalEntry {
     pub message: Option<Message>,
     #[serde(default)]
     pub uuid: Option<String>,
+    /// Correlates streaming re-logs of the same assistant response; paired with
+    /// `message.id` it forms the dedup key ccusage/Claude-Code-Usage-Monitor use.
+    #[serde(rename = "requestId", default)]
+    pub request_id: Option<String>,
     #[serde(rename = "gitBranch", default)]
     pub git_branch: Option<String>,
     #[serde(default)]
     pub slug: Option<String>,
+    /// The user-set session title (from a `custom-title` line). Authoritative.
+    #[serde(rename = "customTitle", default)]
+    pub custom_title: Option<String>,
+    /// Claude Code's auto-generated title (from an `ai-title` line). Fallback.
+    #[serde(rename = "aiTitle", default)]
+    pub ai_title: Option<String>,
+}
+
+impl JournalEntry {
+    /// Dedup key `message.id:requestId`, present only when **both** ids exist.
+    ///
+    /// Claude Code re-logs the same assistant message's `usage` more than once
+    /// (streaming re-logs, compaction, sidechain copies); counting each line
+    /// inflates totals. Entries missing either id return `None` and are always
+    /// counted (never collapsed with other id-less entries).
+    pub fn dedup_key(&self) -> Option<String> {
+        let message_id = self.message.as_ref()?.id.as_deref()?;
+        let request_id = self.request_id.as_deref()?;
+        Some(format!("{message_id}:{request_id}"))
+    }
 }
 
 /// The `message` object on a [`JournalEntry`].
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Message {
+    /// The API message id (e.g. `msg_…`), half of the [`JournalEntry::dedup_key`].
+    #[serde(default)]
+    pub id: Option<String>,
     #[serde(default)]
     pub role: Option<String>,
     #[serde(default)]
@@ -73,6 +110,10 @@ pub struct Usage {
     pub output_tokens: Option<i64>,
     #[serde(default)]
     pub cache_read_input_tokens: Option<i64>,
+    /// Tokens written into the prompt cache. The majority of tokens in practice,
+    /// so omitting it understates cache volume.
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<i64>,
 }
 
 /// An individual tool call with token attribution, used in tooltips and
@@ -121,6 +162,10 @@ pub struct SessionResult {
     pub project: String,
     /// Modification time in milliseconds since the Unix epoch.
     pub mtime: i64,
+    /// The session's human title, if any: last `custom-title`, else last
+    /// `ai-title` (see [`crate::parser::parse_session_title`]). `None` when the
+    /// transcript carries neither.
+    pub title: Option<String>,
 }
 
 /// A node in the d3 treemap tree. Ports `TreemapNode` from `types.ts`.

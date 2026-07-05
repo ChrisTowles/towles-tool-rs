@@ -54,8 +54,8 @@ pub use analyzer::{
 pub use format::{SessionRow, build_session_rows, format_csv, format_json};
 pub use labels::extract_session_label;
 pub use parser::{
-    HasMtime, calculate_cutoff_ms, filter_by_days, parse_jsonl, quick_token_count,
-    quick_token_count_str, read_jsonl,
+    HasMtime, calculate_cutoff_ms, filter_by_days, parse_jsonl, parse_session_title,
+    parse_session_title_str, quick_token_count, quick_token_count_str, read_jsonl,
 };
 pub use render::generate_treemap_html;
 pub use sessions::{
