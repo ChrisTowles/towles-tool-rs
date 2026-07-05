@@ -77,12 +77,14 @@ export type RepoData = {
   needs: number;
 };
 
-/** One in-app window: a named tiling of pane session-ids. */
-export type AgWindow = { id: string; name: string; panes: string[] };
+/** One in-app window: a named tiling of pane session-ids. Scoped to a single
+ * folder — a window may never hold panes from more than one checkout. */
+export type AgWindow = { id: string; name: string; folderDir: string; panes: string[] };
 
 /** The whole window layout. Frontend-owned: mutated locally, saved debounced
- * via `ab_save_windows`, hydrated once from `ab_get_state`. */
-export type WindowsPayload = { windows: AgWindow[]; activeWindow: string };
+ * via `ab_save_windows`, hydrated once from `ab_get_state`. `activeWindows`
+ * tracks the focused window per folder (keyed by `AgWindow.folderDir`). */
+export type WindowsPayload = { windows: AgWindow[]; activeWindows: Record<string, string> };
 
 export type StatePayload = {
   repos: RepoData[];
@@ -227,7 +229,7 @@ export function agentRollup(
   return r;
 }
 
-const EMPTY_WINDOWS: WindowsPayload = { windows: [], activeWindow: "" };
+const EMPTY_WINDOWS: WindowsPayload = { windows: [], activeWindows: {} };
 
 const EMPTY: StatePayload = {
   repos: [],

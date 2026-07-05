@@ -1,34 +1,38 @@
 //! Persisted window layouts (Folder Rail): a *window* is a named, ordered list
-//! of pane session-ids tiled side-by-side in the app's main area. The layout is
-//! frontend-owned — the client mutates it locally and saves the whole blob via
-//! one debounced command — and hydrates from `ab_get_state`. Stored at
-//! `~/.config/towles-tool/agentboard/windows.json` (same per-file pattern as
-//! [`crate::sessions`]). Path-parameterized so tests use a tempdir.
+//! of pane session-ids tiled side-by-side in the app's main area, scoped to a
+//! single folder (a window never mixes panes from more than one checkout).
+//! The layout is frontend-owned — the client mutates it locally and saves the
+//! whole blob via one debounced command — and hydrates from `ab_get_state`.
+//! Stored at `~/.config/towles-tool/agentboard/windows.json` (same per-file
+//! pattern as [`crate::sessions`]). Path-parameterized so tests use a tempdir.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 /// One window: a named tiling of pane session-ids (1 full, 2 halves, 3 thirds,
-/// 4+ a 2×2 grid — the client owns the tiling math).
+/// 4+ a 2×2 grid — the client owns the tiling math), scoped to `folder_dir`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgWindow {
     pub id: String,
     pub name: String,
+    pub folder_dir: String,
     #[serde(default)]
     pub panes: Vec<String>,
 }
 
-/// The whole layout: every window plus which one is focused. Serialized
-/// verbatim to disk and onto `StatePayload.windows`.
+/// The whole layout: every window plus which one is focused per folder.
+/// Serialized verbatim to disk and onto `StatePayload.windows`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowsPayload {
     #[serde(default)]
     pub windows: Vec<AgWindow>,
+    /// Focused window id per folder dir.
     #[serde(default)]
-    pub active_window: String,
+    pub active_windows: BTreeMap<String, String>,
 }
 
 /// Owns the layout plus its file path. Loaded once; saved on each set.
@@ -102,9 +106,10 @@ mod tests {
             windows: vec![AgWindow {
                 id: "w1".into(),
                 name: "checkout push".into(),
+                folder_dir: "/repo/checkout".into(),
                 panes: vec!["s1".into(), "s2".into()],
             }],
-            active_window: "w1".into(),
+            active_windows: BTreeMap::from([("/repo/checkout".into(), "w1".into())]),
         }
     }
 

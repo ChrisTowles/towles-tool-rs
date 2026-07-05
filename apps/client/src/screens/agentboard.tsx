@@ -133,16 +133,17 @@ type Overlay = { status: AgentStatus; until: number };
 
 type Selected = { folderDir: string; sessionId: string } | null;
 
-/** Guarantee at least one window and a valid `activeWindow`. */
+/** Drop any `activeWindows` entries pointing at a window that no longer
+ * exists (or whose folder no longer matches) — windows are created lazily
+ * per folder as sessions open, so there's no "at least one window" floor. */
 function normalizeWins(w: WindowsPayload): WindowsPayload {
-  let windows = w.windows;
-  if (windows.length === 0) {
-    windows = [{ id: `w${Date.now()}`, name: "main", panes: [] }];
+  const activeWindows: Record<string, string> = {};
+  for (const [folderDir, windowId] of Object.entries(w.activeWindows)) {
+    if (w.windows.some((win) => win.id === windowId && win.folderDir === folderDir)) {
+      activeWindows[folderDir] = windowId;
+    }
   }
-  const active = windows.some((win) => win.id === w.activeWindow)
-    ? w.activeWindow
-    : windows[0].id;
-  return { windows, activeWindow: active };
+  return { windows: w.windows, activeWindows };
 }
 
 /** Wall clock ticking every `intervalMs` — drives cache-warmth countdowns.
@@ -161,14 +162,17 @@ type RepoCandidate = { name: string; dir: string };
 
 /**
  * Agentboard — the Folder Rail. Left: rollup tally + needs-you strip + the
- * repos → folders (checkouts) → PTY sessions tree. Right: in-app *windows* —
- * each a named tiling of session panes (side-by-side up to 3, then a 2-col
- * grid), switched via the window strip. Clicking a rail session opens it as a
- * pane in the active window; the colored square on a row is its window's
- * group tag. A session IS a PTY; "agent" (✦) is a badge on a session where
- * Claude is detected running — status is reported, never re-rendered (the
- * real TUI is the PTY). All opened terminals live in one flat mounted pool
- * (hidden when not in the active window) so scrollback survives switching and
+ * repos → folders (checkouts) → PTY sessions tree. Right: in-app *windows*,
+ * scoped to whichever folder is active (clicking a folder header or a
+ * session row focuses it) — each a named tiling of that folder's session
+ * panes (side-by-side up to 3, then a 2-col grid), switched via the window
+ * strip. A window never holds panes from more than one folder. Clicking a
+ * rail session opens it as a pane in its own folder's active window; the
+ * colored square on a row is its window's group tag. A session IS a PTY;
+ * "agent" (✦) is a badge on a session where Claude is detected running —
+ * status is reported, never re-rendered (the real TUI is the PTY). All
+ * opened terminals live in one flat mounted pool (hidden unless in the
+ * active folder's active window) so scrollback survives switching and
  * regrouping. Layout persists via debounced `ab_save_windows`. ⌘D = new
  * session in the selected folder, ⌘W = close the selected session.
  */
@@ -179,6 +183,9 @@ export function AgentboardScreen() {
   const now = useNow(30_000);
 
   const [selected, setSelected] = useState<Selected>(null);
+  // The folder whose windows the main area shows — set by clicking a folder
+  // header or a session row. Null until the user picks a folder.
+  const [activeFolderDir, setActiveFolderDir] = useState<string | null>(null);
   // Add-repo picker: discovered repos under ~/code, fuzzy-searched by `repoQuery`.
   const [addRepoOpen, setAddRepoOpen] = useState(false);
   const [repoQuery, setRepoQuery] = useState("");
@@ -225,7 +232,7 @@ export function AgentboardScreen() {
 
   function updateWins(fn: (w: WindowsPayload) => WindowsPayload) {
     setWins((prev) => {
-      const next = normalizeWins(fn(prev ?? { windows: [], activeWindow: "" }));
+      const next = normalizeWins(fn(prev ?? { windows: [], activeWindows: {} }));
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
         void abInvoke("ab_save_windows", { payload: next });
@@ -234,16 +241,33 @@ export function AgentboardScreen() {
     });
   }
 
-  const activeWin = wins?.windows.find((w) => w.id === wins.activeWindow) ?? wins?.windows[0];
+  // Windows belonging to the active folder, and whichever of those is focused.
+  const windowsForFolder = useMemo(
+    () => wins?.windows.filter((w) => w.folderDir === activeFolderDir) ?? [],
+    [wins, activeFolderDir],
+  );
+  const activeWin =
+    windowsForFolder.find((w) => w.id === (activeFolderDir && wins?.activeWindows[activeFolderDir])) ??
+    windowsForFolder[0];
 
-  function addPaneToActive(sessionId: string) {
+  // Add a session's pane to its own folder's focused window (creating one —
+  // "main" — if the folder has none yet). A window may never span folders, so
+  // this always targets the pane's own folder, never whatever window/folder
+  // happened to be showing beforehand.
+  function addPaneToActive(folderDir: string, sessionId: string) {
     updateWins((w) => {
       if (w.windows.some((win) => win.panes.includes(sessionId))) return w;
+      let windows = w.windows;
+      let windowId = w.activeWindows[folderDir];
+      if (!windows.some((win) => win.id === windowId && win.folderDir === folderDir)) {
+        windowId = `w${Date.now()}`;
+        windows = [...windows, { id: windowId, name: "main", folderDir, panes: [] }];
+      }
       return {
-        ...w,
-        windows: w.windows.map((win) =>
-          win.id === w.activeWindow ? { ...win, panes: [...win.panes, sessionId] } : win,
+        windows: windows.map((win) =>
+          win.id === windowId ? { ...win, panes: [...win.panes, sessionId] } : win,
         ),
+        activeWindows: { ...w.activeWindows, [folderDir]: windowId },
       };
     });
   }
@@ -258,11 +282,22 @@ export function AgentboardScreen() {
     }));
   }
 
+  // Switch the main area to a folder without selecting one of its sessions
+  // (clicking a folder header). Drops any selection from a *different*
+  // folder so the cache bar / ⌘D / ⌘W / Close button never act on a session
+  // that's no longer the one shown — a session selected in the folder you're
+  // switching to stays selected.
+  function selectFolder(folderDir: string) {
+    setActiveFolderDir(folderDir);
+    setSelected((cur) => (cur && cur.folderDir !== folderDir ? null : cur));
+  }
+
   function selectSession(folderDir: string, sessionId: string) {
     cwds.current[sessionId] = folderDir;
     setSelected({ folderDir, sessionId });
+    setActiveFolderDir(folderDir);
     setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
-    addPaneToActive(sessionId);
+    addPaneToActive(folderDir, sessionId);
   }
 
   async function newSession(folderDir: string, launchClaude = false) {
@@ -364,24 +399,37 @@ export function AgentboardScreen() {
     close: (sessionId) => void closeSession(sessionId),
     renameStart: setRenaming,
     ungroup: removePane,
-    focusWindow: (windowId) => updateWins((w) => ({ ...w, activeWindow: windowId })),
+    focusWindow: (windowId) => {
+      const win = wins?.windows.find((w) => w.id === windowId);
+      if (!win) return;
+      selectFolder(win.folderDir);
+      updateWins((w) => ({
+        ...w,
+        activeWindows: { ...w.activeWindows, [win.folderDir]: windowId },
+      }));
+    },
   };
 
-  // ⌘D = new session in the selected folder; ⌘W = close the selected session.
+  // ⌘D = new session in the focused folder (matches the "+ session" button,
+  // which only needs a focused folder, not a selected session); ⌘W = close
+  // the selected session (needs an actual session, so it stays gated on
+  // `selected`).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || !selected) return;
+      if (!(e.metaKey || e.ctrlKey)) return;
       if (e.key === "d") {
+        if (!activeFolderDir) return;
         e.preventDefault();
-        void newSession(selected.folderDir);
+        void newSession(activeFolderDir);
       } else if (e.key === "w") {
+        if (!selected) return;
         e.preventDefault();
         void closeSession(selected.sessionId);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selected]);
+  }, [activeFolderDir, selected]);
 
   // Compact attention strip: failing/review PRs + the next imminent meeting.
   const attention = useMemo(() => {
@@ -493,6 +541,7 @@ export function AgentboardScreen() {
                 now={now}
                 compactPct={state.compactRecommendPercent}
                 selected={selected}
+                activeFolderDir={activeFolderDir}
                 collapsed={collapsed}
                 renaming={renaming}
                 titles={titles}
@@ -500,6 +549,7 @@ export function AgentboardScreen() {
                 wins={wins}
                 actions={actions}
                 onToggle={(k) => setCollapsed((c) => ({ ...c, [k]: !c[k] }))}
+                onSelectFolder={selectFolder}
                 onSelect={selectSession}
                 onNewSession={newSession}
                 onRemoveRepo={removeRepo}
@@ -510,11 +560,14 @@ export function AgentboardScreen() {
         </ScrollArea>
       </div>
 
-      {/* Main area: window strip + the active window's panes tiled side-by-side. */}
+      {/* Main area: window strip + the active window's panes tiled side-by-side.
+          Scoped to `activeFolderDir` — a window may only ever hold panes from
+          the one folder it belongs to, so switching folders switches the
+          whole strip, not just which panes happen to show. */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {wins && activeWin && (
+        {wins && activeFolderDir && (
           <div className="flex items-center gap-1 border-b bg-card px-2 py-1">
-            {wins.windows.map((w) => (
+            {windowsForFolder.map((w) => (
               <button
                 key={w.id}
                 type="button"
@@ -523,12 +576,12 @@ export function AgentboardScreen() {
                 title="double-click to rename"
                 className={cn(
                   "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
-                  w.id === activeWin.id
+                  w.id === activeWin?.id
                     ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:bg-accent/50",
                 )}
               >
-                <span className={cn("size-2 rounded-[3px]", windowColor(wins.windows, w.id))} />
+                <span className={cn("size-2 rounded-[3px]", windowColor(windowsForFolder, w.id))} />
                 {renamingWin === w.id ? (
                   <input
                     autoFocus
@@ -554,7 +607,7 @@ export function AgentboardScreen() {
                 <span className="font-mono text-[10px] text-muted-foreground/60">
                   {w.panes.length}⊞
                 </span>
-                {wins.windows.length > 1 && (
+                {windowsForFolder.length > 1 && (
                   <span
                     role="button"
                     title="close window (panes ungroup; sessions stay in the rail)"
@@ -577,12 +630,13 @@ export function AgentboardScreen() {
               onClick={() =>
                 updateWins((cur) => {
                   const id = `w${Date.now()}`;
+                  const count = cur.windows.filter((w) => w.folderDir === activeFolderDir).length;
                   return {
                     windows: [
                       ...cur.windows,
-                      { id, name: `window ${cur.windows.length + 1}`, panes: [] },
+                      { id, name: `window ${count + 1}`, folderDir: activeFolderDir, panes: [] },
                     ],
-                    activeWindow: id,
+                    activeWindows: { ...cur.activeWindows, [activeFolderDir]: id },
                   };
                 })
               }
@@ -590,10 +644,10 @@ export function AgentboardScreen() {
             >
               <Plus className="size-3" /> window
             </button>
-            {selected && (
+            {activeFolderDir && (
               <button
                 type="button"
-                onClick={() => void newSession(selected.folderDir)}
+                onClick={() => void newSession(activeFolderDir)}
                 className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
                 title="New session in the focused folder (⌘D)"
               >
@@ -780,7 +834,9 @@ export function AgentboardScreen() {
                   <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
                     <TerminalSquare className="size-10" />
                     <p className="text-sm">
-                      Empty window — click a session in the rail to open it here.
+                      {activeFolderDir
+                        ? "Empty window — click a session in the rail to open it here."
+                        : "Select a folder in the rail to see its sessions."}
                     </p>
                   </div>
                 )}
@@ -1022,6 +1078,7 @@ function RepoGroup({
   now,
   compactPct,
   selected,
+  activeFolderDir,
   collapsed,
   renaming,
   titles,
@@ -1029,6 +1086,7 @@ function RepoGroup({
   wins,
   actions,
   onToggle,
+  onSelectFolder,
   onSelect,
   onNewSession,
   onRemoveRepo,
@@ -1038,6 +1096,7 @@ function RepoGroup({
   now: number;
   compactPct: number;
   selected: Selected;
+  activeFolderDir: string | null;
   collapsed: Record<string, boolean>;
   renaming: string | null;
   titles: Record<string, string>;
@@ -1045,6 +1104,7 @@ function RepoGroup({
   wins: WindowsPayload | null;
   actions: SessionActions;
   onToggle: (key: string) => void;
+  onSelectFolder: (folderDir: string) => void;
   onSelect: (folderDir: string, sessionId: string) => void;
   onNewSession: (folderDir: string, launchClaude?: boolean) => void;
   onRemoveRepo: (name: string) => void;
@@ -1104,7 +1164,11 @@ function RepoGroup({
           branch={folder.branch}
           needs={repo.needs}
           collapsed={isCollapsed}
-          onToggle={() => onToggle(repo.key)}
+          active={activeFolderDir === folder.dir}
+          onToggle={() => {
+            onToggle(repo.key);
+            onSelectFolder(folder.dir);
+          }}
           onNewSession={() => onNewSession(folder.dir)}
           onRemoveRepo={() => onRemoveRepo(repo.name)}
         />
@@ -1147,7 +1211,11 @@ function RepoGroup({
                 branch={folder.branch}
                 needs={folder.needs}
                 collapsed={fCollapsed}
-                onToggle={() => onToggle(key)}
+                active={activeFolderDir === folder.dir}
+                onToggle={() => {
+                  onToggle(key);
+                  onSelectFolder(folder.dir);
+                }}
                 onNewSession={() => onNewSession(folder.dir)}
               />
               {!fCollapsed && (
@@ -1219,6 +1287,7 @@ function FolderHeader({
   branch,
   needs,
   collapsed,
+  active,
   onToggle,
   onNewSession,
   onRemoveRepo,
@@ -1228,6 +1297,8 @@ function FolderHeader({
   branch: string;
   needs: number;
   collapsed: boolean;
+  /** Whether this folder is the one currently shown in the main pane area. */
+  active: boolean;
   onToggle: () => void;
   onNewSession: () => void;
   onRemoveRepo?: () => void;
@@ -1237,6 +1308,7 @@ function FolderHeader({
       className={cn(
         "flex items-center gap-2 bg-card px-3 py-2 hover:bg-accent/50",
         scope === "repo" ? "sticky top-0 z-10" : "pl-6",
+        active && "bg-accent/60",
       )}
     >
       <button
@@ -1399,7 +1471,10 @@ function SessionRow({
               <span
                 className={cn(
                   "size-2 shrink-0 rounded-[3px]",
-                  windowColor(wins?.windows ?? [], grouped.id),
+                  windowColor(
+                    wins?.windows.filter((w) => w.folderDir === grouped.folderDir) ?? [],
+                    grouped.id,
+                  ),
                 )}
               />
               <span className="max-w-12 truncate font-mono text-[9.5px] text-muted-foreground/60">
