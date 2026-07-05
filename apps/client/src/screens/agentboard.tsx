@@ -14,6 +14,17 @@ import {
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
   Command,
   CommandDialog,
   CommandEmpty,
@@ -42,6 +53,7 @@ import {
   isAgent,
   isCold,
   isSoloRepo,
+  liveSessions,
   needsCompact,
   sessionLabel,
   sessionNeeds,
@@ -158,8 +170,12 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
-/** A discoverable repo for the fuzzy add-repo picker (from `ab_discover_repos`). */
-type RepoCandidate = { name: string; dir: string };
+/** A repo row in the manage-repos picker (from `ab_discover_repos`): every
+ * repo under the scan roots, unioned with every repo already on the rail. */
+type RepoCandidate = { name: string; dir: string; active: boolean };
+
+/** What a repo-remove confirmation (or immediate removal) needs to act on. */
+type RemoveTarget = { label: string; dirs: string[]; sessionIds: string[] };
 
 /**
  * Agentboard — the Folder Rail. Left: rollup tally + needs-you strip + the
@@ -187,10 +203,13 @@ export function AgentboardScreen() {
   // The folder whose windows the main area shows — set by clicking a folder
   // header or a session row. Null until the user picks a folder.
   const [activeFolderDir, setActiveFolderDir] = useState<string | null>(null);
-  // Add-repo picker: discovered repos under ~/code, fuzzy-searched by `repoQuery`.
+  // Manage-repos picker: every repo under the scan roots + already on the
+  // rail, fuzzy-searched by `repoQuery`, each toggled on/off by checkbox.
   const [addRepoOpen, setAddRepoOpen] = useState(false);
   const [repoQuery, setRepoQuery] = useState("");
   const [candidates, setCandidates] = useState<RepoCandidate[]>([]);
+  // Pending remove awaiting confirmation because it would kill live sessions.
+  const [confirmRemove, setConfirmRemove] = useState<RemoveTarget | null>(null);
   // Session ids whose PTY is mounted (kept alive for scrollback), + their cwd.
   const [open, setOpen] = useState<string[]>([]);
   const cwds = useRef<Record<string, string>>({});
@@ -312,28 +331,74 @@ export function AgentboardScreen() {
     }
   }
 
+  async function fetchCandidates(): Promise<RepoCandidate[]> {
+    return (await abInvoke<RepoCandidate[]>("ab_discover_repos")) ?? [];
+  }
+
+  async function refreshCandidates() {
+    setCandidates(await fetchCandidates());
+  }
+
   // Add a repo to the rail; backend re-emits state so it appears. Mirrors
   // `ttr agentboard repos add <path>`.
-  async function addRepo(dir: string) {
+  async function addRepoPath(dir: string) {
     const path = dir.trim();
     if (!path) return;
-    setAddRepoOpen(false);
     await abInvoke("ab_add_repo", { path });
+    await refreshCandidates();
   }
 
-  // Drop a repo from the watched list (non-destructive — leaves it on disk).
-  async function removeRepo(name: string) {
-    await abInvoke("ab_remove_repo", { name });
+  // Actually remove: kill any live sessions first (killing a PTY is
+  // client-mediated — see `closeSession`/`TerminalView`'s unmount effect),
+  // then drop the checkout(s) from the watched list. Removes by `dir`, never
+  // by resolved session name — a multi-checkout repo removes several dirs in
+  // one batch, and `ab_remove_repo`'s name resolution shifts as each removal
+  // changes the collision-disambiguated names of whatever's left.
+  async function performRemove(target: RemoveTarget) {
+    for (const id of target.sessionIds) await closeSession(id);
+    for (const dir of target.dirs) await abInvoke("ab_remove_repo", { dir });
+    await refreshCandidates();
   }
 
-  // On opening the picker, (re)load the discoverable repos under ~/code.
+  // Remove a repo (or, for a multi-checkout repo, all its checkouts) from
+  // the rail. Immediate when nothing's running; confirms first (see the
+  // AlertDialog below) when any of its sessions are live, since confirming
+  // kills them.
+  function requestRemoveRepo(dirs: string[], label: string) {
+    const folders = repos.flatMap((r) => r.folders).filter((f) => dirs.includes(f.dir));
+    const sessionIds = folders.flatMap((f) => liveSessions(f).map((s) => s.id));
+    const target: RemoveTarget = { label, dirs, sessionIds };
+    if (sessionIds.length === 0) {
+      void performRemove(target);
+      return;
+    }
+    // Never stack the confirm AlertDialog on top of the still-open
+    // manage-repos CommandDialog — two simultaneous Radix dialogs fight over
+    // the focus trap. Close the picker first; reopening isn't needed since
+    // `performRemove` already refreshes `candidates` for next time.
+    setAddRepoOpen(false);
+    setConfirmRemove(target);
+  }
+
+  // Toggle a manage-repos row: add if off the rail, else remove it (guarded
+  // by the same live-session confirmation as every other remove entry point).
+  async function toggleRepo(c: RepoCandidate) {
+    if (!c.active) {
+      await addRepoPath(c.dir);
+      return;
+    }
+    const folder = repos.flatMap((r) => r.folders).find((f) => f.dir === c.dir);
+    requestRemoveRepo([c.dir], folder?.name ?? c.name);
+  }
+
+  // On opening the picker, (re)load the discoverable + on-rail repos.
   useEffect(() => {
     if (!addRepoOpen) return;
     setRepoQuery("");
     let active = true;
     void (async () => {
-      const found = await abInvoke<RepoCandidate[]>("ab_discover_repos");
-      if (active) setCandidates(found ?? []);
+      const found = await fetchCandidates();
+      if (active) setCandidates(found);
     })();
     return () => {
       active = false;
@@ -480,9 +545,9 @@ export function AgentboardScreen() {
             type="button"
             onClick={() => setAddRepoOpen(true)}
             className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-violet-500 hover:bg-accent/50"
-            title="Add a repo to the rail"
+            title="Toggle which repos show up on the rail"
           >
-            <FolderPlus className="size-3.5" /> Add repo
+            <FolderPlus className="size-3.5" /> Manage repos
           </button>
         </div>
 
@@ -531,7 +596,7 @@ export function AgentboardScreen() {
                   variant="outline"
                   onClick={() => setAddRepoOpen(true)}
                 >
-                  <FolderPlus className="size-3.5" /> Add a repo
+                  <FolderPlus className="size-3.5" /> Manage repos
                 </Button>
               </div>
             )}
@@ -553,7 +618,7 @@ export function AgentboardScreen() {
                 onSelectFolder={selectFolder}
                 onSelect={selectSession}
                 onNewSession={newSession}
-                onRemoveRepo={removeRepo}
+                onRemoveRepo={requestRemoveRepo}
                 onRenameCommit={commitRename}
               />
             ))}
@@ -850,8 +915,8 @@ export function AgentboardScreen() {
       <CommandDialog
         open={addRepoOpen}
         onOpenChange={setAddRepoOpen}
-        title="Add repo"
-        description="Fuzzy-search your git repos and add one to the rail."
+        title="Manage repos"
+        description="Toggle which repos show up on the rail."
         className="sm:max-w-2xl"
       >
         <Command>
@@ -868,14 +933,18 @@ export function AgentboardScreen() {
                 : "No match. Type an absolute path to add one."}
             </CommandEmpty>
             {candidates.length > 0 && (
-              <CommandGroup heading="Discovered repos">
+              <CommandGroup heading="Repos">
                 {candidates.map((c) => (
                   <CommandItem
                     key={c.dir}
                     value={`${c.name} ${c.dir}`}
-                    onSelect={() => void addRepo(c.dir)}
+                    onSelect={() => void toggleRepo(c)}
                   >
-                    <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+                    <Checkbox
+                      checked={c.active}
+                      tabIndex={-1}
+                      className="pointer-events-none"
+                    />
                     <span className="flex-1 truncate">{c.name}</span>
                     <span className="truncate font-mono text-[11px] text-muted-foreground">
                       {c.dir}
@@ -884,23 +953,54 @@ export function AgentboardScreen() {
                 ))}
               </CommandGroup>
             )}
-            {repoQuery.startsWith("/") && (
-              <CommandGroup heading="Path">
-                <CommandItem
-                  value={repoQuery}
-                  onSelect={() => void addRepo(repoQuery)}
-                >
-                  <FolderPlus className="size-3.5 shrink-0 text-violet-500" />
-                  <span>Add path</span>
-                  <span className="truncate font-mono text-[11px] text-muted-foreground">
-                    {repoQuery}
-                  </span>
-                </CommandItem>
-              </CommandGroup>
-            )}
+            {repoQuery.startsWith("/") &&
+              !candidates.some((c) => c.dir === repoQuery) && (
+                <CommandGroup heading="Path">
+                  <CommandItem
+                    value={repoQuery}
+                    onSelect={() => void addRepoPath(repoQuery)}
+                  >
+                    <FolderPlus className="size-3.5 shrink-0 text-violet-500" />
+                    <span>Add path</span>
+                    <span className="truncate font-mono text-[11px] text-muted-foreground">
+                      {repoQuery}
+                    </span>
+                  </CommandItem>
+                </CommandGroup>
+              )}
           </CommandList>
         </Command>
       </CommandDialog>
+
+      <AlertDialog
+        open={confirmRemove != null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmRemove(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {confirmRemove?.label} from the rail?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmRemove?.sessionIds.length}{" "}
+              {confirmRemove?.sessionIds.length === 1 ? "session is" : "sessions are"} still
+              running. Removing will stop{" "}
+              {confirmRemove?.sessionIds.length === 1 ? "it" : "them"}.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmRemove) void performRemove(confirmRemove);
+                setConfirmRemove(null);
+              }}
+            >
+              Stop &amp; remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -1108,7 +1208,7 @@ function RepoGroup({
   onSelectFolder: (folderDir: string) => void;
   onSelect: (folderDir: string, sessionId: string) => void;
   onNewSession: (folderDir: string, launchClaude?: boolean) => void;
-  onRemoveRepo: (name: string) => void;
+  onRemoveRepo: (dirs: string[], label: string) => void;
   onRenameCommit: (sessionId: string, name: string) => void;
 }) {
   const solo = isSoloRepo(repo);
@@ -1177,7 +1277,7 @@ function RepoGroup({
             onSelectFolder(folder.dir);
           }}
           onNewSession={() => onNewSession(folder.dir)}
-          onRemoveRepo={() => onRemoveRepo(repo.name)}
+          onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
         />
         {!isCollapsed && (
           <div className="pb-2">
@@ -1204,7 +1304,14 @@ function RepoGroup({
           <span className="truncate text-sm font-semibold">{repo.name}</span>
           {repo.needs > 0 && <NeedsBadge n={repo.needs} className="ml-auto" />}
         </button>
-        <RepoMenu onRemove={() => onRemoveRepo(repo.name)} />
+        <RepoMenu
+          onRemove={() =>
+            onRemoveRepo(
+              repo.folders.map((f) => f.dir),
+              repo.name,
+            )
+          }
+        />
       </div>
       {!repoCollapsed &&
         repo.folders.map((folder) => {
@@ -1230,7 +1337,7 @@ function RepoGroup({
                   onSelectFolder(folder.dir);
                 }}
                 onNewSession={() => onNewSession(folder.dir)}
-                onRemoveRepo={() => onRemoveRepo(folder.name)}
+                onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
               />
               {!fCollapsed && (
                 <div className="pb-1">

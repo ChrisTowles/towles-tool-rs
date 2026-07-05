@@ -23,7 +23,7 @@ use crate::{
     GitInfoCache, OpenCodeAgentWatcher, RepoEntry, SessionMetadataStore, SessionOrder,
     SessionRecord, SessionStore, StatePayload, WatcherContext, add_repo, assemble_state,
     default_repos_path, default_sessions_path, instance_key, load_repos, load_scan_roots,
-    remove_repo_by_name, repo_entries, resolve_session_name, save_repos, save_scan_roots,
+    remove_repo_by_dir, repo_entries, resolve_session_name, save_repos, save_scan_roots,
 };
 
 // Prune schedule constants (BRIDGE-SPEC §4).
@@ -452,8 +452,8 @@ impl Engine {
         added
     }
 
-    pub fn remove_repo(&mut self, name: &str) -> bool {
-        let removed = remove_repo_by_name(&mut self.repo_paths, name);
+    pub fn remove_repo(&mut self, dir: &str) -> bool {
+        let removed = remove_repo_by_dir(&mut self.repo_paths, dir);
         if removed {
             let _ = save_repos(&self.repos_path, &self.repo_paths);
         }
