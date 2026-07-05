@@ -82,7 +82,7 @@ pub fn term_start(
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| format!("failed to open pty: {e}"))?;
 
-    let mut cmd = CommandBuilder::new(default_shell(std::env::var("SHELL").ok()));
+    let mut cmd = CommandBuilder::new(default_shell(std::env::var(SHELL_ENV_VAR).ok()));
     cmd.env("TERM", "xterm-256color");
     // Stamp the PTY with its session id so a Claude agent launched inside inherits
     // it; the agentboard engine reads it back from /proc to attribute the agent to
@@ -167,8 +167,26 @@ fn start_dir(cwd: Option<String>) -> Option<std::path::PathBuf> {
     dirs::home_dir()
 }
 
+/// Env var that names the user's preferred shell: `$SHELL` on Unix,
+/// `%COMSPEC%` on Windows (there's no `$SHELL` equivalent there).
+#[cfg(windows)]
+const SHELL_ENV_VAR: &str = "COMSPEC";
+#[cfg(not(windows))]
+const SHELL_ENV_VAR: &str = "SHELL";
+
 fn default_shell(shell_env: Option<String>) -> String {
-    shell_env.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "/bin/bash".to_string())
+    shell_env.filter(|s| !s.trim().is_empty()).unwrap_or_else(fallback_shell)
+}
+
+/// `powershell.exe` on Windows (resolved via PATH; ships on every supported
+/// Windows version), `/bin/bash` elsewhere.
+#[cfg(windows)]
+fn fallback_shell() -> String {
+    "powershell.exe".to_string()
+}
+#[cfg(not(windows))]
+fn fallback_shell() -> String {
+    "/bin/bash".to_string()
 }
 
 #[cfg(test)]
@@ -181,9 +199,10 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_bash() {
-        assert_eq!(default_shell(None), "/bin/bash");
-        assert_eq!(default_shell(Some("  ".into())), "/bin/bash");
+    fn falls_back_to_platform_default() {
+        let expected = super::fallback_shell();
+        assert_eq!(default_shell(None), expected);
+        assert_eq!(default_shell(Some("  ".into())), expected);
     }
 
     #[test]
