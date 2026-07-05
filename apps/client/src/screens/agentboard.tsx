@@ -397,7 +397,9 @@ export function AgentboardScreen() {
           </div>
         )}
 
-        <ScrollArea className="flex-1">
+        {/* min-h-0 is load-bearing: without it this flex child grows past the
+            rail's height and folders below the fold become unreachable. */}
+        <ScrollArea className="min-h-0 flex-1">
           <div className="flex flex-col">
             {repos.length === 0 && (
               <p className="px-3 py-6 text-center text-sm text-muted-foreground">
@@ -588,7 +590,7 @@ export function AgentboardScreen() {
         {/* One flat pool of mounted terminals (never remounted — a remount
             would respawn the shell). The active window's pane order assigns
             each a percent-rect; panes in other windows stay hidden. */}
-        <div className="relative min-h-0 flex-1 p-2">
+        <div className="relative min-h-0 flex-1 overflow-hidden p-2">
           {(() => {
             const panes = activeWin?.panes ?? [];
             const rects = paneRects(panes.length);
@@ -1217,7 +1219,10 @@ function SessionRow({
                 e.stopPropagation();
                 actions.focusWindow(grouped.id);
               }}
-              className="flex min-w-0 shrink items-center gap-1 group-hover/row:hidden"
+              className={cn(
+                "flex min-w-0 shrink items-center gap-1 group-hover/row:hidden",
+                active && "hidden",
+              )}
             >
               <span
                 className={cn(
@@ -1230,8 +1235,14 @@ function SessionRow({
               </span>
             </span>
           )}
-          {/* Resting: cache + status. Hover: the lifecycle controls. */}
-          <span className="ml-auto flex min-w-0 shrink items-center gap-2 group-hover/row:hidden">
+          {/* Resting: cache + status. Hovered or selected: the lifecycle
+              controls (not hover-only — WebKitGTK can report hover:none). */}
+          <span
+            className={cn(
+              "ml-auto flex min-w-0 shrink items-center gap-2 group-hover/row:hidden",
+              active && "hidden",
+            )}
+          >
             <CacheBadge
               session={eff}
               now={now}
@@ -1242,7 +1253,12 @@ function SessionRow({
               {sessionStatusText(eff)}
             </span>
           </span>
-          <span className="ml-auto hidden shrink-0 items-center gap-2 group-hover/row:flex">
+          <span
+            className={cn(
+              "ml-auto shrink-0 items-center gap-2 group-hover/row:flex",
+              active ? "flex" : "hidden",
+            )}
+          >
             <RowControls session={eff} folderDir={folderDir} grouped={!!grouped} actions={actions} />
           </span>
           {needs && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />}

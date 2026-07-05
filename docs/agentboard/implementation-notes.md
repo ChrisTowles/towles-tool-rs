@@ -66,6 +66,18 @@ driving the mock UI in Chrome (multi-pane tiling confirmed working):
 - Pane headers gained visible `■ stop` and `✕ kill` (kill = PTY + record).
 - Fixed rail-row overflow (meta cluster now shrinks/truncates).
 
+## Real-app feedback fixes (2026-07-05, after user drove `npm run dev`)
+
+- **Rail couldn't scroll** — the ScrollArea flex child was missing `min-h-0`,
+  so with enough repos the tree grew past the rail and lower folders (the
+  "missing shell 2") were unreachable. Verified fixed by measuring the
+  viewport (clamped + `overflow-y: scroll`).
+- **Row controls were hover-only** — now also shown while a row is selected
+  (WebKitGTK can report `hover: none` on touch-capable hardware, making
+  hover-only affordances unreachable in the Tauri shell).
+- Pane container got `overflow-hidden` (a terminal sliver was bleeding below
+  the pane area in the user's screenshot).
+
 ## Deviations
 
 - **[Tier 5] panes positioned by percent-rects in one flat pool**, not nested
