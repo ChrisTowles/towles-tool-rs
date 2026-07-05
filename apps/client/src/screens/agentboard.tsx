@@ -1230,6 +1230,7 @@ function RepoGroup({
                   onSelectFolder(folder.dir);
                 }}
                 onNewSession={() => onNewSession(folder.dir)}
+                onRemoveRepo={() => onRemoveRepo(folder.name)}
               />
               {!fCollapsed && (
                 <div className="pb-1">
@@ -1357,7 +1358,7 @@ function FolderHeader({
         </span>
         <span
           className={cn(
-            "truncate",
+            "min-w-0 truncate",
             scope === "repo"
               ? "text-sm font-semibold"
               : "text-sm text-muted-foreground",
@@ -1365,7 +1366,7 @@ function FolderHeader({
         >
           {title}
         </span>
-        <span className="shrink-0 truncate font-mono text-[11px] text-muted-foreground">
+        <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
           ⎇ {branch}
         </span>
         {(linesAdded > 0 || linesRemoved > 0) && (
