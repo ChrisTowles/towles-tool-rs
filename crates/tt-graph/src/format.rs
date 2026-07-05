@@ -4,8 +4,8 @@ use serde::Serialize;
 
 use crate::Result;
 use crate::analyzer::{SessionAnalysis, analyze_session, extract_project_name, get_primary_model};
-use crate::parser::read_jsonl;
 use crate::types::SessionResult;
+use tt_claude_code::parse_transcript_file;
 
 /// A single flat session row. Serializes with camelCase keys.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -63,7 +63,7 @@ fn estimate_cost(analysis: &SessionAnalysis) -> f64 {
 pub fn build_session_rows(sessions: &[SessionResult]) -> Result<Vec<SessionRow>> {
     let mut rows = Vec::with_capacity(sessions.len());
     for session in sessions {
-        let entries = read_jsonl(&session.path);
+        let entries = parse_transcript_file(&session.path);
         let analysis = analyze_session(&entries);
         let model =
             get_primary_model(analysis.opus_tokens, analysis.sonnet_tokens, analysis.haiku_tokens);

@@ -10,8 +10,10 @@ use std::time::UNIX_EPOCH;
 
 use chrono::{DateTime, Local};
 
+use tt_claude_code::{session_title_file, usage_totals_file};
+
 use crate::analyzer::extract_project_name;
-use crate::parser::{calculate_cutoff_ms, parse_session_title, quick_token_count};
+use crate::parser::calculate_cutoff_ms;
 use crate::types::{BarChartData, BarChartDay, ProjectBar, SessionResult};
 use crate::{Error, Result};
 
@@ -65,8 +67,8 @@ pub fn find_recent_sessions(
             }
 
             let session_id = name.trim_end_matches(".jsonl").to_string();
-            let tokens = quick_token_count(&file_path);
-            let title = parse_session_title(&file_path);
+            let tokens = usage_totals_file(&file_path).billable();
+            let title = session_title_file(&file_path);
 
             sessions.push(SessionResult {
                 session_id,
@@ -118,7 +120,7 @@ pub fn session_result_for_path(session_id: &str, path: &Path) -> Result<SessionR
         tokens: 0,
         project,
         mtime,
-        title: parse_session_title(path),
+        title: session_title_file(path),
     })
 }
 

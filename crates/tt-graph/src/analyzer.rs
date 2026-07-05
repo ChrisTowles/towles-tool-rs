@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use crate::tools::extract_tool_data;
-use crate::types::{Content, JournalEntry, ToolData};
+use crate::types::ToolData;
+use tt_claude_code::{Content, TranscriptEntry};
 
 /// Token breakdown for a session, produced by [`analyze_session`].
 #[derive(Debug, Clone, PartialEq)]
@@ -28,7 +29,7 @@ pub struct SessionAnalysis {
 
 /// Analyze session entries to get a token breakdown by model, plus waste
 /// metrics (repeated reads, model efficiency). Ports `analyzeSession`.
-pub fn analyze_session(entries: &[JournalEntry]) -> SessionAnalysis {
+pub fn analyze_session(entries: &[TranscriptEntry]) -> SessionAnalysis {
     let mut input_tokens = 0;
     let mut output_tokens = 0;
     let mut opus_tokens = 0;
@@ -120,7 +121,7 @@ pub fn analyze_session(entries: &[JournalEntry]) -> SessionAnalysis {
 
 /// Aggregate tool usage across all entries in a session, sorted by token usage
 /// descending. Ports `aggregateSessionTools`.
-pub fn aggregate_session_tools(entries: &[JournalEntry]) -> Vec<ToolData> {
+pub fn aggregate_session_tools(entries: &[TranscriptEntry]) -> Vec<ToolData> {
     // (name, count, input, output), keeping first-seen insertion order.
     let mut order: Vec<String> = Vec::new();
     let mut agg: HashMap<String, (i64, i64, i64)> = HashMap::new();
@@ -231,8 +232,8 @@ pub fn extract_project_name(encoded_project: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Message, Usage};
     use serde_json::json;
+    use tt_claude_code::{Message, Usage};
 
     fn text_block(text: &str) -> Value {
         json!({ "type": "text", "text": text })
@@ -246,8 +247,8 @@ mod tests {
         input: i64,
         output: i64,
         content: Option<Vec<Value>>,
-    ) -> JournalEntry {
-        JournalEntry {
+    ) -> TranscriptEntry {
+        TranscriptEntry {
             entry_type: "assistant".to_string(),
             message: Some(Message {
                 role: Some("assistant".to_string()),
@@ -298,7 +299,7 @@ mod tests {
 
     #[test]
     fn analyze_cache_hit_rate() {
-        let entries = [JournalEntry {
+        let entries = [TranscriptEntry {
             entry_type: "assistant".to_string(),
             message: Some(Message {
                 role: Some("assistant".to_string()),
@@ -308,6 +309,7 @@ mod tests {
                     output_tokens: Some(0),
                     cache_read_input_tokens: Some(800),
                     cache_creation_input_tokens: Some(200),
+                    ..Default::default()
                 }),
                 content: Some(Content::Blocks(vec![text_block("hi")])),
                 ..Default::default()
@@ -340,8 +342,8 @@ mod tests {
         assert_eq!(analyze_session(&entries).model_efficiency, 0.5);
     }
 
-    fn deduped_entry(id: &str, request_id: &str, input: i64, output: i64) -> JournalEntry {
-        JournalEntry {
+    fn deduped_entry(id: &str, request_id: &str, input: i64, output: i64) -> TranscriptEntry {
+        TranscriptEntry {
             entry_type: "assistant".to_string(),
             request_id: Some(request_id.to_string()),
             message: Some(Message {
@@ -383,7 +385,7 @@ mod tests {
 
     #[test]
     fn analyze_skips_entries_without_usage() {
-        let entries = [JournalEntry {
+        let entries = [TranscriptEntry {
             entry_type: "assistant".to_string(),
             message: Some(Message {
                 role: Some("assistant".to_string()),

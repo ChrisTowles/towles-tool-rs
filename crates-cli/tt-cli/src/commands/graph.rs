@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use tt_graph::{
     OutputFormat, build_all_sessions_treemap, build_bar_chart_data, build_session_rows,
     build_session_treemap, find_recent_sessions, find_session_path, format_csv, format_json,
-    generate_treemap_html, read_jsonl, session_result_for_path,
+    generate_treemap_html, parse_transcript_file, session_result_for_path,
 };
 
 /// Max sessions scanned for the all-sessions view (matches the TS `500`).
@@ -157,7 +157,7 @@ fn run_html(
                 }
             };
             ui::info(&format!("📊 Generating treemap for session {id}..."));
-            let entries = read_jsonl(&path);
+            let entries = parse_transcript_file(&path);
             build_session_treemap(id, &entries)
         }
     };

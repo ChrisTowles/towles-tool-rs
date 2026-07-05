@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::types::{Content, JournalEntry};
+use tt_claude_code::{Content, TranscriptEntry};
 
 static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").unwrap()
@@ -35,7 +35,7 @@ fn first_text_block(content: &Content) -> Option<String> {
 }
 
 /// Extract a meaningful label from session entries. Ports `extractSessionLabel`.
-pub fn extract_session_label(entries: &[JournalEntry], session_id: &str) -> String {
+pub fn extract_session_label(entries: &[TranscriptEntry], session_id: &str) -> String {
     let mut first_user_text: Option<String> = None;
     let mut first_assistant_text: Option<String> = None;
     let mut git_branch: Option<String> = None;
@@ -128,10 +128,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn user_text_entry(content: &str) -> JournalEntry {
-        JournalEntry {
+    fn user_text_entry(content: &str) -> TranscriptEntry {
+        TranscriptEntry {
             entry_type: "user".to_string(),
-            message: Some(crate::types::Message {
+            message: Some(tt_claude_code::Message {
                 role: Some("user".to_string()),
                 content: Some(Content::Text(content.to_string())),
                 ..Default::default()
@@ -140,10 +140,10 @@ mod tests {
         }
     }
 
-    fn user_blocks_entry(text: &str) -> JournalEntry {
-        JournalEntry {
+    fn user_blocks_entry(text: &str) -> TranscriptEntry {
+        TranscriptEntry {
             entry_type: "user".to_string(),
-            message: Some(crate::types::Message {
+            message: Some(tt_claude_code::Message {
                 role: Some("user".to_string()),
                 content: Some(Content::Blocks(vec![json!({ "type": "text", "text": text })])),
                 ..Default::default()
@@ -152,10 +152,10 @@ mod tests {
         }
     }
 
-    fn assistant_blocks_entry(text: &str) -> JournalEntry {
-        JournalEntry {
+    fn assistant_blocks_entry(text: &str) -> TranscriptEntry {
+        TranscriptEntry {
             entry_type: "assistant".to_string(),
-            message: Some(crate::types::Message {
+            message: Some(tt_claude_code::Message {
                 role: Some("assistant".to_string()),
                 content: Some(Content::Blocks(vec![json!({ "type": "text", "text": text })])),
                 ..Default::default()
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_git_branch() {
-        let entry = JournalEntry {
+        let entry = TranscriptEntry {
             entry_type: "user".to_string(),
             git_branch: Some("feat/new-feature".to_string()),
             ..Default::default()
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn uses_slug_fallback_for_short_labels() {
-        let entry = JournalEntry { slug: Some("my-slug".to_string()), ..Default::default() };
+        let entry = TranscriptEntry { slug: Some("my-slug".to_string()), ..Default::default() };
         assert_eq!(extract_session_label(&[entry], "abc12345"), "my-slug");
     }
 }
