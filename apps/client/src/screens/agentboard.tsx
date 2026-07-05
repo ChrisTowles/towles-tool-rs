@@ -1097,7 +1097,7 @@ function RepoGroup({
     const folder = repo.folders[0];
     const isCollapsed = collapsed[repo.key];
     return (
-      <div className="group/folder border-b">
+      <div className="border-b">
         <FolderHeader
           scope="repo"
           title={repo.name}
@@ -1140,7 +1140,7 @@ function RepoGroup({
           const key = `${repo.key}::${folder.dir}`;
           const fCollapsed = collapsed[key];
           return (
-            <div key={folder.dir} className="group/folder">
+            <div key={folder.dir}>
               <FolderHeader
                 scope="folder"
                 title={folder.name}
@@ -1169,6 +1169,7 @@ function RepoGroup({
  * resting rail stays quiet. */
 function PurposeRow({ folder }: { folder: FolderData }) {
   const [editing, setEditing] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const purpose = folder.purpose?.trim() ?? "";
 
   async function commit(text: string) {
@@ -1200,12 +1201,16 @@ function PurposeRow({ folder }: { folder: FolderData }) {
     <button
       type="button"
       onClick={() => setEditing(true)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       title="Edit folder purpose"
       className={cn(
         "block w-full truncate py-0.5 pr-3 pl-9 text-left text-[11px]",
         purpose
-          ? "text-muted-foreground hover:text-foreground"
-          : "text-transparent group-hover/folder:text-muted-foreground/50",
+          ? cn("text-muted-foreground", hovered && "text-foreground")
+          : hovered
+            ? "text-muted-foreground/50"
+            : "text-transparent",
       )}
     >
       {purpose || "+ what are you working toward here?"}
@@ -1345,6 +1350,11 @@ function SessionRow({
   const grouped = wins ? windowOf(wins.windows, session.id) : undefined;
   // Prefer the live Claude terminal title (`✳ <title>`) when the PTY is open.
   const label = claudeTitleName(title) ?? sessionLabel(eff);
+  // Hover-reveal is driven by JS state, not CSS `:hover` — the Tauri webview's
+  // WebKitGTK doesn't reliably update `:hover` on real pointer movement, so
+  // `group-hover` utilities never fire even though `matchMedia('(hover:
+  // hover)')` reports true.
+  const [hovered, setHovered] = useState(false);
   return (
     <div
       role="button"
@@ -1352,8 +1362,11 @@ function SessionRow({
       onClick={onSelect}
       onDoubleClick={() => actions.renameStart(session.id)}
       onKeyDown={(e) => e.key === "Enter" && onSelect()}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       className={cn(
-        "group/row ml-1.5 flex cursor-pointer items-center gap-2.5 border-l-2 border-transparent py-1.5 pr-3 pl-7 hover:bg-accent/50",
+        "ml-1.5 flex cursor-pointer items-center gap-2.5 border-l-2 border-transparent py-1.5 pr-3 pl-7",
+        hovered && "bg-accent/50",
         active && "border-l-violet-500 bg-accent",
         needs && "border-l-amber-500",
       )}
@@ -1375,7 +1388,12 @@ function SessionRow({
         />
       ) : (
         <>
-          <span className={cn("truncate", eff.live ? "text-foreground" : "text-muted-foreground")}>
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate",
+              eff.live ? "text-foreground" : "text-muted-foreground",
+            )}
+          >
             {label}
           </span>
           {label !== session.name && (
@@ -1392,8 +1410,8 @@ function SessionRow({
                 actions.focusWindow(grouped.id);
               }}
               className={cn(
-                "flex min-w-0 shrink items-center gap-1 group-hover/row:hidden",
-                active && "hidden",
+                "flex min-w-0 shrink items-center gap-1",
+                (active || hovered) && "hidden",
               )}
             >
               <span
@@ -1407,12 +1425,11 @@ function SessionRow({
               </span>
             </span>
           )}
-          {/* Resting: cache + status. Hovered or selected: the lifecycle
-              controls (not hover-only — WebKitGTK can report hover:none). */}
+          {/* Resting: cache + status. Hovered or selected: the lifecycle controls. */}
           <span
             className={cn(
-              "ml-auto flex min-w-0 shrink items-center gap-2 group-hover/row:hidden",
-              active && "hidden",
+              "ml-auto flex min-w-0 shrink items-center gap-2",
+              (active || hovered) && "hidden",
             )}
           >
             <CacheBadge
@@ -1427,8 +1444,8 @@ function SessionRow({
           </span>
           <span
             className={cn(
-              "ml-auto shrink-0 items-center gap-2 group-hover/row:flex",
-              active ? "flex" : "hidden",
+              "ml-auto shrink-0 items-center gap-2",
+              active || hovered ? "flex" : "hidden",
             )}
           >
             <RowControls session={eff} folderDir={folderDir} grouped={!!grouped} actions={actions} />

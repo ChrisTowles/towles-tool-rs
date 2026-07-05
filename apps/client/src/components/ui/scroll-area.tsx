@@ -18,7 +18,13 @@ function ScrollArea({
     >
       <ScrollAreaPrimitive.Viewport
         data-slot="scroll-area-viewport"
-        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
+        // Radix wraps children in an internal `display: table; min-width: 100%`
+        // div to measure content size for the scrollbar thumb. `display:table`
+        // auto-sizes to its widest descendant's min-content width, so any
+        // unwrapped long text (e.g. a long session/PR title) silently widens
+        // the whole viewport and everything past the visible edge gets clipped
+        // instead of truncating. Force it back to a normal block box.
+        className="[&>div]:block! [&>div]:min-w-0! size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
       >
         {children}
       </ScrollAreaPrimitive.Viewport>
