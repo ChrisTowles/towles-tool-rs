@@ -26,6 +26,10 @@ struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
+    /// The shell's display name, resolved once at spawn time — e.g. "zsh",
+    /// "bash". Best-effort: a user running a different shell inside this one
+    /// (e.g. `bash` inside `zsh`) won't change it.
+    shell_kind: String,
 }
 
 /// All live terminals, keyed by the frontend's `term_id`.
@@ -37,6 +41,12 @@ impl TermState {
     /// stamps these onto the emitted snapshot as `SessionData.live`.
     pub fn live_ids(&self) -> std::collections::HashSet<String> {
         self.0.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// Each live session's shell kind. The agentboard bridge stamps these onto
+    /// the emitted snapshot as `SessionData.shellKind`.
+    pub fn shell_kinds(&self) -> HashMap<String, String> {
+        self.0.lock().unwrap().iter().map(|(id, s)| (id.clone(), s.shell_kind.clone())).collect()
     }
 
     /// Kill and drop the session with `term_id`, if any.
@@ -88,7 +98,9 @@ pub fn term_start(
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| format!("failed to open pty: {e}"))?;
 
-    let mut cmd = CommandBuilder::new(default_shell(std::env::var(SHELL_ENV_VAR).ok()));
+    let shell = default_shell(std::env::var(SHELL_ENV_VAR).ok());
+    let shell_kind = shell_kind_from_path(&shell);
+    let mut cmd = CommandBuilder::new(shell);
     cmd.env("TERM", "xterm-256color");
     // Stamp the PTY with its session id so a Claude agent launched inside inherits
     // it; the agentboard engine reads it back from /proc to attribute the agent to
@@ -103,7 +115,11 @@ pub fn term_start(
         pty.master.try_clone_reader().map_err(|e| format!("failed to clone pty reader: {e}"))?;
     let writer = pty.master.take_writer().map_err(|e| format!("failed to take pty writer: {e}"))?;
 
-    state.0.lock().unwrap().insert(term_id.clone(), Session { master: pty.master, writer, child });
+    state
+        .0
+        .lock()
+        .unwrap()
+        .insert(term_id.clone(), Session { master: pty.master, writer, child, shell_kind });
 
     // Liveness changed (a PTY appeared) — refresh the agentboard snapshot.
     notify_agentboard(&app);
@@ -208,13 +224,28 @@ fn fallback_shell() -> String {
     "/bin/bash".to_string()
 }
 
+/// The shell's display name from its resolved program path — `/usr/bin/zsh`
+/// -> "zsh", `powershell.exe` -> "powershell".
+fn shell_kind_from_path(shell: &str) -> String {
+    let base = Path::new(shell).file_name().and_then(|s| s.to_str()).unwrap_or(shell);
+    base.strip_suffix(".exe").unwrap_or(base).to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{default_shell, start_dir};
+    use super::{default_shell, shell_kind_from_path, start_dir};
 
     #[test]
     fn prefers_shell_env() {
         assert_eq!(default_shell(Some("/usr/bin/zsh".into())), "/usr/bin/zsh");
+    }
+
+    #[test]
+    fn shell_kind_strips_dir_and_exe_suffix() {
+        assert_eq!(shell_kind_from_path("/usr/bin/zsh"), "zsh");
+        assert_eq!(shell_kind_from_path("/bin/bash"), "bash");
+        assert_eq!(shell_kind_from_path("powershell.exe"), "powershell");
+        assert_eq!(shell_kind_from_path("fish"), "fish");
     }
 
     #[test]

@@ -154,6 +154,11 @@ pub struct SessionData {
     /// from its terminal registry before emitting.
     #[serde(default)]
     pub live: bool,
+    /// The shell's display name ("zsh", "bash", …), resolved once at PTY
+    /// spawn time. Assembled as `None` here (same reason as `live`); the app
+    /// stamps it from its terminal registry before emitting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_kind: Option<String>,
     /// True when the latest agent event is an unseen terminal state.
     pub unseen: bool,
     /// Latest/priority agent event attributed to this PTY, if any.

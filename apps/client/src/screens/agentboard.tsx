@@ -1443,6 +1443,11 @@ function SessionRow({
               {session.name}
             </span>
           )}
+          {!agent && eff.shellKind && (
+            <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/50">
+              {eff.shellKind}
+            </span>
+          )}
           {grouped && (
             <span
               role="button"

@@ -30,14 +30,18 @@ pub struct Ab {
     pub _notifier: Mutex<Option<DirNotifier>>,
 }
 
-/// Stamp `SessionData.live` from the app's PTY registry. The engine assembles
-/// `live: false` (the Tauri-free crate can't see PTYs); every payload leaving
-/// the app — command return or event — passes through here first.
-pub fn stamp_live(payload: &mut StatePayload, live: &std::collections::HashSet<String>) {
+/// Stamp `SessionData.live`/`shellKind` from the app's PTY registry. The
+/// engine assembles `live: false`/`shellKind: None` (the Tauri-free crate
+/// can't see PTYs); every payload leaving the app — command return or event —
+/// passes through here first.
+pub fn stamp_pty_state(payload: &mut StatePayload, terms: &crate::terminal::TermState) {
+    let live = terms.live_ids();
+    let shell_kinds = terms.shell_kinds();
     for repo in &mut payload.repos {
         for folder in &mut repo.folders {
             for session in &mut folder.sessions {
                 session.live = live.contains(&session.id);
+                session.shell_kind = shell_kinds.get(&session.id).cloned();
             }
         }
     }
@@ -50,7 +54,7 @@ pub fn stamped_payload(app: &AppHandle) -> StatePayload {
         let mut engine = ab.engine.lock().unwrap();
         engine.compute_payload(now_ms())
     };
-    stamp_live(&mut payload, &app.state::<crate::terminal::TermState>().live_ids());
+    stamp_pty_state(&mut payload, &app.state::<crate::terminal::TermState>());
     payload
 }
 
@@ -70,7 +74,7 @@ pub fn ab_mark_seen(state: State<Ab>, app: AppHandle, name: String) {
         engine.mark_seen_patch(&name)
     };
     if let Some(mut payload) = patched {
-        stamp_live(&mut payload, &app.state::<crate::terminal::TermState>().live_ids());
+        stamp_pty_state(&mut payload, &app.state::<crate::terminal::TermState>());
         let _ = app.emit(STATE_EVENT, payload);
     }
 }
