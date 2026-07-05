@@ -8,12 +8,7 @@ import { useEffect, useState } from "react";
  */
 
 export type AgentStatus =
-  | "idle"
-  | "busy"
-  | "complete"
-  | "error"
-  | "waiting"
-  | "interrupted";
+  "idle" | "busy" | "complete" | "error" | "waiting" | "interrupted";
 
 export type AgentEvent = {
   agent: string;
@@ -122,113 +117,6 @@ export function isSoloRepo(r: RepoData): boolean {
 
 const EMPTY: StatePayload = { repos: [], preferredEditor: "", ts: 0 };
 
-/** Fake state for bare-browser dev (no Tauri), so the Folder Rail renders. */
-const MOCK_STATE: StatePayload = {
-  preferredEditor: "code",
-  ts: 0,
-  repos: [
-    {
-      key: "https://github.com/ChrisTowles/towles-tool-rs.git",
-      name: "towles-tool-rs",
-      originUrl: "https://github.com/ChrisTowles/towles-tool-rs.git",
-      needs: 1,
-      folders: [
-        {
-          name: "slot-0",
-          dir: "/home/ctowles/code/p/towles-tool-rs-slot-0",
-          branch: "feat/data-hub",
-          isWorktree: false,
-          filesChanged: 6,
-          linesAdded: 88,
-          linesRemoved: 20,
-          commitsDelta: 2,
-          needs: 0,
-          sessions: [
-            {
-              id: "s0",
-              name: "shell 1",
-              createdAt: 0,
-              unseen: false,
-              agentState: {
-                agent: "claude",
-                session: "slot-0",
-                status: "busy",
-                ts: 0,
-                threadName: "store snapshot wiring",
-              },
-              agents: [],
-            },
-            { id: "s1", name: "shell 2", createdAt: 0, unseen: false, agentState: null, agents: [] },
-          ],
-        },
-        {
-          name: "slot-1",
-          dir: "/home/ctowles/code/p/towles-tool-rs-slot-1",
-          branch: "feat/agentboard-folder-rail",
-          isWorktree: false,
-          filesChanged: 12,
-          linesAdded: 340,
-          linesRemoved: 45,
-          commitsDelta: 1,
-          needs: 1,
-          sessions: [
-            {
-              id: "s2",
-              name: "shell 1",
-              createdAt: 0,
-              unseen: true,
-              agentState: {
-                agent: "claude",
-                session: "slot-1",
-                status: "waiting",
-                ts: 0,
-                threadName: "agentboard folder rail",
-              },
-              agents: [],
-            },
-            { id: "s3", name: "shell 2", createdAt: 0, unseen: false, agentState: null, agents: [] },
-          ],
-        },
-      ],
-    },
-    {
-      key: "https://github.com/ChrisTowles/toolbox.git",
-      name: "toolbox",
-      originUrl: "https://github.com/ChrisTowles/toolbox.git",
-      needs: 0,
-      folders: [
-        {
-          name: "toolbox",
-          dir: "/home/ctowles/code/p/toolbox",
-          branch: "main",
-          isWorktree: false,
-          filesChanged: 1,
-          linesAdded: 3,
-          linesRemoved: 2,
-          commitsDelta: 0,
-          needs: 0,
-          sessions: [
-            {
-              id: "s4",
-              name: "shell 1",
-              createdAt: 0,
-              unseen: false,
-              agentState: {
-                agent: "claude",
-                session: "toolbox",
-                status: "busy",
-                ts: 0,
-                threadName: "extract path helpers",
-              },
-              agents: [],
-            },
-          ],
-        },
-      ],
-    },
-  ],
-};
-
 /**
  * Subscribe to the live agentboard state: pull the initial snapshot via
  * `ab_get_state`, then track the debounced `agentboard://state` event. Returns
@@ -243,9 +131,10 @@ export function useAgentboardState(): StatePayload {
 
     void (async () => {
       // Outside Tauri (bare-browser dev), `listen` throws on the missing IPC
-      // internals — show mock data instead of leaking unhandled rejections.
+      // internals — stay on the empty state instead of leaking unhandled
+      // rejections.
       if (!("__TAURI_INTERNALS__" in window)) {
-        setState(MOCK_STATE);
+        setState(EMPTY);
         return;
       }
 

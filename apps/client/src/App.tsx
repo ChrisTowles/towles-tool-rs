@@ -4,12 +4,15 @@ import { AppHeader } from "@/components/app-header";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
 import { DayBar } from "@/components/day-bar";
-import { MockBanner } from "@/components/mock-banner";
 import { QuickLog } from "@/components/quick-log";
 import { StatusBar } from "@/components/status-bar";
 import { TabStrip } from "@/components/tab-strip";
 import { Kbd } from "@/components/ui/kbd";
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -31,7 +34,8 @@ function EmptyState() {
 }
 
 function Shortcuts() {
-  const { setPaletteOpen, toggleSidebar, closeTab, activeTab, paletteOpen } = useWorkspace();
+  const { setPaletteOpen, toggleSidebar, closeTab, activeTab, paletteOpen } =
+    useWorkspace();
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -73,7 +77,6 @@ function Workspace() {
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      <MockBanner />
       <AppHeader />
       <DayBar />
 
