@@ -4237,6 +4237,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tt-claude-code",
  "tt-config",
  "tt-exec",
 ]
@@ -4259,6 +4260,14 @@ dependencies = [
  "tt-config",
  "tt-journal",
  "tt-store",
+]
+
+[[package]]
+name = "tt-claude-code"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4342,6 +4351,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tt-claude-code",
 ]
 
 [[package]]
