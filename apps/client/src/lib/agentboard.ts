@@ -83,6 +83,18 @@ export function sessionLabel(s: SessionData): string {
   return thread && thread.length > 0 ? thread : s.name;
 }
 
+/** The Claude session title carried by a terminal's OSC window title, or null
+ * when it isn't a Claude one. Claude Code emits `✳ <session title>`; a plain
+ * shell sets its own cwd/command title (no glyph). The generic `✳ Claude Code`
+ * means "running, no session title yet" → null, so the caller falls back to
+ * its other label (the /proc-derived task name or the shell name). */
+export function claudeTitleName(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const m = raw.match(/^\s*✳\s*(.+?)\s*$/u);
+  if (!m || m[1] === "Claude Code") return null;
+  return m[1];
+}
+
 /** A one-liner status message for a session row. */
 export function sessionStatusText(s: SessionData): string {
   const st = s.agentState;
