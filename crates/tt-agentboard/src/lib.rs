@@ -63,7 +63,7 @@ pub use folder_meta::{FolderMeta, FolderMetaStore, default_folder_meta_path};
 pub use git_info::{GitInfo, GitInfoCache, compute_git_info};
 pub use metadata::SessionMetadataStore;
 pub use repos::{
-    RepoEntry, add_repo, default_repos_path, load_repos, load_scan_roots, remove_repo_by_name,
+    RepoEntry, add_repo, default_repos_path, load_repos, load_scan_roots, remove_repo_by_dir,
     repo_entries, resolve_session_name, save_repos, save_scan_roots,
 };
 pub use session_order::{ReorderDelta, SessionOrder, default_session_order_path};

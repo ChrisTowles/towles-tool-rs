@@ -134,6 +134,17 @@ export function sessionNeeds(s: SessionData): boolean {
   return s.agentState?.status === "waiting" || s.agentState?.status === "error";
 }
 
+/** A folder's currently-running (PTY-live) sessions. */
+export function liveSessions(folder: FolderData): SessionData[] {
+  return folder.sessions.filter((s) => s.live);
+}
+
+/** Display names of every live session across a repo's checkouts, for the
+ * remove-repo confirmation copy. */
+export function repoLiveSessionNames(repo: RepoData): string[] {
+  return repo.folders.flatMap((f) => liveSessions(f).map((s) => sessionLabel(s)));
+}
+
 /** The label a session row leads with: when an agent is running, its task/thread
  * name (so the row reads as *the agent*, not a bare "shell 1"); otherwise the
  * shell's own name. The shell name stays available as a secondary tag. */

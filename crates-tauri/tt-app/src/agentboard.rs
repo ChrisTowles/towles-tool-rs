@@ -114,9 +114,13 @@ pub fn ab_add_repo(state: State<Ab>, path: String) {
     state.emit.notify_one();
 }
 
+/// Remove the repo at `dir` from the rail. Takes the exact dir, not a
+/// resolved session name — the client always has the dir on hand, and
+/// removing several repos in a row by name is unsafe (see
+/// `remove_repo_by_dir`'s doc comment).
 #[tauri::command]
-pub fn ab_remove_repo(state: State<Ab>, name: String) {
-    state.engine.lock().unwrap().remove_repo(&name);
+pub fn ab_remove_repo(state: State<Ab>, dir: String) {
+    state.engine.lock().unwrap().remove_repo(&dir);
     state.emit.notify_one();
 }
 
@@ -136,13 +140,16 @@ pub fn ab_set_scan_roots(state: State<Ab>, roots: Vec<String>) {
     state.engine.lock().unwrap().set_scan_roots(cleaned);
 }
 
-/// A discovered git repo not yet on the rail, for the fuzzy add-repo picker.
+/// A repo candidate for the manage-repos picker: either already on the rail
+/// or discoverable under a scan root.
 #[derive(serde::Serialize)]
 pub struct RepoCandidate {
     /// Friendly label, e.g. `p/towles-tool` (path relative to the scan root).
     pub name: String,
-    /// Absolute path, passed back verbatim to `ab_add_repo`.
+    /// Absolute path, passed back verbatim to `ab_add_repo`/`ab_remove_repo`.
     pub dir: String,
+    /// Whether this repo is currently on the rail.
+    pub active: bool,
 }
 
 /// Expand a leading `~`/`~/` in a configured scan root to the home dir.
@@ -153,16 +160,51 @@ fn expand_tilde(raw: &str, home: Option<&std::path::Path>) -> std::path::PathBuf
     }
 }
 
-/// Discover git repos under the configured scan roots (`scanRoots` in
-/// repos.json, defaulting to `~/code`) that aren't already on the rail, so the
-/// add-repo picker can fuzzy-search them. Each candidate's `name` is its path
-/// relative to whichever root it was found under.
+/// Build the manage-repos picker's candidate list: repos discovered under
+/// `roots` unioned with `existing` (repos already on the rail, which may live
+/// outside every root, e.g. added by typed path). Each candidate's `name` is
+/// its path relative to whichever root it was found under, falling back to
+/// the bare dir for repos outside every root; `active` marks whether it's in
+/// `existing`, so the picker can render it pre-checked. Pulled out of
+/// `ab_discover_repos` so it's testable without a Tauri `State`.
+fn build_repo_candidates(existing: &[String], roots: &[std::path::PathBuf]) -> Vec<RepoCandidate> {
+    use std::collections::HashSet;
+    let existing_set: HashSet<&String> = existing.iter().collect();
+    let name_for = |dir: &str| {
+        roots
+            .iter()
+            .find_map(|root| std::path::Path::new(dir).strip_prefix(root).ok())
+            .and_then(|p| p.to_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| dir.to_string())
+    };
+
+    let mut dirs: Vec<String> = tt_agentboard::repos::discover_git_repos(roots, 4);
+    for dir in existing {
+        if !dirs.contains(dir) {
+            dirs.push(dir.clone());
+        }
+    }
+    dirs.sort();
+    dirs.dedup();
+
+    dirs.into_iter()
+        .map(|dir| {
+            let name = name_for(&dir);
+            let active = existing_set.contains(&dir);
+            RepoCandidate { name, dir, active }
+        })
+        .collect()
+}
+
+/// List every repo the manage-repos picker should show (see
+/// `build_repo_candidates`) under the configured scan roots (`scanRoots` in
+/// repos.json, defaulting to `~/code`).
 #[tauri::command]
 pub fn ab_discover_repos(state: State<Ab>) -> Vec<RepoCandidate> {
-    use std::collections::HashSet;
-    let (existing, configured): (HashSet<String>, Vec<String>) = {
+    let (existing, configured): (Vec<String>, Vec<String>) = {
         let mut engine = state.engine.lock().unwrap();
-        (engine.repo_dirs().into_iter().collect(), engine.scan_roots())
+        (engine.repo_dirs(), engine.scan_roots())
     };
     let home = dirs::home_dir();
     let roots: Vec<std::path::PathBuf> = if configured.is_empty() {
@@ -170,19 +212,38 @@ pub fn ab_discover_repos(state: State<Ab>) -> Vec<RepoCandidate> {
     } else {
         configured.iter().map(|r| expand_tilde(r, home.as_deref())).collect()
     };
-    tt_agentboard::repos::discover_git_repos(&roots, 4)
-        .into_iter()
-        .filter(|dir| !existing.contains(dir))
-        .map(|dir| {
-            let name = roots
-                .iter()
-                .find_map(|root| std::path::Path::new(&dir).strip_prefix(root).ok())
-                .and_then(|p| p.to_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| dir.clone());
-            RepoCandidate { name, dir }
-        })
-        .collect()
+    build_repo_candidates(&existing, &roots)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidates_union_discovered_and_existing_marking_active() {
+        let root = tempfile::TempDir::new().unwrap();
+        let base = root.path();
+        std::fs::create_dir_all(base.join("p/proj/.git")).unwrap();
+        std::fs::create_dir_all(base.join("p/other/.git")).unwrap();
+
+        // "p/other" is already on the rail; "p/proj" is only discovered;
+        // "/elsewhere/typed" is on the rail but outside every scan root.
+        let other_dir = base.join("p/other").to_str().unwrap().to_string();
+        let existing = vec![other_dir.clone(), "/elsewhere/typed".to_string()];
+        let candidates = build_repo_candidates(&existing, &[base.to_path_buf()]);
+
+        let proj = candidates.iter().find(|c| c.dir.ends_with("p/proj")).unwrap();
+        assert!(!proj.active);
+        assert_eq!(proj.name, "p/proj");
+
+        let other = candidates.iter().find(|c| c.dir == other_dir).unwrap();
+        assert!(other.active);
+        assert_eq!(other.name, "p/other");
+
+        let typed = candidates.iter().find(|c| c.dir == "/elsewhere/typed").unwrap();
+        assert!(typed.active);
+        assert_eq!(typed.name, "/elsewhere/typed"); // outside every root → bare dir
+    }
 }
 
 /// Add a PTY session to a folder. Returns the new record so the client can

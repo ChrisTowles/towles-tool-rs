@@ -136,13 +136,17 @@ pub fn add_repo(repo_paths: &mut Vec<String>, path: &str) -> bool {
     true
 }
 
-/// Remove the repo whose resolved session `name` matches. Returns whether removed.
-pub fn remove_repo_by_name(repo_paths: &mut Vec<String>, name: &str) -> bool {
-    let Some(entry) = repo_entries(repo_paths).into_iter().find(|e| e.name == name) else {
-        return false;
-    };
+/// Remove the repo at `dir` exactly. Returns whether removed.
+///
+/// Dir, not the resolved session `name`, is the only safe key to remove by:
+/// `repo_entries`' collision disambiguation (`parent/base` vs bare `base`) is
+/// recomputed fresh on every call, so a caller removing several repos in one
+/// batch by name would see earlier removals change later names out from
+/// under it (e.g. removing `a/web` first un-collides `b/web` down to a bare
+/// `web`, so a subsequent by-name removal of `b/web` silently misses).
+pub fn remove_repo_by_dir(repo_paths: &mut Vec<String>, dir: &str) -> bool {
     let before = repo_paths.len();
-    repo_paths.retain(|p| p != &entry.dir);
+    repo_paths.retain(|p| p != dir);
     repo_paths.len() != before
 }
 
@@ -238,11 +242,23 @@ mod tests {
     }
 
     #[test]
-    fn remove_repo_by_name_removes_matching_dir() {
+    fn remove_repo_by_dir_removes_exact_match() {
         let mut p = paths(&["/work/a/web", "/work/b/web"]);
-        assert!(remove_repo_by_name(&mut p, "a/web"));
+        assert!(remove_repo_by_dir(&mut p, "/work/a/web"));
         assert_eq!(p, paths(&["/work/b/web"]));
-        assert!(!remove_repo_by_name(&mut p, "nope"));
+        assert!(!remove_repo_by_dir(&mut p, "/nope"));
+    }
+
+    #[test]
+    fn remove_repo_by_dir_survives_collision_disambiguation_shifting() {
+        // Removing colliding-basename checkouts one at a time, by dir, must
+        // not be thrown off by `repo_entries` recomputing names (a/web,
+        // b/web) fresh on every call — the bug a by-name removal loop hits
+        // once the first removal un-collides the second down to a bare name.
+        let mut p = paths(&["/work/a/web", "/work/b/web"]);
+        assert!(remove_repo_by_dir(&mut p, "/work/a/web"));
+        assert!(remove_repo_by_dir(&mut p, "/work/b/web"));
+        assert!(p.is_empty());
     }
 
     #[test]
