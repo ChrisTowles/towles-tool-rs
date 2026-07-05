@@ -18,14 +18,20 @@ export function TerminalView({
   termId,
   cwd,
   onExit,
+  onTitle,
 }: {
   termId: string;
   cwd?: string;
   onExit: () => void;
+  /** Fires when the PTY sets its window title (OSC 0/2) — e.g. Claude Code
+   * emits `✳ <session title>`, which the rail uses as the live session label. */
+  onTitle?: (termId: string, title: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
+  const onTitleRef = useRef(onTitle);
+  onTitleRef.current = onTitle;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -48,6 +54,10 @@ export function TerminalView({
     term.loadAddon(fit);
     term.open(host);
     fit.fit();
+
+    // The PTY's window title (OSC 0/2). Claude Code sets `✳ <session title>`;
+    // the rail reads it as the live agent label for this session.
+    term.onTitleChange((title) => onTitleRef.current?.(termId, title));
 
     // React 19 StrictMode double-mounts effects in dev; `disposed` keeps the
     // stale mount's async continuation from starting a second shell, and

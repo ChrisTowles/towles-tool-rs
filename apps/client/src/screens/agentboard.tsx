@@ -12,6 +12,7 @@ import { TerminalView } from "@/components/terminal-view";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
+  claudeTitleName,
   isAgent,
   isSoloRepo,
   sessionLabel,
@@ -60,6 +61,14 @@ export function AgentboardScreen() {
   const cwds = useRef<Record<string, string>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [renaming, setRenaming] = useState<string | null>(null);
+  // Live PTY window titles keyed by session id (Claude emits `✳ <title>`);
+  // preferred over the backend label for sessions whose terminal is open.
+  const [titles, setTitles] = useState<Record<string, string>>({});
+  const onTitle = (id: string, title: string) =>
+    setTitles((m) => (m[id] === title ? m : { ...m, [id]: title }));
+  // The label to lead a session row/tab with: the live Claude terminal title
+  // when present, else the backend-derived task/shell name.
+  const labelFor = (s: SessionData) => claudeTitleName(titles[s.id]) ?? sessionLabel(s);
 
   const repos = state.repos;
 
@@ -186,6 +195,7 @@ export function AgentboardScreen() {
                 selected={selected}
                 collapsed={collapsed}
                 renaming={renaming}
+                titles={titles}
                 onToggle={(k) => setCollapsed((c) => ({ ...c, [k]: !c[k] }))}
                 onSelect={selectSession}
                 onNewSession={newSession}
@@ -221,7 +231,7 @@ export function AgentboardScreen() {
                   )}
                 >
                   <Glyph agent={isAgent(s)} />
-                  {sessionLabel(s)}
+                  {labelFor(s)}
                   <Dot session={s} />
                 </button>
               ))}
@@ -252,7 +262,12 @@ export function AgentboardScreen() {
               hidden={selected?.sessionId !== id}
               className="absolute inset-3.5 overflow-hidden rounded-lg border bg-[#07090c]"
             >
-              <TerminalView termId={id} cwd={cwds.current[id]} onExit={() => closeSession(id)} />
+              <TerminalView
+                termId={id}
+                cwd={cwds.current[id]}
+                onExit={() => closeSession(id)}
+                onTitle={onTitle}
+              />
             </div>
           ))}
           {!selected && (
@@ -300,6 +315,7 @@ function RepoGroup({
   selected,
   collapsed,
   renaming,
+  titles,
   onToggle,
   onSelect,
   onNewSession,
@@ -310,6 +326,7 @@ function RepoGroup({
   selected: Selected;
   collapsed: Record<string, boolean>;
   renaming: string | null;
+  titles: Record<string, string>;
   onToggle: (key: string) => void;
   onSelect: (folderDir: string, sessionId: string) => void;
   onNewSession: (folderDir: string) => void;
@@ -323,6 +340,7 @@ function RepoGroup({
       <SessionRow
         key={s.id}
         session={s}
+        title={titles[s.id]}
         active={selected?.sessionId === s.id}
         renaming={renaming === s.id}
         onSelect={() => onSelect(folder.dir, s.id)}
@@ -444,6 +462,7 @@ function FolderHeader({
 
 function SessionRow({
   session,
+  title,
   active,
   renaming,
   onSelect,
@@ -451,6 +470,7 @@ function SessionRow({
   onRenameCommit,
 }: {
   session: SessionData;
+  title?: string;
   active: boolean;
   renaming: boolean;
   onSelect: () => void;
@@ -458,7 +478,8 @@ function SessionRow({
   onRenameCommit: (name: string) => void;
 }) {
   const needs = sessionNeeds(session);
-  const label = sessionLabel(session);
+  // Prefer the live Claude terminal title (`✳ <title>`) when the PTY is open.
+  const label = claudeTitleName(title) ?? sessionLabel(session);
   return (
     <div
       role="button"
