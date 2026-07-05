@@ -23,7 +23,7 @@ use crate::{
     GitInfoCache, OpenCodeAgentWatcher, RepoEntry, SessionMetadataStore, SessionOrder,
     SessionRecord, SessionStore, StatePayload, WatcherContext, add_repo, assemble_state,
     default_repos_path, default_sessions_path, instance_key, load_repos, load_scan_roots,
-    remove_repo_by_name, repo_entries, resolve_session_name, save_repos,
+    remove_repo_by_name, repo_entries, resolve_session_name, save_repos, save_scan_roots,
 };
 
 // Prune schedule constants (BRIDGE-SPEC §4).
@@ -437,6 +437,11 @@ impl Engine {
     /// Empty when unset — the caller substitutes its own default (`~/code`).
     pub fn scan_roots(&self) -> Vec<String> {
         load_scan_roots(&self.repos_path)
+    }
+
+    /// Persist the add-repo picker's scan roots, preserving the repo list.
+    pub fn set_scan_roots(&mut self, roots: Vec<String>) {
+        let _ = save_scan_roots(&self.repos_path, &roots);
     }
 
     pub fn add_repo(&mut self, path: &str) -> bool {

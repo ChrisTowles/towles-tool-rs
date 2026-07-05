@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import {
+  FolderGit2,
   Info,
   Keyboard,
   NotebookPen,
@@ -17,7 +19,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { useTheme, type Theme } from "@/components/theme-provider";
+import { abInvoke } from "@/lib/agentboard";
 import { closeCurrentWindow } from "@/lib/open-settings";
 
 /** Real, known location of the settings file (shared with the TypeScript CLI). */
@@ -26,6 +30,7 @@ const SETTINGS_PATH = "~/.config/towles-tool/towles-tool.settings.json";
 const TABS = [
   { id: "general", label: "General", icon: SlidersHorizontal },
   { id: "appearance", label: "Appearance", icon: Palette },
+  { id: "agentboard", label: "Agentboard", icon: FolderGit2 },
   { id: "journal", label: "Journal", icon: NotebookPen },
   { id: "collectors", label: "Collectors", icon: RefreshCw },
   { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
@@ -89,6 +94,67 @@ function NotWiredNotice() {
   );
 }
 
+/**
+ * Scan-root editor for the Agentboard add-repo picker. Reads/writes `scanRoots`
+ * in `~/.config/towles-tool/agentboard/repos.json` over the `ab_*` Tauri
+ * commands (no shared settings file, no zod — pure Rust round-trip). One root
+ * per line; empty falls back to `~/code`.
+ */
+function AgentboardSettings() {
+  const [roots, setRoots] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    void abInvoke<string[]>("ab_get_scan_roots").then((r) =>
+      setRoots((r ?? []).join("\n")),
+    );
+  }, []);
+
+  const save = async () => {
+    const list = (roots ?? "")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    await abInvoke("ab_set_scan_roots", { roots: list });
+    setRoots(list.join("\n"));
+    setSaved(true);
+    window.setTimeout(() => setSaved(false), 1500);
+  };
+
+  if (roots === null) {
+    return <div className="text-sm text-muted-foreground">Loading…</div>;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <div className="text-sm font-medium">Scan roots</div>
+        <p className="text-sm text-muted-foreground">
+          One directory per line. The{" "}
+          <span className="font-mono">Add repo</span> picker scans these for git
+          repos. Leave empty to use <span className="font-mono">~/code</span>. A
+          leading <span className="font-mono">~</span> expands to your home
+          directory.
+        </p>
+      </div>
+      <Textarea
+        value={roots}
+        onChange={(e) => setRoots(e.target.value)}
+        rows={5}
+        placeholder="~/code"
+        className="font-mono text-xs"
+        spellCheck={false}
+      />
+      <div className="flex items-center gap-3">
+        <Button size="sm" onClick={() => void save()}>
+          Save
+        </Button>
+        {saved && <span className="text-xs text-muted-foreground">Saved.</span>}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsWindow() {
   const { theme, setTheme } = useTheme();
 
@@ -145,6 +211,14 @@ export function SettingsWindow() {
                 </SelectContent>
               </Select>
             </SettingRow>
+          </TabsContent>
+
+          <TabsContent value="agentboard" className="flex flex-col gap-5 p-4">
+            <TabHeading
+              title="Agentboard"
+              note="Where the add-repo picker looks for your git repos."
+            />
+            <AgentboardSettings />
           </TabsContent>
 
           <TabsContent value="journal" className="flex flex-col gap-5 p-4">

@@ -33,6 +33,7 @@ import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
 import {
+  abInvoke,
   agentRollup,
   claudeTitleName,
   ctxPct,
@@ -57,20 +58,6 @@ import {
 import { toast } from "sonner";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { useWorkspace } from "@/lib/workspace";
-
-/** Invoke a Tauri `ab_*` command; no-op (null) in bare-browser dev. */
-async function abInvoke<T>(
-  cmd: string,
-  args: Record<string, unknown>,
-): Promise<T | null> {
-  if (!("__TAURI_INTERNALS__" in window)) return null;
-  const { invoke } = await import("@tauri-apps/api/core");
-  try {
-    return await invoke<T>(cmd, args);
-  } catch {
-    return null;
-  }
-}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

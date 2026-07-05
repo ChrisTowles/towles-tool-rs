@@ -1,11 +1,11 @@
-//! Watched-repo configuration (agentboard phase 4). The desktop app's session
-//! source: a list of absolute repo paths persisted to its OWN file,
-//! `~/.config/towles-tool/agentboard/repos.json`.
+//! Watched-repo configuration (agentboard). The desktop app's session source: a
+//! list of absolute repo paths plus the add-repo picker's scan roots, persisted
+//! to the app's OWN file, `~/.config/towles-tool/agentboard/repos.json`.
 //!
-//! Deliberately NOT stored in the shared `towles-tool.settings.json`: the TS
-//! CLI's zod parse/save round-trip could strip keys it doesn't know, and this
-//! sits beside `session-order.json` which already established the per-file
-//! pattern. Path-parameterized so tests use a tempdir.
+//! Kept out of the shared `towles-tool.settings.json` on purpose: this is
+//! app-runtime state owned entirely by the Rust/Tauri app — the TypeScript CLI
+//! never reads it — and it sits beside `session-order.json` which established
+//! the per-file pattern. Path-parameterized so tests use a tempdir.
 
 use std::path::{Path, PathBuf};
 
@@ -64,6 +64,17 @@ pub fn save_repos(path: &Path, repo_paths: &[String]) -> std::io::Result<()> {
     }
     let scan_roots = load_scan_roots(path);
     let config = ReposConfig { repo_paths: repo_paths.to_vec(), scan_roots };
+    let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
+    std::fs::write(path, format!("{json}\n"))
+}
+
+/// Persist the scan roots (`scanRoots`), preserving the existing repo list.
+pub fn save_scan_roots(path: &Path, scan_roots: &[String]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let repo_paths = load_repos(path);
+    let config = ReposConfig { repo_paths, scan_roots: scan_roots.to_vec() };
     let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
     std::fs::write(path, format!("{json}\n"))
 }
@@ -252,6 +263,10 @@ mod tests {
         // Adding a repo must not wipe the configured scan roots.
         save_repos(&path, &paths(&["/a/x", "/a/y"])).unwrap();
         assert_eq!(load_scan_roots(&path), paths(&["~/code", "/srv/work"]));
+        assert_eq!(load_repos(&path), paths(&["/a/x", "/a/y"]));
+        // Editing scan roots must not wipe the repo list.
+        save_scan_roots(&path, &paths(&["~/dev"])).unwrap();
+        assert_eq!(load_scan_roots(&path), paths(&["~/dev"]));
         assert_eq!(load_repos(&path), paths(&["/a/x", "/a/y"]));
     }
 

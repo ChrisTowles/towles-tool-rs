@@ -7,6 +7,23 @@ import { useEffect, useState } from "react";
  * Only the fields the screen renders are typed; the payload carries more.
  */
 
+/**
+ * Invoke an `ab_*` Tauri command. Returns `null` in plain-Vite browser dev
+ * (no Tauri host) or if the command errors, so callers degrade gracefully.
+ */
+export async function abInvoke<T>(
+  cmd: string,
+  args: Record<string, unknown> = {},
+): Promise<T | null> {
+  if (!("__TAURI_INTERNALS__" in window)) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<T>(cmd, args);
+  } catch {
+    return null;
+  }
+}
+
 export type AgentStatus =
   "idle" | "busy" | "complete" | "error" | "waiting" | "interrupted";
 
