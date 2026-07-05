@@ -9,9 +9,11 @@
 //! holds the UI's store mutex. After every batch the fresh snapshot is emitted
 //! as `store://snapshot`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter};
+use tokio::sync::Notify;
 use tokio::time::MissedTickBehavior;
 use tt_collect::CalendarProvider;
 
@@ -29,34 +31,42 @@ fn now_ms() -> i64 {
     chrono::Local::now().timestamp_millis()
 }
 
-/// Spawn the scheduler loop. Settings are read once at startup; a cadence or
-/// enable/disable change takes effect on the next app launch.
-pub fn spawn(app: AppHandle) {
-    let collectors = tt_config::load().map(|s| s.collectors).unwrap_or_default();
-    let provider = CalendarProvider::from_str_lenient(&collectors.calendar.provider);
+/// Spawn the scheduler loop. Collector cadence/enable/provider are re-read from
+/// settings whenever `reload` is signalled (the `settings_set` command fires it),
+/// so edits in the Settings window take effect live — no relaunch needed.
+pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
     tauri::async_runtime::spawn(async move {
-        let mut pr_tick =
-            tokio::time::interval(Duration::from_secs(collectors.prs.refresh_seconds.max(30)));
-        pr_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        let mut issue_tick = tokio::time::interval(Duration::from_secs(
-            collectors.issues.refresh_minutes.max(1) * 60,
-        ));
-        issue_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        let calendar_period_ms = collectors.calendar.refresh_minutes.max(1) as i64 * 60_000;
-        let mut calendar_tick =
-            tokio::time::interval(Duration::from_millis(calendar_period_ms as u64));
-        calendar_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
         loop {
-            tokio::select! {
-                _ = pr_tick.tick(), if collectors.prs.enabled => {
-                    run_batch(&app, Batch::Prs, provider, calendar_period_ms).await;
-                }
-                _ = issue_tick.tick(), if collectors.issues.enabled => {
-                    run_batch(&app, Batch::Issues, provider, calendar_period_ms).await;
-                }
-                _ = calendar_tick.tick(), if collectors.calendar.enabled => {
-                    run_batch(&app, Batch::Calendar, provider, calendar_period_ms).await;
+            // (Re)load config and rebuild the tick intervals for this cycle.
+            let collectors = tt_config::load().map(|s| s.collectors).unwrap_or_default();
+            let provider = CalendarProvider::from_str_lenient(&collectors.calendar.provider);
+            let calendar_period_ms = collectors.calendar.refresh_minutes.max(1) as i64 * 60_000;
+
+            let mut pr_tick =
+                tokio::time::interval(Duration::from_secs(collectors.prs.refresh_seconds.max(30)));
+            pr_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut issue_tick = tokio::time::interval(Duration::from_secs(
+                collectors.issues.refresh_minutes.max(1) * 60,
+            ));
+            issue_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut calendar_tick =
+                tokio::time::interval(Duration::from_millis(calendar_period_ms as u64));
+            calendar_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            // Inner loop runs the current cadence until settings change, then
+            // breaks to rebuild from the top with the new values.
+            loop {
+                tokio::select! {
+                    _ = reload.notified() => break,
+                    _ = pr_tick.tick(), if collectors.prs.enabled => {
+                        run_batch(&app, Batch::Prs, provider, calendar_period_ms).await;
+                    }
+                    _ = issue_tick.tick(), if collectors.issues.enabled => {
+                        run_batch(&app, Batch::Issues, provider, calendar_period_ms).await;
+                    }
+                    _ = calendar_tick.tick(), if collectors.calendar.enabled => {
+                        run_batch(&app, Batch::Calendar, provider, calendar_period_ms).await;
+                    }
                 }
             }
         }

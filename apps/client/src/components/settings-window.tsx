@@ -274,8 +274,8 @@ function CollectorsSettingsForm({
   return (
     <div className="flex flex-col gap-6">
       <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-        Collector cadence is read when the app starts, so changes here take
-        effect on the next launch.
+        Changes take effect as soon as you Save — the scheduler re-reads its
+        cadence live.
       </div>
 
       <section className="flex flex-col gap-4">
