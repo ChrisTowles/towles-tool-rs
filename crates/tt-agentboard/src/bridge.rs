@@ -43,8 +43,10 @@ pub struct StatePayload {
 ///
 /// `attribute` maps an agent event to the PTY session id it was detected in
 /// (via `TT_SESSION_ID`); return `None` to fall back to the folder's default
-/// session. Entries are assumed pre-sorted by the caller (the engine sorts by
-/// name); repo grouping preserves first-seen order.
+/// session. `session_agents` (keyed by session id) supplements the tracker with
+/// app-spawned agents the CLI snapshot missed — used only for sessions that end
+/// up with no tracker-attributed state. Entries are assumed pre-sorted by the
+/// caller (the engine sorts by name); repo grouping preserves first-seen order.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_state(
     entries: &[RepoEntry],
@@ -53,6 +55,7 @@ pub fn assemble_state(
     metadata: &SessionMetadataStore,
     sessions: &SessionStore,
     attribute: &dyn Fn(&AgentEvent) -> Option<String>,
+    session_agents: &HashMap<String, AgentEvent>,
     theme: Option<String>,
     preferred_editor: &str,
     ts: i64,
@@ -62,7 +65,8 @@ pub fn assemble_state(
 
     for entry in entries {
         let git = git_infos.get(&entry.dir).cloned().unwrap_or_default();
-        let folder = build_folder(entry, &git, tracker, metadata, sessions, attribute);
+        let folder =
+            build_folder(entry, &git, tracker, metadata, sessions, attribute, session_agents);
 
         let origin = git.origin_url.clone();
         let key = origin.clone().unwrap_or_else(|| format!("path:{}", entry.dir));
@@ -100,6 +104,7 @@ fn build_folder(
     metadata: &SessionMetadataStore,
     sessions: &SessionStore,
     attribute: &dyn Fn(&AgentEvent) -> Option<String>,
+    session_agents: &HashMap<String, AgentEvent>,
 ) -> FolderData {
     let records = sessions.sessions_for(&entry.dir);
     let folder_agents = tracker.get_agents(&entry.name);
@@ -126,6 +131,10 @@ fn build_folder(
             // Single-session folder mirrors the tracker's folder-level priority
             // pick exactly; multi-session folders pick from the session's subset.
             let agent_state = if single { folder_state.clone() } else { pick_state(&agents) };
+            // Supplement: an app-spawned Claude we found by scanning /proc for
+            // this session's TT_SESSION_ID, when the CLI snapshot never reported
+            // it (so the tracker has nothing). Only fills an otherwise-idle row.
+            let agent_state = agent_state.or_else(|| session_agents.get(&r.id).cloned());
             let unseen = agent_state.as_ref().and_then(|e| e.unseen).unwrap_or(false);
             SessionData {
                 id: r.id.clone(),
@@ -249,6 +258,7 @@ mod tests {
             &metadata,
             &store,
             &no_attr,
+            &HashMap::new(),
             Some("mocha".into()),
             "code",
             999,
@@ -291,8 +301,18 @@ mod tests {
             RepoEntry { name: "slot-0".into(), dir: "/r/slot-0".into() },
             RepoEntry { name: "slot-1".into(), dir: "/r/slot-1".into() },
         ];
-        let payload =
-            assemble_state(&entries, &git, &tracker, &metadata, &store, &no_attr, None, "code", 0);
+        let payload = assemble_state(
+            &entries,
+            &git,
+            &tracker,
+            &metadata,
+            &store,
+            &no_attr,
+            &HashMap::new(),
+            None,
+            "code",
+            0,
+        );
         // One repo, two folders (the checkouts).
         assert_eq!(payload.repos.len(), 1);
         assert_eq!(payload.repos[0].name, "proj");
@@ -308,8 +328,18 @@ mod tests {
         store.ensure_default("/r/alpha", 1);
         let git = HashMap::new();
         let entries = vec![RepoEntry { name: "alpha".into(), dir: "/r/alpha".into() }];
-        let payload =
-            assemble_state(&entries, &git, &tracker, &metadata, &store, &no_attr, None, "code", 0);
+        let payload = assemble_state(
+            &entries,
+            &git,
+            &tracker,
+            &metadata,
+            &store,
+            &no_attr,
+            &HashMap::new(),
+            None,
+            "code",
+            0,
+        );
         assert_eq!(payload.repos[0].folders[0].needs, 1);
         assert_eq!(payload.repos[0].needs, 1);
     }
@@ -328,13 +358,85 @@ mod tests {
         let target = s2.id.clone();
         let attribute = move |_: &AgentEvent| Some(target.clone());
         let payload = assemble_state(
-            &entries, &git, &tracker, &metadata, &store, &attribute, None, "code", 0,
+            &entries,
+            &git,
+            &tracker,
+            &metadata,
+            &store,
+            &attribute,
+            &HashMap::new(),
+            None,
+            "code",
+            0,
         );
         let folder = &payload.repos[0].folders[0];
         let one = folder.sessions.iter().find(|s| s.id == s1.id).unwrap();
         let two = folder.sessions.iter().find(|s| s.id == s2.id).unwrap();
         assert!(one.agent_state.is_none());
         assert_eq!(two.agent_state.as_ref().unwrap().status, AgentStatus::Busy);
+    }
+
+    #[test]
+    fn session_agents_supplement_idle_sessions_only() {
+        // No tracker agent: the /proc-detected session agent fills the row.
+        let tracker = AgentTracker::new();
+        let metadata = SessionMetadataStore::new();
+        let mut store = SessionStore::new(None);
+        let rec = store.add("/r/alpha", Some("shell 1"), 1);
+        let git = HashMap::new();
+        let entries = vec![RepoEntry { name: "alpha".into(), dir: "/r/alpha".into() }];
+
+        let mut supplemental = HashMap::new();
+        supplemental.insert(
+            rec.id.clone(),
+            AgentEvent {
+                agent: "claude-code".into(),
+                session: String::new(),
+                status: AgentStatus::Busy,
+                ts: 5,
+                thread_id: None,
+                thread_name: Some("uninstall gitbutler".into()),
+                unseen: None,
+                pane_id: None,
+                details: None,
+            },
+        );
+        let payload = assemble_state(
+            &entries,
+            &git,
+            &tracker,
+            &metadata,
+            &store,
+            &no_attr,
+            &supplemental,
+            None,
+            "code",
+            0,
+        );
+        let s = &payload.repos[0].folders[0].sessions[0];
+        assert_eq!(s.agent_state.as_ref().unwrap().status, AgentStatus::Busy);
+        assert_eq!(
+            s.agent_state.as_ref().unwrap().thread_name.as_deref(),
+            Some("uninstall gitbutler")
+        );
+
+        // With a real tracker agent, the CLI/tracker state wins over the supplement.
+        let mut tracker2 = AgentTracker::new();
+        tracker2.apply_event(ev("alpha", AgentStatus::Waiting, "ta"), false);
+        let payload2 = assemble_state(
+            &entries,
+            &git,
+            &tracker2,
+            &metadata,
+            &store,
+            &no_attr,
+            &supplemental,
+            None,
+            "code",
+            0,
+        );
+        let s2 = &payload2.repos[0].folders[0].sessions[0];
+        assert_eq!(s2.agent_state.as_ref().unwrap().status, AgentStatus::Waiting);
     }
 
     #[test]

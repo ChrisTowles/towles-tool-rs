@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::metadata::{LogInput, ProgressInput, StatusInput};
 use crate::session_order::ReorderDelta;
-use crate::types::{AgentEvent, MetadataTone};
+use crate::types::{AgentEvent, AgentStatus, MetadataTone};
 use crate::{
     AgentTracker, AgentWatcher, AmpAgentWatcher, ClaudeCodeAgentWatcher, CodexAgentWatcher,
     GitInfoCache, OpenCodeAgentWatcher, RepoEntry, SessionMetadataStore, SessionOrder,
@@ -265,6 +265,35 @@ impl Engine {
         let attribute = |event: &AgentEvent| {
             event.thread_id.as_ref().and_then(|tid| tt_session_by_thread.get(tid).cloned())
         };
+        // Supplement CLI detection: app-spawned Claude sessions the CLI snapshot
+        // never enumerated, found by scanning /proc for our injected
+        // TT_SESSION_ID and enriched with task name + status from the
+        // transcript the process has open. Keyed by session id; consumed only
+        // for sessions the tracker left idle. First live process per id wins.
+        let mut session_agents: HashMap<String, AgentEvent> = HashMap::new();
+        for proc in crate::procenv::scan_session_agents() {
+            if session_agents.contains_key(&proc.session_id) {
+                continue;
+            }
+            let (thread_name, status) = match &proc.transcript {
+                Some(p) => crate::watchers::claude_code::enrich_from_transcript(p),
+                None => (None, AgentStatus::Idle),
+            };
+            session_agents.insert(
+                proc.session_id.clone(),
+                AgentEvent {
+                    agent: "claude-code".to_string(),
+                    session: String::new(),
+                    status,
+                    ts: now,
+                    thread_id: None,
+                    thread_name,
+                    unseen: None,
+                    pane_id: None,
+                    details: None,
+                },
+            );
+        }
         let payload = assemble_state(
             entries,
             &git_infos,
@@ -272,6 +301,7 @@ impl Engine {
             &self.metadata,
             &self.sessions,
             &attribute,
+            &session_agents,
             theme,
             &editor,
             now,

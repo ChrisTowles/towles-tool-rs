@@ -29,7 +29,9 @@ export function StatusBar() {
         )}
       </button>
       <div className="flex items-center gap-3">
-        <span>{isTauri ? "Tauri shell" : "browser"}</span>
+        <span className={isTauri ? undefined : "font-medium text-amber-600 dark:text-amber-500"}>
+          {isTauri ? "Tauri shell" : "browser · mock"}
+        </span>
         <span>ttr v0.1.0</span>
       </div>
     </footer>
