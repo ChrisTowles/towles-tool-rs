@@ -134,7 +134,7 @@ pub fn determine_status(entry: &RawEntry) -> Option<AgentStatus> {
 
 /// The thread name from the first qualifying user message (skips system-like
 /// `<…>`/`{…}` first lines). Ports `extractThreadName`.
-fn extract_thread_name(entry: &RawEntry) -> Option<String> {
+pub fn extract_thread_name(entry: &RawEntry) -> Option<String> {
     let msg = entry.message.as_ref()?;
     if msg.role.as_deref() != Some("user") {
         return None;
@@ -153,6 +153,43 @@ fn extract_thread_name(entry: &RawEntry) -> Option<String> {
         return None;
     }
     Some(text.chars().take(80).collect())
+}
+
+/// Derive `(thread_name, status)` for a live agent detected outside the CLI
+/// snapshot (via `procenv::scan_session_agents`) by reading its transcript.
+/// Bounded reads keep large transcripts cheap: the thread name lives near the
+/// top (first user message), the latest status near the bottom (last message).
+/// Falls back to `Idle` when no status line parses.
+pub fn enrich_from_transcript(path: &Path) -> (Option<String>, AgentStatus) {
+    const WINDOW: u64 = 128 * 1024;
+    let head = read_window(path, 0, WINDOW);
+    let thread_name = parse_journal_lines(&head).iter().find_map(extract_thread_name);
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let tail = read_window(path, len.saturating_sub(WINDOW), WINDOW);
+    let status = parse_journal_lines(&tail)
+        .iter()
+        .rev()
+        .find_map(determine_status)
+        .unwrap_or(AgentStatus::Idle);
+    (thread_name, status)
+}
+
+/// Read up to `max` bytes of `path` from byte offset `start`, lossily decoded.
+/// Partial JSONL lines at either edge simply fail to parse and are dropped by
+/// `parse_journal_lines`, so no newline alignment is needed.
+fn read_window(path: &Path, start: u64, max: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    if start > 0 && f.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buf = Vec::new();
+    if f.take(max).read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 /// The most recent non-AskUserQuestion tool name. Ports `extractLastTool`.
@@ -722,6 +759,33 @@ mod tests {
         let details = ev.details.as_ref().unwrap();
         assert_eq!(details.model.as_deref(), Some("claude-sonnet-5"));
         assert_eq!(details.last_tool.as_deref(), Some("Bash"));
+    }
+
+    #[test]
+    fn enrich_from_transcript_reads_name_and_status() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("s.jsonl");
+
+        // First user message → thread name; last assistant-complete → Complete.
+        let mut text = [USER_LINE, DONE_LINE].join("\n");
+        text.push('\n');
+        std::fs::write(&path, &text).unwrap();
+        let (name, status) = enrich_from_transcript(&path);
+        assert_eq!(name.as_deref(), Some("fix the flaky test"));
+        assert_eq!(status, AgentStatus::Complete);
+
+        // Mid tool-run → Busy (task name still resolves from the head).
+        let mut running = [USER_LINE, RUNNING_LINE].join("\n");
+        running.push('\n');
+        std::fs::write(&path, &running).unwrap();
+        let (name2, status2) = enrich_from_transcript(&path);
+        assert_eq!(name2.as_deref(), Some("fix the flaky test"));
+        assert_eq!(status2, AgentStatus::Busy);
+
+        // Missing file → no name, Idle fallback (never panics).
+        let (n3, s3) = enrich_from_transcript(&tmp.path().join("missing.jsonl"));
+        assert_eq!(n3, None);
+        assert_eq!(s3, AgentStatus::Idle);
     }
 
     #[test]
