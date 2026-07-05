@@ -4,6 +4,7 @@ import { AppHeader } from "@/components/app-header";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
 import { DayBar } from "@/components/day-bar";
+import { MockBanner } from "@/components/mock-banner";
 import { QuickLog } from "@/components/quick-log";
 import { StatusBar } from "@/components/status-bar";
 import { TabStrip } from "@/components/tab-strip";
@@ -72,6 +73,7 @@ function Workspace() {
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
+      <MockBanner />
       <AppHeader />
       <DayBar />
 
