@@ -60,7 +60,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 // Re-export the public surface.
 pub use bridge::{StatePayload, assemble_state};
 pub use folder_meta::{FolderMeta, FolderMetaStore, default_folder_meta_path};
-pub use git_info::{GitInfo, GitInfoCache, compute_git_info};
+pub use git_info::{GitInfo, GitInfoCache, compute_git_info, diff_patch};
 pub use metadata::SessionMetadataStore;
 pub use repos::{
     RepoEntry, add_repo, default_repos_path, load_repos, load_scan_roots, remove_repo_by_dir,

@@ -283,6 +283,24 @@ export function AgentboardScreen() {
     for (const r of repos) for (const f of r.folders) for (const s of f.sessions) m.set(s.id, s);
     return m;
   }, [repos]);
+  // Folder dir → its owning repo, so pane chrome can lead with "repo / folder"
+  // (a folder's own name is just the checkout/slot) on multi-checkout repos.
+  const repoOf = useMemo(() => {
+    const m = new Map<string, RepoData>();
+    for (const r of repos) for (const f of r.folders) m.set(f.dir, r);
+    return m;
+  }, [repos]);
+
+  // Diff-preview dialog: the folder's full patch against its pushed
+  // baseline, fetched on demand when a diff summary is clicked.
+  const [diff, setDiff] = useState<{ dir: string; name: string; text: string | null } | null>(
+    null,
+  );
+  async function openDiff(dir: string, name: string) {
+    setDiff({ dir, name, text: null });
+    const text = await abInvoke<string>("ab_get_diff", { dir });
+    setDiff((cur) => (cur && cur.dir === dir ? { ...cur, text: text ?? "" } : cur));
+  }
 
   // --- Window layout (Tier 5): frontend-owned, hydrated once, saved debounced.
   const [wins, setWins] = useState<WindowsPayload | null>(null);
@@ -692,6 +710,7 @@ export function AgentboardScreen() {
                     onNewSession={newSession}
                     onRemoveRepo={requestRemoveRepo}
                     onRenameCommit={commitRename}
+                    onOpenDiff={openDiff}
                   />
                 ))}
               </div>
@@ -900,17 +919,23 @@ export function AgentboardScreen() {
                               selected?.sessionId === id && "border-violet-500/60",
                             )}
                           >
-                            {s && (
-                              <PaneHeader
-                                session={s}
-                                folder={folderOf.get(id)}
-                                label={labelFor(s)}
-                                now={now}
-                                compactPct={state.compactRecommendPercent}
-                                actions={actions}
-                                onUngroup={() => actions.ungroup(id)}
-                              />
-                            )}
+                            {s &&
+                              (() => {
+                                const folder = folderOf.get(id);
+                                return (
+                                  <PaneHeader
+                                    session={s}
+                                    folder={folder}
+                                    repo={folder ? repoOf.get(folder.dir) : undefined}
+                                    label={labelFor(s)}
+                                    now={now}
+                                    compactPct={state.compactRecommendPercent}
+                                    actions={actions}
+                                    onUngroup={() => actions.ungroup(id)}
+                                    onOpenDiff={() => folder && openDiff(folder.dir, folder.name)}
+                                  />
+                                );
+                              })()}
                             <div className="min-h-0 flex-1">
                               <TerminalView
                                 termId={id}
@@ -1103,27 +1128,50 @@ export function AgentboardScreen() {
           />
         </DialogContent>
       </Dialog>
+
+      <Dialog open={diff != null} onOpenChange={(o) => !o && setDiff(null)}>
+        <DialogContent className="flex max-h-[80vh] w-full max-w-3xl flex-col sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="font-mono text-sm">{diff?.name}</DialogTitle>
+          </DialogHeader>
+          <ScrollArea className="min-h-0 flex-1">
+            {diff?.text == null ? (
+              <p className="p-2 text-sm text-muted-foreground">Loading…</p>
+            ) : diff.text === "" ? (
+              <p className="p-2 text-sm text-muted-foreground">No changes.</p>
+            ) : (
+              <DiffView text={diff.text} />
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-/** One pane's chrome: glyph · dot · name · folder⎇branch · cache badge · ⊟. */
+/** One pane's chrome: glyph · dot · name · repo/folder⎇branch · diff · cache
+ * badge · ⊟. The repo prefix only shows on a multi-checkout repo, where a
+ * folder's own name is just the checkout/slot rather than the repo itself. */
 function PaneHeader({
   session,
   folder,
+  repo,
   label,
   now,
   compactPct,
   actions,
   onUngroup,
+  onOpenDiff,
 }: {
   session: SessionData;
   folder?: FolderData;
+  repo?: RepoData;
   label: string;
   now: number;
   compactPct: number;
   actions: SessionActions;
   onUngroup: () => void;
+  onOpenDiff: () => void;
 }) {
   const agent = isAgent(session) && session.live;
   const iconBtn = (label: string, title: string, onClick: () => void, hover: string) => (
@@ -1146,8 +1194,17 @@ function PaneHeader({
       <span className="truncate text-xs text-foreground">{label}</span>
       {folder && (
         <span className="truncate font-mono text-[10px] text-muted-foreground">
+          {repo && repo.name !== folder.name && `${repo.name} / `}
           {folder.name} ⎇ {folder.branch}
         </span>
+      )}
+      {folder && (
+        <DiffSummary
+          filesChanged={folder.filesChanged}
+          linesAdded={folder.linesAdded}
+          linesRemoved={folder.linesRemoved}
+          onOpen={onOpenDiff}
+        />
       )}
       <span className="ml-auto flex shrink-0 items-center gap-2">
         <CacheBadge
@@ -1162,6 +1219,63 @@ function PaneHeader({
         {iconBtn("✕", "kill session (PTY + record)", () => actions.close(session.id), "hover:text-red-500")}
       </span>
     </div>
+  );
+}
+
+/** Clickable `+N −N · K files` diff summary; opens the full-diff dialog. */
+function DiffSummary({
+  filesChanged,
+  linesAdded,
+  linesRemoved,
+  title,
+  onOpen,
+}: {
+  filesChanged: number;
+  linesAdded: number;
+  linesRemoved: number;
+  title?: string;
+  onOpen: () => void;
+}) {
+  if (filesChanged === 0) {
+    return <span className="shrink-0 font-mono text-[11px] text-muted-foreground/60">clean</span>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen();
+      }}
+      className="flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 font-mono text-[11px] hover:bg-accent/50"
+      title={title ?? "View diff"}
+    >
+      <span className="text-green-500">+{linesAdded}</span>
+      <span className="text-red-500">−{linesRemoved}</span>
+      <span className="text-muted-foreground">
+        · {filesChanged} file{filesChanged === 1 ? "" : "s"}
+      </span>
+    </button>
+  );
+}
+
+/** Unified diff text, colored by line prefix (+/− hunks, @@ headers). */
+function DiffView({ text }: { text: string }) {
+  return (
+    <pre className="overflow-x-auto p-2 font-mono text-xs leading-relaxed whitespace-pre">
+      {text.split("\n").map((line, i) => (
+        <div
+          key={i}
+          className={cn(
+            line.startsWith("+") && !line.startsWith("+++") && "bg-green-500/10 text-green-500",
+            line.startsWith("-") && !line.startsWith("---") && "bg-red-500/10 text-red-500",
+            line.startsWith("@@") && "text-blue-400",
+            (line.startsWith("diff ") || line.startsWith("index ")) && "text-muted-foreground",
+          )}
+        >
+          {line || " "}
+        </div>
+      ))}
+    </pre>
   );
 }
 
@@ -1296,6 +1410,7 @@ function RepoGroup({
   onNewSession,
   onRemoveRepo,
   onRenameCommit,
+  onOpenDiff,
 }: {
   repo: RepoData;
   now: number;
@@ -1314,6 +1429,7 @@ function RepoGroup({
   onNewSession: (folderDir: string, launchClaude?: boolean) => void;
   onRemoveRepo: (dirs: string[], label: string) => void;
   onRenameCommit: (sessionId: string, name: string) => void;
+  onOpenDiff: (dir: string, name: string) => void;
 }) {
   const solo = isSoloRepo(repo);
 
@@ -1383,6 +1499,7 @@ function RepoGroup({
           }}
           onNewSession={() => onNewSession(folder.dir)}
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
+          onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
           dir={folder.dir}
         />
         {!isCollapsed && (
@@ -1446,6 +1563,7 @@ function RepoGroup({
                 }}
                 onNewSession={() => onNewSession(folder.dir)}
                 onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
+                onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
                 dir={folder.dir}
               />
               {!fCollapsed && (
@@ -1537,6 +1655,7 @@ function FolderHeader({
   onToggle,
   onNewSession,
   onRemoveRepo,
+  onOpenDiff,
   dir,
 }: {
   scope: "repo" | "folder";
@@ -1557,6 +1676,7 @@ function FolderHeader({
   onToggle: () => void;
   onNewSession: () => void;
   onRemoveRepo?: () => void;
+  onOpenDiff: () => void;
   /** A checkout dir for this repo, used to create a GitHub issue via `gh`. */
   dir: string;
 }) {
@@ -1595,21 +1715,23 @@ function FolderHeader({
         <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
           ⎇ {branch}
         </span>
-        {(linesAdded > 0 || linesRemoved > 0) && (
-          <span
-            className="flex shrink-0 items-center gap-1 font-mono text-[11px]"
-            title={`${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsDelta} commit${commitsDelta === 1 ? "" : "s"} ahead`}
-          >
-            {linesAdded > 0 && <span className="text-green-500">+{linesAdded}</span>}
-            {linesRemoved > 0 && <span className="text-red-500">−{linesRemoved}</span>}
-          </span>
-        )}
         {typeof progressPercent === "number" && (
           <span className="shrink-0 rounded-md border border-violet-500/40 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500">
             {Math.round(progressPercent)}%
           </span>
         )}
       </button>
+      <DiffSummary
+        filesChanged={filesChanged}
+        linesAdded={linesAdded}
+        linesRemoved={linesRemoved}
+        title={
+          filesChanged > 0
+            ? `${commitsDelta} commit${commitsDelta === 1 ? "" : "s"} ahead — view diff`
+            : undefined
+        }
+        onOpen={onOpenDiff}
+      />
       {needs > 0 && <NeedsBadge n={needs} />}
       <button
         type="button"
