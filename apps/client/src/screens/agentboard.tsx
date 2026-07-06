@@ -104,6 +104,20 @@ async function termWriteRetry(termId: string, data: string): Promise<boolean> {
   return false;
 }
 
+/** Single-quote a string for safe injection into a shell command line typed
+ * into a PTY (POSIX `'...'` escaping — embedded `'` becomes `'\''`). */
+function shellQuote(text: string): string {
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+/** The `claude` invocation for a session's PTY: bare, or with an initial
+ * prompt passed as an argument so Claude starts working on it immediately
+ * instead of waiting at an empty prompt. */
+function claudeCommand(prompt: string): string {
+  const trimmed = prompt.trim();
+  return trimmed ? `claude ${shellQuote(trimmed)}\r` : "claude\r";
+}
+
 /** The lifecycle actions a session row can trigger. All are PTY writes — the
  * agent is whatever runs in the real shell, never a re-rendered proxy. */
 type SessionActions = {
@@ -185,6 +199,16 @@ type RepoCandidate = { name: string; dir: string; active: boolean };
 /** What a repo-remove confirmation (or immediate removal) needs to act on. */
 type RemoveTarget = { label: string; dirs: string[]; sessionIds: string[] };
 
+/** A session about to get Claude launched in it, awaiting the "what are you
+ * working toward?" prompt (see `commitStartClaude`). `restart` runs the
+ * interrupt-then-relaunch dance first (a live Claude sits in the shell). */
+type StartClaudeTarget = {
+  folderDir: string;
+  sessionId: string;
+  sessionName: string;
+  restart: boolean;
+};
+
 /**
  * Agentboard — the Folder Rail. Left: rollup tally + needs-you strip + the
  * repos → folders (checkouts) → PTY sessions tree. Right: in-app *windows*,
@@ -218,6 +242,10 @@ export function AgentboardScreen() {
   const [candidates, setCandidates] = useState<RepoCandidate[]>([]);
   // Pending remove awaiting confirmation because it would kill live sessions.
   const [confirmRemove, setConfirmRemove] = useState<RemoveTarget | null>(null);
+  // Session awaiting the "what are you working toward?" prompt before Claude
+  // actually launches — see `commitStartClaude`.
+  const [startClaudeTarget, setStartClaudeTarget] = useState<StartClaudeTarget | null>(null);
+  const [startClaudePrompt, setStartClaudePrompt] = useState("");
   // Session ids whose PTY is mounted (kept alive for scrollback), + their cwd.
   const [open, setOpen] = useState<string[]>([]);
   const cwds = useRef<Record<string, string>>({});
@@ -349,10 +377,38 @@ export function AgentboardScreen() {
     if (!rec) return;
     selectSession(folderDir, rec.id);
     if (launchClaude) {
-      setOverlay(rec.id, "busy");
-      toast(`✦ starting Claude in ${rec.name}`);
-      void termWriteRetry(rec.id, "claude\r");
+      setStartClaudeTarget({ folderDir, sessionId: rec.id, sessionName: rec.name, restart: false });
     }
+  }
+
+  // Actually launch Claude in `target`'s session, folding in whatever prompt
+  // the user entered (or none) — see `commitStartClaude`, which reads the
+  // dialog state and calls this.
+  async function launchClaudeIn(target: StartClaudeTarget, prompt: string) {
+    const { sessionId, sessionName, restart } = target;
+    setOverlay(sessionId, "busy");
+    const verb = restart ? "starting over — fresh Claude session" : "starting Claude";
+    toast(prompt ? `✦ ${verb} in ${sessionName}: ${prompt}` : `✦ ${verb} in ${sessionName}`);
+    if (prompt) void abInvoke("ab_set_session_purpose", { id: sessionId, text: prompt });
+    if (restart) {
+      await termWrite(sessionId, "\x03");
+      await sleep(150);
+      await termWrite(sessionId, "\x04");
+      await sleep(300);
+    }
+    await termWriteRetry(sessionId, claudeCommand(prompt));
+  }
+
+  // Dismiss the start-Claude dialog (Enter, Escape, or click-outside all land
+  // here via `onOpenChange`/`onKeyDown`) and launch with whatever's typed —
+  // blank is a valid answer, it just skips the initial prompt + purpose.
+  function commitStartClaude() {
+    const target = startClaudeTarget;
+    if (!target) return;
+    setStartClaudeTarget(null);
+    const prompt = startClaudePrompt.trim();
+    setStartClaudePrompt("");
+    void launchClaudeIn(target, prompt);
   }
 
   async function fetchCandidates(): Promise<RepoCandidate[]> {
@@ -456,9 +512,7 @@ export function AgentboardScreen() {
     },
     startClaude: (folderDir, s) => {
       selectSession(folderDir, s.id);
-      setOverlay(s.id, "busy");
-      toast(`✦ starting Claude in ${s.name}`);
-      void termWriteRetry(s.id, "claude\r");
+      setStartClaudeTarget({ folderDir, sessionId: s.id, sessionName: s.name, restart: false });
     },
     stopClaude: (s) => {
       setOverlay(s.id, "interrupted");
@@ -476,15 +530,7 @@ export function AgentboardScreen() {
     },
     restartClaude: (folderDir, s) => {
       selectSession(folderDir, s.id);
-      setOverlay(s.id, "busy");
-      toast(`↻ starting over — fresh Claude session in ${s.name}`);
-      void (async () => {
-        await termWrite(s.id, "\x03");
-        await sleep(150);
-        await termWrite(s.id, "\x04");
-        await sleep(300);
-        await termWriteRetry(s.id, "claude\r"); // fresh session (not --continue)
-      })();
+      setStartClaudeTarget({ folderDir, sessionId: s.id, sessionName: s.name, restart: true });
     },
     close: (sessionId) => void closeSession(sessionId),
     renameStart: setRenaming,
@@ -1032,6 +1078,31 @@ export function AgentboardScreen() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={startClaudeTarget != null}
+        onOpenChange={(open) => {
+          if (!open) commitStartClaude();
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>✦ Start Claude{startClaudeTarget ? ` in ${startClaudeTarget.sessionName}` : ""}</DialogTitle>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={startClaudePrompt}
+            onChange={(e) => setStartClaudePrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitStartClaude();
+              }
+            }}
+            placeholder="what are you working toward? (optional)"
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1690,6 +1761,7 @@ function SessionRow({
     <div
       role="button"
       tabIndex={0}
+      title={eff.purpose ? `✦ ${eff.purpose}` : undefined}
       onClick={onSelect}
       onDoubleClick={() => actions.renameStart(session.id)}
       onKeyDown={(e) => e.key === "Enter" && onSelect()}

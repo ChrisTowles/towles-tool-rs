@@ -165,6 +165,10 @@ pub struct SessionData {
     pub agent_state: Option<AgentEvent>,
     /// All agent instances attributed to this PTY (newest-first).
     pub agents: Vec<AgentEvent>,
+    /// User-authored "what am I working toward here" — captured when
+    /// starting Claude (sessions.json).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
 }
 
 /// One checkout of a repo on disk (a clone, a worktree, or a slot). Holds 1..N

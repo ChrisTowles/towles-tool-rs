@@ -23,6 +23,11 @@ pub struct SessionRecord {
     pub id: String,
     pub name: String,
     pub created_at: i64,
+    /// User-authored "what am I working toward in this session" — captured
+    /// when starting Claude, so a later look at the rail explains why this
+    /// session exists. Empty counts as unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
 }
 
 /// On-disk shape: `{ "folders": { "<folderDir>": [ {id,name,createdAt}, ... ] },
@@ -107,7 +112,7 @@ impl SessionStore {
             }
         };
         let id = gen_id(dir, now_ms, seq);
-        let record = SessionRecord { id, name, created_at: now_ms };
+        let record = SessionRecord { id, name, created_at: now_ms, purpose: None };
         self.folders.entry(dir.to_string()).or_default().push(record.clone());
         record
     }
@@ -118,6 +123,22 @@ impl SessionStore {
             if let Some(rec) = list.iter_mut().find(|r| r.id == id) {
                 if rec.name != new_name {
                     rec.name = new_name.to_string();
+                    return true;
+                }
+                return false;
+            }
+        }
+        false
+    }
+
+    /// Set (or clear with `None`/blank) the session's user-authored purpose.
+    /// Returns whether it changed. Caller persists on `true`.
+    pub fn set_purpose(&mut self, id: &str, purpose: Option<&str>) -> bool {
+        let normalized = purpose.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+        for list in self.folders.values_mut() {
+            if let Some(rec) = list.iter_mut().find(|r| r.id == id) {
+                if rec.purpose != normalized {
+                    rec.purpose = normalized;
                     return true;
                 }
                 return false;
@@ -240,6 +261,25 @@ mod tests {
         assert!(store.remove(&rec.id));
         assert!(store.sessions_for("/r/a").is_empty());
         assert!(!store.remove(&rec.id));
+    }
+
+    #[test]
+    fn set_and_clear_purpose() {
+        let mut store = SessionStore::new(None);
+        let rec = store.add("/r/a", None, 1);
+        assert_eq!(store.sessions_for("/r/a")[0].purpose, None);
+        assert!(store.set_purpose(&rec.id, Some("  ship the checkout flow  ")));
+        assert_eq!(
+            store.sessions_for("/r/a")[0].purpose.as_deref(),
+            Some("ship the checkout flow")
+        );
+        // Unchanged write reports false.
+        assert!(!store.set_purpose(&rec.id, Some("ship the checkout flow")));
+        // Blank/None clears it.
+        assert!(store.set_purpose(&rec.id, Some("   ")));
+        assert_eq!(store.sessions_for("/r/a")[0].purpose, None);
+        // Unknown id is a no-op.
+        assert!(!store.set_purpose("nope", Some("x")));
     }
 
     #[test]

@@ -285,6 +285,16 @@ pub fn ab_set_folder_purpose(state: State<Ab>, dir: String, text: Option<String>
     }
 }
 
+/// Set (or clear with `None`/blank) a session's user-authored purpose —
+/// captured when starting Claude, so the rail can show why a session exists.
+#[tauri::command]
+pub fn ab_set_session_purpose(state: State<Ab>, id: String, text: Option<String>) {
+    let changed = state.engine.lock().unwrap().set_session_purpose(&id, text.as_deref());
+    if changed {
+        state.emit.notify_one();
+    }
+}
+
 /// Set the compact-nudge threshold (context-%), persisting to shared settings.
 #[tauri::command]
 pub fn ab_set_compact_percent(state: State<Ab>, percent: u8) {
