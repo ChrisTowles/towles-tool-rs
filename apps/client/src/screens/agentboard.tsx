@@ -24,6 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import {
   Command,
   CommandDialog,
@@ -534,383 +535,390 @@ export function AgentboardScreen() {
 
   return (
     <div className="flex h-full min-h-0">
-      {/* Rail: rollup tally + header + attention strip + Repo → Folder → Session tree. */}
-      <div className="flex w-80 shrink-0 flex-col border-r">
-        <RollupChip state={state} now={now} />
-        <div className="flex items-center justify-between border-b px-3 py-2">
-          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Repos
-          </span>
-          <button
-            type="button"
-            onClick={() => setAddRepoOpen(true)}
-            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-violet-500 hover:bg-accent/50"
-            title="Toggle which repos show up on the rail"
-          >
-            <FolderPlus className="size-3.5" /> Manage repos
-          </button>
-        </div>
-
-        {attention.length > 0 && (
-          <div className="flex flex-col gap-1 border-b p-2">
-            {attention.map((a) => (
+      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
+        {/* Rail: rollup tally + header + attention strip + Repo → Folder → Session tree. */}
+        <ResizablePanel defaultSize="360px" minSize="240px" maxSize="560px">
+          <div className="flex h-full flex-col border-r">
+            <RollupChip state={state} now={now} />
+            <div className="flex items-center justify-between border-b px-3 py-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Repos
+              </span>
               <button
-                key={a.key}
                 type="button"
-                onClick={a.onClick}
-                className={cn(
-                  "flex items-center gap-2 rounded-md border border-l-2 px-2 py-1.5 text-left hover:bg-accent/50",
-                  a.kind === "pr" ? "border-l-red-500" : "border-l-blue-500",
-                )}
+                onClick={() => setAddRepoOpen(true)}
+                className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-violet-500 hover:bg-accent/50"
+                title="Toggle which repos show up on the rail"
               >
-                {a.kind === "pr" ? (
-                  <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
-                ) : (
-                  <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
-                )}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs font-medium">
-                    {a.title}
-                  </span>
-                  <span className="block truncate text-[11px] text-muted-foreground">
-                    {a.sub}
-                  </span>
-                </span>
+                <FolderPlus className="size-3.5" /> Manage repos
               </button>
-            ))}
-          </div>
-        )}
+            </div>
 
-        {/* min-h-0 is load-bearing: without it this flex child grows past the
-            rail's height and folders below the fold become unreachable. */}
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="flex flex-col">
-            {repos.length === 0 && (
-              <div className="flex flex-col items-center gap-3 px-3 py-10 text-center">
-                <FolderGit2 className="size-8 text-muted-foreground" />
-                <p className="text-sm text-muted-foreground">
-                  No repos on the rail yet.
-                </p>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setAddRepoOpen(true)}
-                >
-                  <FolderPlus className="size-3.5" /> Manage repos
-                </Button>
+            {attention.length > 0 && (
+              <div className="flex flex-col gap-1 border-b p-2">
+                {attention.map((a) => (
+                  <button
+                    key={a.key}
+                    type="button"
+                    onClick={a.onClick}
+                    className={cn(
+                      "flex items-center gap-2 rounded-md border border-l-2 px-2 py-1.5 text-left hover:bg-accent/50",
+                      a.kind === "pr" ? "border-l-red-500" : "border-l-blue-500",
+                    )}
+                  >
+                    {a.kind === "pr" ? (
+                      <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-medium">
+                        {a.title}
+                      </span>
+                      <span className="block truncate text-[11px] text-muted-foreground">
+                        {a.sub}
+                      </span>
+                    </span>
+                  </button>
+                ))}
               </div>
             )}
-            {repos.map((repo) => (
-              <RepoGroup
-                key={repo.key}
-                repo={repo}
-                now={now}
-                compactPct={state.compactRecommendPercent}
-                selected={selected}
-                activeFolderDir={activeFolderDir}
-                collapsed={collapsed}
-                renaming={renaming}
-                titles={titles}
-                overlays={overlays}
-                wins={wins}
-                actions={actions}
-                onToggle={(k) => setCollapsed((c) => ({ ...c, [k]: !c[k] }))}
-                onSelectFolder={selectFolder}
-                onSelect={selectSession}
-                onNewSession={newSession}
-                onRemoveRepo={requestRemoveRepo}
-                onRenameCommit={commitRename}
-              />
-            ))}
-          </div>
-        </ScrollArea>
-      </div>
 
-      {/* Main area: window strip + the active window's panes tiled side-by-side.
-          Scoped to `activeFolderDir` — a window may only ever hold panes from
-          the one folder it belongs to, so switching folders switches the
-          whole strip, not just which panes happen to show. */}
-      <div className="flex min-w-0 flex-1 flex-col">
-        {wins && activeFolderDir && (
-          <div className="flex items-center gap-1 border-b bg-card px-2 py-1">
-            {windowsForFolder.map((w) => (
-              <button
-                key={w.id}
-                type="button"
-                onClick={() => actions.focusWindow(w.id)}
-                onDoubleClick={() => setRenamingWin(w.id)}
-                title="double-click to rename"
-                className={cn(
-                  "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
-                  w.id === activeWin?.id
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent/50",
-                )}
-              >
-                <span className={cn("size-2 rounded-[3px]", windowColor(windowsForFolder, w.id))} />
-                {renamingWin === w.id ? (
-                  <input
-                    autoFocus
-                    defaultValue={w.name}
-                    onClick={(e) => e.stopPropagation()}
-                    onBlur={(e) => {
-                      const name = e.target.value.trim() || w.name;
-                      setRenamingWin(null);
-                      updateWins((cur) => ({
-                        ...cur,
-                        windows: cur.windows.map((x) => (x.id === w.id ? { ...x, name } : x)),
-                      }));
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                      if (e.key === "Escape") setRenamingWin(null);
-                    }}
-                    className="w-24 rounded-sm border border-input bg-background px-1 text-[11px] outline-none"
-                  />
-                ) : (
-                  w.name
-                )}
-                <span className="font-mono text-[10px] text-muted-foreground/60">
-                  {w.panes.length}⊞
-                </span>
-                {windowsForFolder.length > 1 && (
-                  <span
-                    role="button"
-                    title="close window (panes ungroup; sessions stay in the rail)"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      updateWins((cur) => ({
-                        ...cur,
-                        windows: cur.windows.filter((x) => x.id !== w.id),
-                      }));
-                    }}
-                    className="text-muted-foreground/50 hover:text-red-500"
-                  >
-                    ✕
-                  </span>
-                )}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() =>
-                updateWins((cur) => {
-                  const id = `w${Date.now()}`;
-                  const count = cur.windows.filter((w) => w.folderDir === activeFolderDir).length;
-                  return {
-                    windows: [
-                      ...cur.windows,
-                      { id, name: `window ${count + 1}`, folderDir: activeFolderDir, panes: [] },
-                    ],
-                    activeWindows: { ...cur.activeWindows, [activeFolderDir]: id },
-                  };
-                })
-              }
-              className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
-            >
-              <Plus className="size-3" /> window
-            </button>
-            {activeFolderDir && (
-              <button
-                type="button"
-                onClick={() => void newSession(activeFolderDir)}
-                className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
-                title="New session in the focused folder (⌘D)"
-              >
-                <Plus className="size-3" /> session
-              </button>
-            )}
-            {selected && (
-              <button
-                type="button"
-                onClick={() => void closeSession(selected.sessionId)}
-                className="ml-auto shrink-0 rounded-md px-2 py-1 font-mono text-[10.5px] text-muted-foreground hover:bg-accent/50"
-                title="Close session (⌘W)"
-              >
-                Close ⌘W
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* Focused agent's cache bar: ctx meter + cache state + lifecycle
-            actions, prominent when it's time to compact (Calm Rail cachebar). */}
-        {selected && (() => {
-          const s = sessionById.get(selected.sessionId);
-          const d = s?.agentState?.details;
-          if (!s?.live || !isAgent(s) || !d?.contextUsed || !d.contextMax) return null;
-          const pct = ctxPct(d);
-          const cold = isCold(d, now);
-          const nudge = needsCompact(d, now, state.compactRecommendPercent);
-          const meterColor = nudge ? "bg-sky-500" : pct >= 70 ? "bg-yellow-500" : "bg-green-500";
-          return (
-            <div className="flex items-center gap-3 border-b bg-card/50 px-3 py-1.5 font-mono text-[11px] text-muted-foreground">
-              <span>ctx</span>
-              <span className="h-1.5 w-20 overflow-hidden rounded-full bg-accent">
-                <span
-                  className={cn("block h-full", meterColor)}
-                  style={{ width: `${Math.min(pct, 100)}%` }}
-                />
-              </span>
-              <span className={nudge ? "text-sky-500" : undefined}>{pct}%</span>
-              <span className="text-muted-foreground/40">·</span>
-              {cold ? (
-                <span className="text-sky-500">❄ cache cold</span>
-              ) : (
-                <span>
-                  {d.cacheTtlMs === 3_600_000 ? "⧗" : "◔"} cache warm ·{" "}
-                  {fmtMins(d.cacheExpiresAt! - now)} left
-                </span>
-              )}
-              {nudge && (
-                <span className="ml-auto flex items-center gap-2">
-                  <span className="rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-sky-500">
-                    {pct}% & cold — resuming re-reads everything
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => actions.compactClaude(s)}
-                    className="rounded-md border border-sky-500/40 px-2 py-0.5 text-sky-500 hover:bg-sky-500/10"
-                  >
-                    ⤿ compact
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => actions.restartClaude(selected.folderDir, s)}
-                    className="rounded-md border border-border px-2 py-0.5 hover:bg-accent/50"
-                  >
-                    ↻ start over
-                  </button>
-                </span>
-              )}
-            </div>
-          );
-        })()}
-
-        {/* One flat pool of mounted terminals (never remounted — a remount
-            would respawn the shell). The active window's pane order assigns
-            each a percent-rect; panes in other windows stay hidden. */}
-        <div className="relative min-h-0 flex-1 overflow-hidden p-2">
-          {(() => {
-            const panes = activeWin?.panes ?? [];
-            const rects = paneRects(panes.length);
-            const rectFor = (id: string) => {
-              const i = panes.indexOf(id);
-              return i < 0 ? undefined : rects[i];
-            };
-            const paneStyle = (r: PaneRect) => ({
-              left: `${r.left}%`,
-              top: `${r.top}%`,
-              width: `${r.width}%`,
-              height: `${r.height}%`,
-            });
-            return (
-              <>
-                {open.map((id) => {
-                  const r = rectFor(id);
-                  const s = sessionById.get(id);
-                  return (
-                    <div
-                      key={id}
-                      hidden={!r}
-                      style={r ? paneStyle(r) : undefined}
-                      className="absolute p-1.5"
-                    >
-                      <div
-                        onClick={() =>
-                          selectSession(folderOf.get(id)?.dir ?? cwds.current[id] ?? "", id)
-                        }
-                        className={cn(
-                          "flex h-full flex-col overflow-hidden rounded-lg border bg-[#07090c]",
-                          selected?.sessionId === id && "border-violet-500/60",
-                        )}
-                      >
-                        {s && (
-                          <PaneHeader
-                            session={s}
-                            folder={folderOf.get(id)}
-                            label={labelFor(s)}
-                            now={now}
-                            compactPct={state.compactRecommendPercent}
-                            actions={actions}
-                            onUngroup={() => actions.ungroup(id)}
-                          />
-                        )}
-                        <div className="min-h-0 flex-1">
-                          <TerminalView
-                            termId={id}
-                            cwd={folderOf.get(id)?.dir ?? cwds.current[id]}
-                            onExit={() => closeSession(id)}
-                            onTitle={onTitle}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {/* Panes restored from disk but not started this run. */}
-                {panes
-                  .filter((id) => !open.includes(id))
-                  .map((id) => {
-                    const r = rectFor(id);
-                    const s = sessionById.get(id);
-                    const dir = folderOf.get(id)?.dir;
-                    return (
-                      <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
-                        <div className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground">
-                          <span className="text-sm">{s ? labelFor(s) : "session"}</span>
-                          {s && dir ? (
-                            <div className="flex gap-3 font-mono text-xs">
-                              <button
-                                type="button"
-                                onClick={() => actions.start(dir, s)}
-                                className="hover:text-green-500"
-                              >
-                                ▶ shell
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => actions.startClaude(dir, s)}
-                                className="text-violet-500 hover:text-violet-400"
-                              >
-                                ✦ Claude
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => actions.ungroup(id)}
-                                className="hover:text-red-500"
-                              >
-                                ⊟ remove
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => actions.ungroup(id)}
-                              className="font-mono text-xs hover:text-red-500"
-                            >
-                              session gone — ⊟ remove pane
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                {panes.length === 0 && (
-                  <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-                    <TerminalSquare className="size-10" />
-                    <p className="text-sm">
-                      {activeFolderDir
-                        ? "Empty window — click a session in the rail to open it here."
-                        : "Select a folder in the rail to see its sessions."}
+            {/* min-h-0 is load-bearing: without it this flex child grows past the
+                rail's height and folders below the fold become unreachable. */}
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="flex flex-col">
+                {repos.length === 0 && (
+                  <div className="flex flex-col items-center gap-3 px-3 py-10 text-center">
+                    <FolderGit2 className="size-8 text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground">
+                      No repos on the rail yet.
                     </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setAddRepoOpen(true)}
+                    >
+                      <FolderPlus className="size-3.5" /> Manage repos
+                    </Button>
                   </div>
                 )}
-              </>
-            );
-          })()}
-        </div>
-      </div>
+                {repos.map((repo) => (
+                  <RepoGroup
+                    key={repo.key}
+                    repo={repo}
+                    now={now}
+                    compactPct={state.compactRecommendPercent}
+                    selected={selected}
+                    activeFolderDir={activeFolderDir}
+                    collapsed={collapsed}
+                    renaming={renaming}
+                    titles={titles}
+                    overlays={overlays}
+                    wins={wins}
+                    actions={actions}
+                    onToggle={(k) => setCollapsed((c) => ({ ...c, [k]: !c[k] }))}
+                    onSelectFolder={selectFolder}
+                    onSelect={selectSession}
+                    onNewSession={newSession}
+                    onRemoveRepo={requestRemoveRepo}
+                    onRenameCommit={commitRename}
+                  />
+                ))}
+              </div>
+            </ScrollArea>
+          </div>
+        </ResizablePanel>
+        <ResizableHandle />
+
+        {/* Main area: window strip + the active window's panes tiled side-by-side.
+            Scoped to `activeFolderDir` — a window may only ever hold panes from
+            the one folder it belongs to, so switching folders switches the
+            whole strip, not just which panes happen to show. */}
+        <ResizablePanel>
+          <div className="flex h-full min-w-0 flex-col">
+            {wins && activeFolderDir && (
+              <div className="flex items-center gap-1 border-b bg-card px-2 py-1">
+                {windowsForFolder.map((w) => (
+                  <button
+                    key={w.id}
+                    type="button"
+                    onClick={() => actions.focusWindow(w.id)}
+                    onDoubleClick={() => setRenamingWin(w.id)}
+                    title="double-click to rename"
+                    className={cn(
+                      "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
+                      w.id === activeWin?.id
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:bg-accent/50",
+                    )}
+                  >
+                    <span className={cn("size-2 rounded-[3px]", windowColor(windowsForFolder, w.id))} />
+                    {renamingWin === w.id ? (
+                      <input
+                        autoFocus
+                        defaultValue={w.name}
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={(e) => {
+                          const name = e.target.value.trim() || w.name;
+                          setRenamingWin(null);
+                          updateWins((cur) => ({
+                            ...cur,
+                            windows: cur.windows.map((x) => (x.id === w.id ? { ...x, name } : x)),
+                          }));
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          if (e.key === "Escape") setRenamingWin(null);
+                        }}
+                        className="w-24 rounded-sm border border-input bg-background px-1 text-[11px] outline-none"
+                      />
+                    ) : (
+                      w.name
+                    )}
+                    <span className="font-mono text-[10px] text-muted-foreground/60">
+                      {w.panes.length}⊞
+                    </span>
+                    {windowsForFolder.length > 1 && (
+                      <span
+                        role="button"
+                        title="close window (panes ungroup; sessions stay in the rail)"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          updateWins((cur) => ({
+                            ...cur,
+                            windows: cur.windows.filter((x) => x.id !== w.id),
+                          }));
+                        }}
+                        className="text-muted-foreground/50 hover:text-red-500"
+                      >
+                        ✕
+                      </span>
+                    )}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateWins((cur) => {
+                      const id = `w${Date.now()}`;
+                      const count = cur.windows.filter((w) => w.folderDir === activeFolderDir).length;
+                      return {
+                        windows: [
+                          ...cur.windows,
+                          { id, name: `window ${count + 1}`, folderDir: activeFolderDir, panes: [] },
+                        ],
+                        activeWindows: { ...cur.activeWindows, [activeFolderDir]: id },
+                      };
+                    })
+                  }
+                  className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
+                >
+                  <Plus className="size-3" /> window
+                </button>
+                {activeFolderDir && (
+                  <button
+                    type="button"
+                    onClick={() => void newSession(activeFolderDir)}
+                    className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
+                    title="New session in the focused folder (⌘D)"
+                  >
+                    <Plus className="size-3" /> session
+                  </button>
+                )}
+                {selected && (
+                  <button
+                    type="button"
+                    onClick={() => void closeSession(selected.sessionId)}
+                    className="ml-auto shrink-0 rounded-md px-2 py-1 font-mono text-[10.5px] text-muted-foreground hover:bg-accent/50"
+                    title="Close session (⌘W)"
+                  >
+                    Close ⌘W
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Focused agent's cache bar: ctx meter + cache state + lifecycle
+                actions, prominent when it's time to compact (Calm Rail cachebar). */}
+            {selected && (() => {
+              const s = sessionById.get(selected.sessionId);
+              const d = s?.agentState?.details;
+              if (!s?.live || !isAgent(s) || !d?.contextUsed || !d.contextMax) return null;
+              const pct = ctxPct(d);
+              const cold = isCold(d, now);
+              const nudge = needsCompact(d, now, state.compactRecommendPercent);
+              const meterColor = nudge ? "bg-sky-500" : pct >= 70 ? "bg-yellow-500" : "bg-green-500";
+              return (
+                <div className="flex items-center gap-3 border-b bg-card/50 px-3 py-1.5 font-mono text-[11px] text-muted-foreground">
+                  <span>ctx</span>
+                  <span className="h-1.5 w-20 overflow-hidden rounded-full bg-accent">
+                    <span
+                      className={cn("block h-full", meterColor)}
+                      style={{ width: `${Math.min(pct, 100)}%` }}
+                    />
+                  </span>
+                  <span className={nudge ? "text-sky-500" : undefined}>{pct}%</span>
+                  <span className="text-muted-foreground/40">·</span>
+                  {cold ? (
+                    <span className="text-sky-500">❄ cache cold</span>
+                  ) : (
+                    <span>
+                      {d.cacheTtlMs === 3_600_000 ? "⧗" : "◔"} cache warm ·{" "}
+                      {fmtMins(d.cacheExpiresAt! - now)} left
+                    </span>
+                  )}
+                  {nudge && (
+                    <span className="ml-auto flex items-center gap-2">
+                      <span className="rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-sky-500">
+                        {pct}% & cold — resuming re-reads everything
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => actions.compactClaude(s)}
+                        className="rounded-md border border-sky-500/40 px-2 py-0.5 text-sky-500 hover:bg-sky-500/10"
+                      >
+                        ⤿ compact
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => actions.restartClaude(selected.folderDir, s)}
+                        className="rounded-md border border-border px-2 py-0.5 hover:bg-accent/50"
+                      >
+                        ↻ start over
+                      </button>
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* One flat pool of mounted terminals (never remounted — a remount
+                would respawn the shell). The active window's pane order assigns
+                each a percent-rect; panes in other windows stay hidden. */}
+            <div className="relative min-h-0 flex-1 overflow-hidden p-2">
+              {(() => {
+                const panes = activeWin?.panes ?? [];
+                const rects = paneRects(panes.length);
+                const rectFor = (id: string) => {
+                  const i = panes.indexOf(id);
+                  return i < 0 ? undefined : rects[i];
+                };
+                const paneStyle = (r: PaneRect) => ({
+                  left: `${r.left}%`,
+                  top: `${r.top}%`,
+                  width: `${r.width}%`,
+                  height: `${r.height}%`,
+                });
+                return (
+                  <>
+                    {open.map((id) => {
+                      const r = rectFor(id);
+                      const s = sessionById.get(id);
+                      return (
+                        <div
+                          key={id}
+                          hidden={!r}
+                          style={r ? paneStyle(r) : undefined}
+                          className="absolute p-1.5"
+                        >
+                          <div
+                            onClick={() =>
+                              selectSession(folderOf.get(id)?.dir ?? cwds.current[id] ?? "", id)
+                            }
+                            className={cn(
+                              "flex h-full flex-col overflow-hidden rounded-lg border bg-[#07090c]",
+                              selected?.sessionId === id && "border-violet-500/60",
+                            )}
+                          >
+                            {s && (
+                              <PaneHeader
+                                session={s}
+                                folder={folderOf.get(id)}
+                                label={labelFor(s)}
+                                now={now}
+                                compactPct={state.compactRecommendPercent}
+                                actions={actions}
+                                onUngroup={() => actions.ungroup(id)}
+                              />
+                            )}
+                            <div className="min-h-0 flex-1">
+                              <TerminalView
+                                termId={id}
+                                cwd={folderOf.get(id)?.dir ?? cwds.current[id]}
+                                onExit={() => closeSession(id)}
+                                onTitle={onTitle}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {/* Panes restored from disk but not started this run. */}
+                    {panes
+                      .filter((id) => !open.includes(id))
+                      .map((id) => {
+                        const r = rectFor(id);
+                        const s = sessionById.get(id);
+                        const dir = folderOf.get(id)?.dir;
+                        return (
+                          <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
+                            <div className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground">
+                              <span className="text-sm">{s ? labelFor(s) : "session"}</span>
+                              {s && dir ? (
+                                <div className="flex gap-3 font-mono text-xs">
+                                  <button
+                                    type="button"
+                                    onClick={() => actions.start(dir, s)}
+                                    className="hover:text-green-500"
+                                  >
+                                    ▶ shell
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => actions.startClaude(dir, s)}
+                                    className="text-violet-500 hover:text-violet-400"
+                                  >
+                                    ✦ Claude
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => actions.ungroup(id)}
+                                    className="hover:text-red-500"
+                                  >
+                                    ⊟ remove
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => actions.ungroup(id)}
+                                  className="font-mono text-xs hover:text-red-500"
+                                >
+                                  session gone — ⊟ remove pane
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    {panes.length === 0 && (
+                      <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+                        <TerminalSquare className="size-10" />
+                        <p className="text-sm">
+                          {activeFolderDir
+                            ? "Empty window — click a session in the rail to open it here."
+                            : "Select a folder in the rail to see its sessions."}
+                        </p>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
 
       <CommandDialog
         open={addRepoOpen}
