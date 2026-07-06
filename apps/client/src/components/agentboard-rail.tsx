@@ -272,12 +272,10 @@ export function RepoGroup({
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
           onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
         />
-        {!isCollapsed && (
-          <div className="group pb-2">
-            <PurposeRow folder={folder} />
-            {sessionRows(folder)}
-          </div>
-        )}
+        {/* The note is a folder label — visible under the header even when the
+            folder is collapsed (renders nothing when unset). */}
+        <PurposeRow folder={folder} />
+        {!isCollapsed && <div className="pb-2">{sessionRows(folder)}</div>}
       </div>
     );
   }
@@ -329,12 +327,10 @@ export function RepoGroup({
                 onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
                 onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
               />
-              {!fCollapsed && (
-                <div className="group pb-1">
-                  <PurposeRow folder={folder} />
-                  {sessionRows(folder)}
-                </div>
-              )}
+              {/* Note is a folder label — shown under the header even when the
+                  folder is collapsed (renders nothing when unset). */}
+              <PurposeRow folder={folder} />
+              {!fCollapsed && <div className="pb-1">{sessionRows(folder)}</div>}
             </div>
           );
         })}
