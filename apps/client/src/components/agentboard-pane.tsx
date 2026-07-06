@@ -37,18 +37,19 @@ export function WorkingContext({
 }) {
   const scope = pathScope(folder.dir);
   return (
-    <div className="flex items-start gap-3 border-b bg-card px-4 py-2">
-      <FolderGit2 className="mt-1 size-4 shrink-0 text-violet-500" />
+    <div className="flex items-start gap-3 border-b bg-card px-4 py-2.5">
+      <FolderGit2 className="mt-1 size-5 shrink-0 text-violet-500" />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-baseline gap-2">
           {scope && (
             <span className="shrink-0 font-mono text-sm text-muted-foreground/60">{scope}</span>
           )}
           {/* Names hold their width; the branch is the flexible one that
-              truncates when space runs out. */}
-          <span className="shrink-0 text-sm font-semibold">{repo.name}</span>
+              truncates when space runs out. The active checkout is the anchor
+              of the whole screen, so its name is sized up to read at a glance. */}
+          <span className="shrink-0 text-xl font-semibold">{repo.name}</span>
           {folder.name !== repo.name && (
-            <span className="shrink-0 text-sm font-medium text-muted-foreground">
+            <span className="min-w-0 shrink truncate text-xl font-medium text-muted-foreground">
               / {folder.name}
             </span>
           )}
