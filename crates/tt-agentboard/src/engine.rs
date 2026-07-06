@@ -476,6 +476,15 @@ impl Engine {
         changed
     }
 
+    /// Set (or clear) a session's user-authored purpose. Persists on change.
+    pub fn set_session_purpose(&mut self, id: &str, purpose: Option<&str>) -> bool {
+        let changed = self.sessions.set_purpose(id, purpose);
+        if changed {
+            let _ = self.sessions.save();
+        }
+        changed
+    }
+
     /// Remove a PTY session by id. Returns whether it was removed. (A folder left
     /// empty is re-seeded with a default shell on the next `compute_payload`.)
     pub fn close_session(&mut self, id: &str) -> bool {

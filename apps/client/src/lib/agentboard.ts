@@ -59,6 +59,9 @@ export type SessionData = {
   unseen: boolean;
   agentState?: AgentEvent | null;
   agents: AgentEvent[];
+  /** User-authored "what am I working toward here" — captured when starting
+   * Claude, so the rail can explain why this session exists. */
+  purpose?: string | null;
 };
 
 /** One checkout of a repo on disk (a clone, worktree, or slot). */

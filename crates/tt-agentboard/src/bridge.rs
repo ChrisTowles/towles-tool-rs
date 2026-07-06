@@ -170,6 +170,7 @@ fn build_folder(
                 unseen,
                 agent_state,
                 agents,
+                purpose: r.purpose.clone(),
             }
         })
         .collect();
