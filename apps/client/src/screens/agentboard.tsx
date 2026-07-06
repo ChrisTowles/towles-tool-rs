@@ -1248,7 +1248,7 @@ function Glyph({ agent }: { agent: boolean }) {
     <span
       className={cn(
         "w-4 shrink-0 text-center font-mono text-xs",
-        agent ? "text-violet-500" : "text-muted-foreground",
+        agent ? "text-violet-500" : "text-muted-foreground/60",
       )}
     >
       {agent ? "✦" : "❯"}
@@ -1399,7 +1399,7 @@ function RepoGroup({
   const repoCollapsed = collapsed[repo.key];
   return (
     <div className="border-b">
-      <div className="sticky top-0 z-10 flex w-full items-center gap-2 bg-card px-3 py-2 hover:bg-accent/50">
+      <div className="sticky top-0 z-10 flex w-full items-center gap-2 border-b border-border bg-card px-3 py-2 hover:bg-accent/50">
         <button
           type="button"
           onClick={() => onToggle(repo.key)}
@@ -1563,7 +1563,7 @@ function FolderHeader({
   return (
     <div
       className={cn(
-        "flex items-center gap-2 bg-card px-3 py-2 hover:bg-accent/50",
+        "flex items-center gap-2 border-b border-border bg-card px-3 py-2 hover:bg-accent/50",
         scope === "repo" ? "sticky top-0 z-10" : "pl-6",
         active && "bg-accent/60",
       )}
@@ -1587,7 +1587,7 @@ function FolderHeader({
             "min-w-0 truncate",
             scope === "repo"
               ? "text-sm font-semibold"
-              : "text-sm text-muted-foreground",
+              : "text-sm font-medium text-muted-foreground",
           )}
         >
           {title}
@@ -1768,8 +1768,8 @@ function SessionRow({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       className={cn(
-        "ml-1.5 flex cursor-pointer items-center gap-2.5 border-l-2 border-transparent py-1.5 pr-3 pl-7",
-        hovered && "bg-accent/50",
+        "ml-1.5 flex cursor-pointer items-center gap-2.5 border-l-2 border-transparent py-1.5 pr-3 pl-9",
+        hovered && "bg-accent",
         active && "border-l-violet-500 bg-accent",
         needs && "border-l-amber-500",
       )}
