@@ -62,8 +62,8 @@ import {
   isSoloRepo,
   liveSessions,
   needsCompact,
+  sessionCatchesEye,
   sessionLabel,
-  sessionNeeds,
   sessionStatusText,
   statusColor,
   useAgentboardState,
@@ -242,6 +242,13 @@ export function AgentboardScreen() {
       for (const f of r.folders) for (const s of f.sessions) m.set(s.id, f);
     return m;
   }, [repos]);
+  // Folder dir → the backend's tracker name for it, so selecting into a
+  // folder can ack its `unseen` agents (`ab_mark_seen`).
+  const folderNameByDir = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of repos) for (const f of r.folders) m.set(f.dir, f.name);
+    return m;
+  }, [repos]);
   const sessionById = useMemo(() => {
     const m = new Map<string, SessionData>();
     for (const r of repos) for (const f of r.folders) for (const s of f.sessions) m.set(s.id, s);
@@ -317,6 +324,7 @@ export function AgentboardScreen() {
   function selectFolder(folderDir: string) {
     setActiveFolderDir(folderDir);
     setSelected((cur) => (cur && cur.folderDir !== folderDir ? null : cur));
+    ackFolder(folderDir);
   }
 
   function selectSession(folderDir: string, sessionId: string) {
@@ -325,6 +333,14 @@ export function AgentboardScreen() {
     setActiveFolderDir(folderDir);
     setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
     addPaneToActive(folderDir, sessionId);
+    ackFolder(folderDir);
+  }
+
+  // The user is now looking at this folder's rail entry — clear its agents'
+  // `unseen` flags (`sessionCatchesEye`'s pulse) via the backend tracker.
+  function ackFolder(folderDir: string) {
+    const name = folderNameByDir.get(folderDir);
+    if (name) void abInvoke("ab_mark_seen", { name });
   }
 
   async function newSession(folderDir: string, launchClaude = false) {
@@ -1168,8 +1184,11 @@ function Glyph({ agent }: { agent: boolean }) {
   );
 }
 
-/** Status dot mirroring `statusColor`; pulses while busy. A session with no
- * live PTY shows a hollow ring — the record exists but nothing is running. */
+/** Status dot mirroring `statusColor`. A session with no live PTY shows a
+ * hollow ring — the record exists but nothing is running. A live session that
+ * has stopped working and hasn't been acknowledged (`sessionCatchesEye`)
+ * pulses with an amber ring — busy itself stays calm since it doesn't need
+ * a look. */
 function Dot({ session }: { session: SessionData }) {
   if (!session.live) {
     return (
@@ -1182,7 +1201,8 @@ function Dot({ session }: { session: SessionData }) {
       className={cn(
         "size-2 shrink-0 rounded-full",
         st ? statusColor(st) : "bg-muted-foreground/40",
-        st === "busy" && "animate-pulse",
+        sessionCatchesEye(session) &&
+          "animate-pulse ring-2 ring-amber-400/70 ring-offset-1 ring-offset-background",
       )}
     />
   );
@@ -1657,7 +1677,7 @@ function SessionRow({
           },
         }
       : session;
-  const needs = sessionNeeds(eff);
+  const needs = sessionCatchesEye(eff);
   const agent = isAgent(eff);
   const grouped = wins ? windowOf(wins.windows, session.id) : undefined;
   // Prefer the live Claude terminal title (`✳ <title>`) when the PTY is open.

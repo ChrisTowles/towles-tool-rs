@@ -140,6 +140,14 @@ export function sessionNeeds(s: SessionData): boolean {
   return s.agentState?.status === "waiting" || s.agentState?.status === "error";
 }
 
+/** A session should catch your eye when it needs you right now (`sessionNeeds`)
+ * or when its agent reached a terminal state (done/errored/interrupted) you
+ * haven't acknowledged yet (`unseen`, cleared by `ab_mark_seen` on select). A
+ * plain `idle` agent — no news since you last looked — stays calm. */
+export function sessionCatchesEye(s: SessionData): boolean {
+  return sessionNeeds(s) || s.unseen;
+}
+
 /** A folder's currently-running (PTY-live) sessions. */
 export function liveSessions(folder: FolderData): SessionData[] {
   return folder.sessions.filter((s) => s.live);
