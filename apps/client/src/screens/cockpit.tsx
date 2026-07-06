@@ -20,6 +20,7 @@ import {
   type IssueItem,
   type PrItem,
 } from "@/lib/data";
+import { openExternalUrl } from "@/lib/open-url";
 
 /**
  * Cockpit — the day home. One dense screen: how long until the next meeting, the
@@ -213,6 +214,10 @@ function PrRow({ pr, now }: { pr: PrItem; now: number }) {
       href={pr.url}
       target="_blank"
       rel="noreferrer"
+      onClick={(e) => {
+        e.preventDefault();
+        void openExternalUrl(pr.url);
+      }}
       className="group flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/40"
     >
       <ChecksIcon checks={pr.checks} />
@@ -243,6 +248,10 @@ function IssueRow({ issue, now }: { issue: IssueItem; now: number }) {
       href={issue.url}
       target="_blank"
       rel="noreferrer"
+      onClick={(e) => {
+        e.preventDefault();
+        void openExternalUrl(issue.url);
+      }}
       className="group flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/40"
     >
       <CircleDot className="size-4 shrink-0 text-green-600 dark:text-green-500" />
