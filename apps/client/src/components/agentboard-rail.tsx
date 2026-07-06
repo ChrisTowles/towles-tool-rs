@@ -63,6 +63,36 @@ import { toast } from "sonner";
 import type { PrItem } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
 
+/** Ambient status color for a set of sessions hidden behind a collapse:
+ * red if one errored, blue if one is waiting on you, yellow while an agent is
+ * busy, else a calm emerald for "live but idle". Null when nothing is live. */
+function collapsedLiveColor(sessions: SessionData[]): string | null {
+  const live = sessions.filter((s) => s.live);
+  if (live.length === 0) return null;
+  if (live.some((s) => s.agentState?.status === "error")) return "bg-red-500";
+  if (live.some((s) => s.agentState?.status === "waiting")) return "bg-blue-500";
+  if (live.some((s) => s.agentState?.status === "busy")) return "bg-yellow-500";
+  return "bg-emerald-500";
+}
+
+/** Shown on a collapsed folder/repo header: a colored dot + count telling you
+ * running sessions are hidden inside (so a collapsed folder doesn't look
+ * asleep when agents are working in it). Nothing when nothing is live. */
+function CollapsedLive({ sessions }: { sessions: SessionData[] }) {
+  const color = collapsedLiveColor(sessions);
+  if (!color) return null;
+  const n = sessions.filter((s) => s.live).length;
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1"
+      title={`${n} running session${n > 1 ? "s" : ""} hidden — expand to see`}
+    >
+      <span className={cn("size-2 rounded-full", color)} />
+      <span className="font-mono text-[10px] text-muted-foreground/70">{n}</span>
+    </span>
+  );
+}
+
 /** The board-wide agent tally pinned atop the rail: total + non-zero status
  * buckets + a ❄ compact count, with the Agentboard settings (compact
  * threshold) behind the trailing ⚙. Quiet when the board is at rest. */
@@ -293,7 +323,12 @@ export function RepoGroup({
           <Chevron collapsed={repoCollapsed} />
           <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="truncate text-sm font-semibold">{repo.name}</span>
-          {repo.needs > 0 && <NeedsBadge n={repo.needs} className="ml-auto" />}
+          <span className="ml-auto flex items-center gap-2">
+            {repoCollapsed && (
+              <CollapsedLive sessions={repo.folders.flatMap((f) => f.sessions)} />
+            )}
+            {repo.needs > 0 && <NeedsBadge n={repo.needs} />}
+          </span>
         </button>
         <RepoMenu
           onRemove={() =>
@@ -410,6 +445,7 @@ function FolderHeader({
             {title}
           </span>
         </button>
+        {collapsed && <CollapsedLive sessions={folder.sessions} />}
         {needs > 0 && <NeedsBadge n={needs} />}
         <IconBtn title="New session (⌘D)" onClick={onNewSession} className="hover:text-violet-500">
           <Plus className="size-3.5" />
