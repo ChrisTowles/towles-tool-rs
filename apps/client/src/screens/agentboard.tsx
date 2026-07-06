@@ -283,6 +283,23 @@ export function AgentboardScreen() {
     for (const r of repos) for (const f of r.folders) for (const s of f.sessions) m.set(s.id, s);
     return m;
   }, [repos]);
+  // Folder dir → its owning repo, so a pane header can lead with "repo /
+  // folder" (a folder's own name is just the checkout/slot/worktree).
+  const repoOf = useMemo(() => {
+    const m = new Map<string, RepoData>();
+    for (const r of repos) for (const f of r.folders) m.set(f.dir, r);
+    return m;
+  }, [repos]);
+
+  // Diff-preview dialog: a folder's full patch, fetched on demand.
+  const [diff, setDiff] = useState<{ dir: string; name: string; text: string | null } | null>(
+    null,
+  );
+  async function openDiff(dir: string, name: string) {
+    setDiff({ dir, name, text: null });
+    const text = await abInvoke<string>("ab_get_diff", { dir });
+    setDiff((cur) => (cur && cur.dir === dir ? { ...cur, text: text ?? "" } : cur));
+  }
 
   // --- Window layout (Tier 5): frontend-owned, hydrated once, saved debounced.
   const [wins, setWins] = useState<WindowsPayload | null>(null);
@@ -692,6 +709,7 @@ export function AgentboardScreen() {
                     onNewSession={newSession}
                     onRemoveRepo={requestRemoveRepo}
                     onRenameCommit={commitRename}
+                    onOpenDiff={openDiff}
                   />
                 ))}
               </div>
@@ -904,11 +922,13 @@ export function AgentboardScreen() {
                               <PaneHeader
                                 session={s}
                                 folder={folderOf.get(id)}
+                                repo={repoOf.get(folderOf.get(id)?.dir ?? "")}
                                 label={labelFor(s)}
                                 now={now}
                                 compactPct={state.compactRecommendPercent}
                                 actions={actions}
                                 onUngroup={() => actions.ungroup(id)}
+                                onOpenDiff={openDiff}
                               />
                             )}
                             <div className="min-h-0 flex-1">
@@ -1103,27 +1123,49 @@ export function AgentboardScreen() {
           />
         </DialogContent>
       </Dialog>
+
+      <Dialog open={diff != null} onOpenChange={(o) => !o && setDiff(null)}>
+        <DialogContent className="flex max-h-[80vh] w-full max-w-3xl flex-col sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="font-mono text-sm">{diff?.name}</DialogTitle>
+          </DialogHeader>
+          <ScrollArea className="min-h-0 flex-1">
+            {diff?.text == null ? (
+              <p className="p-2 text-sm text-muted-foreground">Loading…</p>
+            ) : diff.text === "" ? (
+              <p className="p-2 text-sm text-muted-foreground">No changes.</p>
+            ) : (
+              <DiffView text={diff.text} />
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-/** One pane's chrome: glyph · dot · name · folder⎇branch · cache badge · ⊟. */
+/** One pane's chrome: glyph · dot · name · repo/folder⎇branch · diff · cache
+ * badge · ⊟. */
 function PaneHeader({
   session,
   folder,
+  repo,
   label,
   now,
   compactPct,
   actions,
   onUngroup,
+  onOpenDiff,
 }: {
   session: SessionData;
   folder?: FolderData;
+  repo?: RepoData;
   label: string;
   now: number;
   compactPct: number;
   actions: SessionActions;
   onUngroup: () => void;
+  onOpenDiff: (dir: string, name: string) => void;
 }) {
   const agent = isAgent(session) && session.live;
   const iconBtn = (label: string, title: string, onClick: () => void, hover: string) => (
@@ -1146,8 +1188,19 @@ function PaneHeader({
       <span className="truncate text-xs text-foreground">{label}</span>
       {folder && (
         <span className="truncate font-mono text-[10px] text-muted-foreground">
-          {folder.name} ⎇ {folder.branch}
+          {repo && repo.name !== folder.name ? `${repo.name} / ${folder.name}` : folder.name} ⎇{" "}
+          {folder.branch}
         </span>
+      )}
+      {folder?.isWorktree && <WorktreeBadge />}
+      {folder && (
+        <DiffBadge
+          filesChanged={folder.filesChanged}
+          linesAdded={folder.linesAdded}
+          linesRemoved={folder.linesRemoved}
+          commitsDelta={folder.commitsDelta}
+          onOpen={() => onOpenDiff(folder.dir, folder.name)}
+        />
       )}
       <span className="ml-auto flex shrink-0 items-center gap-2">
         <CacheBadge
@@ -1296,6 +1349,7 @@ function RepoGroup({
   onNewSession,
   onRemoveRepo,
   onRenameCommit,
+  onOpenDiff,
 }: {
   repo: RepoData;
   now: number;
@@ -1314,6 +1368,7 @@ function RepoGroup({
   onNewSession: (folderDir: string, launchClaude?: boolean) => void;
   onRemoveRepo: (dirs: string[], label: string) => void;
   onRenameCommit: (sessionId: string, name: string) => void;
+  onOpenDiff: (dir: string, name: string) => void;
 }) {
   const solo = isSoloRepo(repo);
 
@@ -1383,6 +1438,7 @@ function RepoGroup({
           }}
           onNewSession={() => onNewSession(folder.dir)}
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
+          onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
           dir={folder.dir}
         />
         {!isCollapsed && (
@@ -1446,6 +1502,7 @@ function RepoGroup({
                 }}
                 onNewSession={() => onNewSession(folder.dir)}
                 onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
+                onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
                 dir={folder.dir}
               />
               {!fCollapsed && (
@@ -1537,6 +1594,7 @@ function FolderHeader({
   onToggle,
   onNewSession,
   onRemoveRepo,
+  onOpenDiff,
   dir,
 }: {
   scope: "repo" | "folder";
@@ -1557,6 +1615,8 @@ function FolderHeader({
   onToggle: () => void;
   onNewSession: () => void;
   onRemoveRepo?: () => void;
+  /** Opens the full-diff preview dialog for this folder. */
+  onOpenDiff: () => void;
   /** A checkout dir for this repo, used to create a GitHub issue via `gh`. */
   dir: string;
 }) {
@@ -1595,21 +1655,20 @@ function FolderHeader({
         <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
           ⎇ {branch}
         </span>
-        {(linesAdded > 0 || linesRemoved > 0) && (
-          <span
-            className="flex shrink-0 items-center gap-1 font-mono text-[11px]"
-            title={`${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsDelta} commit${commitsDelta === 1 ? "" : "s"} ahead`}
-          >
-            {linesAdded > 0 && <span className="text-green-500">+{linesAdded}</span>}
-            {linesRemoved > 0 && <span className="text-red-500">−{linesRemoved}</span>}
-          </span>
-        )}
         {typeof progressPercent === "number" && (
           <span className="shrink-0 rounded-md border border-violet-500/40 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500">
             {Math.round(progressPercent)}%
           </span>
         )}
       </button>
+      {isWorktree && <WorktreeBadge />}
+      <DiffBadge
+        filesChanged={filesChanged}
+        linesAdded={linesAdded}
+        linesRemoved={linesRemoved}
+        commitsDelta={commitsDelta}
+        onOpen={onOpenDiff}
+      />
       {needs > 0 && <NeedsBadge n={needs} />}
       <button
         type="button"
@@ -2009,6 +2068,74 @@ function NeedsBadge({ n, className }: { n: number; className?: string }) {
     >
       {n} ⚑
     </span>
+  );
+}
+
+/** Marks a folder as a git worktree checkout (linked to another checkout's
+ * `.git`) — distinct from the plain personal/work `p/`/`w/` path-scope
+ * prefix, so a worktree's WIP diff doesn't read as the repo's one canonical
+ * state. */
+function WorktreeBadge() {
+  return (
+    <span
+      className="shrink-0 rounded-md border border-sky-500/40 bg-sky-500/10 px-1 font-mono text-[10px] text-sky-500"
+      title="Git worktree checkout — a linked working tree, not the primary clone"
+    >
+      ⬡ wt
+    </span>
+  );
+}
+
+/** Clickable `+N −N` diff stat opening the diff-preview dialog. Hidden when
+ * there's nothing to show, so a clean folder's row stays quiet. */
+function DiffBadge({
+  filesChanged,
+  linesAdded,
+  linesRemoved,
+  commitsDelta,
+  onOpen,
+}: {
+  filesChanged: number;
+  linesAdded: number;
+  linesRemoved: number;
+  commitsDelta: number;
+  onOpen: () => void;
+}) {
+  if (linesAdded === 0 && linesRemoved === 0) return null;
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen();
+      }}
+      className="flex shrink-0 items-center gap-1 rounded-md px-1 font-mono text-[11px] hover:bg-accent"
+      title={`${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsDelta} commit${commitsDelta === 1 ? "" : "s"} ahead — click to view diff`}
+    >
+      {linesAdded > 0 && <span className="text-green-500">+{linesAdded}</span>}
+      {linesRemoved > 0 && <span className="text-red-500">−{linesRemoved}</span>}
+    </button>
+  );
+}
+
+/** Unified diff text, colored by line prefix (+/− hunks, @@ headers). */
+function DiffView({ text }: { text: string }) {
+  return (
+    <pre className="overflow-x-auto p-2 font-mono text-xs leading-relaxed whitespace-pre">
+      {text.split("\n").map((line, i) => (
+        <div
+          key={i}
+          className={cn(
+            line.startsWith("+") && !line.startsWith("+++") && "bg-green-500/10 text-green-500",
+            line.startsWith("-") && !line.startsWith("---") && "bg-red-500/10 text-red-500",
+            line.startsWith("@@") && "text-blue-400",
+            (line.startsWith("diff ") || line.startsWith("index ")) && "text-muted-foreground",
+          )}
+        >
+          {line || " "}
+        </div>
+      ))}
+    </pre>
   );
 }
 

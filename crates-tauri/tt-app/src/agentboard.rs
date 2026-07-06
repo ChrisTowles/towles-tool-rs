@@ -382,6 +382,13 @@ pub fn ab_clear_log(state: State<Ab>, session: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Full unified diff for a folder against its pushed baseline, for the
+/// diff-preview dialog. Empty string when there's nothing to show.
+#[tauri::command]
+pub fn ab_get_diff(dir: String) -> String {
+    tt_agentboard::diff_patch(&dir)
+}
+
 /// Open a session's repo directory in the preferred editor. Ports the TS
 /// open-in-editor (spawns `<preferredEditor> <dir>`; the TS TMUX-env stripping is
 /// desktop-irrelevant and skipped).

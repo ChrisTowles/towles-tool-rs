@@ -184,6 +184,7 @@ pub fn run() {
             agentboard::ab_log,
             agentboard::ab_clear_log,
             agentboard::ab_open_in_editor,
+            agentboard::ab_get_diff,
             store::store_snapshot,
             store::store_add_task,
             store::store_set_task_status,
