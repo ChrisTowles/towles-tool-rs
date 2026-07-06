@@ -1,10 +1,12 @@
-import { NotWired } from "@/components/not-wired";
+import { JournalEntryList } from "@/components/journal-entry-list";
 
 export function JournalNotesScreen() {
   return (
-    <NotWired
+    <JournalEntryList
+      ty="note"
       title="Notes"
-      detail="Not wired yet. Build this against `ttr journal list`/`search` (tt-journal crate) so it lists real notes."
+      placeholder="New note title…"
+      emptyLabel="No notes yet."
     />
   );
 }

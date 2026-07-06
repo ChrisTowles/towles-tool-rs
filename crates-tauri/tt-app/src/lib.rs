@@ -5,6 +5,7 @@
 //! (not tmux), rendered by xterm.js in the agentboard screen.
 
 mod agentboard;
+mod journal;
 mod scheduler;
 mod settings;
 mod store;
@@ -186,6 +187,11 @@ pub fn run() {
             store::store_set_task_status,
             store::store_promote_task_to_issue,
             store::journal_log,
+            journal::journal_get_today,
+            journal::journal_list,
+            journal::journal_search,
+            journal::journal_create,
+            journal::journal_open,
             settings::settings_get,
             settings::settings_set,
             terminal::term_start,

@@ -4589,6 +4589,7 @@ dependencies = [
  "tt-agentboard",
  "tt-collect",
  "tt-config",
+ "tt-exec",
  "tt-journal",
  "tt-store",
 ]
