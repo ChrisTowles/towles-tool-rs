@@ -132,6 +132,7 @@ export function AgentboardScreen() {
       return { ...c, [key]: next };
     });
   }
+
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renamingWin, setRenamingWin] = useState<string | null>(null);
   // Live PTY window titles keyed by session id (Claude emits `✳ <title>`);
@@ -204,6 +205,25 @@ export function AgentboardScreen() {
     // the local copy is the live truth and only flows outward.
     if (wins === null && state.ts > 0) setWins(normalizeWins(state.windows));
   }, [wins, state.ts, state.windows]);
+
+  // Auto-reconnect on startup: any session still alive in the session daemon
+  // (shpool) after the last app exit is `detached`. Mount them straight away so
+  // their shells reattach without the user clicking ▶ on each. Runs once, after
+  // the window layout has hydrated (so restored panes land in their saved
+  // positions), and lands on the first survivor so a live terminal is shown
+  // rather than a blank "select a folder" pane.
+  const reconnected = useRef(false);
+  useEffect(() => {
+    if (reconnected.current || state.ts === 0 || wins === null) return;
+    reconnected.current = true;
+    const alive: { dir: string; id: string }[] = [];
+    for (const r of state.repos)
+      for (const f of r.folders)
+        for (const s of f.sessions) if (s.detached) alive.push({ dir: f.dir, id: s.id });
+    alive.forEach(({ dir, id }, i) => (i === 0 ? selectSession(dir, id) : reattach(dir, id)));
+    // selectSession/reattach are stable within a run; the ref makes this one-shot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.ts, wins]);
 
   function updateWins(folderDirs: string[], fn: (w: WindowsPayload) => WindowsPayload) {
     setWins((prev) => {
@@ -289,6 +309,16 @@ export function AgentboardScreen() {
     setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
     addPaneToActive(folderDir, sessionId);
     ackFolder(folderDir);
+  }
+
+  // Mount a session's terminal (its effect reattaches the PTY) WITHOUT stealing
+  // the current selection or touching the window layout — used to bulk-restore
+  // surviving sessions on startup. Its pane position comes from the persisted
+  // windows (already hydrated by the time this runs); a survivor that isn't in
+  // any saved window still reattaches, just stays hidden until surfaced.
+  function reattach(folderDir: string, sessionId: string) {
+    cwds.current[sessionId] = folderDir;
+    setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
   }
 
   // The user is now looking at this folder's rail entry — clear its agents'
