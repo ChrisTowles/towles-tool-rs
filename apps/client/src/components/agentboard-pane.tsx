@@ -85,26 +85,22 @@ function PaneCacheInfo({ session, now }: { session: SessionData; now: number }) 
   );
 }
 
-/** One pane's chrome: glyph · dot · name · repo/folder⎇branch · diff · cache
- * info · ⊟. */
+/** One pane's chrome: glyph · dot · session name · cache info · lifecycle
+ * buttons. The repo / folder / branch / diff live once in the working-context
+ * band above (every pane in a window shares that folder), so they're not
+ * repeated here — the pane header only identifies *which session* this is. */
 export function PaneHeader({
   session,
-  folder,
-  repoName,
   label,
   now,
   actions,
   onUngroup,
-  onOpenDiff,
 }: {
   session: SessionData;
-  folder?: FolderData;
-  repoName?: string;
   label: string;
   now: number;
   actions: SessionActions;
   onUngroup: () => void;
-  onOpenDiff: (dir: string, name: string) => void;
 }) {
   const agent = isAgent(session) && session.live;
   return (
@@ -112,16 +108,6 @@ export function PaneHeader({
       <Glyph agent={isAgent(session)} />
       <Dot session={session} />
       <span className="truncate text-xs text-foreground">{label}</span>
-      {folder && (
-        <span className="truncate font-mono text-[10px] text-muted-foreground">
-          {repoName && repoName !== folder.name ? `${repoName} / ${folder.name}` : folder.name} ⎇{" "}
-          {folder.branch}
-        </span>
-      )}
-      {folder?.isWorktree && <WorktreeBadge />}
-      {folder && (
-        <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir, folder.name)} />
-      )}
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         <PaneCacheInfo session={session} now={now} />
         {agent && (

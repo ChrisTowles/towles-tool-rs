@@ -778,13 +778,10 @@ export function AgentboardScreen() {
                             {s && (
                               <PaneHeader
                                 session={s}
-                                folder={folderOf.get(id)}
-                                repoName={repoOf.get(folderOf.get(id)?.dir ?? "")?.name}
                                 label={labelFor(s)}
                                 now={now}
                                 actions={actions}
                                 onUngroup={() => actions.ungroup(id)}
-                                onOpenDiff={openDiff}
                               />
                             )}
                             <div className="min-h-0 flex-1">
