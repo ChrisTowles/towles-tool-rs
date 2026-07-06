@@ -27,7 +27,7 @@ import {
  * snapshot; the countdown ticks every 30s.
  */
 export function CockpitScreen() {
-  const { snapshot } = useStoreSnapshot();
+  const { snapshot, live } = useStoreSnapshot();
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -99,6 +99,14 @@ export function CockpitScreen() {
         </div>
       </div>
 
+      {!live && (
+        <div className="flex shrink-0 items-center gap-2 border-b bg-amber-500/10 px-5 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+          <CircleAlert className="size-3.5 shrink-0" />
+          Not connected to the store — open this window in the Towles Tool app to see live PRs,
+          issues, and events.
+        </div>
+      )}
+
       <ScrollArea className="min-h-0 flex-1">
         <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-2">
           {/* Pull requests */}
@@ -108,7 +116,7 @@ export function CockpitScreen() {
             icon={<GitPullRequest className="size-4" />}
           >
             {snapshot.prs.length === 0 ? (
-              <Empty>No open PRs across your repos.</Empty>
+              <Empty>{live ? "No open PRs across your repos." : "Not connected yet."}</Empty>
             ) : (
               snapshot.prs
                 .slice()
@@ -124,7 +132,7 @@ export function CockpitScreen() {
             icon={<CircleDot className="size-4" />}
           >
             {snapshot.issues.length === 0 ? (
-              <Empty>No issues assigned to you.</Empty>
+              <Empty>{live ? "No issues assigned to you." : "Not connected yet."}</Empty>
             ) : (
               snapshot.issues
                 .slice()
