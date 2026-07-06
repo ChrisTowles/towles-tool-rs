@@ -1,0 +1,79 @@
+import { describe, expect, it } from "vitest";
+import { parseDiff } from "./diff";
+
+const SAMPLE = `diff --git a/src/a.ts b/src/a.ts
+index 111..222 100644
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,3 +1,4 @@
+ context
++added line
+-removed line
+ more context
+diff --git a/src/new.ts b/src/new.ts
+new file mode 100644
+index 000..333
+--- /dev/null
++++ b/src/new.ts
+@@ -0,0 +1,2 @@
++first
++second
+diff --git a/src/old-name.ts b/src/new-name.ts
+similarity index 90%
+rename from src/old-name.ts
+rename to src/new-name.ts
+index 444..555 100644
+--- a/src/old-name.ts
++++ b/src/new-name.ts
+@@ -1 +1 @@
+-old
++new
+diff --git a/src/gone.ts b/src/gone.ts
+deleted file mode 100644
+index 666..000
+--- a/src/gone.ts
++++ /dev/null
+@@ -1,1 +0,0 @@
+-goodbye
+`;
+
+describe("parseDiff", () => {
+  it("splits a multi-file diff into per-file sections", () => {
+    const files = parseDiff(SAMPLE);
+    expect(files.map((f) => f.path)).toEqual([
+      "src/a.ts",
+      "src/new.ts",
+      "src/new-name.ts",
+      "src/gone.ts",
+    ]);
+  });
+
+  it("classifies file statuses", () => {
+    const [modified, added, renamed, deleted] = parseDiff(SAMPLE);
+    expect(modified.status).toBe("modified");
+    expect(added.status).toBe("added");
+    expect(renamed.status).toBe("renamed");
+    expect(renamed.oldPath).toBe("src/old-name.ts");
+    expect(deleted.status).toBe("deleted");
+  });
+
+  it("counts additions and deletions per file, ignoring the ±±± preamble", () => {
+    const [modified, added, , deleted] = parseDiff(SAMPLE);
+    expect({ add: modified.additions, del: modified.deletions }).toEqual({ add: 1, del: 1 });
+    expect({ add: added.additions, del: added.deletions }).toEqual({ add: 2, del: 0 });
+    expect({ add: deleted.additions, del: deleted.deletions }).toEqual({ add: 0, del: 1 });
+  });
+
+  it("tags body lines by kind for rendering", () => {
+    const [modified] = parseDiff(SAMPLE);
+    const kinds = modified.lines.map((l) => l.kind);
+    expect(kinds).toContain("hunk");
+    expect(kinds).toContain("add");
+    expect(kinds).toContain("del");
+    expect(kinds).toContain("ctx");
+  });
+
+  it("returns an empty list for an empty diff", () => {
+    expect(parseDiff("")).toEqual([]);
+  });
+});

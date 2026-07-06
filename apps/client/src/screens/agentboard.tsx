@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarClock,
-  ChevronDown,
   CircleDot,
   Folder,
   FolderGit2,
@@ -12,6 +11,19 @@ import {
   TerminalSquare,
   Trash2,
 } from "lucide-react";
+import {
+  CacheBadge,
+  Chevron,
+  DiffButton,
+  Dot,
+  fmtMins,
+  Glyph,
+  IconBtn,
+  NeedsBadge,
+  PrChip,
+  WorktreeBadge,
+} from "@/components/agentboard-bits";
+import { DiffViewer } from "@/components/diff-view";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import {
@@ -62,10 +74,11 @@ import {
   isSoloRepo,
   liveSessions,
   needsCompact,
+  pathScope,
+  prForFolder,
   sessionCatchesEye,
   sessionLabel,
   sessionStatusText,
-  statusColor,
   useAgentboardState,
   type FolderData,
   type RepoData,
@@ -76,7 +89,7 @@ import {
   windowOf,
 } from "@/lib/agentboard";
 import { toast } from "sonner";
-import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
+import { fmtCountdown, useStoreSnapshot, type PrItem } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
 import { useWorkspace } from "@/lib/workspace";
 
@@ -310,6 +323,14 @@ export function AgentboardScreen() {
     for (const r of repos) for (const f of r.folders) m.set(f.dir, r);
     return m;
   }, [repos]);
+
+  // The active folder resolved to its data + repo — drives the
+  // working-context band ("where am I working, and why").
+  const activeFolder = useMemo(
+    () => repos.flatMap((r) => r.folders).find((f) => f.dir === activeFolderDir),
+    [repos, activeFolderDir],
+  );
+  const activeRepo = activeFolder ? repoOf.get(activeFolder.dir) : undefined;
 
   // Diff-preview dialog: a folder's full patch, fetched on demand.
   const [diff, setDiff] = useState<{ dir: string; name: string; text: string | null } | null>(
@@ -726,6 +747,7 @@ export function AgentboardScreen() {
                     repo={repo}
                     now={now}
                     compactPct={state.compactRecommendPercent}
+                    prs={snapshot.prs}
                     selected={selected}
                     activeFolderDir={activeFolderDir}
                     collapsed={collapsed}
@@ -755,6 +777,14 @@ export function AgentboardScreen() {
             whole strip, not just which panes happen to show. */}
         <ResizablePanel>
           <div className="flex h-full min-w-0 flex-col">
+            {activeFolder && activeRepo && (
+              <WorkingContext
+                repo={activeRepo}
+                folder={activeFolder}
+                pr={prForFolder(snapshot.prs, activeRepo.originUrl, activeFolder.branch)}
+                onOpenDiff={openDiff}
+              />
+            )}
             {wins && activeFolderDir && (
               <div className="flex items-center gap-1 border-b bg-card px-2 py-1">
                 {windowsForFolder.map((w) => (
@@ -1156,21 +1186,74 @@ export function AgentboardScreen() {
       </Dialog>
 
       <Dialog open={diff != null} onOpenChange={(o) => !o && setDiff(null)}>
-        <DialogContent className="flex max-h-[80vh] w-full max-w-3xl flex-col sm:max-w-3xl">
+        <DialogContent className="flex h-[85vh] w-full flex-col sm:max-w-6xl">
           <DialogHeader>
-            <DialogTitle className="font-mono text-sm">{diff?.name}</DialogTitle>
+            <DialogTitle className="flex items-baseline gap-3 font-mono text-sm">
+              <span>{diff?.name}</span>
+              <span className="text-[11px] font-normal text-muted-foreground">
+                vs pushed base (merge-base with upstream, else origin/main)
+              </span>
+            </DialogTitle>
           </DialogHeader>
-          <ScrollArea className="min-h-0 flex-1">
-            {diff?.text == null ? (
-              <p className="p-2 text-sm text-muted-foreground">Loading…</p>
-            ) : diff.text === "" ? (
-              <p className="p-2 text-sm text-muted-foreground">No changes.</p>
-            ) : (
-              <DiffView text={diff.text} />
-            )}
-          </ScrollArea>
+          {diff?.text == null ? (
+            <p className="p-2 text-sm text-muted-foreground">Loading…</p>
+          ) : (
+            <DiffViewer text={diff.text} />
+          )}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/** The working-context band atop the main pane: *where am I working and why*.
+ * Leads with the focused folder (violet = focus), its branch and git facts —
+ * worktree badge, always-visible diff button, PR chip — then the folder's
+ * purpose line. This is the control-center anchor: one glance answers which
+ * checkout the terminals below belong to and what you set out to do there. */
+function WorkingContext({
+  repo,
+  folder,
+  pr,
+  onOpenDiff,
+}: {
+  repo: RepoData;
+  folder: FolderData;
+  pr?: PrItem;
+  onOpenDiff: (dir: string, name: string) => void;
+}) {
+  const scope = pathScope(folder.dir);
+  return (
+    <div className="flex items-start gap-3 border-b bg-card px-4 py-2">
+      <FolderGit2 className="mt-1 size-4 shrink-0 text-violet-500" />
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <div className="flex min-w-0 items-center gap-2">
+          {scope && (
+            <span className="shrink-0 font-mono text-sm text-muted-foreground/60">{scope}</span>
+          )}
+          {/* Names hold their width; the branch is the flexible one that
+              truncates when space runs out. */}
+          <span className="shrink-0 text-sm font-semibold">{repo.name}</span>
+          {folder.name !== repo.name && (
+            <span className="shrink-0 text-sm font-medium text-muted-foreground">
+              / {folder.name}
+            </span>
+          )}
+          <span className="min-w-0 shrink truncate font-mono text-[11px] text-muted-foreground">
+            ⎇ {folder.branch}
+          </span>
+          {folder.isWorktree && <WorktreeBadge />}
+          <DiffButton
+            filesChanged={folder.filesChanged}
+            linesAdded={folder.linesAdded}
+            linesRemoved={folder.linesRemoved}
+            commitsDelta={folder.commitsDelta}
+            onOpen={() => onOpenDiff(folder.dir, folder.name)}
+          />
+          {pr && <PrChip pr={pr} />}
+        </div>
+        <PurposeRow folder={folder} variant="band" />
+      </div>
     </div>
   );
 }
@@ -1199,19 +1282,6 @@ function PaneHeader({
   onOpenDiff: (dir: string, name: string) => void;
 }) {
   const agent = isAgent(session) && session.live;
-  const iconBtn = (label: string, title: string, onClick: () => void, hover: string) => (
-    <button
-      type="button"
-      title={title}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      className={cn("font-mono text-xs text-muted-foreground/60", hover)}
-    >
-      {label}
-    </button>
-  );
   return (
     <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
       <Glyph agent={isAgent(session)} />
@@ -1225,7 +1295,7 @@ function PaneHeader({
       )}
       {folder?.isWorktree && <WorktreeBadge />}
       {folder && (
-        <DiffBadge
+        <DiffButton
           filesChanged={folder.filesChanged}
           linesAdded={folder.linesAdded}
           linesRemoved={folder.linesRemoved}
@@ -1233,7 +1303,7 @@ function PaneHeader({
           onOpen={() => onOpenDiff(folder.dir, folder.name)}
         />
       )}
-      <span className="ml-auto flex shrink-0 items-center gap-2">
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
         <CacheBadge
           session={session}
           now={now}
@@ -1241,9 +1311,17 @@ function PaneHeader({
           onCompact={() => actions.compactClaude(session)}
           long
         />
-        {agent && iconBtn("■", "stop Claude (shell survives)", () => actions.stopClaude(session), "hover:text-red-500")}
-        {iconBtn("⊟", "remove pane (session stays in the rail)", onUngroup, "hover:text-sky-500")}
-        {iconBtn("✕", "kill session (PTY + record)", () => actions.close(session.id), "hover:text-red-500")}
+        {agent && (
+          <IconBtn title="stop Claude (shell survives)" onClick={() => actions.stopClaude(session)} className="hover:text-red-500">
+            ■
+          </IconBtn>
+        )}
+        <IconBtn title="remove pane (session stays in the rail)" onClick={onUngroup} className="hover:text-sky-500">
+          ⊟
+        </IconBtn>
+        <IconBtn title="kill session (PTY + record)" onClick={() => actions.close(session.id)} className="hover:text-red-500">
+          ✕
+        </IconBtn>
       </span>
     </div>
   );
@@ -1326,46 +1404,11 @@ function RollupBucket({ className, n }: { className: string; n: number }) {
   );
 }
 
-/** ✦ for an agent session, ❯ for a plain shell. */
-function Glyph({ agent }: { agent: boolean }) {
-  return (
-    <span
-      className={cn(
-        "w-4 shrink-0 text-center font-mono text-xs",
-        agent ? "text-violet-500" : "text-muted-foreground/60",
-      )}
-    >
-      {agent ? "✦" : "❯"}
-    </span>
-  );
-}
-
-/** Status dot mirroring `statusColor`; pulses while busy. A session with no
- * live PTY shows a hollow ring — the record exists but nothing is running.
- * "Look at this" is the row's amber border (`sessionCatchesEye`), not the
- * dot — a resting board stays still. */
-function Dot({ session }: { session: SessionData }) {
-  if (!session.live) {
-    return (
-      <span className="size-2 shrink-0 rounded-full border-[1.5px] border-muted-foreground/50 bg-transparent" />
-    );
-  }
-  const st = session.agentState?.status;
-  return (
-    <span
-      className={cn(
-        "size-2 shrink-0 rounded-full",
-        st ? statusColor(st) : "bg-muted-foreground/40",
-        st === "busy" && "animate-pulse",
-      )}
-    />
-  );
-}
-
 function RepoGroup({
   repo,
   now,
   compactPct,
+  prs,
   selected,
   activeFolderDir,
   collapsed,
@@ -1385,6 +1428,7 @@ function RepoGroup({
   repo: RepoData;
   now: number;
   compactPct: number;
+  prs: PrItem[];
   selected: Selected;
   activeFolderDir: string | null;
   collapsed: Record<string, boolean>;
@@ -1461,6 +1505,7 @@ function RepoGroup({
           commitsDelta={folder.commitsDelta}
           progressPercent={folder.metadata?.progress?.percent}
           needs={repo.needs}
+          pr={prForFolder(prs, repo.originUrl, folder.branch)}
           collapsed={isCollapsed}
           active={activeFolderDir === folder.dir}
           onToggle={() => {
@@ -1486,7 +1531,7 @@ function RepoGroup({
   const repoCollapsed = collapsed[repo.key];
   return (
     <div className="border-b">
-      <div className="sticky top-0 z-10 flex w-full items-center gap-2 border-b border-border bg-card px-3 py-2 hover:bg-accent/50">
+      <div className="sticky top-0 z-10 flex w-full items-center gap-2 border-b border-l-2 border-border border-l-transparent bg-card px-3 py-2 hover:bg-accent/50">
         <button
           type="button"
           onClick={() => onToggle(repo.key)}
@@ -1525,6 +1570,7 @@ function RepoGroup({
                 commitsDelta={folder.commitsDelta}
                 progressPercent={folder.metadata?.progress?.percent}
                 needs={folder.needs}
+                pr={prForFolder(prs, repo.originUrl, folder.branch)}
                 collapsed={fCollapsed}
                 active={activeFolderDir === folder.dir}
                 onToggle={() => {
@@ -1549,14 +1595,25 @@ function RepoGroup({
   );
 }
 
-/** The folder's user-authored purpose: a faint one-liner under the header.
- * Click to edit inline (Enter saves, Esc cancels; blank clears). When unset,
- * the row takes up no space at rest — the "+ purpose" hint only appears (and
- * only then claims a row) while hovering the folder group, so a resting rail
- * with many empty folders doesn't pad itself out with blank lines. */
-function PurposeRow({ folder }: { folder: FolderData }) {
+/** The folder's user-authored purpose — the "why am I here". Click to edit
+ * inline (Enter saves, Esc cancels; blank clears).
+ *
+ * `rail` variant: a faint one-liner under the folder header; when unset it
+ * takes up no space at rest (the "+ purpose" hint only appears while hovering
+ * the folder group), so a resting rail doesn't pad itself with blank lines.
+ * `band` variant: lives in the working-context band — always visible, unset
+ * state included, because the band exists to answer "where am I and why". */
+function PurposeRow({
+  folder,
+  variant = "rail",
+}: {
+  folder: FolderData;
+  variant?: "rail" | "band";
+}) {
   const [editing, setEditing] = useState(false);
   const purpose = folder.purpose?.trim() ?? "";
+  const rail = variant === "rail";
+  const pad = rail ? "py-0.5 pr-3 pl-9 text-[11px]" : "text-xs";
 
   async function commit(text: string) {
     setEditing(false);
@@ -1567,7 +1624,7 @@ function PurposeRow({ folder }: { folder: FolderData }) {
 
   if (editing) {
     return (
-      <div className="py-0.5 pr-3 pl-9">
+      <div className={cn(rail && "py-0.5 pr-3 pl-9")}>
         <input
           autoFocus
           defaultValue={purpose}
@@ -1577,7 +1634,10 @@ function PurposeRow({ folder }: { folder: FolderData }) {
             if (e.key === "Enter") void commit((e.target as HTMLInputElement).value);
             if (e.key === "Escape") setEditing(false);
           }}
-          className="w-full rounded-sm border border-input bg-background px-1.5 py-0.5 text-[11px] outline-none"
+          className={cn(
+            "w-full rounded-sm border border-input bg-background px-1.5 py-0.5 outline-none",
+            rail ? "text-[11px]" : "text-xs",
+          )}
         />
       </div>
     );
@@ -1589,7 +1649,11 @@ function PurposeRow({ folder }: { folder: FolderData }) {
         type="button"
         onClick={() => setEditing(true)}
         title="Edit folder purpose"
-        className="hidden w-full truncate py-0.5 pr-3 pl-9 text-left text-[11px] text-muted-foreground/50 group-hover:block"
+        className={cn(
+          "w-full truncate text-left text-muted-foreground/50",
+          pad,
+          rail ? "hidden group-hover:block" : "block hover:text-muted-foreground",
+        )}
       >
         + what are you working toward here?
       </button>
@@ -1601,7 +1665,10 @@ function PurposeRow({ folder }: { folder: FolderData }) {
       type="button"
       onClick={() => setEditing(true)}
       title="Edit folder purpose"
-      className="block w-full truncate py-0.5 pr-3 pl-9 text-left text-[11px] text-muted-foreground hover:text-foreground"
+      className={cn(
+        "block w-full truncate text-left text-muted-foreground hover:text-foreground",
+        pad,
+      )}
     >
       {purpose}
     </button>
@@ -1620,6 +1687,7 @@ function FolderHeader({
   commitsDelta,
   progressPercent,
   needs,
+  pr,
   collapsed,
   active,
   onToggle,
@@ -1640,6 +1708,8 @@ function FolderHeader({
   commitsDelta: number;
   progressPercent?: number | null;
   needs: number;
+  /** The open PR for this folder's branch, when the store knows of one. */
+  pr?: PrItem;
   collapsed: boolean;
   /** Whether this folder is the one currently shown in the main pane area. */
   active: boolean;
@@ -1651,65 +1721,76 @@ function FolderHeader({
   /** A checkout dir for this repo, used to create a GitHub issue via `gh`. */
   dir: string;
 }) {
+  const scopePrefix = pathScope(path);
   return (
+    // Two lines: name (line 1) with the git facts — branch, worktree, diff,
+    // PR — grouped underneath (line 2), so a long branch never squeezes the
+    // name and all git info reads as one cluster. The transparent border-l-2
+    // is always present so the active violet edge never shifts content.
     <div
       className={cn(
-        "flex items-center gap-2 border-b border-border bg-card px-3 py-2 hover:bg-accent/50",
-        scope === "repo" ? "sticky top-0 z-10" : "pl-6",
-        active && "bg-accent/60",
+        "border-b border-l-2 border-border border-l-transparent bg-card pr-2 hover:bg-accent/50",
+        scope === "repo" ? "sticky top-0 z-10 pl-3" : "pl-6",
+        active && "border-l-violet-500 bg-accent/60",
       )}
     >
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex min-w-0 flex-1 items-center gap-2"
-      >
-        <Chevron collapsed={collapsed} />
-        {scope === "repo" ? (
-          <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
-        ) : (
-          <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
-        )}
-        <span className="shrink-0 font-mono text-sm text-muted-foreground/60">
-          {isWorktree ? "w/" : "p/"}
-        </span>
-        <span
-          className={cn(
-            "min-w-0 truncate",
-            scope === "repo"
-              ? "text-sm font-semibold"
-              : "text-sm font-medium text-muted-foreground",
-          )}
+      <div className="flex items-center gap-2 pt-1.5">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex min-w-0 flex-1 items-center gap-2"
         >
-          {title}
-        </span>
-        <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+          <Chevron collapsed={collapsed} />
+          {scope === "repo" ? (
+            <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+          ) : (
+            <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
+          )}
+          {scopePrefix && (
+            <span className="shrink-0 font-mono text-sm text-muted-foreground/60">
+              {scopePrefix}
+            </span>
+          )}
+          <span
+            className={cn(
+              "min-w-0 truncate",
+              scope === "repo"
+                ? "text-sm font-semibold"
+                : "text-sm font-medium text-muted-foreground",
+            )}
+          >
+            {title}
+          </span>
+        </button>
+        {needs > 0 && <NeedsBadge n={needs} />}
+        <IconBtn title="New session (⌘D)" onClick={onNewSession} className="hover:text-violet-500">
+          <Plus className="size-3.5" />
+        </IconBtn>
+        {onRemoveRepo && <RepoMenu path={path} onRemove={onRemoveRepo} dir={dir} />}
+      </div>
+      {/* ml-11 lines the git row up under the name (chevron + icon + gaps). */}
+      <div className="ml-11 flex items-center gap-1.5 pb-1.5">
+        <span
+          className="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
+          onClick={onToggle}
+        >
           ⎇ {branch}
         </span>
+        {isWorktree && <WorktreeBadge />}
+        <DiffButton
+          filesChanged={filesChanged}
+          linesAdded={linesAdded}
+          linesRemoved={linesRemoved}
+          commitsDelta={commitsDelta}
+          onOpen={onOpenDiff}
+        />
+        {pr && <PrChip pr={pr} />}
         {typeof progressPercent === "number" && (
           <span className="shrink-0 rounded-md border border-violet-500/40 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500">
             {Math.round(progressPercent)}%
           </span>
         )}
-      </button>
-      {isWorktree && <WorktreeBadge />}
-      <DiffBadge
-        filesChanged={filesChanged}
-        linesAdded={linesAdded}
-        linesRemoved={linesRemoved}
-        commitsDelta={commitsDelta}
-        onOpen={onOpenDiff}
-      />
-      {needs > 0 && <NeedsBadge n={needs} />}
-      <button
-        type="button"
-        onClick={onNewSession}
-        className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-violet-500"
-        title="New session (⌘D)"
-      >
-        <Plus className="size-3.5" />
-      </button>
-      {onRemoveRepo && <RepoMenu path={path} onRemove={onRemoveRepo} dir={dir} />}
+      </div>
     </div>
   );
 }
@@ -1747,11 +1828,15 @@ function RepoMenu({
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger
-          className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-          title="Repo actions"
-        >
-          <MoreVertical className="size-3.5" />
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="outline"
+            size="icon-xs"
+            title="Repo actions"
+            className="text-muted-foreground"
+          >
+            <MoreVertical className="size-3.5" />
+          </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-auto min-w-56">
           {path && (
@@ -1858,7 +1943,7 @@ function SessionRow({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       className={cn(
-        "ml-1.5 flex cursor-pointer items-center gap-2.5 border-l-2 border-transparent py-1.5 pr-3 pl-9",
+        "relative ml-1.5 flex cursor-pointer items-center gap-2.5 border-l-2 border-transparent py-1.5 pr-3 pl-9",
         hovered && "bg-accent",
         active && "border-l-violet-500 bg-accent",
         needs && "border-l-amber-500",
@@ -1907,10 +1992,7 @@ function SessionRow({
                 e.stopPropagation();
                 actions.focusWindow(grouped.id);
               }}
-              className={cn(
-                "flex min-w-0 shrink items-center gap-1",
-                (active || hovered) && "hidden",
-              )}
+              className="flex min-w-0 shrink items-center gap-1"
             >
               <span
                 className={cn(
@@ -1926,13 +2008,10 @@ function SessionRow({
               </span>
             </span>
           )}
-          {/* Resting: cache + status. Hovered or selected: the lifecycle controls. */}
-          <span
-            className={cn(
-              "ml-auto flex min-w-0 shrink items-center gap-2",
-              (active || hovered) && "hidden",
-            )}
-          >
+          {/* Meta cluster stays in the flow permanently — the lifecycle
+              controls overlay it (absolute, opaque accent) instead of
+              swapping it out, so hovering never reflows the row. */}
+          <span className="ml-auto flex min-w-0 shrink items-center gap-2">
             <CacheBadge
               session={eff}
               now={now}
@@ -1951,16 +2030,13 @@ function SessionRow({
               {sessionStatusText(eff)}
             </span>
           </span>
-          <span
-            className={cn(
-              "ml-auto shrink-0 items-center gap-2",
-              active || hovered ? "flex" : "hidden",
-            )}
-          >
-            <RowControls session={eff} folderDir={folderDir} grouped={!!grouped} actions={actions} />
-          </span>
           {needs && (
             <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />
+          )}
+          {(active || hovered) && (
+            <span className="absolute inset-y-0 right-2 z-10 flex items-center gap-1 bg-accent pl-1.5">
+              <RowControls session={eff} folderDir={folderDir} grouped={!!grouped} actions={actions} />
+            </span>
           )}
         </>
       )}
@@ -1993,190 +2069,31 @@ function RowControls({
     label: string,
     title: string,
     onClick: () => void,
-    className = "text-muted-foreground hover:text-foreground",
+    className = "hover:text-foreground",
   ) => (
-    <button
-      type="button"
-      title={title}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      className={cn("w-4 text-center font-mono text-xs", className)}
-    >
+    <IconBtn title={title} onClick={onClick} className={className}>
       {label}
-    </button>
+    </IconBtn>
   );
 
   return (
     <>
-      {!session.live && btn("▶", "start shell", () => actions.start(folderDir, session), "text-muted-foreground hover:text-green-500")}
+      {!session.live && btn("▶", "start shell", () => actions.start(folderDir, session), "hover:text-green-500")}
       {(!session.live || !agent) &&
         btn("✦", "start Claude here", () => actions.startClaude(folderDir, session), "text-violet-500 hover:text-violet-400")}
       {session.live && agent && (
         <>
-          {btn("■", "stop Claude (shell survives)", () => actions.stopClaude(session), "text-muted-foreground hover:text-red-500")}
-          {atPrompt && btn("⤿", "compact context (/compact)", () => actions.compactClaude(session), "text-muted-foreground hover:text-sky-500")}
-          {btn("↻", "start over — fresh Claude session", () => actions.restartClaude(folderDir, session), "text-muted-foreground hover:text-orange-500")}
+          {btn("■", "stop Claude (shell survives)", () => actions.stopClaude(session), "hover:text-red-500")}
+          {atPrompt && btn("⤿", "compact context (/compact)", () => actions.compactClaude(session), "hover:text-sky-500")}
+          {btn("↻", "start over — fresh Claude session", () => actions.restartClaude(folderDir, session), "hover:text-orange-500")}
         </>
       )}
       {grouped &&
-        btn("⊟", "ungroup — remove pane from its window", () => actions.ungroup(session.id), "text-muted-foreground hover:text-sky-500")}
+        btn("⊟", "ungroup — remove pane from its window", () => actions.ungroup(session.id), "hover:text-sky-500")}
       {btn("✎", "rename", () => actions.renameStart(session.id))}
-      {btn("✕", "close session", () => actions.close(session.id), "text-muted-foreground hover:text-red-500")}
+      {btn("✕", "close session", () => actions.close(session.id), "hover:text-red-500")}
     </>
   );
 }
 
-/** Context/cache health for a live agent session, in the row's meta cluster.
- * Quiet mono text: `41% ◔4m` while warm (⧗ for a 1h cache), `41% ❄` when cold,
- * and an ice-washed `❄ 63% compact` pill when cold at/over the threshold. */
-function CacheBadge({
-  session,
-  now,
-  compactPct,
-  onCompact,
-  long = false,
-}: {
-  session: SessionData;
-  now: number;
-  compactPct: number;
-  /** When set, the ❄ compact pill is clickable and runs /compact directly. */
-  onCompact?: () => void;
-  /** Long form spells out "compact"; the rail uses the short `❄ N%`. */
-  long?: boolean;
-}) {
-  const d = session.agentState?.details;
-  if (!session.live || !d?.contextUsed || !d.contextMax) return null;
-  const pct = ctxPct(d);
-  const cold = isCold(d, now);
 
-  if (needsCompact(d, now, compactPct)) {
-    const pill = "shrink-0 rounded-md border border-sky-500/50 bg-sky-500/10 px-1.5 font-mono text-[10.5px] text-sky-500";
-    const hint = `${pct}% of context used and the prompt cache expired — resuming re-reads everything.`;
-    return onCompact ? (
-      <button
-        type="button"
-        title={`${hint} Click to /compact.`}
-        onClick={(e) => {
-          e.stopPropagation();
-          onCompact();
-        }}
-        className={cn(pill, "hover:bg-sky-500/20")}
-      >
-        ❄ {pct}%{long && " compact"}
-      </button>
-    ) : (
-      <span title={`${hint} Consider /compact or a fresh session.`} className={pill}>
-        ❄ {pct}%{long && " compact"}
-      </span>
-    );
-  }
-
-  const warmth = cold ? "❄" : `${d.cacheTtlMs === 3_600_000 ? "⧗" : "◔"}${fmtMins(d.cacheExpiresAt! - now)}`;
-  return (
-    <span
-      title={cold ? "prompt cache expired" : "prompt cache warm — time left"}
-      className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70"
-    >
-      {pct}% {warmth}
-    </span>
-  );
-}
-
-/** Millis → whole minutes for the cache countdown, floored at 1 ("<1m" ≈ 1m). */
-function fmtMins(ms: number): string {
-  return `${Math.max(1, Math.round(ms / 60_000))}m`;
-}
-
-function NeedsBadge({ n, className }: { n: number; className?: string }) {
-  return (
-    <span
-      className={cn(
-        "shrink-0 rounded-md border border-amber-500/50 bg-amber-500/10 px-1.5 font-mono text-[10.5px] text-amber-500",
-        className,
-      )}
-    >
-      {n} ⚑
-    </span>
-  );
-}
-
-/** Marks a folder as a git worktree checkout (linked to another checkout's
- * `.git`) — distinct from the plain personal/work `p/`/`w/` path-scope
- * prefix, so a worktree's WIP diff doesn't read as the repo's one canonical
- * state. */
-function WorktreeBadge() {
-  return (
-    <span
-      className="shrink-0 rounded-md border border-sky-500/40 bg-sky-500/10 px-1 font-mono text-[10px] text-sky-500"
-      title="Git worktree checkout — a linked working tree, not the primary clone"
-    >
-      ⬡ wt
-    </span>
-  );
-}
-
-/** Clickable `+N −N` diff stat opening the diff-preview dialog. Hidden when
- * there's nothing to show, so a clean folder's row stays quiet. */
-function DiffBadge({
-  filesChanged,
-  linesAdded,
-  linesRemoved,
-  commitsDelta,
-  onOpen,
-}: {
-  filesChanged: number;
-  linesAdded: number;
-  linesRemoved: number;
-  commitsDelta: number;
-  onOpen: () => void;
-}) {
-  if (linesAdded === 0 && linesRemoved === 0) return null;
-  return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        onOpen();
-      }}
-      className="flex shrink-0 items-center gap-1 rounded-md px-1 font-mono text-[11px] hover:bg-accent"
-      title={`${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsDelta} commit${commitsDelta === 1 ? "" : "s"} ahead — click to view diff`}
-    >
-      {linesAdded > 0 && <span className="text-green-500">+{linesAdded}</span>}
-      {linesRemoved > 0 && <span className="text-red-500">−{linesRemoved}</span>}
-    </button>
-  );
-}
-
-/** Unified diff text, colored by line prefix (+/− hunks, @@ headers). */
-function DiffView({ text }: { text: string }) {
-  return (
-    <pre className="overflow-x-auto p-2 font-mono text-xs leading-relaxed whitespace-pre">
-      {text.split("\n").map((line, i) => (
-        <div
-          key={i}
-          className={cn(
-            line.startsWith("+") && !line.startsWith("+++") && "bg-green-500/10 text-green-500",
-            line.startsWith("-") && !line.startsWith("---") && "bg-red-500/10 text-red-500",
-            line.startsWith("@@") && "text-blue-400",
-            (line.startsWith("diff ") || line.startsWith("index ")) && "text-muted-foreground",
-          )}
-        >
-          {line || " "}
-        </div>
-      ))}
-    </pre>
-  );
-}
-
-function Chevron({ collapsed }: { collapsed: boolean }) {
-  return (
-    <ChevronDown
-      className={cn(
-        "size-3.5 shrink-0 text-muted-foreground transition-transform",
-        collapsed && "-rotate-90",
-      )}
-    />
-  );
-}
