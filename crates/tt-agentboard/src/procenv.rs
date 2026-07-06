@@ -92,6 +92,24 @@ pub fn read_session_id(_pid: i32) -> Option<String> {
     None
 }
 
+/// Whether the process `pid` was launched by the app — its environment carries
+/// our [`TT_SESSION_ENV`]. Used to keep externally-started Claude sessions
+/// (e.g. one you ran in a plain terminal) off the board: only agents the app
+/// spawned are ours to report.
+///
+/// Linux reads `/proc`. On platforms without env introspection we cannot tell
+/// yet, so this returns `true` (assume app-launched) rather than hide every
+/// agent — see [`read_session_id`]'s follow-up note. Verified on Linux.
+#[cfg(target_os = "linux")]
+pub fn is_app_launched(pid: i32) -> bool {
+    read_session_id(pid).is_some_and(|s| !s.is_empty())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn is_app_launched(_pid: i32) -> bool {
+    true
+}
+
 /// Extract a variable's value from NUL-separated `KEY=VALUE` environ bytes.
 /// Pure and unit-tested (the platform-specific part is only the file read).
 fn read_var_from_environ(bytes: &[u8], key: &str) -> Option<String> {

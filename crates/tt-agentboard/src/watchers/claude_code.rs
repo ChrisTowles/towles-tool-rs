@@ -377,16 +377,23 @@ pub struct ClaudeCodeAgentWatcher {
     projects_dir: PathBuf,
     sessions: HashMap<String, SessionState>,
     agents_source: Box<dyn Fn() -> Vec<CliAgent> + Send>,
+    /// Predicate: was this pid launched by the app (carries `TT_SESSION_ID`)?
+    /// Injectable so tests aren't at the mercy of real `/proc`. Production uses
+    /// [`crate::procenv::is_app_launched`]; only app-launched Claudes reach the
+    /// board (externally-started terminal sessions are dropped).
+    app_launched: Box<dyn Fn(i32) -> bool + Send>,
 }
 
 impl ClaudeCodeAgentWatcher {
-    /// Create rooted at `projects_dir` with an injectable CLI source (tests
-    /// pass fixtures; production uses the cached real CLI).
+    /// Create rooted at `projects_dir` with an injectable CLI source and
+    /// app-launched predicate (tests pass fixtures/`|_| true`; production uses
+    /// the cached real CLI + real `/proc` env read).
     pub fn new(
         projects_dir: PathBuf,
         agents_source: Box<dyn Fn() -> Vec<CliAgent> + Send>,
+        app_launched: Box<dyn Fn(i32) -> bool + Send>,
     ) -> Self {
-        Self { projects_dir, sessions: HashMap::new(), agents_source }
+        Self { projects_dir, sessions: HashMap::new(), agents_source, app_launched }
     }
 
     /// Create using the real `~/.claude/projects` + the shared cached CLI call.
@@ -400,6 +407,7 @@ impl ClaudeCodeAgentWatcher {
                     CLI_CACHE_TTL_MS,
                 ))
             }),
+            Box::new(crate::procenv::is_app_launched),
         )
     }
 
@@ -531,6 +539,14 @@ impl AgentWatcher for ClaudeCodeAgentWatcher {
 
         // Live sessions: resolve, enrich, emit on change.
         for agent in &agents {
+            // Only report agents the app itself launched (their process carries
+            // TT_SESSION_ID). A Claude started in an external terminal — even
+            // one whose cwd is inside a tracked checkout — is not ours to
+            // surface, so it never lands on the board. (Env read is Linux-only
+            // today; on other platforms nothing is excluded — see procenv.)
+            if !(self.app_launched)(agent.pid) {
+                continue;
+            }
             // pid → owning tmux pane's session first; cwd match as fallback.
             let session =
                 ctx.resolve_session_by_pid(agent.pid).or_else(|| ctx.resolve_session(&agent.cwd));
@@ -646,6 +662,9 @@ mod tests {
         let watcher = ClaudeCodeAgentWatcher::new(
             projects.clone(),
             Box::new(move || source.lock().unwrap().clone()),
+            // Tests can't read real /proc for fake pids — treat all as
+            // app-launched. `drops_external_agents` overrides this per-pid.
+            Box::new(|_| true),
         );
         Fixture { _tmp: tmp, projects, agents, watcher }
     }
@@ -747,6 +766,34 @@ mod tests {
 
         f.watcher.scan(&mut ctx, 1_000);
         assert_eq!(ctx.events[0].session, "by-pane");
+    }
+
+    #[test]
+    fn drops_external_agents() {
+        // Two live Claudes in the same tracked checkout: one the app launched
+        // (pid 100), one started in a plain terminal (pid 200). Only the
+        // app-launched one should reach the board.
+        let tmp = TempDir::new().unwrap();
+        let projects = tmp.path().join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        write_journal(&projects, "/home/u/proj", "app-sid", &[USER_LINE, RUNNING_LINE]);
+        write_journal(&projects, "/home/u/proj", "ext-sid", &[USER_LINE, RUNNING_LINE]);
+        let agents = vec![
+            cli_agent(100, "/home/u/proj", "app-sid", "busy"),
+            cli_agent(200, "/home/u/proj", "ext-sid", "busy"),
+        ];
+        let mut watcher = ClaudeCodeAgentWatcher::new(
+            projects,
+            Box::new(move || agents.clone()),
+            Box::new(|pid| pid == 100), // only pid 100 carries TT_SESSION_ID
+        );
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/proj".into(), "session-x".into()));
+
+        watcher.scan(&mut ctx, 1_000);
+
+        assert_eq!(ctx.events.len(), 1, "external agent should be dropped");
+        assert_eq!(ctx.events[0].thread_id.as_deref(), Some("app-sid"));
     }
 
     #[test]
