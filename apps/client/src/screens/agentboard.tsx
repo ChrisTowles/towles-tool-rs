@@ -601,7 +601,7 @@ export function AgentboardScreen() {
                     now={now}
                     compactPct={state.compactRecommendPercent}
                     prs={snapshot.prs}
-                    selected={selected}
+                    selectedSessionId={selected?.sessionId ?? null}
                     activeFolderDir={activeFolderDir}
                     collapsed={collapsed}
                     renaming={renaming}
@@ -836,7 +836,7 @@ export function AgentboardScreen() {
                               <PaneHeader
                                 session={s}
                                 folder={folderOf.get(id)}
-                                repo={repoOf.get(folderOf.get(id)?.dir ?? "")}
+                                repoName={repoOf.get(folderOf.get(id)?.dir ?? "")?.name}
                                 label={labelFor(s)}
                                 now={now}
                                 compactPct={state.compactRecommendPercent}

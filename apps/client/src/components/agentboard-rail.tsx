@@ -12,10 +12,12 @@ import {
   Chevron,
   DiffButton,
   Dot,
+  DotCount,
   Glyph,
   IconBtn,
   NeedsBadge,
   PrChip,
+  PurposeRow,
   WorktreeBadge,
 } from "@/components/agentboard-bits";
 import { Button } from "@/components/ui/button";
@@ -50,7 +52,6 @@ import {
   type FolderData,
   type Overlay,
   type RepoData,
-  type Selected,
   type SessionActions,
   type SessionData,
   type StatePayload,
@@ -79,9 +80,9 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
           <span className="text-foreground">
             {r.total} agent{r.total !== 1 && "s"}
           </span>
-          {r.busy > 0 && <RollupBucket className="bg-yellow-500" n={r.busy} />}
-          {r.waiting > 0 && <RollupBucket className="bg-blue-500" n={r.waiting} />}
-          {r.error > 0 && <RollupBucket className="bg-red-500" n={r.error} />}
+          {r.busy > 0 && <DotCount status="busy" n={r.busy} />}
+          {r.waiting > 0 && <DotCount status="waiting" n={r.waiting} />}
+          {r.error > 0 && <DotCount status="error" n={r.error} />}
           {r.compact > 0 && (
             <span className="text-sky-500" title="cold sessions worth compacting">
               ❄{r.compact}
@@ -128,21 +129,12 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
   );
 }
 
-function RollupBucket({ className, n }: { className: string; n: number }) {
-  return (
-    <span className="flex items-center gap-1 text-muted-foreground">
-      <span className={cn("size-1.5 rounded-full", className)} />
-      {n}
-    </span>
-  );
-}
-
 export function RepoGroup({
   repo,
   now,
   compactPct,
   prs,
-  selected,
+  selectedSessionId,
   activeFolderDir,
   collapsed,
   renaming,
@@ -162,7 +154,7 @@ export function RepoGroup({
   now: number;
   compactPct: number;
   prs: PrItem[];
-  selected: Selected;
+  selectedSessionId: string | null;
   activeFolderDir: string | null;
   collapsed: Record<string, boolean>;
   renaming: string | null;
@@ -209,7 +201,7 @@ export function RepoGroup({
           now={now}
           compactPct={compactPct}
           title={titles[s.id]}
-          active={selected?.sessionId === s.id}
+          active={selectedSessionId === s.id}
           renaming={renaming === s.id}
           overlay={overlays[s.id]}
           wins={wins}
@@ -229,14 +221,7 @@ export function RepoGroup({
         <FolderHeader
           scope="repo"
           title={repo.name}
-          path={folder.dir}
-          branch={folder.branch}
-          isWorktree={folder.isWorktree}
-          filesChanged={folder.filesChanged}
-          linesAdded={folder.linesAdded}
-          linesRemoved={folder.linesRemoved}
-          commitsDelta={folder.commitsDelta}
-          progressPercent={folder.metadata?.progress?.percent}
+          folder={folder}
           needs={repo.needs}
           pr={prForFolder(prs, repo.originUrl, folder.branch)}
           collapsed={isCollapsed}
@@ -248,7 +233,6 @@ export function RepoGroup({
           onNewSession={() => onNewSession(folder.dir)}
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
           onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
-          dir={folder.dir}
         />
         {!isCollapsed && (
           <div className="group pb-2">
@@ -294,14 +278,7 @@ export function RepoGroup({
               <FolderHeader
                 scope="folder"
                 title={folder.name}
-                path={folder.dir}
-                branch={folder.branch}
-                isWorktree={folder.isWorktree}
-                filesChanged={folder.filesChanged}
-                linesAdded={folder.linesAdded}
-                linesRemoved={folder.linesRemoved}
-                commitsDelta={folder.commitsDelta}
-                progressPercent={folder.metadata?.progress?.percent}
+                folder={folder}
                 needs={folder.needs}
                 pr={prForFolder(prs, repo.originUrl, folder.branch)}
                 collapsed={fCollapsed}
@@ -313,7 +290,6 @@ export function RepoGroup({
                 onNewSession={() => onNewSession(folder.dir)}
                 onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
                 onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
-                dir={folder.dir}
               />
               {!fCollapsed && (
                 <div className="group pb-1">
@@ -328,97 +304,10 @@ export function RepoGroup({
   );
 }
 
-/** The folder's user-authored purpose — the "why am I here". Click to edit
- * inline (Enter saves, Esc cancels; blank clears).
- *
- * `rail` variant: a faint one-liner under the folder header; when unset it
- * takes up no space at rest (the "+ purpose" hint only appears while hovering
- * the folder group), so a resting rail doesn't pad itself with blank lines.
- * `band` variant: lives in the working-context band — always visible, unset
- * state included, because the band exists to answer "where am I and why". */
-export function PurposeRow({
-  folder,
-  variant = "rail",
-}: {
-  folder: FolderData;
-  variant?: "rail" | "band";
-}) {
-  const [editing, setEditing] = useState(false);
-  const purpose = folder.purpose?.trim() ?? "";
-  const rail = variant === "rail";
-  const pad = rail ? "py-0.5 pr-3 pl-9 text-[11px]" : "text-xs";
-
-  async function commit(text: string) {
-    setEditing(false);
-    const trimmed = text.trim();
-    if (trimmed === purpose) return;
-    await abInvoke("ab_set_folder_purpose", { dir: folder.dir, text: trimmed || null });
-  }
-
-  if (editing) {
-    return (
-      <div className={cn(rail && "py-0.5 pr-3 pl-9")}>
-        <input
-          autoFocus
-          defaultValue={purpose}
-          placeholder="what are you working toward here?"
-          onBlur={(e) => void commit(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void commit((e.target as HTMLInputElement).value);
-            if (e.key === "Escape") setEditing(false);
-          }}
-          className={cn(
-            "w-full rounded-sm border border-input bg-background px-1.5 py-0.5 outline-none",
-            rail ? "text-[11px]" : "text-xs",
-          )}
-        />
-      </div>
-    );
-  }
-
-  if (!purpose) {
-    return (
-      <button
-        type="button"
-        onClick={() => setEditing(true)}
-        title="Edit folder purpose"
-        className={cn(
-          "w-full truncate text-left text-muted-foreground/50",
-          pad,
-          rail ? "hidden group-hover:block" : "block hover:text-muted-foreground",
-        )}
-      >
-        + what are you working toward here?
-      </button>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={() => setEditing(true)}
-      title="Edit folder purpose"
-      className={cn(
-        "block w-full truncate text-left text-muted-foreground hover:text-foreground",
-        pad,
-      )}
-    >
-      {purpose}
-    </button>
-  );
-}
-
 function FolderHeader({
   scope,
   title,
-  path,
-  branch,
-  isWorktree,
-  filesChanged,
-  linesAdded,
-  linesRemoved,
-  commitsDelta,
-  progressPercent,
+  folder,
   needs,
   pr,
   collapsed,
@@ -427,19 +316,12 @@ function FolderHeader({
   onNewSession,
   onRemoveRepo,
   onOpenDiff,
-  dir,
 }: {
   scope: "repo" | "folder";
+  /** repo.name at repo scope, folder.name at folder scope. */
   title: string;
-  /** Full path on disk, shown in the kebab menu. */
-  path: string;
-  branch: string;
-  isWorktree: boolean;
-  filesChanged: number;
-  linesAdded: number;
-  linesRemoved: number;
-  commitsDelta: number;
-  progressPercent?: number | null;
+  /** The checkout this header describes: dir, branch, worktree + diff facts. */
+  folder: FolderData;
   needs: number;
   /** The open PR for this folder's branch, when the store knows of one. */
   pr?: PrItem;
@@ -451,10 +333,9 @@ function FolderHeader({
   onRemoveRepo?: () => void;
   /** Opens the full-diff preview dialog for this folder. */
   onOpenDiff: () => void;
-  /** A checkout dir for this repo, used to create a GitHub issue via `gh`. */
-  dir: string;
 }) {
-  const scopePrefix = pathScope(path);
+  const scopePrefix = pathScope(folder.dir);
+  const progressPercent = folder.metadata?.progress?.percent;
   return (
     // Two lines: name (line 1) with the git facts — branch, worktree, diff,
     // PR — grouped underneath (line 2), so a long branch never squeezes the
@@ -499,7 +380,7 @@ function FolderHeader({
         <IconBtn title="New session (⌘D)" onClick={onNewSession} className="hover:text-violet-500">
           <Plus className="size-3.5" />
         </IconBtn>
-        {onRemoveRepo && <RepoMenu path={path} onRemove={onRemoveRepo} dir={dir} />}
+        {onRemoveRepo && <RepoMenu path={folder.dir} onRemove={onRemoveRepo} dir={folder.dir} />}
       </div>
       {/* ml-11 lines the git row up under the name (chevron + icon + gaps). */}
       <div className="ml-11 flex items-center gap-1.5 pb-1.5">
@@ -507,16 +388,10 @@ function FolderHeader({
           className="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
           onClick={onToggle}
         >
-          ⎇ {branch}
+          ⎇ {folder.branch}
         </span>
-        {isWorktree && <WorktreeBadge />}
-        <DiffButton
-          filesChanged={filesChanged}
-          linesAdded={linesAdded}
-          linesRemoved={linesRemoved}
-          commitsDelta={commitsDelta}
-          onOpen={onOpenDiff}
-        />
+        {folder.isWorktree && <WorktreeBadge />}
+        <DiffButton stats={folder} onOpen={onOpenDiff} />
         {pr && <PrChip pr={pr} />}
         {typeof progressPercent === "number" && (
           <span className="shrink-0 rounded-md border border-violet-500/40 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500">

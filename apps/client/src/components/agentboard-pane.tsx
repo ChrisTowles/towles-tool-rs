@@ -6,9 +6,9 @@ import {
   Glyph,
   IconBtn,
   PrChip,
+  PurposeRow,
   WorktreeBadge,
 } from "@/components/agentboard-bits";
-import { PurposeRow } from "@/components/agentboard-rail";
 import {
   isAgent,
   pathScope,
@@ -56,13 +56,7 @@ export function WorkingContext({
             ⎇ {folder.branch}
           </span>
           {folder.isWorktree && <WorktreeBadge />}
-          <DiffButton
-            filesChanged={folder.filesChanged}
-            linesAdded={folder.linesAdded}
-            linesRemoved={folder.linesRemoved}
-            commitsDelta={folder.commitsDelta}
-            onOpen={() => onOpenDiff(folder.dir, folder.name)}
-          />
+          <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir, folder.name)} />
           {pr && <PrChip pr={pr} />}
         </div>
         <PurposeRow folder={folder} variant="band" />
@@ -76,7 +70,7 @@ export function WorkingContext({
 export function PaneHeader({
   session,
   folder,
-  repo,
+  repoName,
   label,
   now,
   compactPct,
@@ -86,7 +80,7 @@ export function PaneHeader({
 }: {
   session: SessionData;
   folder?: FolderData;
-  repo?: RepoData;
+  repoName?: string;
   label: string;
   now: number;
   compactPct: number;
@@ -102,19 +96,13 @@ export function PaneHeader({
       <span className="truncate text-xs text-foreground">{label}</span>
       {folder && (
         <span className="truncate font-mono text-[10px] text-muted-foreground">
-          {repo && repo.name !== folder.name ? `${repo.name} / ${folder.name}` : folder.name} ⎇{" "}
+          {repoName && repoName !== folder.name ? `${repoName} / ${folder.name}` : folder.name} ⎇{" "}
           {folder.branch}
         </span>
       )}
       {folder?.isWorktree && <WorktreeBadge />}
       {folder && (
-        <DiffButton
-          filesChanged={folder.filesChanged}
-          linesAdded={folder.linesAdded}
-          linesRemoved={folder.linesRemoved}
-          commitsDelta={folder.commitsDelta}
-          onOpen={() => onOpenDiff(folder.dir, folder.name)}
-        />
+        <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir, folder.name)} />
       )}
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         <CacheBadge
