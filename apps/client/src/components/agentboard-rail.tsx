@@ -50,6 +50,7 @@ import {
   sessionStatusText,
   windowColor,
   windowOf,
+  type AgWindow,
   type FolderData,
   type Overlay,
   type RepoData,
@@ -173,45 +174,81 @@ export function RepoGroup({
 }) {
   const solo = isSoloRepo(repo);
 
-  const sessionRows = (folder: FolderData) =>
-    folder.sessions.length === 0 ? (
-      <div className="flex items-center gap-2.5 py-1 pr-3 pl-9 text-[11px] italic text-muted-foreground/60">
-        no sessions
-        <button
-          type="button"
-          onClick={() => onNewSession(folder.dir, true)}
-          className="not-italic text-violet-500 hover:underline"
-        >
-          ✦ start Claude
-        </button>
-        <span className="text-muted-foreground/40">·</span>
-        <button
-          type="button"
-          onClick={() => onNewSession(folder.dir, false)}
-          className="not-italic text-violet-500 hover:underline"
-        >
-          + shell
-        </button>
-      </div>
-    ) : (
-      folder.sessions.map((s) => (
-        <SessionRow
-          key={s.id}
-          session={s}
-          folderDir={folder.dir}
-          now={now}
-          compactPct={compactPct}
-          title={titles[s.id]}
-          active={selectedSessionId === s.id}
-          renaming={renaming === s.id}
-          overlay={overlays[s.id]}
-          wins={wins}
-          actions={actions}
-          onSelect={() => onSelect(folder.dir, s.id)}
-          onRenameCommit={(name) => onRenameCommit(s.id, name)}
-        />
-      ))
+  const sessionRow = (folder: FolderData, s: SessionData) => (
+    <SessionRow
+      key={s.id}
+      session={s}
+      folderDir={folder.dir}
+      now={now}
+      compactPct={compactPct}
+      title={titles[s.id]}
+      active={selectedSessionId === s.id}
+      renaming={renaming === s.id}
+      overlay={overlays[s.id]}
+      wins={wins}
+      actions={actions}
+      onSelect={() => onSelect(folder.dir, s.id)}
+      onRenameCommit={(name) => onRenameCommit(s.id, name)}
+    />
+  );
+
+  // Sessions render grouped by the window (pane group) they belong to: each
+  // window that holds panes gets a thin label, then its sessions; sessions in
+  // no window ("loose" shells) list on their own below. Grouping is purely
+  // visual — the ⊟/click mechanics that move panes in and out of windows are
+  // unchanged.
+  const sessionRows = (folder: FolderData) => {
+    if (folder.sessions.length === 0) {
+      return (
+        <div className="flex items-center gap-2.5 py-1 pr-3 pl-9 text-[11px] italic text-muted-foreground/60">
+          no sessions
+          <button
+            type="button"
+            onClick={() => onNewSession(folder.dir, true)}
+            className="not-italic text-violet-500 hover:underline"
+          >
+            ✦ start Claude
+          </button>
+          <span className="text-muted-foreground/40">·</span>
+          <button
+            type="button"
+            onClick={() => onNewSession(folder.dir, false)}
+            className="not-italic text-violet-500 hover:underline"
+          >
+            + shell
+          </button>
+        </div>
+      );
+    }
+    const folderWins = (wins?.windows ?? []).filter((w) => w.folderDir === folder.dir);
+    const byId = new Map(folder.sessions.map((s) => [s.id, s] as const));
+    const grouped = new Set(folderWins.flatMap((w) => w.panes));
+    const loose = folder.sessions.filter((s) => !grouped.has(s.id));
+    const groups = folderWins
+      .map((w) => ({
+        win: w,
+        sessions: w.panes
+          .map((id) => byId.get(id))
+          .filter((s): s is SessionData => s !== undefined),
+      }))
+      .filter((g) => g.sessions.length > 0);
+    return (
+      <>
+        {groups.map(({ win, sessions }) => (
+          <div key={win.id}>
+            <WindowLabel
+              win={win}
+              folderWins={folderWins}
+              count={sessions.length}
+              onFocus={() => actions.focusWindow(win.id)}
+            />
+            {sessions.map((s) => sessionRow(folder, s))}
+          </div>
+        ))}
+        {loose.map((s) => sessionRow(folder, s))}
+      </>
     );
+  };
 
   // Solo repo: collapse repo + folder into one header (repo · branch).
   if (solo) {
@@ -532,6 +569,36 @@ function RepoMenu({
   );
 }
 
+/** Thin header above a window's panes in the rail: a color chip + window name
+ * + pane count, clicking focuses that window in the pane area. Deliberately
+ * small — grouping should add structure to the rail, not bulk. */
+function WindowLabel({
+  win,
+  folderWins,
+  count,
+  onFocus,
+}: {
+  win: AgWindow;
+  folderWins: AgWindow[];
+  count: number;
+  onFocus: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onFocus}
+      title={`window “${win.name}” — click to focus`}
+      className="flex w-full items-center gap-1.5 pt-1 pr-3 pb-0.5 pl-9 text-left"
+    >
+      <span className={cn("size-2 shrink-0 rounded-[3px]", windowColor(folderWins, win.id))} />
+      <span className="truncate font-mono text-[10px] uppercase tracking-wide text-muted-foreground/70">
+        {win.name}
+      </span>
+      <span className="font-mono text-[9.5px] text-muted-foreground/50">{count}⊞</span>
+    </button>
+  );
+}
+
 function SessionRow({
   session,
   folderDir,
@@ -637,30 +704,8 @@ function SessionRow({
               {eff.shellKind}
             </span>
           )}
-          {grouped && (
-            <span
-              role="button"
-              title={`in window “${grouped.name}” — click to focus it`}
-              onClick={(e) => {
-                e.stopPropagation();
-                actions.focusWindow(grouped.id);
-              }}
-              className="flex min-w-0 shrink items-center gap-1"
-            >
-              <span
-                className={cn(
-                  "size-2 shrink-0 rounded-[3px]",
-                  windowColor(
-                    wins?.windows.filter((w) => w.folderDir === grouped.folderDir) ?? [],
-                    grouped.id,
-                  ),
-                )}
-              />
-              <span className="max-w-12 truncate font-mono text-[9.5px] text-muted-foreground/60">
-                {grouped.name}
-              </span>
-            </span>
-          )}
+          {/* Window membership is shown by the WindowLabel grouping above, so
+              no per-row window chip here. */}
           {/* Meta cluster stays in the flow permanently — the lifecycle
               controls overlay it (absolute, opaque accent) instead of
               swapping it out, so hovering never reflows the row. */}
