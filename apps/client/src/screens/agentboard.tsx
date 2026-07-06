@@ -1172,11 +1172,10 @@ function Glyph({ agent }: { agent: boolean }) {
   );
 }
 
-/** Status dot mirroring `statusColor`. A session with no live PTY shows a
- * hollow ring — the record exists but nothing is running. A live session that
- * has stopped working and hasn't been acknowledged (`sessionCatchesEye`)
- * pulses with an amber ring — busy itself stays calm since it doesn't need
- * a look. */
+/** Status dot mirroring `statusColor`; pulses while busy. A session with no
+ * live PTY shows a hollow ring — the record exists but nothing is running.
+ * "Look at this" is the row's amber border (`sessionCatchesEye`), not the
+ * dot — a resting board stays still. */
 function Dot({ session }: { session: SessionData }) {
   if (!session.live) {
     return (
@@ -1189,8 +1188,7 @@ function Dot({ session }: { session: SessionData }) {
       className={cn(
         "size-2 shrink-0 rounded-full",
         st ? statusColor(st) : "bg-muted-foreground/40",
-        sessionCatchesEye(session) &&
-          "animate-pulse ring-2 ring-amber-400/70 ring-offset-1 ring-offset-background",
+        st === "busy" && "animate-pulse",
       )}
     />
   );
