@@ -379,3 +379,136 @@ export function statusColor(status: AgentStatus): string {
       return "bg-muted-foreground/40";
   }
 }
+
+// --- Session PTY writes ---
+
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Write raw bytes into a session's PTY. False when the PTY isn't running. */
+export async function termWrite(termId: string, data: string): Promise<boolean> {
+  if (!("__TAURI_INTERNALS__" in window)) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke("term_write", { termId, data });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Write, retrying while the PTY spawns (a just-mounted terminal takes a beat
+ * before `term_start` registers it). Gives up after ~3s. */
+export async function termWriteRetry(termId: string, data: string): Promise<boolean> {
+  for (let i = 0; i < 20; i++) {
+    if (await termWrite(termId, data)) return true;
+    await sleep(150);
+  }
+  return false;
+}
+
+/** Single-quote a string for safe injection into a shell command line typed
+ * into a PTY (POSIX `'...'` escaping — embedded `'` becomes `'\''`). */
+function shellQuote(text: string): string {
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+/** The `claude` invocation for a session's PTY: bare, or with an initial
+ * prompt passed as an argument so Claude starts working on it immediately
+ * instead of waiting at an empty prompt. */
+export function claudeCommand(prompt: string): string {
+  const trimmed = prompt.trim();
+  return trimmed ? `claude ${shellQuote(trimmed)}\r` : "claude\r";
+}
+
+// --- Session lifecycle + layout shared types ---
+
+/** The lifecycle actions a session row can trigger. All are PTY writes — the
+ * agent is whatever runs in the real shell, never a re-rendered proxy. */
+export type SessionActions = {
+  /** Mount + spawn the session's shell (no Claude). */
+  start: (folderDir: string, s: SessionData) => void;
+  /** Ensure the shell is live, then launch Claude in it. */
+  startClaude: (folderDir: string, s: SessionData) => void;
+  /** Interrupt Claude (Ctrl-C) then exit it (Ctrl-D). The shell survives. */
+  stopClaude: (s: SessionData) => void;
+  /** Send `/compact` to a Claude sitting at its prompt. */
+  compactClaude: (s: SessionData) => void;
+  /** Stop Claude, then launch a fresh session in the same shell. */
+  restartClaude: (folderDir: string, s: SessionData) => void;
+  close: (sessionId: string) => void;
+  renameStart: (sessionId: string) => void;
+  /** Remove the session's pane from its window (session stays in the rail). */
+  ungroup: (sessionId: string) => void;
+  /** Focus the window a session's group tag points at. */
+  focusWindow: (windowId: string) => void;
+};
+
+/** Percent-rect for one pane in the active window's tiling: side-by-side up to
+ * three across, a 2-column grid from four panes on. */
+export type PaneRect = { left: number; top: number; width: number; height: number };
+
+export function paneRects(n: number): PaneRect[] {
+  if (n <= 0) return [];
+  if (n <= 3) {
+    const w = 100 / n;
+    return Array.from({ length: n }, (_, i) => ({ left: i * w, top: 0, width: w, height: 100 }));
+  }
+  const rows = Math.ceil(n / 2);
+  const h = 100 / rows;
+  return Array.from({ length: n }, (_, i) => {
+    const lastRowSolo = n % 2 === 1 && i === n - 1;
+    return {
+      left: lastRowSolo ? 0 : (i % 2) * 50,
+      top: Math.floor(i / 2) * h,
+      width: lastRowSolo ? 100 : 50,
+      height: h,
+    };
+  });
+}
+
+/** Optimistic status shown for ~2.5s after a lifecycle action, until the
+ * watcher's ground truth catches up on its next scan. */
+export type Overlay = { status: AgentStatus; until: number };
+
+export type Selected = { folderDir: string; sessionId: string } | null;
+
+/** Drop any `activeWindows` entries pointing at a window that no longer
+ * exists (or whose folder no longer matches) — windows are created lazily
+ * per folder as sessions open, so there's no "at least one window" floor. */
+export function normalizeWins(w: WindowsPayload): WindowsPayload {
+  const activeWindows: Record<string, string> = {};
+  for (const [folderDir, windowId] of Object.entries(w.activeWindows)) {
+    if (w.windows.some((win) => win.id === windowId && win.folderDir === folderDir)) {
+      activeWindows[folderDir] = windowId;
+    }
+  }
+  return { windows: w.windows, activeWindows };
+}
+
+/** Wall clock ticking every `intervalMs` — drives cache-warmth countdowns.
+ * 30s granularity keeps the rail calm (badges show minutes, not seconds). */
+export function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(t);
+  }, [intervalMs]);
+  return now;
+}
+
+/** A repo row in the manage-repos picker (from `ab_discover_repos`): every
+ * repo under the scan roots, unioned with every repo already on the rail. */
+export type RepoCandidate = { name: string; dir: string; active: boolean };
+
+/** What a repo-remove confirmation (or immediate removal) needs to act on. */
+export type RemoveTarget = { label: string; dirs: string[]; sessionIds: string[] };
+
+/** A session about to get Claude launched in it, awaiting the "what are you
+ * working toward?" prompt (see `commitStartClaude`). `restart` runs the
+ * interrupt-then-relaunch dance first (a live Claude sits in the shell). */
+export type StartClaudeTarget = {
+  folderDir: string;
+  sessionId: string;
+  sessionName: string;
+  restart: boolean;
+};
