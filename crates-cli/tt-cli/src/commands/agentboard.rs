@@ -8,7 +8,9 @@ use std::path::Path;
 use crate::cli::{AgentboardCommands, ReposCommands, SessionsCommands};
 use crate::ui;
 use tt_agentboard::engine::now_ms;
-use tt_agentboard::repos::{add_repo, default_repos_path, load_repos, repo_entries, save_repos};
+use tt_agentboard::repos::{
+    add_repo_persisted, default_repos_path, load_repos, remove_repo_persisted, repo_entries,
+};
 use tt_agentboard::sessions::{SessionStore, default_sessions_path};
 
 pub fn run(command: AgentboardCommands) -> i32 {
@@ -58,22 +60,25 @@ fn add(path: &str) -> i32 {
     }
 
     let repos_path = default_repos_path();
-    let mut repos = load_repos(&repos_path);
-    if !add_repo(&mut repos, &abs) {
-        ui::info(&format!("Already watching: {abs}"));
-        return 0;
+    match add_repo_persisted(&repos_path, &abs) {
+        Ok((_, true)) => {
+            ui::success(&format!("Added {abs}"));
+            0
+        }
+        Ok((_, false)) => {
+            ui::info(&format!("Already watching: {abs}"));
+            0
+        }
+        Err(e) => {
+            ui::error(&format!("Failed to save repos: {e}"));
+            1
+        }
     }
-    if let Err(e) = save_repos(&repos_path, &repos) {
-        ui::error(&format!("Failed to save repos: {e}"));
-        return 1;
-    }
-    ui::success(&format!("Added {abs}"));
-    0
 }
 
 fn remove(target: &str) -> i32 {
     let repos_path = default_repos_path();
-    let mut repos = load_repos(&repos_path);
+    let repos = load_repos(&repos_path);
 
     // Match by session name first, then by exact configured path.
     let by_name = repo_entries(&repos).into_iter().find(|e| e.name == target).map(|e| e.dir);
@@ -83,13 +88,16 @@ fn remove(target: &str) -> i32 {
         ui::error(&format!("No watched repo matching: {target}"));
         return 1;
     };
-    repos.retain(|p| p != &dir);
-    if let Err(e) = save_repos(&repos_path, &repos) {
-        ui::error(&format!("Failed to save repos: {e}"));
-        return 1;
+    match remove_repo_persisted(&repos_path, &dir) {
+        Ok(_) => {
+            ui::success(&format!("Removed {dir}"));
+            0
+        }
+        Err(e) => {
+            ui::error(&format!("Failed to save repos: {e}"));
+            1
+        }
     }
-    ui::success(&format!("Removed {dir}"));
-    0
 }
 
 fn list_sessions() -> i32 {

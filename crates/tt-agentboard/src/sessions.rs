@@ -8,8 +8,8 @@
 //! settings pattern; see [`crate::repos`]). Path-parameterized so tests use a
 //! tempdir; `now_ms` is injected rather than read from the clock.
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
@@ -43,7 +43,11 @@ struct SessionsConfig {
 }
 
 /// Owns the folder→sessions map plus its file path. Loaded once; saved on each
-/// mutation by the caller (engine), mirroring `SessionOrder`.
+/// mutation by the caller (engine), mirroring `SessionOrder`. `save()` only
+/// ever rewrites the folders touched since the last save (see `dirty`) — this
+/// file is shared by every Agentboard window (`tt:parallel-slots` runs one per
+/// checkout), so a save must never clobber another window's folders that this
+/// in-memory copy simply hasn't heard about yet.
 #[derive(Debug, Default)]
 pub struct SessionStore {
     path: Option<PathBuf>,
@@ -51,6 +55,8 @@ pub struct SessionStore {
     /// Per-folder high-water mark for auto-generated `shell N` names; see
     /// [`SessionsConfig`].
     next_seq: HashMap<String, usize>,
+    /// Folder dirs mutated since the last successful `save()`.
+    dirty: HashSet<String>,
 }
 
 /// Default location: `~/.config/towles-tool/agentboard/sessions.json`.
@@ -70,7 +76,7 @@ impl SessionStore {
             Some(p) => load(p),
             None => (HashMap::new(), HashMap::new()),
         };
-        Self { path, folders, next_seq }
+        Self { path, folders, next_seq, dirty: HashSet::new() }
     }
 
     /// The persisted records for a folder (empty slice if none yet).
@@ -114,15 +120,17 @@ impl SessionStore {
         let id = gen_id(dir, now_ms, seq);
         let record = SessionRecord { id, name, created_at: now_ms, purpose: None };
         self.folders.entry(dir.to_string()).or_default().push(record.clone());
+        self.dirty.insert(dir.to_string());
         record
     }
 
     /// Rename the session with `id` (in any folder). Returns whether it changed.
     pub fn rename(&mut self, id: &str, new_name: &str) -> bool {
-        for list in self.folders.values_mut() {
+        for (dir, list) in self.folders.iter_mut() {
             if let Some(rec) = list.iter_mut().find(|r| r.id == id) {
                 if rec.name != new_name {
                     rec.name = new_name.to_string();
+                    self.dirty.insert(dir.clone());
                     return true;
                 }
                 return false;
@@ -149,10 +157,11 @@ impl SessionStore {
 
     /// Remove the session with `id`. Returns whether it was removed.
     pub fn remove(&mut self, id: &str) -> bool {
-        for list in self.folders.values_mut() {
+        for (dir, list) in self.folders.iter_mut() {
             let before = list.len();
             list.retain(|r| r.id != id);
             if list.len() != before {
+                self.dirty.insert(dir.clone());
                 return true;
             }
         }
@@ -160,22 +169,53 @@ impl SessionStore {
     }
 
     /// Drop records for folders no longer in `dirs` (called after a repo removal).
-    pub fn prune(&mut self, dirs: &std::collections::HashSet<String>) {
+    pub fn prune(&mut self, dirs: &HashSet<String>) {
+        let removed: Vec<String> =
+            self.folders.keys().filter(|dir| !dirs.contains(*dir)).cloned().collect();
         self.folders.retain(|dir, _| dirs.contains(dir));
+        self.dirty.extend(removed);
     }
 
-    /// Persist to the configured path (no-op for in-memory stores).
-    pub fn save(&self) -> std::io::Result<()> {
-        let Some(path) = &self.path else {
+    /// Persist the folders touched since the last save. Rereads the file
+    /// fresh first and only overwrites *those* folders' entries, leaving any
+    /// other folder exactly as found on disk — a concurrent Agentboard window
+    /// may have added/renamed/removed sessions for a different folder in the
+    /// meantime, and a blind whole-file overwrite from this instance's
+    /// possibly-stale in-memory copy would silently erase that. Same-folder
+    /// concurrent edits are still last-write-wins; there's no cross-process
+    /// locking here.
+    pub fn save(&mut self) -> std::io::Result<()> {
+        let Some(path) = self.path.clone() else {
             return Ok(());
         };
+        if self.dirty.is_empty() {
+            return Ok(());
+        }
+        let dirty: Vec<String> = self.dirty.drain().collect();
+        let (mut on_disk_folders, mut on_disk_next_seq) = load(&path);
+        for dir in &dirty {
+            match self.folders.get(dir) {
+                Some(list) => {
+                    on_disk_folders.insert(dir.clone(), list.clone());
+                }
+                None => {
+                    on_disk_folders.remove(dir);
+                }
+            }
+            if let Some(seq) = self.next_seq.get(dir) {
+                on_disk_next_seq.insert(dir.clone(), *seq);
+            }
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let config =
-            SessionsConfig { folders: self.folders.clone(), next_seq: self.next_seq.clone() };
+            SessionsConfig { folders: on_disk_folders.clone(), next_seq: on_disk_next_seq.clone() };
         let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
-        std::fs::write(path, format!("{json}\n"))
+        std::fs::write(&path, format!("{json}\n"))?;
+        self.folders = on_disk_folders;
+        self.next_seq = on_disk_next_seq;
+        Ok(())
     }
 }
 
@@ -306,5 +346,29 @@ mod tests {
         let reloaded = SessionStore::new(Some(path));
         assert_eq!(reloaded.sessions_for("/r/a").len(), 1);
         assert_eq!(reloaded.sessions_for("/r/a")[0].name, "one");
+    }
+
+    #[test]
+    fn concurrent_instances_dont_clobber_each_others_folders() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sessions.json");
+
+        // Two long-lived "app instances" both loaded before either has saved.
+        let mut a = SessionStore::new(Some(path.clone()));
+        let mut b = SessionStore::new(Some(path.clone()));
+
+        a.add("/r/a", Some("only-a"), 1);
+        a.save().unwrap();
+
+        // B never learned about /r/a (loaded before A's save), but adds its
+        // own folder — its save must not erase A's folder.
+        b.add("/r/b", Some("only-b"), 2);
+        b.save().unwrap();
+
+        let reloaded = SessionStore::new(Some(path));
+        assert_eq!(reloaded.sessions_for("/r/a").len(), 1);
+        assert_eq!(reloaded.sessions_for("/r/a")[0].name, "only-a");
+        assert_eq!(reloaded.sessions_for("/r/b").len(), 1);
+        assert_eq!(reloaded.sessions_for("/r/b")[0].name, "only-b");
     }
 }

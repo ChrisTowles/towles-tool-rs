@@ -109,6 +109,10 @@ export type StatePayload = {
   compactRecommendPercent: number;
   /** Persisted window layout (hydration source only — see WindowsPayload). */
   windows: WindowsPayload;
+  /** Persisted folder-rail collapse/expand state, keyed by row key (hydration
+   * source only — saved incrementally via `ab_save_collapsed`). Absent key ⇒
+   * expanded. */
+  collapsed: Record<string, boolean>;
   ts: number;
 };
 
@@ -281,6 +285,7 @@ const EMPTY: StatePayload = {
   preferredEditor: "",
   compactRecommendPercent: 30,
   windows: EMPTY_WINDOWS,
+  collapsed: {},
   ts: 0,
 };
 

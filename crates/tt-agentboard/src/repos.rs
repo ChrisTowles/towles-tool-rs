@@ -82,6 +82,30 @@ pub fn save_scan_roots(path: &Path, scan_roots: &[String]) -> std::io::Result<()
     save_config(path, &config)
 }
 
+/// Add `path` straight against the on-disk file: reread fresh immediately
+/// before writing, rather than trusting a caller's in-memory repo list that
+/// may have gone stale. Multiple Agentboard windows (one per `tt:parallel-slots`
+/// checkout) share this one `repos.json`; without a fresh reread here, one
+/// window adding repo A while another adds repo B — both starting from the
+/// same stale snapshot — would have the second save silently drop the first's
+/// addition. Returns the merged repo list plus whether `path` was newly added.
+pub fn add_repo_persisted(path: &Path, new_path: &str) -> std::io::Result<(Vec<String>, bool)> {
+    let mut config = load_config(path);
+    let added = add_repo(&mut config.repo_paths, new_path);
+    save_config(path, &config)?;
+    Ok((config.repo_paths, added))
+}
+
+/// Remove `dir` straight against the on-disk file, same reread-then-write
+/// rationale as [`add_repo_persisted`]. Returns the merged repo list plus
+/// whether `dir` was actually present to remove.
+pub fn remove_repo_persisted(path: &Path, dir: &str) -> std::io::Result<(Vec<String>, bool)> {
+    let mut config = load_config(path);
+    let removed = remove_repo_by_dir(&mut config.repo_paths, dir);
+    save_config(path, &config)?;
+    Ok((config.repo_paths, removed))
+}
+
 /// Dirs skipped while scanning: hidden dirs plus common heavy build/dep dirs.
 fn is_skippable(name: &str) -> bool {
     name.starts_with('.') || matches!(name, "node_modules" | "target" | "dist" | "build")
@@ -318,6 +342,44 @@ mod tests {
     fn discover_missing_root_is_empty() {
         let root = TempDir::new().unwrap();
         assert!(discover_git_repos(&[root.path().join("nope")], 4).is_empty());
+    }
+
+    #[test]
+    fn concurrent_adds_from_two_stale_snapshots_dont_clobber_each_other() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("repos.json");
+        save_repos(&path, &paths(&["/shared/base"])).unwrap();
+
+        // Two instances both load the same starting snapshot...
+        let snapshot_a = load_repos(&path);
+        let snapshot_b = load_repos(&path);
+        assert_eq!(snapshot_a, snapshot_b);
+
+        // ...then each adds a different repo, straight to disk.
+        let (merged_a, added_a) = add_repo_persisted(&path, "/repo/a").unwrap();
+        assert!(added_a);
+        assert_eq!(merged_a, paths(&["/shared/base", "/repo/a"]));
+
+        let (merged_b, added_b) = add_repo_persisted(&path, "/repo/b").unwrap();
+        assert!(added_b);
+        // B's write must still see A's addition, not just its own stale snapshot.
+        assert_eq!(merged_b, paths(&["/shared/base", "/repo/a", "/repo/b"]));
+
+        assert_eq!(load_repos(&path), paths(&["/shared/base", "/repo/a", "/repo/b"]));
+    }
+
+    #[test]
+    fn remove_persisted_preserves_concurrently_added_repo() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("repos.json");
+        save_repos(&path, &paths(&["/repo/a", "/repo/b"])).unwrap();
+
+        // Instance A removes /repo/a while, in between, instance B (unmodeled
+        // here) has already persisted a fresh /repo/c addition.
+        add_repo_persisted(&path, "/repo/c").unwrap();
+        let (merged, removed) = remove_repo_persisted(&path, "/repo/a").unwrap();
+        assert!(removed);
+        assert_eq!(merged, paths(&["/repo/b", "/repo/c"]));
     }
 
     #[test]

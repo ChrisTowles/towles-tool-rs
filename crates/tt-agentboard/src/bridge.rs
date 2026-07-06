@@ -40,6 +40,9 @@ pub struct StatePayload {
     pub compact_recommend_percent: u8,
     /// Persisted window layout (frontend-owned; attached by the engine).
     pub windows: crate::windows::WindowsPayload,
+    /// Persisted folder-rail collapse/expand state, keyed by row key (attached
+    /// by the engine). Absent key ⇒ expanded.
+    pub collapsed: std::collections::BTreeMap<String, bool>,
     pub ts: i64,
 }
 
@@ -114,6 +117,7 @@ pub fn assemble_state(
         preferred_editor: preferred_editor.to_string(),
         compact_recommend_percent,
         windows: crate::windows::WindowsPayload::default(), // engine attaches
+        collapsed: std::collections::BTreeMap::new(),       // engine attaches
         ts,
     }
 }
