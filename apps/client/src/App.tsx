@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { AppHeader } from "@/components/app-header";
 import { AppSidebar } from "@/components/app-sidebar";
+import { CloseGuard } from "@/components/close-guard";
 import { CommandPalette } from "@/components/command-palette";
 import { DayBar } from "@/components/day-bar";
 import { QuickLog } from "@/components/quick-log";
@@ -100,6 +101,7 @@ function Workspace() {
       <Shortcuts />
       <CommandPalette />
       <QuickLog />
+      <CloseGuard />
       <Toaster />
     </div>
   );

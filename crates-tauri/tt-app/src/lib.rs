@@ -156,10 +156,19 @@ pub fn run() {
             Ok(())
         })
         .manage(terminal::TermState::default())
-        .on_window_event(|window, event| {
-            if let WindowEvent::Destroyed = event {
+        .on_window_event(|window, event| match event {
+            // With live shells that shpool can keep alive, closing needs an
+            // answer first (keep detached vs kill); the frontend dialog
+            // resolves via `app_close`, which destroys the window for real.
+            WindowEvent::CloseRequested { api, .. } => {
+                if terminal::ask_before_close(window.app_handle(), window.label()) {
+                    api.prevent_close();
+                }
+            }
+            WindowEvent::Destroyed => {
                 terminal::on_window_destroyed(window.app_handle(), window.label());
             }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             app_slot,
@@ -206,6 +215,7 @@ pub fn run() {
             terminal::term_write,
             terminal::term_resize,
             terminal::term_kill,
+            terminal::app_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Towles Tool application");

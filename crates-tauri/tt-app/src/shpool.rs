@@ -144,6 +144,23 @@ pub fn is_persisted(names: &HashSet<String>, term_id: &str) -> bool {
     names.contains(&session_name(term_id))
 }
 
+/// Kill every daemon-side session belonging to this slot ("quit and kill all"
+/// from the close dialog). Other slots' sessions on the shared daemon are
+/// untouched — the slot prefix is the namespace.
+pub fn kill_slot_sessions() {
+    let prefix = format!("tt-{}-", crate::slot_label());
+    for name in live_session_names().iter().filter(|n| n.starts_with(&prefix)) {
+        let _ = Command::new("shpool")
+            .arg("-s")
+            .arg(socket_path())
+            .arg("kill")
+            .arg(name)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 fn parse_list_names(json: &str) -> HashSet<String> {
     #[derive(serde::Deserialize)]
     struct Reply {

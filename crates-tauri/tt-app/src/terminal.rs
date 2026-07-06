@@ -229,6 +229,48 @@ pub fn on_window_destroyed(app: &AppHandle, label: &str) {
     }
 }
 
+/// Emitted (with the live-shell count) when a window close is intercepted so
+/// the frontend can ask: keep the shells running detached, or kill them?
+pub const CLOSE_ASK_EVENT: &str = "app://close-requested";
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CloseAsk {
+    live: usize,
+}
+
+/// Whether closing the main window needs the keep-or-kill dialog first: only
+/// when shpool can actually keep shells alive (without it closing kills them
+/// like it always did — nothing to ask) and at least one PTY is live. Emits
+/// [`CLOSE_ASK_EVENT`] when returning true; the caller prevents the close and
+/// the frontend answers via [`app_close`].
+pub fn ask_before_close(app: &AppHandle, label: &str) -> bool {
+    if label != MAIN_WINDOW_LABEL || !crate::shpool::available() {
+        return false;
+    }
+    let live = app.state::<TermState>().live_ids().len();
+    if live == 0 {
+        return false;
+    }
+    let _ = app.emit_to(MAIN_WINDOW_LABEL, CLOSE_ASK_EVENT, CloseAsk { live });
+    true
+}
+
+/// The keep-or-kill dialog's answer. `kill_sessions` kills every one of this
+/// slot's daemon-side sessions (live *and* previously detached — "quit and
+/// kill" means nothing left running); keeping just tears the window down,
+/// which detaches. `destroy()` bypasses CloseRequested, so no re-prompt.
+#[tauri::command]
+pub fn app_close(app: AppHandle, kill_sessions: bool) {
+    if kill_sessions {
+        app.state::<TermState>().kill_all();
+        crate::shpool::kill_slot_sessions();
+    }
+    if let Some(win) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = win.destroy();
+    }
+}
+
 /// Resolve the shell's working directory: the requested `cwd` if it exists,
 /// otherwise the user's home. `None` lets portable-pty inherit the app's cwd.
 fn start_dir(cwd: Option<String>) -> Option<std::path::PathBuf> {
