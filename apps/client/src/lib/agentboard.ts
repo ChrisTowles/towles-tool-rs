@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { PrItem } from "./data";
 import { invokeCmd, invokeOrThrow } from "./tauri";
 
 /**
@@ -210,6 +211,28 @@ export function sessionStatusText(s: SessionData): string {
 /** True when a repo's single folder should collapse into one rail header. */
 export function isSoloRepo(r: RepoData): boolean {
   return r.folders.length === 1;
+}
+
+/** The `~/code/<scope>/` prefix of a checkout dir (`w/` work, `p/` personal,
+ * `f/` fork), or null when the dir lives outside that layout. */
+export function pathScope(dir: string): string | null {
+  const m = dir.match(/\/code\/([a-z])\//);
+  return m ? `${m[1]}/` : null;
+}
+
+/** The open PR for a folder's branch: exact branch match, scoped to the repo
+ * via its origin URL (PR rows carry gh's `owner/name`, which both https and
+ * ssh remote URLs contain). Origin-less repos match on branch alone. */
+export function prForFolder(
+  prs: PrItem[],
+  originUrl: string | null | undefined,
+  branch: string,
+): PrItem | undefined {
+  if (!branch) return undefined;
+  const origin = originUrl?.toLowerCase();
+  return prs.find(
+    (p) => p.branch === branch && (!origin || origin.includes(p.repo.toLowerCase())),
+  );
 }
 
 /** `0:04` / `3:20` / `1:02:30` — elapsed duration since a session started. */
