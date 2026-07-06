@@ -3,6 +3,9 @@ node_modules/
 dist/
 /apps/client/dist
 /e2e/screenshots
+# tauri-build regenerates these from the compiled plugin set, so they flip-flop
+# between wdio and non-wdio builds if tracked
+/crates-tauri/tt-app/gen/schemas/
 .claude/settings.local.json
 *.local
 .DS_Store

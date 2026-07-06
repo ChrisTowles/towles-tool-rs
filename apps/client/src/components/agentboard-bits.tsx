@@ -1,11 +1,14 @@
-import type { ComponentProps, ReactNode } from "react";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import { ChevronDown, GitCompare, GitPullRequest } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
+  abInvoke,
   ctxPct,
   isCold,
   needsCompact,
   statusColor,
+  type AgentStatus,
+  type FolderData,
   type SessionData,
 } from "@/lib/agentboard";
 import type { PrItem } from "@/lib/data";
@@ -86,6 +89,18 @@ export function Dot({ session }: { session: SessionData }) {
   );
 }
 
+/** A status-colored micro-dot + count, e.g. "●3", for agent rollups (the rail
+ * chip and the nav sidebar). Color always derives from `statusColor` so the
+ * buckets can never drift from the `Dot` atom. */
+export function DotCount({ status, n }: { status: AgentStatus; n: number }) {
+  return (
+    <span className="flex items-center gap-1 text-muted-foreground">
+      <span className={cn("size-1.5 rounded-full", statusColor(status))} />
+      {n}
+    </span>
+  );
+}
+
 export function Chevron({ collapsed }: { collapsed: boolean }) {
   return (
     <ChevronDown
@@ -128,16 +143,10 @@ export function WorktreeBadge() {
  * a hover or dropped when the tree is clean, so the feature stays findable).
  * Clean folders read a quiet `diff`; dirty ones carry the ± tally. */
 export function DiffButton({
-  filesChanged,
-  linesAdded,
-  linesRemoved,
-  commitsDelta,
+  stats: { filesChanged, linesAdded, linesRemoved, commitsDelta },
   onOpen,
 }: {
-  filesChanged: number;
-  linesAdded: number;
-  linesRemoved: number;
-  commitsDelta: number;
+  stats: Pick<FolderData, "filesChanged" | "linesAdded" | "linesRemoved" | "commitsDelta">;
   onOpen: () => void;
 }) {
   const clean = linesAdded === 0 && linesRemoved === 0;
@@ -259,4 +268,84 @@ export function CacheBadge({
 /** Millis → whole minutes for the cache countdown, floored at 1 ("<1m" ≈ 1m). */
 export function fmtMins(ms: number): string {
   return `${Math.max(1, Math.round(ms / 60_000))}m`;
+}
+
+/** The folder's user-authored purpose — the "why am I here". Click to edit
+ * inline (Enter saves, Esc cancels; blank clears).
+ *
+ * `rail` variant: a faint one-liner under the folder header; when unset it
+ * takes up no space at rest (the "+ purpose" hint only appears while hovering
+ * the folder group), so a resting rail doesn't pad itself with blank lines.
+ * `band` variant: lives in the working-context band — always visible, unset
+ * state included, because the band exists to answer "where am I and why". */
+export function PurposeRow({
+  folder,
+  variant = "rail",
+}: {
+  folder: FolderData;
+  variant?: "rail" | "band";
+}) {
+  const [editing, setEditing] = useState(false);
+  const purpose = folder.purpose?.trim() ?? "";
+  const rail = variant === "rail";
+  const pad = rail ? "py-0.5 pr-3 pl-9 text-[11px]" : "text-xs";
+
+  async function commit(text: string) {
+    setEditing(false);
+    const trimmed = text.trim();
+    if (trimmed === purpose) return;
+    await abInvoke("ab_set_folder_purpose", { dir: folder.dir, text: trimmed || null });
+  }
+
+  if (editing) {
+    return (
+      <div className={cn(rail && "py-0.5 pr-3 pl-9")}>
+        <input
+          autoFocus
+          defaultValue={purpose}
+          placeholder="what are you working toward here?"
+          onBlur={(e) => void commit(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void commit((e.target as HTMLInputElement).value);
+            if (e.key === "Escape") setEditing(false);
+          }}
+          className={cn(
+            "w-full rounded-sm border border-input bg-background px-1.5 py-0.5 outline-none",
+            rail ? "text-[11px]" : "text-xs",
+          )}
+        />
+      </div>
+    );
+  }
+
+  if (!purpose) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title="Edit folder purpose"
+        className={cn(
+          "w-full truncate text-left text-muted-foreground/50",
+          pad,
+          rail ? "hidden group-hover:block" : "block hover:text-muted-foreground",
+        )}
+      >
+        + what are you working toward here?
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      title="Edit folder purpose"
+      className={cn(
+        "block w-full truncate text-left text-muted-foreground hover:text-foreground",
+        pad,
+      )}
+    >
+      {purpose}
+    </button>
+  );
 }
