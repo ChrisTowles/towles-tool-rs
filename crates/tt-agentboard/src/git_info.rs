@@ -200,6 +200,36 @@ pub fn compute_git_info_from_outputs(
     }
 }
 
+/// Full unified diff against the pushed baseline (merge-base with upstream,
+/// else origin/main), for the diff-preview dialog. Untracked files don't
+/// appear in `git diff`, so they're listed by name in a trailing block rather
+/// than silently dropped. Empty string when `dir` isn't a git repo or has no
+/// changes.
+pub fn diff_patch(dir: &str) -> String {
+    if dir.is_empty() {
+        return String::new();
+    }
+    let origin_main = resolve_origin_main(dir);
+    let base = resolve_pushed_base(dir, &origin_main);
+    let mut patch = git_out(dir, &["diff", &base]);
+
+    let status_out = git_out(dir, &["status", "--porcelain"]);
+    let untracked: Vec<&str> =
+        status_out.lines().filter(|l| l.starts_with("??")).map(|l| l[2..].trim()).collect();
+    if !untracked.is_empty() {
+        if !patch.is_empty() {
+            patch.push_str("\n\n");
+        }
+        patch.push_str("# Untracked files (not shown):\n");
+        for f in untracked {
+            patch.push_str("?? ");
+            patch.push_str(f);
+            patch.push('\n');
+        }
+    }
+    patch
+}
+
 /// Parse `git diff --numstat` output into (added, removed, changed file set).
 /// Binary files (`-`/`-`) contribute to the file set but not line counts.
 fn parse_numstat(diff_out: &str) -> (i64, i64, HashSet<String>) {
