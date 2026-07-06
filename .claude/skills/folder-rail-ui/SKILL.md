@@ -25,9 +25,25 @@ hierarchy away.
 **Level markers (structure = gray icon, per §1):** a repo header leads with a
 `FolderGit2` glyph + `font-semibold text-foreground` name; a folder (checkout)
 sub-header is indented and leads with a plain `Folder` glyph (dimmer,
-`text-muted-foreground/70`) + a `text-muted-foreground` name. This is how a
-solo repo reads as a *repo*, not just another folder. Icons are
+`text-muted-foreground/70`) + a `font-medium text-muted-foreground` name. This
+is how a solo repo reads as a *repo*, not just another folder. Icons are
 `size-3.5 text-muted-foreground`.
+
+Every header row — repo or folder tier, solo-collapsed or not — gets a
+`border-b border-border` so it caps off as a distinct header band instead of
+blending into the session rows underneath it. Apply this uniformly; a repo
+tier that skips it (e.g. a solo repo's collapsed header) reintroduces the same
+folder-vs-session ambiguity this rule exists to prevent.
+
+A live session's name renders brighter (`text-foreground`) than its folder
+header (`text-muted-foreground`) — that's by design (state stays legible), but
+it means brightness alone can't carry the folder/session distinction. Weight,
+the header's bottom border, and indentation depth do that job instead: repo
+`font-semibold` → folder `font-medium` → session normal weight, each level
+indented further than its parent (`px-3` repo → `pl-6` folder → `pl-9`+`ml-1.5`
+session). The same ladder applies to the level glyph itself — a folder's
+`Folder` icon (`/70`) must never read dimmer than a session's `❯` shell glyph
+(`text-muted-foreground/60`) below it, or the hierarchy inverts.
 
 ---
 
@@ -42,7 +58,8 @@ something is not conveying agent status or an attention signal, it is gray.
 |---|---|---|
 | App/rail background | `bg-background` | the canvas |
 | Card / sticky headers / terminal chrome | `bg-card` | folder headers, tab bars |
-| Row hover | `hover:bg-accent/50` | |
+| Row hover | `hover:bg-accent/50` | rows already on a raised surface (`bg-card`) |
+| Row hover, on bare background | `bg-accent` (full) | a rail session row sits directly on `bg-background`; at the app's near-black dark-mode lightness values `/50` blends to ~the same lightness as a resting `bg-card` header, so it reads as "became a header" instead of "is hovered" — use full `bg-accent` there and let the active row's violet border (not a darker fill) carry the hover-vs-active distinction |
 | Active/selected row | `bg-accent` | |
 | Hairline divider | `border-border` | 1px, everywhere |
 | Primary text | `text-foreground` | |
@@ -89,7 +106,9 @@ The one hue net-new to this design. **violet-500** marks *agent-ness* and the
 *currently focused* thing. It aligns with the app's existing dark
 `--sidebar-primary` (a violet).
 
-- Agent glyph `✦` → `text-violet-500`; shell glyph `❯` → `text-muted-foreground`
+- Agent glyph `✦` → `text-violet-500`; shell glyph `❯` → `text-muted-foreground/60`
+  (dimmer than a folder's `Folder` icon, so a child glyph never outranks its
+  parent's)
 - Active session row: `border-l-2 border-l-violet-500 bg-accent`
 - "+ session" / "+ agent" affordances: `text-violet-500`
 - Terminal prompt `❯` caret: violet
@@ -105,8 +124,10 @@ The one hue net-new to this design. **violet-500** marks *agent-ness* and the
 - **Mono:** `font-mono` for anything that is *data the terminal/git owns* —
   branch names, `+/−` diff stats, timestamps/ages, session counts, keyboard
   hints, the `✦`/`❯` glyphs, and terminal content.
-- Folder name: `font-semibold`. Session name: normal weight `text-foreground`.
-  Messages/branch/time: `text-muted-foreground`, ~11px.
+- Weight ladder by depth: repo `font-semibold`, folder sub-header
+  `font-medium`, session name normal weight (`text-foreground` if live,
+  `text-muted-foreground` otherwise). Never let a deeper level outweigh its
+  parent. Messages/branch/time: `text-muted-foreground`, ~11px.
 - Diff stats: `text-green-500` `+N` and `text-red-500` `−N`, mono, small.
 
 Rule of thumb: **if git or the shell produced the string, render it mono.**
@@ -130,14 +151,18 @@ Two panes. Left = navigation (the rail). Right = the focused terminal(s).
 ```
 
 **Rail (`w-80`, `overflow-y-auto`):** a list of folders. Each folder:
-- **Sticky header** (`sticky top-0 bg-card`, `border-b border-border`): a caret
-  `▾`, the folder name (with a muted `w/` `p/` scope prefix in mono), then a
-  right-aligned meta cluster — amber count badge (only if it has needs-you
-  sessions) + branch name in mono.
-- **Session rows** (indented ~30px under the header): `glyph · status-dot ·
-  name · right-aligned status message`, with a trailing amber `attn` micro-dot
-  when it needs you. Row is `border-l-2` transparent by default → violet when
-  active → amber when needs-you.
+- **Header** (`bg-card`, `border-b border-border`; sticky only at the repo
+  tier): a caret `▾`, the folder name (with a muted `w/` `p/` scope prefix in
+  mono), then a right-aligned meta cluster — amber count badge (only if it has
+  needs-you sessions) + branch name in mono. The `border-b` is load-bearing and
+  applies to every header uniformly (repo, folder, and a solo repo's collapsed
+  repo+folder header alike): it caps the header off as a distinct band so it
+  doesn't visually blend into its own session rows below.
+- **Session rows** (indented deeper than their folder header — `pl-9` +
+  `ml-1.5` vs. the folder's `pl-6`): `glyph · status-dot · name ·
+  right-aligned status message`, with a trailing amber `attn` micro-dot when it
+  needs you. Row is `border-l-2` transparent by default → violet when active →
+  amber when needs-you.
 
 **Main pane:** header (`bg-card border-b`) with the folder's `scope+name` +
 branch, then a row of **session tabs** (`✦`/`❯` glyph + name + status dot;
@@ -165,13 +190,13 @@ between glyph/dot/name; panel padding `p-3.5`.
 **Session row**
 ```tsx
 <button className={cn(
-  "flex items-center gap-2.5 py-1.5 pr-3 pl-7 text-left border-l-2 border-transparent",
-  "hover:bg-accent/50",
+  "flex items-center gap-2.5 py-1.5 pr-3 pl-9 text-left border-l-2 border-transparent",
+  hovered && "bg-accent",
   active && "bg-accent border-l-violet-500",
   needsYou && "border-l-amber-500",
 )}>
   <span className={cn("font-mono text-xs w-4 text-center",
-    type === "agent" ? "text-violet-500" : "text-muted-foreground")}>
+    type === "agent" ? "text-violet-500" : "text-muted-foreground/60")}>
     {type === "agent" ? "✦" : "❯"}
   </span>
   <span className={cn("size-2 rounded-full", statusColor(status))} />
