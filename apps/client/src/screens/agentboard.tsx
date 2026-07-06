@@ -234,7 +234,15 @@ export function AgentboardScreen() {
   // happened to be showing beforehand.
   function addPaneToActive(folderDir: string, sessionId: string) {
     updateWins([folderDir], (w) => {
-      if (w.windows.some((win) => win.panes.includes(sessionId))) return w;
+      // Already placed in a window: don't move it — switch to that window so
+      // clicking the session brings its pane into view (a session in a
+      // non-active window would otherwise select but stay hidden).
+      const host = w.windows.find((win) => win.panes.includes(sessionId));
+      if (host) {
+        return w.activeWindows[folderDir] === host.id
+          ? w
+          : { ...w, activeWindows: { ...w.activeWindows, [folderDir]: host.id } };
+      }
       let windows = w.windows;
       let windowId = w.activeWindows[folderDir];
       if (!windows.some((win) => win.id === windowId && win.folderDir === folderDir)) {
