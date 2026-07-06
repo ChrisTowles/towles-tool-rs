@@ -101,6 +101,19 @@ pub fn term_start(
     let shell = default_shell(std::env::var(SHELL_ENV_VAR).ok());
     let shell_kind = shell_kind_from_path(&shell);
     let mut cmd = CommandBuilder::new(shell);
+    // Drop any TT_* var inherited from the app process itself (e.g. TT_DEV_PORT,
+    // set by scripts/dev-port.mjs for *this* slot's own dev server) so a shell
+    // command run inside this terminal — like `npm run dev` for a different
+    // repo/slot — resolves its own port/session instead of colliding with the
+    // outer one.
+    let inherited_tt_vars: Vec<String> = cmd
+        .iter_full_env_as_str()
+        .filter(|(k, _)| k.starts_with("TT_"))
+        .map(|(k, _)| k.to_string())
+        .collect();
+    for key in inherited_tt_vars {
+        cmd.env_remove(key);
+    }
     cmd.env("TERM", "xterm-256color");
     // Stamp the PTY with its session id so a Claude agent launched inside inherits
     // it; the agentboard engine reads it back from /proc to attribute the agent to
