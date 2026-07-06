@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invokeCmd } from "./tauri";
+import { invokeCmd, invokeOrThrow } from "./tauri";
 
 /**
  * Client-side view of the agentboard bridge (`crates-tauri/tt-app/src/agentboard.rs`).
@@ -10,6 +10,12 @@ import { invokeCmd } from "./tauri";
 
 /** Invoke an `ab_*` Tauri command (thin alias over the shared invoker). */
 export const abInvoke = invokeCmd;
+
+/** Create a GitHub issue directly for the repo checked out at `dir` (`gh`
+ * infers the repo from the folder's git remote). Returns the new issue's URL;
+ * throws on failure so the caller can surface it (e.g. via toast). */
+export const abCreateIssue = (dir: string, title: string) =>
+  invokeOrThrow<string>("store_create_issue", { dir, title });
 
 export type AgentStatus =
   "idle" | "busy" | "complete" | "error" | "waiting" | "interrupted";

@@ -149,6 +149,27 @@ pub fn store_promote_task_to_issue(
     Ok(())
 }
 
+/// Create a new GitHub issue directly for the repo checked out at `dir` (no
+/// linked todo). `gh` infers the repo from the folder's git remote, mirroring
+/// the `.current_dir()` convention `tt-collect`'s issue/PR collectors use.
+/// Used by the agentboard repo rail's "New issue" action; the created issue
+/// shows up in Board's issue list once the next `issues` collector run picks
+/// it up.
+#[tauri::command]
+pub fn store_create_issue(dir: String, title: String) -> Result<String, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("issue title is required".into());
+    }
+    let output = std::process::Command::new("gh")
+        .args(["issue", "create", "--title", title, "--body", ""])
+        .current_dir(&dir)
+        .output()
+        .map_err(|e| format!("failed to spawn gh in {dir}: {e}"))?;
+    let (_, url) = parse_gh_issue_create_output(&output)?;
+    Ok(url)
+}
+
 /// Run `gh issue create` and return the new issue's `(number, url)`.
 fn create_gh_issue(repo: &str, title: &str) -> Result<(i64, String), String> {
     let output = std::process::Command::new("gh")
@@ -157,6 +178,12 @@ fn create_gh_issue(repo: &str, title: &str) -> Result<(i64, String), String> {
         ])
         .output()
         .map_err(|e| format!("failed to spawn gh: {e}"))?;
+    parse_gh_issue_create_output(&output)
+}
+
+/// Parse a `gh issue create` invocation's output into `(number, url)`. `gh`
+/// prints the new issue URL on stdout; the trailing path segment is its number.
+fn parse_gh_issue_create_output(output: &std::process::Output) -> Result<(i64, String), String> {
     if !output.status.success() {
         return Err(format!(
             "gh issue create failed: {}",
