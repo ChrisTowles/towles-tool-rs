@@ -37,6 +37,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -1262,6 +1264,7 @@ function RepoGroup({
         <FolderHeader
           scope="repo"
           title={repo.name}
+          path={folder.dir}
           branch={folder.branch}
           isWorktree={folder.isWorktree}
           filesChanged={folder.filesChanged}
@@ -1322,6 +1325,7 @@ function RepoGroup({
               <FolderHeader
                 scope="folder"
                 title={folder.name}
+                path={folder.dir}
                 branch={folder.branch}
                 isWorktree={folder.isWorktree}
                 filesChanged={folder.filesChanged}
@@ -1410,6 +1414,7 @@ function PurposeRow({ folder }: { folder: FolderData }) {
 function FolderHeader({
   scope,
   title,
+  path,
   branch,
   isWorktree,
   filesChanged,
@@ -1426,6 +1431,8 @@ function FolderHeader({
 }: {
   scope: "repo" | "folder";
   title: string;
+  /** Full path on disk, shown in the kebab menu. */
+  path: string;
   branch: string;
   isWorktree: boolean;
   filesChanged: number;
@@ -1500,13 +1507,13 @@ function FolderHeader({
       >
         <Plus className="size-3.5" />
       </button>
-      {onRemoveRepo && <RepoMenu onRemove={onRemoveRepo} />}
+      {onRemoveRepo && <RepoMenu path={path} onRemove={onRemoveRepo} />}
     </div>
   );
 }
 
-/** Kebab menu on a repo header: currently just "Remove from rail". */
-function RepoMenu({ onRemove }: { onRemove: () => void }) {
+/** Kebab menu on a repo header: shows the full folder path, plus "Remove from rail". */
+function RepoMenu({ path, onRemove }: { path?: string; onRemove: () => void }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -1515,8 +1522,16 @@ function RepoMenu({ onRemove }: { onRemove: () => void }) {
       >
         <MoreVertical className="size-3.5" />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem variant="destructive" onSelect={onRemove}>
+      <DropdownMenuContent align="end" className="w-auto min-w-56">
+        {path && (
+          <>
+            <DropdownMenuLabel className="font-mono text-[11px] font-normal whitespace-nowrap text-muted-foreground">
+              {path}
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+          </>
+        )}
+        <DropdownMenuItem variant="destructive" onSelect={onRemove} className="whitespace-nowrap">
           <Trash2 className="size-3.5" /> Remove from rail
         </DropdownMenuItem>
       </DropdownMenuContent>
