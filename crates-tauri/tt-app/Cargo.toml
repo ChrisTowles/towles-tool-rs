@@ -17,6 +17,7 @@ tauri = { workspace = true, features = ["devtools"] }
 tt-agentboard = { workspace = true }
 tt-collect = { workspace = true }
 tt-config = { workspace = true }
+tt-exec = { workspace = true }
 tt-journal = { workspace = true }
 tt-store = { workspace = true }
 base64 = { workspace = true }

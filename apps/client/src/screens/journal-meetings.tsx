@@ -1,10 +1,12 @@
-import { NotWired } from "@/components/not-wired";
+import { JournalEntryList } from "@/components/journal-entry-list";
 
 export function JournalMeetingsScreen() {
   return (
-    <NotWired
+    <JournalEntryList
+      ty="meeting"
       title="Meetings"
-      detail="Not wired yet. Build this against `ttr journal meeting`/`list` (tt-journal crate) so it shows real meeting notes."
+      placeholder="New meeting title…"
+      emptyLabel="No meetings yet."
     />
   );
 }
