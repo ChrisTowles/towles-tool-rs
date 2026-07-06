@@ -17,6 +17,7 @@ pub struct SessionAnalysis {
     pub opus_tokens: i64,
     pub sonnet_tokens: i64,
     pub haiku_tokens: i64,
+    pub fable_tokens: i64,
     pub cache_hit_rate: f64,
     /// Total cache-read tokens across the session.
     pub cache_read_tokens: i64,
@@ -35,6 +36,7 @@ pub fn analyze_session(entries: &[TranscriptEntry]) -> SessionAnalysis {
     let mut opus_tokens = 0;
     let mut sonnet_tokens = 0;
     let mut haiku_tokens = 0;
+    let mut fable_tokens = 0;
     let mut cache_read = 0;
     let mut cache_creation = 0;
     let mut total_input = 0;
@@ -88,6 +90,8 @@ pub fn analyze_session(entries: &[TranscriptEntry]) -> SessionAnalysis {
             sonnet_tokens += tokens;
         } else if model.contains("haiku") {
             haiku_tokens += tokens;
+        } else if model.contains("fable") {
+            fable_tokens += tokens;
         }
     }
 
@@ -99,7 +103,7 @@ pub fn analyze_session(entries: &[TranscriptEntry]) -> SessionAnalysis {
         }
     }
 
-    let total_tokens = opus_tokens + sonnet_tokens + haiku_tokens;
+    let total_tokens = opus_tokens + sonnet_tokens + haiku_tokens + fable_tokens;
 
     SessionAnalysis {
         input_tokens,
@@ -107,6 +111,7 @@ pub fn analyze_session(entries: &[TranscriptEntry]) -> SessionAnalysis {
         opus_tokens,
         sonnet_tokens,
         haiku_tokens,
+        fable_tokens,
         cache_hit_rate: if total_input > 0 { cache_read as f64 / total_input as f64 } else { 0.0 },
         cache_read_tokens: cache_read,
         cache_creation_tokens: cache_creation,
@@ -170,15 +175,22 @@ pub fn aggregate_session_tools(entries: &[TranscriptEntry]) -> Vec<ToolData> {
     tools
 }
 
-/// Get the primary model name (Opus / Sonnet / Haiku) from analysis token
-/// totals. Ports `getPrimaryModel`.
-pub fn get_primary_model(opus_tokens: i64, sonnet_tokens: i64, haiku_tokens: i64) -> &'static str {
-    if opus_tokens >= sonnet_tokens && opus_tokens >= haiku_tokens {
+/// Get the primary model name (Opus / Sonnet / Haiku / Fable) from analysis
+/// token totals. Ports `getPrimaryModel`.
+pub fn get_primary_model(
+    opus_tokens: i64,
+    sonnet_tokens: i64,
+    haiku_tokens: i64,
+    fable_tokens: i64,
+) -> &'static str {
+    if opus_tokens >= sonnet_tokens && opus_tokens >= haiku_tokens && opus_tokens >= fable_tokens {
         "Opus"
-    } else if sonnet_tokens >= haiku_tokens {
+    } else if sonnet_tokens >= haiku_tokens && sonnet_tokens >= fable_tokens {
         "Sonnet"
-    } else {
+    } else if haiku_tokens >= fable_tokens {
         "Haiku"
+    } else {
+        "Fable"
     }
 }
 
@@ -194,6 +206,8 @@ pub fn get_model_name(model: Option<&str>) -> String {
         "Sonnet".to_string()
     } else if model.contains("haiku") {
         "Haiku".to_string()
+    } else if model.contains("fable") {
+        "Fable".to_string()
     } else {
         model.split('-').next().filter(|s| !s.is_empty()).unwrap_or("unknown").to_string()
     }
@@ -288,13 +302,15 @@ mod tests {
             assistant_entry("claude-opus-4", 100, 50, None),
             assistant_entry("claude-sonnet-4", 200, 100, None),
             assistant_entry("claude-haiku-3", 50, 25, None),
+            assistant_entry("claude-fable-5", 40, 20, None),
         ];
         let r = analyze_session(&entries);
-        assert_eq!(r.input_tokens, 350);
-        assert_eq!(r.output_tokens, 175);
+        assert_eq!(r.input_tokens, 390);
+        assert_eq!(r.output_tokens, 195);
         assert_eq!(r.opus_tokens, 150);
         assert_eq!(r.sonnet_tokens, 300);
         assert_eq!(r.haiku_tokens, 75);
+        assert_eq!(r.fable_tokens, 60);
     }
 
     #[test]
@@ -461,11 +477,12 @@ mod tests {
 
     #[test]
     fn primary_model_variants() {
-        assert_eq!(get_primary_model(100, 50, 10), "Opus");
-        assert_eq!(get_primary_model(10, 500, 10), "Sonnet");
-        assert_eq!(get_primary_model(0, 0, 100), "Haiku");
-        assert_eq!(get_primary_model(100, 100, 0), "Opus");
-        assert_eq!(get_primary_model(0, 0, 0), "Opus");
+        assert_eq!(get_primary_model(100, 50, 10, 0), "Opus");
+        assert_eq!(get_primary_model(10, 500, 10, 0), "Sonnet");
+        assert_eq!(get_primary_model(0, 0, 100, 0), "Haiku");
+        assert_eq!(get_primary_model(100, 100, 0, 0), "Opus");
+        assert_eq!(get_primary_model(0, 0, 0, 0), "Opus");
+        assert_eq!(get_primary_model(10, 10, 10, 500), "Fable");
     }
 
     // ── getModelName ──
@@ -476,6 +493,8 @@ mod tests {
         assert_eq!(get_model_name(Some("claude-opus-4-20250514")), "Opus");
         assert_eq!(get_model_name(Some("claude-sonnet-4-20250514")), "Sonnet");
         assert_eq!(get_model_name(Some("claude-3-haiku")), "Haiku");
+        assert_eq!(get_model_name(Some("claude-fable-5")), "Fable");
+        assert_eq!(get_model_name(Some("claude-fable-5[1m]")), "Fable");
         assert_eq!(get_model_name(Some("gpt-4-turbo")), "gpt");
         assert_eq!(get_model_name(Some("")), "unknown");
     }
