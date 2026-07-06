@@ -68,13 +68,19 @@ export function Glyph({ agent }: { agent: boolean }) {
 }
 
 /** Status dot mirroring `statusColor`; pulses while busy. A session with no
- * live PTY shows a hollow ring — the record exists but nothing is running.
- * "Look at this" is the row's amber border (`sessionCatchesEye`), not the
- * dot — a resting board stays still. */
+ * live PTY shows a hollow ring — the record exists but nothing is running —
+ * tinted sky when the shell is still alive, detached, on the session daemon
+ * (resumable). "Look at this" is the row's amber border (`sessionCatchesEye`),
+ * not the dot — a resting board stays still. */
 export function Dot({ session }: { session: SessionData }) {
   if (!session.live) {
     return (
-      <span className="size-2 shrink-0 rounded-full border-[1.5px] border-muted-foreground/50 bg-transparent" />
+      <span
+        className={cn(
+          "size-2 shrink-0 rounded-full border-[1.5px] bg-transparent",
+          session.detached ? "border-sky-500/80 dark:border-sky-400/80" : "border-muted-foreground/50",
+        )}
+      />
     );
   }
   const st = session.agentState?.status;

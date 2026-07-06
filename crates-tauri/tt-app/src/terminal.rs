@@ -1,10 +1,16 @@
-//! Embedded terminals: shells in PTYs (portable-pty), rendered by xterm.js in
-//! the app. Unlike the tmux-mode agentboard, the desktop app owns the PTYs
-//! directly. Many terminals live at once, keyed by a frontend-supplied
+//! Embedded terminals: shells in PTYs (portable-pty), rendered by ghostty-web
+//! in the app. Many terminals live at once, keyed by a frontend-supplied
 //! `term_id` (the agentboard screen spawns one or more per session, each rooted
 //! in the session's folder). Output streams to the frontend as base64
-//! `terminal://output` events tagged with `termId` (raw bytes — xterm.js owns
-//! UTF-8 decoding across chunk boundaries); input/resize come back as commands.
+//! `terminal://output` events tagged with `termId` (raw bytes — the frontend
+//! terminal owns UTF-8 decoding across chunk boundaries); input/resize come
+//! back as commands.
+//!
+//! When shpool is installed, the PTY runs `shpool attach` instead of the shell
+//! directly, so the shell lives in a service-managed daemon and survives the
+//! app: killing the PTY client only disconnects the session, and starting the
+//! same `term_id` again resumes it (see [`crate::shpool`]). Explicit closes
+//! (`term_kill`) kill the daemon-side session too.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -100,7 +106,17 @@ pub fn term_start(
 
     let shell = default_shell(std::env::var(SHELL_ENV_VAR).ok());
     let shell_kind = shell_kind_from_path(&shell);
-    let mut cmd = CommandBuilder::new(shell);
+    let dir = start_dir(cwd);
+    let mut cmd = if crate::shpool::available() {
+        // Persistent path: the PTY hosts an attach client; the shell itself
+        // lives in the shpool daemon and survives this app process.
+        crate::shpool::ensure_daemon();
+        let mut c = CommandBuilder::new("shpool");
+        c.args(crate::shpool::attach_args(&term_id, dir.as_deref()));
+        c
+    } else {
+        CommandBuilder::new(shell)
+    };
     // Drop any TT_* var inherited from the app process itself (e.g. TT_DEV_PORT,
     // set by scripts/dev-port.mjs for *this* slot's own dev server) so a shell
     // command run inside this terminal — like `npm run dev` for a different
@@ -117,9 +133,13 @@ pub fn term_start(
     cmd.env("TERM", "xterm-256color");
     // Stamp the PTY with its session id so a Claude agent launched inside inherits
     // it; the agentboard engine reads it back from /proc to attribute the agent to
-    // this session (see tt_agentboard::procenv). `term_id` == the session id.
+    // this session (see tt_agentboard::procenv). `term_id` == the session id. On
+    // the shpool path this rides `forward_env` into the daemon-side shell.
     cmd.env("TT_SESSION_ID", &term_id);
-    if let Some(dir) = start_dir(cwd) {
+    // Never nest: if the app itself was launched from inside a shpool session,
+    // the inherited name would make the attach client think it's recursing.
+    cmd.env_remove("SHPOOL_SESSION_NAME");
+    if let Some(dir) = &dir {
         cmd.cwd(dir);
     }
     let child = pty.slave.spawn_command(cmd).map_err(|e| format!("failed to spawn shell: {e}"))?;
@@ -189,15 +209,20 @@ pub fn term_resize(
         .map_err(|e| e.to_string())
 }
 
-/// Kill one shell (the frontend calls this when a terminal unmounts).
+/// Kill one shell (the frontend calls this when a terminal unmounts — an
+/// explicit close). Also kills the daemon-side shpool session, if any, so a
+/// deliberately closed pane doesn't linger detached forever.
 #[tauri::command]
 pub fn term_kill(app: AppHandle, state: State<TermState>, term_id: String) {
     state.kill(&term_id);
+    crate::shpool::kill_session(&term_id);
     notify_agentboard(&app);
 }
 
-/// Kill every shell when the main window goes away, so no orphan shells
-/// accumulate (wired to the window Destroyed event in lib.rs).
+/// Drop every PTY when the main window goes away (wired to the window
+/// Destroyed event in lib.rs). On the shpool path this only *disconnects* the
+/// sessions — the daemon keeps the shells alive and the next launch resumes
+/// them; without shpool it kills the shells outright (nothing to resume).
 pub fn on_window_destroyed(app: &AppHandle, label: &str) {
     if label == MAIN_WINDOW_LABEL {
         app.state::<TermState>().kill_all();

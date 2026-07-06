@@ -686,7 +686,13 @@ function RowControls({
 
   return (
     <>
-      {!session.live && btn("▶", "start shell", () => actions.start(folderDir, session), "hover:text-green-500")}
+      {!session.live &&
+        btn(
+          "▶",
+          session.detached ? "resume shell — still running, detached" : "start shell",
+          () => actions.start(folderDir, session),
+          "hover:text-green-500",
+        )}
       {(!session.live || !agent) &&
         btn("✦", "start Claude here", () => actions.startClaude(folderDir, session), "text-violet-500 hover:text-violet-400")}
       {session.live && agent && (

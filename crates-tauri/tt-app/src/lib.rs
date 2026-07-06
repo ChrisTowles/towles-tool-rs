@@ -1,14 +1,16 @@
 //! Towles Tool desktop app (Tauri 2). Hosts the agentboard bridge: an engine
 //! (tracker/metadata/order/git/watcher) driven by tokio tasks that emits state
 //! snapshots as the `agentboard://state` event and exposes client commands.
-//! Also owns the embedded terminals (`terminal`): PTYs the app spawns directly
-//! (not tmux), rendered by xterm.js in the agentboard screen.
+//! Also owns the embedded terminals (`terminal`): PTYs the app spawns,
+//! persisted across app restarts by a shpool daemon when available
+//! (`shpool`), rendered by ghostty-web in the agentboard screen.
 
 mod agentboard;
 mod graph;
 mod journal;
 mod scheduler;
 mod settings;
+mod shpool;
 mod store;
 mod terminal;
 
@@ -26,7 +28,7 @@ use tt_agentboard::fs_notify::DirNotifier;
 /// `CARGO_MANIFEST_DIR` (`<root>/crates-tauri/tt-app`), so each slot's binary
 /// knows its own slot without any runtime cwd/env plumbing. Lets several slots'
 /// windows be told apart in the title bar, taskbar, and app header.
-fn slot_label() -> String {
+pub(crate) fn slot_label() -> String {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
