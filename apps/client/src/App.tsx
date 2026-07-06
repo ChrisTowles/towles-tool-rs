@@ -65,7 +65,7 @@ function Workspace() {
       >
         {sidebarVisible && (
           <>
-            <ResizablePanel defaultSize="220px" minSize="160px" maxSize="400px">
+            <ResizablePanel defaultSize="220px" minSize="160px" maxSize="260px">
               <AppSidebar />
             </ResizablePanel>
             <ResizableHandle />
