@@ -5,6 +5,7 @@ import {
   FolderGit2,
   MoreVertical,
   Plus,
+  StickyNote,
   Trash2,
 } from "lucide-react";
 import {
@@ -380,7 +381,9 @@ function FolderHeader({
         <IconBtn title="New session (⌘D)" onClick={onNewSession} className="hover:text-violet-500">
           <Plus className="size-3.5" />
         </IconBtn>
-        {onRemoveRepo && <RepoMenu path={folder.dir} onRemove={onRemoveRepo} dir={folder.dir} />}
+        {onRemoveRepo && (
+          <RepoMenu path={folder.dir} onRemove={onRemoveRepo} dir={folder.dir} folder={folder} />
+        )}
       </div>
       {/* ml-11 lines the git row up under the name (chevron + icon + gaps). */}
       <div className="ml-11 flex items-center gap-1.5 pb-1.5">
@@ -404,19 +407,26 @@ function FolderHeader({
 }
 
 /** Kebab menu on a repo/folder header: shows the full folder path (when
- * given), "Create issue…" (shells `gh issue create` in `dir`), and "Remove
- * from rail". */
+ * given), "Set/Edit note…" (when a `folder` is given — the note that shows
+ * under the folder in the rail), "Create issue…" (shells `gh issue create` in
+ * `dir`), and "Remove from rail". */
 function RepoMenu({
   path,
   onRemove,
   dir,
+  folder,
 }: {
   path?: string;
   onRemove: () => void;
   dir: string;
+  /** When set, the menu offers note editing for this checkout. */
+  folder?: FolderData;
 }) {
   const [issueOpen, setIssueOpen] = useState(false);
   const [issueTitle, setIssueTitle] = useState("");
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [noteText, setNoteText] = useState("");
+  const purpose = folder?.purpose?.trim() ?? "";
 
   async function createIssue() {
     const title = issueTitle.trim();
@@ -431,6 +441,13 @@ function RepoMenu({
     } catch (e) {
       toast.error(String(e));
     }
+  }
+
+  async function saveNote() {
+    setNoteOpen(false);
+    const trimmed = noteText.trim();
+    if (trimmed === purpose) return;
+    await abInvoke("ab_set_folder_purpose", { dir, text: trimmed || null });
   }
 
   return (
@@ -455,6 +472,17 @@ function RepoMenu({
               <DropdownMenuSeparator />
             </>
           )}
+          {folder && (
+            <DropdownMenuItem
+              onSelect={() => {
+                setNoteText(purpose);
+                setNoteOpen(true);
+              }}
+              className="whitespace-nowrap"
+            >
+              <StickyNote className="size-3.5" /> {purpose ? "Edit note…" : "Set note…"}
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onSelect={() => setIssueOpen(true)} className="whitespace-nowrap">
             <CircleDot className="size-3.5" /> Create issue…
           </DropdownMenuItem>
@@ -467,6 +495,23 @@ function RepoMenu({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      <Dialog open={noteOpen} onOpenChange={setNoteOpen}>
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>{purpose ? "Edit note" : "Set note"}</DialogTitle>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={noteText}
+            onChange={(e) => setNoteText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void saveNote();
+              if (e.key === "Escape") setNoteOpen(false);
+            }}
+            placeholder="what are you working toward here? (blank clears)"
+          />
+        </DialogContent>
+      </Dialog>
       <Dialog open={issueOpen} onOpenChange={setIssueOpen}>
         <DialogContent showCloseButton={false}>
           <DialogHeader>

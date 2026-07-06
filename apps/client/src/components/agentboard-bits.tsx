@@ -279,9 +279,10 @@ export function fmtMins(ms: number): string {
 /** The folder's user-authored purpose — the "why am I here". Click to edit
  * inline (Enter saves, Esc cancels; blank clears).
  *
- * `rail` variant: a faint one-liner under the folder header; when unset it
- * takes up no space at rest (the "+ purpose" hint only appears while hovering
- * the folder group), so a resting rail doesn't pad itself with blank lines.
+ * `rail` variant: a faint one-liner under the folder header, shown only when a
+ * note is set. When unset it renders nothing at all (not even on hover) so the
+ * folder row keeps a fixed height and the rail never jumps as the mouse moves
+ * across it — set a note from the folder's "…" menu instead.
  * `band` variant: lives in the working-context band — always visible, unset
  * state included, because the band exists to answer "where am I and why". */
 export function PurposeRow({
@@ -325,15 +326,17 @@ export function PurposeRow({
   }
 
   if (!purpose) {
+    // Rail: no note → no row (a stable-height folder that doesn't resize on
+    // hover). The note is set from the folder's "…" menu.
+    if (rail) return null;
     return (
       <button
         type="button"
         onClick={() => setEditing(true)}
         title="Edit folder purpose"
         className={cn(
-          "w-full truncate text-left text-muted-foreground/50",
+          "block w-full truncate text-left text-muted-foreground/50 hover:text-muted-foreground",
           pad,
-          rail ? "hidden group-hover:block" : "block hover:text-muted-foreground",
         )}
       >
         + what are you working toward here?
