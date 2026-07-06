@@ -274,7 +274,7 @@ export function AgentboardScreen() {
     windowsForFolder[0];
 
   // Add a session's pane to its own folder's focused window (creating one —
-  // "main" — if the folder has none yet). A window may never span folders, so
+  // "primary" — if the folder has none yet). A window may never span folders, so
   // this always targets the pane's own folder, never whatever window/folder
   // happened to be showing beforehand.
   function addPaneToActive(folderDir: string, sessionId: string) {
@@ -284,7 +284,7 @@ export function AgentboardScreen() {
       let windowId = w.activeWindows[folderDir];
       if (!windows.some((win) => win.id === windowId && win.folderDir === folderDir)) {
         windowId = `w${Date.now()}`;
-        windows = [...windows, { id: windowId, name: "main", folderDir, panes: [] }];
+        windows = [...windows, { id: windowId, name: "primary", folderDir, panes: [] }];
       }
       return {
         windows: windows.map((win) =>

@@ -25,11 +25,16 @@ pub struct SessionRecord {
     pub created_at: i64,
 }
 
-/// On-disk shape: `{ "<folderDir>": [ {id,name,createdAt}, ... ] }`.
+/// On-disk shape: `{ "folders": { "<folderDir>": [ {id,name,createdAt}, ... ] },
+/// "nextSeq": { "<folderDir>": n } }`. `nextSeq` is the per-folder high-water
+/// mark for auto-generated `shell N` names — it only ever increases, so a
+/// removed session's number is never reused by a later `add`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SessionsConfig {
     #[serde(default)]
     folders: HashMap<String, Vec<SessionRecord>>,
+    #[serde(default)]
+    next_seq: HashMap<String, usize>,
 }
 
 /// Owns the folder→sessions map plus its file path. Loaded once; saved on each
@@ -38,6 +43,9 @@ struct SessionsConfig {
 pub struct SessionStore {
     path: Option<PathBuf>,
     folders: HashMap<String, Vec<SessionRecord>>,
+    /// Per-folder high-water mark for auto-generated `shell N` names; see
+    /// [`SessionsConfig`].
+    next_seq: HashMap<String, usize>,
 }
 
 /// Default location: `~/.config/towles-tool/agentboard/sessions.json`.
@@ -53,11 +61,11 @@ pub fn default_sessions_path() -> PathBuf {
 impl SessionStore {
     /// Load from `path` (empty on missing/corrupt). `None` = in-memory only (tests).
     pub fn new(path: Option<PathBuf>) -> Self {
-        let folders = match &path {
+        let (folders, next_seq) = match &path {
             Some(p) => load(p),
-            None => HashMap::new(),
+            None => (HashMap::new(), HashMap::new()),
         };
-        Self { path, folders }
+        Self { path, folders, next_seq }
     }
 
     /// The persisted records for a folder (empty slice if none yet).
@@ -83,15 +91,24 @@ impl SessionStore {
         false
     }
 
-    /// Append a new session to a folder. `name` defaults to `shell <n>`. Returns
-    /// the created record. Caller persists.
+    /// Append a new session to a folder. `name` defaults to `shell <n>`, where
+    /// `<n>` comes from a per-folder counter that only ever increases — a
+    /// removed session's number is never reused, so numbers can't collide or
+    /// silently repeat across add/remove cycles. Returns the created record.
+    /// Caller persists.
     pub fn add(&mut self, dir: &str, name: Option<&str>, now_ms: i64) -> SessionRecord {
-        let list = self.folders.entry(dir.to_string()).or_default();
-        let seq = list.len();
-        let name = name.map(str::to_string).unwrap_or_else(|| format!("shell {}", seq + 1));
+        let seq = self.folders.get(dir).map(Vec::len).unwrap_or(0);
+        let name = match name {
+            Some(n) => n.to_string(),
+            None => {
+                let counter = self.next_seq.entry(dir.to_string()).or_insert(0);
+                *counter += 1;
+                format!("shell {counter}")
+            }
+        };
         let id = gen_id(dir, now_ms, seq);
         let record = SessionRecord { id, name, created_at: now_ms };
-        list.push(record.clone());
+        self.folders.entry(dir.to_string()).or_default().push(record.clone());
         record
     }
 
@@ -134,18 +151,21 @@ impl SessionStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let config = SessionsConfig { folders: self.folders.clone() };
+        let config =
+            SessionsConfig { folders: self.folders.clone(), next_seq: self.next_seq.clone() };
         let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
         std::fs::write(path, format!("{json}\n"))
     }
 }
 
-/// Load the folder→sessions map from `path` (empty on missing/corrupt).
-fn load(path: &Path) -> HashMap<String, Vec<SessionRecord>> {
+/// Load the folder→sessions map and next-seq counters from `path` (empty on
+/// missing/corrupt).
+fn load(path: &Path) -> (HashMap<String, Vec<SessionRecord>>, HashMap<String, usize>) {
     let Ok(text) = std::fs::read_to_string(path) else {
-        return HashMap::new();
+        return (HashMap::new(), HashMap::new());
     };
-    serde_json::from_str::<SessionsConfig>(&text).map(|c| c.folders).unwrap_or_default()
+    let config = serde_json::from_str::<SessionsConfig>(&text).unwrap_or_default();
+    (config.folders, config.next_seq)
 }
 
 /// Generate a session id unique across folders and creations: a hash of the
@@ -190,6 +210,17 @@ mod tests {
         // Different folder, same time/seq → still distinct (dir is hashed in).
         let c = store.add("/r/b", None, 1);
         assert_ne!(a.id, c.id);
+    }
+
+    #[test]
+    fn add_never_reuses_a_removed_number() {
+        let mut store = SessionStore::new(None);
+        let a = store.add("/r/a", None, 1); // "shell 1"
+        let b = store.add("/r/a", None, 2); // "shell 2"
+        assert!(store.remove(&a.id));
+        let c = store.add("/r/a", None, 3);
+        assert_eq!(b.name, "shell 2");
+        assert_eq!(c.name, "shell 3"); // not "shell 2" again, and not the freed "shell 1"
     }
 
     #[test]
