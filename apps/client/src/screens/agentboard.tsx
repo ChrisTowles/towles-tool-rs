@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarClock,
   ChevronDown,
+  CircleDot,
   Folder,
   FolderGit2,
   FolderPlus,
@@ -34,6 +35,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -42,11 +44,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
 import {
+  abCreateIssue,
   abInvoke,
   agentRollup,
   claudeTitleName,
@@ -1289,6 +1293,7 @@ function RepoGroup({
           }}
           onNewSession={() => onNewSession(folder.dir)}
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
+          dir={folder.dir}
         />
         {!isCollapsed && (
           <div className="group pb-2">
@@ -1322,6 +1327,7 @@ function RepoGroup({
               repo.name,
             )
           }
+          dir={repo.folders[0].dir}
         />
       </div>
       {!repoCollapsed &&
@@ -1350,6 +1356,7 @@ function RepoGroup({
                 }}
                 onNewSession={() => onNewSession(folder.dir)}
                 onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
+                dir={folder.dir}
               />
               {!fCollapsed && (
                 <div className="group pb-1">
@@ -1440,6 +1447,7 @@ function FolderHeader({
   onToggle,
   onNewSession,
   onRemoveRepo,
+  dir,
 }: {
   scope: "repo" | "folder";
   title: string;
@@ -1459,6 +1467,8 @@ function FolderHeader({
   onToggle: () => void;
   onNewSession: () => void;
   onRemoveRepo?: () => void;
+  /** A checkout dir for this repo, used to create a GitHub issue via `gh`. */
+  dir: string;
 }) {
   return (
     <div
@@ -1519,35 +1529,88 @@ function FolderHeader({
       >
         <Plus className="size-3.5" />
       </button>
-      {onRemoveRepo && <RepoMenu path={path} onRemove={onRemoveRepo} />}
+      {onRemoveRepo && <RepoMenu path={path} onRemove={onRemoveRepo} dir={dir} />}
     </div>
   );
 }
 
-/** Kebab menu on a repo header: shows the full folder path, plus "Remove from rail". */
-function RepoMenu({ path, onRemove }: { path?: string; onRemove: () => void }) {
+/** Kebab menu on a repo/folder header: shows the full folder path (when
+ * given), "Create issue…" (shells `gh issue create` in `dir`), and "Remove
+ * from rail". */
+function RepoMenu({
+  path,
+  onRemove,
+  dir,
+}: {
+  path?: string;
+  onRemove: () => void;
+  dir: string;
+}) {
+  const [issueOpen, setIssueOpen] = useState(false);
+  const [issueTitle, setIssueTitle] = useState("");
+
+  async function createIssue() {
+    const title = issueTitle.trim();
+    if (!title) return;
+    setIssueOpen(false);
+    setIssueTitle("");
+    try {
+      const url = await abCreateIssue(dir, title);
+      toast.success("Issue created", {
+        action: { label: "Open", onClick: () => window.open(url, "_blank", "noopener") },
+      });
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }
+
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-        title="Repo actions"
-      >
-        <MoreVertical className="size-3.5" />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-auto min-w-56">
-        {path && (
-          <>
-            <DropdownMenuLabel className="font-mono text-[11px] font-normal whitespace-nowrap text-muted-foreground">
-              {path}
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-          </>
-        )}
-        <DropdownMenuItem variant="destructive" onSelect={onRemove} className="whitespace-nowrap">
-          <Trash2 className="size-3.5" /> Remove from rail
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+          title="Repo actions"
+        >
+          <MoreVertical className="size-3.5" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-auto min-w-56">
+          {path && (
+            <>
+              <DropdownMenuLabel className="font-mono text-[11px] font-normal whitespace-nowrap text-muted-foreground">
+                {path}
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+            </>
+          )}
+          <DropdownMenuItem onSelect={() => setIssueOpen(true)} className="whitespace-nowrap">
+            <CircleDot className="size-3.5" /> Create issue…
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant="destructive"
+            onSelect={onRemove}
+            className="whitespace-nowrap"
+          >
+            <Trash2 className="size-3.5" /> Remove from rail
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Dialog open={issueOpen} onOpenChange={setIssueOpen}>
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>New issue</DialogTitle>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={issueTitle}
+            onChange={(e) => setIssueTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void createIssue();
+            }}
+            placeholder="Issue title…"
+          />
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
