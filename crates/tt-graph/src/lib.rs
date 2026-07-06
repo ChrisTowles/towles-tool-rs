@@ -56,11 +56,14 @@ pub use labels::extract_session_label;
 pub use parser::{HasMtime, calculate_cutoff_ms, filter_by_days};
 pub use render::generate_treemap_html;
 pub use sessions::{
-    build_bar_chart_data, find_recent_sessions, find_session_path, session_result_for_path,
+    build_bar_chart_data, build_model_totals, build_project_totals, find_recent_sessions,
+    find_session_path, session_result_for_path,
 };
 pub use tools::{extract_tool_data, extract_tool_detail, sanitize_string, truncate_detail};
 pub use treemap::{build_all_sessions_treemap, build_session_treemap, build_turn_nodes};
-pub use types::{BarChartData, BarChartDay, ProjectBar, SessionResult, ToolData, TreemapNode};
+pub use types::{
+    BarChartData, BarChartDay, ModelBar, ProjectBar, SessionResult, ToolData, TreemapNode,
+};
 // The Claude Code transcript schema + parse/title/usage projections now live in
 // the shared crate; re-export the pieces tt-graph's consumers (the CLI) use so
 // they need not depend on tt-claude-code directly.

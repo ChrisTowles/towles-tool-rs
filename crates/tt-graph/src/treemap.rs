@@ -228,6 +228,7 @@ pub fn build_all_sessions_treemap(sessions: &[SessionResult]) -> Result<TreemapN
                             analysis.opus_tokens,
                             analysis.sonnet_tokens,
                             analysis.haiku_tokens,
+                            analysis.fable_tokens,
                         )
                         .to_string(),
                     ),

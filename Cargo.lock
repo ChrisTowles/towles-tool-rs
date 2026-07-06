@@ -4893,6 +4893,7 @@ dependencies = [
  "tt-collect",
  "tt-config",
  "tt-exec",
+ "tt-graph",
  "tt-journal",
  "tt-store",
 ]

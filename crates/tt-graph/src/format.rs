@@ -65,8 +65,12 @@ pub fn build_session_rows(sessions: &[SessionResult]) -> Result<Vec<SessionRow>>
     for session in sessions {
         let entries = parse_transcript_file(&session.path);
         let analysis = analyze_session(&entries);
-        let model =
-            get_primary_model(analysis.opus_tokens, analysis.sonnet_tokens, analysis.haiku_tokens);
+        let model = get_primary_model(
+            analysis.opus_tokens,
+            analysis.sonnet_tokens,
+            analysis.haiku_tokens,
+            analysis.fable_tokens,
+        );
         let project = extract_project_name(&session.project);
         let cost = estimate_cost(&analysis);
 

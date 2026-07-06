@@ -30,6 +30,16 @@ pub struct ProjectBar {
     pub total_tokens: i64,
 }
 
+/// One model's aggregated tokens across a set of sessions. Ports the "spend by
+/// model" view: total tokens billed to Opus/Sonnet/Haiku over the selected
+/// window.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelBar {
+    pub model: String,
+    pub total_tokens: i64,
+}
+
 /// One day of the stacked bar chart: per-project token totals.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BarChartDay {
