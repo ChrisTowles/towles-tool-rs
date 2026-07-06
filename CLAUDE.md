@@ -78,9 +78,10 @@ Cargo workspace + npm workspace (`apps/client` only):
     in logic.
   - `tt-collect` — collectors that fill tt.db: calendar via `claude -p`
     (strict-JSON prompt + lenient extraction; `CalendarProvider` picks the
-    Google/Outlook prompt+MCP), issues + PRs via `gh`. Collector keys are
-    `claude:calendar`, `issues`, `prs` — the frontend matches on them. Email
-    was removed in the day-screens pivot.
+    Google/Outlook prompt+MCP) — **off by default** since it burns tokens
+    per tick; issues + PRs via `gh`. Collector keys are `claude:calendar`,
+    `issues`, `prs` — the frontend matches on them. Email was removed in the
+    day-screens pivot.
   - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`ttr mcp serve`) exposing
     the store + live agent sessions + `journal_append` to claude sessions.
 - `crates-cli/tt-cli` — `clap` 4 CLI, binary `ttr`. Commands:
@@ -111,10 +112,18 @@ Cargo workspace + npm workspace (`apps/client` only):
   `src/lib/mock-data.ts`. The three "Focus" screens are **Cockpit** (default
   day home — next-meeting countdown + PRs + issue queue), **Board** (cross-repo
   kanban over local todos grouped by status, with promote-to-issue), and
-  **Agentboard** (repos + per-repo xterm terminals). Product rules: the app is
-  for getting in the zone — manage PRs and work issues across repos; calendar
-  is only *time until the next meeting*. Agent status is **reported, never
-  re-rendered** (interaction happens in the real PTY via xterm.js); the day
+  **Agentboard** (repos + per-repo terminals). Terminals render with
+  **ghostty-web** (Ghostty's VT engine as WASM, xterm.js-compatible API,
+  canvas renderer — `components/terminal-view.tsx`), and their shells run
+  inside a **shpool** daemon so they survive an app restart: the Rust side
+  (`crates-tauri/tt-app/src/{terminal,shpool}.rs`) wraps each PTY in
+  `shpool attach` on a per-user, slot-namespaced socket, stamps
+  `SessionData.detached` from `shpool list`, and asks keep-or-kill on window
+  close (`components/close-guard.tsx`). No shpool binary → direct PTY spawn
+  (no persistence). Product rules: the app is for getting in the zone —
+  manage PRs and work issues across repos; calendar is only *time until the
+  next meeting*. Agent status is **reported, never re-rendered** (interaction
+  happens in the real PTY via the terminal view); the day
   bar (`day-bar.tsx`) and the Agentboard needs-you feed unify agents, PRs, and
   calendar into one attention model. Verify frontend/IPC changes by driving the
   real shell with `npm run e2e` (see the Commands section and
