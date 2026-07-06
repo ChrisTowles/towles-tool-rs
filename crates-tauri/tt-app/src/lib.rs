@@ -42,7 +42,7 @@ fn app_slot() -> String {
 }
 
 pub fn run() {
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
 
     // WebdriverIO E2E plugins, only under `--features wdio` (see e2e/):
     // tauri-plugin-wdio exposes the execute/mock IPC surface, and

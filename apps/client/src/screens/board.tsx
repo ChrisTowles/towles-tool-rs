@@ -27,6 +27,7 @@ import {
   type TaskItem,
   type TaskStatus,
 } from "@/lib/data";
+import { openExternalUrl } from "@/lib/open-url";
 
 /**
  * Board — the cross-repo personal kanban over local todos. Columns are the five
@@ -186,10 +187,10 @@ function Card({
             ))}
             <DropdownMenuSeparator />
             {task.issueUrl ? (
-              <DropdownMenuItem asChild>
-                <a href={task.issueUrl} target="_blank" rel="noreferrer">
-                  Open issue <ExternalLink className="ml-auto size-3.5" />
-                </a>
+              <DropdownMenuItem
+                onSelect={() => task.issueUrl && void openExternalUrl(task.issueUrl)}
+              >
+                Open issue <ExternalLink className="ml-auto size-3.5" />
               </DropdownMenuItem>
             ) : repos.length > 0 ? (
               <DropdownMenuSub>
@@ -216,6 +217,10 @@ function Card({
               href={task.issueUrl}
               target="_blank"
               rel="noreferrer"
+              onClick={(e) => {
+                e.preventDefault();
+                if (task.issueUrl) void openExternalUrl(task.issueUrl);
+              }}
               className="font-mono text-[11px] text-muted-foreground hover:text-foreground hover:underline"
             >
               {task.repo} #{task.issueNumber}

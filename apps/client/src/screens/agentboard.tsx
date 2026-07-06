@@ -77,6 +77,7 @@ import {
 } from "@/lib/agentboard";
 import { toast } from "sonner";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
+import { openExternalUrl } from "@/lib/open-url";
 import { useWorkspace } from "@/lib/workspace";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -536,7 +537,7 @@ export function AgentboardScreen() {
           kind: "pr",
           title: `${p.repo.split("/").pop()} #${p.number}`,
           sub: p.checks === "failing" ? "Checks failing" : "Review requested",
-          onClick: () => window.open(p.url, "_blank", "noopener"),
+          onClick: () => void openExternalUrl(p.url),
         });
       }
     }
@@ -1575,7 +1576,7 @@ function RepoMenu({
     try {
       const url = await abCreateIssue(dir, title);
       toast.success("Issue created", {
-        action: { label: "Open", onClick: () => window.open(url, "_blank", "noopener") },
+        action: { label: "Open", onClick: () => void openExternalUrl(url) },
       });
     } catch (e) {
       toast.error(String(e));
