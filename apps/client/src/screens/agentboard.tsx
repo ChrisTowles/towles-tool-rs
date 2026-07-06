@@ -1217,7 +1217,7 @@ function RepoGroup({
 
   const sessionRows = (folder: FolderData) =>
     folder.sessions.length === 0 ? (
-      <div className="flex items-center gap-2.5 py-1.5 pr-3 pl-9 text-[11px] italic text-muted-foreground/60">
+      <div className="flex items-center gap-2.5 py-1 pr-3 pl-9 text-[11px] italic text-muted-foreground/60">
         no sessions
         <button
           type="button"
@@ -1283,7 +1283,7 @@ function RepoGroup({
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
         />
         {!isCollapsed && (
-          <div className="pb-2">
+          <div className="group pb-2">
             <PurposeRow folder={folder} />
             {sessionRows(folder)}
           </div>
@@ -1344,7 +1344,7 @@ function RepoGroup({
                 onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
               />
               {!fCollapsed && (
-                <div className="pb-1">
+                <div className="group pb-1">
                   <PurposeRow folder={folder} />
                   {sessionRows(folder)}
                 </div>
@@ -1358,11 +1358,11 @@ function RepoGroup({
 
 /** The folder's user-authored purpose: a faint one-liner under the header.
  * Click to edit inline (Enter saves, Esc cancels; blank clears). When unset,
- * a "+ purpose" hint appears only while hovering the folder group, so a
- * resting rail stays quiet. */
+ * the row takes up no space at rest — the "+ purpose" hint only appears (and
+ * only then claims a row) while hovering the folder group, so a resting rail
+ * with many empty folders doesn't pad itself out with blank lines. */
 function PurposeRow({ folder }: { folder: FolderData }) {
   const [editing, setEditing] = useState(false);
-  const [hovered, setHovered] = useState(false);
   const purpose = folder.purpose?.trim() ?? "";
 
   async function commit(text: string) {
@@ -1390,23 +1390,27 @@ function PurposeRow({ folder }: { folder: FolderData }) {
     );
   }
 
+  if (!purpose) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title="Edit folder purpose"
+        className="hidden w-full truncate py-0.5 pr-3 pl-9 text-left text-[11px] text-muted-foreground/50 group-hover:block"
+      >
+        + what are you working toward here?
+      </button>
+    );
+  }
+
   return (
     <button
       type="button"
       onClick={() => setEditing(true)}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       title="Edit folder purpose"
-      className={cn(
-        "block w-full truncate py-0.5 pr-3 pl-9 text-left text-[11px]",
-        purpose
-          ? cn("text-muted-foreground", hovered && "text-foreground")
-          : hovered
-            ? "text-muted-foreground/50"
-            : "text-transparent",
-      )}
+      className="block w-full truncate py-0.5 pr-3 pl-9 text-left text-[11px] text-muted-foreground hover:text-foreground"
     >
-      {purpose || "+ what are you working toward here?"}
+      {purpose}
     </button>
   );
 }
