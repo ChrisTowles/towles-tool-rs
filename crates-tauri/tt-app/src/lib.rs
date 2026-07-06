@@ -179,6 +179,7 @@ pub fn run() {
             agentboard::ab_set_session_purpose,
             agentboard::ab_set_compact_percent,
             agentboard::ab_save_windows,
+            agentboard::ab_save_collapsed,
             agentboard::ab_set_status,
             agentboard::ab_set_progress,
             agentboard::ab_log,

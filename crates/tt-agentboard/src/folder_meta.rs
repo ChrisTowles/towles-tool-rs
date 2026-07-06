@@ -4,7 +4,7 @@
 //! folder's absolute dir (same per-file pattern as [`crate::sessions`]).
 //! Path-parameterized so tests use a tempdir.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -26,11 +26,15 @@ struct FolderMetaConfig {
 }
 
 /// Owns the folder→meta map plus its file path. Loaded once; saved on each
-/// mutation by the caller (engine), mirroring [`crate::sessions::SessionStore`].
+/// mutation by the caller (engine), mirroring [`crate::sessions::SessionStore`]
+/// — including its merge-on-save behavior, since this file is likewise shared
+/// across every Agentboard window.
 #[derive(Debug, Default)]
 pub struct FolderMetaStore {
     path: Option<PathBuf>,
     folders: HashMap<String, FolderMeta>,
+    /// Folder dirs mutated since the last successful `save()`.
+    dirty: HashSet<String>,
 }
 
 /// Default location: `~/.config/towles-tool/agentboard/folder_meta.json`.
@@ -50,7 +54,7 @@ impl FolderMetaStore {
             Some(p) => load(p),
             None => HashMap::new(),
         };
-        Self { path, folders }
+        Self { path, folders, dirty: HashSet::new() }
     }
 
     /// The purpose text for a folder, if one is set (empty counts as unset).
@@ -77,25 +81,48 @@ impl FolderMetaStore {
                 }
             }
         }
+        self.dirty.insert(dir.to_string());
         true
     }
 
     /// Drop metadata for folders no longer in `dirs` (called after a repo removal).
-    pub fn prune(&mut self, dirs: &std::collections::HashSet<String>) {
+    pub fn prune(&mut self, dirs: &HashSet<String>) {
+        let removed: Vec<String> =
+            self.folders.keys().filter(|dir| !dirs.contains(*dir)).cloned().collect();
         self.folders.retain(|dir, _| dirs.contains(dir));
+        self.dirty.extend(removed);
     }
 
-    /// Persist to the configured path (no-op for in-memory stores).
-    pub fn save(&self) -> std::io::Result<()> {
-        let Some(path) = &self.path else {
+    /// Persist the folders touched since the last save; see
+    /// [`crate::sessions::SessionStore::save`] for why this rereads the file
+    /// fresh and only overwrites the dirty folders rather than the whole map.
+    pub fn save(&mut self) -> std::io::Result<()> {
+        let Some(path) = self.path.clone() else {
             return Ok(());
         };
+        if self.dirty.is_empty() {
+            return Ok(());
+        }
+        let dirty: Vec<String> = self.dirty.drain().collect();
+        let mut on_disk = load(&path);
+        for dir in &dirty {
+            match self.folders.get(dir) {
+                Some(meta) => {
+                    on_disk.insert(dir.clone(), meta.clone());
+                }
+                None => {
+                    on_disk.remove(dir);
+                }
+            }
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let config = FolderMetaConfig { folders: self.folders.clone() };
+        let config = FolderMetaConfig { folders: on_disk.clone() };
         let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
-        std::fs::write(path, format!("{json}\n"))
+        std::fs::write(&path, format!("{json}\n"))?;
+        self.folders = on_disk;
+        Ok(())
     }
 }
 
@@ -162,6 +189,27 @@ mod tests {
 
         let reloaded = FolderMetaStore::new(Some(path));
         assert_eq!(reloaded.purpose_for("/r/a"), Some("ship it"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_instances_dont_clobber_each_others_folders() {
+        let dir =
+            std::env::temp_dir().join(format!("tt-folder-meta-concurrent-{}", std::process::id()));
+        let path = dir.join("folder_meta.json");
+
+        let mut a = FolderMetaStore::new(Some(path.clone()));
+        let mut b = FolderMetaStore::new(Some(path.clone()));
+
+        a.set_purpose("/r/a", Some("ship it"));
+        a.save().unwrap();
+
+        b.set_purpose("/r/b", Some("fix it"));
+        b.save().unwrap();
+
+        let reloaded = FolderMetaStore::new(Some(path));
+        assert_eq!(reloaded.purpose_for("/r/a"), Some("ship it"));
+        assert_eq!(reloaded.purpose_for("/r/b"), Some("fix it"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

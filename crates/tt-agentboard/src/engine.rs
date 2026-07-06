@@ -21,9 +21,9 @@ use crate::types::{AgentEvent, AgentStatus, MetadataTone};
 use crate::{
     AgentTracker, AgentWatcher, AmpAgentWatcher, ClaudeCodeAgentWatcher, CodexAgentWatcher,
     GitInfoCache, OpenCodeAgentWatcher, RepoEntry, SessionMetadataStore, SessionOrder,
-    SessionRecord, SessionStore, StatePayload, WatcherContext, add_repo, assemble_state,
+    SessionRecord, SessionStore, StatePayload, WatcherContext, add_repo_persisted, assemble_state,
     default_repos_path, default_sessions_path, instance_key, load_repos, load_scan_roots,
-    remove_repo_by_dir, repo_entries, resolve_session_name, save_repos, save_scan_roots,
+    remove_repo_persisted, repo_entries, resolve_session_name, save_scan_roots,
 };
 
 // Prune schedule constants (BRIDGE-SPEC §4).
@@ -77,6 +77,7 @@ pub struct Engine {
     order: SessionOrder,
     folder_meta: crate::folder_meta::FolderMetaStore,
     windows: crate::windows::WindowsStore,
+    collapse: crate::collapse::CollapseStore,
     sessions: SessionStore,
     git_cache: GitInfoCache,
     watchers: Vec<Box<dyn AgentWatcher + Send>>,
@@ -115,6 +116,7 @@ impl Engine {
                 crate::folder_meta::default_folder_meta_path(),
             )),
             windows: crate::windows::WindowsStore::new(Some(crate::default_windows_path())),
+            collapse: crate::collapse::CollapseStore::new(Some(crate::default_collapse_path())),
             git_cache: GitInfoCache::new(),
             watchers: vec![
                 Box::new(ClaudeCodeAgentWatcher::with_defaults()),
@@ -230,10 +232,27 @@ impl Engine {
 
     /// Replace the persisted window layout (frontend-owned blob). Persists on
     /// change; returns whether it changed.
-    pub fn set_windows(&mut self, payload: crate::windows::WindowsPayload) -> bool {
+    /// `touched` is the set of folder dirs whose windows/active-window the
+    /// frontend actually mutated since its last save (see
+    /// [`crate::windows::WindowsStore::save`]) — required so a whole-blob save
+    /// from one Agentboard window can't clobber another window's folders.
+    pub fn set_windows(
+        &mut self,
+        payload: crate::windows::WindowsPayload,
+        touched: &[String],
+    ) -> bool {
         let changed = self.windows.set(payload);
         if changed {
-            let _ = self.windows.save();
+            let _ = self.windows.save(touched);
+        }
+        changed
+    }
+
+    /// Set (or clear) one folder-rail row's collapsed state. Persists on change.
+    pub fn set_collapsed(&mut self, key: &str, collapsed: bool) -> bool {
+        let changed = self.collapse.set(key, collapsed);
+        if changed {
+            let _ = self.collapse.save();
         }
         changed
     }
@@ -362,6 +381,7 @@ impl Engine {
         );
 
         payload.windows = self.windows.payload().clone();
+        payload.collapsed = self.collapse.payload().collapsed.clone();
         self.last_payload = Some(payload.clone());
         payload
     }
@@ -444,20 +464,28 @@ impl Engine {
         let _ = save_scan_roots(&self.repos_path, &roots);
     }
 
+    /// Adds straight against `repos.json` (reread-fresh-then-write; see
+    /// [`add_repo_persisted`]) rather than trusting `self.repo_paths`, which
+    /// may be stale — another Agentboard window may have added/removed a
+    /// different repo since our last reload.
     pub fn add_repo(&mut self, path: &str) -> bool {
-        let added = add_repo(&mut self.repo_paths, path);
-        if added {
-            let _ = save_repos(&self.repos_path, &self.repo_paths);
+        match add_repo_persisted(&self.repos_path, path) {
+            Ok((merged, added)) => {
+                self.repo_paths = merged;
+                added
+            }
+            Err(_) => false,
         }
-        added
     }
 
     pub fn remove_repo(&mut self, dir: &str) -> bool {
-        let removed = remove_repo_by_dir(&mut self.repo_paths, dir);
-        if removed {
-            let _ = save_repos(&self.repos_path, &self.repo_paths);
+        match remove_repo_persisted(&self.repos_path, dir) {
+            Ok((merged, removed)) => {
+                self.repo_paths = merged;
+                removed
+            }
+            Err(_) => false,
         }
-        removed
     }
 
     /// Add a PTY session to a folder and persist. Returns the created record.

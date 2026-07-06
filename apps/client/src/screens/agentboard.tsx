@@ -249,7 +249,27 @@ export function AgentboardScreen() {
   // Session ids whose PTY is mounted (kept alive for scrollback), + their cwd.
   const [open, setOpen] = useState<string[]>([]);
   const cwds = useRef<Record<string, string>>({});
+  // Folder-rail collapse/expand state (issue #52): hydrated once from
+  // `ab_get_state`, then this local copy is the live truth — same pattern as
+  // `wins` below, except each toggle saves incrementally (one key at a time)
+  // rather than a debounced whole-blob save, since a collapse entry is never
+  // ambiguous between "not yet toggled" and "explicitly reset".
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const hydratedCollapsed = useRef(false);
+  useEffect(() => {
+    if (!hydratedCollapsed.current && state.ts > 0) {
+      hydratedCollapsed.current = true;
+      setCollapsed(state.collapsed);
+    }
+  }, [state.ts, state.collapsed]);
+
+  function toggleCollapsed(key: string) {
+    setCollapsed((c) => {
+      const next = !c[key];
+      void abInvoke("ab_save_collapsed", { key, collapsed: next });
+      return { ...c, [key]: next };
+    });
+  }
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renamingWin, setRenamingWin] = useState<string | null>(null);
   // Live PTY window titles keyed by session id (Claude emits `✳ <title>`);
@@ -304,18 +324,26 @@ export function AgentboardScreen() {
   // --- Window layout (Tier 5): frontend-owned, hydrated once, saved debounced.
   const [wins, setWins] = useState<WindowsPayload | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Folder dirs actually mutated since the last flush — the backend merges
+  // by folder dir on save, so it needs to know which ones we touched (a
+  // never-hydrated-vs-explicitly-emptied folder look identical in the blob
+  // alone; see `WindowsStore::save`'s doc comment).
+  const dirtyWinFolders = useRef<Set<string>>(new Set());
   useEffect(() => {
     // Hydrate from the first real payload (mock or ab_get_state); after that
     // the local copy is the live truth and only flows outward.
     if (wins === null && state.ts > 0) setWins(normalizeWins(state.windows));
   }, [wins, state.ts, state.windows]);
 
-  function updateWins(fn: (w: WindowsPayload) => WindowsPayload) {
+  function updateWins(folderDirs: string[], fn: (w: WindowsPayload) => WindowsPayload) {
     setWins((prev) => {
       const next = normalizeWins(fn(prev ?? { windows: [], activeWindows: {} }));
+      for (const dir of folderDirs) dirtyWinFolders.current.add(dir);
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        void abInvoke("ab_save_windows", { payload: next });
+        const touchedFolders = [...dirtyWinFolders.current];
+        dirtyWinFolders.current = new Set();
+        void abInvoke("ab_save_windows", { payload: next, touchedFolders });
       }, 400);
       return next;
     });
@@ -335,7 +363,7 @@ export function AgentboardScreen() {
   // this always targets the pane's own folder, never whatever window/folder
   // happened to be showing beforehand.
   function addPaneToActive(folderDir: string, sessionId: string) {
-    updateWins((w) => {
+    updateWins([folderDir], (w) => {
       if (w.windows.some((win) => win.panes.includes(sessionId))) return w;
       let windows = w.windows;
       let windowId = w.activeWindows[folderDir];
@@ -353,7 +381,10 @@ export function AgentboardScreen() {
   }
 
   function removePane(sessionId: string) {
-    updateWins((w) => ({
+    // A pane lives in exactly one folder's window; find it before mutating
+    // so we know which single folder to mark touched.
+    const folderDir = wins?.windows.find((win) => win.panes.includes(sessionId))?.folderDir;
+    updateWins(folderDir ? [folderDir] : [], (w) => ({
       ...w,
       windows: w.windows.map((win) => ({
         ...win,
@@ -556,7 +587,7 @@ export function AgentboardScreen() {
       const win = wins?.windows.find((w) => w.id === windowId);
       if (!win) return;
       selectFolder(win.folderDir);
-      updateWins((w) => ({
+      updateWins([win.folderDir], (w) => ({
         ...w,
         activeWindows: { ...w.activeWindows, [win.folderDir]: windowId },
       }));
@@ -703,7 +734,7 @@ export function AgentboardScreen() {
                     overlays={overlays}
                     wins={wins}
                     actions={actions}
-                    onToggle={(k) => setCollapsed((c) => ({ ...c, [k]: !c[k] }))}
+                    onToggle={toggleCollapsed}
                     onSelectFolder={selectFolder}
                     onSelect={selectSession}
                     onNewSession={newSession}
@@ -749,7 +780,7 @@ export function AgentboardScreen() {
                         onBlur={(e) => {
                           const name = e.target.value.trim() || w.name;
                           setRenamingWin(null);
-                          updateWins((cur) => ({
+                          updateWins([w.folderDir], (cur) => ({
                             ...cur,
                             windows: cur.windows.map((x) => (x.id === w.id ? { ...x, name } : x)),
                           }));
@@ -772,7 +803,7 @@ export function AgentboardScreen() {
                         title="close window (panes ungroup; sessions stay in the rail)"
                         onClick={(e) => {
                           e.stopPropagation();
-                          updateWins((cur) => ({
+                          updateWins([w.folderDir], (cur) => ({
                             ...cur,
                             windows: cur.windows.filter((x) => x.id !== w.id),
                           }));
@@ -787,7 +818,7 @@ export function AgentboardScreen() {
                 <button
                   type="button"
                   onClick={() =>
-                    updateWins((cur) => {
+                    updateWins([activeFolderDir], (cur) => {
                       const id = `w${Date.now()}`;
                       const count = cur.windows.filter((w) => w.folderDir === activeFolderDir).length;
                       return {
