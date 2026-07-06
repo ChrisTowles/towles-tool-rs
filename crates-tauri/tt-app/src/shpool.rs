@@ -15,22 +15,60 @@
 //! [shpool]: https://github.com/shell-pool/shpool
 
 use std::collections::HashSet;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-/// Whether the `shpool` binary is usable (checked once per app run).
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
+
+// Tri-state cache of whether the `shpool` binary is present. Unlike a plain
+// `OnceLock`, this can flip from NO to YES within a run — the in-app installer
+// (`shpool_install`) refreshes it on success, so terminals opened afterward
+// take the persistent path without an app restart.
+const UNKNOWN: u8 = 0;
+const YES: u8 = 1;
+const NO: u8 = 2;
+static AVAILABILITY: AtomicU8 = AtomicU8::new(UNKNOWN);
+
+/// Fresh probe: does `shpool version` succeed?
+fn probe_installed() -> bool {
+    Command::new("shpool")
+        .arg("version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Re-probe the binary and update the cache. Returns the fresh result.
+fn refresh_available() -> bool {
+    let v = probe_installed();
+    AVAILABILITY.store(if v { YES } else { NO }, Ordering::Relaxed);
+    v
+}
+
+/// Whether the `shpool` binary is usable. Cached after the first probe;
+/// [`refresh_available`] (called by a successful install) re-arms it.
 pub fn available() -> bool {
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        Command::new("shpool")
-            .arg("version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    })
+    match AVAILABILITY.load(Ordering::Relaxed) {
+        YES => true,
+        NO => false,
+        _ => refresh_available(),
+    }
+}
+
+/// Whether `cargo` is on PATH — the installer needs it to build shpool.
+fn cargo_available() -> bool {
+    Command::new("cargo")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// The dedicated daemon socket: `$XDG_RUNTIME_DIR/towles-tool/shpool.sock`,
@@ -158,6 +196,110 @@ pub fn kill_slot_sessions() {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+}
+
+// --- In-app onboarding: install shpool so persistence works ---------------
+
+/// Streamed while `cargo install` runs (see [`INSTALL_LOG_EVENT`]).
+pub const INSTALL_LOG_EVENT: &str = "shpool://install-log";
+/// Emitted once when the install finishes (see [`INSTALL_DONE_EVENT`]).
+pub const INSTALL_DONE_EVENT: &str = "shpool://install-done";
+
+/// Guards against launching a second `cargo install` while one is running.
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// Capability snapshot for the persistence-onboarding banner.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ShpoolStatus {
+    /// The `shpool` binary is present — sessions persist across app restarts.
+    installed: bool,
+    /// `cargo` is available to build shpool (the in-app installer needs it).
+    cargo_available: bool,
+    /// An install is currently running (so the UI can show progress, not a
+    /// second "install" button, if the banner remounts).
+    installing: bool,
+}
+
+#[derive(Serialize, Clone)]
+struct InstallLine {
+    line: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InstallDone {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Report whether persistence is set up (and whether we could install it).
+/// Re-probes the binary so the banner reflects reality after an install.
+#[tauri::command]
+pub fn shpool_status() -> ShpoolStatus {
+    ShpoolStatus {
+        installed: refresh_available(),
+        cargo_available: cargo_available(),
+        installing: INSTALLING.load(Ordering::Relaxed),
+    }
+}
+
+/// Install shpool via `cargo install shpool --locked`, off the UI thread.
+/// Returns immediately; progress streams as [`INSTALL_LOG_EVENT`] and the
+/// outcome arrives as [`INSTALL_DONE_EVENT`]. On success the availability
+/// cache is re-armed so new terminals persist without an app restart.
+#[tauri::command]
+pub fn shpool_install(app: AppHandle) -> Result<(), String> {
+    if available() {
+        // Already there — nothing to do; tell the UI it's done.
+        let _ = app.emit(INSTALL_DONE_EVENT, InstallDone { ok: true, error: None });
+        return Ok(());
+    }
+    if !cargo_available() {
+        return Err("cargo not found — install Rust from https://rustup.rs first".to_string());
+    }
+    // Claim the install slot; bail if another is already running.
+    if INSTALLING.swap(true, Ordering::SeqCst) {
+        return Err("an install is already in progress".to_string());
+    }
+    std::thread::spawn(move || {
+        let result = run_cargo_install(&app);
+        let ok = result.is_ok();
+        if ok {
+            refresh_available();
+        }
+        INSTALLING.store(false, Ordering::SeqCst);
+        let _ = app.emit(INSTALL_DONE_EVENT, InstallDone { ok, error: result.err() });
+    });
+    Ok(())
+}
+
+/// Run the compile, streaming cargo's stderr (where its `Compiling …`
+/// progress goes) to the frontend line by line. Returns the last line as the
+/// error message on failure. stdout is dropped (cargo puts nothing useful
+/// there) so its pipe can never fill and deadlock the build.
+fn run_cargo_install(app: &AppHandle) -> Result<(), String> {
+    let mut child = Command::new("cargo")
+        .args(["install", "shpool", "--locked"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to launch cargo: {e}"))?;
+
+    let mut tail = String::new();
+    if let Some(stderr) = child.stderr.take() {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            tail = line.clone();
+            let _ = app.emit(INSTALL_LOG_EVENT, InstallLine { line });
+        }
+    }
+
+    match child.wait() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) => Err(if tail.is_empty() { "cargo install failed".to_string() } else { tail }),
+        Err(e) => Err(e.to_string()),
     }
 }
 

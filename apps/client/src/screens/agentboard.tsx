@@ -11,6 +11,7 @@ import { fmtMins } from "@/components/agentboard-bits";
 import { PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffViewer } from "@/components/diff-view";
+import { PersistenceBanner } from "@/components/persistence-banner";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import {
@@ -525,7 +526,8 @@ export function AgentboardScreen() {
   }, [snapshot.prs, snapshot.events, now, openTab]);
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col">
+      <PersistenceBanner />
       <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
         {/* Rail: rollup tally + header + attention strip + Repo → Folder → Session tree. */}
         <ResizablePanel defaultSize="360px" minSize="240px" maxSize="560px">
