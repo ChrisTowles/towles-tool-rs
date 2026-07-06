@@ -101,6 +101,11 @@ export function TerminalView({
 
     const observer = new ResizeObserver(() => {
       fit.fit();
+      // `fit()` on a pane that just went from `hidden` (0x0) to visible only
+      // marks newly-added rows dirty; rows written while the pane was hidden
+      // never got painted and stay blank until something (e.g. a scroll)
+      // forces a full repaint. Force that repaint explicitly here.
+      term.refresh(0, term.rows - 1);
       void import("@tauri-apps/api/core").then(({ invoke }) =>
         invoke("term_resize", { termId, cols: term.cols, rows: term.rows }).catch(() => {}),
       );
