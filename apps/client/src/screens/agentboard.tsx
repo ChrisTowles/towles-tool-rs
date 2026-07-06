@@ -7,7 +7,6 @@ import {
   Plus,
   TerminalSquare,
 } from "lucide-react";
-import { fmtMins } from "@/components/agentboard-bits";
 import { PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffViewer } from "@/components/diff-view";
@@ -43,11 +42,7 @@ import {
   abInvoke,
   claudeCommand,
   claudeTitleName,
-  ctxPct,
-  isAgent,
-  isCold,
   liveSessions,
-  needsCompact,
   normalizeWins,
   paneRects,
   prForFolder,
@@ -742,60 +737,6 @@ export function AgentboardScreen() {
               </div>
             )}
 
-            {/* Focused agent's cache bar: ctx meter + cache state + lifecycle
-                actions, prominent when it's time to compact (Calm Rail cachebar). */}
-            {selected && (() => {
-              const s = sessionById.get(selected.sessionId);
-              const d = s?.agentState?.details;
-              if (!s?.live || !isAgent(s) || !d?.contextUsed || !d.contextMax) return null;
-              const pct = ctxPct(d);
-              const cold = isCold(d, now);
-              const nudge = needsCompact(d, now, state.compactRecommendPercent);
-              const meterColor = nudge ? "bg-sky-500" : pct >= 70 ? "bg-yellow-500" : "bg-green-500";
-              return (
-                <div className="flex items-center gap-3 border-b bg-card/50 px-3 py-1.5 font-mono text-[11px] text-muted-foreground">
-                  <span>ctx</span>
-                  <span className="h-1.5 w-20 overflow-hidden rounded-full bg-accent">
-                    <span
-                      className={cn("block h-full", meterColor)}
-                      style={{ width: `${Math.min(pct, 100)}%` }}
-                    />
-                  </span>
-                  <span className={nudge ? "text-sky-500" : undefined}>{pct}%</span>
-                  <span className="text-muted-foreground/40">·</span>
-                  {cold ? (
-                    <span className="text-sky-500">❄ cache cold</span>
-                  ) : (
-                    <span>
-                      {d.cacheTtlMs === 3_600_000 ? "⧗" : "◔"} cache warm ·{" "}
-                      {fmtMins(d.cacheExpiresAt! - now)} left
-                    </span>
-                  )}
-                  {nudge && (
-                    <span className="ml-auto flex items-center gap-2">
-                      <span className="rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-sky-500">
-                        {pct}% & cold — resuming re-reads everything
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => actions.compactClaude(s)}
-                        className="rounded-md border border-sky-500/40 px-2 py-0.5 text-sky-500 hover:bg-sky-500/10"
-                      >
-                        ⤿ compact
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => actions.restartClaude(selected.folderDir, s)}
-                        className="rounded-md border border-border px-2 py-0.5 hover:bg-accent/50"
-                      >
-                        ↻ start over
-                      </button>
-                    </span>
-                  )}
-                </div>
-              );
-            })()}
-
             {/* One flat pool of mounted terminals (never remounted — a remount
                 would respawn the shell). The active window's pane order assigns
                 each a percent-rect; panes in other windows stay hidden. */}
@@ -841,7 +782,6 @@ export function AgentboardScreen() {
                                 repoName={repoOf.get(folderOf.get(id)?.dir ?? "")?.name}
                                 label={labelFor(s)}
                                 now={now}
-                                compactPct={state.compactRecommendPercent}
                                 actions={actions}
                                 onUngroup={() => actions.ungroup(id)}
                                 onOpenDiff={openDiff}
