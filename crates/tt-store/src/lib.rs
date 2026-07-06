@@ -32,7 +32,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Kanban columns a todo can live in, in board order.
 pub const TASK_STATUSES: [&str; 5] = ["backlog", "next", "doing", "review", "done"];
@@ -291,11 +291,45 @@ impl Store {
     /// Create tables and record the schema version. Idempotent.
     fn migrate(&self) -> Result<()> {
         self.conn.execute_batch(SCHEMA_V1)?;
+        self.migrate_tasks_v2()?;
         self.conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![SCHEMA_VERSION.to_string()],
         )?;
+        Ok(())
+    }
+
+    /// `CREATE TABLE IF NOT EXISTS` is a no-op on a `tasks` table that already
+    /// existed under the pre-kanban schema (`source`/`source_ref`/`done`, no
+    /// `status`/`position`/`repo`/`issue_number`/`issue_url`), so a db created
+    /// before the day-screens pivot never gained the new columns and every
+    /// query against `tasks` fails outright. Bring it forward by hand, and
+    /// drop the `emails` table, dead since the same pivot.
+    fn migrate_tasks_v2(&self) -> Result<()> {
+        let mut has_status = false;
+        {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(tasks)")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(1)?;
+                if name == "status" {
+                    has_status = true;
+                    break;
+                }
+            }
+        }
+        if !has_status {
+            self.conn.execute_batch(
+                "ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'backlog';
+                 ALTER TABLE tasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE tasks ADD COLUMN repo TEXT;
+                 ALTER TABLE tasks ADD COLUMN issue_number INTEGER;
+                 ALTER TABLE tasks ADD COLUMN issue_url TEXT;
+                 UPDATE tasks SET status = 'done' WHERE done = 1;",
+            )?;
+        }
+        self.conn.execute_batch("DROP TABLE IF EXISTS emails;")?;
         Ok(())
     }
 
@@ -665,7 +699,50 @@ mod tests {
             .conn
             .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, "1");
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_brings_pre_kanban_tasks_table_forward() {
+        // Reproduces a db created before the day-screens pivot: `tasks` has the
+        // old source/source_ref/done columns and no status/position/repo/
+        // issue_number/issue_url, plus the since-removed `emails` table.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tt.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL,
+                    source_ref TEXT,
+                    text TEXT NOT NULL,
+                    due_ts INTEGER,
+                    done INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    completed_at INTEGER
+                );
+                CREATE TABLE emails (id INTEGER PRIMARY KEY);
+                INSERT INTO tasks (source, text, done, created_at)
+                    VALUES ('manual', 'old todo', 0, 1),
+                           ('manual', 'finished todo', 1, 2);",
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        let snapshot = s.snapshot().unwrap();
+        assert_eq!(snapshot.tasks.len(), 2);
+        assert!(snapshot.tasks.iter().any(|t| t.text == "old todo" && t.status == "backlog"));
+        assert!(snapshot.tasks.iter().any(|t| t.text == "finished todo" && t.status == "done"));
+
+        let has_emails: bool = s
+            .conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'emails'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(!has_emails, "dead `emails` table should be dropped");
     }
 
     #[test]
