@@ -3,12 +3,12 @@
 //! Ports `src/commands/doctor/history.ts`. The history file is SHARED with the
 //! TypeScript CLI at `$XDG_CONFIG_HOME/tt/doctor-history.json` (default
 //! `~/.config/tt/doctor-history.json` — note `tt`, not `towles-tool`). The
-//! [`super::DoctorRunResult`] serde shape must match the TS `DoctorRunResult`
+//! [`tt_doctor::DoctorRunResult`] serde shape must match the TS `DoctorRunResult`
 //! exactly (camelCase) so both tools can read each other's records.
 
-use super::DoctorRunResult;
 use std::cmp::Ordering;
 use std::path::PathBuf;
+use tt_doctor::{DoctorRunResult, NameOk};
 
 const MAX_HISTORY: usize = 50;
 
@@ -136,8 +136,8 @@ pub fn diff_runs(previous: &DoctorRunResult, current: &DoctorRunResult) -> Vec<D
 /// Shared added/passed/failed diffing for the `{name, ok}` lists (plugins, agentboard).
 fn diff_name_ok(
     category: &'static str,
-    previous: &[super::NameOk],
-    current: &[super::NameOk],
+    previous: &[NameOk],
+    current: &[NameOk],
     entries: &mut Vec<DiffEntry>,
 ) {
     for curr in current {
@@ -185,8 +185,8 @@ fn compare_versions(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::doctor::{CheckResult, NameOk};
     use tempfile::TempDir;
+    use tt_doctor::CheckResult;
 
     fn tool(name: &str, version: Option<&str>, ok: bool) -> CheckResult {
         CheckResult {

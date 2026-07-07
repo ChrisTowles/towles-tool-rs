@@ -12,6 +12,7 @@ path = "src/main.rs"
 tt-agentboard = { workspace = true }
 tt-collect = { workspace = true }
 tt-config = { workspace = true }
+tt-doctor = { workspace = true }
 tt-exec = { workspace = true }
 tt-git = { workspace = true }
 tt-graph = { workspace = true }

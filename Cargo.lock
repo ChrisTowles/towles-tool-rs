@@ -4892,6 +4892,7 @@ dependencies = [
  "tt-agentboard",
  "tt-collect",
  "tt-config",
+ "tt-doctor",
  "tt-exec",
  "tt-graph",
  "tt-journal",
@@ -4925,6 +4926,7 @@ dependencies = [
  "tt-agentboard",
  "tt-collect",
  "tt-config",
+ "tt-doctor",
  "tt-exec",
  "tt-git",
  "tt-graph",
@@ -4956,6 +4958,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tt-doctor"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tt-agentboard",
+ "tt-exec",
 ]
 
 [[package]]

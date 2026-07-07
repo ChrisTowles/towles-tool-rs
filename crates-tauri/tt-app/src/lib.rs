@@ -6,6 +6,7 @@
 //! (`shpool`), rendered by ghostty-web in the agentboard screen.
 
 mod agentboard;
+mod doctor;
 mod graph;
 mod journal;
 mod scheduler;
@@ -262,6 +263,7 @@ pub fn run() {
             journal::journal_create,
             journal::journal_open,
             graph::graph_spend_summary,
+            doctor::doctor_run,
             settings::settings_get,
             settings::settings_set,
             terminal::term_start,
