@@ -72,12 +72,42 @@ pub fn parse_agents(json: &str) -> Vec<CliAgent> {
         .collect()
 }
 
-/// Run the CLI. Failures (claude missing, non-zero exit, bad JSON) yield an
-/// empty list — the watcher treats that as "no live sessions visible".
+/// Wall-clock ceiling for one `claude agents` scan. The scan runs on every 2s
+/// watcher tick, so a hung `claude` would otherwise stall the scan thread
+/// forever; bound it and treat a timeout like any other failure.
+const CLI_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run the CLI. Failures (claude missing, non-zero exit, timeout, bad JSON)
+/// yield an empty list — the watcher treats that as "no live sessions visible"
+/// — but each failure kind is logged once so a persistently broken scan is
+/// visible instead of silent.
 pub fn fetch_agents() -> Vec<CliAgent> {
-    match tt_exec::run("claude", &["agents", "--all", "--json"]) {
-        Ok(out) if out.ok() => parse_agents(&out.stdout),
-        _ => Vec::new(),
+    match tt_exec::run_with_timeout("claude", &["agents", "--all", "--json"], CLI_TIMEOUT) {
+        Ok(out) if out.ok() => {
+            // Distinguish "parsed, no live sessions" from "output wasn't a JSON
+            // array at all" — only the latter is a parse failure worth warning on.
+            if serde_json::from_str::<Vec<serde_json::Value>>(&out.stdout).is_err() {
+                log::warn!("claude agents scan: could not parse CLI output as JSON");
+                return Vec::new();
+            }
+            parse_agents(&out.stdout)
+        }
+        Ok(out) => {
+            log::warn!("claude agents scan: exited {} ({})", out.exit_code, out.stderr.trim());
+            Vec::new()
+        }
+        Err(tt_exec::Error::Timeout { timeout, .. }) => {
+            log::warn!("claude agents scan: timed out after {timeout:?}");
+            Vec::new()
+        }
+        Err(tt_exec::Error::Spawn { source, .. }) => {
+            log::warn!("claude agents scan: could not spawn `claude`: {source}");
+            Vec::new()
+        }
+        Err(err) => {
+            log::warn!("claude agents scan: {err}");
+            Vec::new()
+        }
     }
 }
 
