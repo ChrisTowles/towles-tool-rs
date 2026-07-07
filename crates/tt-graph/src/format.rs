@@ -33,8 +33,16 @@ fn cost_per_million(model: &str) -> Option<(f64, f64)> {
 
 /// Estimate cost by distributing input/output tokens proportionally across the
 /// models actually used, rounded to 4 decimal places. Ports `estimateCost`.
+///
+/// Every model that ran counts toward the denominator, including Fable — even
+/// though `cost_per_million` has no Fable price yet (its share is effectively
+/// priced at 0). Omitting it would misattribute a mixed session's whole
+/// input/output token spend to the priced models that happen to appear.
 fn estimate_cost(analysis: &SessionAnalysis) -> f64 {
-    let total = analysis.opus_tokens + analysis.sonnet_tokens + analysis.haiku_tokens;
+    let total = analysis.opus_tokens
+        + analysis.sonnet_tokens
+        + analysis.haiku_tokens
+        + analysis.fable_tokens;
     if total == 0 {
         return 0.0;
     }
@@ -44,14 +52,19 @@ fn estimate_cost(analysis: &SessionAnalysis) -> f64 {
         ("opus", analysis.opus_tokens),
         ("sonnet", analysis.sonnet_tokens),
         ("haiku", analysis.haiku_tokens),
+        ("fable", analysis.fable_tokens),
     ] {
         if tokens == 0 {
             continue;
         }
+        // A model with no price in the table dilutes the fractions but adds no
+        // cost of its own (currently Fable). It must still count in `total`.
+        let Some((in_rate, out_rate)) = cost_per_million(model) else {
+            continue;
+        };
         let fraction = tokens as f64 / total as f64;
         let input_share = analysis.input_tokens as f64 * fraction;
         let output_share = analysis.output_tokens as f64 * fraction;
-        let (in_rate, out_rate) = cost_per_million(model).unwrap();
         cost += (input_share * in_rate + output_share * out_rate) / 1_000_000.0;
     }
 
@@ -252,5 +265,45 @@ mod tests {
         assert_eq!(num_to_string(0.0), "0");
         assert_eq!(num_to_string(0.0525), "0.0525");
         assert_eq!(num_to_string(0.005), "0.005");
+    }
+
+    // ── estimateCost ──
+
+    fn analysis(input: i64, output: i64, haiku: i64, fable: i64) -> SessionAnalysis {
+        SessionAnalysis {
+            input_tokens: input,
+            output_tokens: output,
+            opus_tokens: 0,
+            sonnet_tokens: 0,
+            haiku_tokens: haiku,
+            fable_tokens: fable,
+            cache_hit_rate: 0.0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            repeated_reads: 0,
+            model_efficiency: 0.0,
+        }
+    }
+
+    #[test]
+    fn cost_dilutes_across_unpriced_fable_tokens() {
+        // 1M fable + 10K haiku. Only ~1% of the tokens belong to (priced) haiku,
+        // so the estimate is ~1% of the naive "all haiku" figure — Fable dilutes
+        // the fraction but is itself priced at 0.
+        let a = analysis(1_000_000, 0, 10_000, 1_000_000);
+        let cost = estimate_cost(&a);
+
+        let naive_all_haiku = 1_000_000.0 * 0.8 / 1_000_000.0; // 0.8
+        let expected = naive_all_haiku * (10_000.0 / 1_010_000.0); // ~0.00792
+        assert!((cost - expected).abs() < 0.001, "cost={cost} expected≈{expected}");
+        assert!(cost < naive_all_haiku * 0.02, "cost {cost} should be ~1% of {naive_all_haiku}");
+    }
+
+    #[test]
+    fn cost_all_fable_is_zero() {
+        // Fable has no price in the table, so an all-Fable session costs nothing
+        // (and, crucially, does not panic on the missing price).
+        let a = analysis(1_000_000, 500_000, 0, 1_000_000);
+        assert_eq!(estimate_cost(&a), 0.0);
     }
 }

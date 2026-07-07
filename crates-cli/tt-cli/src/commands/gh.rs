@@ -114,9 +114,11 @@ fn pr(args: PrArgs) -> i32 {
         }
     }
 
-    // Push the branch if it has no upstream yet.
+    // Push when the branch has no upstream, is ahead of it, or its upstream is
+    // gone — otherwise the PR would be opened from a stale remote head.
     if let Some(status) = git(&["status", "-sb"]) {
-        if !status.stdout.contains("origin/") {
+        let branch_line = status.stdout.lines().next().unwrap_or("");
+        if tt_git::pr::should_push(branch_line) {
             ui::info("Pushing branch to remote...");
             if git(&["push", "-u", "origin", &current]).is_none() {
                 return 1;

@@ -104,6 +104,29 @@ pub fn generate_pr_content(branch: &str, commits: &[String]) -> PrContent {
     PrContent { title, body: lines.join("\n") }
 }
 
+/// Decide whether `git push` is needed before opening a PR, given the `## …`
+/// branch-header line of `git status -sb`.
+///
+/// Push when the branch has no upstream, has commits *ahead* of its upstream, or
+/// its upstream is `[gone]` (deleted on the remote). A branch that is up to date
+/// or only *behind* already has its head on the remote, so pushing is skipped —
+/// otherwise an existing-upstream branch with local commits would open a PR from
+/// a stale remote head.
+///
+/// The header line looks like `## <branch>` (no upstream) or
+/// `## <branch>...<upstream>[ <tracking>]`, where `<tracking>` is `[ahead N]`,
+/// `[behind M]`, `[ahead N, behind M]`, or `[gone]`.
+pub fn should_push(status_branch_line: &str) -> bool {
+    let line = status_branch_line.trim_start_matches("## ").trim();
+    let Some((_, upstream)) = line.split_once("...") else {
+        // No `...<upstream>` → the branch has never been pushed.
+        return true;
+    };
+    // `[gone]` upstream (deleted remote) must re-push; `[ahead …]` means we have
+    // local commits the remote lacks.
+    upstream.contains("[gone]") || upstream.contains("[ahead ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +174,37 @@ mod tests {
         // feature/ prefix + 42- leading number both stripped.
         let content = generate_pr_content("refactor/42-clean-up-code", &v(&["a", "b"]));
         assert_eq!(content.title, "Clean Up Code");
+    }
+
+    // ── should_push ──
+
+    #[test]
+    fn push_when_no_upstream() {
+        assert!(should_push("## feat"));
+    }
+
+    #[test]
+    fn no_push_when_up_to_date() {
+        assert!(!should_push("## feat...origin/feat"));
+    }
+
+    #[test]
+    fn push_when_ahead() {
+        assert!(should_push("## feat...origin/feat [ahead 2]"));
+    }
+
+    #[test]
+    fn no_push_when_only_behind() {
+        assert!(!should_push("## feat...origin/feat [behind 1]"));
+    }
+
+    #[test]
+    fn push_when_ahead_and_behind() {
+        assert!(should_push("## feat...origin/feat [ahead 1, behind 2]"));
+    }
+
+    #[test]
+    fn push_when_upstream_gone() {
+        assert!(should_push("## feat...origin/feat [gone]"));
     }
 }

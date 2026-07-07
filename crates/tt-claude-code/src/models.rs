@@ -15,7 +15,8 @@
 //!   Mythos 5, Opus 4.6 / 4.7 / 4.8, Sonnet 4.6 / 5. Listed in [`ONE_M_MODELS`].
 //! - **200K**: Haiku (all), Opus 4.5 and earlier, Sonnet 4.5 and earlier — and
 //!   the fallback for anything unrecognized.
-//! - **Amazon Bedrock** (`anthropic.<id>` prefix): treated as **200K** for now,
+//! - **Amazon Bedrock** (bare `anthropic.<id>` or a region-prefixed inference
+//!   profile such as `us.anthropic.<id>`): treated as **200K** for now,
 //!   regardless of model. Revisit if/when Bedrock serves 1M for these models.
 //! - An explicit `[1m]` marker on the model string (the older Sonnet 4/4.5 1M
 //!   opt-in) always forces 1M.
@@ -50,8 +51,12 @@ pub fn context_window(model: &str) -> i64 {
     if m.ends_with("[1m]") {
         return CONTEXT_1M;
     }
-    // Amazon Bedrock currently serves a 200K window for these models. KEEP UPDATED.
-    if m.starts_with("anthropic.") {
+    // Amazon Bedrock currently serves a 200K window for these models, whether the
+    // id is a bare `anthropic.<model>` or a region-prefixed cross-region inference
+    // profile (`us.anthropic.*`, `eu.`, `apac.`, `global.`). Match the
+    // `anthropic.` segment so region-prefixed profiles don't fall through to the
+    // 1M family match below. KEEP UPDATED.
+    if m.starts_with("anthropic.") || m.contains(".anthropic.") {
         return CONTEXT_200K;
     }
     if ONE_M_MODELS.iter().any(|needle| m.contains(needle)) {
@@ -95,6 +100,18 @@ mod tests {
     fn bedrock_prefix_caps_at_200k() {
         // Same model, Bedrock prefix → 200K even though first-party is 1M.
         assert_eq!(context_window("anthropic.claude-opus-4-8"), CONTEXT_200K);
+        assert_eq!(context_window("claude-opus-4-8"), CONTEXT_1M);
+    }
+
+    #[test]
+    fn bedrock_region_inference_profiles_cap_at_200k() {
+        // Cross-region inference profiles embed a 1M-native family but must still
+        // report 200K, so the `.anthropic.` segment has to win over the family match.
+        assert_eq!(context_window("us.anthropic.claude-opus-4-8-v1"), CONTEXT_200K);
+        assert_eq!(context_window("eu.anthropic.claude-sonnet-5-v1"), CONTEXT_200K);
+        assert_eq!(context_window("apac.anthropic.claude-opus-4-8"), CONTEXT_200K);
+        assert_eq!(context_window("global.anthropic.claude-fable-5"), CONTEXT_200K);
+        // The bare first-party id is unchanged (still 1M).
         assert_eq!(context_window("claude-opus-4-8"), CONTEXT_1M);
     }
 
