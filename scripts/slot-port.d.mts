@@ -1,17 +1,23 @@
-// Hand-written declarations for slot-port.mjs so TypeScript importers
-// (apps/client/vite.config.ts, e2e/wdio.conf.ts) typecheck. Keep in sync with
-// the .mjs exports.
+// Hand-written declarations for slot-port.mjs so TypeScript consumers
+// (apps/client/vite.config.ts, wdio.conf.ts) type-check under `tsc -b`.
+// Keep in sync with the exports in slot-port.mjs.
 
-export declare const PORT_MIN: number;
+export const PORT_MIN: number;
 
-/** Deterministic per-slot base port derived from the repo-root dir name. */
-export declare function slotBasePort(repoRoot: string): number;
+/** Stable base port for the slot rooted at `repoRoot` (keyed on its dir name). */
+export function slotBasePort(repoRoot: string): number;
 
-/** Read KEY=VALUE pairs from the repo's gitignored `.env.local`, if present. */
-export declare function loadEnvLocal(repoRoot: string): Record<string, string>;
+/**
+ * Load `.env.local` (at `repoRoot`) into `process.env`. Real env vars win over
+ * the file; a missing file is a no-op.
+ */
+export function loadEnvLocal(repoRoot: string): void;
 
-/** The slot's dev-server port: `TT_DEV_PORT` override or the slot base. */
-export declare function resolveDevPort(repoRoot: string): number;
+/**
+ * Resolve the dev-server port after loading `.env.local`; `null` for an
+ * invalid explicit `TT_DEV_PORT`.
+ */
+export function resolveDevPort(repoRoot: string): number | null;
 
-/** The in-app WebDriver server port paired with a dev port. */
-export declare function resolveWebdriverPort(devPort: number): number;
+/** The embedded WebDriver server's port for a given dev port. */
+export function resolveWebdriverPort(devPort: number): number;
