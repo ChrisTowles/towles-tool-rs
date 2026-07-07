@@ -1,7 +1,7 @@
 //! The agentboard engine: tracker + metadata + session-order + git cache +
 //! watchers behind one struct, host-agnostic. Extracted from
-//! `crates-tauri/tt-app/src/agentboard.rs` (phase T3 of
-//! docs/AGENTBOARD-PORT.md) so both hosts share it:
+//! `crates-tauri/tt-app/src/agentboard.rs` (phase T3 of the agentboard port)
+//! so both hosts share it:
 //!
 //! - the Tauri app drives it repos.json-first ([`Engine::scan_once`],
 //!   [`Engine::compute_payload`]);
