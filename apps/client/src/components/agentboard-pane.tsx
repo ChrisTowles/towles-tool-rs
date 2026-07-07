@@ -35,7 +35,8 @@ export function WorkingContext({
   repo: RepoData;
   folder: FolderData;
   pr?: PrItem;
-  onOpenDiff: (dir: string, name: string) => void;
+  /** Opens the folder's diff pane in its focused window. */
+  onOpenDiff: (dir: string) => void;
 }) {
   const scope = pathScope(folder.dir);
   // A slot/worktree has a distinct checkout name; a lone clone shares the
@@ -53,7 +54,7 @@ export function WorkingContext({
           {repoDistinct && <span className="shrink-0 font-medium">{repo.name}</span>}
           <span className="min-w-0 shrink truncate font-mono text-[11px]">⎇ {folder.branch}</span>
           {folder.isWorktree && <WorktreeBadge />}
-          <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir, folder.name)} />
+          <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir)} />
           {pr && <PrChip pr={pr} />}
         </div>
         <PurposeRow folder={folder} variant="band" />

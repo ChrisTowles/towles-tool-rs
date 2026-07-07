@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RepoGroup, RollupChip } from "@/components/agentboard-rail";
-import { DiffViewer } from "@/components/diff-view";
+import { DiffPane } from "@/components/diff-pane";
 import { PersistenceBanner } from "@/components/persistence-banner";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
@@ -42,9 +42,14 @@ import {
   abInvoke,
   claudeCommand,
   claudeTitleName,
+  diffPaneDir,
+  diffPaneId,
+  dropPane,
+  isDiffPane,
   liveSessions,
   normalizeWins,
   paneRects,
+  placePane,
   prForFolder,
   sessionLabel,
   sleep,
@@ -66,6 +71,7 @@ import {
   type WindowsPayload,
   windowColor,
 } from "@/lib/agentboard";
+import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
 import { useWorkspace } from "@/lib/workspace";
@@ -84,13 +90,16 @@ import { toast } from "sonner";
  * status is reported, never re-rendered (the real TUI is the PTY). All
  * opened terminals live in one flat mounted pool (hidden unless in the
  * active folder's active window) so scrollback survives switching and
- * regrouping. Layout persists via debounced `ab_save_windows`. ⌘D = new
- * session in the selected folder, ⌘W = close the selected session.
+ * regrouping. A folder's diff opens as a pane in the same tiling (never a
+ * modal), so you review while the agents keep working. Layout persists via
+ * debounced `ab_save_windows`. Shortcuts come from the registry in
+ * lib/shortcuts.tsx (⌘D new session, ⌘⇧W close session, ⌘⇧G diff pane),
+ * active only while this tab is shown.
  */
 export function AgentboardScreen() {
   const state = useAgentboardState();
   const { snapshot } = useStoreSnapshot();
-  const { openTab } = useWorkspace();
+  const { openTab, activeTab } = useWorkspace();
   const now = useNow(30_000);
 
   const [selected, setSelected] = useState<Selected>(null);
@@ -182,14 +191,18 @@ export function AgentboardScreen() {
   );
   const activeRepo = activeFolder ? repoOf.get(activeFolder.dir) : undefined;
 
-  // Diff-preview dialog: a folder's full patch, fetched on demand.
-  const [diff, setDiff] = useState<{ dir: string; name: string; text: string | null } | null>(
-    null,
-  );
-  async function openDiff(dir: string, name: string) {
-    setDiff({ dir, name, text: null });
-    const text = await abInvoke<string>("ab_get_diff", { dir });
-    setDiff((cur) => (cur && cur.dir === dir ? { ...cur, text: text ?? "" } : cur));
+  // Folder dir → its data, for the diff panes (their pane id carries the dir).
+  const folderByDir = useMemo(() => {
+    const m = new Map<string, FolderData>();
+    for (const r of repos) for (const f of r.folders) m.set(f.dir, f);
+    return m;
+  }, [repos]);
+
+  // Open a folder's diff as a pane in its focused window (beside the live
+  // terminals — never a modal). Re-opening focuses the window it's already in.
+  function openDiff(dir: string) {
+    setActiveFolderDir(dir);
+    addPaneToActive(dir, diffPaneId(dir));
   }
 
   // --- Window layout (Tier 5): frontend-owned, hydrated once, saved debounced.
@@ -248,47 +261,17 @@ export function AgentboardScreen() {
     windowsForFolder.find((w) => w.id === (activeFolderDir && wins?.activeWindows[activeFolderDir])) ??
     windowsForFolder[0];
 
-  // Add a session's pane to its own folder's focused window (creating one —
-  // "primary" — if the folder has none yet). A window may never span folders, so
-  // this always targets the pane's own folder, never whatever window/folder
-  // happened to be showing beforehand.
-  function addPaneToActive(folderDir: string, sessionId: string) {
-    updateWins([folderDir], (w) => {
-      // Already placed in a window: don't move it — switch to that window so
-      // clicking the session brings its pane into view (a session in a
-      // non-active window would otherwise select but stay hidden).
-      const host = w.windows.find((win) => win.panes.includes(sessionId));
-      if (host) {
-        return w.activeWindows[folderDir] === host.id
-          ? w
-          : { ...w, activeWindows: { ...w.activeWindows, [folderDir]: host.id } };
-      }
-      let windows = w.windows;
-      let windowId = w.activeWindows[folderDir];
-      if (!windows.some((win) => win.id === windowId && win.folderDir === folderDir)) {
-        windowId = `w${Date.now()}`;
-        windows = [...windows, { id: windowId, name: "primary", folderDir, panes: [] }];
-      }
-      return {
-        windows: windows.map((win) =>
-          win.id === windowId ? { ...win, panes: [...win.panes, sessionId] } : win,
-        ),
-        activeWindows: { ...w.activeWindows, [folderDir]: windowId },
-      };
-    });
+  // Add a pane (session or diff) to its own folder's focused window — the
+  // placement rules live in the pure `placePane` reducer (lib/agentboard.ts).
+  function addPaneToActive(folderDir: string, paneId: string) {
+    updateWins([folderDir], (w) => placePane(w, folderDir, paneId, () => `w${Date.now()}`));
   }
 
-  function removePane(sessionId: string) {
+  function removePane(paneId: string) {
     // A pane lives in exactly one folder's window; find it before mutating
     // so we know which single folder to mark touched.
-    const folderDir = wins?.windows.find((win) => win.panes.includes(sessionId))?.folderDir;
-    updateWins(folderDir ? [folderDir] : [], (w) => ({
-      ...w,
-      windows: w.windows.map((win) => ({
-        ...win,
-        panes: win.panes.filter((p) => p !== sessionId),
-      })),
-    }));
+    const folderDir = wins?.windows.find((win) => win.panes.includes(paneId))?.folderDir;
+    updateWins(folderDir ? [folderDir] : [], (w) => dropPane(w, paneId));
   }
 
   // Switch the main area to a folder without selecting one of its sessions
@@ -502,26 +485,30 @@ export function AgentboardScreen() {
     },
   };
 
-  // ⌘D = new session in the focused folder (matches the "+ session" button,
-  // which only needs a focused folder, not a selected session); ⌘W = close
-  // the selected session (needs an actual session, so it stays gated on
-  // `selected`).
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.key === "d") {
-        if (!activeFolderDir) return;
-        e.preventDefault();
-        void newSession(activeFolderDir);
-      } else if (e.key === "w") {
-        if (!selected) return;
-        e.preventDefault();
-        void closeSession(selected.sessionId);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeFolderDir, selected]);
+  // Agentboard-scoped shortcuts (see lib/shortcuts.tsx for the registry).
+  // Gated on the tab being active: this screen stays mounted while hidden, so
+  // without the gate ⌘D would spawn sessions from the Cockpit. Close-session
+  // is ⌘⇧W (not ⌘W) — killing a shell deserves a deliberate chord.
+  useShortcuts(
+    useMemo(
+      () => ({
+        "ab-new-session": () => {
+          if (activeFolderDir) void newSession(activeFolderDir);
+        },
+        "ab-close-session": () => {
+          if (selected) void closeSession(selected.sessionId);
+        },
+        "ab-toggle-diff": () => {
+          if (activeFolderDir) openDiff(activeFolderDir);
+        },
+      }),
+      // newSession/closeSession/openDiff are stable within a render pass; the
+      // state they close over is what matters.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [activeFolderDir, selected, wins],
+    ),
+    activeTab === "agentboard",
+  );
 
   // Compact attention strip: failing/review PRs + the next imminent meeting.
   const attention = useMemo(() => {
@@ -682,6 +669,7 @@ export function AgentboardScreen() {
                     onClick={() => actions.focusWindow(w.id)}
                     onDoubleClick={() => setRenamingWin(w.id)}
                     title="double-click to rename"
+                    aria-pressed={w.id === activeWin?.id}
                     className={cn(
                       "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
                       w.id === activeWin?.id
@@ -716,10 +704,24 @@ export function AgentboardScreen() {
                       {w.panes.length}⊞
                     </span>
                     {windowsForFolder.length > 1 && (
+                      // span-with-role, not <button>: it nests inside the
+                      // window chip's real <button>, and interactive elements
+                      // may not nest. Keyboard support added by hand instead.
                       <span
                         role="button"
+                        tabIndex={0}
                         title="close window (panes ungroup; sessions stay in the rail)"
+                        aria-label={`close window ${w.name}`}
                         onClick={(e) => {
+                          e.stopPropagation();
+                          updateWins([w.folderDir], (cur) => ({
+                            ...cur,
+                            windows: cur.windows.filter((x) => x.id !== w.id),
+                          }));
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter" && e.key !== " ") return;
+                          e.preventDefault();
                           e.stopPropagation();
                           updateWins([w.folderDir], (cur) => ({
                             ...cur,
@@ -757,7 +759,7 @@ export function AgentboardScreen() {
                     type="button"
                     onClick={() => void newSession(activeFolderDir)}
                     className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
-                    title="New session in the focused folder (⌘D)"
+                    title={`New session in the focused folder (${shortcutHint("ab-new-session")})`}
                   >
                     <Plus className="size-3" /> session
                   </button>
@@ -767,9 +769,10 @@ export function AgentboardScreen() {
                     type="button"
                     onClick={() => void closeSession(selected.sessionId)}
                     className="ml-auto shrink-0 rounded-md px-2 py-1 font-mono text-[10.5px] text-muted-foreground hover:bg-accent/50"
-                    title="Close session (⌘W)"
+                    title={`Close session (${shortcutHint("ab-close-session")})`}
+                    aria-label="Close the selected session"
                   >
-                    Close ⌘W
+                    Close {shortcutHint("ab-close-session")}
                   </button>
                 )}
               </div>
@@ -809,7 +812,7 @@ export function AgentboardScreen() {
                               selectSession(folderOf.get(id)?.dir ?? cwds.current[id] ?? "", id)
                             }
                             className={cn(
-                              "flex h-full flex-col overflow-hidden rounded-lg border bg-[#07090c]",
+                              "flex h-full flex-col overflow-hidden rounded-lg border bg-card",
                               selected?.sessionId === id && "border-violet-500/60",
                             )}
                           >
@@ -822,7 +825,10 @@ export function AgentboardScreen() {
                                 onUngroup={() => actions.ungroup(id)}
                               />
                             )}
-                            <div className="min-h-0 flex-1">
+                            {/* data-term-host marks terminal territory for the
+                                shortcut guard — keys typed here belong to the
+                                shell (Ctrl+D is EOF, not "new session"). */}
+                            <div className="min-h-0 flex-1" data-term-host>
                               <TerminalView
                                 termId={id}
                                 cwd={folderOf.get(id)?.dir ?? cwds.current[id]}
@@ -834,9 +840,22 @@ export function AgentboardScreen() {
                         </div>
                       );
                     })}
+                    {/* Diff panes: a folder's patch tiled beside its terminals. */}
+                    {panes.filter(isDiffPane).map((id) => {
+                      const r = rectFor(id);
+                      const dir = diffPaneDir(id) ?? "";
+                      return (
+                        <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
+                          <DiffPane
+                            folder={folderByDir.get(dir)}
+                            onClose={() => removePane(id)}
+                          />
+                        </div>
+                      );
+                    })}
                     {/* Panes restored from disk but not started this run. */}
                     {panes
-                      .filter((id) => !open.includes(id))
+                      .filter((id) => !open.includes(id) && !isDiffPane(id))
                       .map((id) => {
                         const r = rectFor(id);
                         const s = sessionById.get(id);
@@ -1015,23 +1034,6 @@ export function AgentboardScreen() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={diff != null} onOpenChange={(o) => !o && setDiff(null)}>
-        <DialogContent className="flex h-[85vh] w-full flex-col sm:max-w-6xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-baseline gap-3 font-mono text-sm">
-              <span>{diff?.name}</span>
-              <span className="text-[11px] font-normal text-muted-foreground">
-                vs pushed base (merge-base with upstream, else origin/main)
-              </span>
-            </DialogTitle>
-          </DialogHeader>
-          {diff?.text == null ? (
-            <p className="p-2 text-sm text-muted-foreground">Loading…</p>
-          ) : (
-            <DiffViewer text={diff.text} />
-          )}
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

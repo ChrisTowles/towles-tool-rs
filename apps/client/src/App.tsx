@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useMemo } from "react";
 import { AppHeader } from "@/components/app-header";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CloseGuard } from "@/components/close-guard";
@@ -16,39 +16,30 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { openSettings } from "@/lib/open-settings";
 import { SCREENS } from "@/lib/screens";
+import { ShortcutHelpHost, useShortcuts, type ShortcutScope } from "@/lib/shortcuts";
 import { WorkspaceProvider, useWorkspace } from "@/lib/workspace";
 import { SCREEN_COMPONENTS } from "@/screens";
 
+/** Global (always-active) bindings + the `?` help overlay. Screen-scoped
+ * bindings live with their screens (e.g. Agentboard), gated on their tab. */
 function Shortcuts() {
-  const { setPaletteOpen, toggleSidebar, paletteOpen } = useWorkspace();
+  const { setPaletteOpen, toggleSidebar, paletteOpen, activeTab } = useWorkspace();
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      switch (e.key) {
-        case "k":
-          e.preventDefault();
-          setPaletteOpen(!paletteOpen);
-          break;
-        case ",":
-          e.preventDefault();
-          void openSettings();
-          break;
-        case "b":
-          e.preventDefault();
-          toggleSidebar();
-          break;
-        case "j":
-          e.preventDefault();
-          window.dispatchEvent(new Event("quicklog:open"));
-          break;
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [setPaletteOpen, toggleSidebar, paletteOpen]);
+  useShortcuts(
+    useMemo(
+      () => ({
+        palette: () => setPaletteOpen(!paletteOpen),
+        settings: () => void openSettings(),
+        sidebar: toggleSidebar,
+        quicklog: () => window.dispatchEvent(new Event("quicklog:open")),
+      }),
+      [setPaletteOpen, toggleSidebar, paletteOpen],
+    ),
+  );
 
-  return null;
+  const activeScopes: ShortcutScope[] =
+    activeTab === "agentboard" ? ["global", "agentboard"] : ["global"];
+  return <ShortcutHelpHost activeScopes={activeScopes} />;
 }
 
 function Workspace() {
