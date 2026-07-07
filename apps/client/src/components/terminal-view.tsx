@@ -59,11 +59,16 @@ export function TerminalView({
         fontSize: 13,
         fontFamily: "ui-monospace, 'JetBrains Mono', 'Fira Code', monospace",
         scrollback: 10_000,
+        // No wheel animation: the ~100ms ease steps in whole lines (janky on
+        // WebKitGTK), and an in-flight animation fights the write-time
+        // viewport correction in preserveScrollOnWrite.
+        smoothScrollDuration: 0,
         theme: {
           background: cs.backgroundColor || "#1e1e2e",
           foreground: cs.color || "#cdd6f4",
         },
       });
+      preserveScrollOnWrite(term);
       const fit = new FitAddon();
       term.loadAddon(fit);
 
@@ -154,6 +159,37 @@ export function TerminalView({
   }, [termId, cwd]);
 
   return <div ref={hostRef} className="size-full bg-background p-1" />;
+}
+
+/**
+ * ghostty-web ≤0.4.0 calls scrollToBottom() on every write() when the
+ * viewport is scrolled up (coder/ghostty-web#127), so streaming PTY output —
+ * Claude Code repaints its status line constantly — yanks the user out of
+ * scrollback within a repaint or two. Until the upstream fix (PR #150) ships,
+ * wrap the private writeInternal to restore the viewport after each write,
+ * shifted by however many lines the write pushed into scrollback so the same
+ * content stays on screen. At the bottom (viewportY 0) nothing changes:
+ * output still follows live.
+ */
+function preserveScrollOnWrite(term: Terminal) {
+  const t = term as unknown as {
+    writeInternal: (data: string | Uint8Array, callback?: () => void) => void;
+    targetViewportY: number;
+  };
+  const original = t.writeInternal.bind(term);
+  t.writeInternal = (data, callback) => {
+    // viewportY counts lines up from the bottom; 0 means pinned to live output.
+    const viewportY = term.getViewportY();
+    const scrollbackBefore = term.getScrollbackLength();
+    original(data, callback);
+    if (viewportY > 0) {
+      const grown = term.getScrollbackLength() - scrollbackBefore;
+      term.scrollToLine(viewportY + grown); // clamps to scrollback length
+      // Keep the wheel-scroll target in sync so a queued smooth-scroll step
+      // can't ease back toward a stale position.
+      t.targetViewportY = term.getViewportY();
+    }
+  };
 }
 
 function base64ToBytes(b64: string): Uint8Array {
