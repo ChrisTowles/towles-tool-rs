@@ -85,6 +85,12 @@ pub struct Engine {
     preferred_editor: String,
     compact_recommend_percent: u8,
     seeded_once: bool,
+    /// Sticky agent→PTY attribution: thread id (CLI sessionId) → the
+    /// `TT_SESSION_ID` read from that agent's process env. Refreshed from live
+    /// processes each compute and kept while the tracker still holds the
+    /// thread, so an agent that exits stays on the pane it ran in instead of
+    /// drifting to its folder's default session.
+    thread_sessions: HashMap<String, String>,
 }
 
 /// Everything [`Engine::compute_payload_with`] needs that is derived from the
@@ -192,6 +198,7 @@ impl Engine {
             preferred_editor,
             compact_recommend_percent,
             seeded_once: false,
+            thread_sessions: HashMap::new(),
         }
     }
 
@@ -388,7 +395,20 @@ impl Engine {
         snapshot: &AgentSnapshot,
         now: i64,
     ) -> StatePayload {
+        // Link each live agent to the PTY session it runs in: read `TT_SESSION_ID`
+        // from the agent's process env (/proc), keyed by its thread id (==
+        // sessionId). Attributions are sticky: they live in `thread_sessions`
+        // for as long as the tracker still holds the thread, so an agent whose
+        // process exited (its final Complete/Interrupted state) stays on the
+        // pane it ran in instead of drifting to its folder's default session.
+        // Agents with no injected id (e.g. non-Claude kinds without a pid
+        // source) stay unmapped and fall back to their folder's default
+        // session in `assemble_state`.
+        for (tid, sid) in &snapshot.tt_session_by_thread {
+            self.thread_sessions.insert(tid.clone(), sid.clone());
+        }
         let mut pinned: HashMap<String, Vec<String>> = HashMap::new();
+        let mut tracked_threads: HashSet<String> = HashSet::new();
         for entry in entries {
             for agent in self.tracker.get_agents(&entry.name) {
                 let Some(tid) = agent.thread_id.clone() else {
@@ -400,9 +420,15 @@ impl Engine {
                         .or_default()
                         .push(instance_key(&agent.agent, Some(&tid)));
                 }
+                tracked_threads.insert(tid);
             }
         }
         self.tracker.set_pinned_instances_multi(&pinned);
+        // Drop cached attributions for threads that are neither alive nor
+        // still shown by the tracker — the cache stays bounded by the set of
+        // agents actually on the board.
+        self.thread_sessions
+            .retain(|tid, _| snapshot.live_threads.contains(tid) || tracked_threads.contains(tid));
 
         // Prune schedule — every broadcast (§4).
         self.tracker.prune_stuck(STUCK_MS, now);
@@ -420,9 +446,11 @@ impl Engine {
         let editor = self.preferred_editor.clone();
         // Attribute each agent event to the PTY session it ran in, joining the
         // event's thread id (== the CLI sessionId) to the `TT_SESSION_ID` read
-        // from that agent's process. Unmatched → folder's default session.
+        // from that agent's process (sticky across process exit, see above).
+        // No mapping → folder's default session; a mapping onto a session that
+        // isn't one of the folder's records → dropped (see `assemble_state`).
         let attribute = |event: &AgentEvent| {
-            event.thread_id.as_ref().and_then(|tid| snapshot.tt_session_by_thread.get(tid).cloned())
+            event.thread_id.as_ref().and_then(|tid| self.thread_sessions.get(tid).cloned())
         };
         let mut payload = assemble_state(
             entries,
