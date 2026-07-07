@@ -58,6 +58,9 @@ export function TerminalView({
         cursorBlink: true,
         fontSize: 13,
         fontFamily: "ui-monospace, 'JetBrains Mono', 'Fira Code', monospace",
+        // ghostty's WASM engine caps history around ~1.5k short lines
+        // regardless of this value (tried 1M: eviction onset unchanged), so
+        // this is aspirational until upstream honors it.
         scrollback: 10_000,
         // No wheel animation: the ~100ms ease steps in whole lines (janky on
         // WebKitGTK), and an in-flight animation fights the write-time
@@ -69,6 +72,12 @@ export function TerminalView({
         },
       });
       preserveScrollOnWrite(term);
+      if (import.meta.env.VITE_WDIO) {
+        // Expose live terminals to the drive/e2e harness (wdio builds only).
+        const w = window as unknown as { __tt_terms?: Record<string, Terminal> };
+        (w.__tt_terms ??= {})[termId] = term;
+        unlisteners.push(() => delete w.__tt_terms?.[termId]);
+      }
       const fit = new FitAddon();
       term.loadAddon(fit);
 
@@ -183,7 +192,10 @@ function preserveScrollOnWrite(term: Terminal) {
     const scrollbackBefore = term.getScrollbackLength();
     original(data, callback);
     if (viewportY > 0) {
-      const grown = term.getScrollbackLength() - scrollbackBefore;
+      // Growth can read negative when the engine evicts old pages mid-write;
+      // eviction at the top doesn't move content relative to the bottom, so
+      // never scroll down for it — only compensate for added lines.
+      const grown = Math.max(0, term.getScrollbackLength() - scrollbackBefore);
       term.scrollToLine(viewportY + grown); // clamps to scrollback length
       // Keep the wheel-scroll target in sync so a queued smooth-scroll step
       // can't ease back toward a stale position.
