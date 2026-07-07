@@ -86,11 +86,14 @@ pub fn socket_path() -> PathBuf {
 /// shell prompt shouldn't), screenful restore on reattach, and forward the
 /// attach client's `TT_SESSION_ID`/`TERM` into newly created session shells —
 /// that's how a Claude launched inside the shell is attributed back to its
-/// session (see `tt_agentboard::procenv`).
+/// session (see `tt_agentboard::procenv`). The display/session vars ride along
+/// too: the daemon runs under the service manager with a login env that lacks
+/// them, and clipboard tools inside the shell (e.g. `wl-paste`, which Claude
+/// Code shells out to for Ctrl+V image paste) need the app's live values.
 const CONF: &str = r#"# Managed by Towles Tool — rewritten whenever the app spawns a terminal.
 prompt_prefix = ""
 session_restore_mode = "screen"
-forward_env = ["TT_SESSION_ID", "TERM"]
+forward_env = ["TT_SESSION_ID", "TERM", "WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE"]
 "#;
 
 /// Write (refresh) our daemon config, returning its path. `None` when there
