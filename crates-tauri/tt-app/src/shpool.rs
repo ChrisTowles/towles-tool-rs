@@ -154,6 +154,70 @@ pub fn kill_session(term_id: &str) {
         .status();
 }
 
+/// One daemon session for the cleanup UI. `term_id` is the name with this
+/// slot's `tt-<slot>-` prefix stripped — it equals a live `SessionData.id`
+/// when a matching agentboard session still exists, else the session is an
+/// orphan (its record was removed but the shell kept running).
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ShpoolSessionInfo {
+    name: String,
+    term_id: String,
+    /// "attached" or "disconnected".
+    status: String,
+    started_at_ms: Option<i64>,
+}
+
+/// List this slot's daemon sessions for the cleanup dialog. Empty when shpool
+/// is absent or the daemon isn't running.
+#[tauri::command]
+pub fn shpool_sessions() -> Vec<ShpoolSessionInfo> {
+    if !available() {
+        return Vec::new();
+    }
+    let Ok(out) = Command::new("shpool")
+        .arg("-s")
+        .arg(socket_path())
+        .args(["list", "--json"])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let prefix = format!("tt-{}-", crate::slot_label());
+    parse_list_full(&String::from_utf8_lossy(&out.stdout))
+        .into_iter()
+        .filter_map(|(name, status, started_at_ms)| {
+            let term_id = name.strip_prefix(&prefix)?.to_string();
+            Some(ShpoolSessionInfo { name, term_id, status: status.to_lowercase(), started_at_ms })
+        })
+        .collect()
+}
+
+/// Kill one daemon session by full name (cleanup dialog). Guarded to this
+/// slot's prefix so it can never touch another slot's or an unrelated shpool
+/// session.
+#[tauri::command]
+pub fn shpool_kill_session(name: String) -> Result<(), String> {
+    let prefix = format!("tt-{}-", crate::slot_label());
+    if !name.starts_with(&prefix) {
+        return Err("refusing to kill a session outside this slot".to_string());
+    }
+    let status = Command::new("shpool")
+        .arg("-s")
+        .arg(socket_path())
+        .arg("kill")
+        .arg(&name)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() { Ok(()) } else { Err(format!("shpool kill {name} failed")) }
+}
+
 /// Names of every session alive on the daemon (attached or disconnected).
 /// Empty when shpool is absent or the daemon isn't running. Compare via
 /// [`session_name`].
@@ -304,6 +368,12 @@ fn run_cargo_install(app: &AppHandle) -> Result<(), String> {
 }
 
 fn parse_list_names(json: &str) -> HashSet<String> {
+    parse_list_full(json).into_iter().map(|(name, _, _)| name).collect()
+}
+
+/// Parse `shpool list --json` into `(name, status, started_at_ms)` tuples.
+/// Tolerant of missing/renamed fields (only `name` is required).
+fn parse_list_full(json: &str) -> Vec<(String, String, Option<i64>)> {
     #[derive(serde::Deserialize)]
     struct Reply {
         #[serde(default)]
@@ -312,9 +382,18 @@ fn parse_list_names(json: &str) -> HashSet<String> {
     #[derive(serde::Deserialize)]
     struct Entry {
         name: String,
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        started_at_unix_ms: Option<i64>,
     }
     serde_json::from_str::<Reply>(json)
-        .map(|r| r.sessions.into_iter().map(|s| s.name).collect())
+        .map(|r| {
+            r.sessions
+                .into_iter()
+                .map(|s| (s.name, s.status.unwrap_or_default(), s.started_at_unix_ms))
+                .collect()
+        })
         .unwrap_or_default()
 }
 

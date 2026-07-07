@@ -31,6 +31,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { SessionsDialog } from "@/components/sessions-dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
@@ -102,6 +103,12 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
   // Track the slider locally while dragging; commit on release.
   const [draft, setDraft] = useState<number | null>(null);
   const pct = draft ?? threshold;
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  // Every session that still has a record — daemon sessions outside this set
+  // are orphans in the cleanup dialog.
+  const knownIds = new Set(
+    state.repos.flatMap((repo) => repo.folders.flatMap((f) => f.sessions.map((s) => s.id))),
+  );
 
   return (
     <div className="flex items-center gap-2.5 border-b bg-card px-3 py-2 font-mono text-[11px]">
@@ -154,9 +161,17 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
               Past this threshold, a session whose prompt cache expired shows the ❄ compact
               nudge. Stored in the shared towles-tool settings file.
             </div>
+            <button
+              type="button"
+              onClick={() => setSessionsOpen(true)}
+              className="mt-1 self-start text-xs text-violet-500 hover:text-violet-400"
+            >
+              Manage terminal sessions…
+            </button>
           </div>
         </PopoverContent>
       </Popover>
+      <SessionsDialog open={sessionsOpen} onOpenChange={setSessionsOpen} knownIds={knownIds} />
     </div>
   );
 }

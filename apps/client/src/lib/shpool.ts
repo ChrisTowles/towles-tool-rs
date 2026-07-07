@@ -3,6 +3,28 @@ import { toast } from "sonner";
 import { isTauri } from "@/lib/data";
 import { invokeCmd, invokeOrThrow } from "@/lib/tauri";
 
+/** One daemon session, from the Rust `shpool_sessions` command. */
+export type ShpoolSession = {
+  /** Full shpool session name (`tt-<slot>-<termId>`). */
+  name: string;
+  /** The name with the slot prefix stripped — equals a `SessionData.id` when a
+   * matching agentboard session still exists, else it's an orphan. */
+  termId: string;
+  /** "attached" or "disconnected". */
+  status: string;
+  startedAtMs?: number | null;
+};
+
+/** List this slot's persistent shpool sessions (empty outside Tauri / no shpool). */
+export async function fetchShpoolSessions(): Promise<ShpoolSession[]> {
+  return (await invokeCmd<ShpoolSession[]>("shpool_sessions")) ?? [];
+}
+
+/** Kill one daemon session by full name (cleanup). Throws on failure. */
+export async function killShpoolSession(name: string): Promise<void> {
+  await invokeOrThrow("shpool_kill_session", { name });
+}
+
 /** Persistence capability, from the Rust `shpool_status` command. */
 export type ShpoolStatus = {
   /** The shpool binary is present — shells survive an app restart. */

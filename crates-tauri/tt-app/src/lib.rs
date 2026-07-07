@@ -218,6 +218,8 @@ pub fn run() {
             terminal::app_close,
             shpool::shpool_status,
             shpool::shpool_install,
+            shpool::shpool_sessions,
+            shpool::shpool_kill_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Towles Tool application");
