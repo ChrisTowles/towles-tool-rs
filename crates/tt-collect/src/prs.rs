@@ -1,27 +1,29 @@
 //! `gh`-backed pull-request collector.
 //!
-//! `gh` has no cwd support in [`tt_exec`], so this module shells out with
-//! [`std::process::Command`] directly to run each repo's `gh` in its own working
-//! directory. The JSON-to-[`PrInput`] mapping is factored into pure functions
-//! ([`map_pr_list`], [`checks_status`]) so it can be unit-tested with inline
-//! fixtures without invoking `gh`.
+//! Subprocess plumbing (cwd, timeout, name cache) lives in [`crate::gh`]. The
+//! JSON-to-[`PrInput`] mapping is factored into pure functions ([`map_pr_list`],
+//! [`checks_status`]) so it can be unit-tested with inline fixtures without
+//! invoking `gh`.
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Command;
 
 use tt_store::PrInput;
+
+use crate::gh;
 
 /// The `--json` field set requested from `gh pr list`.
 const PR_LIST_FIELDS: &str = "number,title,headRefName,state,statusCheckRollup,url,updatedAt";
 
 /// Collect and dedup the authored + review-requested open PRs for one repo dir.
 ///
-/// Returns an error string (never panics) if `gh` is missing, exits non-zero, or
-/// emits unparseable JSON. Dedup is by PR number; a review-requested entry wins
-/// over an authored one for the same PR.
-pub(crate) fn collect_repo_prs(dir: &Path) -> Result<Vec<PrInput>, String> {
-    let repo = repo_name_with_owner(dir)?;
+/// Returns the repo's `owner/name` alongside its PRs so callers know which repo
+/// a (possibly empty) result belongs to. Returns an error string (never panics)
+/// if `gh` is missing, times out, exits non-zero, or emits unparseable JSON.
+/// Dedup is by PR number; a review-requested entry wins over an authored one
+/// for the same PR.
+pub(crate) fn collect_repo_prs(dir: &Path) -> Result<(String, Vec<PrInput>), String> {
+    let repo = gh::repo_name_with_owner(dir)?;
     let authored = gh_pr_list(dir, &["--author", "@me"])?;
     let review = gh_pr_list(dir, &["--search", "review-requested:@me"])?;
 
@@ -33,50 +35,23 @@ pub(crate) fn collect_repo_prs(dir: &Path) -> Result<Vec<PrInput>, String> {
     for pr in map_pr_list(&review, &repo, true) {
         by_number.insert(pr.number, pr);
     }
-    Ok(by_number.into_values().collect())
-}
-
-/// `owner/repo` for the repo rooted at `dir`, via `gh repo view`.
-fn repo_name_with_owner(dir: &Path) -> Result<String, String> {
-    let output = Command::new("gh")
-        .args(["repo", "view", "--json", "nameWithOwner"])
-        .current_dir(dir)
-        .output()
-        .map_err(|e| format!("failed to spawn gh in {}: {e}", dir.display()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "gh repo view failed in {}: {}",
-            dir.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let value: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid gh JSON: {e}"))?;
-    value
-        .get("nameWithOwner")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("gh repo view returned no nameWithOwner for {}", dir.display()))
+    Ok((repo, by_number.into_values().collect()))
 }
 
 /// Run `gh pr list` in `dir` with the shared field set plus `extra` filters.
 fn gh_pr_list(dir: &Path, extra: &[&str]) -> Result<serde_json::Value, String> {
-    let mut args = vec!["pr", "list", "--state", "open", "--json", PR_LIST_FIELDS];
+    let mut args = vec![
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        gh::LIST_LIMIT,
+        "--json",
+        PR_LIST_FIELDS,
+    ];
     args.extend_from_slice(extra);
-    log::debug!("gh {} (cwd {})", args.join(" "), dir.display());
-    let output = Command::new("gh")
-        .args(&args)
-        .current_dir(dir)
-        .output()
-        .map_err(|e| format!("failed to spawn gh in {}: {e}", dir.display()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "gh pr list failed in {}: {}",
-            dir.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid gh JSON: {e}"))
+    gh::run_json(dir, &args)
 }
 
 /// Map a parsed `gh pr list` JSON array to [`PrInput`]s. Non-array input yields

@@ -329,13 +329,14 @@ pub fn infer_type_from_path(path: &Path) -> Option<JournalType> {
 /// `extractDateFromFilename`.
 pub fn extract_date_from_filename(path: &Path) -> Option<NaiveDate> {
     let name = path.file_name()?.to_str()?;
-    let bytes = name.as_bytes();
-    // Expect at least `YYYY-MM-DD` (10 chars) with dashes at indices 4 and 7.
-    if bytes.len() < 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+    // Expect a `YYYY-MM-DD` prefix. `str::get` returns None (rather than
+    // panicking) when a multibyte character straddles a slice boundary, so an odd
+    // filename is skipped instead of crashing the whole list/search.
+    let (y, m, d) = (name.get(0..4)?, name.get(5..7)?, name.get(8..10)?);
+    if name.get(4..5)? != "-" || name.get(7..8)? != "-" {
         return None;
     }
     let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
-    let (y, m, d) = (&name[0..4], &name[5..7], &name[8..10]);
     if !digits(y) || !digits(m) || !digits(d) {
         return None;
     }
@@ -601,6 +602,19 @@ mod tests {
             Some(ymd(2026, 3, 15))
         );
         assert_eq!(extract_date_from_filename(Path::new("/x/no-date.md")), None);
+    }
+
+    #[test]
+    fn extract_date_skips_multibyte_without_panic() {
+        // A multibyte char straddling the YYYY-MM-DD byte window must be skipped,
+        // not panic on a non-char-boundary slice (which would kill list/search).
+        assert_eq!(extract_date_from_filename(Path::new("/x/2026-07-1日.md")), None);
+        assert_eq!(extract_date_from_filename(Path::new("/x/2026-07-€x.md")), None);
+        // A well-formed prefix still parses.
+        assert_eq!(
+            extract_date_from_filename(Path::new("/x/2026-07-06-note.md")),
+            Some(ymd(2026, 7, 6))
+        );
     }
 
     #[test]

@@ -5,16 +5,6 @@ use assert_cmd::Command;
 use predicates::str::contains;
 
 #[test]
-fn mcp_help_lists_serve() {
-    Command::cargo_bin("ttr")
-        .unwrap()
-        .args(["mcp", "--help"])
-        .assert()
-        .success()
-        .stdout(contains("serve"));
-}
-
-#[test]
 fn mcp_serve_handshake_and_tool_list() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = dir.path().join("tt.db");

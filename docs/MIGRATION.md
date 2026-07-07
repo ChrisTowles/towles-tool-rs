@@ -146,7 +146,7 @@ cite the yaak or slot-1 source path in the commit.
   `agentboard`/`ag` command to launch/manage the app-side pieces.
 
 - [x] **7 — Agentboard rewrite inside the Tauri app.** Done across the 5 phases
-  in [docs/AGENTBOARD-PORT.md](AGENTBOARD-PORT.md): the Tauri-free
+  of the agentboard port: the Tauri-free
   `tt-agentboard` crate (types, tracker, metadata, session-order, git-info,
   ports, all four watchers — claude-code/amp/codex/opencode, bridge assembly,
   repos config, metadata-HTTP validation), the `tt-app` bridge (engine + tokio
@@ -184,7 +184,7 @@ cite the yaak or slot-1 source path in the commit.
   (split terminals), and Email + Calendar screen. Product rules: agent TUIs are
   never re-rendered (status is read-only; interaction = real PTY), collectors
   are the only tt.db writers, `assistant` settings block gates the token-costing
-  claude collectors. See `implementation-notes.md` for deviations.
+  claude collectors.
 
   **Day-screens pivot (2026-07-04, same day).** The product refocused on
   *getting in the zone*: PRs + cross-repo issues + a personal kanban. Changes:

@@ -58,6 +58,13 @@ impl Dispatcher {
             Err(_) => return Some(error_response(Value::Null, -32700, "Parse error")),
         };
 
+        // A top-level array is a JSON-RPC batch. MCP 2025-06-18 removed batching,
+        // so reject it with a single Invalid Request instead of letting the `id`
+        // lookup below miss and silently drop it (which hangs a waiting client).
+        if value.is_array() {
+            return Some(error_response(Value::Null, -32600, "Invalid Request"));
+        }
+
         // Requests carry an `id`; notifications do not, and receive no response.
         let id = match value.get("id") {
             Some(id) if !id.is_null() => id.clone(),
@@ -656,6 +663,28 @@ mod tests {
             serde_json::from_str(&dispatcher.handle_at("{ not json", NOW).unwrap()).unwrap();
         assert_eq!(response["id"], Value::Null);
         assert_eq!(response["error"]["code"], -32700);
+    }
+
+    #[test]
+    fn batch_array_returns_invalid_request() {
+        // MCP 2025-06-18 dropped batching: a top-level array must get a single
+        // Invalid Request response, not be silently dropped as a notification.
+        let mut dispatcher = dispatcher();
+        let batch = r#"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#;
+        let response: Value =
+            serde_json::from_str(&dispatcher.handle_at(batch, NOW).unwrap()).unwrap();
+        assert_eq!(response["id"], Value::Null);
+        assert_eq!(response["error"]["code"], -32600);
+    }
+
+    #[test]
+    fn request_with_id_but_no_method_is_invalid_request() {
+        let mut dispatcher = dispatcher();
+        let request = json!({ "jsonrpc": "2.0", "id": 5 }).to_string();
+        let response: Value =
+            serde_json::from_str(&dispatcher.handle_at(&request, NOW).unwrap()).unwrap();
+        assert_eq!(response["id"], 5);
+        assert_eq!(response["error"]["code"], -32600);
     }
 
     #[test]

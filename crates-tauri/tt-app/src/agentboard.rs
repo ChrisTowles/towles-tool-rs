@@ -54,11 +54,15 @@ pub fn stamp_pty_state(payload: &mut StatePayload, terms: &crate::terminal::Term
 }
 
 /// The stamped payload, recomputed now. Shared by `ab_get_state` and emitters.
+/// The agent snapshot (claude CLI + `/proc` + transcript reads) is collected
+/// BEFORE taking the engine lock so its subprocess work can't stall other
+/// `ab_*` commands.
 pub fn stamped_payload(app: &AppHandle) -> StatePayload {
+    let snapshot = tt_agentboard::engine::collect_agent_snapshot(now_ms());
     let ab = app.state::<Ab>();
     let mut payload = {
         let mut engine = ab.engine.lock().unwrap();
-        engine.compute_payload(now_ms())
+        engine.compute_payload_with(&snapshot, now_ms())
     };
     stamp_pty_state(&mut payload, &app.state::<crate::terminal::TermState>());
     payload
@@ -403,10 +407,14 @@ pub fn ab_clear_log(state: State<Ab>, session: String) -> Result<(), String> {
 }
 
 /// Full unified diff for a folder against its pushed baseline, for the
-/// diff-preview dialog. Empty string when there's nothing to show.
+/// diff-preview dialog. Empty string when there's nothing to show. Async: a
+/// large working-tree diff is a real subprocess wait that must not stall the
+/// main thread.
 #[tauri::command]
-pub fn ab_get_diff(dir: String) -> String {
-    tt_agentboard::diff_patch(&dir)
+pub async fn ab_get_diff(dir: String) -> String {
+    tauri::async_runtime::spawn_blocking(move || tt_agentboard::diff_patch(&dir))
+        .await
+        .unwrap_or_default()
 }
 
 /// Open a session's repo directory in the preferred editor. Ports the TS

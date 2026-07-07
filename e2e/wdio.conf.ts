@@ -1,10 +1,12 @@
 import path from "node:path";
-import { resolveWebdriverPort } from "../scripts/slot-port.mjs";
+import { resolveDevPort, resolveWebdriverPort } from "../scripts/slot-port.mjs";
 
 // Ports are injected by scripts/e2e.mjs (resolved from .env.local). The dev
 // server serves the wdio-enabled frontend; the embedded WebDriver server runs
-// inside the app on wdPort.
-const devPort = Number(process.env.TT_DEV_PORT) || 1420;
+// inside the app on wdPort. Falling back to the slot-derived port (not a
+// hardcoded 1420) keeps concurrent worktree slots from colliding.
+const repoRoot = process.cwd();
+const devPort = Number(process.env.TT_DEV_PORT) || resolveDevPort(repoRoot);
 const wdPort = resolveWebdriverPort(devPort);
 
 // Debug binary built with `--features wdio`. Run from repo root, so resolve cwd.

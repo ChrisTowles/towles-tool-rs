@@ -1,5 +1,5 @@
 //! `claude agents --all --json` as the authoritative source for live Claude
-//! Code sessions (phase T7 of docs/AGENTBOARD-PORT.md; Chris's call,
+//! Code sessions (phase T7 of the agentboard port; Chris's call,
 //! 2026-07-03: prefer the supported CLI surface over parsing raw
 //! `~/.claude/sessions/<pid>.json` files and inferring status from journals).
 //!

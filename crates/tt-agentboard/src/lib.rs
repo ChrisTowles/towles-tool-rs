@@ -2,8 +2,8 @@
 //! `packages/agentboard/src` — the in-memory agent state machine, per-session
 //! metadata, custom session ordering, git-info, and port attribution.
 //!
-//! This crate is deliberately transport-free (phase 1 of the agentboard port, see
-//! [docs/AGENTBOARD-PORT.md](../../../docs/AGENTBOARD-PORT.md)): **no tmux, no
+//! This crate is deliberately transport-free (phase 1 of the agentboard port):
+//! **no tmux, no
 //! WebSocket/HTTP broadcast, no fs watchers, no poll loops, no UI**. Where the TS
 //! entangles state with transport (WS broadcasts, tmux calls, `setInterval`
 //! polls, `fs.watch`), only the pure logic is ported and the transport is left to

@@ -92,6 +92,13 @@ fn run_batch_blocking(
     provider: CalendarProvider,
     calendar_period_ms: i64,
 ) {
+    // Data collected while the window is minimized has no audience; skip the
+    // subprocess sweep (and, for calendar, the claude tokens). The next tick
+    // after a restore refreshes everything.
+    if main_window_minimized(app) {
+        return;
+    }
+
     let store = match tt_store::Store::open_default() {
         Ok(store) => store,
         Err(e) => {
@@ -113,9 +120,10 @@ fn run_batch_blocking(
         Batch::Calendar => {
             // Token-cost guard: an interval's first tick fires at startup, so a
             // relaunch inside half a refresh period would re-bill `claude -p`
-            // for data we already have. Skip when the newest successful claude
-            // run is that fresh.
-            if claude_fresh_within(&store, now, calendar_period_ms / 2) {
+            // for data we already have — and a run that just FAILED must back
+            // off rather than re-bill immediately on the next relaunch, so any
+            // recorded run (ok or not) counts as fresh here.
+            if claude_ran_within(&store, now, calendar_period_ms / 2) {
                 return;
             }
             log_failure(tt_collect::collect_calendar(&store, provider, now));
@@ -125,6 +133,14 @@ fn run_batch_blocking(
     if let Ok(snapshot) = store.snapshot() {
         let _ = app.emit(SNAPSHOT_EVENT, snapshot);
     }
+}
+
+/// Whether the main window currently reports itself minimized. Unknown states
+/// (no window, backend error) count as visible so collection never silently
+/// starves.
+fn main_window_minimized(app: &AppHandle) -> bool {
+    use tauri::Manager;
+    app.get_webview_window("main").map(|w| w.is_minimized().unwrap_or(false)).unwrap_or(false)
 }
 
 fn log_failure(summary: tt_collect::CollectSummary) {
@@ -137,13 +153,52 @@ fn log_failure(summary: tt_collect::CollectSummary) {
     }
 }
 
-/// Whether any successful `claude:*` collector run is younger than `max_age_ms`.
-fn claude_fresh_within(store: &tt_store::Store, now: i64, max_age_ms: i64) -> bool {
+/// Whether any `claude:*` collector run — successful or not — is younger than
+/// `max_age_ms`. Failed runs count: a claude invocation that burned tokens and
+/// then failed parsing must not be retried at relaunch speed.
+fn claude_ran_within(store: &tt_store::Store, now: i64, max_age_ms: i64) -> bool {
     match store.runs() {
         Ok(runs) => runs
             .iter()
-            .filter(|r| r.ok && r.collector.starts_with("claude:"))
+            .filter(|r| r.collector.starts_with("claude:"))
             .any(|r| now - r.ran_at < max_age_ms),
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_ran_within_counts_only_claude_collectors() {
+        let store = tt_store::Store::open_in_memory().unwrap();
+        store.record_run("prs", true, None, 90).unwrap();
+        store.record_run("issues", true, None, 95).unwrap();
+        assert!(!claude_ran_within(&store, 100, 50), "gh collectors never suppress calendar");
+
+        store.record_run("claude:calendar", true, None, 90).unwrap();
+        assert!(claude_ran_within(&store, 100, 50));
+    }
+
+    #[test]
+    fn claude_ran_within_respects_the_age_window() {
+        let store = tt_store::Store::open_in_memory().unwrap();
+        store.record_run("claude:calendar", true, None, 10).unwrap();
+        assert!(claude_ran_within(&store, 40, 50), "run 30ms old, window 50ms");
+        assert!(!claude_ran_within(&store, 100, 50), "run 90ms old, window 50ms");
+    }
+
+    #[test]
+    fn claude_ran_within_counts_failed_runs_as_backoff() {
+        let store = tt_store::Store::open_in_memory().unwrap();
+        store.record_run("claude:calendar", false, Some("no parseable JSON"), 90).unwrap();
+        assert!(claude_ran_within(&store, 100, 50), "a failed paid run still suppresses retry");
+    }
+
+    #[test]
+    fn claude_ran_within_is_not_fresh_on_query_error_or_empty() {
+        let store = tt_store::Store::open_in_memory().unwrap();
+        assert!(!claude_ran_within(&store, 100, 50));
     }
 }

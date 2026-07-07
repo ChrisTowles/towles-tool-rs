@@ -17,13 +17,21 @@
 //! and a `message`, and is also recorded via [`tt_store::Store::record_run`]
 //! under a stable collector key: `claude:calendar`, `issues`, or `prs`.
 
+mod gh;
 mod issues;
 mod prompts;
 mod prs;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use tt_store::{EventInput, Store};
+
+/// Hard cap on a `claude -p` calendar run. Generous for MCP tool calls; without
+/// it a wedged claude (auth prompt, dead MCP server) blocks its caller forever —
+/// in the app that stalls every collector, since the scheduler awaits batches
+/// serially.
+const CLAUDE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Which calendar backend the `claude -p` prompt should drive. Selected from
 /// config so the same app works at home (Google MCP) and work (Outlook MCP).
@@ -85,82 +93,113 @@ pub fn collect_calendar(store: &Store, provider: CalendarProvider, now_ms: i64) 
     }
 }
 
-/// Collect open issues assigned to me across `repo_dirs` via `gh` and replace the
+/// Collect open issues assigned to me across `repo_dirs` via `gh` and update the
 /// stored issue set. Records `issues`. With no repo dirs this is a clean no-op.
+///
+/// Failure containment: rows are only replaced for repos whose `gh` calls
+/// succeeded. A repo that errors (rate limit, network, auth) keeps its
+/// last-known-good rows — a transient outage must not blank the dashboard —
+/// and the run is recorded `ok = false` so staleness is visible. Only a fully
+/// clean sweep does a full-table replace (which also purges rows of repos no
+/// longer tracked).
 pub fn collect_issues(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> CollectSummary {
-    const KEY: &str = "issues";
-    if repo_dirs.is_empty() {
-        return finish(store, KEY, true, 0, Some("no repos configured".to_string()), now_ms);
-    }
-
-    let mut by_key: std::collections::HashMap<(String, i64), tt_store::IssueInput> =
-        std::collections::HashMap::new();
-    let mut errors: Vec<String> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
-    for dir in repo_dirs {
-        if !dir.is_dir() {
-            skipped.push(format!("skipped missing repo dir {}", dir.display()));
-            continue;
-        }
-        match issues::collect_repo_issues(dir) {
-            Ok(list) => {
-                for issue in list {
-                    by_key.insert((issue.repo.clone(), issue.number), issue);
-                }
-            }
-            Err(e) => errors.push(e),
-        }
-    }
-
-    let all: Vec<tt_store::IssueInput> = by_key.into_values().collect();
-    let count = all.len();
-    if let Err(e) = store.replace_issues(&all) {
-        return finish(store, KEY, false, count, Some(e.to_string()), now_ms);
-    }
-    let notes: Vec<String> = errors.iter().cloned().chain(skipped).collect();
-    let message = if notes.is_empty() { None } else { Some(notes.join("; ")) };
-    finish(store, KEY, errors.is_empty(), count, message, now_ms)
+    let outcome = sweep_repos(repo_dirs, issues::collect_repo_issues);
+    let write = |all: &[tt_store::IssueInput], repos: Option<&[String]>| match repos {
+        None => store.replace_issues(all),
+        Some(repos) => store.replace_issues_for_repos(repos, all),
+    };
+    finish_sweep(store, "issues", outcome, write, |i| (i.repo.clone(), i.number), now_ms)
 }
 
-/// Collect open + review-requested PRs across `repo_dirs` via `gh` and replace
-/// the stored PR set. Records `prs`. With no repo dirs this is a clean no-op
-/// (`ok = true`, message `"no repos configured"`).
+/// Collect open + review-requested PRs across `repo_dirs` via `gh` and update
+/// the stored PR set. Records `prs`. Failure containment matches
+/// [`collect_issues`]: failed repos keep their last-known-good rows.
 pub fn collect_prs(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> CollectSummary {
-    const KEY: &str = "prs";
-    if repo_dirs.is_empty() {
-        return finish(store, KEY, true, 0, Some("no repos configured".to_string()), now_ms);
-    }
+    let outcome = sweep_repos(repo_dirs, prs::collect_repo_prs);
+    let write = |all: &[tt_store::PrInput], repos: Option<&[String]>| match repos {
+        None => store.replace_prs(all),
+        Some(repos) => store.replace_prs_for_repos(repos, all),
+    };
+    finish_sweep(store, "prs", outcome, write, |p| (p.repo.clone(), p.number), now_ms)
+}
 
-    let mut by_key: std::collections::HashMap<(String, i64), tt_store::PrInput> =
-        std::collections::HashMap::new();
-    let mut errors: Vec<String> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
+/// Per-repo results of one collector sweep.
+struct Sweep<T> {
+    /// `(owner/name, items)` for every repo whose `gh` calls succeeded —
+    /// including repos with zero items, which still need their rows cleared.
+    successes: Vec<(String, Vec<T>)>,
+    errors: Vec<String>,
+    skipped: Vec<String>,
+}
+
+/// Run `collect_repo` over every existing repo dir, partitioning outcomes.
+fn sweep_repos<T>(
+    repo_dirs: &[PathBuf],
+    collect_repo: impl Fn(&std::path::Path) -> Result<(String, Vec<T>), String>,
+) -> Sweep<T> {
+    let mut sweep = Sweep { successes: Vec::new(), errors: Vec::new(), skipped: Vec::new() };
     for dir in repo_dirs {
         // Tracked repos can go stale (moved/deleted dirs); a missing cwd makes
         // `Command` fail with a misleading "gh not found" error, so skip them
         // here and surface the skip in the run message instead.
         if !dir.is_dir() {
-            skipped.push(format!("skipped missing repo dir {}", dir.display()));
+            sweep.skipped.push(format!("skipped missing repo dir {}", dir.display()));
             continue;
         }
-        match prs::collect_repo_prs(dir) {
-            Ok(list) => {
-                for pr in list {
-                    by_key.insert((pr.repo.clone(), pr.number), pr);
-                }
-            }
-            Err(e) => errors.push(e),
+        match collect_repo(dir) {
+            Ok(result) => sweep.successes.push(result),
+            Err(e) => sweep.errors.push(e),
         }
     }
+    sweep
+}
 
-    let all: Vec<tt_store::PrInput> = by_key.into_values().collect();
-    let count = all.len();
-    if let Err(e) = store.replace_prs(&all) {
-        return finish(store, KEY, false, count, Some(e.to_string()), now_ms);
+/// Apply a sweep's results to the store and record the run.
+///
+/// `write(all, None)` performs a full-table replace; `write(all, Some(repos))`
+/// replaces only the named repos' rows. `key_of` yields the `(repo, number)`
+/// identity used to dedup items collected from two checkouts of one repo
+/// (parallel worktree slots).
+fn finish_sweep<T>(
+    store: &Store,
+    key: &str,
+    sweep: Sweep<T>,
+    write: impl Fn(&[T], Option<&[String]>) -> tt_store::Result<usize>,
+    key_of: impl Fn(&T) -> (String, i64),
+    now_ms: i64,
+) -> CollectSummary {
+    let Sweep { successes, errors, skipped } = sweep;
+
+    if successes.is_empty() {
+        // Nothing succeeded: never touch existing rows. All-skipped (or an
+        // empty tracked list) is a clean no-op; any error marks the run failed.
+        let ok = errors.is_empty();
+        let mut notes: Vec<String> = errors.into_iter().chain(skipped).collect();
+        if notes.is_empty() {
+            notes.push("no repos configured".to_string());
+        }
+        return finish(store, key, ok, 0, Some(notes.join("; ")), now_ms);
     }
+
+    let repos: Vec<String> = successes.iter().map(|(repo, _)| repo.clone()).collect();
+    let mut by_key: std::collections::HashMap<(String, i64), T> = std::collections::HashMap::new();
+    for (_, items) in successes {
+        for item in items {
+            by_key.insert(key_of(&item), item);
+        }
+    }
+    let all: Vec<T> = by_key.into_values().collect();
+    let count = all.len();
+
+    let clean_sweep = errors.is_empty() && skipped.is_empty();
+    let scope = if clean_sweep { None } else { Some(repos.as_slice()) };
+    if let Err(e) = write(&all, scope) {
+        return finish(store, key, false, count, Some(e.to_string()), now_ms);
+    }
+
     let notes: Vec<String> = errors.iter().cloned().chain(skipped).collect();
     let message = if notes.is_empty() { None } else { Some(notes.join("; ")) };
-    finish(store, KEY, errors.is_empty(), count, message, now_ms)
+    finish(store, key, errors.is_empty(), count, message, now_ms)
 }
 
 /// Run every collector: calendar, issues, then PRs.
@@ -202,12 +241,13 @@ fn finish(
     CollectSummary { collector: collector.to_string(), ok, count, message }
 }
 
-/// Run `claude -p <prompt>` and extract a JSON value from its stdout. Returns a
-/// human-readable error string on spawn failure, non-zero exit, or no parseable
-/// JSON.
+/// Run `claude -p <prompt>` (capped at [`CLAUDE_TIMEOUT`]) and extract a JSON
+/// value from its stdout. Returns a human-readable error string on spawn
+/// failure, timeout, non-zero exit, or no parseable JSON.
 fn run_claude(prompt: &str) -> Result<serde_json::Value, String> {
     log::debug!("claude -p ({} byte prompt)", prompt.len());
-    let output = tt_exec::run("claude", &["-p", prompt]).map_err(|e| e.to_string())?;
+    let output = tt_exec::run_with_timeout("claude", &["-p", prompt], CLAUDE_TIMEOUT)
+        .map_err(|e| e.to_string())?;
     if !output.ok() {
         let stderr = output.stderr.trim();
         return Err(if stderr.is_empty() {
@@ -219,22 +259,37 @@ fn run_claude(prompt: &str) -> Result<serde_json::Value, String> {
     extract_json(&output.stdout).ok_or_else(|| "no parseable JSON in claude output".to_string())
 }
 
-/// Leniently extract the first balanced JSON array or object from `raw`.
+/// Leniently extract the first parseable balanced JSON array or object from
+/// `raw`.
 ///
-/// Strips Markdown code fences, then bracket-scans (respecting strings and
-/// escapes) for the first `[`/`{` and its matching close. Returns `None` when
-/// nothing parses — an unbalanced fragment, prose with no JSON, or a claude
-/// error sentence.
+/// Bracket-scans (respecting strings and escapes) from each `[`/`{` in turn; a
+/// candidate that is unbalanced or fails to parse — prose like `[3 total]`
+/// ahead of the real payload — moves the scan to the next opener instead of
+/// giving up. The raw text is never rewritten (a fence marker inside a JSON
+/// string must survive), and fences don't need stripping: the scan simply
+/// starts at the first opener. Returns `None` when nothing in `raw` parses.
 pub fn extract_json(raw: &str) -> Option<serde_json::Value> {
-    let cleaned = raw.replace("```json", "").replace("```JSON", "").replace("```", "");
-    let bytes = cleaned.as_bytes();
-    let start = bytes.iter().position(|&b| b == b'[' || b == b'{')?;
-    let (open, close) = if bytes[start] == b'[' { ('[', ']') } else { ('{', '}') };
+    let mut from = 0;
+    while let Some(offset) = raw[from..].find(['[', '{']) {
+        let start = from + offset;
+        if let Some(value) = parse_balanced_at(raw, start) {
+            return Some(value);
+        }
+        // This opener didn't yield JSON; resume after it.
+        from = start + 1;
+    }
+    None
+}
+
+/// Parse the balanced bracket run starting at byte `start` (which must be `[`
+/// or `{`), or `None` if it never closes or isn't valid JSON.
+fn parse_balanced_at(raw: &str, start: usize) -> Option<serde_json::Value> {
+    let (open, close) = if raw.as_bytes()[start] == b'[' { ('[', ']') } else { ('{', '}') };
 
     let mut depth: i32 = 0;
     let mut in_string = false;
     let mut escaped = false;
-    for (offset, ch) in cleaned[start..].char_indices() {
+    for (offset, ch) in raw[start..].char_indices() {
         if in_string {
             if escaped {
                 escaped = false;
@@ -252,7 +307,7 @@ pub fn extract_json(raw: &str) -> Option<serde_json::Value> {
                 depth -= 1;
                 if depth == 0 {
                     let end = start + offset + ch.len_utf8();
-                    return serde_json::from_str(&cleaned[start..end]).ok();
+                    return serde_json::from_str(&raw[start..end]).ok();
                 }
             }
             _ => {}
@@ -293,8 +348,43 @@ mod tests {
     }
 
     #[test]
-    fn extract_unbalanced_is_none() {
-        assert!(extract_json(r#"[{"a": 1}"#).is_none());
+    fn extract_unbalanced_array_salvages_inner_object() {
+        // The array never closes, but the scan moves to the next opener and
+        // rescues the complete object inside it.
+        let v = extract_json(r#"[{"a": 1}"#).unwrap();
+        assert_eq!(v["a"], 1);
+    }
+
+    #[test]
+    fn extract_fully_unbalanced_is_none() {
+        assert!(extract_json(r#"[{"a": 1"#).is_none());
+    }
+
+    #[test]
+    fn extract_skips_prose_brackets_before_the_payload() {
+        // claude routinely narrates before the JSON; a bracketed fragment in
+        // that prose must not abort extraction.
+        let raw = r#"Here are today's events [3 total]:
+[{"externalId":"e1","title":"standup","startTs":1}]"#;
+        let v = extract_json(raw).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["title"], "standup");
+    }
+
+    #[test]
+    fn extract_skips_unparseable_brace_fragment() {
+        let raw = r#"I'll check {your} calendar: [{"title":"standup"}]"#;
+        let v = extract_json(raw).unwrap();
+        assert_eq!(v[0]["title"], "standup");
+    }
+
+    #[test]
+    fn extract_preserves_fence_marker_inside_string_values() {
+        // The old implementation rewrote the raw text to strip fences, which
+        // corrupted fence markers inside JSON strings.
+        let raw = "```json\n{\"title\": \"use ```json blocks\"}\n```";
+        let v = extract_json(raw).unwrap();
+        assert_eq!(v["title"], "use ```json blocks");
     }
 
     #[test]
@@ -333,5 +423,127 @@ mod tests {
         assert_eq!(summary.message.as_deref(), Some("no repos configured"));
         let runs = store.runs().unwrap();
         assert_eq!(runs[0].collector, "issues");
+    }
+
+    fn issue(repo: &str, number: i64) -> tt_store::IssueInput {
+        tt_store::IssueInput {
+            repo: repo.to_string(),
+            number,
+            title: format!("issue {number}"),
+            labels: vec![],
+            state: "open".to_string(),
+            url: format!("https://github.com/{repo}/issues/{number}"),
+            updated_ts: 1,
+        }
+    }
+
+    fn issue_write(
+        store: &Store,
+    ) -> impl Fn(&[tt_store::IssueInput], Option<&[String]>) -> tt_store::Result<usize> + '_ {
+        |all, repos| match repos {
+            None => store.replace_issues(all),
+            Some(repos) => store.replace_issues_for_repos(repos, all),
+        }
+    }
+
+    #[test]
+    fn all_failed_sweep_preserves_existing_rows() {
+        let store = Store::open_in_memory().unwrap();
+        store.replace_issues(&[issue("o/a", 1)]).unwrap();
+
+        let sweep = Sweep {
+            successes: vec![],
+            errors: vec!["gh: rate limited".to_string()],
+            skipped: vec![],
+        };
+        let summary = finish_sweep(
+            &store,
+            "issues",
+            sweep,
+            issue_write(&store),
+            |i| (i.repo.clone(), i.number),
+            9,
+        );
+
+        assert!(!summary.ok);
+        assert_eq!(store.issues().unwrap().len(), 1, "last-known-good rows survive a dead sweep");
+        assert!(summary.message.unwrap().contains("rate limited"));
+    }
+
+    #[test]
+    fn partial_sweep_replaces_only_succeeded_repos() {
+        let store = Store::open_in_memory().unwrap();
+        store.replace_issues(&[issue("o/a", 1), issue("o/b", 2)]).unwrap();
+
+        // o/a re-collected (fresh row 3); o/b errored.
+        let sweep = Sweep {
+            successes: vec![("o/a".to_string(), vec![issue("o/a", 3)])],
+            errors: vec!["gh failed in /repos/b: boom".to_string()],
+            skipped: vec![],
+        };
+        let summary = finish_sweep(
+            &store,
+            "issues",
+            sweep,
+            issue_write(&store),
+            |i| (i.repo.clone(), i.number),
+            9,
+        );
+
+        assert!(!summary.ok, "a failed repo marks the run failed even though data was written");
+        let issues = store.issues().unwrap();
+        assert!(issues.iter().any(|i| i.repo == "o/a" && i.number == 3));
+        assert!(issues.iter().any(|i| i.repo == "o/b" && i.number == 2), "failed repo keeps rows");
+        assert!(!issues.iter().any(|i| i.number == 1), "succeeded repo's stale rows are gone");
+    }
+
+    #[test]
+    fn clean_sweep_purges_untracked_repos() {
+        let store = Store::open_in_memory().unwrap();
+        store.replace_issues(&[issue("o/gone", 1)]).unwrap();
+
+        let sweep = Sweep {
+            successes: vec![("o/a".to_string(), vec![issue("o/a", 2)])],
+            errors: vec![],
+            skipped: vec![],
+        };
+        let summary = finish_sweep(
+            &store,
+            "issues",
+            sweep,
+            issue_write(&store),
+            |i| (i.repo.clone(), i.number),
+            9,
+        );
+
+        assert!(summary.ok);
+        let issues = store.issues().unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].repo, "o/a", "full replace drops repos no longer tracked");
+    }
+
+    #[test]
+    fn sweep_dedups_same_repo_from_two_checkouts() {
+        let store = Store::open_in_memory().unwrap();
+        // Two worktree slots of one repo both succeed and report the same issue.
+        let sweep = Sweep {
+            successes: vec![
+                ("o/a".to_string(), vec![issue("o/a", 1)]),
+                ("o/a".to_string(), vec![issue("o/a", 1)]),
+            ],
+            errors: vec![],
+            skipped: vec![],
+        };
+        let summary = finish_sweep(
+            &store,
+            "issues",
+            sweep,
+            issue_write(&store),
+            |i| (i.repo.clone(), i.number),
+            9,
+        );
+        assert!(summary.ok);
+        assert_eq!(summary.count, 1);
+        assert_eq!(store.issues().unwrap().len(), 1);
     }
 }

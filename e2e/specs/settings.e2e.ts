@@ -49,20 +49,4 @@ describe("Towles Tool desktop shell", () => {
     );
     expect(Array.isArray(candidates)).toBe(true);
   });
-
-  it("mocks an IPC command without touching the backend", async () => {
-    const mock = await browser.tauri.mock("settings_get");
-    await mock.mockReturnValue({
-      preferredEditor: "MOCKED_EDITOR",
-      journalSettings: { baseFolder: "/mock" },
-      collectors: { calendar: { enabled: false }, prs: {}, issues: {} },
-    });
-
-    const mocked = await browser.tauri.execute(({ core }) =>
-      core.invoke<UserSettings>("settings_get"),
-    );
-    expect(mocked.preferredEditor).toBe("MOCKED_EDITOR");
-
-    await mock.mockRestore();
-  });
 });

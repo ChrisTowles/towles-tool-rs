@@ -52,6 +52,31 @@ fn doctor_diff_without_history_warns() {
 }
 
 #[test]
+fn doctor_json_track_writes_history_and_stays_valid_json() {
+    let temp_dir = TempDir::new().expect("temp dir");
+
+    // --track must be honored in JSON mode, and stdout must remain valid JSON.
+    let assert =
+        doctor_cmd(temp_dir.path()).args(["doctor", "--json", "--track"]).assert().success();
+    let stdout = &assert.get_output().stdout;
+    serde_json::from_slice::<serde_json::Value>(stdout)
+        .expect("doctor --json --track should still emit valid JSON on stdout");
+
+    let history_path = temp_dir.path().join("config").join("tt").join("doctor-history.json");
+    assert!(history_path.exists(), "--track should write history even in JSON mode");
+    let runs: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&history_path).unwrap()).unwrap();
+    assert_eq!(runs.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn doctor_json_diff_is_rejected() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    // --diff output is human-format, so it can't be combined with --json.
+    doctor_cmd(temp_dir.path()).args(["doctor", "--json", "--diff"]).assert().failure();
+}
+
+#[test]
 fn doctor_track_then_diff_round_trips() {
     let temp_dir = TempDir::new().expect("temp dir");
 

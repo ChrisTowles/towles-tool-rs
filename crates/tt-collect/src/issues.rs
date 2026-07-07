@@ -1,76 +1,43 @@
 //! `gh`-backed issue collector.
 //!
-//! Mirrors [`crate::prs`]: `gh` has no cwd support in [`tt_exec`], so this module
-//! shells out with [`std::process::Command`] directly to run each repo's `gh` in
-//! its own working directory. The JSON-to-[`IssueInput`] mapping is factored into
+//! Mirrors [`crate::prs`]: subprocess plumbing (cwd, timeout, name cache) lives
+//! in [`crate::gh`]. The JSON-to-[`IssueInput`] mapping is factored into
 //! [`map_issue_list`] so it can be unit-tested with inline fixtures.
 
 use std::path::Path;
-use std::process::Command;
 
 use tt_store::IssueInput;
+
+use crate::gh;
 
 /// The `--json` field set requested from `gh issue list`.
 const ISSUE_LIST_FIELDS: &str = "number,title,labels,state,url,updatedAt";
 
 /// Collect the open issues assigned to me for one repo dir.
 ///
-/// Returns an error string (never panics) if `gh` is missing, exits non-zero, or
-/// emits unparseable JSON.
-pub(crate) fn collect_repo_issues(dir: &Path) -> Result<Vec<IssueInput>, String> {
-    let repo = repo_name_with_owner(dir)?;
-    let list = gh_issue_list(dir, &["--assignee", "@me"])?;
-    Ok(map_issue_list(&list, &repo))
-}
-
-/// `owner/repo` for the repo rooted at `dir`, via `gh repo view`.
-fn repo_name_with_owner(dir: &Path) -> Result<String, String> {
-    let output = Command::new("gh")
-        .args(["repo", "view", "--json", "nameWithOwner"])
-        .current_dir(dir)
-        .output()
-        .map_err(|e| format!("failed to spawn gh in {}: {e}", dir.display()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "gh repo view failed in {}: {}",
-            dir.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let value: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid gh JSON: {e}"))?;
-    value
-        .get("nameWithOwner")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("gh repo view returned no nameWithOwner for {}", dir.display()))
-}
-
-/// Run `gh issue list` in `dir` with the shared field set plus `extra` filters.
-fn gh_issue_list(dir: &Path, extra: &[&str]) -> Result<serde_json::Value, String> {
-    let mut args = vec![
-        "issue",
-        "list",
-        "--state",
-        "open",
-        "--json",
-        ISSUE_LIST_FIELDS,
-    ];
-    args.extend_from_slice(extra);
-    log::debug!("gh {} (cwd {})", args.join(" "), dir.display());
-    let output = Command::new("gh")
-        .args(&args)
-        .current_dir(dir)
-        .output()
-        .map_err(|e| format!("failed to spawn gh in {}: {e}", dir.display()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "gh issue list failed in {}: {}",
-            dir.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid gh JSON: {e}"))
+/// Returns the repo's `owner/name` alongside its issues so callers know which
+/// repo a (possibly empty) result belongs to. Returns an error string (never
+/// panics) if `gh` is missing, times out, exits non-zero, or emits unparseable
+/// JSON.
+pub(crate) fn collect_repo_issues(dir: &Path) -> Result<(String, Vec<IssueInput>), String> {
+    let repo = gh::repo_name_with_owner(dir)?;
+    let list = gh::run_json(
+        dir,
+        &[
+            "issue",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            gh::LIST_LIMIT,
+            "--json",
+            ISSUE_LIST_FIELDS,
+            "--assignee",
+            "@me",
+        ],
+    )?;
+    let issues = map_issue_list(&list, &repo);
+    Ok((repo, issues))
 }
 
 /// Map a parsed `gh issue list` JSON array to [`IssueInput`]s. Non-array input

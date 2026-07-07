@@ -188,12 +188,19 @@ fn run_html(
     }
     ui::info(&format!("✓ Saved to {}", output_path.display()));
 
-    // Auto-open unless disabled, and never when stdout isn't a terminal.
-    if !args.no_open && std::io::stdout().is_terminal() {
+    if should_open(args.open, args.no_open, std::io::stdout().is_terminal()) {
         ui::info("📈 Opening treemap...");
         open_in_browser(&output_path);
     }
     0
+}
+
+/// Decide whether to open the report in a browser: an explicit `--open` always
+/// opens (even off a TTY); otherwise open by default unless `--no-open`, and only
+/// when stdout is a terminal (so tests/CI never launch a browser). `clap` makes
+/// `--open` and `--no-open` mutually exclusive.
+fn should_open(open_flag: bool, no_open: bool, is_tty: bool) -> bool {
+    open_flag || (!no_open && is_tty)
 }
 
 /// `~/.claude`, honoring `$HOME` so tests can redirect it.
@@ -207,5 +214,26 @@ fn open_in_browser(path: &Path) {
     let path_str = path.to_string_lossy();
     if let Err(e) = tt_exec::run(cmd, &[&path_str]) {
         ui::warning(&format!("Could not open browser ({cmd}): {e}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_open;
+
+    #[test]
+    fn open_flag_forces_open_even_off_tty() {
+        assert!(should_open(true, false, false));
+    }
+
+    #[test]
+    fn no_open_wins_the_tty_default() {
+        assert!(!should_open(false, true, true));
+    }
+
+    #[test]
+    fn tty_default_opens_without_flags() {
+        assert!(should_open(false, false, true));
+        assert!(!should_open(false, false, false));
     }
 }

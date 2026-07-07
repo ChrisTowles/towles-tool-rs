@@ -71,3 +71,26 @@ fn reset_requires_confirm() {
     let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(value["preferredEditor"], "code");
 }
+
+#[test]
+fn reset_preserves_unknown_keys() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let settings_path = temp_dir.path().join("towles-tool.settings.json");
+    // The settings file is shared with the TypeScript CLI, which owns keys this
+    // model doesn't capture. Reset must not nuke them.
+    std::fs::write(
+        &settings_path,
+        r#"{"preferredEditor":"vim","tsOnlyFlag":{"a":1},"anotherTsKey":true}"#,
+    )
+    .unwrap();
+
+    cli_cmd(temp_dir.path()).args(["config", "reset", "--confirm"]).assert().success();
+
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    // Known fields are reset to defaults.
+    assert_eq!(value["preferredEditor"], "code");
+    // Unknown keys owned by the other tool survive.
+    assert_eq!(value["tsOnlyFlag"], serde_json::json!({ "a": 1 }));
+    assert_eq!(value["anotherTsKey"], true);
+}

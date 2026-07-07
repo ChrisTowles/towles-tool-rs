@@ -34,8 +34,9 @@ pub enum Commands {
         #[arg(long)]
         track: bool,
 
-        /// Compare current run against the last tracked run
-        #[arg(long)]
+        /// Compare current run against the last tracked run (human-format; not
+        /// combinable with --json)
+        #[arg(long, conflicts_with = "json")]
         diff: bool,
     },
 

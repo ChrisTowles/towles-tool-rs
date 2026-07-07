@@ -6,6 +6,7 @@
 //! (`shpool`), rendered by ghostty-web in the agentboard screen.
 
 mod agentboard;
+mod doctor;
 mod graph;
 mod journal;
 mod scheduler;
@@ -99,20 +100,40 @@ pub fn run() {
 
             let handle = app.handle().clone();
 
-            // Debounced emitter: coalesce a burst of triggers into one rebuild + emit.
+            // Debounced emitter: coalesce a burst of triggers into one rebuild,
+            // and broadcast only when the payload actually changed — every emit
+            // costs the webview a deserialize + React re-render, and the scan
+            // and git tickers signal unconditionally. The rebuild itself runs
+            // on a blocking worker (it can shell out on cache misses).
             {
                 let emit = emit.clone();
                 tauri::async_runtime::spawn(async move {
+                    // Compared with `ts` zeroed: the stamp changes every
+                    // rebuild, the rest only when state does.
+                    let mut last: Option<tt_agentboard::StatePayload> = None;
                     loop {
                         emit.notified().await;
                         tokio::time::sleep(Duration::from_millis(200)).await;
-                        let payload = agentboard::stamped_payload(&handle);
-                        let _ = handle.emit(STATE_EVENT, payload);
+                        let rebuild_handle = handle.clone();
+                        let Ok(payload) = tauri::async_runtime::spawn_blocking(move || {
+                            agentboard::stamped_payload(&rebuild_handle)
+                        })
+                        .await
+                        else {
+                            continue;
+                        };
+                        let mut probe = payload.clone();
+                        probe.ts = 0;
+                        if last.as_ref() != Some(&probe) {
+                            last = Some(probe);
+                            let _ = handle.emit(STATE_EVENT, payload);
+                        }
                     }
                 });
             }
 
-            // Watcher scan: every 2s, or eagerly on an fs-notify signal.
+            // Watcher scan: every 2s, or eagerly on a (debounced) fs-notify
+            // signal.
             {
                 let engine = engine.clone();
                 let emit = emit.clone();
@@ -133,19 +154,39 @@ pub fn run() {
                 });
             }
 
-            // Git-stat poll: refresh working-tree stats every 1.5s.
+            // Git-stat poll: recompute working-tree stats every 10s with the
+            // subprocesses OUTSIDE the engine lock — a slow or hung git (stale
+            // network mount, cold cache) must never wedge the ab_* commands
+            // that share the lock, and lock-held git spawns every 1.5s were
+            // the dominant idle-CPU cost. Signals a re-emit only when some
+            // repo's stats actually changed.
             {
                 let engine = engine.clone();
                 let emit = emit.clone();
                 tauri::async_runtime::spawn(async move {
-                    let mut interval = tokio::time::interval(Duration::from_millis(1500));
+                    let mut interval = tokio::time::interval(Duration::from_secs(10));
                     loop {
                         interval.tick().await;
-                        {
-                            let mut e = engine.lock().unwrap();
-                            e.refresh_git(now_ms());
+                        let poll_engine = engine.clone();
+                        let changed = tauri::async_runtime::spawn_blocking(move || {
+                            let targets = poll_engine.lock().unwrap().git_targets();
+                            let mut changed = false;
+                            for dir in targets {
+                                let info = tt_agentboard::git_info::compute_git_info(&dir);
+                                let stored = poll_engine.lock().unwrap().store_git_info(
+                                    &dir,
+                                    info,
+                                    now_ms(),
+                                );
+                                changed |= stored;
+                            }
+                            changed
+                        })
+                        .await
+                        .unwrap_or(false);
+                        if changed {
+                            emit.notify_one();
                         }
-                        emit.notify_one();
                     }
                 });
             }
@@ -222,6 +263,7 @@ pub fn run() {
             journal::journal_create,
             journal::journal_open,
             graph::graph_spend_summary,
+            doctor::doctor_run,
             settings::settings_get,
             settings::settings_set,
             terminal::term_start,

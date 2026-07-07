@@ -135,7 +135,9 @@ fn reset(config_dir: Option<&Path>, confirm: bool) -> i32 {
         return 1;
     }
 
-    match tt_config::save_to(&path, &defaults) {
+    // Merge defaults over the existing file so keys the shared TypeScript CLI
+    // owns (which this model doesn't capture) survive the reset.
+    match tt_config::save_merge_to(&path, &defaults) {
         Ok(()) => {
             ui::success(&format!("Settings reset to defaults: {}", path.display()));
             0

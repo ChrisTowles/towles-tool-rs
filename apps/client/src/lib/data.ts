@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { invokeOk, isTauri } from "./tauri";
 
 /**
  * Client-side view of the personal-HQ store (the Rust `tt-store` crate, surfaced
@@ -90,8 +90,6 @@ export type StoreSnapshot = {
   runs: CollectRun[];
 };
 
-export const isTauri = () => "__TAURI_INTERNALS__" in window;
-
 const MINUTE = 60_000;
 
 /** An empty snapshot — the state until the real store answers. */
@@ -115,6 +113,9 @@ export function useStoreSnapshot(): { snapshot: StoreSnapshot; live: boolean } {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    // A `store://snapshot` event can beat the initial `store_snapshot` invoke;
+    // once one has, its data is fresher, so don't let the invoke roll it back.
+    let eventArrived = false;
 
     void (async () => {
       try {
@@ -122,6 +123,7 @@ export function useStoreSnapshot(): { snapshot: StoreSnapshot; live: boolean } {
         const { listen } = await import("@tauri-apps/api/event");
 
         const sub = await listen<StoreSnapshot>("store://snapshot", (e) => {
+          eventArrived = true;
           setSnapshot(e.payload);
           setLive(true);
         });
@@ -132,7 +134,7 @@ export function useStoreSnapshot(): { snapshot: StoreSnapshot; live: boolean } {
         unlisten = sub;
 
         const initial = await invoke<StoreSnapshot>("store_snapshot");
-        if (!disposed) {
+        if (!disposed && !eventArrived) {
           setSnapshot(initial);
           setLive(true);
         }
@@ -158,10 +160,13 @@ export function fmtClock(ms: number): string {
   });
 }
 
-/** `22m` / `1h 05m` — a positive duration; `now` for anything non-positive. */
+/** `<1m` / `22m` / `1h 05m` — a positive duration; `now` for anything
+ * non-positive. Sub-minute positive spans render `<1m` instead of rounding to
+ * `0m`, so a meeting 20s out reads "in <1m", never "in 0m". */
 export function fmtCountdown(msUntil: number): string {
   if (msUntil <= 0) return "now";
   const mins = Math.round(msUntil / MINUTE);
+  if (mins < 1) return "<1m";
   if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);
   const m = mins % 60;
@@ -210,37 +215,13 @@ export function useAppSlot(): string | null {
   return slot;
 }
 
-/**
- * Run a store write command, degrading gracefully in the browser: outside Tauri
- * (or on any failure) show a toast and report failure so callers can revert an
- * optimistic update.
- */
-async function storeInvoke(
-  command: string,
-  args: Record<string, unknown>,
-): Promise<boolean> {
-  if (!isTauri()) {
-    toast.info("not wired in browser");
-    return false;
-  }
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke(command, args);
-    return true;
-  } catch (e) {
-    toast.error(String(e));
-    return false;
-  }
-}
-
 export const storeAddTask = (text: string, dueTs?: number) =>
-  storeInvoke("store_add_task", { text, dueTs });
+  invokeOk("store_add_task", { text, dueTs });
 
 export const storeSetTaskStatus = (id: number, status: TaskStatus) =>
-  storeInvoke("store_set_task_status", { id, status });
+  invokeOk("store_set_task_status", { id, status });
 
 export const storePromoteTaskToIssue = (id: number, repo: string) =>
-  storeInvoke("store_promote_task_to_issue", { id, repo });
+  invokeOk("store_promote_task_to_issue", { id, repo });
 
-export const journalLog = (text: string) =>
-  storeInvoke("journal_log", { text });
+export const journalLog = (text: string) => invokeOk("journal_log", { text });

@@ -90,7 +90,8 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     id: "gh-prs",
     title: "Pull requests",
     icon: GitPullRequest,
-    keywords: ["github", "gh", "branches"],
+    keywords: ["github", "gh", "branches", "review", "checks"],
+    fullBleed: true,
   },
   config: {
     id: "config",

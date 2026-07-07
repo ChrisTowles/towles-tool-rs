@@ -184,14 +184,23 @@ pub fn journal_create(ty: String, title: String) -> Result<String, String> {
     Ok(relative_to(&base_folder, &info.full_path))
 }
 
-/// Open a journal entry (path relative to the base folder) in the preferred editor.
+/// Open a journal entry (path relative to the base folder) in the preferred
+/// editor. Spawns without waiting (like `ab_open_in_editor`): `tt_exec::run`
+/// waits for the process to exit, which froze the app for the whole editor
+/// session with any non-forking editor (vim, `code --wait`).
 #[tauri::command]
 pub fn journal_open(relative_path: String) -> Result<(), String> {
     let settings = load_settings()?;
     let journal = &settings.journal_settings;
+    let editor = settings.preferred_editor.trim();
+    if editor.is_empty() {
+        return Err("No preferred editor configured".into());
+    }
     let full_path = PathBuf::from(&journal.base_folder).join(&relative_path);
-    let full_str = full_path.to_string_lossy();
-    tt_exec::run(&settings.preferred_editor, &[&journal.base_folder, &full_str])
+    std::process::Command::new(editor)
+        .arg(&journal.base_folder)
+        .arg(&full_path)
+        .spawn()
         .map(|_| ())
         .map_err(|e| format!("could not open in editor: {e}"))
 }
