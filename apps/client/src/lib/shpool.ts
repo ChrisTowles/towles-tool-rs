@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { isTauri } from "@/lib/data";
-import { invokeCmd, invokeOrThrow } from "@/lib/tauri";
+import { invokeCmd, invokeOrThrow, isTauri } from "@/lib/tauri";
 
 /** One daemon session, from the Rust `shpool_sessions` command. */
 export type ShpoolSession = {

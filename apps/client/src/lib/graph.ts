@@ -1,5 +1,4 @@
-import { toast } from "sonner";
-import { isTauri } from "@/lib/data";
+import { invokeToast } from "@/lib/tauri";
 
 /**
  * Client-side bridge to the Graph screen (the Rust `tt-graph` crate, surfaced via
@@ -21,19 +20,5 @@ export type SpendSummary = {
   byModel: ModelBar[];
 };
 
-async function graphInvoke<T>(
-  command: string,
-  args: Record<string, unknown> = {},
-): Promise<T | null> {
-  if (!isTauri()) return null;
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return await invoke<T>(command, args);
-  } catch (e) {
-    toast.error(String(e));
-    return null;
-  }
-}
-
 export const graphSpendSummary = (days: number) =>
-  graphInvoke<SpendSummary>("graph_spend_summary", { days });
+  invokeToast<SpendSummary>("graph_spend_summary", { days });

@@ -4,6 +4,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { CloseGuard } from "@/components/close-guard";
 import { CommandPalette } from "@/components/command-palette";
 import { DayBar } from "@/components/day-bar";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { QuickLog } from "@/components/quick-log";
 import { StatusBar } from "@/components/status-bar";
 import {
@@ -73,12 +74,16 @@ function Workspace() {
               // content wrapper and own the whole content area.
               return SCREENS[id].fullBleed ? (
                 <div key={id} hidden={hidden} className="h-full">
-                  <Screen />
+                  <ErrorBoundary label={SCREENS[id].title}>
+                    <Screen />
+                  </ErrorBoundary>
                 </div>
               ) : (
                 <ScrollArea key={id} hidden={hidden} className="h-full">
                   <div className="mx-auto max-w-3xl p-6">
-                    <Screen />
+                    <ErrorBoundary label={SCREENS[id].title}>
+                      <Screen />
+                    </ErrorBoundary>
                   </div>
                 </ScrollArea>
               );

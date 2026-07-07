@@ -1,5 +1,4 @@
-import { toast } from "sonner";
-import { isTauri } from "@/lib/data";
+import { invokeToast } from "@/lib/tauri";
 
 /**
  * Client-side bridge to the journal screens (the Rust `tt-journal` crate, surfaced
@@ -25,30 +24,16 @@ export type SearchMatch = {
   context: string[];
 };
 
-async function journalInvoke<T>(
-  command: string,
-  args: Record<string, unknown> = {},
-): Promise<T | null> {
-  if (!isTauri()) return null;
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return await invoke<T>(command, args);
-  } catch (e) {
-    toast.error(String(e));
-    return null;
-  }
-}
-
-export const journalGetToday = () => journalInvoke<TodayNote>("journal_get_today");
+export const journalGetToday = () => invokeToast<TodayNote>("journal_get_today");
 
 export const journalList = (opts: { ty?: string; limit?: number; sort?: string } = {}) =>
-  journalInvoke<JournalEntry[]>("journal_list", opts);
+  invokeToast<JournalEntry[]>("journal_list", opts);
 
 export const journalCreate = (ty: "note" | "meeting", title: string) =>
-  journalInvoke<string>("journal_create", { ty, title });
+  invokeToast<string>("journal_create", { ty, title });
 
 export const journalSearch = (opts: { query: string; ty?: string }) =>
-  journalInvoke<SearchMatch[]>("journal_search", opts);
+  invokeToast<SearchMatch[]>("journal_search", opts);
 
 export const journalOpen = (relativePath: string) =>
-  journalInvoke<null>("journal_open", { relativePath });
+  invokeToast<null>("journal_open", { relativePath });
