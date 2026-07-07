@@ -209,8 +209,32 @@ impl Engine {
     /// (desktop mode).
     pub fn scan_once(&mut self, now: i64) {
         self.reload_repos();
-        let entries = repo_entries(&self.repo_paths);
+        let all_paths = self.expand_with_worktrees(now);
+        let entries = repo_entries(&all_paths);
         self.scan_once_with_resolvers(&|dir| resolve_session_name(dir, &entries), &|_| None, now);
+    }
+
+    /// `self.repo_paths` plus any `git worktree` checkouts of those repos that
+    /// aren't already tracked (via `git worktree list`, e.g. a checkout under
+    /// `.claude/worktrees/`) — so a worktree shows up in the rail without the
+    /// user adding it to repos.json. Derived live on every call, nothing
+    /// persisted, so a `git worktree remove` just stops appearing next poll.
+    /// Distinct from the "multiple clones" pattern (separate `repoPaths`
+    /// entries, unrelated repos to git): those are unaffected here.
+    ///
+    /// Also warms the git-info cache for every newly-discovered dir:
+    /// `compute_payload_for_entries` reads `git_infos` cache-only (no refresh),
+    /// so a worktree that was never individually cached would show up with an
+    /// empty `GitInfo` — no `origin_url`, so it'd fail to group under its
+    /// parent repo and render as its own standalone entry instead.
+    fn expand_with_worktrees(&mut self, now: i64) -> Vec<String> {
+        let base = self.repo_paths.clone();
+        let cache = &mut self.git_cache;
+        let all = merge_worktree_dirs(&base, |dir| cache.get_or_refresh(dir, now).worktree_dirs);
+        for dir in &all {
+            self.git_cache.get_or_refresh(dir, now);
+        }
+        all
     }
 
     /// One scan of every watcher: collect emits through the resolvers and feed
@@ -275,7 +299,8 @@ impl Engine {
     /// Full recompute from repos.json using a pre-collected agent snapshot.
     pub fn compute_payload_with(&mut self, snapshot: &AgentSnapshot, now: i64) -> StatePayload {
         self.reload_repos();
-        let mut entries = repo_entries(&self.repo_paths);
+        let all_paths = self.expand_with_worktrees(now);
+        let mut entries = repo_entries(&all_paths);
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         // New folders get a default `shell 1` seeded once; a folder whose
         // sessions were all closed stays empty (rendered as "no sessions").
@@ -547,5 +572,58 @@ impl Engine {
 impl Default for Engine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Pure merge behind [`Engine::expand_with_worktrees`]: `repo_paths` plus each
+/// dir's worktrees (via `worktrees_of`), deduped, configured entries first.
+/// Split out so the merge/dedup logic is unit-testable without a real
+/// `GitInfoCache`/git subprocess.
+fn merge_worktree_dirs(
+    repo_paths: &[String],
+    mut worktrees_of: impl FnMut(&str) -> Vec<String>,
+) -> Vec<String> {
+    let mut seen: HashSet<String> = repo_paths.iter().cloned().collect();
+    let mut all = repo_paths.to_vec();
+    for dir in repo_paths {
+        for wt in worktrees_of(dir) {
+            if seen.insert(wt.clone()) {
+                all.push(wt);
+            }
+        }
+    }
+    all
+}
+
+#[cfg(test)]
+mod merge_worktree_dirs_tests {
+    use super::merge_worktree_dirs;
+
+    #[test]
+    fn appends_discovered_worktrees_after_configured_paths() {
+        let repo_paths = vec!["/repo/main".to_string()];
+        let all = merge_worktree_dirs(&repo_paths, |dir| {
+            assert_eq!(dir, "/repo/main");
+            vec!["/repo/.claude/worktrees/feat".to_string()]
+        });
+        assert_eq!(all, vec!["/repo/main", "/repo/.claude/worktrees/feat"]);
+    }
+
+    #[test]
+    fn dedupes_a_worktree_already_configured_explicitly() {
+        // e.g. towles-tool-rs-slot-2 manually added even though it's also a
+        // worktree of towles-tool-rs-slot-1 — must not appear twice.
+        let repo_paths = vec!["/repo/slot-1".to_string(), "/repo/slot-2".to_string()];
+        let all = merge_worktree_dirs(&repo_paths, |dir| match dir {
+            "/repo/slot-1" => vec!["/repo/slot-2".to_string()],
+            _ => vec![],
+        });
+        assert_eq!(all, repo_paths);
+    }
+
+    #[test]
+    fn no_worktrees_leaves_the_list_unchanged() {
+        let repo_paths = vec!["/repo/plain-clone".to_string()];
+        assert_eq!(merge_worktree_dirs(&repo_paths, |_| vec![]), repo_paths);
     }
 }

@@ -34,6 +34,10 @@ pub struct GitInfo {
     /// `git remote get-url origin`, if the checkout has an origin remote. Used to
     /// group folders (checkouts) of the same logical repo in the Folder Rail.
     pub origin_url: Option<String>,
+    /// Absolute paths of this repo's OTHER `git worktree` checkouts (this dir
+    /// excluded), from `git worktree list`. Not part of the wire payload — the
+    /// engine uses it to auto-discover worktrees that aren't in `repoPaths` yet.
+    pub worktree_dirs: Vec<String>,
 }
 
 /// Must stay above the git poll interval so the poll keeps entries warm.
@@ -149,7 +153,25 @@ pub fn compute_git_info(dir: &str) -> GitInfo {
         compute_git_info_from_outputs(&branch, &git_dir, &status_out, &diff_out, &ahead_behind);
     let origin_url = git_out(dir, &["remote", "get-url", "origin"]);
     info.origin_url = (!origin_url.is_empty()).then_some(origin_url);
+    info.worktree_dirs = list_other_worktrees(dir);
     info
+}
+
+/// This repo's OTHER `git worktree` checkouts (`dir` itself excluded). Empty
+/// for a plain clone (no linked worktrees) or a non-repo dir.
+fn list_other_worktrees(dir: &str) -> Vec<String> {
+    let out = git_out(dir, &["worktree", "list", "--porcelain"]);
+    parse_worktree_list(&out).into_iter().filter(|w| w != dir).collect()
+}
+
+/// Parse `git worktree list --porcelain` into the absolute path of each
+/// worktree (main + linked). Pure — unit-tested on fixture output.
+fn parse_worktree_list(porcelain: &str) -> Vec<String> {
+    porcelain
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(str::to_string)
+        .collect()
 }
 
 /// origin/main, or origin/master if that's what the remote uses. Ports `resolveOriginMain`.
@@ -197,8 +219,10 @@ pub fn compute_git_info_from_outputs(
         lines_added,
         lines_removed,
         commits_delta: parse_ahead_behind(ahead_behind),
-        // The pure parser has no origin knowledge; `compute_git_info` fills it in.
+        // The pure parser has no origin/worktree-list knowledge; `compute_git_info`
+        // fills both in.
         origin_url: None,
+        worktree_dirs: Vec::new(),
     }
 }
 
@@ -350,5 +374,20 @@ mod tests {
         cache.insert("/repo", info.clone(), 1000);
         // Fresh → returns cached value without shelling out to git.
         assert_eq!(cache.get_or_refresh("/repo", 2000), info);
+    }
+
+    #[test]
+    fn worktree_list_parses_each_entry_path() {
+        let porcelain = "worktree /repo/main\nHEAD abc\nbranch refs/heads/main\n\n\
+            worktree /repo/.claude/worktrees/feat\nHEAD def\nbranch refs/heads/feat\n";
+        assert_eq!(
+            parse_worktree_list(porcelain),
+            vec!["/repo/main", "/repo/.claude/worktrees/feat"],
+        );
+    }
+
+    #[test]
+    fn worktree_list_empty_for_plain_clone_or_blank_output() {
+        assert_eq!(parse_worktree_list(""), Vec::<String>::new());
     }
 }
