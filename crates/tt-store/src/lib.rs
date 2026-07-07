@@ -303,11 +303,17 @@ impl Store {
     /// `CREATE TABLE IF NOT EXISTS` is a no-op on a `tasks` table that already
     /// existed under the pre-kanban schema (`source`/`source_ref`/`done`, no
     /// `status`/`position`/`repo`/`issue_number`/`issue_url`), so a db created
-    /// before the day-screens pivot never gained the new columns and every
-    /// query against `tasks` fails outright. Bring it forward by hand, and
-    /// drop the `emails` table, dead since the same pivot.
+    /// before the day-screens pivot never gained the new columns. Rebuild such
+    /// a table to the v2 shape. A rebuild — not `ALTER TABLE ADD COLUMN` — is
+    /// required because the legacy `source` column is `NOT NULL` without a
+    /// default: left in place it fails every future `INSERT INTO tasks`
+    /// (SQLite can't drop a column's NOT NULL in place). The rebuild also
+    /// repairs dbs that were half-migrated by the old ALTER-based migration
+    /// (new columns added, `source` still present). Drops the `emails` table,
+    /// dead since the same pivot.
     fn migrate_tasks_v2(&self) -> Result<()> {
         let mut has_status = false;
+        let mut has_source = false;
         {
             let mut stmt = self.conn.prepare("PRAGMA table_info(tasks)")?;
             let mut rows = stmt.query([])?;
@@ -315,19 +321,44 @@ impl Store {
                 let name: String = row.get(1)?;
                 if name == "status" {
                     has_status = true;
-                    break;
+                }
+                if name == "source" {
+                    has_source = true;
                 }
             }
         }
-        if !has_status {
-            self.conn.execute_batch(
-                "ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'backlog';
-                 ALTER TABLE tasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
-                 ALTER TABLE tasks ADD COLUMN repo TEXT;
-                 ALTER TABLE tasks ADD COLUMN issue_number INTEGER;
-                 ALTER TABLE tasks ADD COLUMN issue_url TEXT;
-                 UPDATE tasks SET status = 'done' WHERE done = 1;",
-            )?;
+        if has_source {
+            // Legacy rows carry their kanban fields either in the old `done`
+            // flag (never migrated) or in already-added v2 columns
+            // (half-migrated by the old ALTER-based migration).
+            let (status_expr, position_expr, link_exprs) = if has_status {
+                ("status", "position", "repo, issue_number, issue_url")
+            } else {
+                ("CASE WHEN done = 1 THEN 'done' ELSE 'backlog' END", "0", "NULL, NULL, NULL")
+            };
+            self.conn.execute_batch(&format!(
+                "BEGIN;
+                 CREATE TABLE tasks_v2 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'backlog',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    due_ts INTEGER,
+                    repo TEXT,
+                    issue_number INTEGER,
+                    issue_url TEXT,
+                    created_at INTEGER NOT NULL,
+                    completed_at INTEGER
+                 );
+                 INSERT INTO tasks_v2 (id, text, status, position, due_ts, repo, issue_number,
+                                       issue_url, created_at, completed_at)
+                   SELECT id, text, {status_expr}, {position_expr}, due_ts, {link_exprs},
+                          created_at, completed_at
+                   FROM tasks;
+                 DROP TABLE tasks;
+                 ALTER TABLE tasks_v2 RENAME TO tasks;
+                 COMMIT;"
+            ))?;
         }
         self.conn.execute_batch("DROP TABLE IF EXISTS emails;")?;
         Ok(())
@@ -360,6 +391,40 @@ impl Store {
         }
         tx.commit()?;
         Ok(events.len())
+    }
+
+    /// Replace only the named repos' issue rows, leaving other repos' rows
+    /// intact. Collectors use this when a sweep partially failed: repos that
+    /// errored keep their last-known-good rows instead of being wiped.
+    pub fn replace_issues_for_repos(
+        &self,
+        repos: &[String],
+        issues: &[IssueInput],
+    ) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut del = tx.prepare("DELETE FROM issues WHERE repo = ?1")?;
+            for repo in repos {
+                del.execute(params![repo])?;
+            }
+            let mut stmt = tx.prepare(
+                "INSERT INTO issues (repo, number, title, labels, state, url, updated_ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            for i in issues {
+                stmt.execute(params![
+                    i.repo,
+                    i.number,
+                    i.title,
+                    serde_json::to_string(&i.labels)?,
+                    i.state,
+                    i.url,
+                    i.updated_ts,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(issues.len())
     }
 
     /// Full-snapshot replace of issue rows.
@@ -425,6 +490,39 @@ impl Store {
             params![repo, number, url, id],
         )?;
         Ok(())
+    }
+
+    /// Replace only the named repos' PR rows, leaving other repos' rows intact.
+    /// See [`Store::replace_issues_for_repos`] for the failure-containment
+    /// rationale.
+    pub fn replace_prs_for_repos(&self, repos: &[String], prs: &[PrInput]) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut del = tx.prepare("DELETE FROM pr_status WHERE repo = ?1")?;
+            for repo in repos {
+                del.execute(params![repo])?;
+            }
+            let mut stmt = tx.prepare(
+                "INSERT INTO pr_status
+                   (repo, number, title, branch, state, checks, review_state, url, updated_ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?;
+            for p in prs {
+                stmt.execute(params![
+                    p.repo,
+                    p.number,
+                    p.title,
+                    p.branch,
+                    p.state,
+                    p.checks,
+                    p.review_state,
+                    p.url,
+                    p.updated_ts,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(prs.len())
     }
 
     /// Full-snapshot replace of PR status rows.
@@ -530,14 +628,18 @@ impl Store {
         self.query_runs(&format!("SELECT {RUN_COLS} FROM collect_runs ORDER BY collector ASC"), [])
     }
 
-    /// A single full snapshot of the store for the dashboard.
+    /// A single full snapshot of the store for the dashboard. The five reads
+    /// share one transaction so a concurrent writer (CLI collector, another
+    /// window) can't produce a torn cross-table view.
     pub fn snapshot(&self) -> Result<Snapshot> {
+        let tx = self.conn.unchecked_transaction()?;
         let events = self
             .query_events(&format!("SELECT {EVENT_COLS} FROM events ORDER BY start_ts ASC"), [])?;
         let tasks = self.query_tasks(&format!("SELECT {TASK_COLS} FROM tasks {TASK_ORDER}"), [])?;
         let issues = self.issues()?;
         let prs = self.prs()?;
         let runs = self.runs()?;
+        tx.commit()?;
         Ok(Snapshot { events, tasks, issues, prs, runs })
     }
 
@@ -736,6 +838,12 @@ mod tests {
         assert!(snapshot.tasks.iter().any(|t| t.text == "old todo" && t.status == "backlog"));
         assert!(snapshot.tasks.iter().any(|t| t.text == "finished todo" && t.status == "done"));
 
+        // Writes must work too: the legacy NOT-NULL `source` column has to be
+        // gone, or every INSERT that omits it fails.
+        let added = s.add_task("new todo", None, 3).unwrap();
+        assert_eq!(added.status, "backlog");
+        assert!(!task_columns(&s).contains(&"source".to_string()));
+
         let has_emails: bool = s
             .conn
             .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'emails'")
@@ -743,6 +851,55 @@ mod tests {
             .exists([])
             .unwrap();
         assert!(!has_emails, "dead `emails` table should be dropped");
+    }
+
+    fn task_columns(s: &Store) -> Vec<String> {
+        let mut stmt = s.conn.prepare("PRAGMA table_info(tasks)").unwrap();
+        let cols = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
+        cols.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    }
+
+    #[test]
+    fn migrate_repairs_half_migrated_tasks_table() {
+        // A db the old ALTER-based migration already touched: v2 columns exist,
+        // but the legacy NOT-NULL `source` column is still present, so inserts
+        // that omit it fail. The rebuild must keep the v2 values it finds.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tt.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL,
+                    source_ref TEXT,
+                    text TEXT NOT NULL,
+                    due_ts INTEGER,
+                    done INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    completed_at INTEGER,
+                    status TEXT NOT NULL DEFAULT 'backlog',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    repo TEXT,
+                    issue_number INTEGER,
+                    issue_url TEXT
+                );
+                INSERT INTO tasks (source, text, done, created_at, status, position, repo,
+                                   issue_number, issue_url)
+                    VALUES ('manual', 'linked todo', 0, 1, 'doing', 2, 'o/r', 7,
+                            'https://github.com/o/r/issues/7');",
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        let t = s.snapshot().unwrap().tasks.into_iter().find(|t| t.text == "linked todo").unwrap();
+        assert_eq!(t.status, "doing");
+        assert_eq!(t.position, 2);
+        assert_eq!(t.repo.as_deref(), Some("o/r"));
+        assert_eq!(t.issue_number, Some(7));
+        s.add_task("post-repair todo", None, 9).unwrap();
+        assert!(!task_columns(&s).contains(&"source".to_string()));
     }
 
     #[test]
@@ -770,6 +927,46 @@ mod tests {
         let issues = s.issues().unwrap();
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].number, 3);
+    }
+
+    #[test]
+    fn replace_issues_for_repos_preserves_other_repos_rows() {
+        let s = Store::open_in_memory().unwrap();
+        s.replace_issues(&[issue("o/a", 1, 100), issue("o/b", 2, 200)]).unwrap();
+
+        // Repo o/a re-collected (now empty); o/b's gh call failed → untouched.
+        s.replace_issues_for_repos(&["o/a".to_string()], &[]).unwrap();
+        let issues = s.issues().unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].repo, "o/b");
+
+        // Scoped write inserts the named repo's fresh rows.
+        s.replace_issues_for_repos(&["o/a".to_string()], &[issue("o/a", 9, 900)]).unwrap();
+        let issues = s.issues().unwrap();
+        let repos: Vec<&str> = issues.iter().map(|i| i.repo.as_str()).collect();
+        assert!(repos.contains(&"o/a") && repos.contains(&"o/b"));
+    }
+
+    #[test]
+    fn replace_prs_for_repos_preserves_other_repos_rows() {
+        let pr = |repo: &str, number: i64| PrInput {
+            repo: repo.to_string(),
+            number,
+            title: "t".to_string(),
+            branch: "b".to_string(),
+            state: "open".to_string(),
+            checks: "passing".to_string(),
+            review_state: String::new(),
+            url: "https://x".to_string(),
+            updated_ts: 1,
+        };
+        let s = Store::open_in_memory().unwrap();
+        s.replace_prs(&[pr("o/a", 1), pr("o/b", 2)]).unwrap();
+        s.replace_prs_for_repos(&["o/a".to_string()], &[pr("o/a", 3)]).unwrap();
+        let prs = s.prs().unwrap();
+        assert_eq!(prs.len(), 2);
+        assert!(prs.iter().any(|p| p.repo == "o/b" && p.number == 2));
+        assert!(prs.iter().any(|p| p.repo == "o/a" && p.number == 3));
     }
 
     #[test]

@@ -100,17 +100,38 @@ pub fn run_with_stdin(cmd: &str, args: &[&str], stdin: &str) -> Result<Output> {
 /// stdout/stderr are drained on dedicated threads while the child runs, so a
 /// chatty child can't deadlock by filling a pipe the parent isn't reading.
 pub fn run_with_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Result<Output> {
+    run_with_timeout_in(cmd, args, None, timeout)
+}
+
+/// [`run_with_timeout`], but with the child's working directory set to `dir`.
+/// For tools like `gh` that resolve their target repo from the cwd.
+pub fn run_in_dir_with_timeout(
+    cmd: &str,
+    args: &[&str],
+    dir: &std::path::Path,
+    timeout: Duration,
+) -> Result<Output> {
+    run_with_timeout_in(cmd, args, Some(dir), timeout)
+}
+
+fn run_with_timeout_in(
+    cmd: &str,
+    args: &[&str],
+    dir: Option<&std::path::Path>,
+    timeout: Duration,
+) -> Result<Output> {
     use std::io::Read;
     use std::process::Stdio;
     use wait_timeout::ChildExt;
 
     log::debug!("exec (timeout {timeout:?}): {}", display_cmd(cmd, args));
-    let mut child = Command::new(cmd)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| Error::Spawn { cmd: cmd.to_string(), source })?;
+    let mut command = Command::new(cmd);
+    command.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if let Some(dir) = dir {
+        command.current_dir(dir);
+    }
+    let mut child =
+        command.spawn().map_err(|source| Error::Spawn { cmd: cmd.to_string(), source })?;
 
     fn drain(reader: Option<impl Read>) -> String {
         let mut buf = Vec::new();
@@ -225,6 +246,15 @@ mod tests {
         let err = run_with_timeout("definitely-not-a-real-binary-xyz", &[], Duration::from_secs(5))
             .unwrap_err();
         assert!(matches!(err, Error::Spawn { .. }));
+    }
+
+    #[test]
+    fn run_in_dir_with_timeout_sets_cwd() {
+        let dir = std::env::temp_dir();
+        let output = run_in_dir_with_timeout("pwd", &[], &dir, Duration::from_secs(5)).unwrap();
+        // Canonicalize both sides: temp_dir is often a symlink (e.g. /tmp → /private/tmp).
+        let reported = std::fs::canonicalize(output.stdout.trim()).unwrap();
+        assert_eq!(reported, std::fs::canonicalize(&dir).unwrap());
     }
 
     #[test]

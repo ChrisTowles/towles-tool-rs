@@ -36,17 +36,21 @@ impl StoreState {
         StoreState { store: Arc::new(Mutex::new(store)) }
     }
 
-    /// Clone the shared store handle. Exposed for the Phase-3 collector scheduler,
-    /// which needs to lock the store from its own tokio task (unused until then).
-    #[allow(dead_code)]
-    pub fn handle(&self) -> Arc<Mutex<Option<Store>>> {
-        self.store.clone()
-    }
-
     #[cfg(test)]
     fn from_option(store: Option<Store>) -> StoreState {
         StoreState { store: Arc::new(Mutex::new(store)) }
     }
+}
+
+/// Run `f` against the store, mapping an unavailable store to the stable
+/// error string the frontend (and tests) key on.
+fn with_store<T>(
+    state: &StoreState,
+    f: impl FnOnce(&Store) -> Result<T, String>,
+) -> Result<T, String> {
+    let guard = state.store.lock().unwrap();
+    let store = guard.as_ref().ok_or("store unavailable: no data directory")?;
+    f(store)
 }
 
 /// Epoch milliseconds from the local wall clock (write-boundary clock).
@@ -56,9 +60,7 @@ fn now_ms() -> i64 {
 
 /// Compute a snapshot, or an error string when the store is unavailable.
 fn snapshot_of(state: &StoreState) -> Result<Snapshot, String> {
-    let guard = state.store.lock().unwrap();
-    let store = guard.as_ref().ok_or("store unavailable: no data directory")?;
-    store.snapshot().map_err(|e| format!("store snapshot failed: {e}"))
+    with_store(state, |store| store.snapshot().map_err(|e| format!("store snapshot failed: {e}")))
 }
 
 /// Recompute and emit the snapshot. Best-effort: a missing store or emit failure is
@@ -85,11 +87,9 @@ pub fn store_add_task(
     text: String,
     due_ts: Option<i64>,
 ) -> Result<(), String> {
-    {
-        let guard = state.store.lock().unwrap();
-        let store = guard.as_ref().ok_or("store unavailable: no data directory")?;
-        store.add_task(&text, due_ts, now_ms()).map_err(|e| format!("add_task failed: {e}"))?;
-    }
+    with_store(&state, |store| {
+        store.add_task(&text, due_ts, now_ms()).map_err(|e| format!("add_task failed: {e}"))
+    })?;
     emit_snapshot(&app, &state);
     Ok(())
 }
@@ -102,13 +102,11 @@ pub fn store_set_task_status(
     id: i64,
     status: String,
 ) -> Result<(), String> {
-    {
-        let guard = state.store.lock().unwrap();
-        let store = guard.as_ref().ok_or("store unavailable: no data directory")?;
+    with_store(&state, |store| {
         store
             .set_task_status(id, &status, now_ms())
-            .map_err(|e| format!("set_task_status failed: {e}"))?;
-    }
+            .map_err(|e| format!("set_task_status failed: {e}"))
+    })?;
     emit_snapshot(&app, &state);
     Ok(())
 }
@@ -118,33 +116,34 @@ pub fn store_set_task_status(
 ///
 /// Shells `gh issue create --repo <repo>` with the todo's text as the title.
 /// `gh` prints the new issue URL on stdout; the trailing path segment is its
-/// number.
+/// number. Async: the network round-trip runs on a blocking worker so a slow
+/// GitHub call can't stall the main thread (sync commands run there).
 #[tauri::command]
-pub fn store_promote_task_to_issue(
+pub async fn store_promote_task_to_issue(
     app: AppHandle,
-    state: State<StoreState>,
+    state: State<'_, StoreState>,
     id: i64,
     repo: String,
 ) -> Result<(), String> {
-    let title = {
-        let guard = state.store.lock().unwrap();
-        let store = guard.as_ref().ok_or("store unavailable: no data directory")?;
-        store
+    let title = with_store(&state, |store| {
+        Ok(store
             .get_task(id)
             .map_err(|e| format!("get_task failed: {e}"))?
             .ok_or_else(|| format!("no todo with id {id}"))?
-            .text
-    };
+            .text)
+    })?;
 
-    let (number, url) = create_gh_issue(&repo, &title)?;
+    let gh_repo = repo.clone();
+    let (number, url) =
+        tauri::async_runtime::spawn_blocking(move || create_gh_issue(&gh_repo, &title))
+            .await
+            .map_err(|e| format!("gh issue create task failed: {e}"))??;
 
-    {
-        let guard = state.store.lock().unwrap();
-        let store = guard.as_ref().ok_or("store unavailable: no data directory")?;
+    with_store(&state, |store| {
         store
             .link_task_issue(id, &repo, number, &url)
-            .map_err(|e| format!("link_task_issue failed: {e}"))?;
-    }
+            .map_err(|e| format!("link_task_issue failed: {e}"))
+    })?;
     emit_snapshot(&app, &state);
     Ok(())
 }
@@ -154,20 +153,25 @@ pub fn store_promote_task_to_issue(
 /// the `.current_dir()` convention `tt-collect`'s issue/PR collectors use.
 /// Used by the agentboard repo rail's "New issue" action; the created issue
 /// shows up in Board's issue list once the next `issues` collector run picks
-/// it up.
+/// it up. Async for the same main-thread reason as
+/// [`store_promote_task_to_issue`].
 #[tauri::command]
-pub fn store_create_issue(dir: String, title: String) -> Result<String, String> {
-    let title = title.trim();
+pub async fn store_create_issue(dir: String, title: String) -> Result<String, String> {
+    let title = title.trim().to_string();
     if title.is_empty() {
         return Err("issue title is required".into());
     }
-    let output = std::process::Command::new("gh")
-        .args(["issue", "create", "--title", title, "--body", ""])
-        .current_dir(&dir)
-        .output()
-        .map_err(|e| format!("failed to spawn gh in {dir}: {e}"))?;
-    let (_, url) = parse_gh_issue_create_output(&output)?;
-    Ok(url)
+    tauri::async_runtime::spawn_blocking(move || {
+        let output = std::process::Command::new("gh")
+            .args(["issue", "create", "--title", &title, "--body", ""])
+            .current_dir(&dir)
+            .output()
+            .map_err(|e| format!("failed to spawn gh in {dir}: {e}"))?;
+        let (_, url) = parse_gh_issue_create_output(&output)?;
+        Ok(url)
+    })
+    .await
+    .map_err(|e| format!("gh issue create task failed: {e}"))?
 }
 
 /// Run `gh issue create` and return the new issue's `(number, url)`.
@@ -224,11 +228,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn now_ms_is_positive() {
-        assert!(now_ms() > 0);
-    }
-
-    #[test]
     fn snapshot_of_empty_store_is_empty() {
         let state = StoreState::from_option(Some(Store::open_in_memory().unwrap()));
         let snap = snapshot_of(&state).unwrap();
@@ -252,16 +251,5 @@ mod tests {
         let state = StoreState::from_option(None);
         let err = snapshot_of(&state).unwrap_err();
         assert!(err.contains("store unavailable"), "got: {err}");
-    }
-
-    #[test]
-    fn handle_shares_the_same_store() {
-        let store = Store::open_in_memory().unwrap();
-        store.add_task("shared", None, 1).unwrap();
-        let state = StoreState::from_option(Some(store));
-        let handle = state.handle();
-        let guard = handle.lock().unwrap();
-        let snap = guard.as_ref().unwrap().snapshot().unwrap();
-        assert_eq!(snap.tasks.len(), 1);
     }
 }
