@@ -12,7 +12,9 @@
 //!   remoteless folder stands alone under `key = "path:<dir>"`).
 //! - Each folder's agent events (from the tracker, keyed by folder name) are
 //!   distributed across its sessions by the `attribute` closure — which maps an
-//!   event to the PTY `TT_SESSION_ID` it ran in. Unattributed events fall back
+//!   event to the PTY `TT_SESSION_ID` it ran in. An attributed event renders
+//!   only on that exact session (an id foreign to this folder's records is
+//!   dropped, never guessed); only events with no attribution at all fall back
 //!   to the folder's default (first) session.
 
 use std::collections::HashMap;
@@ -51,7 +53,9 @@ pub struct StatePayload {
 /// agents + `needs`), then groups folders into [`RepoData`] by origin URL.
 ///
 /// `attribute` maps an agent event to the PTY session id it was detected in
-/// (via `TT_SESSION_ID`); return `None` to fall back to the folder's default
+/// (via `TT_SESSION_ID`); an id that matches none of the folder's records drops
+/// the event (it lives in another instance's session). Return `None` — no
+/// attribution machinery for this event — to fall back to the folder's default
 /// session. `session_agents` (keyed by session id) supplements the tracker with
 /// app-spawned agents the CLI snapshot missed — used only for sessions that end
 /// up with no tracker-attributed state. Entries are assumed pre-sorted by the
@@ -123,9 +127,10 @@ pub fn assemble_state(
 }
 
 /// Build one folder: git stats + its persisted sessions with agents distributed
-/// by `attribute` (unattributed → default session), plus a placeholder `needs`
-/// count (always 0 here — see [`session_needs`] — the app recomputes it after
-/// stamping shell liveness via [`recompute_needs`]).
+/// by `attribute` (attributed → that exact session or dropped; no attribution →
+/// default session), plus a placeholder `needs` count (always 0 here — see
+/// [`session_needs`] — the app recomputes it after stamping shell liveness via
+/// [`recompute_needs`]).
 #[allow(clippy::too_many_arguments)]
 fn build_folder(
     entry: &RepoEntry,
@@ -139,29 +144,32 @@ fn build_folder(
 ) -> FolderData {
     let records = sessions.sessions_for(&entry.dir);
     let folder_agents = tracker.get_agents(&entry.name);
-    let folder_state = tracker.get_state(&entry.name);
     let default_id = records.first().map(|r| r.id.clone());
 
-    // Bucket each agent onto the session it ran in (attributed id if it matches a
-    // real record, else the folder's default session).
+    // Bucket each agent onto the session it ran in. A positively attributed
+    // agent renders only on that exact record: an id that isn't one of this
+    // folder's records means the agent runs in some *other* app instance's
+    // session (sessions.json is shared across windows/slots), and dropping it
+    // beats pinning someone else's agent — name, cache chip and all — onto an
+    // unrelated pane. Only agents with no attribution machinery at all (kinds
+    // without a pid→TT_SESSION_ID path, non-Linux hosts) fall back to the
+    // folder's default (first) session.
     let mut by_session: HashMap<String, Vec<AgentEvent>> = HashMap::new();
     for agent in folder_agents {
-        let sid = attribute(&agent)
-            .filter(|id| records.iter().any(|r| &r.id == id))
-            .or_else(|| default_id.clone());
+        let sid = match attribute(&agent) {
+            Some(id) => records.iter().any(|r| r.id == id).then_some(id),
+            None => default_id.clone(),
+        };
         if let Some(sid) = sid {
             by_session.entry(sid).or_default().push(agent);
         }
     }
 
-    let single = records.len() == 1;
     let session_data: Vec<SessionData> = records
         .iter()
         .map(|r| {
             let agents = by_session.remove(&r.id).unwrap_or_default();
-            // Single-session folder mirrors the tracker's folder-level priority
-            // pick exactly; multi-session folders pick from the session's subset.
-            let agent_state = if single { folder_state.clone() } else { pick_state(&agents) };
+            let agent_state = pick_state(&agents);
             // Supplement: an app-spawned Claude we found by scanning /proc for
             // this session's TT_SESSION_ID, when the CLI snapshot never reported
             // it (so the tracker has nothing). Only fills an otherwise-idle row.
@@ -537,6 +545,40 @@ mod tests {
         let two = folder.sessions.iter().find(|s| s.id == s2.id).unwrap();
         assert!(one.agent_state.is_none());
         assert_eq!(two.agent_state.as_ref().unwrap().status, AgentStatus::Busy);
+    }
+
+    #[test]
+    fn foreign_attribution_is_dropped_not_defaulted() {
+        // An agent positively attributed to a session id that matches none of
+        // this folder's records runs in some other app instance's session
+        // (sessions.json is shared) — it must not land on the default session,
+        // even when the folder has only one (the old single-session mirror
+        // leaked folder-level state here).
+        let mut tracker = AgentTracker::new();
+        tracker.apply_event(ev("alpha", AgentStatus::Busy, "ta"), false);
+        let metadata = SessionMetadataStore::new();
+        let mut store = SessionStore::new(None);
+        store.add("/r/alpha", Some("one"), 1);
+        let git = HashMap::new();
+        let entries = vec![RepoEntry { name: "alpha".into(), dir: "/r/alpha".into() }];
+        let attribute = |_: &AgentEvent| Some("someone-elses-session".to_string());
+        let payload = assemble_state(
+            &entries,
+            &git,
+            &tracker,
+            &metadata,
+            &store,
+            &FolderMetaStore::default(),
+            &attribute,
+            &HashMap::new(),
+            None,
+            "code",
+            30,
+            0,
+        );
+        let folder = &payload.repos[0].folders[0];
+        assert!(folder.sessions[0].agent_state.is_none());
+        assert!(folder.sessions[0].agents.is_empty());
     }
 
     #[test]
