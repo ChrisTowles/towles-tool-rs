@@ -1,26 +1,9 @@
 import { useEffect, useState } from "react";
-import {
-  CalendarClock,
-  CircleCheck,
-  CircleDot,
-  CircleX,
-  Clock,
-  ExternalLink,
-  GitPullRequest,
-  CircleAlert,
-} from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { CalendarClock, CircleAlert, CircleDot, GitPullRequest } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import {
-  fmtAge,
-  fmtClock,
-  fmtCountdown,
-  useStoreSnapshot,
-  type IssueItem,
-  type PrItem,
-} from "@/lib/data";
-import { openExternalUrl } from "@/lib/open-url";
+import { fmtClock, fmtCountdown, useStoreSnapshot } from "@/lib/data";
+import { Empty, IssueRow, Panel, PrRow, prNeedsYou, prRank } from "@/components/store-bits";
 
 /**
  * Cockpit — the day home. One dense screen: how long until the next meeting, the
@@ -43,9 +26,7 @@ export function CockpitScreen() {
   const later = upcoming.slice(1, 3);
   const soon = nextEvent && nextEvent.startTs - now < 15 * 60_000;
 
-  const needsYouPrs = snapshot.prs.filter(
-    (p) => p.checks === "failing" || p.reviewState === "review_requested",
-  );
+  const needsYouPrs = snapshot.prs.filter(prNeedsYou);
   const repos = new Set([
     ...snapshot.prs.map((p) => p.repo),
     ...snapshot.issues.map((i) => i.repo),
@@ -121,7 +102,7 @@ export function CockpitScreen() {
             ) : (
               snapshot.prs
                 .slice()
-                .sort((a, b) => rank(b) - rank(a) || b.updatedTs - a.updatedTs)
+                .sort((a, b) => prRank(b) - prRank(a) || b.updatedTs - a.updatedTs)
                 .map((pr) => <PrRow key={`${pr.repo}#${pr.number}`} pr={pr} now={now} />)
             )}
           </Panel>
@@ -147,13 +128,6 @@ export function CockpitScreen() {
   );
 }
 
-/** PR ordering weight: failing checks outrank review-requested outrank the rest. */
-function rank(pr: PrItem): number {
-  if (pr.checks === "failing") return 2;
-  if (pr.reviewState === "review_requested") return 1;
-  return 0;
-}
-
 function Gauge({ n, label, tone }: { n: number; label: string; tone: "warn" | "muted" }) {
   return (
     <div className="flex flex-col items-center">
@@ -170,105 +144,3 @@ function Gauge({ n, label, tone }: { n: number; label: string; tone: "warn" | "m
   );
 }
 
-function Panel({
-  title,
-  note,
-  icon,
-  children,
-}: {
-  title: string;
-  note?: string;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="flex flex-col overflow-hidden rounded-lg border">
-      <div className="flex items-center justify-between border-b bg-muted/40 px-3 py-2">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          {icon}
-          {title}
-        </div>
-        {note && <span className="text-xs text-muted-foreground">{note}</span>}
-      </div>
-      <div className="flex flex-col divide-y">{children}</div>
-    </section>
-  );
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="px-3 py-8 text-center text-sm text-muted-foreground">{children}</p>;
-}
-
-function ChecksIcon({ checks }: { checks: string }) {
-  if (checks === "passing")
-    return <CircleCheck className="size-4 shrink-0 text-green-600 dark:text-green-500" />;
-  if (checks === "failing") return <CircleX className="size-4 shrink-0 text-destructive" />;
-  if (checks === "none") return <CircleDot className="size-4 shrink-0 text-muted-foreground/50" />;
-  return <Clock className="size-4 shrink-0 text-amber-600 dark:text-amber-500" />;
-}
-
-function PrRow({ pr, now }: { pr: PrItem; now: number }) {
-  const reviewRequested = pr.reviewState === "review_requested";
-  return (
-    <a
-      href={pr.url}
-      target="_blank"
-      rel="noreferrer"
-      onClick={(e) => {
-        e.preventDefault();
-        void openExternalUrl(pr.url);
-      }}
-      className="group flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/40"
-    >
-      <ChecksIcon checks={pr.checks} />
-      <div className="min-w-0 flex-1">
-        <div className="truncate">{pr.title}</div>
-        <div className="truncate font-mono text-xs text-muted-foreground">
-          {pr.repo} #{pr.number} · {fmtAge(pr.updatedTs, now)}
-        </div>
-      </div>
-      {reviewRequested && (
-        <Badge className="shrink-0 bg-blue-500/15 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400">
-          review you
-        </Badge>
-      )}
-      {pr.checks === "failing" && (
-        <Badge className="shrink-0 bg-red-500/15 text-red-700 dark:bg-red-500/20 dark:text-red-400">
-          <CircleAlert className="size-3" /> checks
-        </Badge>
-      )}
-      <ExternalLink className="size-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100" />
-    </a>
-  );
-}
-
-function IssueRow({ issue, now }: { issue: IssueItem; now: number }) {
-  return (
-    <a
-      href={issue.url}
-      target="_blank"
-      rel="noreferrer"
-      onClick={(e) => {
-        e.preventDefault();
-        void openExternalUrl(issue.url);
-      }}
-      className="group flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/40"
-    >
-      <CircleDot className="size-4 shrink-0 text-green-600 dark:text-green-500" />
-      <div className="min-w-0 flex-1">
-        <div className="truncate">{issue.title}</div>
-        <div className="truncate font-mono text-xs text-muted-foreground">
-          {issue.repo} #{issue.number} · {fmtAge(issue.updatedTs, now)}
-        </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-1">
-        {issue.labels.slice(0, 2).map((l) => (
-          <Badge key={l} variant="outline" className="text-[10px]">
-            {l}
-          </Badge>
-        ))}
-      </div>
-      <ExternalLink className="size-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100" />
-    </a>
-  );
-}
