@@ -1,15 +1,15 @@
 //! The agentboard engine: tracker + metadata + session-order + git cache +
 //! watchers behind one struct, host-agnostic. Extracted from
 //! `crates-tauri/tt-app/src/agentboard.rs` (phase T3 of the agentboard port)
-//! so both hosts share it:
-//!
-//! - the Tauri app drives it repos.json-first ([`Engine::scan_once`],
-//!   [`Engine::compute_payload`]);
-//! - the tmux-mode server derives entries from live tmux sessions and uses the
-//!   `*_for_entries` / `*_with_resolver` variants.
+//! so every host (the Tauri app, `ttr mcp serve`) shares it.
 //!
 //! The engine is synchronous; hosts own scheduling (tokio tasks, debounces)
-//! and transport (Tauri events, SSE).
+//! and transport (Tauri events, MCP responses). Hosts guard it with a `Mutex`,
+//! so everything expensive that does NOT need engine state is deliberately
+//! outside `impl Engine`: [`collect_agent_snapshot`] (claude CLI + `/proc` +
+//! transcript reads) and [`crate::git_info::compute_git_info`] (git
+//! subprocesses) run unlocked, and their results are handed to cheap locked
+//! methods ([`Engine::compute_payload_with`], [`Engine::store_git_info`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -85,7 +85,71 @@ pub struct Engine {
     preferred_editor: String,
     compact_recommend_percent: u8,
     seeded_once: bool,
-    last_payload: Option<StatePayload>,
+}
+
+/// Everything [`Engine::compute_payload_with`] needs that is derived from the
+/// system rather than engine state: the claude CLI's live-agent snapshot, the
+/// `TT_SESSION_ID` read from each agent's process env, and the app-spawned
+/// agents found by scanning `/proc`. Collect it with [`collect_agent_snapshot`]
+/// — outside the engine lock, since it spawns a process and reads transcripts.
+pub struct AgentSnapshot {
+    live_threads: HashSet<String>,
+    tt_session_by_thread: HashMap<String, String>,
+    session_agents: HashMap<String, AgentEvent>,
+}
+
+/// Gather the live-agent inputs for a payload rebuild. Runs the (cached)
+/// `claude agents` fetch and the `/proc` scans; call it WITHOUT holding the
+/// engine lock so a slow claude CLI can't stall `ab_*` commands.
+pub fn collect_agent_snapshot(now: i64) -> AgentSnapshot {
+    // CLI-derived liveness drives the pruning pins (§4; T7 replaced the
+    // ~/.claude/sessions pid files; the waiting synthesis is gone — the
+    // claude watcher emits CLI-authoritative statuses directly).
+    let cli_agents = crate::claude_cli::fetch_agents_cached(std::time::Duration::from_millis(
+        crate::watchers::claude_code::CLI_CACHE_TTL_MS,
+    ));
+    let live_threads: HashSet<String> = cli_agents.iter().map(|a| a.session_id.clone()).collect();
+    // Link each live agent to the PTY session it runs in: read `TT_SESSION_ID`
+    // from the agent's process env (/proc), keyed by its thread id (==
+    // sessionId). Agents with no injected id (e.g. started in an external
+    // terminal, or non-Claude kinds without a pid source) stay unmapped and
+    // fall back to their folder's default session in `assemble_state`.
+    let tt_session_by_thread: HashMap<String, String> = cli_agents
+        .iter()
+        .filter_map(|a| {
+            crate::procenv::read_session_id(a.pid).map(|sid| (a.session_id.clone(), sid))
+        })
+        .collect();
+    // Supplement CLI detection: app-spawned Claude sessions the CLI snapshot
+    // never enumerated, found by scanning /proc for our injected
+    // TT_SESSION_ID and enriched with task name + status from the
+    // transcript the process has open. Keyed by session id; consumed only
+    // for sessions the tracker left idle. First live process per id wins.
+    let mut session_agents: HashMap<String, AgentEvent> = HashMap::new();
+    for proc in crate::procenv::scan_session_agents() {
+        if session_agents.contains_key(&proc.session_id) {
+            continue;
+        }
+        let (thread_name, status) = match &proc.transcript {
+            Some(p) => crate::watchers::claude_code::enrich_from_transcript(p),
+            None => (None, AgentStatus::Idle),
+        };
+        session_agents.insert(
+            proc.session_id.clone(),
+            AgentEvent {
+                agent: "claude-code".to_string(),
+                session: String::new(),
+                status,
+                ts: now,
+                thread_id: None,
+                thread_name,
+                unseen: None,
+                pane_id: None,
+                details: None,
+            },
+        );
+    }
+    AgentSnapshot { live_threads, tt_session_by_thread, session_agents }
 }
 
 impl Engine {
@@ -128,7 +192,6 @@ impl Engine {
             preferred_editor,
             compact_recommend_percent,
             seeded_once: false,
-            last_payload: None,
         }
     }
 
@@ -180,23 +243,37 @@ impl Engine {
         self.preferred_editor.clone()
     }
 
-    /// Refresh git info for each watched repo (runs git subprocesses).
-    pub fn refresh_git(&mut self, now: i64) {
-        for entry in repo_entries(&self.repo_paths) {
-            self.git_cache.refresh(&entry.dir, now);
-        }
+    /// The dirs whose git info the host should recompute (all watched repos,
+    /// freshly reloaded). Cheap; hold the lock only for this, then run
+    /// [`crate::git_info::compute_git_info`] per dir unlocked and hand the
+    /// results back via [`Engine::store_git_info`].
+    pub fn git_targets(&mut self) -> Vec<String> {
+        self.reload_repos();
+        repo_entries(&self.repo_paths).into_iter().map(|e| e.dir).collect()
     }
 
-    /// Refresh git info for an arbitrary dir list (tmux-session mode).
-    pub fn refresh_git_dirs(&mut self, dirs: &[String], now: i64) {
-        for dir in dirs {
-            self.git_cache.refresh(dir, now);
-        }
+    /// Store one repo's freshly computed git info. Returns whether it differs
+    /// from the cached value, so the host can skip re-emitting an unchanged
+    /// snapshot.
+    pub fn store_git_info(&mut self, dir: &str, info: crate::git_info::GitInfo, now: i64) -> bool {
+        let changed = self.git_cache.get(dir) != info;
+        self.git_cache.insert(dir, info, now);
+        changed
     }
 
     /// Full recompute from repos.json (desktop mode). Base order is by name
     /// (createdAt is meaningless for configured repos).
+    ///
+    /// Collects the agent snapshot itself — convenient for hosts without a hot
+    /// loop (the MCP server). Hot loops should call [`collect_agent_snapshot`]
+    /// unlocked and pass it to [`Engine::compute_payload_with`].
     pub fn compute_payload(&mut self, now: i64) -> StatePayload {
+        let snapshot = collect_agent_snapshot(now);
+        self.compute_payload_with(&snapshot, now)
+    }
+
+    /// Full recompute from repos.json using a pre-collected agent snapshot.
+    pub fn compute_payload_with(&mut self, snapshot: &AgentSnapshot, now: i64) -> StatePayload {
         self.reload_repos();
         let mut entries = repo_entries(&self.repo_paths);
         entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -211,7 +288,7 @@ impl Engine {
         if seeded {
             let _ = self.sessions.save();
         }
-        let payload = self.compute_payload_for_entries(&entries, now);
+        let payload = self.compute_payload_for_entries(&entries, snapshot, now);
         // Drop metadata + session records for repos no longer configured.
         let names: HashSet<String> = entries.iter().map(|e| e.name.clone()).collect();
         let dirs: HashSet<String> = entries.iter().map(|e| e.dir.clone()).collect();
@@ -264,6 +341,7 @@ impl Engine {
 
     /// Set the compact-nudge threshold and persist it to the shared settings
     /// file (`agentboard.compactRecommendPercent`). Clamped to 1..=100.
+    /// Persists via `save_merge` so keys the TypeScript CLI owns survive.
     pub fn set_compact_recommend_percent(&mut self, percent: u8) -> bool {
         let percent = percent.clamp(1, 100);
         if percent == self.compact_recommend_percent {
@@ -272,41 +350,26 @@ impl Engine {
         self.compact_recommend_percent = percent;
         if let Ok(mut settings) = tt_config::load() {
             settings.agentboard.compact_recommend_percent = Some(percent);
-            let _ = tt_config::save(&settings);
+            let _ = tt_config::save_merge(&settings);
         }
         true
     }
 
     /// Full recompute for the given entries: pid-liveness pin → prune
-    /// schedule → assemble snapshot. The tmux server passes entries derived
-    /// from live tmux sessions.
-    pub fn compute_payload_for_entries(&mut self, entries: &[RepoEntry], now: i64) -> StatePayload {
-        // CLI-derived liveness drives the pruning pins (§4; T7 replaced the
-        // ~/.claude/sessions pid files; the waiting synthesis is gone — the
-        // claude watcher emits CLI-authoritative statuses directly).
-        let cli_agents = crate::claude_cli::fetch_agents_cached(std::time::Duration::from_millis(
-            crate::watchers::claude_code::CLI_CACHE_TTL_MS,
-        ));
-        let live_threads: HashSet<String> =
-            cli_agents.iter().map(|a| a.session_id.clone()).collect();
-        // Link each live agent to the PTY session it runs in: read `TT_SESSION_ID`
-        // from the agent's process env (/proc), keyed by its thread id (==
-        // sessionId). Agents with no injected id (e.g. started in an external
-        // terminal, or non-Claude kinds without a pid source) stay unmapped and
-        // fall back to their folder's default session in `assemble_state`.
-        let tt_session_by_thread: HashMap<String, String> = cli_agents
-            .iter()
-            .filter_map(|a| {
-                crate::procenv::read_session_id(a.pid).map(|sid| (a.session_id.clone(), sid))
-            })
-            .collect();
+    /// schedule → assemble snapshot.
+    fn compute_payload_for_entries(
+        &mut self,
+        entries: &[RepoEntry],
+        snapshot: &AgentSnapshot,
+        now: i64,
+    ) -> StatePayload {
         let mut pinned: HashMap<String, Vec<String>> = HashMap::new();
         for entry in entries {
             for agent in self.tracker.get_agents(&entry.name) {
                 let Some(tid) = agent.thread_id.clone() else {
                     continue;
                 };
-                if live_threads.contains(&tid) {
+                if snapshot.live_threads.contains(&tid) {
                     pinned
                         .entry(entry.name.clone())
                         .or_default()
@@ -334,37 +397,8 @@ impl Engine {
         // event's thread id (== the CLI sessionId) to the `TT_SESSION_ID` read
         // from that agent's process. Unmatched → folder's default session.
         let attribute = |event: &AgentEvent| {
-            event.thread_id.as_ref().and_then(|tid| tt_session_by_thread.get(tid).cloned())
+            event.thread_id.as_ref().and_then(|tid| snapshot.tt_session_by_thread.get(tid).cloned())
         };
-        // Supplement CLI detection: app-spawned Claude sessions the CLI snapshot
-        // never enumerated, found by scanning /proc for our injected
-        // TT_SESSION_ID and enriched with task name + status from the
-        // transcript the process has open. Keyed by session id; consumed only
-        // for sessions the tracker left idle. First live process per id wins.
-        let mut session_agents: HashMap<String, AgentEvent> = HashMap::new();
-        for proc in crate::procenv::scan_session_agents() {
-            if session_agents.contains_key(&proc.session_id) {
-                continue;
-            }
-            let (thread_name, status) = match &proc.transcript {
-                Some(p) => crate::watchers::claude_code::enrich_from_transcript(p),
-                None => (None, AgentStatus::Idle),
-            };
-            session_agents.insert(
-                proc.session_id.clone(),
-                AgentEvent {
-                    agent: "claude-code".to_string(),
-                    session: String::new(),
-                    status,
-                    ts: now,
-                    thread_id: None,
-                    thread_name,
-                    unseen: None,
-                    pane_id: None,
-                    details: None,
-                },
-            );
-        }
         let mut payload = assemble_state(
             entries,
             &git_infos,
@@ -373,7 +407,7 @@ impl Engine {
             &self.sessions,
             &self.folder_meta,
             &attribute,
-            &session_agents,
+            &snapshot.session_agents,
             theme,
             &editor,
             self.compact_recommend_percent,
@@ -382,14 +416,7 @@ impl Engine {
 
         payload.windows = self.windows.payload().clone();
         payload.collapsed = self.collapse.payload().collapsed.clone();
-        self.last_payload = Some(payload.clone());
         payload
-    }
-
-    /// Drop metadata for sessions not in `names` (tmux-session mode calls
-    /// this with the live session set).
-    pub fn prune_metadata_sessions(&mut self, names: &HashSet<String>) {
-        self.metadata.prune_sessions(names);
     }
 
     /// Mark a folder's agents seen. Returns a fresh payload only if something
@@ -402,33 +429,6 @@ impl Engine {
         Some(self.compute_payload(now_ms()))
     }
 
-    /// Clear unseen flags for a session a client just focused. Returns whether
-    /// anything was cleared (ports `tracker.handleFocus`).
-    pub fn handle_focus(&mut self, name: &str) -> bool {
-        self.tracker.handle_focus(name)
-    }
-
-    pub fn last_payload(&self) -> Option<StatePayload> {
-        self.last_payload.clone()
-    }
-
-    /// Sessions currently being viewed at boot — they never count as unseen
-    /// (ports `tracker.setActiveSessions`).
-    pub fn set_active_sessions(&mut self, sessions: &[String]) {
-        self.tracker.set_active_sessions(sessions);
-    }
-
-    /// Persist a pane assignment onto a tracked instance (pane merge, T6).
-    pub fn assign_pane_id(
-        &mut self,
-        session: &str,
-        agent: &str,
-        thread_id: Option<&str>,
-        pane_id: &str,
-    ) {
-        self.tracker.assign_pane_id(session, agent, thread_id, pane_id);
-    }
-
     pub fn dismiss(&mut self, session: &str, agent: &str, thread_id: Option<&str>) -> bool {
         self.tracker.dismiss(session, agent, thread_id)
     }
@@ -438,12 +438,19 @@ impl Engine {
     }
 
     /// Set the theme and persist it to the shared settings' `agentboard.theme`
-    /// (interop-safe — that key exists in the TS schema).
+    /// (interop-safe — that key exists in the TS schema). Persists via
+    /// `save_merge` so keys the TypeScript CLI owns survive, and skips the
+    /// write entirely when the settings file is unreadable — writing defaults
+    /// over a momentarily unreadable file would wipe the user's config.
     pub fn set_theme(&mut self, theme: String) {
         self.theme = Some(theme.clone());
-        let mut settings = tt_config::load().unwrap_or_default();
-        settings.agentboard.theme = Some(serde_json::Value::String(theme));
-        let _ = tt_config::save(&settings);
+        match tt_config::load() {
+            Ok(mut settings) => {
+                settings.agentboard.theme = Some(serde_json::Value::String(theme));
+                let _ = tt_config::save_merge(&settings);
+            }
+            Err(e) => log::warn!("theme not persisted: settings unreadable: {e}"),
+        }
     }
 
     /// Absolute dirs currently on the rail (freshly reloaded), so the add-repo

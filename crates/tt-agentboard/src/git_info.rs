@@ -106,12 +106,14 @@ impl GitInfoCache {
     }
 }
 
-/// Run `git -C <dir> <args...>` and return trimmed stdout, or "" on any failure.
-/// Mirrors the TS `shellAsync` (ignores stderr and exit code; empty on error).
+/// Run `git -C <dir> <args...>` and return trimmed stdout, or "" on any failure
+/// — including a timeout: a repo on a stale network mount must degrade to
+/// empty stats, not hang its caller. Mirrors the TS `shellAsync` (ignores
+/// stderr and exit code; empty on error).
 fn git_out(dir: &str, args: &[&str]) -> String {
     let mut full: Vec<&str> = vec!["-C", dir];
     full.extend_from_slice(args);
-    match tt_exec::run("git", &full) {
+    match tt_exec::run_with_timeout("git", &full, std::time::Duration::from_secs(5)) {
         Ok(out) => out.stdout.trim().to_string(),
         Err(_) => String::new(),
     }

@@ -54,11 +54,15 @@ pub fn stamp_pty_state(payload: &mut StatePayload, terms: &crate::terminal::Term
 }
 
 /// The stamped payload, recomputed now. Shared by `ab_get_state` and emitters.
+/// The agent snapshot (claude CLI + `/proc` + transcript reads) is collected
+/// BEFORE taking the engine lock so its subprocess work can't stall other
+/// `ab_*` commands.
 pub fn stamped_payload(app: &AppHandle) -> StatePayload {
+    let snapshot = tt_agentboard::engine::collect_agent_snapshot(now_ms());
     let ab = app.state::<Ab>();
     let mut payload = {
         let mut engine = ab.engine.lock().unwrap();
-        engine.compute_payload(now_ms())
+        engine.compute_payload_with(&snapshot, now_ms())
     };
     stamp_pty_state(&mut payload, &app.state::<crate::terminal::TermState>());
     payload

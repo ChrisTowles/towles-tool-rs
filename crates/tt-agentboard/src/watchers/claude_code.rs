@@ -40,8 +40,11 @@ use crate::watcher::{AgentWatcher, JSONL_SUFFIX, WatcherContext};
 use crate::watchers::claude_usage::{ClaudeUsageSummary, extract_usage_summary};
 
 const NAME: &str = "claude-code";
-/// The shared CLI snapshot TTL (watcher 2s tick, pane scan 3s, engine rebuilds).
-pub const CLI_CACHE_TTL_MS: u64 = 1500;
+/// The shared CLI snapshot TTL (watcher 2s tick, pane scan 3s, engine
+/// rebuilds). Each expiry costs a `claude agents` Node process (~170ms);
+/// 5s keeps liveness plenty fresh for pinning/attribution at a fraction of
+/// the former 1.5s respawn rate.
+pub const CLI_CACHE_TTL_MS: u64 = 5000;
 
 // The transcript line schema ([`TranscriptEntry`], content accessors) now lives
 // in the shared `tt-claude-code` crate. This watcher keeps only the claude-code
@@ -107,6 +110,31 @@ pub fn enrich_from_transcript(path: &Path) -> (Option<String>, AgentStatus) {
         .find_map(determine_status)
         .unwrap_or(AgentStatus::Idle);
     (thread_name, status)
+}
+
+/// `(dev, ino)` for rotation detection; `None` where the platform doesn't
+/// expose it.
+#[cfg(unix)]
+fn metadata_file_id(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn metadata_file_id(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+/// Everything in `path` from byte `offset` on, or `None` if it can't be read.
+fn read_from_offset(path: &Path, offset: u64) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    if offset > 0 {
+        f.seek(SeekFrom::Start(offset)).ok()?;
+    }
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    Some(buf)
 }
 
 /// Read up to `max` bytes of `path` from byte offset `start`, lossily decoded.
@@ -323,6 +351,11 @@ struct SessionState {
     journal_status: AgentStatus,
     /// Next read offset = last-newline byte boundary (adopted fix #1).
     file_offset: u64,
+    /// `(dev, ino)` of the journal the offset belongs to. A same-path
+    /// replacement that GREW the file passes the shrink check but invalidates
+    /// the offset; the inode is the reliable identity (unix only; elsewhere
+    /// the shrink check is the sole rotation signal).
+    file_id: Option<(u64, u64)>,
     journal_path: Option<PathBuf>,
     thread_name: Option<String>,
     usage: Option<ClaudeUsageSummary>,
@@ -345,6 +378,7 @@ impl Default for SessionState {
             emitted_status: None,
             journal_status: AgentStatus::Idle,
             file_offset: 0,
+            file_id: None,
             journal_path: None,
             thread_name: None,
             usage: None,
@@ -454,9 +488,14 @@ impl ClaudeCodeAgentWatcher {
             return;
         };
         let size = meta.len();
+        let file_id = metadata_file_id(&meta);
         // Adopted fix #1: shrunk file → reset to 0 and re-derive from scratch
-        // (all journal-derived state is stale, not just the offset).
-        if size < state.file_offset {
+        // (all journal-derived state is stale, not just the offset). A
+        // same-path replacement that grew past the old offset is the same
+        // situation with a different symptom, caught by the inode change.
+        let rotated = size < state.file_offset
+            || (file_id.is_some() && state.file_id.is_some() && file_id != state.file_id);
+        if rotated {
             state.file_offset = 0;
             state.journal_status = AgentStatus::Idle;
             state.thread_name = None;
@@ -464,20 +503,22 @@ impl ClaudeCodeAgentWatcher {
             state.last_tool = None;
             state.loop_state = None;
         }
+        state.file_id = file_id;
         if size == state.file_offset {
             return;
         }
 
-        let Ok(bytes) = std::fs::read(&path) else {
+        // Read only the bytes past the stored offset: journals grow to tens of
+        // MB and are appended several times a second while an agent streams —
+        // re-reading the whole file per scan was a hot loop.
+        let Some(fresh) = read_from_offset(&path, state.file_offset) else {
             return;
         };
-        let start = (state.file_offset as usize).min(bytes.len());
-        let slice = &bytes[start..];
-        let consumed = consumed_len(slice);
+        let consumed = consumed_len(&fresh);
         if consumed == 0 {
             return;
         }
-        let text = String::from_utf8_lossy(&slice[..consumed]);
+        let text = String::from_utf8_lossy(&fresh[..consumed]);
         let parsed = parse_transcript(&text);
         state.file_offset += consumed as u64;
 
@@ -913,5 +954,55 @@ mod tests {
         ctx.by_dir.push(("/home/u/my.app".into(), "p".into()));
         f.watcher.scan(&mut ctx, 1_000);
         assert_eq!(ctx.events[0].thread_name.as_deref(), Some("fix the flaky test"));
+    }
+
+    #[test]
+    fn incremental_append_is_picked_up_across_scans() {
+        let mut f = fixture();
+        let path =
+            write_journal(&f.projects, "/home/u/proj", "sid-inc", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(100, "/home/u/proj", "sid-inc", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/proj".into(), "proj".into()));
+        f.watcher.scan(&mut ctx, 1_000);
+        assert_eq!(ctx.events.last().unwrap().status, AgentStatus::Busy);
+
+        // Append (same file, same inode): the next scan must parse only the new
+        // tail and still see the completion.
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+            writeln!(file, "{DONE_LINE}").unwrap();
+        }
+        *f.agents.lock().unwrap() = vec![cli_agent(100, "/home/u/proj", "sid-inc", "idle")];
+        f.watcher.scan(&mut ctx, 2_000);
+        assert_eq!(ctx.events.last().unwrap().status, AgentStatus::Complete);
+    }
+
+    #[test]
+    fn replaced_journal_resets_offset_and_rederives() {
+        let mut f = fixture();
+        let path =
+            write_journal(&f.projects, "/home/u/proj", "sid-rot", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(100, "/home/u/proj", "sid-rot", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/proj".into(), "proj".into()));
+        f.watcher.scan(&mut ctx, 1_000);
+        assert_eq!(ctx.events.last().unwrap().thread_name.as_deref(), Some("fix the flaky test"));
+
+        // Replace the journal at the same path with a LARGER file (new inode):
+        // without rotation detection the stored offset would land mid-file and
+        // the new head (thread name) would never be seen.
+        std::fs::remove_file(&path).unwrap();
+        let new_user = r#"{"timestamp":"2026-07-03T11:00:00.000Z","message":{"role":"user","content":"a rewritten journal with a much longer opening prompt than before"}}"#;
+        write_journal(&f.projects, "/home/u/proj", "sid-rot", &[new_user, RUNNING_LINE, DONE_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(100, "/home/u/proj", "sid-rot", "idle")];
+        f.watcher.scan(&mut ctx, 2_000);
+        let ev = ctx.events.last().unwrap();
+        assert_eq!(
+            ev.thread_name.as_deref(),
+            Some("a rewritten journal with a much longer opening prompt than before")
+        );
+        assert_eq!(ev.status, AgentStatus::Complete);
     }
 }
