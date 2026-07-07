@@ -31,9 +31,11 @@ pub struct SessionRecord {
 }
 
 /// On-disk shape: `{ "folders": { "<folderDir>": [ {id,name,createdAt}, ... ] },
-/// "nextSeq": { "<folderDir>": n } }`. `nextSeq` is the per-folder high-water
-/// mark for auto-generated `shell N` names — it only ever increases, so a
-/// removed session's number is never reused by a later `add`.
+/// "nextSeq": { "<folderDir>": n } }`. `nextSeq` is the per-folder add counter:
+/// it bumps on every `add` and only ever increases, so a removed session's
+/// number is never reused by a later `add` and two adds can never share a
+/// sequence — even within the same millisecond (the id hashes it; see
+/// [`gen_id`]).
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SessionsConfig {
     #[serde(default)]
@@ -52,7 +54,7 @@ struct SessionsConfig {
 pub struct SessionStore {
     path: Option<PathBuf>,
     folders: HashMap<String, Vec<SessionRecord>>,
-    /// Per-folder high-water mark for auto-generated `shell N` names; see
+    /// Per-folder monotonic add counter (names + id salt); see
     /// [`SessionsConfig`].
     next_seq: HashMap<String, usize>,
     /// Folder dirs mutated since the last successful `save()`.
@@ -105,17 +107,19 @@ impl SessionStore {
     /// Append a new session to a folder. `name` defaults to `shell <n>`, where
     /// `<n>` comes from a per-folder counter that only ever increases — a
     /// removed session's number is never reused, so numbers can't collide or
-    /// silently repeat across add/remove cycles. Returns the created record.
-    /// Caller persists.
+    /// silently repeat across add/remove cycles. The counter bumps on every
+    /// add (named or not) and salts the id, so an add/remove/add cycle within
+    /// one millisecond still yields distinct ids — an id reuse would make the
+    /// new shell silently resume the removed session's still-warm daemon
+    /// session (shpool names derive from the id) and replay its buffer.
+    /// Returns the created record. Caller persists.
     pub fn add(&mut self, dir: &str, name: Option<&str>, now_ms: i64) -> SessionRecord {
-        let seq = self.folders.get(dir).map(Vec::len).unwrap_or(0);
+        let counter = self.next_seq.entry(dir.to_string()).or_insert(0);
+        *counter += 1;
+        let seq = *counter;
         let name = match name {
             Some(n) => n.to_string(),
-            None => {
-                let counter = self.next_seq.entry(dir.to_string()).or_insert(0);
-                *counter += 1;
-                format!("shell {counter}")
-            }
+            None => format!("shell {seq}"),
         };
         let id = gen_id(dir, now_ms, seq);
         let record = SessionRecord { id, name, created_at: now_ms, purpose: None };
@@ -230,7 +234,8 @@ fn load(path: &Path) -> (HashMap<String, Vec<SessionRecord>>, HashMap<String, us
 }
 
 /// Generate a session id unique across folders and creations: a hash of the
-/// folder dir, the creation time, and the in-folder sequence number. Also serves
+/// folder dir, the creation time, and the folder's monotonic add counter (never
+/// reused, so same-millisecond add/remove/add cycles still differ). Also serves
 /// as the PTY `term_id` and the injected `TT_SESSION_ID`.
 fn gen_id(dir: &str, now_ms: i64, seq: usize) -> String {
     let mut h = DefaultHasher::new();
@@ -282,6 +287,23 @@ mod tests {
         let c = store.add("/r/a", None, 3);
         assert_eq!(b.name, "shell 2");
         assert_eq!(c.name, "shell 3"); // not "shell 2" again, and not the freed "shell 1"
+    }
+
+    #[test]
+    fn add_remove_add_in_same_millisecond_yields_distinct_ids() {
+        // An id reuse here would resume the removed session's daemon-side
+        // shell (shpool session names derive from the id) and replay its
+        // buffer into the "new" pane.
+        let mut store = SessionStore::new(None);
+        let a = store.add("/r/a", None, 7);
+        assert!(store.remove(&a.id));
+        let b = store.add("/r/a", None, 7);
+        assert_ne!(a.id, b.id);
+        // Explicitly named adds consume a sequence too — same guarantee.
+        let c = store.add("/r/a", Some("build"), 7);
+        assert!(store.remove(&c.id));
+        let d = store.add("/r/a", Some("build"), 7);
+        assert_ne!(c.id, d.id);
     }
 
     #[test]

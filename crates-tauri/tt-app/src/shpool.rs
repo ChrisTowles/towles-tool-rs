@@ -159,13 +159,25 @@ pub fn attach_args(term_id: &str, dir: Option<&std::path::Path>) -> Vec<String> 
 
 /// Best-effort kill of the daemon-side session (explicit pane close — the
 /// shell and anything in it dies). No-op when shpool is absent or the session
-/// is already gone.
+/// is already gone. Verified against `list` with a couple of retries: the
+/// attach client is usually killed just before this runs and a kill landing
+/// mid-disconnect can fail silently, leaving a zombie session whose buffer
+/// would replay into a later attach on the same name.
 pub fn kill_session(term_id: &str) {
     if !available() {
         return;
     }
-    let _ = run_shpool(&["kill", &session_name(term_id)]);
-    invalidate_session_cache();
+    let name = session_name(term_id);
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = run_shpool(&["kill", &name]);
+        invalidate_session_cache();
+        if !live_session_names().contains(&name) {
+            return;
+        }
+    }
 }
 
 /// One daemon session for the cleanup UI. `term_id` is the name with this
