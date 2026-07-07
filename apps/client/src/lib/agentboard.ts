@@ -57,6 +57,10 @@ export type SessionData = {
   /** The shell's display name ("zsh", "bash", …), resolved once at PTY spawn
    * time (stamped by the app, same as `live`). Null until the session starts. */
   shellKind?: string | null;
+  /** True when no PTY is attached but the shell still runs, detached, on the
+   * app's session daemon (app was closed / pane replaced). Starting the
+   * session reattaches it with its history. */
+  detached?: boolean;
   unseen: boolean;
   agentState?: AgentEvent | null;
   agents: AgentEvent[];
@@ -189,7 +193,7 @@ export function claudeTitleName(raw: string | undefined): string | null {
 
 /** A one-liner status message for a session row. */
 export function sessionStatusText(s: SessionData): string {
-  if (!s.live) return "not started";
+  if (!s.live) return s.detached ? "detached — still running" : "not started";
   const st = s.agentState;
   if (!st) return "idle";
   switch (st.status) {

@@ -5,6 +5,7 @@ import {
   FolderGit2,
   MoreVertical,
   Plus,
+  StickyNote,
   Trash2,
 } from "lucide-react";
 import {
@@ -30,6 +31,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { SessionsDialog } from "@/components/sessions-dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
@@ -49,6 +51,7 @@ import {
   sessionStatusText,
   windowColor,
   windowOf,
+  type AgWindow,
   type FolderData,
   type Overlay,
   type RepoData,
@@ -61,6 +64,36 @@ import { toast } from "sonner";
 import type { PrItem } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
 
+/** Ambient status color for a set of sessions hidden behind a collapse:
+ * red if one errored, blue if one is waiting on you, yellow while an agent is
+ * busy, else a calm emerald for "live but idle". Null when nothing is live. */
+function collapsedLiveColor(sessions: SessionData[]): string | null {
+  const live = sessions.filter((s) => s.live);
+  if (live.length === 0) return null;
+  if (live.some((s) => s.agentState?.status === "error")) return "bg-red-500";
+  if (live.some((s) => s.agentState?.status === "waiting")) return "bg-blue-500";
+  if (live.some((s) => s.agentState?.status === "busy")) return "bg-yellow-500";
+  return "bg-emerald-500";
+}
+
+/** Shown on a collapsed folder/repo header: a colored dot + count telling you
+ * running sessions are hidden inside (so a collapsed folder doesn't look
+ * asleep when agents are working in it). Nothing when nothing is live. */
+function CollapsedLive({ sessions }: { sessions: SessionData[] }) {
+  const color = collapsedLiveColor(sessions);
+  if (!color) return null;
+  const n = sessions.filter((s) => s.live).length;
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1"
+      title={`${n} running session${n > 1 ? "s" : ""} hidden — expand to see`}
+    >
+      <span className={cn("size-2 rounded-full", color)} />
+      <span className="font-mono text-[10px] text-muted-foreground/70">{n}</span>
+    </span>
+  );
+}
+
 /** The board-wide agent tally pinned atop the rail: total + non-zero status
  * buckets + a ❄ compact count, with the Agentboard settings (compact
  * threshold) behind the trailing ⚙. Quiet when the board is at rest. */
@@ -70,6 +103,12 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
   // Track the slider locally while dragging; commit on release.
   const [draft, setDraft] = useState<number | null>(null);
   const pct = draft ?? threshold;
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  // Every session that still has a record — daemon sessions outside this set
+  // are orphans in the cleanup dialog.
+  const knownIds = new Set(
+    state.repos.flatMap((repo) => repo.folders.flatMap((f) => f.sessions.map((s) => s.id))),
+  );
 
   return (
     <div className="flex items-center gap-2.5 border-b bg-card px-3 py-2 font-mono text-[11px]">
@@ -122,9 +161,17 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
               Past this threshold, a session whose prompt cache expired shows the ❄ compact
               nudge. Stored in the shared towles-tool settings file.
             </div>
+            <button
+              type="button"
+              onClick={() => setSessionsOpen(true)}
+              className="mt-1 self-start text-xs text-violet-500 hover:text-violet-400"
+            >
+              Manage terminal sessions…
+            </button>
           </div>
         </PopoverContent>
       </Popover>
+      <SessionsDialog open={sessionsOpen} onOpenChange={setSessionsOpen} knownIds={knownIds} />
     </div>
   );
 }
@@ -172,45 +219,81 @@ export function RepoGroup({
 }) {
   const solo = isSoloRepo(repo);
 
-  const sessionRows = (folder: FolderData) =>
-    folder.sessions.length === 0 ? (
-      <div className="flex items-center gap-2.5 py-1 pr-3 pl-9 text-[11px] italic text-muted-foreground/60">
-        no sessions
-        <button
-          type="button"
-          onClick={() => onNewSession(folder.dir, true)}
-          className="not-italic text-violet-500 hover:underline"
-        >
-          ✦ start Claude
-        </button>
-        <span className="text-muted-foreground/40">·</span>
-        <button
-          type="button"
-          onClick={() => onNewSession(folder.dir, false)}
-          className="not-italic text-violet-500 hover:underline"
-        >
-          + shell
-        </button>
-      </div>
-    ) : (
-      folder.sessions.map((s) => (
-        <SessionRow
-          key={s.id}
-          session={s}
-          folderDir={folder.dir}
-          now={now}
-          compactPct={compactPct}
-          title={titles[s.id]}
-          active={selectedSessionId === s.id}
-          renaming={renaming === s.id}
-          overlay={overlays[s.id]}
-          wins={wins}
-          actions={actions}
-          onSelect={() => onSelect(folder.dir, s.id)}
-          onRenameCommit={(name) => onRenameCommit(s.id, name)}
-        />
-      ))
+  const sessionRow = (folder: FolderData, s: SessionData) => (
+    <SessionRow
+      key={s.id}
+      session={s}
+      folderDir={folder.dir}
+      now={now}
+      compactPct={compactPct}
+      title={titles[s.id]}
+      active={selectedSessionId === s.id}
+      renaming={renaming === s.id}
+      overlay={overlays[s.id]}
+      wins={wins}
+      actions={actions}
+      onSelect={() => onSelect(folder.dir, s.id)}
+      onRenameCommit={(name) => onRenameCommit(s.id, name)}
+    />
+  );
+
+  // Sessions render grouped by the window (pane group) they belong to: each
+  // window that holds panes gets a thin label, then its sessions; sessions in
+  // no window ("loose" shells) list on their own below. Grouping is purely
+  // visual — the ⊟/click mechanics that move panes in and out of windows are
+  // unchanged.
+  const sessionRows = (folder: FolderData) => {
+    if (folder.sessions.length === 0) {
+      return (
+        <div className="flex items-center gap-2.5 py-1 pr-3 pl-9 text-[11px] italic text-muted-foreground/60">
+          no sessions
+          <button
+            type="button"
+            onClick={() => onNewSession(folder.dir, true)}
+            className="not-italic text-violet-500 hover:underline"
+          >
+            ✦ start Claude
+          </button>
+          <span className="text-muted-foreground/40">·</span>
+          <button
+            type="button"
+            onClick={() => onNewSession(folder.dir, false)}
+            className="not-italic text-violet-500 hover:underline"
+          >
+            + shell
+          </button>
+        </div>
+      );
+    }
+    const folderWins = (wins?.windows ?? []).filter((w) => w.folderDir === folder.dir);
+    const byId = new Map(folder.sessions.map((s) => [s.id, s] as const));
+    const grouped = new Set(folderWins.flatMap((w) => w.panes));
+    const loose = folder.sessions.filter((s) => !grouped.has(s.id));
+    const groups = folderWins
+      .map((w) => ({
+        win: w,
+        sessions: w.panes
+          .map((id) => byId.get(id))
+          .filter((s): s is SessionData => s !== undefined),
+      }))
+      .filter((g) => g.sessions.length > 0);
+    return (
+      <>
+        {groups.map(({ win, sessions }) => (
+          <div key={win.id}>
+            <WindowLabel
+              win={win}
+              folderWins={folderWins}
+              count={sessions.length}
+              onFocus={() => actions.focusWindow(win.id)}
+            />
+            {sessions.map((s) => sessionRow(folder, s))}
+          </div>
+        ))}
+        {loose.map((s) => sessionRow(folder, s))}
+      </>
     );
+  };
 
   // Solo repo: collapse repo + folder into one header (repo · branch).
   if (solo) {
@@ -234,12 +317,10 @@ export function RepoGroup({
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
           onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
         />
-        {!isCollapsed && (
-          <div className="group pb-2">
-            <PurposeRow folder={folder} />
-            {sessionRows(folder)}
-          </div>
-        )}
+        {/* The note is a folder label — visible under the header even when the
+            folder is collapsed (renders nothing when unset). */}
+        <PurposeRow folder={folder} />
+        {!isCollapsed && <div className="pb-2">{sessionRows(folder)}</div>}
       </div>
     );
   }
@@ -257,7 +338,12 @@ export function RepoGroup({
           <Chevron collapsed={repoCollapsed} />
           <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="truncate text-sm font-semibold">{repo.name}</span>
-          {repo.needs > 0 && <NeedsBadge n={repo.needs} className="ml-auto" />}
+          <span className="ml-auto flex items-center gap-2">
+            {repoCollapsed && (
+              <CollapsedLive sessions={repo.folders.flatMap((f) => f.sessions)} />
+            )}
+            {repo.needs > 0 && <NeedsBadge n={repo.needs} />}
+          </span>
         </button>
         <RepoMenu
           onRemove={() =>
@@ -291,12 +377,10 @@ export function RepoGroup({
                 onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
                 onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
               />
-              {!fCollapsed && (
-                <div className="group pb-1">
-                  <PurposeRow folder={folder} />
-                  {sessionRows(folder)}
-                </div>
-              )}
+              {/* Note is a folder label — shown under the header even when the
+                  folder is collapsed (renders nothing when unset). */}
+              <PurposeRow folder={folder} />
+              {!fCollapsed && <div className="pb-1">{sessionRows(folder)}</div>}
             </div>
           );
         })}
@@ -376,11 +460,14 @@ function FolderHeader({
             {title}
           </span>
         </button>
+        {collapsed && <CollapsedLive sessions={folder.sessions} />}
         {needs > 0 && <NeedsBadge n={needs} />}
         <IconBtn title="New session (⌘D)" onClick={onNewSession} className="hover:text-violet-500">
           <Plus className="size-3.5" />
         </IconBtn>
-        {onRemoveRepo && <RepoMenu path={folder.dir} onRemove={onRemoveRepo} dir={folder.dir} />}
+        {onRemoveRepo && (
+          <RepoMenu path={folder.dir} onRemove={onRemoveRepo} dir={folder.dir} folder={folder} />
+        )}
       </div>
       {/* ml-11 lines the git row up under the name (chevron + icon + gaps). */}
       <div className="ml-11 flex items-center gap-1.5 pb-1.5">
@@ -404,19 +491,26 @@ function FolderHeader({
 }
 
 /** Kebab menu on a repo/folder header: shows the full folder path (when
- * given), "Create issue…" (shells `gh issue create` in `dir`), and "Remove
- * from rail". */
+ * given), "Set/Edit note…" (when a `folder` is given — the note that shows
+ * under the folder in the rail), "Create issue…" (shells `gh issue create` in
+ * `dir`), and "Remove from rail". */
 function RepoMenu({
   path,
   onRemove,
   dir,
+  folder,
 }: {
   path?: string;
   onRemove: () => void;
   dir: string;
+  /** When set, the menu offers note editing for this checkout. */
+  folder?: FolderData;
 }) {
   const [issueOpen, setIssueOpen] = useState(false);
   const [issueTitle, setIssueTitle] = useState("");
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [noteText, setNoteText] = useState("");
+  const purpose = folder?.purpose?.trim() ?? "";
 
   async function createIssue() {
     const title = issueTitle.trim();
@@ -431,6 +525,13 @@ function RepoMenu({
     } catch (e) {
       toast.error(String(e));
     }
+  }
+
+  async function saveNote() {
+    setNoteOpen(false);
+    const trimmed = noteText.trim();
+    if (trimmed === purpose) return;
+    await abInvoke("ab_set_folder_purpose", { dir, text: trimmed || null });
   }
 
   return (
@@ -455,6 +556,17 @@ function RepoMenu({
               <DropdownMenuSeparator />
             </>
           )}
+          {folder && (
+            <DropdownMenuItem
+              onSelect={() => {
+                setNoteText(purpose);
+                setNoteOpen(true);
+              }}
+              className="whitespace-nowrap"
+            >
+              <StickyNote className="size-3.5" /> {purpose ? "Edit note…" : "Set note…"}
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onSelect={() => setIssueOpen(true)} className="whitespace-nowrap">
             <CircleDot className="size-3.5" /> Create issue…
           </DropdownMenuItem>
@@ -467,6 +579,23 @@ function RepoMenu({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      <Dialog open={noteOpen} onOpenChange={setNoteOpen}>
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>{purpose ? "Edit note" : "Set note"}</DialogTitle>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={noteText}
+            onChange={(e) => setNoteText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void saveNote();
+              if (e.key === "Escape") setNoteOpen(false);
+            }}
+            placeholder="what are you working toward here? (blank clears)"
+          />
+        </DialogContent>
+      </Dialog>
       <Dialog open={issueOpen} onOpenChange={setIssueOpen}>
         <DialogContent showCloseButton={false}>
           <DialogHeader>
@@ -484,6 +613,36 @@ function RepoMenu({
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/** Thin header above a window's panes in the rail: a color chip + window name
+ * + pane count, clicking focuses that window in the pane area. Deliberately
+ * small — grouping should add structure to the rail, not bulk. */
+function WindowLabel({
+  win,
+  folderWins,
+  count,
+  onFocus,
+}: {
+  win: AgWindow;
+  folderWins: AgWindow[];
+  count: number;
+  onFocus: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onFocus}
+      title={`window “${win.name}” — click to focus`}
+      className="flex w-full items-center gap-1.5 pt-1 pr-3 pb-0.5 pl-9 text-left"
+    >
+      <span className={cn("size-2 shrink-0 rounded-[3px]", windowColor(folderWins, win.id))} />
+      <span className="truncate font-mono text-[10px] uppercase tracking-wide text-muted-foreground/70">
+        {win.name}
+      </span>
+      <span className="font-mono text-[9.5px] text-muted-foreground/50">{count}⊞</span>
+    </button>
   );
 }
 
@@ -592,30 +751,8 @@ function SessionRow({
               {eff.shellKind}
             </span>
           )}
-          {grouped && (
-            <span
-              role="button"
-              title={`in window “${grouped.name}” — click to focus it`}
-              onClick={(e) => {
-                e.stopPropagation();
-                actions.focusWindow(grouped.id);
-              }}
-              className="flex min-w-0 shrink items-center gap-1"
-            >
-              <span
-                className={cn(
-                  "size-2 shrink-0 rounded-[3px]",
-                  windowColor(
-                    wins?.windows.filter((w) => w.folderDir === grouped.folderDir) ?? [],
-                    grouped.id,
-                  ),
-                )}
-              />
-              <span className="max-w-12 truncate font-mono text-[9.5px] text-muted-foreground/60">
-                {grouped.name}
-              </span>
-            </span>
-          )}
+          {/* Window membership is shown by the WindowLabel grouping above, so
+              no per-row window chip here. */}
           {/* Meta cluster stays in the flow permanently — the lifecycle
               controls overlay it (absolute, opaque accent) instead of
               swapping it out, so hovering never reflows the row. */}
@@ -686,7 +823,13 @@ function RowControls({
 
   return (
     <>
-      {!session.live && btn("▶", "start shell", () => actions.start(folderDir, session), "hover:text-green-500")}
+      {!session.live &&
+        btn(
+          "▶",
+          session.detached ? "resume shell — still running, detached" : "start shell",
+          () => actions.start(folderDir, session),
+          "hover:text-green-500",
+        )}
       {(!session.live || !agent) &&
         btn("✦", "start Claude here", () => actions.startClaude(folderDir, session), "text-violet-500 hover:text-violet-400")}
       {session.live && agent && (

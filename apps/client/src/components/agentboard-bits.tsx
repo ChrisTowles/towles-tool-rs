@@ -68,13 +68,19 @@ export function Glyph({ agent }: { agent: boolean }) {
 }
 
 /** Status dot mirroring `statusColor`; pulses while busy. A session with no
- * live PTY shows a hollow ring — the record exists but nothing is running.
- * "Look at this" is the row's amber border (`sessionCatchesEye`), not the
- * dot — a resting board stays still. */
+ * live PTY shows a hollow ring — the record exists but nothing is running —
+ * tinted sky when the shell is still alive, detached, on the session daemon
+ * (resumable). "Look at this" is the row's amber border (`sessionCatchesEye`),
+ * not the dot — a resting board stays still. */
 export function Dot({ session }: { session: SessionData }) {
   if (!session.live) {
     return (
-      <span className="size-2 shrink-0 rounded-full border-[1.5px] border-muted-foreground/50 bg-transparent" />
+      <span
+        className={cn(
+          "size-2 shrink-0 rounded-full border-[1.5px] bg-transparent",
+          session.detached ? "border-sky-500/80 dark:border-sky-400/80" : "border-muted-foreground/50",
+        )}
+      />
     );
   }
   const st = session.agentState?.status;
@@ -273,9 +279,10 @@ export function fmtMins(ms: number): string {
 /** The folder's user-authored purpose — the "why am I here". Click to edit
  * inline (Enter saves, Esc cancels; blank clears).
  *
- * `rail` variant: a faint one-liner under the folder header; when unset it
- * takes up no space at rest (the "+ purpose" hint only appears while hovering
- * the folder group), so a resting rail doesn't pad itself with blank lines.
+ * `rail` variant: a faint one-liner under the folder header, shown only when a
+ * note is set. When unset it renders nothing at all (not even on hover) so the
+ * folder row keeps a fixed height and the rail never jumps as the mouse moves
+ * across it — set a note from the folder's "…" menu instead.
  * `band` variant: lives in the working-context band — always visible, unset
  * state included, because the band exists to answer "where am I and why". */
 export function PurposeRow({
@@ -319,15 +326,17 @@ export function PurposeRow({
   }
 
   if (!purpose) {
+    // Rail: no note → no row (a stable-height folder that doesn't resize on
+    // hover). The note is set from the folder's "…" menu.
+    if (rail) return null;
     return (
       <button
         type="button"
         onClick={() => setEditing(true)}
         title="Edit folder purpose"
         className={cn(
-          "w-full truncate text-left text-muted-foreground/50",
+          "block w-full truncate text-left text-muted-foreground/50 hover:text-muted-foreground",
           pad,
-          rail ? "hidden group-hover:block" : "block hover:text-muted-foreground",
         )}
       >
         + what are you working toward here?

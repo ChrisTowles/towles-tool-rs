@@ -171,6 +171,7 @@ fn build_folder(
                 created_at: r.created_at,
                 live: false,      // stamped by the app from its PTY registry
                 shell_kind: None, // stamped by the app from its PTY registry
+                detached: false,  // stamped by the app from its session daemon
                 unseen,
                 agent_state,
                 agents,

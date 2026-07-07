@@ -123,7 +123,8 @@ pub struct CollectorsSettings {
 }
 
 /// Calendar collector: shells out to `claude -p` against an MCP calendar, so it
-/// costs tokens. `provider` selects the built-in prompt variant + MCP.
+/// costs tokens — disabled by default; opt in per machine.
+/// `provider` selects the built-in prompt variant + MCP.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CalendarCollector {
@@ -135,7 +136,7 @@ pub struct CalendarCollector {
 
 impl Default for CalendarCollector {
     fn default() -> Self {
-        Self { enabled: true, provider: "google".to_string(), refresh_minutes: 15 }
+        Self { enabled: false, provider: "google".to_string(), refresh_minutes: 15 }
     }
 }
 
@@ -393,7 +394,8 @@ mod tests {
     #[test]
     fn collectors_defaults() {
         let c = UserSettings::default().collectors;
-        assert!(c.calendar.enabled);
+        // Off by default: the calendar collector burns tokens (`claude -p`).
+        assert!(!c.calendar.enabled);
         assert_eq!(c.calendar.provider, "google");
         assert_eq!(c.calendar.refresh_minutes, 15);
         assert!(c.prs.enabled);

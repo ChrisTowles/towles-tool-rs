@@ -30,18 +30,21 @@ pub struct Ab {
     pub _notifier: Mutex<Option<DirNotifier>>,
 }
 
-/// Stamp `SessionData.live`/`shellKind` from the app's PTY registry. The
-/// engine assembles `live: false`/`shellKind: None` (the Tauri-free crate
-/// can't see PTYs); every payload leaving the app — command return or event —
-/// passes through here first.
+/// Stamp `SessionData.live`/`shellKind`/`detached` from the app's PTY registry
+/// and the shpool daemon. The engine assembles them false/None (the Tauri-free
+/// crate can't see PTYs or the daemon); every payload leaving the app —
+/// command return or event — passes through here first.
 pub fn stamp_pty_state(payload: &mut StatePayload, terms: &crate::terminal::TermState) {
     let live = terms.live_ids();
     let shell_kinds = terms.shell_kinds();
+    let persisted = crate::shpool::live_session_names();
     for repo in &mut payload.repos {
         for folder in &mut repo.folders {
             for session in &mut folder.sessions {
                 session.live = live.contains(&session.id);
                 session.shell_kind = shell_kinds.get(&session.id).cloned();
+                session.detached =
+                    !session.live && crate::shpool::is_persisted(&persisted, &session.id);
             }
         }
     }
