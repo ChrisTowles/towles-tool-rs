@@ -123,7 +123,9 @@ pub fn assemble_state(
 }
 
 /// Build one folder: git stats + its persisted sessions with agents distributed
-/// by `attribute` (unattributed → default session), plus the `needs` count.
+/// by `attribute` (unattributed → default session), plus a placeholder `needs`
+/// count (always 0 here — see [`session_needs`] — the app recomputes it after
+/// stamping shell liveness via [`recompute_needs`]).
 #[allow(clippy::too_many_arguments)]
 fn build_folder(
     entry: &RepoEntry,
@@ -198,12 +200,41 @@ fn build_folder(
     }
 }
 
-/// A session "needs you" when its agent is blocked or broke.
-fn session_needs(s: &SessionData) -> bool {
-    matches!(
-        s.agent_state.as_ref().map(|e| e.status),
-        Some(AgentStatus::Waiting) | Some(AgentStatus::Error)
-    )
+/// Whether a session "needs you". A session only counts if a shell actually
+/// exists for it (`live` in this app, or `detached` on the session daemon) —
+/// otherwise a stale agent status would make the day-bar cry wolf about a shell
+/// that's gone. Given a real shell, it needs you when its agent is blocked
+/// (`Waiting`) or broke (`Error`), or when its turn just ended (`Complete` /
+/// `Interrupted`) and the user hasn't looked yet (`unseen`, cleared by
+/// `ab_mark_seen` when the row is selected).
+///
+/// Note: `live`/`detached` are stamped app-side (see `recompute_needs`), so at
+/// engine assemble time (both false) this is always `false` — assemble-time
+/// `needs` is a placeholder the app overwrites.
+pub fn session_needs(s: &SessionData) -> bool {
+    if !(s.live || s.detached) {
+        return false;
+    }
+    match s.agent_state.as_ref().map(|e| e.status) {
+        Some(AgentStatus::Waiting) | Some(AgentStatus::Error) => true,
+        Some(AgentStatus::Complete) | Some(AgentStatus::Interrupted) => s.unseen,
+        _ => false,
+    }
+}
+
+/// Recompute every folder's and repo's `needs` from its sessions with
+/// [`session_needs`]. The engine assembles `needs` before the app has stamped
+/// `live`/`detached` (so every count is a 0 placeholder); the app calls this
+/// after stamping so every payload it emits carries truthful counts.
+pub fn recompute_needs(payload: &mut StatePayload) {
+    for repo in &mut payload.repos {
+        let mut repo_needs = 0;
+        for folder in &mut repo.folders {
+            folder.needs = folder.sessions.iter().filter(|s| session_needs(s)).count() as i64;
+            repo_needs += folder.needs;
+        }
+        repo.needs = repo_needs;
+    }
 }
 
 /// Priority ordering for picking a session's headline agent state: attention
@@ -357,8 +388,62 @@ mod tests {
         assert_eq!(payload.repos[0].folders.len(), 2);
     }
 
+    /// A `SessionData` with just the fields `session_needs` reads set; the rest
+    /// are inert defaults.
+    fn session(
+        live: bool,
+        detached: bool,
+        status: Option<AgentStatus>,
+        unseen: bool,
+    ) -> SessionData {
+        SessionData {
+            id: "s".into(),
+            name: "shell 1".into(),
+            created_at: 0,
+            live,
+            shell_kind: None,
+            detached,
+            unseen,
+            agent_state: status.map(|status| AgentEvent {
+                agent: "claude-code".into(),
+                session: "s".into(),
+                status,
+                ts: 1,
+                thread_id: None,
+                thread_name: None,
+                unseen: Some(unseen),
+                pane_id: None,
+                details: None,
+            }),
+            agents: Vec::new(),
+            purpose: None,
+        }
+    }
+
     #[test]
-    fn needs_bubbles_folder_to_repo() {
+    fn session_needs_requires_a_shell_and_attention_state() {
+        // Live + waiting/error counts.
+        assert!(session_needs(&session(true, false, Some(AgentStatus::Waiting), false)));
+        assert!(session_needs(&session(true, false, Some(AgentStatus::Error), false)));
+        // Detached (shell survives on the daemon) + waiting counts too.
+        assert!(session_needs(&session(false, true, Some(AgentStatus::Waiting), false)));
+        // Neither live nor detached: a stale status must NOT count.
+        assert!(!session_needs(&session(false, false, Some(AgentStatus::Waiting), false)));
+        assert!(!session_needs(&session(false, false, Some(AgentStatus::Error), false)));
+        // Live, ended turn, unseen → your turn, counts. Seen → doesn't.
+        assert!(session_needs(&session(true, false, Some(AgentStatus::Complete), true)));
+        assert!(!session_needs(&session(true, false, Some(AgentStatus::Complete), false)));
+        assert!(session_needs(&session(true, false, Some(AgentStatus::Interrupted), true)));
+        // Live but busy/idle/no-agent never needs you.
+        assert!(!session_needs(&session(true, false, Some(AgentStatus::Busy), false)));
+        assert!(!session_needs(&session(true, false, Some(AgentStatus::Idle), false)));
+        assert!(!session_needs(&session(true, false, None, false)));
+    }
+
+    #[test]
+    fn assemble_time_needs_is_zero_before_stamping() {
+        // The engine assembles live=false/detached=false, so even a waiting agent
+        // yields needs=0 until the app stamps shell liveness and recomputes.
         let mut tracker = AgentTracker::new();
         tracker.apply_event(ev("alpha", AgentStatus::Waiting, "ta"), false);
         let metadata = SessionMetadataStore::new();
@@ -380,8 +465,44 @@ mod tests {
             30,
             0,
         );
+        assert_eq!(payload.repos[0].folders[0].needs, 0);
+        assert_eq!(payload.repos[0].needs, 0);
+    }
+
+    #[test]
+    fn recompute_needs_bubbles_folder_to_repo() {
+        let mut tracker = AgentTracker::new();
+        tracker.apply_event(ev("alpha", AgentStatus::Waiting, "ta"), false);
+        let metadata = SessionMetadataStore::new();
+        let mut store = SessionStore::new(None);
+        store.ensure_default("/r/alpha", 1);
+        let git = HashMap::new();
+        let entries = vec![RepoEntry { name: "alpha".into(), dir: "/r/alpha".into() }];
+        let mut payload = assemble_state(
+            &entries,
+            &git,
+            &tracker,
+            &metadata,
+            &store,
+            &FolderMetaStore::default(),
+            &no_attr,
+            &HashMap::new(),
+            None,
+            "code",
+            30,
+            0,
+        );
+        // Simulate the app stamping the session's shell as live, then recompute.
+        payload.repos[0].folders[0].sessions[0].live = true;
+        recompute_needs(&mut payload);
         assert_eq!(payload.repos[0].folders[0].needs, 1);
         assert_eq!(payload.repos[0].needs, 1);
+
+        // Stamp it back to no shell: needs falls to 0 at both levels.
+        payload.repos[0].folders[0].sessions[0].live = false;
+        recompute_needs(&mut payload);
+        assert_eq!(payload.repos[0].folders[0].needs, 0);
+        assert_eq!(payload.repos[0].needs, 0);
     }
 
     #[test]

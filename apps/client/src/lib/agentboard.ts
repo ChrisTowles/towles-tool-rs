@@ -69,6 +69,21 @@ export type SessionData = {
   purpose?: string | null;
 };
 
+/** Tone hint on agent-pushed status/log lines (Rust `MetadataTone`). */
+export type MetadataTone = "neutral" | "info" | "success" | "warn" | "error";
+
+/** Agent-pushed metadata for a folder (`ab_set_status`/`ab_set_progress`/
+ * `ab_log`, also reachable over MCP) — the agent's own words about what it's
+ * doing, rendered read-only under the folder header. */
+export type FolderMetadata = {
+  status?: { text: string; tone?: MetadataTone | null; ts: number } | null;
+  progress?: {
+    percent?: number | null;
+    label?: string | null;
+  } | null;
+  logs?: { message: string; tone?: MetadataTone | null; source?: string | null; ts: number }[];
+};
+
 /** One checkout of a repo on disk (a clone, worktree, or slot). */
 export type FolderData = {
   name: string;
@@ -83,9 +98,7 @@ export type FolderData = {
   needs: number;
   /** User-authored "what am I working toward here" (persisted per folder). */
   purpose?: string | null;
-  /** Agent-pushed progress/status (`ab_set_progress`/`ab_set_status`). Only
-   * `progress.percent` is rendered today; the payload carries more. */
-  metadata?: { progress?: { percent?: number | null } | null } | null;
+  metadata?: FolderMetadata | null;
 };
 
 /** A logical repo: the group of checkouts sharing a `git remote origin` URL. */
@@ -142,14 +155,89 @@ export function windowOf(wins: AgWindow[], sessionId: string): AgWindow | undefi
   return wins.find((w) => w.panes.includes(sessionId));
 }
 
+// --- Diff panes ---
+// A window's `panes` normally hold session ids (`s<16 hex>` from the backend's
+// `gen_id`). A folder's diff view rides the same tiling as a sentinel pane id
+// (`~diff:<folderDir>` — `~` can never open a session id), so the diff renders
+// *beside* the live terminals instead of covering them in a modal.
+
+const DIFF_PANE_PREFIX = "~diff:";
+
+/** The (per-folder) pane id of the folder's diff pane. */
+export function diffPaneId(folderDir: string): string {
+  return `${DIFF_PANE_PREFIX}${folderDir}`;
+}
+
+export function isDiffPane(paneId: string): boolean {
+  return paneId.startsWith(DIFF_PANE_PREFIX);
+}
+
+/** The folder dir a diff pane id points at (null for session panes). */
+export function diffPaneDir(paneId: string): string | null {
+  return isDiffPane(paneId) ? paneId.slice(DIFF_PANE_PREFIX.length) : null;
+}
+
+// --- Pure window-layout reducers (unit-tested; the screen wraps them in
+// `updateWins` for persistence) ---
+
+/** Place a pane in its folder's focused window, creating a "primary" window if
+ * the folder has none. A pane already hosted somewhere isn't moved — its
+ * window becomes the folder's active one instead, so clicking a rail row
+ * brings the existing pane into view rather than duplicating it. */
+export function placePane(
+  w: WindowsPayload,
+  folderDir: string,
+  paneId: string,
+  newWindowId: () => string,
+): WindowsPayload {
+  const host = w.windows.find((win) => win.panes.includes(paneId));
+  if (host) {
+    return w.activeWindows[folderDir] === host.id
+      ? w
+      : { ...w, activeWindows: { ...w.activeWindows, [folderDir]: host.id } };
+  }
+  let windows = w.windows;
+  let windowId = w.activeWindows[folderDir];
+  if (!windows.some((win) => win.id === windowId && win.folderDir === folderDir)) {
+    windowId = newWindowId();
+    windows = [...windows, { id: windowId, name: "primary", folderDir, panes: [] }];
+  }
+  return {
+    windows: windows.map((win) =>
+      win.id === windowId ? { ...win, panes: [...win.panes, paneId] } : win,
+    ),
+    activeWindows: { ...w.activeWindows, [folderDir]: windowId },
+  };
+}
+
+/** Drop a pane from every window that holds it (pane ids are unique — session
+ * ids globally, diff ids per folder — so at most one window matches). */
+export function dropPane(w: WindowsPayload, paneId: string): WindowsPayload {
+  return {
+    ...w,
+    windows: w.windows.map((win) => ({
+      ...win,
+      panes: win.panes.filter((p) => p !== paneId),
+    })),
+  };
+}
+
 /** A session is an "agent" session iff Claude is running in it right now. */
 export function isAgent(s: SessionData): boolean {
   return s.agentState != null;
 }
 
-/** A session "needs you" when its agent is blocked on input or errored. */
+/** A session "needs you" only when a shell actually exists for it (live PTY or
+ * a detached daemon shell — anything else is a stale record whose agent status
+ * can't be current) AND its agent demands attention: blocked on input, errored,
+ * or its turn just ended and you haven't looked yet (`unseen` terminal state,
+ * cleared by `ab_mark_seen` on select). Mirrors `session_needs` in
+ * `crates/tt-agentboard/src/bridge.rs` — keep the two in lockstep. */
 export function sessionNeeds(s: SessionData): boolean {
-  return s.agentState?.status === "waiting" || s.agentState?.status === "error";
+  if (!s.live && !s.detached) return false;
+  const st = s.agentState?.status;
+  if (st === "waiting" || st === "error") return true;
+  return s.unseen && (st === "complete" || st === "interrupted");
 }
 
 /** A session should catch your eye when it needs you right now (`sessionNeeds`)

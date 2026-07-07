@@ -45,6 +45,19 @@ fn app_slot() -> String {
 }
 
 pub fn run() {
+    // WebKitGTK's DMABUF renderer glitches on the NVIDIA proprietary driver:
+    // small damage regions (e.g. a terminal cursor blink) flash as
+    // window-sized artifacts (tauri-apps/tauri#9304). Opt out before any
+    // webview exists, but only where NVIDIA is actually driving the screen,
+    // and never override an explicit user setting.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+        && std::path::Path::new("/proc/driver/nvidia/version").exists()
+    {
+        // SAFETY: called before Tauri/GTK spawn any threads.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
+
     let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
 
     // WebdriverIO E2E plugins, only under `--features wdio` (see e2e/):

@@ -193,7 +193,10 @@ pub struct FolderData {
     pub lines_removed: i64,
     pub commits_delta: i64,
     pub sessions: Vec<SessionData>,
-    /// Number of sessions whose agent is `waiting`/`error` (bubbles up to repo).
+    /// Number of sessions that "need you" (see `bridge::session_needs`): a live
+    /// or detached shell whose agent is waiting/errored, or whose turn just
+    /// ended and is still unseen. Bubbles up to the repo. Computed app-side
+    /// after shell-liveness stamping (`bridge::recompute_needs`).
     pub needs: i64,
     /// User-authored "what am I working toward here" (folder_meta.json).
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -48,6 +48,9 @@ pub fn stamp_pty_state(payload: &mut StatePayload, terms: &crate::terminal::Term
             }
         }
     }
+    // Now that `live`/`detached` are truthful, recompute every folder/repo
+    // `needs` count — the engine assembled them as 0 placeholders pre-stamp.
+    tt_agentboard::bridge::recompute_needs(payload);
 }
 
 /// The stamped payload, recomputed now. Shared by `ab_get_state` and emitters.

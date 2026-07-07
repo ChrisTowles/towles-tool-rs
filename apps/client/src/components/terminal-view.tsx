@@ -66,6 +66,32 @@ export function TerminalView({
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
+
+      // Paste: ghostty-web lets Ctrl+V fall through to the browser's native
+      // paste event, but its own paste handler is text/plain-only — an image
+      // on the clipboard (Claude Code's Ctrl+V attach) is silently dropped.
+      // Intercept the paste event ourselves instead: an image becomes 0x16
+      // (SYN) on the PTY — the byte a Linux terminal sends for Ctrl+V — so
+      // TUIs like Claude Code read the image from the system clipboard
+      // themselves; text goes through term.paste(), which adds the
+      // bracketed-paste markers ghostty-web's native path omits. Registered
+      // before term.open() because ghostty-web attaches its own paste
+      // listener to this same element there, and same-node listeners fire in
+      // registration order — ours must run first to claim the event.
+      let ptyWrite: ((data: string) => void) | undefined;
+      const onPaste = (e: ClipboardEvent) => {
+        const items = e.clipboardData ? Array.from(e.clipboardData.items) : [];
+        const hasImage = items.some((it) => it.type.startsWith("image/"));
+        const text = e.clipboardData?.getData("text/plain") ?? "";
+        if (!hasImage && !text) return; // nothing we handle; leave it to ghostty
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (hasImage) ptyWrite?.("\x16");
+        else term?.paste(text);
+      };
+      host.addEventListener("paste", onPaste, { capture: true });
+      unlisteners.push(() => host.removeEventListener("paste", onPaste, { capture: true }));
+
       term.open(host);
       fit.fit();
 
@@ -102,7 +128,8 @@ export function TerminalView({
       await invoke("term_start", { termId, cols: term.cols, rows: term.rows, cwd });
       started = true;
       if (disposed) return void invoke("term_kill", { termId }).catch(() => {});
-      term.onData((data) => void invoke("term_write", { termId, data }).catch(() => {}));
+      ptyWrite = (data) => void invoke("term_write", { termId, data }).catch(() => {});
+      term.onData((data) => ptyWrite?.(data));
       // FitAddon watches the host with its own ResizeObserver and refits;
       // mirror every grid change to the PTY. Both are torn down by
       // `term.dispose()`, which disposes loaded addons.

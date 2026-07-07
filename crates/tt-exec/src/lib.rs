@@ -6,6 +6,7 @@
 
 use serde::de::DeserializeOwned;
 use std::process::Command;
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -19,6 +20,9 @@ pub enum Error {
         exit_code: i32,
         stderr: String,
     },
+
+    #[error("Command timed out after {timeout:?}: {cmd}")]
+    Timeout { cmd: String, timeout: Duration },
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
@@ -89,6 +93,59 @@ pub fn run_with_stdin(cmd: &str, args: &[&str], stdin: &str) -> Result<Output> {
     })
 }
 
+/// Run a command, capturing output, but give up after `timeout`. On expiry the
+/// child is killed (and reaped) and `Err(Error::Timeout)` is returned so a hung
+/// subprocess can't block the caller forever. Does not fail on a non-zero exit.
+///
+/// stdout/stderr are drained on dedicated threads while the child runs, so a
+/// chatty child can't deadlock by filling a pipe the parent isn't reading.
+pub fn run_with_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Result<Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use wait_timeout::ChildExt;
+
+    log::debug!("exec (timeout {timeout:?}): {}", display_cmd(cmd, args));
+    let mut child = Command::new(cmd)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|source| Error::Spawn { cmd: cmd.to_string(), source })?;
+
+    fn drain(reader: Option<impl Read>) -> String {
+        let mut buf = Vec::new();
+        if let Some(mut reader) = reader {
+            let _ = reader.read_to_end(&mut buf);
+        }
+        String::from_utf8_lossy(&buf).to_string()
+    }
+
+    let out = child.stdout.take();
+    let err = child.stderr.take();
+    let out_thread = std::thread::spawn(move || drain(out));
+    let err_thread = std::thread::spawn(move || drain(err));
+
+    let status = child
+        .wait_timeout(timeout)
+        .map_err(|source| Error::Spawn { cmd: cmd.to_string(), source })?;
+
+    let Some(status) = status else {
+        // Timed out: kill and reap so we don't leave a zombie. The drain threads
+        // then observe EOF on the closed pipes and finish on their own.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Error::Timeout { cmd: display_cmd(cmd, args), timeout });
+    };
+
+    // The child has exited, so its pipes are closed and the drain threads will
+    // return promptly. `join` only errors if a thread panicked — treat that as
+    // empty output rather than propagating a panic.
+    let stdout = out_thread.join().unwrap_or_default();
+    let stderr = err_thread.join().unwrap_or_default();
+
+    Ok(Output { stdout, stderr, exit_code: status.code().unwrap_or(-1) })
+}
+
 /// Run a command and fail if it exits with a non-zero status.
 pub fn run_ok(cmd: &str, args: &[&str]) -> Result<Output> {
     let output = run(cmd, args)?;
@@ -144,6 +201,30 @@ mod tests {
     fn run_with_stdin_survives_child_ignoring_stdin() {
         let output = run_with_stdin("echo", &["ok"], "ignored").unwrap();
         assert_eq!(output.stdout.trim(), "ok");
+    }
+
+    #[test]
+    fn run_with_timeout_kills_a_slow_child() {
+        let start = std::time::Instant::now();
+        let err = run_with_timeout("sleep", &["5"], Duration::from_millis(200)).unwrap_err();
+        assert!(matches!(err, Error::Timeout { .. }));
+        // The kill must happen near the timeout, not after the full 5s sleep.
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn run_with_timeout_returns_output_when_fast() {
+        let output = run_with_timeout("echo", &["hi"], Duration::from_secs(5)).unwrap();
+        assert_eq!(output.stdout.trim(), "hi");
+        assert_eq!(output.exit_code, 0);
+        assert!(output.ok());
+    }
+
+    #[test]
+    fn run_with_timeout_reports_spawn_failure_for_missing_binary() {
+        let err = run_with_timeout("definitely-not-a-real-binary-xyz", &[], Duration::from_secs(5))
+            .unwrap_err();
+        assert!(matches!(err, Error::Spawn { .. }));
     }
 
     #[test]

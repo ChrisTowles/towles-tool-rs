@@ -9,6 +9,7 @@ import {
   Trash2,
 } from "lucide-react";
 import {
+  AgentStatusLine,
   CacheBadge,
   Chevron,
   DiffButton,
@@ -134,6 +135,7 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
           <button
             type="button"
             title="Agentboard settings"
+            aria-label="Agentboard settings"
             className="ml-auto text-muted-foreground/60 hover:text-foreground"
           >
             ⚙
@@ -215,7 +217,8 @@ export function RepoGroup({
   onNewSession: (folderDir: string, launchClaude?: boolean) => void;
   onRemoveRepo: (dirs: string[], label: string) => void;
   onRenameCommit: (sessionId: string, name: string) => void;
-  onOpenDiff: (dir: string, name: string) => void;
+  /** Opens the folder's diff pane in its focused window. */
+  onOpenDiff: (dir: string) => void;
 }) {
   const solo = isSoloRepo(repo);
 
@@ -308,6 +311,7 @@ export function RepoGroup({
           needs={repo.needs}
           pr={prForFolder(prs, repo.originUrl, folder.branch)}
           collapsed={isCollapsed}
+          now={now}
           active={activeFolderDir === folder.dir}
           onToggle={() => {
             onToggle(repo.key);
@@ -315,7 +319,7 @@ export function RepoGroup({
           }}
           onNewSession={() => onNewSession(folder.dir)}
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
-          onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
+          onOpenDiff={() => onOpenDiff(folder.dir)}
         />
         {/* The note is a folder label — visible under the header even when the
             folder is collapsed (renders nothing when unset). */}
@@ -368,6 +372,7 @@ export function RepoGroup({
                 needs={folder.needs}
                 pr={prForFolder(prs, repo.originUrl, folder.branch)}
                 collapsed={fCollapsed}
+                now={now}
                 active={activeFolderDir === folder.dir}
                 onToggle={() => {
                   onToggle(key);
@@ -375,7 +380,7 @@ export function RepoGroup({
                 }}
                 onNewSession={() => onNewSession(folder.dir)}
                 onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
-                onOpenDiff={() => onOpenDiff(folder.dir, folder.name)}
+                onOpenDiff={() => onOpenDiff(folder.dir)}
               />
               {/* Note is a folder label — shown under the header even when the
                   folder is collapsed (renders nothing when unset). */}
@@ -396,6 +401,7 @@ function FolderHeader({
   pr,
   collapsed,
   active,
+  now,
   onToggle,
   onNewSession,
   onRemoveRepo,
@@ -412,14 +418,15 @@ function FolderHeader({
   collapsed: boolean;
   /** Whether this folder is the one currently shown in the main pane area. */
   active: boolean;
+  now: number;
   onToggle: () => void;
   onNewSession: () => void;
   onRemoveRepo?: () => void;
-  /** Opens the full-diff preview dialog for this folder. */
+  /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: () => void;
 }) {
   const scopePrefix = pathScope(folder.dir);
-  const progressPercent = folder.metadata?.progress?.percent;
+  const progress = folder.metadata?.progress;
   return (
     // Two lines: name (line 1) with the git facts — branch, worktree, diff,
     // PR — grouped underneath (line 2), so a long branch never squeezes the
@@ -480,11 +487,18 @@ function FolderHeader({
         {folder.isWorktree && <WorktreeBadge />}
         <DiffButton stats={folder} onOpen={onOpenDiff} />
         {pr && <PrChip pr={pr} />}
-        {typeof progressPercent === "number" && (
-          <span className="shrink-0 rounded-md border border-violet-500/40 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500">
-            {Math.round(progressPercent)}%
+        {typeof progress?.percent === "number" && (
+          <span
+            title={progress.label ?? "agent-reported progress"}
+            className="shrink-0 rounded-md border border-violet-500/40 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500"
+          >
+            {Math.round(progress.percent)}%{progress.label ? ` ${progress.label}` : ""}
           </span>
         )}
+      </div>
+      {/* The agent's own status line (ab_set_status), when one was pushed. */}
+      <div className="ml-11 empty:hidden [&:not(:empty)]:pb-1.5">
+        <AgentStatusLine metadata={folder.metadata} now={now} />
       </div>
     </div>
   );
@@ -703,6 +717,7 @@ function SessionRow({
     <div
       role="button"
       tabIndex={0}
+      aria-current={active || undefined}
       title={eff.purpose ? `✦ ${eff.purpose}` : undefined}
       onClick={onSelect}
       onDoubleClick={() => actions.renameStart(session.id)}

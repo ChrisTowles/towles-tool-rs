@@ -1,6 +1,7 @@
 import { useState, type ComponentProps, type ReactNode } from "react";
 import { ChevronDown, GitCompare, GitPullRequest } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   abInvoke,
   ctxPct,
@@ -9,6 +10,8 @@ import {
   statusColor,
   type AgentStatus,
   type FolderData,
+  type FolderMetadata,
+  type MetadataTone,
   type SessionData,
 } from "@/lib/agentboard";
 import type { PrItem } from "@/lib/data";
@@ -23,7 +26,10 @@ import { cn } from "@/lib/utils";
 
 /** A small square icon action that *reads as a button* (bordered, hover fill)
  * — shadcn outline button at icon-xs, mono glyph or lucide icon inside.
- * Clicks never bubble into the row/header the button sits on. */
+ * `title` renders as a real (Radix) tooltip: instant, styled, and — unlike a
+ * native `title` attribute or CSS `:hover` reveal — reliable in the Tauri
+ * WebKitGTK webview. It doubles as the `aria-label`, since the glyph alone
+ * says nothing. Clicks never bubble into the row/header the button sits on. */
 export function IconBtn({
   title,
   onClick,
@@ -37,19 +43,24 @@ export function IconBtn({
   children: ReactNode;
 } & Omit<ComponentProps<"button">, "onClick" | "title" | "children">) {
   return (
-    <Button
-      variant="outline"
-      size="icon-xs"
-      title={title}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      className={cn("font-mono text-xs text-muted-foreground", className)}
-      {...props}
-    >
-      {children}
-    </Button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="outline"
+          size="icon-xs"
+          aria-label={title}
+          onClick={(e) => {
+            e.stopPropagation();
+            onClick();
+          }}
+          className={cn("font-mono text-xs text-muted-foreground", className)}
+          {...props}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{title}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -76,6 +87,7 @@ export function Dot({ session }: { session: SessionData }) {
   if (!session.live) {
     return (
       <span
+        title={session.detached ? "detached — shell still running" : "not started"}
         className={cn(
           "size-2 shrink-0 rounded-full border-[1.5px] bg-transparent",
           session.detached ? "border-sky-500/80 dark:border-sky-400/80" : "border-muted-foreground/50",
@@ -86,6 +98,7 @@ export function Dot({ session }: { session: SessionData }) {
   const st = session.agentState?.status;
   return (
     <span
+      title={st ? `agent ${st}` : "shell running, no agent"}
       className={cn(
         "size-2 shrink-0 rounded-full",
         st ? statusColor(st) : "bg-muted-foreground/40",
@@ -274,6 +287,60 @@ export function CacheBadge({
 /** Millis → whole minutes for the cache countdown, floored at 1 ("<1m" ≈ 1m). */
 export function fmtMins(ms: number): string {
   return `${Math.max(1, Math.round(ms / 60_000))}m`;
+}
+
+/** Text colors for agent-pushed status/log tones. Every hue carries a `dark:`
+ * pair — never a bare palette color. */
+const TONE_TEXT: Record<MetadataTone, string> = {
+  neutral: "text-muted-foreground",
+  info: "text-sky-600 dark:text-sky-400",
+  success: "text-emerald-600 dark:text-emerald-400",
+  warn: "text-amber-600 dark:text-amber-400",
+  error: "text-red-600 dark:text-red-400",
+};
+
+/** The agent's own status line (`ab_set_status`, also pushed over MCP) under a
+ * folder header — what the agent *says* it's doing, next to what we *observe*
+ * (the session dots). Read-only by design; recent `ab_log` lines ride along in
+ * the tooltip. Renders nothing when no agent has pushed a status. */
+export function AgentStatusLine({
+  metadata,
+  now,
+}: {
+  metadata: FolderMetadata | null | undefined;
+  now: number;
+}) {
+  const status = metadata?.status;
+  if (!status?.text) return null;
+  const tone = status.tone ?? "neutral";
+  const logs = (metadata?.logs ?? []).slice(-5);
+  const age = Math.max(0, now - status.ts);
+  const line = (
+    <span className={cn("flex min-w-0 items-center gap-1.5 text-[11px]", TONE_TEXT[tone])}>
+      <span className="shrink-0 opacity-60">▸</span>
+      <span className="min-w-0 truncate">{status.text}</span>
+      {age >= 60_000 && (
+        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60">
+          {fmtMins(age)} ago
+        </span>
+      )}
+    </span>
+  );
+  if (logs.length === 0) return line;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{line}</TooltipTrigger>
+      <TooltipContent side="bottom" align="start" className="max-w-96">
+        <div className="flex flex-col gap-0.5 font-mono text-[11px]">
+          {logs.map((l, i) => (
+            <span key={i} className="truncate">
+              {l.message}
+            </span>
+          ))}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 /** The folder's user-authored purpose — the "why am I here". Click to edit
