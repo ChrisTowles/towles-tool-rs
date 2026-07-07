@@ -103,8 +103,10 @@ Cargo workspace + npm workspace (`apps/client` only):
   shadcn/ui (`@/*` → `src/*` alias, components vendored into
   `src/components/ui/`, light/dark via the `.dark` class). Yaak-style app
   shell: resizable sidebar + closable tabs (`src/lib/workspace.tsx` context),
-  command palette (⌘K), settings dialog, status bar, keyboard shortcuts
-  (⌘K/⌘,/⌘B/⌘W/⌘J/⌘D). Screens live in `src/screens/` (registry in
+  command palette (⌘K), settings dialog, status bar, keyboard shortcuts via
+  the validated registry in `src/lib/shortcuts.tsx` (`?` opens the help
+  overlay; screen-scoped bindings gate on their tab). Screens live in
+  `src/screens/` (registry in
   `src/lib/screens.ts`). Live data flows through `src/lib/data.ts`
   (`useStoreSnapshot` → `store_snapshot` command + `store://snapshot` event)
   and `src/lib/agentboard.ts`; both fall back to mock data in plain-Vite
