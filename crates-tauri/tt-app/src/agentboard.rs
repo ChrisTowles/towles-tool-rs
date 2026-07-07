@@ -407,10 +407,14 @@ pub fn ab_clear_log(state: State<Ab>, session: String) -> Result<(), String> {
 }
 
 /// Full unified diff for a folder against its pushed baseline, for the
-/// diff-preview dialog. Empty string when there's nothing to show.
+/// diff-preview dialog. Empty string when there's nothing to show. Async: a
+/// large working-tree diff is a real subprocess wait that must not stall the
+/// main thread.
 #[tauri::command]
-pub fn ab_get_diff(dir: String) -> String {
-    tt_agentboard::diff_patch(&dir)
+pub async fn ab_get_diff(dir: String) -> String {
+    tauri::async_runtime::spawn_blocking(move || tt_agentboard::diff_patch(&dir))
+        .await
+        .unwrap_or_default()
 }
 
 /// Open a session's repo directory in the preferred editor. Ports the TS

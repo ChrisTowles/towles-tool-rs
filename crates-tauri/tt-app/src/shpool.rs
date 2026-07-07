@@ -18,10 +18,30 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+
+/// Hard cap per `shpool` invocation. The daemon answers its socket in
+/// milliseconds when healthy; a wedged daemon must degrade (empty list, failed
+/// kill) instead of hanging the caller — `live_session_names` runs on every
+/// snapshot stamp.
+const SHPOOL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Run `shpool -s <socket> <args…>`, returning stdout only on a clean exit.
+fn run_shpool(args: &[&str]) -> Option<String> {
+    let socket = socket_path();
+    let socket = socket.to_string_lossy();
+    let mut full: Vec<&str> = vec!["-s", &socket];
+    full.extend_from_slice(args);
+    match tt_exec::run_with_timeout("shpool", &full, SHPOOL_TIMEOUT) {
+        Ok(out) if out.ok() => Some(out.stdout),
+        _ => None,
+    }
+}
 
 // Tri-state cache of whether the `shpool` binary is present. Unlike a plain
 // `OnceLock`, this can flip from NO to YES within a run — the in-app installer
@@ -34,13 +54,10 @@ static AVAILABILITY: AtomicU8 = AtomicU8::new(UNKNOWN);
 
 /// Fresh probe: does `shpool version` succeed?
 fn probe_installed() -> bool {
-    Command::new("shpool")
-        .arg("version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    matches!(
+        tt_exec::run_with_timeout("shpool", &["version"], SHPOOL_TIMEOUT),
+        Ok(out) if out.ok()
+    )
 }
 
 /// Re-probe the binary and update the cache. Returns the fresh result.
@@ -147,14 +164,8 @@ pub fn kill_session(term_id: &str) {
     if !available() {
         return;
     }
-    let _ = Command::new("shpool")
-        .arg("-s")
-        .arg(socket_path())
-        .arg("kill")
-        .arg(session_name(term_id))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let _ = run_shpool(&["kill", &session_name(term_id)]);
+    invalidate_session_cache();
 }
 
 /// One daemon session for the cleanup UI. `term_id` is the name with this
@@ -178,20 +189,11 @@ pub fn shpool_sessions() -> Vec<ShpoolSessionInfo> {
     if !available() {
         return Vec::new();
     }
-    let Ok(out) = Command::new("shpool")
-        .arg("-s")
-        .arg(socket_path())
-        .args(["list", "--json"])
-        .stderr(Stdio::null())
-        .output()
-    else {
+    let Some(stdout) = run_shpool(&["list", "--json"]) else {
         return Vec::new();
     };
-    if !out.status.success() {
-        return Vec::new();
-    }
     let prefix = format!("tt-{}-", crate::slot_label());
-    parse_list_full(&String::from_utf8_lossy(&out.stdout))
+    parse_list_full(&stdout)
         .into_iter()
         .filter_map(|(name, status, started_at_ms)| {
             let term_id = name.strip_prefix(&prefix)?.to_string();
@@ -209,38 +211,38 @@ pub fn shpool_kill_session(name: String) -> Result<(), String> {
     if !name.starts_with(&prefix) {
         return Err("refusing to kill a session outside this slot".to_string());
     }
-    let status = Command::new("shpool")
-        .arg("-s")
-        .arg(socket_path())
-        .arg("kill")
-        .arg(&name)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| e.to_string())?;
-    if status.success() { Ok(()) } else { Err(format!("shpool kill {name} failed")) }
+    let killed = run_shpool(&["kill", &name]).is_some();
+    invalidate_session_cache();
+    if killed { Ok(()) } else { Err(format!("shpool kill {name} failed")) }
 }
 
-/// Names of every session alive on the daemon (attached or disconnected).
-/// Empty when shpool is absent or the daemon isn't running. Compare via
-/// [`session_name`].
+/// TTL cache over `shpool list`: the emitter stamps `SessionData.detached`
+/// onto every snapshot, and spawning one `shpool list` per emit was a steady
+/// subprocess drip. A short TTL bounds staleness; state-changing paths
+/// ([`kill_session`], [`crate::terminal::term_start`]) invalidate eagerly.
+static SESSION_CACHE: Mutex<Option<(Instant, HashSet<String>)>> = Mutex::new(None);
+const SESSION_CACHE_TTL: Duration = Duration::from_secs(2);
+
+/// Drop the cached `shpool list` result (the session set just changed).
+pub fn invalidate_session_cache() {
+    *SESSION_CACHE.lock().unwrap() = None;
+}
+
+/// Names of every session alive on the daemon (attached or disconnected),
+/// cached for [`SESSION_CACHE_TTL`]. Empty when shpool is absent or the
+/// daemon isn't running. Compare via [`session_name`].
 pub fn live_session_names() -> HashSet<String> {
     if !available() {
         return HashSet::new();
     }
-    let Ok(out) = Command::new("shpool")
-        .arg("-s")
-        .arg(socket_path())
-        .args(["list", "--json"])
-        .stderr(Stdio::null())
-        .output()
-    else {
-        return HashSet::new();
-    };
-    if !out.status.success() {
-        return HashSet::new();
+    if let Some((at, names)) = SESSION_CACHE.lock().unwrap().as_ref()
+        && at.elapsed() < SESSION_CACHE_TTL
+    {
+        return names.clone();
     }
-    parse_list_names(&String::from_utf8_lossy(&out.stdout))
+    let names = run_shpool(&["list", "--json"]).map(|s| parse_list_names(&s)).unwrap_or_default();
+    *SESSION_CACHE.lock().unwrap() = Some((Instant::now(), names.clone()));
+    names
 }
 
 /// Whether `term_id` has a session alive on the daemon (in `names` from
@@ -251,19 +253,16 @@ pub fn is_persisted(names: &HashSet<String>, term_id: &str) -> bool {
 
 /// Kill every daemon-side session belonging to this slot ("quit and kill all"
 /// from the close dialog). Other slots' sessions on the shared daemon are
-/// untouched — the slot prefix is the namespace.
+/// untouched — the slot prefix is the namespace. Known limitation: a checkout
+/// whose directory name is a dash-prefix of another checkout's (e.g. `foo`
+/// beside `foo-bar`) would match the longer slot's sessions too; slot dirs
+/// must not be dash-prefixes of each other.
 pub fn kill_slot_sessions() {
     let prefix = format!("tt-{}-", crate::slot_label());
     for name in live_session_names().iter().filter(|n| n.starts_with(&prefix)) {
-        let _ = Command::new("shpool")
-            .arg("-s")
-            .arg(socket_path())
-            .arg("kill")
-            .arg(name)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let _ = run_shpool(&["kill", name]);
     }
+    invalidate_session_cache();
 }
 
 // --- In-app onboarding: install shpool so persistence works ---------------
@@ -414,15 +413,7 @@ pub fn ensure_daemon() {
 
 /// Cheap liveness probe: `list` succeeds only when a daemon answers the socket.
 fn daemon_running() -> bool {
-    Command::new("shpool")
-        .arg("-s")
-        .arg(socket_path())
-        .arg("list")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    run_shpool(&["list"]).is_some()
 }
 
 /// Render the systemd user unit. The shpool binary path is resolved now (PATH

@@ -11,11 +11,20 @@
 //! app: killing the PTY client only disconnects the session, and starting the
 //! same `term_id` again resumes it (see [`crate::shpool`]). Explicit closes
 //! (`term_kill`) kill the daemon-side session too.
+//!
+//! Concurrency contract: the [`TermState`] map lock is only ever held for map
+//! surgery — never across a PTY write, a subprocess, or a kill/wait. Input
+//! goes through a per-terminal channel + writer thread so a shell that stops
+//! reading (Ctrl+S, stopped job) can only back up its own terminal, and every
+//! reader/exit path is generation-checked so a replaced PTY's exit event can
+//! never close its successor.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -27,11 +36,24 @@ pub const OUTPUT_EVENT: &str = "terminal://output";
 pub const EXIT_EVENT: &str = "terminal://exit";
 const MAIN_WINDOW_LABEL: &str = "main";
 
+/// Queued-keystroke cap per terminal. When the shell stops draining its PTY
+/// (flow-stopped, stopped job) further input errors instead of blocking or
+/// growing without bound.
+const INPUT_QUEUE_CAP: usize = 1024;
+
+/// Monotonic id for PTY instances. `term_start` on an existing `term_id`
+/// replaces the session; the generation lets the OLD reader thread recognize
+/// it has been superseded and swallow its exit event instead of killing the
+/// replacement (a webview reload restarts every terminal this way).
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 /// One live PTY session (one shell shown in one xterm.js instance).
 struct Session {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// Input queue consumed by this session's writer thread.
+    input: SyncSender<Vec<u8>>,
     child: Box<dyn Child + Send + Sync>,
+    generation: u64,
     /// The shell's display name, resolved once at spawn time — e.g. "zsh",
     /// "bash". Best-effort: a user running a different shell inside this one
     /// (e.g. `bash` inside `zsh`) won't change it.
@@ -55,18 +77,34 @@ impl TermState {
         self.0.lock().unwrap().iter().map(|(id, s)| (id.clone(), s.shell_kind.clone())).collect()
     }
 
-    /// Kill and drop the session with `term_id`, if any.
+    /// Kill, reap, and drop the session with `term_id`, if any. The kill/wait
+    /// runs after the map lock is released.
     fn kill(&self, term_id: &str) {
-        if let Some(mut session) = self.0.lock().unwrap().remove(term_id) {
+        let session = self.0.lock().unwrap().remove(term_id);
+        if let Some(mut session) = session {
             let _ = session.child.kill();
+            let _ = session.child.wait();
         }
     }
 
-    /// Kill and drop every session (window teardown).
+    /// Kill, reap, and drop every session (window teardown).
     fn kill_all(&self) {
-        for (_, mut session) in self.0.lock().unwrap().drain() {
+        let sessions: Vec<Session> = self.0.lock().unwrap().drain().map(|(_, s)| s).collect();
+        for mut session in sessions {
             let _ = session.child.kill();
+            let _ = session.child.wait();
         }
+    }
+
+    /// Remove `term_id` only if it still holds `generation`, returning the
+    /// session for reaping. A newer generation means this id was replaced —
+    /// leave the replacement alone.
+    fn take_if_current(&self, term_id: &str, generation: u64) -> Option<Session> {
+        let mut guard = self.0.lock().unwrap();
+        if guard.get(term_id).is_some_and(|s| s.generation == generation) {
+            return guard.remove(term_id);
+        }
+        None
     }
 }
 
@@ -88,16 +126,30 @@ struct TermExit {
 
 /// Spawn a shell in a fresh PTY sized to the xterm.js grid, rooted at `cwd`
 /// (falls back to `$HOME` when `cwd` is missing or not an existing dir).
-/// Replaces any existing terminal with the same `term_id`.
+/// Replaces any existing terminal with the same `term_id`. Async: the spawn
+/// path can run subprocesses (shpool daemon bring-up) that must not block the
+/// main thread.
 #[tauri::command]
-pub fn term_start(
+pub async fn term_start(
     app: AppHandle,
-    state: State<TermState>,
     term_id: String,
     cols: u16,
     rows: u16,
     cwd: Option<String>,
 ) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || term_start_blocking(app, term_id, cols, rows, cwd))
+        .await
+        .map_err(|e| format!("terminal spawn task failed: {e}"))?
+}
+
+fn term_start_blocking(
+    app: AppHandle,
+    term_id: String,
+    cols: u16,
+    rows: u16,
+    cwd: Option<String>,
+) -> Result<(), String> {
+    let state = app.state::<TermState>();
     state.kill(&term_id);
 
     let pty = native_pty_system()
@@ -146,20 +198,38 @@ pub fn term_start(
 
     let mut reader =
         pty.master.try_clone_reader().map_err(|e| format!("failed to clone pty reader: {e}"))?;
-    let writer = pty.master.take_writer().map_err(|e| format!("failed to take pty writer: {e}"))?;
+    let mut writer =
+        pty.master.take_writer().map_err(|e| format!("failed to take pty writer: {e}"))?;
 
-    state
-        .0
-        .lock()
-        .unwrap()
-        .insert(term_id.clone(), Session { master: pty.master, writer, child, shell_kind });
+    let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let (input_tx, input_rx): (SyncSender<Vec<u8>>, Receiver<Vec<u8>>) =
+        sync_channel(INPUT_QUEUE_CAP);
 
+    state.0.lock().unwrap().insert(
+        term_id.clone(),
+        Session { master: pty.master, input: input_tx, child, generation, shell_kind },
+    );
+
+    // A new PTY may resume a daemon session — refresh the persisted-set view.
+    crate::shpool::invalidate_session_cache();
     // Liveness changed (a PTY appeared) — refresh the agentboard snapshot.
     notify_agentboard(&app);
 
+    // Writer thread: drain the input queue into the PTY in arrival order. A
+    // shell that stops reading blocks only this thread; the channel cap bounds
+    // the backlog. Ends when the session is dropped (sender closes) or the
+    // PTY write fails.
+    std::thread::spawn(move || {
+        while let Ok(bytes) = input_rx.recv() {
+            if writer.write_all(&bytes).is_err() {
+                break;
+            }
+        }
+    });
+
     // Reader thread: pump PTY output to the frontend until EOF (shell exited).
     std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 65536];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
@@ -170,8 +240,16 @@ pub fn term_start(
                 }
             }
         }
-        let _ = app.emit_to(MAIN_WINDOW_LABEL, EXIT_EVENT, TermExit { term_id });
-        notify_agentboard(&app); // shell exited — session no longer live
+        // EOF can mean (a) the shell exited, or (b) this PTY was replaced /
+        // explicitly killed. Only (a) — where this generation still owns the
+        // id — may emit the exit event; a stale exit after a replacement
+        // would make the frontend close (and shpool-kill) the NEW session.
+        let state = app.state::<TermState>();
+        if let Some(mut session) = state.take_if_current(&term_id, generation) {
+            let _ = session.child.wait();
+            let _ = app.emit_to(MAIN_WINDOW_LABEL, EXIT_EVENT, TermExit { term_id });
+            notify_agentboard(&app); // shell exited — session no longer live
+        }
     });
 
     Ok(())
@@ -185,12 +263,18 @@ fn notify_agentboard(app: &AppHandle) {
     }
 }
 
-/// Forward keyboard input (xterm.js `onData` UTF-8 text) to the shell.
+/// Forward keyboard input (xterm.js `onData` UTF-8 text) to the shell. Queues
+/// onto the session's writer thread — never blocks, even against a shell that
+/// has stopped reading its PTY.
 #[tauri::command]
 pub fn term_write(state: State<TermState>, term_id: String, data: String) -> Result<(), String> {
-    let mut guard = state.0.lock().unwrap();
-    let session = guard.get_mut(&term_id).ok_or("no shell running")?;
-    session.writer.write_all(data.as_bytes()).map_err(|e| e.to_string())
+    let guard = state.0.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    match session.input.try_send(data.into_bytes()) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => Err("terminal input backed up (shell not reading)".into()),
+        Err(TrySendError::Disconnected(_)) => Err("no shell running".into()),
+    }
 }
 
 /// Keep the PTY size in sync with the xterm.js grid.
@@ -201,8 +285,8 @@ pub fn term_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let mut guard = state.0.lock().unwrap();
-    let session = guard.get_mut(&term_id).ok_or("no shell running")?;
+    let guard = state.0.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
     session
         .master
         .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
@@ -211,12 +295,16 @@ pub fn term_resize(
 
 /// Kill one shell (the frontend calls this when a terminal unmounts — an
 /// explicit close). Also kills the daemon-side shpool session, if any, so a
-/// deliberately closed pane doesn't linger detached forever.
+/// deliberately closed pane doesn't linger detached forever. Async: the
+/// shpool kill is a subprocess.
 #[tauri::command]
-pub fn term_kill(app: AppHandle, state: State<TermState>, term_id: String) {
-    state.kill(&term_id);
-    crate::shpool::kill_session(&term_id);
-    notify_agentboard(&app);
+pub async fn term_kill(app: AppHandle, term_id: String) {
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        app.state::<TermState>().kill(&term_id);
+        crate::shpool::kill_session(&term_id);
+        notify_agentboard(&app);
+    })
+    .await;
 }
 
 /// Drop every PTY when the main window goes away (wired to the window
@@ -260,11 +348,16 @@ pub fn ask_before_close(app: &AppHandle, label: &str) -> bool {
 /// slot's daemon-side sessions (live *and* previously detached — "quit and
 /// kill" means nothing left running); keeping just tears the window down,
 /// which detaches. `destroy()` bypasses CloseRequested, so no re-prompt.
+/// Async: the daemon-side kills are subprocesses.
 #[tauri::command]
-pub fn app_close(app: AppHandle, kill_sessions: bool) {
+pub async fn app_close(app: AppHandle, kill_sessions: bool) {
     if kill_sessions {
-        app.state::<TermState>().kill_all();
-        crate::shpool::kill_slot_sessions();
+        let kill_app = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            kill_app.state::<TermState>().kill_all();
+            crate::shpool::kill_slot_sessions();
+        })
+        .await;
     }
     if let Some(win) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = win.destroy();
