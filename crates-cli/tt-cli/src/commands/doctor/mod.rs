@@ -9,9 +9,8 @@
 //!
 //! Deviations from the TS CLI (see docs/MIGRATION.md):
 //! - Output format is selected with `--json` (a bool flag), not TS's `--format json`.
-//! - The tool list follows the current product (`cargo` and `shpool` added;
-//!   `tmux`/`ttyd` retired with the tmux agentboard); `diff` tolerates
-//!   added/removed tools.
+//! - The tool list follows the current product (`cargo` added; `tmux`/`ttyd`
+//!   retired with the tmux agentboard); `diff` tolerates added/removed tools.
 
 mod history;
 

@@ -159,12 +159,6 @@ pub struct SessionData {
     /// stamps it from its terminal registry before emitting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_kind: Option<String>,
-    /// True when no PTY is attached here but the shell still runs, detached,
-    /// on the app's session daemon (the app was closed, or the pane replaced).
-    /// Starting the session reattaches it. Assembled as `false` here (same
-    /// reason as `live`); the app stamps it from the daemon before emitting.
-    #[serde(default)]
-    pub detached: bool,
     /// True when the latest agent event is an unseen terminal state.
     pub unseen: bool,
     /// Latest/priority agent event attributed to this PTY, if any.
@@ -194,9 +188,9 @@ pub struct FolderData {
     pub commits_delta: i64,
     pub sessions: Vec<SessionData>,
     /// Number of sessions that "need you" (see `bridge::session_needs`): a live
-    /// or detached shell whose agent is waiting/errored, or whose turn just
-    /// ended and is still unseen. Bubbles up to the repo. Computed app-side
-    /// after shell-liveness stamping (`bridge::recompute_needs`).
+    /// shell whose agent is waiting/errored, or whose turn just ended and is
+    /// still unseen. Bubbles up to the repo. Computed app-side after
+    /// shell-liveness stamping (`bridge::recompute_needs`).
     pub needs: i64,
     /// User-authored "what am I working toward here" (folder_meta.json).
     #[serde(default, skip_serializing_if = "Option::is_none")]

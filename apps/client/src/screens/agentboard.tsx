@@ -10,7 +10,6 @@ import {
 import { PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffPane } from "@/components/diff-pane";
-import { PersistenceBanner } from "@/components/persistence-banner";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import {
@@ -219,25 +218,6 @@ export function AgentboardScreen() {
     if (wins === null && state.ts > 0) setWins(normalizeWins(state.windows));
   }, [wins, state.ts, state.windows]);
 
-  // Auto-reconnect on startup: any session still alive in the session daemon
-  // (shpool) after the last app exit is `detached`. Mount them straight away so
-  // their shells reattach without the user clicking ▶ on each. Runs once, after
-  // the window layout has hydrated (so restored panes land in their saved
-  // positions), and lands on the first survivor so a live terminal is shown
-  // rather than a blank "select a folder" pane.
-  const reconnected = useRef(false);
-  useEffect(() => {
-    if (reconnected.current || state.ts === 0 || wins === null) return;
-    reconnected.current = true;
-    const alive: { dir: string; id: string }[] = [];
-    for (const r of state.repos)
-      for (const f of r.folders)
-        for (const s of f.sessions) if (s.detached) alive.push({ dir: f.dir, id: s.id });
-    alive.forEach(({ dir, id }, i) => (i === 0 ? selectSession(dir, id) : reattach(dir, id)));
-    // selectSession/reattach are stable within a run; the ref makes this one-shot.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.ts, wins]);
-
   function updateWins(folderDirs: string[], fn: (w: WindowsPayload) => WindowsPayload) {
     setWins((prev) => {
       const next = normalizeWins(fn(prev ?? { windows: [], activeWindows: {} }));
@@ -292,16 +272,6 @@ export function AgentboardScreen() {
     setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
     addPaneToActive(folderDir, sessionId);
     ackFolder(folderDir);
-  }
-
-  // Mount a session's terminal (its effect reattaches the PTY) WITHOUT stealing
-  // the current selection or touching the window layout — used to bulk-restore
-  // surviving sessions on startup. Its pane position comes from the persisted
-  // windows (already hydrated by the time this runs); a survivor that isn't in
-  // any saved window still reattaches, just stays hidden until surfaced.
-  function reattach(folderDir: string, sessionId: string) {
-    cwds.current[sessionId] = folderDir;
-    setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
   }
 
   // The user is now looking at this folder's rail entry — clear its agents'
@@ -547,7 +517,6 @@ export function AgentboardScreen() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PersistenceBanner />
       <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
         {/* Rail: rollup tally + header + attention strip + Repo → Folder → Session tree. */}
         <ResizablePanel defaultSize="360px" minSize="240px" maxSize="560px">
