@@ -109,10 +109,9 @@ impl SessionStore {
     /// removed session's number is never reused, so numbers can't collide or
     /// silently repeat across add/remove cycles. The counter bumps on every
     /// add (named or not) and salts the id, so an add/remove/add cycle within
-    /// one millisecond still yields distinct ids — an id reuse would make the
-    /// new shell silently resume the removed session's still-warm daemon
-    /// session (shpool names derive from the id) and replay its buffer.
-    /// Returns the created record. Caller persists.
+    /// one millisecond still yields distinct ids — an id reuse would let a
+    /// stale agent-event/PTY-exit race attribute to the wrong (newly created)
+    /// session. Returns the created record. Caller persists.
     pub fn add(&mut self, dir: &str, name: Option<&str>, now_ms: i64) -> SessionRecord {
         let counter = self.next_seq.entry(dir.to_string()).or_insert(0);
         *counter += 1;
@@ -291,9 +290,8 @@ mod tests {
 
     #[test]
     fn add_remove_add_in_same_millisecond_yields_distinct_ids() {
-        // An id reuse here would resume the removed session's daemon-side
-        // shell (shpool session names derive from the id) and replay its
-        // buffer into the "new" pane.
+        // An id reuse here would let a stale agent-event/PTY-exit race
+        // attribute to the "new" pane instead of the session that produced it.
         let mut store = SessionStore::new(None);
         let a = store.add("/r/a", None, 7);
         assert!(store.remove(&a.id));

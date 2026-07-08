@@ -1,16 +1,13 @@
-//! Embedded terminals: shells in PTYs (portable-pty), rendered by ghostty-web
-//! in the app. Many terminals live at once, keyed by a frontend-supplied
+//! Embedded terminals: shells in PTYs (portable-pty), rendered by xterm.js in
+//! the app. Many terminals live at once, keyed by a frontend-supplied
 //! `term_id` (the agentboard screen spawns one or more per session, each rooted
 //! in the session's folder). Output streams to the frontend as base64
 //! `terminal://output` events tagged with `termId` (raw bytes — the frontend
 //! terminal owns UTF-8 decoding across chunk boundaries); input/resize come
 //! back as commands.
 //!
-//! When shpool is installed, the PTY runs `shpool attach` instead of the shell
-//! directly, so the shell lives in a service-managed daemon and survives the
-//! app: killing the PTY client only disconnects the session, and starting the
-//! same `term_id` again resumes it (see [`crate::shpool`]). Explicit closes
-//! (`term_kill`) kill the daemon-side session too.
+//! Shells are owned directly by the app process — closing the app kills them,
+//! nothing persists across a restart.
 //!
 //! Concurrency contract: the [`TermState`] map lock is only ever held for map
 //! surgery — never across a PTY write, a subprocess, or a kill/wait. Input
@@ -126,9 +123,8 @@ struct TermExit {
 
 /// Spawn a shell in a fresh PTY sized to the xterm.js grid, rooted at `cwd`
 /// (falls back to `$HOME` when `cwd` is missing or not an existing dir).
-/// Replaces any existing terminal with the same `term_id`. Async: the spawn
-/// path can run subprocesses (shpool daemon bring-up) that must not block the
-/// main thread.
+/// Replaces any existing terminal with the same `term_id`. Async: runs on a
+/// blocking task so PTY setup never blocks the main thread.
 #[tauri::command]
 pub async fn term_start(
     app: AppHandle,
@@ -159,16 +155,7 @@ fn term_start_blocking(
     let shell = default_shell(std::env::var(SHELL_ENV_VAR).ok());
     let shell_kind = shell_kind_from_path(&shell);
     let dir = start_dir(cwd);
-    let mut cmd = if crate::shpool::available() {
-        // Persistent path: the PTY hosts an attach client; the shell itself
-        // lives in the shpool daemon and survives this app process.
-        crate::shpool::ensure_daemon();
-        let mut c = CommandBuilder::new("shpool");
-        c.args(crate::shpool::attach_args(&term_id, dir.as_deref()));
-        c
-    } else {
-        CommandBuilder::new(shell)
-    };
+    let mut cmd = CommandBuilder::new(shell);
     // Drop any TT_* var inherited from the app process itself (e.g. TT_DEV_PORT,
     // set by scripts/dev-port.mjs for *this* slot's own dev server) so a shell
     // command run inside this terminal — like `npm run dev` for a different
@@ -185,12 +172,8 @@ fn term_start_blocking(
     cmd.env("TERM", "xterm-256color");
     // Stamp the PTY with its session id so a Claude agent launched inside inherits
     // it; the agentboard engine reads it back from /proc to attribute the agent to
-    // this session (see tt_agentboard::procenv). `term_id` == the session id. On
-    // the shpool path this rides `forward_env` into the daemon-side shell.
+    // this session (see tt_agentboard::procenv). `term_id` == the session id.
     cmd.env("TT_SESSION_ID", &term_id);
-    // Never nest: if the app itself was launched from inside a shpool session,
-    // the inherited name would make the attach client think it's recursing.
-    cmd.env_remove("SHPOOL_SESSION_NAME");
     if let Some(dir) = &dir {
         cmd.cwd(dir);
     }
@@ -210,8 +193,6 @@ fn term_start_blocking(
         Session { master: pty.master, input: input_tx, child, generation, shell_kind },
     );
 
-    // A new PTY may resume a daemon session — refresh the persisted-set view.
-    crate::shpool::invalidate_session_cache();
     // Liveness changed (a PTY appeared) — refresh the agentboard snapshot.
     notify_agentboard(&app);
 
@@ -243,7 +224,7 @@ fn term_start_blocking(
         // EOF can mean (a) the shell exited, or (b) this PTY was replaced /
         // explicitly killed. Only (a) — where this generation still owns the
         // id — may emit the exit event; a stale exit after a replacement
-        // would make the frontend close (and shpool-kill) the NEW session.
+        // would make the frontend close the NEW session.
         let state = app.state::<TermState>();
         if let Some(mut session) = state.take_if_current(&term_id, generation) {
             let _ = session.child.wait();
@@ -294,73 +275,18 @@ pub fn term_resize(
 }
 
 /// Kill one shell (the frontend calls this when a terminal unmounts — an
-/// explicit close). Also kills the daemon-side shpool session, if any, so a
-/// deliberately closed pane doesn't linger detached forever. Async: the
-/// shpool kill is a subprocess.
+/// explicit close).
 #[tauri::command]
-pub async fn term_kill(app: AppHandle, term_id: String) {
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        app.state::<TermState>().kill(&term_id);
-        crate::shpool::kill_session(&term_id);
-        notify_agentboard(&app);
-    })
-    .await;
+pub fn term_kill(app: AppHandle, term_id: String) {
+    app.state::<TermState>().kill(&term_id);
+    notify_agentboard(&app);
 }
 
 /// Drop every PTY when the main window goes away (wired to the window
-/// Destroyed event in lib.rs). On the shpool path this only *disconnects* the
-/// sessions — the daemon keeps the shells alive and the next launch resumes
-/// them; without shpool it kills the shells outright (nothing to resume).
+/// Destroyed event in lib.rs) — shells don't survive the app closing.
 pub fn on_window_destroyed(app: &AppHandle, label: &str) {
     if label == MAIN_WINDOW_LABEL {
         app.state::<TermState>().kill_all();
-    }
-}
-
-/// Emitted (with the live-shell count) when a window close is intercepted so
-/// the frontend can ask: keep the shells running detached, or kill them?
-pub const CLOSE_ASK_EVENT: &str = "app://close-requested";
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CloseAsk {
-    live: usize,
-}
-
-/// Whether closing the main window needs the keep-or-kill dialog first: only
-/// when shpool can actually keep shells alive (without it closing kills them
-/// like it always did — nothing to ask) and at least one PTY is live. Emits
-/// [`CLOSE_ASK_EVENT`] when returning true; the caller prevents the close and
-/// the frontend answers via [`app_close`].
-pub fn ask_before_close(app: &AppHandle, label: &str) -> bool {
-    if label != MAIN_WINDOW_LABEL || !crate::shpool::available() {
-        return false;
-    }
-    let live = app.state::<TermState>().live_ids().len();
-    if live == 0 {
-        return false;
-    }
-    let _ = app.emit_to(MAIN_WINDOW_LABEL, CLOSE_ASK_EVENT, CloseAsk { live });
-    true
-}
-
-/// The keep-or-kill dialog's answer. `kill_sessions` kills every one of this
-/// slot's daemon-side sessions (live *and* previously detached — "quit and
-/// kill" means nothing left running); keeping just tears the window down,
-/// which detaches. `destroy()` bypasses CloseRequested, so no re-prompt.
-/// Async: the daemon-side kills are subprocesses.
-#[tauri::command]
-pub async fn app_close(app: AppHandle, kill_sessions: bool) {
-    if kill_sessions {
-        let kill_app = app.clone();
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            kill_app.state::<TermState>().kill_all();
-            crate::shpool::kill_slot_sessions();
-        })
-        .await;
-    }
-    if let Some(win) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        let _ = win.destroy();
     }
 }
 

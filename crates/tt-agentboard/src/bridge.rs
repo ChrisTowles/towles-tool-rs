@@ -181,7 +181,6 @@ fn build_folder(
                 created_at: r.created_at,
                 live: false,      // stamped by the app from its PTY registry
                 shell_kind: None, // stamped by the app from its PTY registry
-                detached: false,  // stamped by the app from its session daemon
                 unseen,
                 agent_state,
                 agents,
@@ -209,18 +208,17 @@ fn build_folder(
 }
 
 /// Whether a session "needs you". A session only counts if a shell actually
-/// exists for it (`live` in this app, or `detached` on the session daemon) —
-/// otherwise a stale agent status would make the day-bar cry wolf about a shell
-/// that's gone. Given a real shell, it needs you when its agent is blocked
-/// (`Waiting`) or broke (`Error`), or when its turn just ended (`Complete` /
-/// `Interrupted`) and the user hasn't looked yet (`unseen`, cleared by
-/// `ab_mark_seen` when the row is selected).
+/// exists for it (`live`) — otherwise a stale agent status would make the
+/// day-bar cry wolf about a shell that's gone. Given a real shell, it needs
+/// you when its agent is blocked (`Waiting`) or broke (`Error`), or when its
+/// turn just ended (`Complete` / `Interrupted`) and the user hasn't looked
+/// yet (`unseen`, cleared by `ab_mark_seen` when the row is selected).
 ///
-/// Note: `live`/`detached` are stamped app-side (see `recompute_needs`), so at
-/// engine assemble time (both false) this is always `false` — assemble-time
+/// Note: `live` is stamped app-side (see `recompute_needs`), so at engine
+/// assemble time (always false) this is always `false` — assemble-time
 /// `needs` is a placeholder the app overwrites.
 pub fn session_needs(s: &SessionData) -> bool {
-    if !(s.live || s.detached) {
+    if !s.live {
         return false;
     }
     match s.agent_state.as_ref().map(|e| e.status) {
@@ -232,8 +230,8 @@ pub fn session_needs(s: &SessionData) -> bool {
 
 /// Recompute every folder's and repo's `needs` from its sessions with
 /// [`session_needs`]. The engine assembles `needs` before the app has stamped
-/// `live`/`detached` (so every count is a 0 placeholder); the app calls this
-/// after stamping so every payload it emits carries truthful counts.
+/// `live` (so every count is a 0 placeholder); the app calls this after
+/// stamping so every payload it emits carries truthful counts.
 pub fn recompute_needs(payload: &mut StatePayload) {
     for repo in &mut payload.repos {
         let mut repo_needs = 0;
@@ -398,19 +396,13 @@ mod tests {
 
     /// A `SessionData` with just the fields `session_needs` reads set; the rest
     /// are inert defaults.
-    fn session(
-        live: bool,
-        detached: bool,
-        status: Option<AgentStatus>,
-        unseen: bool,
-    ) -> SessionData {
+    fn session(live: bool, status: Option<AgentStatus>, unseen: bool) -> SessionData {
         SessionData {
             id: "s".into(),
             name: "shell 1".into(),
             created_at: 0,
             live,
             shell_kind: None,
-            detached,
             unseen,
             agent_state: status.map(|status| AgentEvent {
                 agent: "claude-code".into(),
@@ -431,27 +423,25 @@ mod tests {
     #[test]
     fn session_needs_requires_a_shell_and_attention_state() {
         // Live + waiting/error counts.
-        assert!(session_needs(&session(true, false, Some(AgentStatus::Waiting), false)));
-        assert!(session_needs(&session(true, false, Some(AgentStatus::Error), false)));
-        // Detached (shell survives on the daemon) + waiting counts too.
-        assert!(session_needs(&session(false, true, Some(AgentStatus::Waiting), false)));
-        // Neither live nor detached: a stale status must NOT count.
-        assert!(!session_needs(&session(false, false, Some(AgentStatus::Waiting), false)));
-        assert!(!session_needs(&session(false, false, Some(AgentStatus::Error), false)));
+        assert!(session_needs(&session(true, Some(AgentStatus::Waiting), false)));
+        assert!(session_needs(&session(true, Some(AgentStatus::Error), false)));
+        // Not live: a stale status must NOT count.
+        assert!(!session_needs(&session(false, Some(AgentStatus::Waiting), false)));
+        assert!(!session_needs(&session(false, Some(AgentStatus::Error), false)));
         // Live, ended turn, unseen → your turn, counts. Seen → doesn't.
-        assert!(session_needs(&session(true, false, Some(AgentStatus::Complete), true)));
-        assert!(!session_needs(&session(true, false, Some(AgentStatus::Complete), false)));
-        assert!(session_needs(&session(true, false, Some(AgentStatus::Interrupted), true)));
+        assert!(session_needs(&session(true, Some(AgentStatus::Complete), true)));
+        assert!(!session_needs(&session(true, Some(AgentStatus::Complete), false)));
+        assert!(session_needs(&session(true, Some(AgentStatus::Interrupted), true)));
         // Live but busy/idle/no-agent never needs you.
-        assert!(!session_needs(&session(true, false, Some(AgentStatus::Busy), false)));
-        assert!(!session_needs(&session(true, false, Some(AgentStatus::Idle), false)));
-        assert!(!session_needs(&session(true, false, None, false)));
+        assert!(!session_needs(&session(true, Some(AgentStatus::Busy), false)));
+        assert!(!session_needs(&session(true, Some(AgentStatus::Idle), false)));
+        assert!(!session_needs(&session(true, None, false)));
     }
 
     #[test]
     fn assemble_time_needs_is_zero_before_stamping() {
-        // The engine assembles live=false/detached=false, so even a waiting agent
-        // yields needs=0 until the app stamps shell liveness and recomputes.
+        // The engine assembles live=false, so even a waiting agent yields
+        // needs=0 until the app stamps shell liveness and recomputes.
         let mut tracker = AgentTracker::new();
         tracker.apply_event(ev("alpha", AgentStatus::Waiting, "ta"), false);
         let metadata = SessionMetadataStore::new();

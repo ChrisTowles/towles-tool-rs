@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import { AppHeader } from "@/components/app-header";
 import { AppSidebar } from "@/components/app-sidebar";
-import { CloseGuard } from "@/components/close-guard";
 import { CommandPalette } from "@/components/command-palette";
 import { DayBar } from "@/components/day-bar";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -97,7 +96,6 @@ function Workspace() {
       <Shortcuts />
       <CommandPalette />
       <QuickLog />
-      <CloseGuard />
       <Toaster />
     </div>
   );

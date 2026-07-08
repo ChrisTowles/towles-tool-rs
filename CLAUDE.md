@@ -115,14 +115,10 @@ Cargo workspace + npm workspace (`apps/client` only):
   day home — next-meeting countdown + PRs + issue queue), **Board** (cross-repo
   kanban over local todos grouped by status, with promote-to-issue), and
   **Agentboard** (repos + per-repo terminals). Terminals render with
-  **ghostty-web** (Ghostty's VT engine as WASM, xterm.js-compatible API,
-  canvas renderer — `components/terminal-view.tsx`), and their shells run
-  inside a **shpool** daemon so they survive an app restart: the Rust side
-  (`crates-tauri/tt-app/src/{terminal,shpool}.rs`) wraps each PTY in
-  `shpool attach` on a per-user, slot-namespaced socket, stamps
-  `SessionData.detached` from `shpool list`, and asks keep-or-kill on window
-  close (`components/close-guard.tsx`). No shpool binary → direct PTY spawn
-  (no persistence). Product rules: the app is for getting in the zone —
+  **xterm.js** (`components/terminal-view.tsx`), backed by shells the app
+  spawns directly in PTYs (`crates-tauri/tt-app/src/terminal.rs`) — no
+  cross-restart persistence; closing the app kills them. Product rules: the
+  app is for getting in the zone —
   manage PRs and work issues across repos; calendar is only *time until the
   next meeting*. Agent status is **reported, never re-rendered** (interaction
   happens in the real PTY via the terminal view); the day
