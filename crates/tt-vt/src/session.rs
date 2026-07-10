@@ -11,7 +11,7 @@
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-use crate::engine::{Engine, EngineOptions, VtError};
+use crate::engine::{Engine, EngineOptions, Select, VtError};
 use crate::frame::Frame;
 
 pub enum Input {
@@ -25,6 +25,10 @@ pub enum Input {
     },
     /// Scroll the viewport by rows (up is negative); `None` jumps to bottom.
     Scroll(Option<isize>),
+    /// Apply a selection operation.
+    Select(Select),
+    /// Reply with the active selection's plain text on the provided channel.
+    Copy(mpsc::SyncSender<Option<String>>),
 }
 
 #[derive(Debug)]
@@ -81,6 +85,14 @@ impl Session {
                         let _ = engine.resize(cols, rows, cell_width_px, cell_height_px);
                     }
                     Input::Scroll(delta) => engine.scroll(delta),
+                    // Out-of-bounds coordinates (layout races) are ignored;
+                    // the selection just doesn't change.
+                    Input::Select(op) => {
+                        let _ = engine.select(op);
+                    }
+                    Input::Copy(reply) => {
+                        let _ = reply.try_send(engine.copy_selection().ok().flatten());
+                    }
                 };
                 apply(first);
                 while let Ok(more) = rx.try_recv() {

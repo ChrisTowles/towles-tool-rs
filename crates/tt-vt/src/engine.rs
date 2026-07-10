@@ -9,10 +9,35 @@ use std::rc::Rc;
 
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
 use libghostty_vt::screen::{CellWide, Screen};
+use libghostty_vt::selection::{FormatOptions, SelectLineOptions, SelectWordOptions, Selection};
 use libghostty_vt::style::Underline;
-use libghostty_vt::terminal::{Mode, Options, ScrollViewport, Terminal};
+use libghostty_vt::terminal::{Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal};
 
 use crate::frame::{flags, Colors, Cursor, CursorShape, Frame, Modes};
+
+/// A selection operation, in viewport cell coordinates.
+#[derive(Debug, Clone, Copy)]
+pub enum Select {
+    /// Anchor→head drag selection (both ends inclusive).
+    Range {
+        ax: u16,
+        ay: u16,
+        bx: u16,
+        by: u16,
+    },
+    /// Select the word at a cell (double-click).
+    Word {
+        x: u16,
+        y: u16,
+    },
+    /// Select the line at a cell (triple-click).
+    Line {
+        x: u16,
+        y: u16,
+    },
+    All,
+    Clear,
+}
 
 /// Errors from the underlying libghostty-vt library.
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +62,8 @@ pub struct Engine {
     /// filled synchronously during `feed` by the pty-write effect.
     pty_out: Rc<RefCell<Vec<u8>>>,
     title_changed: Rc<StdCell<bool>>,
+    /// Force the next render to be a full frame (selection changed).
+    force_full: bool,
 }
 
 impl Engine {
@@ -65,6 +92,7 @@ impl Engine {
             cells: CellIterator::new()?,
             pty_out,
             title_changed,
+            force_full: false,
         })
     }
 
@@ -100,6 +128,52 @@ impl Engine {
         });
     }
 
+    /// Apply a selection operation (viewport cell coordinates). Selection
+    /// changes don't reliably mark rows dirty, so the next render is forced
+    /// full to repaint highlights everywhere (including deselection).
+    pub fn select(&mut self, op: Select) -> Result<()> {
+        match op {
+            Select::Range { ax, ay, bx, by } => {
+                let a = self.grid_ref(ax, ay)?;
+                let b = self.grid_ref(bx, by)?;
+                let sel = Selection::new(a, b, false);
+                self.term.set_selection(Some(&sel))?;
+            }
+            Select::Word { x, y } => {
+                let g = self.grid_ref(x, y)?;
+                if let Some(sel) = self.term.select_word(SelectWordOptions::new(g))? {
+                    self.term.set_selection(Some(&sel))?;
+                }
+            }
+            Select::Line { x, y } => {
+                let g = self.grid_ref(x, y)?;
+                if let Some(sel) = self.term.select_line(SelectLineOptions::new(g))? {
+                    self.term.set_selection(Some(&sel))?;
+                }
+            }
+            Select::All => {
+                if let Some(sel) = self.term.select_all()? {
+                    self.term.set_selection(Some(&sel))?;
+                }
+            }
+            Select::Clear => {
+                self.term.set_selection(None)?;
+            }
+        }
+        self.force_full = true;
+        Ok(())
+    }
+
+    /// Plain text of the active selection, if any.
+    pub fn copy_selection(&mut self) -> Result<Option<String>> {
+        let bytes = self.term.format_selection_alloc(None, FormatOptions::new())?;
+        Ok(bytes.map(|b| String::from_utf8_lossy(&b).into_owned()))
+    }
+
+    fn grid_ref(&self, x: u16, y: u16) -> Result<libghostty_vt::screen::GridRef<'_>> {
+        Ok(self.term.grid_ref(Point::Viewport(PointCoordinate { x, y: u32::from(y) }))?)
+    }
+
     /// Produce a frame of everything that changed since the last call, or
     /// `None` when nothing did.
     pub fn render(&mut self) -> Result<Option<Frame>> {
@@ -111,10 +185,11 @@ impl Engine {
 
         let snap = self.render.update(&self.term)?;
         let dirty = snap.dirty()?;
-        if dirty == Dirty::Clean && title.is_none() {
+        let force_full = std::mem::take(&mut self.force_full);
+        if dirty == Dirty::Clean && title.is_none() && !force_full {
             return Ok(None);
         }
-        let full = dirty == Dirty::Full;
+        let full = dirty == Dirty::Full || force_full;
 
         let mut changed = Vec::new();
         let mut row_iter = self.rows.update(&snap)?;
@@ -197,7 +272,8 @@ impl Engine {
                         }
                     }
                 }
-                changed.push(crate::frame::RowUpdate { y, runs });
+                let sel = row.selection()?.map(|s| (s.start_x, s.end_x));
+                changed.push(crate::frame::RowUpdate { y, runs, sel });
                 row.set_dirty(false)?;
             }
             y += 1;

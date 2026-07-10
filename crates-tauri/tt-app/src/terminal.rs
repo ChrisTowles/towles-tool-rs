@@ -29,7 +29,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tt_vt::{EngineOptions, Event as VtEvent, Frame, Input as VtInput};
+use tt_vt::{EngineOptions, Event as VtEvent, Frame, Input as VtInput, Select as VtSelect};
 
 pub const FRAME_EVENT: &str = "terminal://frame";
 pub const EXIT_EVENT: &str = "terminal://exit";
@@ -335,6 +335,60 @@ pub fn term_scroll(
     let session = guard.get(&term_id).ok_or("no shell running")?;
     let _ = session.vt.send(VtInput::Scroll(delta));
     Ok(())
+}
+
+/// Apply a selection gesture from the terminal view, in viewport cell
+/// coordinates. `kind`: drag (anchor→head range), word (double-click),
+/// line (triple-click), all, clear.
+#[tauri::command]
+pub fn term_select(
+    state: State<TermState>,
+    term_id: String,
+    kind: String,
+    ax: Option<u16>,
+    ay: Option<u16>,
+    bx: Option<u16>,
+    by: Option<u16>,
+) -> Result<(), String> {
+    let op = match kind.as_str() {
+        "drag" => VtSelect::Range {
+            ax: ax.unwrap_or(0),
+            ay: ay.unwrap_or(0),
+            bx: bx.unwrap_or(0),
+            by: by.unwrap_or(0),
+        },
+        "word" => VtSelect::Word { x: ax.unwrap_or(0), y: ay.unwrap_or(0) },
+        "line" => VtSelect::Line { x: ax.unwrap_or(0), y: ay.unwrap_or(0) },
+        "all" => VtSelect::All,
+        "clear" => VtSelect::Clear,
+        other => return Err(format!("unknown selection kind: {other}")),
+    };
+    let guard = state.0.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::Select(op));
+    Ok(())
+}
+
+/// Plain text of the terminal's active selection (empty string when there is
+/// none). The engine thread answers over a bounded channel; a dead engine
+/// yields an error rather than a hang.
+#[tauri::command]
+pub async fn term_copy(app: AppHandle, term_id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (reply_tx, reply_rx) = sync_channel::<Option<String>>(1);
+        {
+            let state = app.state::<TermState>();
+            let guard = state.0.lock().unwrap();
+            let session = guard.get(&term_id).ok_or("no shell running")?;
+            session.vt.send(VtInput::Copy(reply_tx)).map_err(|_| "terminal engine gone")?;
+        }
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map(|text| text.unwrap_or_default())
+            .map_err(|_| "terminal engine did not answer".to_string())
+    })
+    .await
+    .map_err(|e| format!("copy task failed: {e}"))?
 }
 
 /// Kill one shell (the frontend calls this when a terminal unmounts — an

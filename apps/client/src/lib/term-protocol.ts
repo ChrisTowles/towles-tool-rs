@@ -17,6 +17,8 @@ export interface Run {
 export interface RowUpdate {
   y: number;
   runs: Run[];
+  /** Row-local selected column range, inclusive. */
+  sel?: [number, number];
 }
 
 export type CursorShape = "block" | "bar" | "underline" | "hollow";

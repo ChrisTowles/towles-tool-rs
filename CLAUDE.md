@@ -114,10 +114,16 @@ Cargo workspace + npm workspace (`apps/client` only):
   `src/lib/mock-data.ts`. The three "Focus" screens are **Cockpit** (default
   day home — next-meeting countdown + PRs + issue queue), **Board** (cross-repo
   kanban over local todos grouped by status, with promote-to-issue), and
-  **Agentboard** (repos + per-repo terminals). Terminals render with
-  **xterm.js** (`components/terminal-view.tsx`), backed by shells the app
-  spawns directly in PTYs (`crates-tauri/tt-app/src/terminal.rs`) — no
-  cross-restart persistence; closing the app kills them. Product rules: the
+  **Agentboard** (repos + per-repo terminals). Terminals are a canvas
+  renderer (`components/terminal-view.tsx` + `src/lib/term-protocol.ts`)
+  over **libghostty-vt** terminal state in Rust (`crates/tt-vt`, one engine
+  thread per terminal): the PTY host (`crates-tauri/tt-app/src/terminal.rs`)
+  spawns shells with portable-pty, feeds bytes to the engine, and emits
+  `terminal://frame` events (dirty-row style runs + cursor + selection +
+  mode hints); input/resize/scroll/selection/copy go back as `term_*`
+  commands. Building tt-vt needs **zig 0.15.x** on PATH (dotfiles
+  `functions/18-zig.sh`). No cross-restart persistence; closing the app
+  kills the shells. Product rules: the
   app is for getting in the zone —
   manage PRs and work issues across repos; calendar is only *time until the
   next meeting*. Agent status is **reported, never re-rendered** (interaction

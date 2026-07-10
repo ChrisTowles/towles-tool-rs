@@ -51,6 +51,10 @@ pub struct RowUpdate {
     /// Viewport row index (0 = top).
     pub y: u16,
     pub runs: Vec<Run>,
+    /// Row-local selected column range, inclusive, when the row intersects
+    /// the active selection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sel: Option<(u16, u16)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

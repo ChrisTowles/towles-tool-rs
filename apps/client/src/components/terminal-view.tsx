@@ -72,12 +72,13 @@ export function TerminalView({
     const cellH = Math.ceil(FONT_SIZE * LINE_HEIGHT);
     const baseline = Math.round((cellH - FONT_SIZE) / 2 + FONT_SIZE * 0.8);
 
-    // Client-side grid mirror: rows of style runs, updated per frame, so any
-    // row (cursor moves, resize repaints) can be repainted from local state.
+    // Client-side grid mirror: rows of style runs (+ selection range), updated
+    // per frame, so any row (cursor moves, resize repaints) can be repainted
+    // from local state.
     const grid = {
       cols: Math.max(2, Math.floor(host.clientWidth / cellW)),
       rows: Math.max(1, Math.floor(host.clientHeight / cellH)),
-      lines: [] as Run[][],
+      lines: [] as { runs: Run[]; sel?: [number, number] }[],
       cursor: null as Cursor | null,
       modes: { appCursorKeys: false, bracketedPaste: false, altScreen: false, mouseTracking: false },
       scrolledBack: false,
@@ -92,7 +93,7 @@ export function TerminalView({
     const paintRow = (y: number) => {
       ctx.fillStyle = theme.bg;
       ctx.fillRect(0, y * cellH, canvas.clientWidth, cellH);
-      for (const run of grid.lines[y] ?? []) {
+      for (const run of grid.lines[y]?.runs ?? []) {
         const flags = run.flags ?? 0;
         let fg = run.fg !== undefined ? rgb(run.fg) : theme.fg;
         let bg = run.bg !== undefined ? rgb(run.bg) : theme.bg;
@@ -129,6 +130,13 @@ export function TerminalView({
           if (flags & OVERLINE) line(y * cellH + 1);
         }
       }
+      const sel = grid.lines[y]?.sel;
+      if (sel) {
+        ctx.globalAlpha = 0.3;
+        ctx.fillStyle = theme.fg;
+        ctx.fillRect(sel[0] * cellW, y * cellH, (sel[1] - sel[0] + 1) * cellW, cellH);
+        ctx.globalAlpha = 1;
+      }
     };
 
     const paintCursor = () => {
@@ -150,7 +158,7 @@ export function TerminalView({
           break;
         default: {
           ctx.fillRect(px, py, cellW, cellH);
-          const ch = charAt(grid.lines[c.y] ?? [], c.x);
+          const ch = charAt(grid.lines[c.y]?.runs ?? [], c.x);
           if (ch) {
             ctx.fillStyle = theme.bg;
             setFont(0);
@@ -172,9 +180,9 @@ export function TerminalView({
       if (frame.full || frame.cols !== grid.cols || frame.rows !== grid.rows) {
         grid.cols = frame.cols;
         grid.rows = frame.rows;
-        grid.lines = Array.from({ length: frame.rows }, () => []);
+        grid.lines = Array.from({ length: frame.rows }, () => ({ runs: [] }));
       }
-      for (const row of frame.changed) grid.lines[row.y] = row.runs;
+      for (const row of frame.changed) grid.lines[row.y] = { runs: row.runs, sel: row.sel };
       grid.cursor = frame.cursor;
       grid.modes = frame.modes;
       if (frame.title !== undefined) onTitleRef.current?.(termId, frame.title);
@@ -256,6 +264,13 @@ export function TerminalView({
 
       const onKeyDown = (e: KeyboardEvent) => {
         if (e.isComposing) return;
+        if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "c")) {
+          e.preventDefault();
+          void invoke<string>("term_copy", { termId })
+            .then((text) => (text ? navigator.clipboard.writeText(text) : undefined))
+            .catch(() => {});
+          return;
+        }
         const seq = encodeKey(e, grid.modes);
         if (seq !== null) {
           e.preventDefault();
@@ -294,17 +309,67 @@ export function TerminalView({
       };
       const focusInput = () => input.focus({ preventScroll: true });
 
+      // Mouse selection: drag = range, double-click = word, triple = line,
+      // plain click = clear. Coordinates are viewport cells; the engine owns
+      // the selection and reports highlight ranges back in frames.
+      const select = (
+        kind: "drag" | "word" | "line" | "all" | "clear",
+        a?: { x: number; y: number },
+        b?: { x: number; y: number },
+      ) =>
+        void invoke("term_select", {
+          termId,
+          kind,
+          ax: a?.x,
+          ay: a?.y,
+          bx: b?.x,
+          by: b?.y,
+        }).catch(() => {});
+      const cellOf = (e: MouseEvent) => ({
+        x: Math.max(0, Math.min(grid.cols - 1, Math.floor(e.offsetX / cellW))),
+        y: Math.max(0, Math.min(grid.rows - 1, Math.floor(e.offsetY / cellH))),
+      });
+      let anchor: { x: number; y: number } | null = null;
+      let dragged = false;
+      const onMouseDown = (e: MouseEvent) => {
+        focusInput();
+        if (e.button !== 0) return;
+        e.preventDefault(); // keep focus on the hidden input
+        const cell = cellOf(e);
+        if (e.detail === 2) select("word", cell);
+        else if (e.detail >= 3) select("line", cell);
+        else {
+          anchor = cell;
+          dragged = false;
+        }
+      };
+      const onMouseMove = (e: MouseEvent) => {
+        if (!anchor) return;
+        const cell = cellOf(e);
+        if (!dragged && cell.x === anchor.x && cell.y === anchor.y) return;
+        dragged = true;
+        select("drag", anchor, cell);
+      };
+      const onMouseUp = () => {
+        if (anchor && !dragged) select("clear");
+        anchor = null;
+      };
+
       input.addEventListener("keydown", onKeyDown);
       input.addEventListener("paste", onPaste);
       input.addEventListener("compositionend", onComposed);
       host.addEventListener("wheel", onWheel, { passive: false });
-      host.addEventListener("mousedown", focusInput);
+      canvas.addEventListener("mousedown", onMouseDown);
+      canvas.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
       disposers.push(() => {
         input.removeEventListener("keydown", onKeyDown);
         input.removeEventListener("paste", onPaste);
         input.removeEventListener("compositionend", onComposed);
         host.removeEventListener("wheel", onWheel);
-        host.removeEventListener("mousedown", focusInput);
+        canvas.removeEventListener("mousedown", onMouseDown);
+        canvas.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
       });
       focusInput();
     })();

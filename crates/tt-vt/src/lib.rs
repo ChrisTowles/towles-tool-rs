@@ -13,7 +13,7 @@ pub mod engine;
 pub mod frame;
 pub mod session;
 
-pub use engine::{Engine, EngineOptions, VtError};
+pub use engine::{Engine, EngineOptions, Select, VtError};
 pub use frame::{Frame, Modes};
 pub use session::{Event, Input, Session, SpawnError};
 
@@ -139,6 +139,40 @@ mod tests {
         e.scroll(None); // back to bottom
         let frame = e.render().expect("render").expect("frame");
         assert!(row_text(&frame, 0).starts_with("line"));
+    }
+
+    #[test]
+    fn selection_highlights_rows_and_copies_text() {
+        let mut e = engine(20, 4);
+        e.feed(b"alpha beta\r\ngamma");
+        e.render().expect("render").expect("frame");
+
+        e.select(engine::Select::Range { ax: 0, ay: 0, bx: 2, by: 1 }).expect("select");
+        let frame = e.render().expect("render").expect("selection forces a frame");
+        assert!(frame.full, "selection change repaints everything");
+        let row0 = frame.changed.iter().find(|r| r.y == 0).unwrap();
+        let row1 = frame.changed.iter().find(|r| r.y == 1).unwrap();
+        assert_eq!(row0.sel, Some((0, 19)), "row 0 selected to line end");
+        assert_eq!(row1.sel.map(|s| s.0), Some(0), "row 1 selected from col 0");
+
+        let text = e.copy_selection().expect("copy").expect("selection text");
+        assert!(text.contains("alpha beta") && text.contains("gam"), "got {text:?}");
+
+        e.select(engine::Select::Clear).expect("clear");
+        let frame = e.render().expect("render").expect("clear forces a frame");
+        assert!(frame.changed.iter().all(|r| r.sel.is_none()));
+        assert_eq!(e.copy_selection().expect("copy"), None);
+    }
+
+    #[test]
+    fn word_selection_snaps_to_boundaries() {
+        let mut e = engine(20, 4);
+        e.feed(b"alpha beta");
+        e.render().expect("render").expect("frame");
+
+        e.select(engine::Select::Word { x: 7, y: 0 }).expect("select word");
+        let text = e.copy_selection().expect("copy").expect("word text");
+        assert_eq!(text, "beta");
     }
 
     #[test]
