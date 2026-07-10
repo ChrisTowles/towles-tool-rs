@@ -8,11 +8,11 @@ use std::cell::{Cell as StdCell, RefCell};
 use std::rc::Rc;
 
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
-use libghostty_vt::screen::CellWide;
+use libghostty_vt::screen::{CellWide, Screen};
 use libghostty_vt::style::Underline;
-use libghostty_vt::terminal::{Options, Terminal};
+use libghostty_vt::terminal::{Mode, Options, ScrollViewport, Terminal};
 
-use crate::frame::{flags, Colors, Cursor, CursorShape, Frame};
+use crate::frame::{flags, Colors, Cursor, CursorShape, Frame, Modes};
 
 /// Errors from the underlying libghostty-vt library.
 #[derive(Debug, thiserror::Error)]
@@ -89,6 +89,15 @@ impl Engine {
     ) -> Result<()> {
         self.term.resize(cols, rows, cell_width_px, cell_height_px)?;
         Ok(())
+    }
+
+    /// Scroll the viewport into scrollback (`delta` rows; up is negative).
+    /// `None` jumps back to the bottom (live) position.
+    pub fn scroll(&mut self, delta: Option<isize>) {
+        self.term.scroll_viewport(match delta {
+            Some(d) => ScrollViewport::Delta(d),
+            None => ScrollViewport::Bottom,
+        });
     }
 
     /// Produce a frame of everything that changed since the last call, or
@@ -217,6 +226,12 @@ impl Engine {
             changed,
             cursor,
             colors: Colors { fg: pack_rgb(palette.foreground), bg: pack_rgb(palette.background) },
+            modes: Modes {
+                app_cursor_keys: self.term.mode(Mode::DECCKM)?,
+                bracketed_paste: self.term.mode(Mode::BRACKETED_PASTE)?,
+                alt_screen: self.term.active_screen()? == Screen::Alternate,
+                mouse_tracking: self.term.is_mouse_tracking()?,
+            },
             title,
             scrollback_rows: self.term.scrollback_rows()?,
         }))

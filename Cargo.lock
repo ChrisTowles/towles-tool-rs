@@ -4917,7 +4917,6 @@ dependencies = [
 name = "tt-app"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "chrono",
  "dirs",
  "portable-pty",
@@ -4938,6 +4937,7 @@ dependencies = [
  "tt-graph",
  "tt-journal",
  "tt-store",
+ "tt-vt",
 ]
 
 [[package]]

@@ -14,7 +14,7 @@ pub mod frame;
 pub mod session;
 
 pub use engine::{Engine, EngineOptions, VtError};
-pub use frame::Frame;
+pub use frame::{Frame, Modes};
 pub use session::{Event, Input, Session, SpawnError};
 
 #[cfg(test)]
@@ -101,6 +101,44 @@ mod tests {
         let frame = e.render().expect("render").expect("frame");
         assert_eq!(frame.cols, 20);
         assert_eq!(row_text(&frame, 0), "aaaaaaaaaabbbb", "line unwraps on widen");
+    }
+
+    #[test]
+    fn modes_track_terminal_state() {
+        let mut e = engine(20, 4);
+        e.feed(b"x");
+        let frame = e.render().expect("render").expect("frame");
+        assert!(!frame.modes.app_cursor_keys);
+        assert!(!frame.modes.alt_screen);
+
+        // Enter alt screen (1049), app cursor keys (DECCKM), bracketed paste.
+        e.feed(b"\x1b[?1049h\x1b[?1h\x1b[?2004h");
+        let frame = e.render().expect("render").expect("frame");
+        assert!(frame.modes.app_cursor_keys);
+        assert!(frame.modes.alt_screen);
+        assert!(frame.modes.bracketed_paste);
+    }
+
+    #[test]
+    fn scroll_moves_viewport_into_scrollback() {
+        let mut e = engine(10, 3);
+        for i in 0..20 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        e.render().expect("render").expect("frame");
+
+        e.scroll(Some(-5));
+        let frame = e.render().expect("render").expect("scrolled frame");
+        assert!(frame.changed.iter().any(|r| !r.runs.is_empty()));
+        let top = row_text(&frame, 0);
+        assert!(
+            top.starts_with("line") && top != "line18",
+            "viewport moved off the live tail, got {top:?}"
+        );
+
+        e.scroll(None); // back to bottom
+        let frame = e.render().expect("render").expect("frame");
+        assert!(row_text(&frame, 0).starts_with("line"));
     }
 
     #[test]

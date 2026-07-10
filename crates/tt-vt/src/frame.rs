@@ -81,6 +81,21 @@ pub struct Colors {
     pub bg: u32,
 }
 
+/// Terminal mode hints the renderer needs for input encoding and wheel
+/// behavior. Mirrors what xterm.js tracks internally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Modes {
+    /// DECCKM: arrows send SS3 (`ESC O A`) instead of CSI (`ESC [ A`).
+    pub app_cursor_keys: bool,
+    /// Mode 2004: wrap pasted text in `ESC [200~` / `ESC [201~`.
+    pub bracketed_paste: bool,
+    /// Alternate screen active (fullscreen TUI; wheel becomes arrow keys).
+    pub alt_screen: bool,
+    /// Any mouse tracking mode enabled.
+    pub mouse_tracking: bool,
+}
+
 /// One render frame: everything that changed since the previous frame.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,6 +108,7 @@ pub struct Frame {
     pub changed: Vec<RowUpdate>,
     pub cursor: Cursor,
     pub colors: Colors,
+    pub modes: Modes,
     /// Present only on the frame where the OSC 0/2 title changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,

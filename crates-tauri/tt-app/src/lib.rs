@@ -258,6 +258,7 @@ pub fn run() {
             terminal::term_start,
             terminal::term_write,
             terminal::term_resize,
+            terminal::term_scroll,
             terminal::term_kill,
         ])
         .run(tauri::generate_context!())

@@ -1,9 +1,10 @@
-//! Embedded terminals: shells in PTYs (portable-pty), rendered by xterm.js in
-//! the app. Many terminals live at once, keyed by a frontend-supplied
-//! `term_id` (the agentboard screen spawns one or more per session, each rooted
-//! in the session's folder). Output streams to the frontend as base64
-//! `terminal://output` events tagged with `termId` (raw bytes — the frontend
-//! terminal owns UTF-8 decoding across chunk boundaries); input/resize come
+//! Embedded terminals: shells in PTYs (portable-pty), terminal state in
+//! tt-vt (libghostty-vt), rendered by the app's canvas terminal view. Many
+//! terminals live at once, keyed by a frontend-supplied `term_id` (the
+//! agentboard screen spawns one or more per session, each rooted in the
+//! session's folder). PTY bytes feed a per-terminal tt-vt engine thread;
+//! the frontend receives `terminal://frame` events (dirty-row style runs,
+//! cursor, title, mode hints) tagged with `termId`; input/resize/scroll come
 //! back as commands.
 //!
 //! Shells are owned directly by the app process — closing the app kills them,
@@ -14,7 +15,9 @@
 //! goes through a per-terminal channel + writer thread so a shell that stops
 //! reading (Ctrl+S, stopped job) can only back up its own terminal, and every
 //! reader/exit path is generation-checked so a replaced PTY's exit event can
-//! never close its successor.
+//! never close its successor. The tt-vt engine thread is owned by the PTY
+//! reader thread (dropped — and joined — at EOF, after the map entry is
+//! resolved); the map only holds a cloneable input sender for resize/scroll.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -23,15 +26,18 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tt_vt::{EngineOptions, Event as VtEvent, Frame, Input as VtInput};
 
-pub const OUTPUT_EVENT: &str = "terminal://output";
+pub const FRAME_EVENT: &str = "terminal://frame";
 pub const EXIT_EVENT: &str = "terminal://exit";
 const MAIN_WINDOW_LABEL: &str = "main";
+
+/// Scrollback kept per terminal, in rows. Lives in the Rust engine, not the
+/// webview (xterm.js used to hold this in the JS heap).
+const MAX_SCROLLBACK: usize = 10_000;
 
 /// Queued-keystroke cap per terminal. When the shell stops draining its PTY
 /// (flow-stopped, stopped job) further input errors instead of blocking or
@@ -44,11 +50,14 @@ const INPUT_QUEUE_CAP: usize = 1024;
 /// replacement (a webview reload restarts every terminal this way).
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// One live PTY session (one shell shown in one xterm.js instance).
+/// One live PTY session (one shell shown in one terminal view).
 struct Session {
     master: Box<dyn MasterPty + Send>,
     /// Input queue consumed by this session's writer thread.
     input: SyncSender<Vec<u8>>,
+    /// Feed for this terminal's tt-vt engine thread (resize/scroll from
+    /// commands; the PTY reader holds its own clone for output bytes).
+    vt: std::sync::mpsc::Sender<VtInput>,
     child: Box<dyn Child + Send + Sync>,
     generation: u64,
     /// The shell's display name, resolved once at spawn time — e.g. "zsh",
@@ -105,13 +114,13 @@ impl TermState {
     }
 }
 
-/// Output chunk streamed to the frontend; `termId` routes it to the right xterm.
+/// Render frame streamed to the frontend; `termId` routes it to the right
+/// terminal view.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TermChunk {
+struct TermFrame {
     term_id: String,
-    /// Base64 of the raw PTY bytes.
-    data: String,
+    frame: Frame,
 }
 
 /// Emitted once when a shell exits so the frontend can close that terminal.
@@ -188,9 +197,33 @@ fn term_start_blocking(
     let (input_tx, input_rx): (SyncSender<Vec<u8>>, Receiver<Vec<u8>>) =
         sync_channel(INPUT_QUEUE_CAP);
 
+    // Terminal state engine: consumes PTY bytes, produces render frames for
+    // the frontend and reply bytes (DA1 etc.) for the shell.
+    let vt = tt_vt::Session::spawn(EngineOptions { cols, rows, max_scrollback: MAX_SCROLLBACK }, {
+        let app = app.clone();
+        let term_id = term_id.clone();
+        let pty_input = input_tx.clone();
+        move |event| match event {
+            VtEvent::Frame(frame) => {
+                let _ = app.emit_to(
+                    MAIN_WINDOW_LABEL,
+                    FRAME_EVENT,
+                    TermFrame { term_id: term_id.clone(), frame },
+                );
+            }
+            // Best-effort: a full input queue drops the reply; the
+            // querying program times out like it would on a slow tty.
+            VtEvent::PtyReply(bytes) => {
+                let _ = pty_input.try_send(bytes);
+            }
+        }
+    })
+    .map_err(|e| format!("failed to start terminal engine: {e}"))?;
+    let vt_tx = vt.sender();
+
     state.0.lock().unwrap().insert(
         term_id.clone(),
-        Session { master: pty.master, input: input_tx, child, generation, shell_kind },
+        Session { master: pty.master, input: input_tx, vt: vt_tx, child, generation, shell_kind },
     );
 
     // Liveness changed (a PTY appeared) — refresh the agentboard snapshot.
@@ -208,16 +241,19 @@ fn term_start_blocking(
         }
     });
 
-    // Reader thread: pump PTY output to the frontend until EOF (shell exited).
+    // Reader thread: pump PTY output into the terminal engine until EOF
+    // (shell exited). Owns the engine handle: dropping `vt` after the map
+    // entry is resolved joins the engine thread exactly once, whether the
+    // shell exited or this PTY was replaced.
     std::thread::spawn(move || {
         let mut buf = [0u8; 65536];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let chunk =
-                        TermChunk { term_id: term_id.clone(), data: BASE64.encode(&buf[..n]) };
-                    let _ = app.emit_to(MAIN_WINDOW_LABEL, OUTPUT_EVENT, chunk);
+                    if !vt.send(VtInput::Bytes(buf[..n].to_vec())) {
+                        break;
+                    }
                 }
             }
         }
@@ -231,6 +267,7 @@ fn term_start_blocking(
             let _ = app.emit_to(MAIN_WINDOW_LABEL, EXIT_EVENT, TermExit { term_id });
             notify_agentboard(&app); // shell exited — session no longer live
         }
+        drop(vt);
     });
 
     Ok(())
@@ -244,9 +281,9 @@ fn notify_agentboard(app: &AppHandle) {
     }
 }
 
-/// Forward keyboard input (xterm.js `onData` UTF-8 text) to the shell. Queues
-/// onto the session's writer thread — never blocks, even against a shell that
-/// has stopped reading its PTY.
+/// Forward keyboard input (UTF-8 text / escape sequences the terminal view
+/// encoded) to the shell. Queues onto the session's writer thread — never
+/// blocks, even against a shell that has stopped reading its PTY.
 #[tauri::command]
 pub fn term_write(state: State<TermState>, term_id: String, data: String) -> Result<(), String> {
     let guard = state.0.lock().unwrap();
@@ -258,20 +295,46 @@ pub fn term_write(state: State<TermState>, term_id: String, data: String) -> Res
     }
 }
 
-/// Keep the PTY size in sync with the xterm.js grid.
+/// Keep the PTY and the terminal engine in sync with the rendered grid.
+/// `cell_width`/`cell_height` are the renderer's cell size in px (used for
+/// pixel size reports; 0 when unknown).
 #[tauri::command]
 pub fn term_resize(
     state: State<TermState>,
     term_id: String,
     cols: u16,
     rows: u16,
+    cell_width: Option<u16>,
+    cell_height: Option<u16>,
 ) -> Result<(), String> {
+    let (cw, ch) = (cell_width.unwrap_or(0), cell_height.unwrap_or(0));
     let guard = state.0.lock().unwrap();
     let session = guard.get(&term_id).ok_or("no shell running")?;
     session
         .master
-        .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-        .map_err(|e| e.to_string())
+        .resize(PtySize { rows, cols, pixel_width: cols * cw, pixel_height: rows * ch })
+        .map_err(|e| e.to_string())?;
+    let _ = session.vt.send(VtInput::Resize {
+        cols,
+        rows,
+        cell_width_px: u32::from(cw),
+        cell_height_px: u32::from(ch),
+    });
+    Ok(())
+}
+
+/// Scroll the terminal viewport into scrollback (`delta` rows, up is
+/// negative); `None` jumps back to the live bottom.
+#[tauri::command]
+pub fn term_scroll(
+    state: State<TermState>,
+    term_id: String,
+    delta: Option<isize>,
+) -> Result<(), String> {
+    let guard = state.0.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::Scroll(delta));
+    Ok(())
 }
 
 /// Kill one shell (the frontend calls this when a terminal unmounts — an

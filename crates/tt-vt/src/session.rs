@@ -23,6 +23,8 @@ pub enum Input {
         cell_width_px: u32,
         cell_height_px: u32,
     },
+    /// Scroll the viewport by rows (up is negative); `None` jumps to bottom.
+    Scroll(Option<isize>),
 }
 
 #[derive(Debug)]
@@ -78,6 +80,7 @@ impl Session {
                         // keeps the old grid; the next resize fixes it.
                         let _ = engine.resize(cols, rows, cell_width_px, cell_height_px);
                     }
+                    Input::Scroll(delta) => engine.scroll(delta),
                 };
                 apply(first);
                 while let Ok(more) = rx.try_recv() {
@@ -105,6 +108,13 @@ impl Session {
     /// Send input to the engine. Returns false if the session thread is gone.
     pub fn send(&self, input: Input) -> bool {
         self.tx.send(input).is_ok()
+    }
+
+    /// A cloneable sender for feeding this session from other threads (e.g. a
+    /// PTY reader). The engine thread exits once the [`Session`] is dropped
+    /// AND every cloned sender is gone.
+    pub fn sender(&self) -> mpsc::Sender<Input> {
+        self.tx.clone()
     }
 }
 
