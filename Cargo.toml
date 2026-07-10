@@ -13,6 +13,7 @@ members = [
   "crates/tt-journal",
   "crates/tt-mcp",
   "crates/tt-store",
+  "crates/tt-vt",
   # CLI crates
   "crates-cli/tt-cli",
   # Tauri-specific crates
@@ -28,6 +29,9 @@ dirs = "6.0.0"
 env_logger = "0.11.8"
 indexmap = "2.7.1"
 inquire = "0.7.5"
+# Builds libghostty-vt from source at the crate's pinned ghostty commit;
+# requires zig 0.15.x on PATH (dotfiles functions/18-zig.sh installs it).
+libghostty-vt = "0.2.0"
 notify = "6.1.1"
 portable-pty = "0.9.0"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
@@ -56,6 +60,7 @@ tt-graph = { path = "crates/tt-graph" }
 tt-journal = { path = "crates/tt-journal" }
 tt-mcp = { path = "crates/tt-mcp" }
 tt-store = { path = "crates/tt-store" }
+tt-vt = { path = "crates/tt-vt" }
 
 [profile.release]
 strip = false

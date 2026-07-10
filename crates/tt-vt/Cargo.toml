@@ -1,0 +1,13 @@
+[package]
+name = "tt-vt"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal state engine on libghostty-vt: feeds PTY bytes, emits dirty-row render frames"
+
+[dependencies]
+libghostty-vt = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
