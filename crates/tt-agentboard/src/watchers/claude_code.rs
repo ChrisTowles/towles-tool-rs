@@ -430,10 +430,11 @@ pub struct ClaudeCodeAgentWatcher {
     projects_dir: PathBuf,
     sessions: HashMap<String, SessionState>,
     agents_source: Box<dyn Fn() -> Vec<CliAgent> + Send>,
-    /// Predicate: was this pid launched by the app (carries `TT_SESSION_ID`)?
+    /// Predicate: was this pid launched by an app instance we report (carries
+    /// `TT_SESSION_ID`, and `TT_APP_INSTANCE` within the host's scope)?
     /// Injectable so tests aren't at the mercy of real `/proc`. Production uses
-    /// [`crate::procenv::is_app_launched`]; only app-launched Claudes reach the
-    /// board (externally-started terminal sessions are dropped).
+    /// [`crate::procenv::in_scope`]; externally-started terminal sessions and —
+    /// per-instance scope — agents in another app instance's PTYs are dropped.
     app_launched: Box<dyn Fn(i32) -> bool + Send>,
 }
 
@@ -449,8 +450,9 @@ impl ClaudeCodeAgentWatcher {
         Self { projects_dir, sessions: HashMap::new(), agents_source, app_launched }
     }
 
-    /// Create using the real `~/.claude/projects` + the shared cached CLI call.
-    pub fn with_defaults() -> Self {
+    /// Create using the real `~/.claude/projects` + the shared cached CLI call,
+    /// admitting only agents in `scope` (see [`crate::procenv::InstanceScope`]).
+    pub fn with_defaults(scope: crate::procenv::InstanceScope) -> Self {
         let projects_dir =
             dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude").join("projects");
         Self::new(
@@ -460,7 +462,7 @@ impl ClaudeCodeAgentWatcher {
                     CLI_CACHE_TTL_MS,
                 ))
             }),
-            Box::new(crate::procenv::is_app_launched),
+            Box::new(move |pid| crate::procenv::in_scope(pid, &scope)),
         )
     }
 
@@ -609,11 +611,12 @@ impl AgentWatcher for ClaudeCodeAgentWatcher {
 
         // Live sessions: resolve, enrich, emit on change.
         for agent in &agents {
-            // Only report agents the app itself launched (their process carries
-            // TT_SESSION_ID). A Claude started in an external terminal — even
-            // one whose cwd is inside a tracked checkout — is not ours to
-            // surface, so it never lands on the board. (Env read is Linux-only
-            // today; on other platforms nothing is excluded — see procenv.)
+            // Only report agents in scope: launched by an app instance we
+            // cover (TT_SESSION_ID + TT_APP_INSTANCE, see procenv). A Claude
+            // started in an external terminal — even one whose cwd is inside a
+            // tracked checkout — or in another app instance's PTY is not ours
+            // to surface, so it never lands on the board. (Env read is
+            // Linux-only today; on other platforms nothing is excluded.)
             if !(self.app_launched)(agent.pid) {
                 continue;
             }

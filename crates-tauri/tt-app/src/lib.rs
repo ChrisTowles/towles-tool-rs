@@ -80,7 +80,12 @@ pub fn run() {
                 let _ = win.set_title(&format!("Towles Tool — {}", slot_label()));
             }
 
-            let engine = Arc::new(Mutex::new(Engine::new()));
+            // Scope to this app instance: sessions.json is shared across
+            // instances, so another running app's PTY can carry the same
+            // session id — its agents are that window's to report, not ours.
+            let engine = Arc::new(Mutex::new(Engine::new(
+                tt_agentboard::procenv::InstanceScope::this_app(),
+            )));
             let emit = Arc::new(Notify::new());
             let scan = Arc::new(Notify::new());
 

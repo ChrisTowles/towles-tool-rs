@@ -1,18 +1,58 @@
 //! Read a live process's environment to link a detected agent back to the PTY
 //! session it runs in. Every agentboard PTY is spawned with `TT_SESSION_ID` set
-//! to its session id (see the app's `terminal.rs`); a Claude process launched
-//! inside that shell inherits the variable, so reading it back from the agent's
-//! process environment tells us exactly which session the agent occupies.
+//! to its session id and `TT_APP_INSTANCE` set to the spawning app's pid (see
+//! the app's `terminal.rs`); a Claude process launched inside that shell
+//! inherits both, so reading them back from the agent's process environment
+//! tells us exactly which session the agent occupies — and which app instance
+//! owns the PTY it runs in.
+//!
+//! The instance stamp exists because `sessions.json` is shared across app
+//! instances: two concurrently running apps materialize the same session
+//! records and stamp the same `TT_SESSION_ID` on their own PTYs. Without the
+//! instance check, an agent waiting in one app's PTY would be attributed to
+//! the same-id session in every other app and flag "needs you" on a pane
+//! that is visibly doing something else. [`InstanceScope`] picks the policy:
+//! each app window scopes to its own instance; the MCP server (no PTYs of its
+//! own) scopes to any.
 //!
 //! Linux reads `/proc/<pid>/environ` (readable for our own uid). Other platforms
 //! return `None` for now — a `ps eww` / libproc path is a documented follow-up;
-//! the platform-specific surface is confined to [`read_session_id`].
+//! the platform-specific surface is confined to [`session_id_in_scope`].
 
 use std::path::PathBuf;
 
 /// The env var injected into every agentboard PTY at spawn, read back here to
 /// attribute a detected agent to its session.
 pub const TT_SESSION_ENV: &str = "TT_SESSION_ID";
+
+/// The env var identifying which app instance spawned the PTY (the app's pid).
+/// Distinguishes PTYs of two concurrently running app instances that host the
+/// same shared session record.
+pub const TT_INSTANCE_ENV: &str = "TT_APP_INSTANCE";
+
+/// The instance id this process stamps on its PTYs: its pid. Unique among
+/// concurrently live processes, which is the only window where two instances
+/// can host the same session id at once.
+pub fn instance_id() -> String {
+    std::process::id().to_string()
+}
+
+/// Which app-spawned agents an engine host reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstanceScope {
+    /// Only agents in PTYs stamped with this `TT_APP_INSTANCE` — an app window
+    /// reports just the agents living in its own PTYs.
+    Instance(String),
+    /// Agents in any app instance's PTYs — the MCP server's cross-cutting view.
+    Any,
+}
+
+impl InstanceScope {
+    /// Scope to the running process ([`instance_id`]) — what an app host uses.
+    pub fn this_app() -> Self {
+        Self::Instance(instance_id())
+    }
+}
 
 /// A live `claude` process discovered by scanning `/proc`, tagged with the
 /// `TT_SESSION_ID` of the PTY it runs in and the transcript it has open. Lets
@@ -26,11 +66,12 @@ pub struct SessionAgentProc {
     pub transcript: Option<PathBuf>,
 }
 
-/// Scan `/proc` for live `claude` processes carrying `TT_SESSION_ID`, one entry
-/// per matching process (the shell + MCP children carry the var too but are
-/// filtered out by process name). Linux-only; empty elsewhere.
+/// Scan `/proc` for live `claude` processes carrying `TT_SESSION_ID` and
+/// matching `scope`, one entry per matching process (the shell + MCP children
+/// carry the vars too but are filtered out by process name). Linux-only; empty
+/// elsewhere.
 #[cfg(target_os = "linux")]
-pub fn scan_session_agents() -> Vec<SessionAgentProc> {
+pub fn scan_session_agents(scope: &InstanceScope) -> Vec<SessionAgentProc> {
     let mut out = Vec::new();
     let Ok(dir) = std::fs::read_dir("/proc") else {
         return out;
@@ -45,22 +86,15 @@ pub fn scan_session_agents() -> Vec<SessionAgentProc> {
         if comm.trim() != "claude" {
             continue;
         }
-        match read_session_id(pid) {
-            Some(sid) if !sid.is_empty() => {
-                out.push(SessionAgentProc {
-                    session_id: sid,
-                    pid,
-                    transcript: open_transcript(pid),
-                });
-            }
-            _ => {}
+        if let Some(sid) = session_id_in_scope(pid, scope) {
+            out.push(SessionAgentProc { session_id: sid, pid, transcript: open_transcript(pid) });
         }
     }
     out
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn scan_session_agents() -> Vec<SessionAgentProc> {
+pub fn scan_session_agents(_scope: &InstanceScope) -> Vec<SessionAgentProc> {
     Vec::new()
 }
 
@@ -79,39 +113,51 @@ fn open_transcript(pid: i32) -> Option<PathBuf> {
     })
 }
 
-/// The `TT_SESSION_ID` of the PTY `pid` runs in, if it was spawned by us.
+/// The `TT_SESSION_ID` of the PTY `pid` runs in, if that PTY was spawned by an
+/// app instance `scope` admits.
 #[cfg(target_os = "linux")]
-pub fn read_session_id(pid: i32) -> Option<String> {
+pub fn session_id_in_scope(pid: i32, scope: &InstanceScope) -> Option<String> {
     let bytes = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-    read_var_from_environ(&bytes, TT_SESSION_ENV)
+    scoped_session_id(&bytes, scope)
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn read_session_id(_pid: i32) -> Option<String> {
+pub fn session_id_in_scope(_pid: i32, _scope: &InstanceScope) -> Option<String> {
     // macOS/other: no `/proc`. Follow-up: `ps eww <pid>` or libproc.
     None
 }
 
-/// Whether the process `pid` was launched by the app — its environment carries
-/// our [`TT_SESSION_ENV`]. Used to keep externally-started Claude sessions
-/// (e.g. one you ran in a plain terminal) off the board: only agents the app
-/// spawned are ours to report.
+/// Whether the process `pid` was launched by an app instance `scope` admits.
+/// Used to keep foreign Claude sessions off the board: externally-started ones
+/// (no `TT_SESSION_ID` at all), and — for [`InstanceScope::Instance`] — ones
+/// living in another app instance's PTYs.
 ///
 /// Linux reads `/proc`. On platforms without env introspection we cannot tell
-/// yet, so this returns `true` (assume app-launched) rather than hide every
-/// agent — see [`read_session_id`]'s follow-up note. Verified on Linux.
+/// yet, so this returns `true` (assume ours) rather than hide every agent —
+/// see [`session_id_in_scope`]'s follow-up note. Verified on Linux.
 #[cfg(target_os = "linux")]
-pub fn is_app_launched(pid: i32) -> bool {
-    read_session_id(pid).is_some_and(|s| !s.is_empty())
+pub fn in_scope(pid: i32, scope: &InstanceScope) -> bool {
+    session_id_in_scope(pid, scope).is_some()
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn is_app_launched(_pid: i32) -> bool {
+pub fn in_scope(_pid: i32, _scope: &InstanceScope) -> bool {
     true
 }
 
-/// Extract a variable's value from NUL-separated `KEY=VALUE` environ bytes.
+/// The session id from environ bytes, if the stamped instance passes `scope`.
 /// Pure and unit-tested (the platform-specific part is only the file read).
+fn scoped_session_id(bytes: &[u8], scope: &InstanceScope) -> Option<String> {
+    let sid = read_var_from_environ(bytes, TT_SESSION_ENV).filter(|s| !s.is_empty())?;
+    match scope {
+        InstanceScope::Any => Some(sid),
+        InstanceScope::Instance(id) => (read_var_from_environ(bytes, TT_INSTANCE_ENV).as_deref()
+            == Some(id.as_str()))
+        .then_some(sid),
+    }
+}
+
+/// Extract a variable's value from NUL-separated `KEY=VALUE` environ bytes.
 fn read_var_from_environ(bytes: &[u8], key: &str) -> Option<String> {
     let prefix = format!("{key}=");
     bytes.split(|&b| b == 0).find_map(|entry| {
@@ -139,8 +185,32 @@ mod tests {
     }
 
     #[test]
-    fn empty_value_returns_empty_string() {
-        let environ = b"TT_SESSION_ID=\0";
-        assert_eq!(read_var_from_environ(environ, TT_SESSION_ENV).as_deref(), Some(""));
+    fn any_scope_admits_every_stamped_session() {
+        let environ = b"TT_SESSION_ID=s00abc\0TT_APP_INSTANCE=1234\0";
+        assert_eq!(scoped_session_id(environ, &InstanceScope::Any).as_deref(), Some("s00abc"));
+        // Even one with no instance stamp (older spawn) — Any only requires the
+        // session id.
+        let unstamped = b"TT_SESSION_ID=s00abc\0";
+        assert_eq!(scoped_session_id(unstamped, &InstanceScope::Any).as_deref(), Some("s00abc"));
+    }
+
+    #[test]
+    fn instance_scope_requires_matching_stamp() {
+        let environ = b"TT_SESSION_ID=s00abc\0TT_APP_INSTANCE=1234\0";
+        let ours = InstanceScope::Instance("1234".into());
+        let theirs = InstanceScope::Instance("5678".into());
+        assert_eq!(scoped_session_id(environ, &ours).as_deref(), Some("s00abc"));
+        assert_eq!(scoped_session_id(environ, &theirs), None);
+        // No instance stamp at all → not ours, even with a session id. This is
+        // the shared-sessions.json collision the stamp exists to prevent.
+        let unstamped = b"TT_SESSION_ID=s00abc\0";
+        assert_eq!(scoped_session_id(unstamped, &ours), None);
+    }
+
+    #[test]
+    fn empty_session_id_is_out_of_scope() {
+        let environ = b"TT_SESSION_ID=\0TT_APP_INSTANCE=1234\0";
+        assert_eq!(scoped_session_id(environ, &InstanceScope::Any), None);
+        assert_eq!(scoped_session_id(environ, &InstanceScope::Instance("1234".into())), None);
     }
 }

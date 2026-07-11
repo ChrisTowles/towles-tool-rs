@@ -55,7 +55,10 @@ pub fn stamp_pty_state(payload: &mut StatePayload, terms: &crate::terminal::Term
 /// BEFORE taking the engine lock so its subprocess work can't stall other
 /// `ab_*` commands.
 pub fn stamped_payload(app: &AppHandle) -> StatePayload {
-    let snapshot = tt_agentboard::engine::collect_agent_snapshot(now_ms());
+    let snapshot = tt_agentboard::engine::collect_agent_snapshot(
+        now_ms(),
+        &tt_agentboard::procenv::InstanceScope::this_app(),
+    );
     let ab = app.state::<Ab>();
     let mut payload = {
         let mut engine = ab.engine.lock().unwrap();
