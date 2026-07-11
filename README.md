@@ -1,13 +1,14 @@
 # Towles Tool (Rust)
 
-A Rust rewrite of the [`towles-tool`](https://github.com/ChrisTowles/towles-tool)
-CLI, paired with a [Tauri 2](https://v2.tauri.app/) desktop shell. The repository
+A Rust rewrite of [`towles-tool`](https://github.com/ChrisTowles/towles-tool):
+a [Tauri 2](https://v2.tauri.app/) desktop app paired with the `ttr` CLI. The repository
 is built from the [Yaak](https://github.com/mountain-loop/yaak) golden template —
 a Cargo workspace with Tauri-free shared crates, a `clap` CLI, and a React + Vite
 frontend. It also ships the `tt` Claude Code plugin (see below).
 
-During the migration the Rust binary is named **`ttr`**. Once it reaches feature
-parity with the TypeScript CLI, it takes over the `tt` name in a hard cutover.
+During the migration the Rust binary is named **`ttr`**. Once the daily-driver
+commands are ported (full CLI parity is not a goal), it takes over the `tt`
+name in a hard cutover.
 
 > **Status:** in progress. The scaffold plus config, doctor, journal, GitHub
 > helpers, install, claude-sessions, the data-hub store/collectors, the MCP server, and

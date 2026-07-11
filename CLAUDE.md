@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Rust rewrite of the `towles-tool` CLI plus a Tauri 2 desktop shell. Modeled on
+Rust rewrite of `towles-tool`: a Tauri 2 desktop app plus the `ttr` CLI. Modeled on
 the [Yaak](https://github.com/mountain-loop/yaak) repo structure (see
 [ATTRIBUTION.md](ATTRIBUTION.md)).
 
@@ -49,16 +49,18 @@ webdriver = `+3000`); `dev:drive` and `e2e` share a slot's ports, so don't run
 both at once in one slot. Full docs + Linux gotchas: [e2e/README.md](e2e/README.md).
 
 > The binary is **`ttr`** during migration. Do not rename it to `tt` — the
-> TypeScript CLI keeps `tt` until the Rust port reaches feature parity, then we
-> hard-cut over (see [docs/MIGRATION.md](docs/MIGRATION.md), item 8).
+> TypeScript CLI keeps `tt` until the daily-driver commands are ported (full
+> CLI parity is **not** a goal), then we hard-cut over (see
+> [docs/MIGRATION.md](docs/MIGRATION.md), item 8).
 
 ## Architecture
 
 Cargo workspace + npm workspace (`apps/client` only):
 
 - `crates/` — **Tauri-free** shared libraries. This is a hard rule (Yaak's
-  shared-crate pattern): nothing here may depend on `tauri`, so both the CLI and
-  the app can use these crates.
+  shared-crate pattern): nothing here may depend on `tauri`, so logic stays
+  fast to compile and unit-testable without the app shell (and both the CLI
+  and the app can consume it).
   - `tt-config` — settings, stored at
     `~/.config/towles-tool/towles-tool.settings.json`. **This file is shared
     with the TypeScript CLI**, so serde types must tolerate unknown fields
@@ -137,9 +139,11 @@ Cargo workspace + npm workspace (`apps/client` only):
 
 Features are ported from the TypeScript CLI at
 `~/code/p/towles-tool-repos/towles-tool-slot-1` per
-[docs/MIGRATION.md](docs/MIGRATION.md). When deriving code, the commit message
-should cite the upstream source path (yaak `path/to/file` or slot-1
-`src/commands/...`).
+[docs/MIGRATION.md](docs/MIGRATION.md). Porting is selective: a TS feature is
+ported only if still wanted, and it lands on its natural surface (app screen
+or CLI command — see the no-CLI-parity convention below). When deriving code,
+the commit message should cite the upstream source path (yaak `path/to/file`
+or slot-1 `src/commands/...`).
 
 ## Conventions
 
@@ -155,6 +159,13 @@ etc.). The points below are repo-specific specializations of that doc.
 - **Frontend styling:** Tailwind + shadcn/ui only — no CSS modules, no
   hand-rolled stylesheets, no CSS-in-JS. Add components with
   `npx shadcn@latest add <name>`, don't hand-write Radix wrappers.
+- **No CLI-parity requirement.** The app is the primary product; each feature
+  picks its natural surface. App-only features don't need a `ttr` subcommand,
+  and terminal-native tools (journal, gh, doctor) don't need app screens. The
+  CLI remains the home for terminal workflows and headless entry points
+  (`mcp serve`, `collect`, `install`). Either way, the logic lands in a
+  Tauri-free `crates/` library with unit tests — the e2e harness is not the
+  primary correctness seam.
 - **Hard cutover, no back-compat shims** — replace, don't wrap. (No compat
   layers, no dual-name aliases beyond the deliberate `ttr`→`tt` rename.)
 - **Dev tooling must not hardcode ports/paths.** Chris runs multiple worktree

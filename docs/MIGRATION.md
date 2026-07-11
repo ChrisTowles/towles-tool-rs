@@ -8,6 +8,12 @@ repo). Structural patterns come from Yaak (see [ATTRIBUTION.md](../ATTRIBUTION.m
 Work the items roughly in order; each builds on the last. When deriving code,
 cite the yaak or slot-1 source path in the commit.
 
+**2026-07-11 — CLI parity dropped as a requirement.** The app is the primary
+product; remaining TS features are ported selectively (only if still wanted)
+and land on their natural surface — app screen or CLI command, no obligation
+to ship both. The `ttr` → `tt` cutover gate (item 8) is that the daily-driver
+commands work, plus Chris's explicit go-ahead — not full parity.
+
 - [x] **0 — Scaffold (milestone 0).** Cargo workspace, `tt-config` + `tt-exec`
   shared crates, `tt-cli` (`config`, `doctor`), Tauri shell, React client. *This
   repo.*
