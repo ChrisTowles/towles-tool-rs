@@ -120,6 +120,13 @@ export const SHORTCUTS = defineShortcuts([
     keys: "mod+shift+p",
     description: "Jump to previous session needing you",
   },
+  {
+    id: "ab-split-session",
+    scope: "agentboard",
+    keys: "mod+shift+s",
+    description: "Add another session as a pane in this window",
+    when: "a folder is focused",
+  },
 ]);
 
 const IS_MAC =

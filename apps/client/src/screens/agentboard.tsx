@@ -106,8 +106,10 @@ import { toast } from "sonner";
  * debounced `ab_save_windows`. Shortcuts come from the registry in
  * lib/shortcuts.tsx (⌘D new session, ⌘⇧W close session, ⌘⇧G diff pane,
  * ⌘⇧N/⌘⇧P jump to the next/previous session that needs you — `cycleNeedsYou`
- * in lib/agentboard.ts, board-wide, wraps around), active only while this
- * tab is shown.
+ * in lib/agentboard.ts, board-wide, wraps around — ⌘⇧S add another session
+ * as a pane in the active window, skipping straight to it when there's only
+ * one candidate and opening a picker otherwise), active only while this tab
+ * is shown.
  */
 /** Sentinel key in the persisted collapse map for "the whole rail is collapsed
  * to icons" — rides the same `ab_save_collapsed` store as the per-row keys
@@ -129,6 +131,10 @@ export function AgentboardScreen() {
   const [addRepoOpen, setAddRepoOpen] = useState(false);
   const [repoQuery, setRepoQuery] = useState("");
   const [candidates, setCandidates] = useState<RepoCandidate[]>([]);
+  // ab-split-session picker: only shown when the active folder has more than
+  // one session not already in the active window (a single candidate is
+  // added directly — see `splitIntoWindow`).
+  const [splitOpen, setSplitOpen] = useState(false);
   // Pending remove awaiting confirmation because it would kill live sessions.
   const [confirmRemove, setConfirmRemove] = useState<RemoveTarget | null>(null);
   // Session awaiting the "what are you working toward?" prompt before Claude
@@ -326,6 +332,39 @@ export function AgentboardScreen() {
   const activeWin =
     windowsForFolder.find((w) => w.id === (activeFolderDir && wins?.activeWindows[activeFolderDir])) ??
     windowsForFolder[0];
+
+  // The active folder's sessions not currently a pane in *any* of its
+  // windows — what ab-split-session (⌘⇧S) has to choose from. Deliberately
+  // folder-wide, not just the active window: `selectSession` (via
+  // `placePane`) never moves a pane that already has a window, it just
+  // switches focus to wherever it lives — so a session parked in another
+  // window isn't a real candidate, it'd just yank focus away from the
+  // window you're trying to add *to*.
+  const splitCandidates = useMemo(() => {
+    if (!activeFolder) return [];
+    const openIds = new Set(windowsForFolder.flatMap((w) => w.panes));
+    return activeFolder.sessions.filter((s) => !openIds.has(s.id));
+  }, [activeFolder, windowsForFolder]);
+
+  // ab-split-session: add one of the active folder's not-yet-opened sessions
+  // as a pane in its active window. One candidate adds directly (mirrors
+  // clicking it); more than one opens a picker, since a single keypress
+  // can't disambiguate.
+  function splitIntoWindow() {
+    if (!activeFolderDir) {
+      toast("Select a folder first.");
+      return;
+    }
+    if (splitCandidates.length === 0) {
+      toast("No unopened sessions in this folder to add.");
+      return;
+    }
+    if (splitCandidates.length === 1) {
+      selectSession(activeFolderDir, splitCandidates[0].id);
+      return;
+    }
+    setSplitOpen(true);
+  }
 
   // Add a pane (session or diff) to its own folder's focused window — the
   // placement rules live in the pure `placePane` reducer (lib/agentboard.ts).
@@ -591,11 +630,12 @@ export function AgentboardScreen() {
         "ab-toggle-rail": toggleRail,
         "ab-jump-next": () => jumpToNeedsYou("next"),
         "ab-jump-prev": () => jumpToNeedsYou("prev"),
+        "ab-split-session": splitIntoWindow,
       }),
-      // newSession/closeSession/openDiff/jumpToNeedsYou are stable within a
-      // render pass; the state they close over is what matters.
+      // newSession/closeSession/openDiff/jumpToNeedsYou/splitIntoWindow are
+      // stable within a render pass; the state they close over is what matters.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [activeFolderDir, selected, wins, repos, folderOf],
+      [activeFolderDir, selected, wins, repos, folderOf, splitCandidates],
     ),
     activeTab === "agentboard",
   );
@@ -1133,6 +1173,40 @@ export function AgentboardScreen() {
                   </CommandItem>
                 </CommandGroup>
               )}
+          </CommandList>
+        </Command>
+      </CommandDialog>
+
+      <CommandDialog
+        open={splitOpen}
+        onOpenChange={setSplitOpen}
+        title="Add to window"
+        description={
+          activeFolder
+            ? `Pick a session from ${activeFolder.name} to add as a pane.`
+            : "Pick a session to add as a pane."
+        }
+        className="sm:max-w-lg"
+      >
+        <Command>
+          <CommandInput autoFocus placeholder="Search sessions…" />
+          <CommandList className="max-h-[60vh]">
+            <CommandEmpty>No sessions match.</CommandEmpty>
+            <CommandGroup heading="Sessions">
+              {splitCandidates.map((s) => (
+                <CommandItem
+                  key={s.id}
+                  value={sessionLabel(s)}
+                  onSelect={() => {
+                    setSplitOpen(false);
+                    if (activeFolderDir) selectSession(activeFolderDir, s.id);
+                  }}
+                >
+                  <TerminalSquare className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="flex-1 truncate">{sessionLabel(s)}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
           </CommandList>
         </Command>
       </CommandDialog>
