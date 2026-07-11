@@ -207,9 +207,14 @@ impl Engine {
     }
 
     /// Re-read `repos.json` so changes made by the `ttr agentboard` CLI (which
-    /// writes the same file) are picked up without restarting the host.
+    /// writes the same file) are picked up without restarting the host. A
+    /// torn/corrupt read (the file exists but won't parse — most likely racing
+    /// another instance's write, #75) keeps the last known-good list rather
+    /// than degrading to empty, which would prune every folder's sessions.
     fn reload_repos(&mut self) {
-        self.repo_paths = load_repos(&self.repos_path);
+        if let Some(paths) = crate::repos::try_load_repos(&self.repos_path) {
+            self.repo_paths = paths;
+        }
     }
 
     /// One scan of every watcher with the repos.json-derived resolver
@@ -322,11 +327,19 @@ impl Engine {
         }
         let payload = self.compute_payload_for_entries(&entries, snapshot, now);
         // Drop metadata + session records for repos no longer configured.
-        let names: HashSet<String> = entries.iter().map(|e| e.name.clone()).collect();
-        let dirs: HashSet<String> = entries.iter().map(|e| e.dir.clone()).collect();
-        self.metadata.prune_sessions(&names);
-        self.sessions.prune(&dirs);
-        self.folder_meta.prune(&dirs);
+        // Skipped when the resolved entry set is empty: every configured repo
+        // vanishing in one poll is far more likely a transient glitch (torn
+        // repos.json read, worktree-list hiccup) than a real config wipe, and
+        // pruning on it deletes every folder's session records (#75). Stale
+        // records left by a genuine remove-all are pruned on the next
+        // non-empty poll.
+        if !entries.is_empty() {
+            let names: HashSet<String> = entries.iter().map(|e| e.name.clone()).collect();
+            let dirs: HashSet<String> = entries.iter().map(|e| e.dir.clone()).collect();
+            self.metadata.prune_sessions(&names);
+            self.sessions.prune(&dirs);
+            self.folder_meta.prune(&dirs);
+        }
         payload
     }
 

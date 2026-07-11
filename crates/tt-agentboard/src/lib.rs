@@ -32,6 +32,7 @@ pub mod folder_meta;
 pub mod fs_notify;
 pub mod git_info;
 pub mod metadata;
+pub mod persist;
 pub mod procenv;
 pub mod repos;
 pub mod session_order;
@@ -67,7 +68,7 @@ pub use metadata::SessionMetadataStore;
 pub use repos::{
     RepoEntry, add_repo, add_repo_persisted, default_repos_path, load_repos, load_scan_roots,
     remove_repo_by_dir, remove_repo_persisted, repo_entries, resolve_session_name, save_repos,
-    save_scan_roots,
+    save_scan_roots, try_load_repos,
 };
 pub use session_order::{ReorderDelta, SessionOrder, default_session_order_path};
 pub use sessions::{SessionRecord, SessionStore, default_sessions_path};

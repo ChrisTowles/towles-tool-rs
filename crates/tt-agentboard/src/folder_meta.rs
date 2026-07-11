@@ -115,12 +115,9 @@ impl FolderMetaStore {
                 }
             }
         }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let config = FolderMetaConfig { folders: on_disk.clone() };
         let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
-        std::fs::write(&path, format!("{json}\n"))?;
+        crate::persist::write_atomic(&path, &format!("{json}\n"))?;
         self.folders = on_disk;
         Ok(())
     }
