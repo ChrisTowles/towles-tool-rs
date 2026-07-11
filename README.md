@@ -1,7 +1,7 @@
 # Towles Tool (Rust)
 
-A Rust rewrite of the [`towles-tool`](https://github.com/ChrisTowles/towles-tool)
-CLI, paired with a [Tauri 2](https://v2.tauri.app/) desktop shell. The repository
+A Rust rewrite of [`towles-tool`](https://github.com/ChrisTowles/towles-tool):
+a [Tauri 2](https://v2.tauri.app/) desktop app paired with the `ttr` CLI. The repository
 is built from the [Yaak](https://github.com/mountain-loop/yaak) golden template —
 a Cargo workspace with Tauri-free shared crates, a `clap` CLI, and a React + Vite
 frontend. It also ships the `tt` Claude Code plugin (see below).
