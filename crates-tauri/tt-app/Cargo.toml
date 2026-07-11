@@ -29,6 +29,7 @@ dirs = { workspace = true }
 portable-pty = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sysinfo = { workspace = true }
 tokio = { workspace = true, features = ["time", "sync", "rt", "macros", "net", "io-util"] }
 
 # WebdriverIO E2E testing plugins, gated behind the `wdio` feature so they are
