@@ -105,12 +105,16 @@ function CollapsedLive({ sessions }: { sessions: SessionData[] }) {
 export function RailIconStrip({
   repos,
   activeFolderDir,
+  attentionCount,
   onSelectFolder,
   onExpand,
   expandHint,
 }: {
   repos: RepoData[];
   activeFolderDir: string | null;
+  /** Items in the rail's attention strip (failing PRs, imminent meeting) —
+   * hidden while collapsed, so the strip surfaces the count instead. */
+  attentionCount: number;
   onSelectFolder: (dir: string) => void;
   onExpand: () => void;
   /** Keyboard hint for the expand tooltip, e.g. "⌘⇧B". */
@@ -180,6 +184,24 @@ export function RailIconStrip({
           <span className={cn("size-2 rounded-full", liveColor)} />
           {liveN}
         </span>
+      )}
+      {attentionCount > 0 && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label="Expand the rail to see attention items"
+              onClick={onExpand}
+              className="mt-1 rounded-md border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-500 hover:bg-amber-500/20"
+            >
+              {attentionCount} ⚑
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            {attentionCount} attention item{attentionCount === 1 ? "" : "s"} (failing PRs,
+            imminent meeting) — expand to see
+          </TooltipContent>
+        </Tooltip>
       )}
       <div className="my-1.5 h-px w-6 shrink-0 bg-border" />
       <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto">

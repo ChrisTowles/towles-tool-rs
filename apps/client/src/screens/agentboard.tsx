@@ -537,6 +537,7 @@ export function AgentboardScreen() {
           <RailIconStrip
             repos={repos}
             activeFolderDir={activeFolderDir}
+            attentionCount={attention.length}
             onSelectFolder={selectFolder}
             onExpand={toggleRail}
             expandHint={shortcutHint("ab-toggle-rail")}
