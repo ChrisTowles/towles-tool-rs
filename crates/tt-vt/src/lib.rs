@@ -11,10 +11,12 @@
 
 pub mod engine;
 pub mod frame;
+pub mod search;
 pub mod session;
 
 pub use engine::{Engine, EngineOptions, Select, VtError};
 pub use frame::{Frame, Modes};
+pub use search::SearchMatch;
 pub use session::{Event, Input, Session, SpawnError};
 
 #[cfg(test)]
@@ -206,6 +208,71 @@ mod tests {
         assert_eq!(total, 6, "2+2 wide cells + space + x");
         let cursor_row_run = &row.runs[0];
         assert_eq!(cursor_row_run.x, 0);
+    }
+
+    #[test]
+    fn search_spans_scrollback_and_reports_absolute_rows() {
+        let mut e = engine(10, 3);
+        for i in 0..20 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        e.render().expect("render").expect("frame");
+
+        // "line1" matches line1 plus line10..line19 (substring), top to bottom.
+        let matches = e.search("line1", 100).expect("search");
+        assert_eq!(matches.len(), 11);
+        assert_eq!(matches[0], SearchMatch { row: 1, col: 0, width: 5 });
+        assert!(matches.iter().all(|m| m.col == 0 && m.width == 5));
+        assert!(matches.windows(2).all(|w| w[0].row < w[1].row), "ordered top to bottom");
+
+        // The oldest row lives in scrollback, well above the 3-row viewport.
+        assert_eq!(
+            e.search("line0", 10).expect("search"),
+            vec![SearchMatch { row: 0, col: 0, width: 5 }]
+        );
+
+        // The limit caps the result count.
+        assert_eq!(e.search("line", 4).expect("search").len(), 4);
+    }
+
+    #[test]
+    fn search_is_case_insensitive_and_column_exact_across_wide_chars() {
+        let mut e = engine(20, 4);
+        e.feed("Hello \x1b[1m日本\x1b[0m World".as_bytes());
+        e.render().expect("render").expect("frame");
+
+        assert_eq!(
+            e.search("hello", 10).expect("search"),
+            vec![SearchMatch { row: 0, col: 0, width: 5 }]
+        );
+        // "World" sits after two wide chars (4 columns) — column is grid-exact.
+        assert_eq!(
+            e.search("WORLD", 10).expect("search"),
+            vec![SearchMatch { row: 0, col: 11, width: 5 }]
+        );
+        assert!(e.search("absent", 10).expect("search").is_empty());
+        assert!(e.search("", 10).expect("search").is_empty());
+    }
+
+    #[test]
+    fn scroll_to_moves_the_viewport_and_frames_carry_viewport_top() {
+        let mut e = engine(10, 3);
+        for i in 0..40 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        let frame = e.render().expect("render").expect("frame");
+        // At the live bottom the viewport top equals the scrollback depth.
+        assert_eq!(frame.viewport_top, frame.scrollback_rows);
+        assert!(frame.viewport_top > 0);
+
+        e.scroll_to(0).expect("scroll_to top row");
+        let frame = e.render().expect("render").expect("scrolled frame");
+        assert_eq!(frame.viewport_top, 0);
+        assert_eq!(row_text(&frame, 0), "line0");
+
+        // Scrolling to an already-visible row keeps the viewport put.
+        e.scroll_to(1).expect("scroll_to visible row");
+        assert_eq!(e.viewport_top().expect("viewport_top"), 0);
     }
 
     #[test]

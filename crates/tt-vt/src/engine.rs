@@ -7,6 +7,7 @@
 use std::cell::{Cell as StdCell, RefCell};
 use std::rc::Rc;
 
+use libghostty_vt::fmt::{Formatter, FormatterOptions};
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
 use libghostty_vt::screen::{CellWide, Screen};
 use libghostty_vt::selection::{FormatOptions, SelectLineOptions, SelectWordOptions, Selection};
@@ -14,6 +15,7 @@ use libghostty_vt::style::Underline;
 use libghostty_vt::terminal::{Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal};
 
 use crate::frame::{flags, Colors, Cursor, CursorShape, Frame, Modes};
+use crate::search::{self, SearchMatch};
 
 /// A selection operation, in viewport cell coordinates.
 #[derive(Debug, Clone, Copy)]
@@ -172,6 +174,76 @@ impl Engine {
         self.force_full = true;
     }
 
+    /// Case-insensitively search the full screen (scrollback + active area)
+    /// for `query`, top to bottom, up to `limit` matches. Rows come from a
+    /// one-shot plain-text format pass (fast pre-filter); matching rows are
+    /// then re-read cell by cell so match columns are exact across wide
+    /// characters. Trailing whitespace is trimmed per row, so queries ending
+    /// in spaces may miss end-of-line hits.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchMatch>> {
+        let mut out = Vec::new();
+        let probe = query.to_lowercase();
+        if probe.is_empty() || limit == 0 {
+            return Ok(out);
+        }
+        let mut formatter =
+            Formatter::new(&self.term, FormatterOptions::new().with_unwrap(false).with_trim(true))?;
+        let bytes = formatter.format_alloc(None)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let cols = self.term.cols()?;
+        for (row, line) in text.lines().enumerate() {
+            if !line.to_lowercase().contains(&probe) {
+                continue;
+            }
+            let cells = self.row_cells(row, cols)?;
+            for (col, width) in search::match_row(&cells, query) {
+                out.push(SearchMatch { row, col, width });
+                if out.len() >= limit {
+                    return Ok(out);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// One absolute screen row's cells (char + column + width), skipping
+    /// wide-char spacers. Empty cells read as spaces, like the render path.
+    fn row_cells(&self, row: usize, cols: u16) -> Result<Vec<search::RowCell>> {
+        let mut cells = Vec::with_capacity(cols as usize);
+        for x in 0..cols {
+            let point = Point::Screen(PointCoordinate { x, y: row as u32 });
+            let cell = self.term.grid_ref(point)?.cell()?;
+            let wide = cell.wide()?;
+            if matches!(wide, CellWide::SpacerTail | CellWide::SpacerHead) {
+                continue;
+            }
+            let width: u16 = if wide == CellWide::Wide { 2 } else { 1 };
+            let ch = char::from_u32(cell.codepoint()?).filter(|c| *c != '\0').unwrap_or(' ');
+            cells.push(search::RowCell { ch, col: x, width });
+        }
+        Ok(cells)
+    }
+
+    /// Absolute row index of the viewport's top (0 = oldest scrollback row).
+    /// At the live bottom this equals the scrollback depth.
+    pub fn viewport_top(&self) -> Result<usize> {
+        Ok(self.term.scrollbar()?.offset as usize)
+    }
+
+    /// Scroll the viewport so absolute `row` is visible, about a third down
+    /// from the top. No-op when the viewport is already there.
+    pub fn scroll_to(&mut self, row: usize) -> Result<()> {
+        let sb = self.term.scrollbar()?;
+        let max_top = sb.total.saturating_sub(sb.len);
+        let target = (row as u64).saturating_sub(sb.len / 3).min(max_top);
+        let delta =
+            i64::try_from(target).unwrap_or(i64::MAX) - i64::try_from(sb.offset).unwrap_or(0);
+        if delta != 0 {
+            self.term.scroll_viewport(ScrollViewport::Delta(delta as isize));
+        }
+        Ok(())
+    }
+
     /// Plain text of the active selection, if any.
     pub fn copy_selection(&mut self) -> Result<Option<String>> {
         let bytes = self.term.format_selection_alloc(None, FormatOptions::new())?;
@@ -318,6 +390,7 @@ impl Engine {
             },
             title,
             scrollback_rows: self.term.scrollback_rows()?,
+            viewport_top: self.viewport_top()?,
         }))
     }
 }

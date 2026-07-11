@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronUp, X } from "lucide-react";
 import {
   BOLD,
   FAINT,
@@ -12,12 +13,25 @@ import {
   encodePaste,
   isWideRun,
   rgb,
+  stepMatch,
+  viewportMatches,
   type Cursor,
   type Frame,
   type Run,
+  type SearchMatch,
 } from "@/lib/term-protocol";
 import { linkAt, type TermLink } from "@/lib/term-links";
+import { matchesShortcut } from "@/lib/shortcuts";
 import { openExternalUrl } from "@/lib/open-url";
+import { Input } from "@/components/ui/input";
+import { IconBtn } from "@/components/agentboard-bits";
+
+/** Scrollback-search highlight fills — alpha washes over the cell backgrounds
+ * so they read on both light and dark terminal themes. The current match gets
+ * the stronger orange + an outline; other matches a lighter amber. */
+const MATCH_FILL = "rgba(250, 204, 21, 0.3)";
+const CURRENT_MATCH_FILL = "rgba(249, 115, 22, 0.5)";
+const CURRENT_MATCH_STROKE = "rgba(249, 115, 22, 0.9)";
 
 const FONT_SIZE = 13;
 const FONT_FAMILY = "ui-monospace, 'JetBrains Mono', 'Fira Code', monospace";
@@ -56,6 +70,69 @@ export function TerminalView({
   const onTitleRef = useRef(onTitle);
   onTitleRef.current = onTitle;
 
+  // Scrollback search. The canvas paints from `searchRef` (mutable, read by
+  // the render closure inside the effect); React state mirrors what the
+  // overlay UI shows. `bridgeRef` exposes the effect's IPC + paint internals
+  // to the overlay handlers once the Tauri side is up.
+  const searchRef = useRef<{ matches: SearchMatch[]; current: number }>({
+    matches: [],
+    current: -1,
+  });
+  const bridgeRef = useRef<{
+    search: (query: string) => Promise<SearchMatch[]>;
+    scrollTo: (row: number) => void;
+    repaint: () => void;
+    focusTerm: () => void;
+  } | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [matchCount, setMatchCount] = useState(0);
+  const [currentMatch, setCurrentMatch] = useState(-1);
+
+  const runSearch = useCallback(async (q: string) => {
+    const bridge = bridgeRef.current;
+    if (!bridge) return;
+    const matches = q ? await bridge.search(q).catch(() => [] as SearchMatch[]) : [];
+    const current = matches.length - 1; // start at the most recent match
+    searchRef.current = { matches, current };
+    setMatchCount(matches.length);
+    setCurrentMatch(current);
+    if (current >= 0) bridge.scrollTo(matches[current].row);
+    bridge.repaint();
+  }, []);
+
+  const step = useCallback((dir: 1 | -1) => {
+    const sr = searchRef.current;
+    const next = stepMatch(sr.matches.length, sr.current, dir);
+    if (next < 0) return;
+    sr.current = next;
+    setCurrentMatch(next);
+    bridgeRef.current?.scrollTo(sr.matches[next].row);
+    bridgeRef.current?.repaint();
+  }, []);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setQuery("");
+    setMatchCount(0);
+    setCurrentMatch(-1);
+    searchRef.current = { matches: [], current: -1 };
+    bridgeRef.current?.repaint();
+    bridgeRef.current?.focusTerm();
+  }, []);
+
+  // Focus the overlay input when it opens; re-run the search as the query
+  // changes (debounced — each keystroke otherwise round-trips the engine).
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
+  useEffect(() => {
+    if (!searchOpen) return;
+    const t = setTimeout(() => void runSearch(query), 150);
+    return () => clearTimeout(t);
+  }, [searchOpen, query, runSearch]);
+
   useEffect(() => {
     const host = hostRef.current;
     const canvas = canvasRef.current;
@@ -87,6 +164,9 @@ export function TerminalView({
       scrolledBack: false,
       /** URL under the mouse — underlined and Ctrl/Cmd-clickable. */
       hoveredLink: null as TermLink | null,
+      /** Absolute row of the viewport top (from frames) — maps absolute
+       * search-match rows onto viewport rows for highlighting. */
+      viewportTop: 0,
     };
 
     const setFont = (flags: number) => {
@@ -151,6 +231,22 @@ export function TerminalView({
         ctx.fillStyle = theme.fg;
         ctx.fillRect(sel[0] * cellW, y * cellH, (sel[1] - sel[0] + 1) * cellW, cellH);
         ctx.globalAlpha = 1;
+      }
+      // Search-match highlights: alpha washes over the drawn text, the
+      // current match outlined so it stands apart from the rest.
+      const sr = searchRef.current;
+      if (sr.matches.length) {
+        for (const m of viewportMatches(sr.matches, grid.viewportTop, grid.rows)) {
+          if (m.y !== y) continue;
+          const isCurrent = m.index === sr.current;
+          ctx.fillStyle = isCurrent ? CURRENT_MATCH_FILL : MATCH_FILL;
+          ctx.fillRect(m.col * cellW, y * cellH, m.width * cellW, cellH);
+          if (isCurrent) {
+            ctx.strokeStyle = CURRENT_MATCH_STROKE;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(m.col * cellW + 0.5, y * cellH + 0.5, m.width * cellW - 1, cellH - 1);
+          }
+        }
       }
     };
 
@@ -241,6 +337,11 @@ export function TerminalView({
       }
       grid.cursor = frame.cursor;
       grid.modes = frame.modes;
+      grid.viewportTop = frame.viewportTop;
+      // The engine knows where the viewport really is (search navigation
+      // scrolls it too, not just the wheel) — derive "scrolled back" from
+      // the frame instead of trusting the wheel handler's optimistic flag.
+      grid.scrolledBack = frame.viewportTop < frame.scrollbackRows;
       if (frame.title !== undefined) onTitleRef.current?.(termId, frame.title);
 
       if (frame.full || resized) {
@@ -320,6 +421,13 @@ export function TerminalView({
 
       const onKeyDown = (e: KeyboardEvent) => {
         if (e.isComposing) return;
+        // The search chord is ours, not the shell's (Ctrl+F stays with the
+        // shell) — checked before encodeKey turns it into a control byte.
+        if (matchesShortcut("term-search", e)) {
+          e.preventDefault();
+          setSearchOpen(true);
+          return;
+        }
         if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "c")) {
           e.preventDefault();
           void invoke<string>("term_copy", { termId })
@@ -364,6 +472,14 @@ export function TerminalView({
         }
       };
       const focusInput = () => input.focus({ preventScroll: true });
+
+      // Hand the overlay its IPC + paint hooks now that the shell is up.
+      bridgeRef.current = {
+        search: (q) => invoke<SearchMatch[]>("term_search", { termId, query: q }),
+        scrollTo: (row) => void invoke("term_scroll_to", { termId, row }).catch(() => {}),
+        repaint: paintAll,
+        focusTerm: focusInput,
+      };
 
       // Mouse selection: drag = range, double-click = word, triple = line,
       // plain click = clear. Coordinates are viewport cells; the engine owns
@@ -488,6 +604,8 @@ export function TerminalView({
 
     return () => {
       disposed = true;
+      bridgeRef.current = null;
+      searchRef.current = { matches: [], current: -1 };
       observer.disconnect();
       for (const dispose of disposers) dispose();
       for (const unlisten of unlisteners) unlisten();
@@ -503,6 +621,42 @@ export function TerminalView({
   return (
     <div ref={hostRef} className="relative size-full overflow-hidden bg-background p-1">
       <canvas ref={canvasRef} className="block" />
+      {/* Scrollback search overlay (Ctrl/⌘+Shift+F). Enter/Shift+Enter step
+          through matches; Escape returns focus to the terminal. */}
+      {searchOpen && (
+        <div className="absolute right-1 top-1 z-10 flex items-center gap-1 rounded-md border bg-card p-1 shadow-md">
+          <Input
+            ref={searchInputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                step(e.shiftKey ? -1 : 1);
+              } else if (e.key === "Escape" || matchesShortcut("term-search", e.nativeEvent)) {
+                e.preventDefault();
+                closeSearch();
+              }
+            }}
+            placeholder="Search scrollback"
+            className="h-6 w-44 px-2 text-xs md:text-xs"
+            spellCheck={false}
+            aria-label="search scrollback"
+          />
+          <span className="min-w-10 text-center font-mono text-[10px] tabular-nums text-muted-foreground">
+            {matchCount > 0 ? `${currentMatch + 1}/${matchCount}` : "0/0"}
+          </span>
+          <IconBtn title="Previous match (Shift+Enter)" onClick={() => step(-1)}>
+            <ChevronUp className="size-3" />
+          </IconBtn>
+          <IconBtn title="Next match (Enter)" onClick={() => step(1)}>
+            <ChevronDown className="size-3" />
+          </IconBtn>
+          <IconBtn title="Close search (Esc)" onClick={closeSearch}>
+            <X className="size-3" />
+          </IconBtn>
+        </div>
+      )}
       {/* Hidden input: receives focus/keystrokes/IME composition/paste. */}
       <textarea
         ref={inputRef}

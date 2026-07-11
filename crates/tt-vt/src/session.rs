@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use crate::engine::{Engine, EngineOptions, Select, VtError};
 use crate::frame::Frame;
+use crate::search::SearchMatch;
 
 /// Minimum time between render passes (~90 fps). Caps how fast frames can be
 /// produced so the UI side can never fall behind unboundedly.
@@ -40,6 +41,15 @@ pub enum Input {
     Select(Select),
     /// Reply with the active selection's plain text on the provided channel.
     Copy(mpsc::SyncSender<Option<String>>),
+    /// Case-insensitive scrollback search; matches (up to `limit`) are sent
+    /// back on the provided channel, top to bottom.
+    Search {
+        query: String,
+        limit: usize,
+        reply: mpsc::SyncSender<Vec<SearchMatch>>,
+    },
+    /// Scroll the viewport so the given absolute row is visible.
+    ScrollTo(usize),
     /// Force the next render to be a full frame (re-shown pane needs a
     /// complete repaint; see [`Engine::request_full`]).
     RequestFull,
@@ -108,6 +118,12 @@ impl Session {
                     }
                     Input::Copy(reply) => {
                         let _ = reply.try_send(engine.copy_selection().ok().flatten());
+                    }
+                    Input::Search { query, limit, reply } => {
+                        let _ = reply.try_send(engine.search(&query, limit).unwrap_or_default());
+                    }
+                    Input::ScrollTo(row) => {
+                        let _ = engine.scroll_to(row);
                     }
                     Input::RequestFull => engine.request_full(),
                 };

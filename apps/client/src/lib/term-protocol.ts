@@ -48,6 +48,40 @@ export interface Frame {
   modes: Modes;
   title?: string;
   scrollbackRows: number;
+  /** Absolute row index of the viewport's top (0 = oldest scrollback row);
+   * equals `scrollbackRows` at the live bottom. */
+  viewportTop: number;
+}
+
+/** One scrollback search hit (mirrors tt-vt's `SearchMatch`): absolute row
+ * (0 = oldest scrollback row), starting column, width in columns. */
+export interface SearchMatch {
+  row: number;
+  col: number;
+  width: number;
+}
+
+/** The matches visible in the current viewport, mapped to viewport rows.
+ * `index` is the match's position in the full list (to mark the current
+ * match distinctly). */
+export function viewportMatches(
+  matches: SearchMatch[],
+  viewportTop: number,
+  rows: number,
+): { y: number; col: number; width: number; index: number }[] {
+  const out: { y: number; col: number; width: number; index: number }[] = [];
+  for (let index = 0; index < matches.length; index++) {
+    const m = matches[index];
+    const y = m.row - viewportTop;
+    if (y >= 0 && y < rows) out.push({ y, col: m.col, width: m.width, index });
+  }
+  return out;
+}
+
+/** Step a match index by ±1 with wrap-around; -1 when there are no matches. */
+export function stepMatch(count: number, current: number, dir: 1 | -1): number {
+  if (count <= 0) return -1;
+  return (((current + dir) % count) + count) % count;
 }
 
 // Run style flag bits (crates/tt-vt/src/frame.rs `flags` module).
