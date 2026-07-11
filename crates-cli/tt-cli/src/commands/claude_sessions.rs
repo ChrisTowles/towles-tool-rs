@@ -1,4 +1,5 @@
-//! `ttr graph`: token-accounting treemap over Claude Code session JSONL files.
+//! `ttr claude-sessions`: Claude Code session summary across every repo, built
+//! from token-accounting over session JSONL files.
 //!
 //! Ports `src/commands/graph/index.ts`. All pure logic (parsing, analysis,
 //! treemap/bar-chart building, JSON/CSV/HTML rendering) lives in the Tauri-free
@@ -6,13 +7,13 @@
 //! opens the generated report in a browser.
 //!
 //! Deviations from the TS CLI (see docs/MIGRATION.md):
-//! - The local HTTP server (`--serve`/`--port`, `server.ts`) is dropped. Graph
-//!   only writes an HTML file and opens it in a browser.
+//! - The local HTTP server (`--serve`/`--port`, `server.ts`) is dropped. This
+//!   command only writes an HTML file and opens it in a browser.
 //! - Auto-open is skipped when stdout is not a TTY (so tests/CI never launch a
 //!   browser), in addition to the explicit `--no-open` flag.
 //! - The per-command `--debug` flag is replaced by the global `-v/--verbose` flag.
 
-use crate::cli::GraphArgs;
+use crate::cli::ClaudeSessionsArgs;
 use crate::ui;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -25,7 +26,7 @@ use tt_graph::{
 /// Max sessions scanned for the all-sessions view (matches the TS `500`).
 const SESSION_LIMIT: usize = 500;
 
-pub fn run(args: GraphArgs) -> i32 {
+pub fn run(args: ClaudeSessionsArgs) -> i32 {
     let Some(format) = OutputFormat::parse(&args.format) else {
         ui::error(&format!("Invalid format \"{}\". Use: html, json, csv", args.format));
         return 1;
@@ -109,7 +110,7 @@ fn run_rows(
 /// HTML path: build the treemap, write it under `~/.claude/reports`, and open it.
 fn run_html(
     projects_dir: &Path,
-    args: &GraphArgs,
+    args: &ClaudeSessionsArgs,
     days: f64,
     now_ms: i64,
     now: &chrono::DateTime<chrono::Local>,

@@ -10,7 +10,7 @@ Rust:
 
 ```sh
 cargo run -p tt-cli -- <args>       # run the CLI (binary is `ttr`, not `tt`)
-cargo run -p tt-cli -- doctor       # e.g. doctor, config, journal, gh, install, graph
+cargo run -p tt-cli -- doctor       # e.g. doctor, config, journal, gh, install, claude-sessions
 cargo fmt --check                   # formatting (rustfmt, 100-col)
 cargo clippy --all -- -D warnings   # lint; warnings are errors
 cargo test --all                    # unit + assert_cmd black-box tests
@@ -88,7 +88,7 @@ Cargo workspace + npm workspace (`apps/client` only):
   `config show|validate|schema|reset`, `doctor [--json --track --diff]`,
   `journal daily-notes|note|meeting|list|search` (+ `today` alias),
   `gh pr|branch|branch-clean` (+ `pr` alias), `install [-o]`,
-  `graph [-s --days -f html|json|csv --open/--no-open]`,
+  `claude-sessions [-s --days -f html|json|csv --open/--no-open]`,
   `collect calendar|issues|prs|all`, `mcp serve`.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
   `npm run dev` (root) picks a free dev-server port automatically

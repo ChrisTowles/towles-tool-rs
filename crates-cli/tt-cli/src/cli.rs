@@ -57,8 +57,9 @@ pub enum Commands {
         no_open: bool,
     },
 
-    /// Generate an interactive HTML treemap from session token data
-    Graph(GraphArgs),
+    /// Claude Code session summary across every repo: token accounting, an
+    /// HTML treemap, or JSON/CSV export
+    ClaudeSessions(ClaudeSessionsArgs),
 
     /// GitHub utilities
     Gh(GhArgs),
@@ -188,7 +189,7 @@ pub enum ReposCommands {
 }
 
 #[derive(Args)]
-pub struct GraphArgs {
+pub struct ClaudeSessionsArgs {
     /// Session ID to analyze (shows all sessions if not provided)
     #[arg(long, short = 's')]
     pub session: Option<String>,

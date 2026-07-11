@@ -10,7 +10,7 @@ During the migration the Rust binary is named **`ttr`**. Once it reaches feature
 parity with the TypeScript CLI, it takes over the `tt` name in a hard cutover.
 
 > **Status:** in progress. The scaffold plus config, doctor, journal, GitHub
-> helpers, install, graph, the data-hub store/collectors, the MCP server, and
+> helpers, install, claude-sessions, the data-hub store/collectors, the MCP server, and
 > the Agentboard app screens are ported. Features land one at a time — see
 > [docs/MIGRATION.md](docs/MIGRATION.md).
 
@@ -70,7 +70,7 @@ The CLI binary is `ttr`. Run any command with `--help` for its flags.
 - `journal daily-notes|note|meeting|list|search` — filesystem notes with date-token path templates (`today` is an alias for `daily-notes`).
 - `gh pr|branch|branch-clean` — open a PR from the current branch, create a branch from a GitHub issue, or delete merged branches (`pr` is an alias for `gh pr`).
 - `install [-o/--observability]` — apply recommended Claude Code settings and ensure required plugins.
-- `graph [-s/--session] [--days N] [-f html|json|csv] [--open/--no-open]` — token-usage treemap from session data; HTML report to `~/.claude/reports`, or JSON/CSV to stdout.
+- `claude-sessions [-s/--session] [--days N] [-f html|json|csv] [--open/--no-open]` — Claude Code session summary across every repo; HTML treemap report to `~/.claude/reports`, or JSON/CSV to stdout.
 - `agentboard repos|sessions` — manage the watched-repo list and per-folder PTY sessions the app and collectors read.
 - `collect calendar|issues|prs|all` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`.
 - `mcp serve` — stdio MCP server exposing the store, live agent sessions, and `journal_append` (register with `claude mcp add tt -- ttr mcp serve`).

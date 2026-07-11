@@ -10,7 +10,7 @@ happens with Chris's explicit go-ahead**.
 - The TS CLI owns `tt` (bun-linked from the live towles-tool checkout) and is
   the daily driver.
 - The Rust CLI ships as `ttr` from this repo; all TS commands are ported
-  (config, doctor+history, journal, gh/pr, install, graph, agentboard repos).
+  (config, doctor+history, journal, gh/pr, install, claude-sessions, agentboard repos).
 - The desktop app is the agentboard now — the tmux sidebar was **removed**
   (2026-07-04); `ttr agentboard` is just the `repos` watch-list the app reads.
 - The Claude plugin ships from the live repo (option (a),
@@ -38,7 +38,7 @@ Local-first (it's a personal tool):
       (the tmux sidebar has been removed — confirm the desktop app fully covers
       the workflow before the rename).
 - [ ] `ttr doctor --json`, `ttr journal list`, `ttr gh branch-clean --dry-run`,
-      `ttr graph -f csv` still parity-match their `tt` counterparts on real
+      `ttr claude-sessions -f csv` still parity-match their `tt` counterparts on real
       data (re-run the checks; they were byte-identical at port time).
 - [ ] Plugin distribution decision executed (move marketplace here or keep
       shipping from the live repo indefinitely — see PLUGIN-DISTRIBUTION.md).

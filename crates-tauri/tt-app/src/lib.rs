@@ -5,8 +5,8 @@
 //! kills on window close, rendered by xterm.js in the agentboard screen.
 
 mod agentboard;
+mod claude_sessions;
 mod doctor;
-mod graph;
 mod journal;
 mod scheduler;
 mod settings;
@@ -251,7 +251,8 @@ pub fn run() {
             journal::journal_search,
             journal::journal_create,
             journal::journal_open,
-            graph::graph_spend_summary,
+            claude_sessions::claude_sessions_summary,
+            claude_sessions::claude_sessions_list,
             doctor::doctor_run,
             settings::settings_get,
             settings::settings_set,

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as echarts from "echarts";
-import { RefreshCw } from "lucide-react";
+import { History, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -9,7 +9,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { graphSpendSummary, type SpendSummary } from "@/lib/graph";
+import { Panel, Empty } from "@/components/store-bits";
+import { fmtAge } from "@/lib/data";
+import {
+  claudeSessionsList,
+  claudeSessionsSummary,
+  type ClaudeSession,
+  type SpendSummary,
+} from "@/lib/claude-sessions";
 
 const DAY_OPTIONS = [
   { label: "Last 7 days", value: "7" },
@@ -20,6 +27,9 @@ const DAY_OPTIONS = [
 
 /** Cap the project ranking so one sprawling history doesn't dwarf the chart. */
 const MAX_PROJECT_BARS = 12;
+
+/** Cap the recent-sessions list so one sprawling history doesn't dwarf the panel. */
+const MAX_SESSIONS_SHOWN = 20;
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -128,15 +138,45 @@ function SpendBarChart({ bars }: { bars: { label: string; totalTokens: number }[
   return <div ref={ref} style={{ height: Math.max(120, bars.length * 36) }} />;
 }
 
-/** Graph — where tokens have gone, by project and by model, over a selectable window. */
-export function GraphScreen() {
+function SessionRow({ session, now }: { session: ClaudeSession; now: number }) {
+  return (
+    <div className="flex items-center gap-3 px-3 py-2.5 text-sm">
+      <div className="min-w-0 flex-1">
+        <div className="truncate">{session.title ?? "Untitled session"}</div>
+        <div className="truncate font-mono text-xs text-muted-foreground">
+          {session.project} · {fmtAge(session.mtime, now)}
+        </div>
+      </div>
+      <span className="shrink-0 font-mono text-xs text-muted-foreground">
+        {formatTokens(session.tokens)}
+      </span>
+    </div>
+  );
+}
+
+/** Claude Sessions — Claude Code session history across every repo: where tokens
+ * have gone (by project and by model), and what you've actually been working on,
+ * over a selectable window. */
+export function ClaudeSessionsScreen() {
   const [days, setDays] = useState("7");
   const [summary, setSummary] = useState<SpendSummary | null>(null);
+  const [sessions, setSessions] = useState<ClaudeSession[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   async function refresh(d: string) {
     setLoading(true);
-    setSummary(await graphSpendSummary(Number(d)));
+    const [nextSummary, nextSessions] = await Promise.all([
+      claudeSessionsSummary(Number(d)),
+      claudeSessionsList(Number(d)),
+    ]);
+    setSummary(nextSummary);
+    setSessions(nextSessions);
     setLoading(false);
   }
 
@@ -148,11 +188,13 @@ export function GraphScreen() {
   const byProject = summary?.byProject.slice(0, MAX_PROJECT_BARS) ?? [];
   const truncatedProjects = (summary?.byProject.length ?? 0) - byProject.length;
   const byModel = summary?.byModel ?? [];
+  const shownSessions = sessions?.slice(0, MAX_SESSIONS_SHOWN) ?? [];
+  const truncatedSessions = (sessions?.length ?? 0) - shownSessions.length;
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="font-heading text-lg font-semibold">Graph</h2>
+        <h2 className="font-heading text-lg font-semibold">Claude Sessions</h2>
         <div className="flex items-center gap-2">
           <Select value={days} onValueChange={setDays}>
             <SelectTrigger className="w-36">
@@ -176,20 +218,39 @@ export function GraphScreen() {
       {loading && !summary ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : summary ? (
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-lg border border-border bg-card p-3.5">
-            <h3 className="mb-3 text-sm font-medium text-foreground">Tokens by project</h3>
-            <SpendBarChart bars={byProject.map((b) => ({ label: b.project, ...b }))} />
-            {truncatedProjects > 0 && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                +{truncatedProjects} more project{truncatedProjects === 1 ? "" : "s"} not shown
+        <div className="flex flex-col gap-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="rounded-lg border border-border bg-card p-3.5">
+              <h3 className="mb-3 text-sm font-medium text-foreground">Tokens by project</h3>
+              <SpendBarChart bars={byProject.map((b) => ({ label: b.project, ...b }))} />
+              {truncatedProjects > 0 && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  +{truncatedProjects} more project{truncatedProjects === 1 ? "" : "s"} not shown
+                </p>
+              )}
+            </div>
+            <div className="rounded-lg border border-border bg-card p-3.5">
+              <h3 className="mb-3 text-sm font-medium text-foreground">Tokens by model</h3>
+              <SpendBarChart bars={byModel.map((b) => ({ label: b.model, ...b }))} />
+            </div>
+          </div>
+
+          <Panel
+            title="Recent sessions"
+            note={sessions ? `${sessions.length}` : undefined}
+            icon={<History className="size-4 text-muted-foreground" />}
+          >
+            {shownSessions.length === 0 ? (
+              <Empty>No sessions in this range.</Empty>
+            ) : (
+              shownSessions.map((s) => <SessionRow key={s.sessionId} session={s} now={now} />)
+            )}
+            {truncatedSessions > 0 && (
+              <p className="px-3 py-2 text-xs text-muted-foreground">
+                +{truncatedSessions} more session{truncatedSessions === 1 ? "" : "s"} not shown
               </p>
             )}
-          </div>
-          <div className="rounded-lg border border-border bg-card p-3.5">
-            <h3 className="mb-3 text-sm font-medium text-foreground">Tokens by model</h3>
-            <SpendBarChart bars={byModel.map((b) => ({ label: b.model, ...b }))} />
-          </div>
+          </Panel>
         </div>
       ) : (
         <p className="text-sm text-muted-foreground">Not available outside the app.</p>

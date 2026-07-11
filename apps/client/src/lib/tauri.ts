@@ -40,7 +40,7 @@ export async function invokeOrThrow<T>(
 /**
  * Read-style command wrapper for optional data: `null` in browser dev (silently)
  * or on failure (after surfacing the error as a toast). Shared by the journal
- * and graph bridges, which return real payloads or nothing.
+ * and claude-sessions bridges, which return real payloads or nothing.
  */
 export async function invokeToast<T>(
   cmd: string,
