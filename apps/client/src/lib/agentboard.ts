@@ -244,6 +244,36 @@ export function sessionCatchesEye(s: SessionData): boolean {
   return sessionNeeds(s) || s.unseen;
 }
 
+/** The next (or previous) session that catches the eye (`sessionCatchesEye`),
+ * board-wide, in the same repo → folder → session order the rail renders.
+ * `fromSessionId` anchors the cycle — the result is the nearest match after
+ * (or before) it in that order, wrapping around; `null` (nothing selected, or
+ * the id isn't found) starts from the very beginning/end. Returns `null` when
+ * nothing currently catches the eye. */
+export function cycleNeedsYou(
+  repos: RepoData[],
+  fromSessionId: string | null,
+  direction: "next" | "prev",
+): SessionData | null {
+  const all: SessionData[] = [];
+  for (const r of repos) for (const f of r.folders) for (const s of f.sessions) all.push(s);
+
+  const targetIndexes = all
+    .map((s, i) => (sessionCatchesEye(s) ? i : -1))
+    .filter((i) => i !== -1);
+  if (targetIndexes.length === 0) return null;
+
+  const fromIndex = fromSessionId ? all.findIndex((s) => s.id === fromSessionId) : -1;
+
+  const chosen =
+    direction === "next"
+      ? (targetIndexes.find((i) => i > fromIndex) ?? targetIndexes[0])
+      : ([...targetIndexes].reverse().find((i) => i < fromIndex) ??
+        targetIndexes[targetIndexes.length - 1]);
+
+  return all[chosen];
+}
+
 /** A folder's currently-running (PTY-live) sessions. */
 export function liveSessions(folder: FolderData): SessionData[] {
   return folder.sessions.filter((s) => s.live);

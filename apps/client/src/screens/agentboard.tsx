@@ -44,6 +44,7 @@ import {
   abInvoke,
   claudeCommand,
   claudeTitleName,
+  cycleNeedsYou,
   diffPaneDir,
   diffPaneId,
   dropPane,
@@ -96,8 +97,10 @@ import { toast } from "sonner";
  * regrouping. A folder's diff opens as a pane in the same tiling (never a
  * modal), so you review while the agents keep working. Layout persists via
  * debounced `ab_save_windows`. Shortcuts come from the registry in
- * lib/shortcuts.tsx (⌘D new session, ⌘⇧W close session, ⌘⇧G diff pane),
- * active only while this tab is shown.
+ * lib/shortcuts.tsx (⌘D new session, ⌘⇧W close session, ⌘⇧G diff pane,
+ * ⌘⇧N/⌘⇧P jump to the next/previous session that needs you — `cycleNeedsYou`
+ * in lib/agentboard.ts, board-wide, wraps around), active only while this
+ * tab is shown.
  */
 /** Sentinel key in the persisted collapse map for "the whole rail is collapsed
  * to icons" — rides the same `ab_save_collapsed` store as the per-row keys
@@ -320,6 +323,20 @@ export function AgentboardScreen() {
     if (name) void abInvoke("ab_mark_seen", { name });
   }
 
+  // ab-jump-next/ab-jump-prev (see lib/shortcuts.tsx): board-wide, wraps
+  // around, reuses `selectSession` — the same "mount + focus + ack" path a
+  // rail click uses — so a jump behaves exactly like clicking the session.
+  function jumpToNeedsYou(direction: "next" | "prev") {
+    const target = cycleNeedsYou(repos, selected?.sessionId ?? null, direction);
+    if (!target) {
+      toast("Nothing needs you right now.");
+      return;
+    }
+    const folderDir = folderOf.get(target.id)?.dir;
+    if (!folderDir) return;
+    selectSession(folderDir, target.id);
+  }
+
   async function newSession(folderDir: string, launchClaude = false) {
     const rec = await abInvoke<SessionData>("ab_add_session", { dir: folderDir, name: null });
     if (!rec) return;
@@ -511,11 +528,13 @@ export function AgentboardScreen() {
           if (activeFolderDir) openDiff(activeFolderDir);
         },
         "ab-toggle-rail": toggleRail,
+        "ab-jump-next": () => jumpToNeedsYou("next"),
+        "ab-jump-prev": () => jumpToNeedsYou("prev"),
       }),
-      // newSession/closeSession/openDiff are stable within a render pass; the
-      // state they close over is what matters.
+      // newSession/closeSession/openDiff/jumpToNeedsYou are stable within a
+      // render pass; the state they close over is what matters.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [activeFolderDir, selected, wins],
+      [activeFolderDir, selected, wins, repos, folderOf],
     ),
     activeTab === "agentboard",
   );
