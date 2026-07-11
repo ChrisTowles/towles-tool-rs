@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarClock,
+  Eye,
+  EyeOff,
   FolderGit2,
   FolderPlus,
   GitPullRequest,
@@ -151,6 +153,16 @@ export function AgentboardScreen() {
   const railCollapsed = !!collapsed[RAIL_COLLAPSE_KEY];
   const toggleRail = () => toggleCollapsed(RAIL_COLLAPSE_KEY);
 
+  // "Hide inactive" rail filter: drop folders with no live session (and any
+  // repo left with none), so a big rail can shrink to just what's actually
+  // running. A view filter, not a rail-structure change — local state only,
+  // unlike `collapsed` it doesn't need to survive a reload. Lookups used for
+  // panes/sessions (folderOf, sessionById, etc. below) stay on the full
+  // `repos` list; only the two render surfaces (RepoGroup list, RailIconStrip)
+  // read `visibleRepos`, since a pane already open for a now-hidden folder
+  // must keep working.
+  const [hideInactive, setHideInactive] = useState(false);
+
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renamingWin, setRenamingWin] = useState<string | null>(null);
   // Live PTY window titles keyed by session id (Claude emits `✳ <title>`);
@@ -164,6 +176,23 @@ export function AgentboardScreen() {
     claudeTitleName(titles[s.id]) ?? sessionLabel(s);
 
   const repos = state.repos;
+
+  // Repos/folders the rail actually renders: every folder when the "hide
+  // inactive" filter is off, else only folders with a live session (a repo
+  // with none left drops out entirely). The active folder always stays
+  // visible even if it just went idle, so switching away from what you're
+  // looking at never happens as a side effect of the filter.
+  const visibleRepos = useMemo(() => {
+    if (!hideInactive) return repos;
+    return repos
+      .map((r) => ({
+        ...r,
+        folders: r.folders.filter(
+          (f) => liveSessions(f).length > 0 || f.dir === activeFolderDir,
+        ),
+      }))
+      .filter((r) => r.folders.length > 0);
+  }, [repos, hideInactive, activeFolderDir]);
 
   // Index every session by id → its folder / its data, for cwd + pane chrome.
   const folderOf = useMemo(() => {
@@ -535,7 +564,7 @@ export function AgentboardScreen() {
             panel + handle just unmount; the main panel keeps its identity. */}
         {railCollapsed && (
           <RailIconStrip
-            repos={repos}
+            repos={visibleRepos}
             activeFolderDir={activeFolderDir}
             attentionCount={attention.length}
             onSelectFolder={selectFolder}
@@ -562,6 +591,29 @@ export function AgentboardScreen() {
                         title="Toggle which repos show up on the rail"
                       >
                         <FolderPlus className="size-3.5" /> Manage repos
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHideInactive((v) => !v)}
+                        aria-label={hideInactive ? "Show all repos" : "Hide inactive repos"}
+                        aria-pressed={hideInactive}
+                        className={cn(
+                          "rounded-md p-1 hover:bg-accent/50",
+                          hideInactive
+                            ? "text-violet-500 hover:text-violet-400"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                        title={
+                          hideInactive
+                            ? "Showing only repos with a live session — click to show all"
+                            : "Hide repos with no live session"
+                        }
+                      >
+                        {hideInactive ? (
+                          <EyeOff className="size-3.5" />
+                        ) : (
+                          <Eye className="size-3.5" />
+                        )}
                       </button>
                       <button
                         type="button"
@@ -624,7 +676,22 @@ export function AgentboardScreen() {
                           </Button>
                         </div>
                       )}
-                      {repos.map((repo) => (
+                      {repos.length > 0 && visibleRepos.length === 0 && (
+                        <div className="flex flex-col items-center gap-3 px-3 py-10 text-center">
+                          <EyeOff className="size-8 text-muted-foreground" />
+                          <p className="text-sm text-muted-foreground">
+                            No active work right now.
+                          </p>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setHideInactive(false)}
+                          >
+                            <Eye className="size-3.5" /> Show all repos
+                          </Button>
+                        </div>
+                      )}
+                      {visibleRepos.map((repo) => (
                         <RepoGroup
                           key={repo.key}
                           repo={repo}
