@@ -78,7 +78,7 @@ function defineShortcuts(
 export const SHORTCUTS = defineShortcuts([
   { id: "palette", scope: "global", keys: "mod+k", description: "Command palette" },
   { id: "settings", scope: "global", keys: "mod+,", description: "Settings" },
-  { id: "sidebar", scope: "global", keys: "mod+b", description: "Toggle sidebar" },
+  { id: "sidebar", scope: "global", keys: "mod+b", description: "Collapse sidebar to icons" },
   { id: "quicklog", scope: "global", keys: "mod+j", description: "Quick journal log" },
   { id: "help", scope: "global", keys: "?", description: "Keyboard shortcuts (this overlay)" },
   {
@@ -101,6 +101,12 @@ export const SHORTCUTS = defineShortcuts([
     keys: "mod+shift+g",
     description: "Open the focused folder's diff pane",
     when: "a folder is focused",
+  },
+  {
+    id: "ab-toggle-rail",
+    scope: "agentboard",
+    keys: "mod+shift+b",
+    description: "Collapse the folder rail to icons (and back)",
   },
 ]);
 

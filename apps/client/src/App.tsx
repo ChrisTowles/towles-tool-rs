@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { AppHeader } from "@/components/app-header";
-import { AppSidebar } from "@/components/app-sidebar";
+import { AppSidebar, AppSidebarIcons } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
 import { DayBar } from "@/components/day-bar";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -43,53 +43,64 @@ function Shortcuts() {
 }
 
 function Workspace() {
-  const { visited, activeTab, sidebarVisible } = useWorkspace();
+  const { visited, activeTab, sidebarCollapsed } = useWorkspace();
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
       <AppHeader />
       <DayBar />
 
-      <ResizablePanelGroup
-        key={sidebarVisible ? "with-sidebar" : "no-sidebar"}
-        orientation="horizontal"
-        className="min-h-0 flex-1"
-      >
-        {sidebarVisible && (
-          <>
-            <ResizablePanel defaultSize="220px" minSize="160px" maxSize="260px">
-              <AppSidebar />
-            </ResizablePanel>
-            <ResizableHandle />
-          </>
+      <div className="flex min-h-0 flex-1">
+        {/* Icon-collapsed nav: a fixed-width strip outside the panel group, not
+            a ResizablePanel — its width is locked, so react-resizable-panels'
+            drag machinery would be pure dead weight (mirrors the Agentboard
+            rail's RailIconStrip). */}
+        {sidebarCollapsed && (
+          <div className="w-12 shrink-0 border-r bg-background">
+            <AppSidebarIcons />
+          </div>
         )}
-        <ResizablePanel>
-          <div className="h-full">
-            {visited.map((id) => {
-              const Screen = SCREEN_COMPONENTS[id];
-              const hidden = id !== activeTab;
-              // Keep visited screens mounted so their local state survives switching.
-              // Full-bleed screens (e.g. terminals) skip the centered, scrolling
-              // content wrapper and own the whole content area.
-              return SCREENS[id].fullBleed ? (
-                <div key={id} hidden={hidden} className="h-full">
-                  <ErrorBoundary label={SCREENS[id].title}>
-                    <Screen />
-                  </ErrorBoundary>
-                </div>
-              ) : (
-                <ScrollArea key={id} hidden={hidden} className="h-full">
-                  <div className="mx-auto max-w-3xl p-6">
+        <ResizablePanelGroup
+          key={sidebarCollapsed ? "sidebar-icons" : "sidebar-full"}
+          orientation="horizontal"
+          className="min-h-0 flex-1"
+        >
+          {!sidebarCollapsed && (
+            <>
+              <ResizablePanel defaultSize="190px" minSize="160px" maxSize="240px">
+                <AppSidebar />
+              </ResizablePanel>
+              <ResizableHandle />
+            </>
+          )}
+          <ResizablePanel key="main">
+            <div className="h-full">
+              {visited.map((id) => {
+                const Screen = SCREEN_COMPONENTS[id];
+                const hidden = id !== activeTab;
+                // Keep visited screens mounted so their local state survives switching.
+                // Full-bleed screens (e.g. terminals) skip the centered, scrolling
+                // content wrapper and own the whole content area.
+                return SCREENS[id].fullBleed ? (
+                  <div key={id} hidden={hidden} className="h-full">
                     <ErrorBoundary label={SCREENS[id].title}>
                       <Screen />
                     </ErrorBoundary>
                   </div>
-                </ScrollArea>
-              );
-            })}
-          </div>
-        </ResizablePanel>
-      </ResizablePanelGroup>
+                ) : (
+                  <ScrollArea key={id} hidden={hidden} className="h-full">
+                    <div className="mx-auto max-w-3xl p-6">
+                      <ErrorBoundary label={SCREENS[id].title}>
+                        <Screen />
+                      </ErrorBoundary>
+                    </div>
+                  </ScrollArea>
+                );
+              })}
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </div>
 
       <StatusBar />
 
