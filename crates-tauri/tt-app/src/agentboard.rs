@@ -435,13 +435,19 @@ pub fn ab_clear_log(state: State<Ab>, session: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Full unified diff for a folder against its pushed baseline, for the
-/// diff-preview dialog. Empty string when there's nothing to show. Async: a
-/// large working-tree diff is a real subprocess wait that must not stall the
-/// main thread.
+/// Full unified diff for a folder, for the diff pane. `mode` picks the
+/// baseline: `"uncommitted"` diffs the working tree vs HEAD, anything else
+/// diffs vs the merge-base with origin/main. Empty string when there's
+/// nothing to show. Async: a large working-tree diff is a real subprocess
+/// wait that must not stall the main thread.
 #[tauri::command]
-pub async fn ab_get_diff(dir: String) -> String {
-    tauri::async_runtime::spawn_blocking(move || tt_agentboard::diff_patch(&dir))
+pub async fn ab_get_diff(dir: String, mode: String) -> String {
+    let mode = if mode == "uncommitted" {
+        tt_agentboard::DiffMode::Uncommitted
+    } else {
+        tt_agentboard::DiffMode::Main
+    };
+    tauri::async_runtime::spawn_blocking(move || tt_agentboard::diff_patch(&dir, mode))
         .await
         .unwrap_or_default()
 }

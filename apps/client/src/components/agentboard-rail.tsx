@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import {
   AgentStatusLine,
+  AheadBehind,
   CacheBadge,
   Chevron,
   DiffButton,
@@ -594,6 +595,7 @@ function FolderHeader({
         >
           ⎇ {folder.branch}
         </span>
+        <AheadBehind stats={folder} />
         {folder.isWorktree && <WorktreeBadge />}
         <DiffButton stats={folder} onOpen={onOpenDiff} />
         {pr && <PrChip pr={pr} />}

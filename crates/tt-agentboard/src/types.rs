@@ -185,7 +185,10 @@ pub struct FolderData {
     pub files_changed: i64,
     pub lines_added: i64,
     pub lines_removed: i64,
-    pub commits_delta: i64,
+    /// Commits on this branch that origin/main doesn't have.
+    pub commits_ahead: i64,
+    /// Commits on origin/main that this branch doesn't have.
+    pub commits_behind: i64,
     pub sessions: Vec<SessionData>,
     /// Number of sessions that "need you" (see `bridge::session_needs`): a live
     /// shell whose agent is waiting/errored, or whose turn just ended and is
@@ -230,7 +233,8 @@ pub struct TmuxSessionData {
     pub files_changed: i64,
     pub lines_added: i64,
     pub lines_removed: i64,
-    pub commits_delta: i64,
+    pub commits_ahead: i64,
+    pub commits_behind: i64,
     pub unseen: bool,
     pub panes: i64,
     pub ports: Vec<u32>,
