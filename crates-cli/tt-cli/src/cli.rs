@@ -232,6 +232,20 @@ pub enum GhCommands {
 
     /// Create a pull request from the current branch
     Pr(PrArgs),
+
+    /// Assign an open issue to a sibling slot checkout of this repo
+    /// (hard-fails unless the slot is clean: no changes, no stashes)
+    Assign(AssignArgs),
+}
+
+#[derive(Args)]
+pub struct AssignArgs {
+    /// Issue number to assign
+    pub issue: u64,
+
+    /// Target slot checkout directory (a clone of this same repo)
+    #[arg(long, short = 's')]
+    pub slot: std::path::PathBuf,
 }
 
 #[derive(Args)]
