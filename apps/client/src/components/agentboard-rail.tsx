@@ -242,6 +242,11 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
           {r.busy > 0 && <DotCount status="busy" n={r.busy} />}
           {r.waiting > 0 && <DotCount status="waiting" n={r.waiting} />}
           {r.error > 0 && <DotCount status="error" n={r.error} />}
+          {r.expiring > 0 && (
+            <span className="text-amber-500" title="warm prompt caches about to expire — nudge them">
+              ◔{r.expiring}
+            </span>
+          )}
           {r.compact > 0 && (
             <span className="text-sky-500" title="cold sessions worth compacting">
               ❄{r.compact}

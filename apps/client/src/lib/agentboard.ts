@@ -526,6 +526,19 @@ export function isCold(d: AgentEventDetails | null | undefined, now: number): bo
   return !d?.cacheExpiresAt || now >= d.cacheExpiresAt;
 }
 
+/** How far before expiry the cache counts as "expiring": 2m on the 5-minute
+ * cache, 10m on the 1-hour cache — enough headroom to nudge the session (any
+ * request re-warms the cache) before a resume goes full-price. */
+export function cacheWarnMs(ttlMs: number | null | undefined): number {
+  return ttlMs === 3_600_000 ? 600_000 : 120_000;
+}
+
+/** Still warm, but inside the warn window — one nudge away from going cold. */
+export function isCacheExpiring(d: AgentEventDetails | null | undefined, now: number): boolean {
+  if (!d?.cacheExpiresAt || isCold(d, now)) return false;
+  return d.cacheExpiresAt - now <= cacheWarnMs(d.cacheTtlMs);
+}
+
 /** The compact nudge: cold AND at/above the settings threshold. Warm-and-huge
  * is fine to keep going — the cost only bites on a cold resume. */
 export function needsCompact(
@@ -546,6 +559,8 @@ export type AgentRollup = {
   error: number;
   /** Running agents that are cold + over the compact threshold. */
   compact: number;
+  /** Running agents whose warm cache is inside the warn window. */
+  expiring: number;
 };
 
 export function agentRollup(
@@ -553,7 +568,7 @@ export function agentRollup(
   now: number,
   compactThresholdPct: number,
 ): AgentRollup {
-  const r: AgentRollup = { total: 0, busy: 0, waiting: 0, error: 0, compact: 0 };
+  const r: AgentRollup = { total: 0, busy: 0, waiting: 0, error: 0, compact: 0, expiring: 0 };
   for (const repo of repos)
     for (const f of repo.folders)
       for (const s of f.sessions) {
@@ -564,6 +579,7 @@ export function agentRollup(
         else if (st === "waiting") r.waiting += 1;
         else if (st === "error") r.error += 1;
         if (needsCompact(s.agentState?.details, now, compactThresholdPct)) r.compact += 1;
+        if (isCacheExpiring(s.agentState?.details, now)) r.expiring += 1;
       }
   return r;
 }

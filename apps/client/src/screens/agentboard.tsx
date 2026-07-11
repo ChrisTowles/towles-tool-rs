@@ -10,6 +10,7 @@ import {
   Plus,
   TerminalSquare,
 } from "lucide-react";
+import { fmtMins } from "@/components/agentboard-bits";
 import { PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffPane } from "@/components/diff-pane";
@@ -52,6 +53,8 @@ import {
   diffPaneId,
   dropEmptyWindows,
   dropPane,
+  isAgent,
+  isCacheExpiring,
   isDiffPane,
   isFolderQuiet,
   liveSessions,
@@ -121,6 +124,29 @@ export function AgentboardScreen() {
   const { snapshot } = useStoreSnapshot();
   const { openTab, activeTab } = useWorkspace();
   const now = useNow(30_000);
+
+  // One-shot "prompt cache about to expire" toast per session per cache
+  // generation. `cacheExpiresAt` moves forward on every request Claude makes,
+  // so keying on `sessionId:cacheExpiresAt` naturally re-arms the toast after
+  // the session is nudged — while the 30s `useNow` tick can't re-fire the same
+  // warning. The set is tiny (one entry per warning ever shown this mount),
+  // so it's never pruned.
+  const cacheWarned = useRef(new Set<string>());
+  useEffect(() => {
+    for (const repo of state.repos)
+      for (const folder of repo.folders)
+        for (const s of folder.sessions) {
+          const d = s.agentState?.details;
+          if (!s.live || !isAgent(s) || !d?.cacheExpiresAt) continue;
+          if (!isCacheExpiring(d, now)) continue;
+          const key = `${s.id}:${d.cacheExpiresAt}`;
+          if (cacheWarned.current.has(key)) continue;
+          cacheWarned.current.add(key);
+          toast(
+            `◔ ${folder.name} / ${s.name} — prompt cache expires in ~${fmtMins(d.cacheExpiresAt - now)}. Any message re-warms it; a cold resume re-reads everything at full price.`,
+          );
+        }
+  }, [state.repos, now]);
 
   const [selected, setSelected] = useState<Selected>(null);
   // The folder whose windows the main area shows — set by clicking a folder
