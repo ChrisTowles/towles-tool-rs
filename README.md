@@ -6,8 +6,9 @@ is built from the [Yaak](https://github.com/mountain-loop/yaak) golden template 
 a Cargo workspace with Tauri-free shared crates, a `clap` CLI, and a React + Vite
 frontend. It also ships the `tt` Claude Code plugin (see below).
 
-During the migration the Rust binary is named **`ttr`**. Once it reaches feature
-parity with the TypeScript CLI, it takes over the `tt` name in a hard cutover.
+During the migration the Rust binary is named **`ttr`**. Once the daily-driver
+commands are ported (full CLI parity is not a goal), it takes over the `tt`
+name in a hard cutover.
 
 > **Status:** in progress. The scaffold plus config, doctor, journal, GitHub
 > helpers, install, claude-sessions, the data-hub store/collectors, the MCP server, and
