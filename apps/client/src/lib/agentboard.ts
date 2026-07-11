@@ -195,8 +195,16 @@ export function placePane(
   let windows = w.windows;
   let windowId = w.activeWindows[folderDir];
   if (!windows.some((win) => win.id === windowId && win.folderDir === folderDir)) {
-    windowId = newWindowId();
-    windows = [...windows, { id: windowId, name: "primary", folderDir, panes: [] }];
+    // Stale/missing active entry: reuse the folder's first existing window
+    // before minting a new one — otherwise a dangling entry spawns a duplicate
+    // "primary" beside the window the user already has.
+    const existing = windows.find((win) => win.folderDir === folderDir);
+    if (existing) {
+      windowId = existing.id;
+    } else {
+      windowId = newWindowId();
+      windows = [...windows, { id: windowId, name: "primary", folderDir, panes: [] }];
+    }
   }
   return {
     windows: windows.map((win) =>
@@ -206,16 +214,110 @@ export function placePane(
   };
 }
 
-/** Drop a pane from every window that holds it (pane ids are unique — session
- * ids globally, diff ids per folder — so at most one window matches). */
+/** Drop a pane from the window that holds it (pane ids are unique — session
+ * ids globally, diff ids per folder — so at most one window matches). A window
+ * is a tiling of panes, not a container worth keeping empty: when the pane was
+ * the window's last, the window goes with it and the folder's active window
+ * moves to a sibling — unless it's the folder's only window, which stays as
+ * the landing surface for the next pane. */
 export function dropPane(w: WindowsPayload, paneId: string): WindowsPayload {
+  const host = w.windows.find((win) => win.panes.includes(paneId));
+  if (!host) return w;
+  const siblings = w.windows.filter(
+    (win) => win.folderDir === host.folderDir && win.id !== host.id,
+  );
+  if (host.panes.length === 1 && siblings.length > 0) {
+    const activeWindows = { ...w.activeWindows };
+    if (activeWindows[host.folderDir] === host.id) {
+      activeWindows[host.folderDir] = siblings[0].id;
+    }
+    return { windows: w.windows.filter((win) => win.id !== host.id), activeWindows };
+  }
   return {
     ...w,
-    windows: w.windows.map((win) => ({
-      ...win,
-      panes: win.panes.filter((p) => p !== paneId),
-    })),
+    windows: w.windows.map((win) =>
+      win.id === host.id ? { ...win, panes: win.panes.filter((p) => p !== paneId) } : win,
+    ),
   };
+}
+
+/** The folder dirs whose slice of the layout (their windows, in order, or
+ * their active-window entry) differs between two payloads — exactly the
+ * `touchedFolders` the backend's merge-by-folder save needs. */
+export function changedFolderDirs(a: WindowsPayload, b: WindowsPayload): string[] {
+  const dirs = new Set<string>([
+    ...a.windows.map((win) => win.folderDir),
+    ...b.windows.map((win) => win.folderDir),
+    ...Object.keys(a.activeWindows),
+    ...Object.keys(b.activeWindows),
+  ]);
+  const sig = (p: WindowsPayload, dir: string) =>
+    JSON.stringify([
+      p.windows.filter((win) => win.folderDir === dir),
+      p.activeWindows[dir] ?? null,
+    ]);
+  return [...dirs].filter((d) => sig(a, d) !== sig(b, d));
+}
+
+/** Hydration-time sweep: drop every zero-pane window. Windows are created
+ * lazily (`placePane` mints "primary" on demand), so an empty window restored
+ * from disk is pure residue — it holds no panes, and its only state worth
+ * missing is a name. Only safe at hydration: run mid-session it would eat a
+ * window the user just created via "+ window" and hasn't filled yet. */
+export function dropEmptyWindows(w: WindowsPayload): WindowsPayload {
+  const windows = w.windows.filter((win) => win.panes.length > 0);
+  return windows.length === w.windows.length
+    ? w
+    : normalizeWins({ windows, activeWindows: w.activeWindows });
+}
+
+/** Reconcile the persisted layout against what actually exists. The blob on
+ * disk outlives its panes: sessions get removed by another app instance, a
+ * repo comes off the rail with non-live session records, a crash beats the
+ * debounced save — leaving ghost pane ids that hold a tile slot and render as
+ * a dead dashed pane (so a fresh pane lands in spot two behind a corpse).
+ *
+ * Drops windows of folders not in `validFolderDirs`, then panes that are
+ * neither a known session id nor a valid folder's diff pane. Windows *emptied
+ * by this prune* vanish like a closed-out window (`dropPane`'s rule), keeping
+ * one per folder when the prune emptied them all; a window that was already
+ * empty going in is deliberate (freshly created via "+ window") and is never
+ * touched. Returns `w` itself when nothing changed, so callers can cheaply
+ * skip the save. */
+export function pruneWins(
+  w: WindowsPayload,
+  validSessionIds: ReadonlySet<string>,
+  validFolderDirs: ReadonlySet<string>,
+): WindowsPayload {
+  const pruned: AgWindow[] = [];
+  const emptied = new Set<string>();
+  for (const win of w.windows) {
+    if (!validFolderDirs.has(win.folderDir)) continue;
+    const panes = win.panes.filter((p) => {
+      const dir = diffPaneDir(p);
+      return dir !== null ? validFolderDirs.has(dir) : validSessionIds.has(p);
+    });
+    if (panes.length === 0 && win.panes.length > 0) emptied.add(win.id);
+    pruned.push(panes.length === win.panes.length ? win : { ...win, panes });
+  }
+  const kept = pruned.filter((win) => {
+    if (!emptied.has(win.id)) return true;
+    const folderWins = pruned.filter((x) => x.folderDir === win.folderDir);
+    if (folderWins.some((x) => !emptied.has(x.id))) return false;
+    // The prune emptied every window of this folder — keep the active one.
+    const keeper =
+      folderWins.find((x) => x.id === w.activeWindows[win.folderDir]) ?? folderWins[0];
+    return win.id === keeper.id;
+  });
+  const activeWindows: Record<string, string> = {};
+  for (const win of kept) {
+    if (win.folderDir in activeWindows) continue;
+    const cur = w.activeWindows[win.folderDir];
+    activeWindows[win.folderDir] =
+      cur && kept.some((x) => x.folderDir === win.folderDir && x.id === cur) ? cur : win.id;
+  }
+  const next = { windows: kept, activeWindows };
+  return changedFolderDirs(w, next).length === 0 ? w : next;
 }
 
 /** A session is an "agent" session iff Claude is running in it right now. */

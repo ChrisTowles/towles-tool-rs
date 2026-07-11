@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  changedFolderDirs,
   cycleNeedsYou,
   diffPaneDir,
   diffPaneId,
+  dropEmptyWindows,
   dropPane,
   isDiffPane,
   isFolderQuiet,
@@ -11,6 +13,7 @@ import {
   pathScope,
   placePane,
   prForFolder,
+  pruneWins,
   sessionNeeds,
   type AgentStatus,
   type FolderData,
@@ -188,6 +191,13 @@ describe("placePane", () => {
     expect(next.windows.find((x) => x.id === "w2")?.folderDir).toBe("/f");
     expect(next.windows.find((x) => x.id === "w1")?.panes).toEqual(["s9"]);
   });
+
+  it("reuses the folder's existing window when the active entry is stale", () => {
+    const w: WindowsPayload = { windows: [win("w1", "/f", ["s1"])], activeWindows: {} };
+    const next = placePane(w, "/f", "s2", () => "never-minted");
+    expect(next.windows).toEqual([win("w1", "/f", ["s1", "s2"])]);
+    expect(next.activeWindows["/f"]).toBe("w1");
+  });
 });
 
 describe("dropPane", () => {
@@ -199,6 +209,153 @@ describe("dropPane", () => {
     const next = dropPane(w, "s2");
     expect(next.windows[0].panes).toEqual(["s1"]);
     expect(next.windows[1].panes).toEqual(["s3"]);
+  });
+
+  it("deletes an emptied window and refocuses a sibling", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", ["s1"]), win("w2", "/f", ["s2"])],
+      activeWindows: { "/f": "w1" },
+    };
+    const next = dropPane(w, "s1");
+    expect(next.windows).toEqual([win("w2", "/f", ["s2"])]);
+    expect(next.activeWindows["/f"]).toBe("w2");
+  });
+
+  it("keeps the folder's last window when its last pane closes", () => {
+    const w: WindowsPayload = { windows: [win("w1", "/f", ["s1"])], activeWindows: { "/f": "w1" } };
+    const next = dropPane(w, "s1");
+    expect(next.windows).toEqual([win("w1", "/f", [])]);
+    expect(next.activeWindows["/f"]).toBe("w1");
+  });
+
+  it("only counts same-folder windows as siblings", () => {
+    // /f's only window empties; /g's window must not count as a sibling.
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", ["s1"]), win("w2", "/g", ["s2"])],
+      activeWindows: { "/f": "w1", "/g": "w2" },
+    };
+    const next = dropPane(w, "s1");
+    expect(next.windows).toEqual([win("w1", "/f", []), win("w2", "/g", ["s2"])]);
+  });
+
+  it("is a no-op for a pane no window holds", () => {
+    const w: WindowsPayload = { windows: [win("w1", "/f", ["s1"])], activeWindows: {} };
+    expect(dropPane(w, "ghost")).toBe(w);
+  });
+});
+
+describe("pruneWins", () => {
+  const valid = (sessions: string[], folders: string[]) =>
+    [new Set(sessions), new Set(folders)] as const;
+
+  it("drops ghost session panes so survivors tile from the first slot", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", ["ghost", "s1"])],
+      activeWindows: { "/f": "w1" },
+    };
+    const [s, f] = valid(["s1"], ["/f"]);
+    expect(pruneWins(w, s, f).windows[0].panes).toEqual(["s1"]);
+  });
+
+  it("drops a window emptied by pruning when the folder has a surviving one", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", ["ghost"]), win("w2", "/f", ["s1"])],
+      activeWindows: { "/f": "w1" },
+    };
+    const [s, f] = valid(["s1"], ["/f"]);
+    const next = pruneWins(w, s, f);
+    expect(next.windows).toEqual([win("w2", "/f", ["s1"])]);
+    expect(next.activeWindows["/f"]).toBe("w2");
+  });
+
+  it("keeps one (active-preferred) window when pruning empties them all", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", ["g1"]), win("w2", "/f", ["g2"])],
+      activeWindows: { "/f": "w2" },
+    };
+    const [s, f] = valid([], ["/f"]);
+    const next = pruneWins(w, s, f);
+    expect(next.windows).toEqual([win("w2", "/f", [])]);
+    expect(next.activeWindows["/f"]).toBe("w2");
+  });
+
+  it("never touches a deliberately-empty window", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", ["s1"]), win("w2", "/f", [])],
+      activeWindows: { "/f": "w2" },
+    };
+    const [s, f] = valid(["s1"], ["/f"]);
+    expect(pruneWins(w, s, f)).toBe(w);
+  });
+
+  it("drops windows of folders no longer on the rail", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/gone", ["s1"]), win("w2", "/f", ["s2"])],
+      activeWindows: { "/gone": "w1", "/f": "w2" },
+    };
+    const [s, f] = valid(["s1", "s2"], ["/f"]);
+    const next = pruneWins(w, s, f);
+    expect(next.windows).toEqual([win("w2", "/f", ["s2"])]);
+    expect(next.activeWindows).toEqual({ "/f": "w2" });
+  });
+
+  it("keeps a valid folder's diff pane, drops a removed folder's", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", [diffPaneId("/f"), diffPaneId("/gone"), "s1"])],
+      activeWindows: { "/f": "w1" },
+    };
+    const [s, f] = valid(["s1"], ["/f"]);
+    expect(pruneWins(w, s, f).windows[0].panes).toEqual([diffPaneId("/f"), "s1"]);
+  });
+
+  it("returns the same object when nothing changed", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", ["s1"])],
+      activeWindows: { "/f": "w1" },
+    };
+    const [s, f] = valid(["s1"], ["/f"]);
+    expect(pruneWins(w, s, f)).toBe(w);
+  });
+});
+
+describe("dropEmptyWindows", () => {
+  it("sweeps zero-pane windows and their active entries", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", ["s1"]), win("w2", "/f", []), win("w3", "/g", [])],
+      activeWindows: { "/f": "w2", "/g": "w3" },
+    };
+    const next = dropEmptyWindows(w);
+    expect(next.windows).toEqual([win("w1", "/f", ["s1"])]);
+    expect(next.activeWindows).toEqual({});
+  });
+
+  it("returns the same object when no window is empty", () => {
+    const w: WindowsPayload = { windows: [win("w1", "/f", ["s1"])], activeWindows: {} };
+    expect(dropEmptyWindows(w)).toBe(w);
+  });
+});
+
+describe("changedFolderDirs", () => {
+  it("names only the folders whose windows or active entry differ", () => {
+    const a: WindowsPayload = {
+      windows: [win("w1", "/f", ["s1"]), win("w2", "/g", ["s2"])],
+      activeWindows: { "/f": "w1", "/g": "w2" },
+    };
+    const b: WindowsPayload = {
+      windows: [win("w1", "/f", ["s1"])],
+      activeWindows: { "/f": "w1" },
+    };
+    expect(changedFolderDirs(a, b)).toEqual(["/g"]);
+    expect(changedFolderDirs(a, a)).toEqual([]);
+  });
+
+  it("catches an active-window-only change", () => {
+    const a: WindowsPayload = {
+      windows: [win("w1", "/f", []), win("w2", "/f", [])],
+      activeWindows: { "/f": "w1" },
+    };
+    const b: WindowsPayload = { ...a, activeWindows: { "/f": "w2" } };
+    expect(changedFolderDirs(a, b)).toEqual(["/f"]);
   });
 });
 

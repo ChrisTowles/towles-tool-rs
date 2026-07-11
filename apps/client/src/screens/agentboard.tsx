@@ -42,11 +42,13 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
   abInvoke,
+  changedFolderDirs,
   claudeCommand,
   claudeTitleName,
   cycleNeedsYou,
   diffPaneDir,
   diffPaneId,
+  dropEmptyWindows,
   dropPane,
   isDiffPane,
   isFolderQuiet,
@@ -55,6 +57,7 @@ import {
   paneRects,
   placePane,
   prForFolder,
+  pruneWins,
   sessionLabel,
   sleep,
   termWrite,
@@ -256,23 +259,60 @@ export function AgentboardScreen() {
   const dirtyWinFolders = useRef<Set<string>>(new Set());
   useEffect(() => {
     // Hydrate from the first real payload (mock or ab_get_state); after that
-    // the local copy is the live truth and only flows outward.
-    if (wins === null && state.ts > 0) setWins(normalizeWins(state.windows));
+    // the local copy is the live truth and only flows outward. Empty windows
+    // restored from disk are residue (windows are created lazily) — sweep
+    // them here, and persist the sweep if it changed anything.
+    if (wins !== null || state.ts === 0) return;
+    const hydrated = normalizeWins(state.windows);
+    const swept = dropEmptyWindows(hydrated);
+    setWins(swept);
+    const touched = changedFolderDirs(hydrated, swept);
+    if (touched.length > 0) scheduleSave(swept, touched);
   }, [wins, state.ts, state.windows]);
+
+  function scheduleSave(next: WindowsPayload, folderDirs: string[]) {
+    for (const dir of folderDirs) dirtyWinFolders.current.add(dir);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      const touchedFolders = [...dirtyWinFolders.current];
+      dirtyWinFolders.current = new Set();
+      void abInvoke("ab_save_windows", { payload: next, touchedFolders });
+    }, 400);
+  }
 
   function updateWins(folderDirs: string[], fn: (w: WindowsPayload) => WindowsPayload) {
     setWins((prev) => {
       const next = normalizeWins(fn(prev ?? { windows: [], activeWindows: {} }));
-      for (const dir of folderDirs) dirtyWinFolders.current.add(dir);
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => {
-        const touchedFolders = [...dirtyWinFolders.current];
-        dirtyWinFolders.current = new Set();
-        void abInvoke("ab_save_windows", { payload: next, touchedFolders });
-      }, 400);
+      scheduleSave(next, folderDirs);
       return next;
     });
   }
+
+  // Reconcile the layout against reality whenever either changes: sessions
+  // and folders vanish out from under the persisted blob (closed by another
+  // slot's app instance, a repo removed with non-live session records, a
+  // crash before the debounced save), leaving ghost pane ids that hold a tile
+  // slot and render as a dead dashed pane. Locally-mounted terminals (`open`)
+  // count as valid even before the backend's state event catches up, so a
+  // just-created session's pane never loses the race to this prune.
+  useEffect(() => {
+    if (!wins) return;
+    const validSessions = new Set(open);
+    const validFolders = new Set<string>();
+    for (const r of repos)
+      for (const f of r.folders) {
+        validFolders.add(f.dir);
+        for (const s of f.sessions) validSessions.add(s.id);
+      }
+    const next = pruneWins(wins, validSessions, validFolders);
+    if (next !== wins) {
+      updateWins(changedFolderDirs(wins, next), (cur) =>
+        pruneWins(cur, validSessions, validFolders),
+      );
+    }
+    // updateWins is stable within a render pass; wins/repos/open are the inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wins, repos, open]);
 
   // Windows belonging to the active folder, and whichever of those is focused.
   const windowsForFolder = useMemo(
