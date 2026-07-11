@@ -17,14 +17,15 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Kbd } from "@/components/ui/kbd";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useTheme, type Theme } from "@/components/theme-provider";
 import { abInvoke } from "@/lib/agentboard";
-import { useUserSettings, type UserSettings } from "@/lib/settings";
 import { closeCurrentWindow } from "@/lib/open-settings";
+import { useUserSettings, type UserSettings } from "@/lib/settings";
+import { SHORTCUTS, shortcutKeys, type ShortcutScope } from "@/lib/shortcuts";
 
 /** Real, known location of the settings file (shared with the TypeScript CLI). */
 const SETTINGS_PATH = "~/.config/towles-tool/towles-tool.settings.json";
@@ -39,14 +40,10 @@ const TABS = [
   { id: "about", label: "About", icon: Info },
 ] as const;
 
-const SHORTCUTS = [
-  { keys: "⌘K", action: "Open command palette / search" },
-  { keys: "⌘,", action: "Open Settings" },
-  { keys: "⌘B", action: "Toggle sidebar" },
-  { keys: "⌘W", action: "Close the active tab" },
-  { keys: "⌘J", action: "Quick log to today's journal" },
-  { keys: "⌘D", action: "Split the focused terminal" },
-];
+const SCOPE_LABELS: Record<ShortcutScope, string> = {
+  global: "",
+  agentboard: "Agentboard",
+};
 
 /** Toggle/select row: label + description on the left, control on the right. */
 function SettingRow({
@@ -489,20 +486,30 @@ export function SettingsWindow() {
           <TabsContent value="shortcuts" className="flex flex-col gap-5 p-4">
             <TabHeading
               title="Shortcuts"
-              note="Keyboard shortcuts (⌘ on macOS, Ctrl elsewhere)."
+              note="Keyboard shortcuts (⌘ on macOS, Ctrl elsewhere). Agentboard-scoped ones only fire while that tab is active. Press ? in the app for the same list."
             />
             <div className="flex flex-col">
-              {SHORTCUTS.map((s, i) => (
+              {Object.values(SHORTCUTS).map((s, i) => (
                 <div
-                  key={s.keys}
+                  key={s.id}
                   className={`flex items-center justify-between py-2 ${
                     i > 0 ? "border-t border-border" : ""
                   }`}
                 >
                   <span className="text-sm text-muted-foreground">
-                    {s.action}
+                    {s.description}
+                    {s.when && <span className="text-muted-foreground/70"> — {s.when}</span>}
+                    {s.scope !== "global" && (
+                      <span className="ml-2 text-xs text-muted-foreground/70">
+                        ({SCOPE_LABELS[s.scope]})
+                      </span>
+                    )}
                   </span>
-                  <Kbd>{s.keys}</Kbd>
+                  <KbdGroup>
+                    {shortcutKeys(s.id).map((cap) => (
+                      <Kbd key={cap}>{cap}</Kbd>
+                    ))}
+                  </KbdGroup>
                 </div>
               ))}
             </div>
