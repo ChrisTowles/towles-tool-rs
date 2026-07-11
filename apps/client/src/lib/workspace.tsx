@@ -16,12 +16,17 @@ type WorkspaceState = {
 
 const WorkspaceContext = createContext<WorkspaceState | null>(null);
 
+const SIDEBAR_COLLAPSED_KEY = "tt-sidebar-collapsed";
+
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   // Screens are mounted once on first visit and kept mounted (hidden via CSS)
   // so their local state — e.g. Agentboard's terminals — survives switching.
   const [visited, setVisited] = useState<ScreenId[]>(["cockpit"]);
   const [activeTab, setActiveTab] = useState<ScreenId>("cockpit");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Icon-only is the default; expanding is the remembered opt-in.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== "false",
+  );
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   const openTab = useCallback((id: ScreenId) => {
@@ -29,7 +34,14 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     setActiveTab(id);
   }, []);
 
-  const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
+  const toggleSidebar = useCallback(
+    () =>
+      setSidebarCollapsed((v) => {
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(!v));
+        return !v;
+      }),
+    [],
+  );
 
   const value = useMemo(
     () => ({
