@@ -32,7 +32,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Kanban columns a todo can live in, in board order.
 pub const TASK_STATUSES: [&str; 5] = ["backlog", "next", "doing", "review", "done"];
@@ -94,6 +94,16 @@ CREATE TABLE IF NOT EXISTS collect_runs (
     ok INTEGER NOT NULL,
     message TEXT
 );
+CREATE TABLE IF NOT EXISTS dm_status (
+    channel TEXT PRIMARY KEY,
+    from_name TEXT NOT NULL,
+    text TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    from_me INTEGER NOT NULL,
+    url TEXT,
+    fetched_at INTEGER NOT NULL,
+    dismissed_ts INTEGER NOT NULL DEFAULT 0
+);
 ";
 
 // Column lists, kept in sync with the row-mapping closures below.
@@ -103,6 +113,7 @@ const TASK_COLS: &str =
 const ISSUE_COLS: &str = "repo, number, title, labels, state, url, updated_ts";
 const PR_COLS: &str = "repo, number, title, branch, state, checks, review_state, url, updated_ts";
 const RUN_COLS: &str = "collector, ran_at, ok, message";
+const DM_COLS: &str = "channel, from_name, text, ts, from_me, url, fetched_at, dismissed_ts";
 
 /// Kanban ordering used across queries: board column, then manual position, then age.
 const TASK_ORDER: &str = "\
@@ -189,6 +200,24 @@ pub struct CollectRun {
     pub message: Option<String>,
 }
 
+/// The latest state of one watched DM conversation. `from_me` means the most
+/// recent message in the channel is the user's own (i.e. already answered);
+/// `dismissed_ts` is the `ts` of the last message the user marked handled, so
+/// the UI shows a banner only when `!from_me && dismissed_ts < ts`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmItem {
+    pub channel: String,
+    pub from_name: String,
+    pub text: String,
+    pub ts: i64,
+    pub from_me: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    pub fetched_at: i64,
+    pub dismissed_ts: i64,
+}
+
 /// Full-store snapshot for the dashboard UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -198,6 +227,7 @@ pub struct Snapshot {
     pub issues: Vec<IssueItem>,
     pub prs: Vec<PrItem>,
     pub runs: Vec<CollectRun>,
+    pub dms: Vec<DmItem>,
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +261,19 @@ pub struct IssueInput {
     pub state: String,
     pub url: String,
     pub updated_ts: i64,
+}
+
+/// What the Slack collector hands the store for one watched DM conversation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmInput {
+    pub channel: String,
+    pub from_name: String,
+    pub text: String,
+    pub ts: i64,
+    pub from_me: bool,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -553,6 +596,38 @@ impl Store {
         Ok(prs.len())
     }
 
+    /// Upsert the latest state of a watched DM conversation. `dismissed_ts` is
+    /// preserved across upserts — dismissal is user state, not collector state.
+    pub fn upsert_dm(&self, dm: &DmInput, now_ms: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO dm_status (channel, from_name, text, ts, from_me, url, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(channel) DO UPDATE SET
+               from_name = excluded.from_name, text = excluded.text, ts = excluded.ts,
+               from_me = excluded.from_me, url = excluded.url, fetched_at = excluded.fetched_at",
+            params![
+                dm.channel,
+                dm.from_name,
+                dm.text,
+                dm.ts,
+                dm.from_me,
+                dm.url,
+                now_ms
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Mark the message at `ts` in `channel` handled: the UI stops showing it.
+    /// A newer message (larger `ts`) re-raises the banner.
+    pub fn dismiss_dm(&self, channel: &str, ts: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE dm_status SET dismissed_ts = ?2 WHERE channel = ?1",
+            params![channel, ts],
+        )?;
+        Ok(())
+    }
+
     /// Record the outcome of a collector run (one row per collector, upserted).
     pub fn record_run(
         &self,
@@ -628,6 +703,11 @@ impl Store {
         self.query_runs(&format!("SELECT {RUN_COLS} FROM collect_runs ORDER BY collector ASC"), [])
     }
 
+    /// All watched DM conversations, newest message first.
+    pub fn dms(&self) -> Result<Vec<DmItem>> {
+        self.query_dms(&format!("SELECT {DM_COLS} FROM dm_status ORDER BY ts DESC"), [])
+    }
+
     /// A single full snapshot of the store for the dashboard. The five reads
     /// share one transaction so a concurrent writer (CLI collector, another
     /// window) can't produce a torn cross-table view.
@@ -639,8 +719,9 @@ impl Store {
         let issues = self.issues()?;
         let prs = self.prs()?;
         let runs = self.runs()?;
+        let dms = self.dms()?;
         tx.commit()?;
-        Ok(Snapshot { events, tasks, issues, prs, runs })
+        Ok(Snapshot { events, tasks, issues, prs, runs, dms })
     }
 
     // --- Row-mapping helpers ---------------------------------------------
@@ -739,6 +820,23 @@ impl Store {
                 review_state: r.get(6)?,
                 url: r.get(7)?,
                 updated_ts: r.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn query_dms(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<DmItem>> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params, |r| {
+            Ok(DmItem {
+                channel: r.get(0)?,
+                from_name: r.get(1)?,
+                text: r.get(2)?,
+                ts: r.get(3)?,
+                from_me: r.get(4)?,
+                url: r.get(5)?,
+                fetched_at: r.get(6)?,
+                dismissed_ts: r.get(7)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1045,6 +1143,44 @@ mod tests {
     }
 
     #[test]
+    fn upsert_dm_preserves_dismissal_until_a_newer_message() {
+        let s = Store::open_in_memory().unwrap();
+        let msg = |ts: i64, from_me: bool| DmInput {
+            channel: "D123".to_string(),
+            from_name: "Sarah".to_string(),
+            text: format!("msg at {ts}"),
+            ts,
+            from_me,
+            url: Some("slack://channel?team=T1&id=D123".to_string()),
+        };
+
+        s.upsert_dm(&msg(100, false), 1).unwrap();
+        let dm = &s.dms().unwrap()[0];
+        assert!(!dm.from_me);
+        assert_eq!(dm.dismissed_ts, 0, "fresh message starts undismissed");
+
+        // Mark handled: dismissed_ts catches up to ts.
+        s.dismiss_dm("D123", 100).unwrap();
+        assert_eq!(s.dms().unwrap()[0].dismissed_ts, 100);
+
+        // Re-collecting the same message keeps the dismissal.
+        s.upsert_dm(&msg(100, false), 2).unwrap();
+        let dm = s.dms().unwrap()[0].clone();
+        assert_eq!(dm.dismissed_ts, 100);
+        assert_eq!(dm.fetched_at, 2);
+
+        // A newer message outruns the dismissal (dismissed_ts < ts again).
+        s.upsert_dm(&msg(200, false), 3).unwrap();
+        let dm = s.dms().unwrap()[0].clone();
+        assert_eq!(dm.ts, 200);
+        assert!(dm.dismissed_ts < dm.ts);
+
+        // Replying clears it collector-side: latest message is mine.
+        s.upsert_dm(&msg(300, true), 4).unwrap();
+        assert!(s.dms().unwrap()[0].from_me);
+    }
+
+    #[test]
     fn snapshot_serializes_camel_case() {
         let s = Store::open_in_memory().unwrap();
         s.replace_events(
@@ -1075,6 +1211,18 @@ mod tests {
         }])
         .unwrap();
         s.record_run("gcal", true, None, 4).unwrap();
+        s.upsert_dm(
+            &DmInput {
+                channel: "D1".to_string(),
+                from_name: "Sarah".to_string(),
+                text: "hi".to_string(),
+                ts: 5,
+                from_me: false,
+                url: None,
+            },
+            6,
+        )
+        .unwrap();
 
         let json = serde_json::to_string(&s.snapshot().unwrap()).unwrap();
         for key in [
@@ -1086,6 +1234,9 @@ mod tests {
             "\"updatedTs\"",
             "\"reviewState\"",
             "\"ranAt\"",
+            "\"fromName\"",
+            "\"fromMe\"",
+            "\"dismissedTs\"",
         ] {
             assert!(json.contains(key), "expected {key} in snapshot JSON: {json}");
         }

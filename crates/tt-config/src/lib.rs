@@ -120,6 +120,7 @@ pub struct CollectorsSettings {
     pub calendar: CalendarCollector,
     pub prs: PrCollector,
     pub issues: IssueCollector,
+    pub slack: SlackDmCollector,
 }
 
 /// Calendar collector: shells out to `claude -p` against an MCP calendar, so it
@@ -151,6 +152,34 @@ pub struct PrCollector {
 impl Default for PrCollector {
     fn default() -> Self {
         Self { enabled: true, refresh_seconds: 120 }
+    }
+}
+
+/// Slack DM watcher: polls one DM conversation (e.g. spouse) via the Slack Web
+/// API and surfaces unanswered messages in the app's attention banner. Needs a
+/// user OAuth token (`xoxp-…`) with `im:history` — disabled until one is set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SlackDmCollector {
+    pub enabled: bool,
+    /// Slack user OAuth token (`xoxp-…`). Empty = collector stays off.
+    pub token: String,
+    /// Slack member ID of the person to watch (e.g. `U0123ABCD`).
+    pub watch_user_id: String,
+    /// Display name shown in the banner (avoids an extra `users.info` call).
+    pub watch_name: String,
+    pub refresh_seconds: u64,
+}
+
+impl Default for SlackDmCollector {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token: String::new(),
+            watch_user_id: String::new(),
+            watch_name: String::new(),
+            refresh_seconds: 60,
+        }
     }
 }
 
@@ -402,6 +431,10 @@ mod tests {
         assert_eq!(c.prs.refresh_seconds, 120);
         assert!(c.issues.enabled);
         assert_eq!(c.issues.refresh_minutes, 5);
+        // Off by default: the Slack watcher needs a user token first.
+        assert!(!c.slack.enabled);
+        assert!(c.slack.token.is_empty());
+        assert_eq!(c.slack.refresh_seconds, 60);
     }
 
     #[test]

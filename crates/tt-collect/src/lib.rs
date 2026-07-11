@@ -21,6 +21,9 @@ mod gh;
 mod issues;
 mod prompts;
 mod prs;
+mod slack;
+
+pub use slack::SlackDmConfig;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -121,6 +124,26 @@ pub fn collect_prs(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> Collect
         Some(repos) => store.replace_prs_for_repos(repos, all),
     };
     finish_sweep(store, "prs", outcome, write, |p| (p.repo.clone(), p.number), now_ms)
+}
+
+/// Collect the watched Slack DM's latest state via the Slack Web API and
+/// upsert it into the store. Records `slack:dm`. Missing token/user-id is a
+/// recorded failure (the caller gates on `enabled`, so reaching here without
+/// credentials is a misconfiguration worth surfacing, not a silent no-op).
+pub fn collect_slack_dm(store: &Store, config: &SlackDmConfig, now_ms: i64) -> CollectSummary {
+    const KEY: &str = "slack:dm";
+    if config.token.trim().is_empty() || config.watch_user_id.trim().is_empty() {
+        let msg = "slack collector needs both a token and a watch user id".to_string();
+        return finish(store, KEY, false, 0, Some(msg), now_ms);
+    }
+    match slack::fetch_dm(config) {
+        Ok(Some(dm)) => match store.upsert_dm(&dm, now_ms) {
+            Ok(()) => finish(store, KEY, true, 1, None, now_ms),
+            Err(e) => finish(store, KEY, false, 0, Some(e.to_string()), now_ms),
+        },
+        Ok(None) => finish(store, KEY, true, 0, Some("no messages in DM yet".to_string()), now_ms),
+        Err(msg) => finish(store, KEY, false, 0, Some(msg), now_ms),
+    }
 }
 
 /// Per-repo results of one collector sweep.

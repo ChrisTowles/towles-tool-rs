@@ -249,6 +249,7 @@ pub fn run() {
             store::store_set_task_status,
             store::store_promote_task_to_issue,
             store::store_create_issue,
+            store::store_dm_dismiss,
             store::journal_log,
             journal::journal_get_today,
             journal::journal_list,
