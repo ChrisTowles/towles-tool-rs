@@ -32,6 +32,7 @@ pub mod folder_meta;
 pub mod fs_notify;
 pub mod git_info;
 pub mod metadata;
+pub mod notify;
 pub mod persist;
 pub mod procenv;
 pub mod repos;
@@ -65,6 +66,7 @@ pub use collapse::{CollapsePayload, CollapseStore, default_collapse_path};
 pub use folder_meta::{FolderMeta, FolderMetaStore, default_folder_meta_path};
 pub use git_info::{DiffMode, GitInfo, GitInfoCache, compute_git_info, diff_patch};
 pub use metadata::SessionMetadataStore;
+pub use notify::{NeedsYouEdge, NeedsYouWatch};
 pub use repos::{
     RepoEntry, add_repo, add_repo_persisted, default_repos_path, load_repos, load_scan_roots,
     remove_repo_by_dir, remove_repo_persisted, repo_entries, resolve_session_name, save_repos,

@@ -105,10 +105,20 @@ pub struct AgentboardSettings {
     /// clean for the TS CLI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_recommend_percent: Option<u8>,
+
+    /// Fire a desktop notification when an agent session flips into
+    /// "needs you" (waiting/errored/finished-unseen). `None` = the built-in
+    /// default (on). Only written once the user changes it, so the shared
+    /// settings file stays clean for the TS CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify_needs_you: Option<bool>,
 }
 
 /// Built-in default for [`AgentboardSettings::compact_recommend_percent`].
 pub const DEFAULT_COMPACT_RECOMMEND_PERCENT: u8 = 30;
+
+/// Built-in default for [`AgentboardSettings::notify_needs_you`]: notifications on.
+pub const DEFAULT_NOTIFY_NEEDS_YOU: bool = true;
 
 /// Data-hub collector settings (the Rust CLI/app's tt.db collectors; the TS CLI
 /// ignores this block). Each collector is configured independently — enable
@@ -435,6 +445,17 @@ mod tests {
         assert!(!c.slack.enabled);
         assert!(c.slack.token.is_empty());
         assert_eq!(c.slack.refresh_seconds, 60);
+    }
+
+    #[test]
+    fn notify_needs_you_defaults_unset_and_on() {
+        let s = UserSettings::default();
+        // Unset until the user changes it, so the shared file stays clean…
+        assert!(s.agentboard.notify_needs_you.is_none());
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("notifyNeedsYou"));
+        // …and unset means ON.
+        assert!(s.agentboard.notify_needs_you.unwrap_or(DEFAULT_NOTIFY_NEEDS_YOU));
     }
 
     #[test]

@@ -14,6 +14,7 @@ tauri-build = { workspace = true }
 
 [dependencies]
 tauri = { workspace = true, features = ["devtools"] }
+tauri-plugin-notification = { workspace = true }
 tauri-plugin-opener = { workspace = true }
 tt-agentboard = { workspace = true }
 tt-collect = { workspace = true }
