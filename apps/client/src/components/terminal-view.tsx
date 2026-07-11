@@ -10,11 +10,14 @@ import {
   UNDERLINE,
   encodeKey,
   encodePaste,
+  isWideRun,
   rgb,
+  urlAt,
   type Cursor,
   type Frame,
   type Run,
 } from "@/lib/term-protocol";
+import { openExternalUrl } from "@/lib/open-url";
 
 const FONT_SIZE = 13;
 const FONT_FAMILY = "ui-monospace, 'JetBrains Mono', 'Fira Code', monospace";
@@ -338,6 +341,8 @@ export function TerminalView({
         x: Math.max(0, Math.min(grid.cols - 1, Math.floor(e.offsetX / cellW))),
         y: Math.max(0, Math.min(grid.rows - 1, Math.floor(e.offsetY / cellH))),
       });
+      const urlAtCell = (cell: { x: number; y: number }) =>
+        urlAt(grid.lines.map((l) => l?.runs ?? []), cell.x, cell.y, grid.cols);
       let anchor: { x: number; y: number } | null = null;
       let dragged = false;
       const onMouseDown = (e: MouseEvent) => {
@@ -345,6 +350,14 @@ export function TerminalView({
         if (e.button !== 0) return;
         e.preventDefault(); // keep focus on the hidden input
         const cell = cellOf(e);
+        // Ctrl/Cmd+click on a URL opens it in the OS browser.
+        if (e.ctrlKey || e.metaKey) {
+          const url = urlAtCell(cell);
+          if (url) {
+            void openExternalUrl(url);
+            return;
+          }
+        }
         if (e.detail === 2) select("word", cell);
         else if (e.detail >= 3) select("line", cell);
         else {
@@ -353,7 +366,12 @@ export function TerminalView({
         }
       };
       const onMouseMove = (e: MouseEvent) => {
-        if (!anchor) return;
+        if (!anchor) {
+          // Hover affordance: pointer cursor while Ctrl/Cmd is over a URL.
+          canvas.style.cursor =
+            (e.ctrlKey || e.metaKey) && urlAtCell(cellOf(e)) ? "pointer" : "";
+          return;
+        }
         const cell = cellOf(e);
         if (!dragged && cell.x === anchor.x && cell.y === anchor.y) return;
         dragged = true;
@@ -451,12 +469,6 @@ export function TerminalView({
       />
     </div>
   );
-}
-
-/** Whether a run may contain wide (2-column) characters: its column width
- * exceeds its character count. */
-function isWideRun(run: Run): boolean {
-  return run.width > [...run.text].length;
 }
 
 /** The character at terminal column `x` in a row of runs, if any. */
