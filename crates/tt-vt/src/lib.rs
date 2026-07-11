@@ -229,4 +229,28 @@ mod tests {
         );
         drop(session); // joins the thread
     }
+
+    #[test]
+    fn session_coalesces_bursts_into_few_frames() {
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let session = Session::spawn(
+            EngineOptions { cols: 40, rows: 8, max_scrollback: 100 },
+            move |event| {
+                let _ = event_tx.send(event);
+            },
+        )
+        .expect("spawn session");
+
+        // A flood of small chunks, like a TUI redrawing on every keystroke.
+        for i in 0..200 {
+            assert!(session.send(Input::Bytes(format!("chunk {i}\r\n").into_bytes())));
+        }
+        // Dropping closes the channel; the thread drains queued input, renders,
+        // and exits, which also drops the sink and ends the event stream.
+        drop(session);
+
+        let frames = event_rx.iter().filter(|e| matches!(e, Event::Frame(_))).count();
+        assert!(frames > 0, "the burst must produce at least one frame");
+        assert!(frames < 20, "200 rapid chunks must coalesce into few frames, got {frames}");
+    }
 }
