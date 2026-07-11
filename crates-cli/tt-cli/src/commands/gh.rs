@@ -10,20 +10,23 @@
 //!   no-op cancel. This keeps CI/tests from hanging on a prompt.
 //! - The per-command `--debug` flag is replaced by the global `-v/--verbose` flag.
 
-use crate::cli::{BranchCleanArgs, GhCommands, PrArgs};
+use crate::cli::{AssignArgs, BranchCleanArgs, GhCommands, PrArgs};
 use crate::ui;
 use std::fmt;
 use std::io::IsTerminal;
+use std::path::Path;
+use std::time::Duration;
 use tt_git::branch_name::create_branch_name_from_issue;
 use tt_git::picker::{ChoiceValue, build_issue_choices, compute_column_layout};
 use tt_git::pr::generate_pr_content;
-use tt_git::{Issue, branch_clean, issues};
+use tt_git::{Issue, branch_clean, issues, slot_assign};
 
 pub fn run(command: GhCommands) -> i32 {
     match command {
         GhCommands::Branch { assigned_to_me } => branch(assigned_to_me),
         GhCommands::BranchClean(args) => branch_clean_cmd(args),
         GhCommands::Pr(args) => pr(args),
+        GhCommands::Assign(args) => assign(args),
     }
 }
 
@@ -222,6 +225,113 @@ fn branch_clean_cmd(args: BranchCleanArgs) -> i32 {
         ui::warning(&format!("Failed to delete {failed} branch(es)"));
     }
     0
+}
+
+// ---------------------------------------------------------------------------
+// gh assign (dispatch an issue to a sibling slot checkout)
+// ---------------------------------------------------------------------------
+
+/// Timeout for git plumbing reads in the slot (status/stash/remote).
+const SLOT_GIT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Timeout for `gh issue develop` (talks to the network, then fetches).
+const GH_DEVELOP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Run git in `dir`, requiring exit 0; surfaces the failure as a user error.
+fn git_in(dir: &Path, args: &[&str]) -> Option<String> {
+    match tt_exec::run_in_dir_with_timeout("git", args, dir, SLOT_GIT_TIMEOUT) {
+        Ok(out) if out.ok() => Some(out.stdout),
+        Ok(out) => {
+            ui::error(&format!(
+                "git {} failed in {}: {}",
+                args.join(" "),
+                dir.display(),
+                out.stderr.trim()
+            ));
+            None
+        }
+        Err(e) => {
+            ui::error(&format!("Failed to run git in {}: {e}", dir.display()));
+            None
+        }
+    }
+}
+
+/// `ttr gh assign <issue> --slot <dir>`: run `gh issue develop <issue>
+/// --checkout` inside the slot, but only after the guard — the slot must be a
+/// checkout of this same repo with a completely clean tree (no uncommitted or
+/// untracked changes, no stashes). The guard hard-fails with no `--force`
+/// escape hatch: its whole purpose is that a dispatch can never trample a
+/// slot holding in-progress work.
+fn assign(args: AssignArgs) -> i32 {
+    let slot = &args.slot;
+    if !slot.join(".git").exists() {
+        ui::error(&format!("{} is not a git checkout (no .git)", slot.display()));
+        return 1;
+    }
+
+    // Guard 1: the slot must be a clone of this repo, not something unrelated.
+    let Some(expected_remote) = git(&["remote", "get-url", "origin"]) else {
+        return 1;
+    };
+    if !expected_remote.ok() {
+        ui::error("Current directory has no `origin` remote to match the slot against");
+        return 1;
+    }
+    let Some(slot_remote) = git_in(slot, &["remote", "get-url", "origin"]) else {
+        return 1;
+    };
+    // Guard 2+3: clean working tree and empty stash list.
+    let Some(status) = git_in(slot, &["status", "--porcelain"]) else {
+        return 1;
+    };
+    let Some(stashes) = git_in(slot, &["stash", "list"]) else {
+        return 1;
+    };
+
+    if let Err(blocked) = slot_assign::validate_slot(
+        expected_remote.stdout.trim(),
+        slot_remote.trim(),
+        &status,
+        &stashes,
+    ) {
+        ui::error(&format!(
+            "Refusing to assign issue #{} to {}: {blocked}",
+            args.issue,
+            slot.display()
+        ));
+        return 1;
+    }
+
+    if !gh_installed() {
+        ui::error("GitHub CLI not installed");
+        return 1;
+    }
+
+    ui::info(&format!("Slot {} is clean; assigning issue #{}...", slot.display(), args.issue));
+    let issue_arg = args.issue.to_string();
+    match tt_exec::run_in_dir_with_timeout(
+        "gh",
+        &["issue", "develop", &issue_arg, "--checkout"],
+        slot,
+        GH_DEVELOP_TIMEOUT,
+    ) {
+        Ok(out) if out.ok() => {
+            let detail = format!("{}{}", out.stdout.trim(), out.stderr.trim());
+            if !detail.is_empty() {
+                println!("{detail}");
+            }
+            ui::success(&format!("Issue #{} checked out in {}", args.issue, slot.display()));
+            0
+        }
+        Ok(out) => {
+            ui::error(&format!("gh issue develop failed: {}", out.stderr.trim()));
+            1
+        }
+        Err(e) => {
+            ui::error(&format!("Failed to run gh in {}: {e}", slot.display()));
+            1
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
