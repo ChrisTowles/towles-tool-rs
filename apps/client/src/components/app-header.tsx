@@ -1,10 +1,12 @@
+import { useEffect, useState } from "react";
 import { PanelLeftClose, PanelLeftOpen, Search, Settings } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useAppSlot } from "@/lib/data";
+import { cn } from "@/lib/utils";
+import { fmtClock, fmtCountdown, useAppSlot, useStoreSnapshot } from "@/lib/data";
 import { openSettings } from "@/lib/open-settings";
 import { useWorkspace } from "@/lib/workspace";
 
@@ -55,11 +57,55 @@ function SlotBadge() {
   );
 }
 
+/**
+ * Dead-center of the header: the clock, plus what the time means next — the
+ * upcoming meeting's countdown (amber inside 15 minutes). Absolutely centered
+ * so it stays put regardless of what sits left/right. Ticks every 30s (same
+ * cadence as the day bar).
+ */
+function ClockCluster() {
+  const { openTab } = useWorkspace();
+  const { snapshot } = useStoreSnapshot();
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const nextEvent = snapshot.events
+    .filter((e) => e.startTs > now)
+    .sort((a, b) => a.startTs - b.startTs)[0];
+  const eventSoon = nextEvent && nextEvent.startTs - now < 15 * 60_000;
+
+  return (
+    <div className="absolute left-1/2 flex -translate-x-1/2 items-center gap-2">
+      <span className="font-mono text-sm font-semibold tabular-nums text-foreground">
+        {fmtClock(now)}
+      </span>
+      {nextEvent && (
+        <>
+          <span className="text-muted-foreground/40">·</span>
+          <button
+            className={cn(
+              "max-w-72 truncate rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent/50",
+              eventSoon && "text-amber-600 dark:text-amber-500",
+            )}
+            onClick={() => openTab("cockpit")}
+          >
+            {nextEvent.title} in {fmtCountdown(nextEvent.startTs - now)}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function AppHeader() {
   const { sidebarCollapsed, toggleSidebar, setPaletteOpen } = useWorkspace();
 
   return (
-    <header className="flex h-11 shrink-0 items-center gap-2 border-b px-2">
+    <header className="relative flex h-11 shrink-0 items-center gap-2 border-b px-2">
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
@@ -79,6 +125,8 @@ export function AppHeader() {
       <h1 className="font-heading px-1 text-sm font-semibold">Towles Tool</h1>
 
       <SlotBadge />
+
+      <ClockCluster />
 
       <div className="flex-1" />
 

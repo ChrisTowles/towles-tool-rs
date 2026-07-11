@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
-import { CalendarClock, CircleAlert, ListTodo } from "lucide-react";
+import { CircleAlert, ListTodo } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useAgentboardState } from "@/lib/agentboard";
-import { fmtAge, fmtClock, fmtCountdown, useStoreSnapshot } from "@/lib/data";
+import { fmtAge, useStoreSnapshot } from "@/lib/data";
 import { useWorkspace } from "@/lib/workspace";
 
 /**
- * Persistent, quiet strip under the header: what's next and what needs you.
- * The clock (and everything derived from `now`) ticks every 30s.
+ * Persistent, quiet strip under the header: the top task and what needs you.
+ * (The clock and next-meeting countdown live in the header's center cluster.)
+ * Everything derived from `now` ticks every 30s.
  */
 export function DayBar() {
   const { openTab } = useWorkspace();
@@ -21,9 +22,6 @@ export function DayBar() {
     return () => clearInterval(id);
   }, []);
 
-  const nextEvent = snapshot.events
-    .filter((e) => e.startTs > now)
-    .sort((a, b) => a.startTs - b.startTs)[0];
   const topTask = snapshot.tasks
     .filter((t) => t.status !== "done")
     .sort((a, b) => a.createdAt - b.createdAt)[0];
@@ -39,41 +37,16 @@ export function DayBar() {
   const newestRun = claudeRuns.reduce((max, r) => Math.max(max, r.ranAt), 0);
   const fresh = newestRun > 0 && now - newestRun < 30 * 60_000;
 
-  const eventSoon = nextEvent && nextEvent.startTs - now < 15 * 60_000;
-
   return (
     <div className="flex h-8 shrink-0 items-center gap-2 border-b px-3 text-xs text-muted-foreground">
-      <span className="tabular-nums font-medium text-foreground">{fmtClock(now)}</span>
-
-      {nextEvent && (
-        <>
-          <span className="text-muted-foreground/40">·</span>
-          <button
-            className={cn(
-              "flex items-center gap-1.5 rounded-md px-1.5 py-0.5 hover:bg-accent/50",
-              eventSoon && "text-amber-600 dark:text-amber-500",
-            )}
-            onClick={() => openTab("cockpit")}
-          >
-            <CalendarClock className="size-3.5" />
-            <span className="truncate">
-              {nextEvent.title} in {fmtCountdown(nextEvent.startTs - now)}
-            </span>
-          </button>
-        </>
-      )}
-
       {topTask && (
-        <>
-          <span className="text-muted-foreground/40">·</span>
-          <button
-            className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 hover:bg-accent/50"
-            onClick={() => openTab("cockpit")}
-          >
-            <ListTodo className="size-3.5" />
-            <span className="max-w-56 truncate">{topTask.text}</span>
-          </button>
-        </>
+        <button
+          className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 hover:bg-accent/50"
+          onClick={() => openTab("cockpit")}
+        >
+          <ListTodo className="size-3.5" />
+          <span className="max-w-56 truncate">{topTask.text}</span>
+        </button>
       )}
 
       <div className="flex-1" />
