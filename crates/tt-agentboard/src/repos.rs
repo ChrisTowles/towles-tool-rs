@@ -47,6 +47,20 @@ fn load_config(path: &Path) -> ReposConfig {
     serde_json::from_str(&text).unwrap_or_default()
 }
 
+/// Load the repo-path list, distinguishing a torn/corrupt read from a
+/// legitimately absent file: `Some(vec![])` when the file doesn't exist (no
+/// repos configured yet), but `None` when it exists and can't be read or
+/// parsed — most likely a read that raced another instance's write (#75).
+/// Callers should keep their previous in-memory list on `None` rather than
+/// degrading to empty.
+pub fn try_load_repos(path: &Path) -> Option<Vec<String>> {
+    if !path.exists() {
+        return Some(Vec::new());
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<ReposConfig>(&text).ok().map(|c| c.repo_paths)
+}
+
 /// Load the repo-path list. Empty on missing/corrupt file. Ports the loader half.
 pub fn load_repos(path: &Path) -> Vec<String> {
     load_config(path).repo_paths
@@ -58,13 +72,12 @@ pub fn load_scan_roots(path: &Path) -> Vec<String> {
     load_config(path).scan_roots
 }
 
-/// Persist `config` as pretty JSON with a trailing newline.
+/// Persist `config` as pretty JSON with a trailing newline. Atomic
+/// (temp+rename) so a concurrent reader in another instance never sees a
+/// truncated fragment; see [`crate::persist::write_atomic`].
 fn save_config(path: &Path, config: &ReposConfig) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let json = serde_json::to_string_pretty(config).unwrap_or_else(|_| "{}".to_string());
-    std::fs::write(path, format!("{json}\n"))
+    crate::persist::write_atomic(path, &format!("{json}\n"))
 }
 
 /// Persist the repo-path list as `{"repoPaths":[...]}`. Any existing `scanRoots`
@@ -389,6 +402,24 @@ mod tests {
         let bad = dir.path().join("bad.json");
         std::fs::write(&bad, "not json").unwrap();
         assert!(load_repos(&bad).is_empty());
+    }
+
+    #[test]
+    fn try_load_distinguishes_missing_from_torn_read() {
+        let dir = TempDir::new().unwrap();
+        // Missing file: legitimately no repos configured.
+        assert_eq!(try_load_repos(&dir.path().join("nope.json")), Some(vec![]));
+        // Valid file: the list.
+        let path = dir.path().join("repos.json");
+        save_repos(&path, &paths(&["/a/x"])).unwrap();
+        assert_eq!(try_load_repos(&path), Some(paths(&["/a/x"])));
+        // Existing-but-unparseable (a torn read of a concurrent write): None,
+        // so callers keep their previous in-memory list instead of pruning
+        // everything against an empty set (#75).
+        std::fs::write(&path, r#"{"repoPaths":["/a/x"#).unwrap();
+        assert_eq!(try_load_repos(&path), None);
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(try_load_repos(&path), None);
     }
 
     #[test]

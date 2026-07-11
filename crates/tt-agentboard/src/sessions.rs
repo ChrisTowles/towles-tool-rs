@@ -209,13 +209,10 @@ impl SessionStore {
                 on_disk_next_seq.insert(dir.clone(), *seq);
             }
         }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let config =
             SessionsConfig { folders: on_disk_folders.clone(), next_seq: on_disk_next_seq.clone() };
         let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
-        std::fs::write(&path, format!("{json}\n"))?;
+        crate::persist::write_atomic(&path, &format!("{json}\n"))?;
         self.folders = on_disk_folders;
         self.next_seq = on_disk_next_seq;
         Ok(())

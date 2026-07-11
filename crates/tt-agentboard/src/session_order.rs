@@ -135,13 +135,8 @@ impl SessionOrder {
         let Some(path) = &self.persist_path else {
             return;
         };
-        if let Some(parent) = path.parent()
-            && std::fs::create_dir_all(parent).is_err()
-        {
-            return;
-        }
         if let Ok(json) = serde_json::to_string(&self.order) {
-            let _ = std::fs::write(path, format!("{json}\n"));
+            let _ = crate::persist::write_atomic(path, &format!("{json}\n"));
         }
     }
 }
