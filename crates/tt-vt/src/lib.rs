@@ -70,6 +70,26 @@ mod tests {
     }
 
     #[test]
+    fn request_full_forces_a_full_frame_from_a_clean_engine() {
+        let mut e = engine(20, 4);
+        e.feed(b"one\r\ntwo");
+        e.render().expect("render").expect("first frame");
+        assert!(e.render().expect("render").is_none(), "engine is clean");
+
+        // A re-shown pane asks for a full repaint even though nothing is
+        // dirty — the frame must exist, be full, and carry every row (#47).
+        e.request_full();
+        let frame = e.render().expect("render").expect("forced frame");
+        assert!(frame.full);
+        assert_eq!(frame.changed.len(), 4, "all viewport rows resent");
+        assert_eq!(row_text(&frame, 0), "one");
+        assert_eq!(row_text(&frame, 1), "two");
+
+        // One-shot: the next render is incremental again.
+        assert!(e.render().expect("render").is_none());
+    }
+
+    #[test]
     fn title_change_is_reported_once() {
         let mut e = engine(20, 4);
         e.feed(b"\x1b]0;my-title\x07");

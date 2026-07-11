@@ -337,6 +337,18 @@ pub fn term_scroll(
     Ok(())
 }
 
+/// Ask the engine to emit one full frame regardless of dirty state. The view
+/// calls this when a pane transitions from hidden (`display:none`) back to
+/// visible: dirty-only frames never resend rows the engine considers clean,
+/// so a stale canvas would otherwise stay stale until a scroll (#47).
+#[tauri::command]
+pub fn term_request_full(state: State<TermState>, term_id: String) -> Result<(), String> {
+    let guard = state.0.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::RequestFull);
+    Ok(())
+}
+
 /// Apply a selection gesture from the terminal view, in viewport cell
 /// coordinates. `kind`: drag (anchor→head range), word (double-click),
 /// line (triple-click), all, clear.

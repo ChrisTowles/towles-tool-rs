@@ -40,6 +40,9 @@ pub enum Input {
     Select(Select),
     /// Reply with the active selection's plain text on the provided channel.
     Copy(mpsc::SyncSender<Option<String>>),
+    /// Force the next render to be a full frame (re-shown pane needs a
+    /// complete repaint; see [`Engine::request_full`]).
+    RequestFull,
 }
 
 #[derive(Debug)]
@@ -106,6 +109,7 @@ impl Session {
                     Input::Copy(reply) => {
                         let _ = reply.try_send(engine.copy_selection().ok().flatten());
                     }
+                    Input::RequestFull => engine.request_full(),
                 };
                 apply(first);
                 // Absorb further input until the frame interval since the

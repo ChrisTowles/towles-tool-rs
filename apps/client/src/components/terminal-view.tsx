@@ -177,17 +177,26 @@ export function TerminalView({
 
     const applyFrame = (frame: Frame) => {
       const prevCursorY = grid.cursor?.y;
-      if (frame.full || frame.cols !== grid.cols || frame.rows !== grid.rows) {
+      const resized = frame.cols !== grid.cols || frame.rows !== grid.rows;
+      if (frame.full) {
         grid.cols = frame.cols;
         grid.rows = frame.rows;
         grid.lines = Array.from({ length: frame.rows }, () => ({ runs: [] }));
+      } else if (resized) {
+        // Dimension change on a dirty-only frame (resize race): adjust the
+        // row count but KEEP existing rows — wiping them here blanks rows
+        // the engine considers clean and will never resend (#47).
+        grid.cols = frame.cols;
+        grid.rows = frame.rows;
+        while (grid.lines.length < frame.rows) grid.lines.push({ runs: [] });
+        grid.lines.length = frame.rows;
       }
       for (const row of frame.changed) grid.lines[row.y] = { runs: row.runs, sel: row.sel };
       grid.cursor = frame.cursor;
       grid.modes = frame.modes;
       if (frame.title !== undefined) onTitleRef.current?.(termId, frame.title);
 
-      if (frame.full) {
+      if (frame.full || resized) {
         paintAll();
         return;
       }
@@ -374,7 +383,17 @@ export function TerminalView({
       focusInput();
     })();
 
+    // Panes are hidden with display:none (never unmounted), so the observer
+    // sees them collapse to 0×0 and grow back on window switches.
+    let wasHidden = false;
     const observer = new ResizeObserver(() => {
+      if (host.clientWidth === 0 || host.clientHeight === 0) {
+        // Hidden pane: never resize the PTY to a degenerate 2×1 grid — that
+        // reflows the shell while offscreen and desyncs the local mirror
+        // from the engine's grid, which is how panes came back stale (#47).
+        wasHidden = true;
+        return;
+      }
       const cols = Math.max(2, Math.floor(host.clientWidth / cellW));
       const rows = Math.max(1, Math.floor(host.clientHeight / cellH));
       fitCanvas();
@@ -390,6 +409,15 @@ export function TerminalView({
             cellWidth: Math.round(cellW),
             cellHeight: cellH,
           }).catch(() => {}),
+        );
+      }
+      if (wasHidden) {
+        // Re-shown: ask the engine for one full frame in case any dirty-only
+        // frame was missed while hidden — the engine never resends rows it
+        // considers clean, so a gap would otherwise persist until a scroll.
+        wasHidden = false;
+        void import("@tauri-apps/api/core").then(({ invoke }) =>
+          invoke("term_request_full", { termId }).catch(() => {}),
         );
       }
     });
