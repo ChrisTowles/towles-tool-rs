@@ -20,8 +20,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// `files_changed`/`lines_added`/`lines_removed` measure the working tree against
 /// the pushed baseline (merge-base with upstream, else origin/main).
-/// `commits_delta` uses a different baseline (distance from origin/main), so the
-/// two can disagree on a feature branch tracking its own remote.
+/// `commits_ahead`/`commits_behind` use a different baseline (distance from
+/// origin/main), so the two can disagree on a feature branch tracking its own
+/// remote.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GitInfo {
     pub branch: String,
@@ -29,8 +30,12 @@ pub struct GitInfo {
     pub files_changed: i64,
     pub lines_added: i64,
     pub lines_removed: i64,
-    /// Positive = ahead of origin/main, negative = behind.
-    pub commits_delta: i64,
+    /// Commits on HEAD that origin/main doesn't have.
+    pub commits_ahead: i64,
+    /// Commits on origin/main that HEAD doesn't have. Kept separate from
+    /// `commits_ahead` (not a signed delta) so "3 ahead, 2 behind" doesn't
+    /// collapse to a meaningless "+1".
+    pub commits_behind: i64,
     /// `git remote get-url origin`, if the checkout has an origin remote. Used to
     /// group folders (checkouts) of the same logical repo in the Folder Rail.
     pub origin_url: Option<String>,
@@ -212,13 +217,15 @@ pub fn compute_git_info_from_outputs(
     let untracked = status_out.lines().filter(|l| l.starts_with("??")).count() as i64;
     let files_changed = changed_files.len() as i64 + untracked;
 
+    let (commits_ahead, commits_behind) = parse_ahead_behind(ahead_behind);
     GitInfo {
         branch: branch.to_string(),
         is_worktree: git_dir.contains("/worktrees/"),
         files_changed,
         lines_added,
         lines_removed,
-        commits_delta: parse_ahead_behind(ahead_behind),
+        commits_ahead,
+        commits_behind,
         // The pure parser has no origin/worktree-list knowledge; `compute_git_info`
         // fills both in.
         origin_url: None,
@@ -226,17 +233,32 @@ pub fn compute_git_info_from_outputs(
     }
 }
 
-/// Full unified diff against the pushed baseline (merge-base with upstream,
-/// else origin/main), for the diff-preview dialog. Untracked files don't
-/// appear in `git diff`, so they're listed by name in a trailing block rather
-/// than silently dropped. Empty string when `dir` isn't a git repo or has no
-/// changes.
-pub fn diff_patch(dir: &str) -> String {
+/// What baseline the diff pane compares the working tree against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffMode {
+    /// Everything on this branch vs where it forked from origin/main
+    /// (merge-base) — committed and uncommitted work alike.
+    Main,
+    /// Only what isn't committed yet: `git diff HEAD` (staged + unstaged).
+    Uncommitted,
+}
+
+/// Full unified diff for the diff pane, baseline picked by `mode`. Untracked
+/// files don't appear in `git diff`, so they're listed by name in a trailing
+/// block rather than silently dropped. Empty string when `dir` isn't a git
+/// repo or has no changes.
+pub fn diff_patch(dir: &str, mode: DiffMode) -> String {
     if dir.is_empty() {
         return String::new();
     }
-    let origin_main = resolve_origin_main(dir);
-    let base = resolve_pushed_base(dir, &origin_main);
+    let base = match mode {
+        DiffMode::Main => {
+            let origin_main = resolve_origin_main(dir);
+            let merge_base = git_out(dir, &["merge-base", "HEAD", &origin_main]);
+            if merge_base.is_empty() { "HEAD".to_string() } else { merge_base }
+        }
+        DiffMode::Uncommitted => "HEAD".to_string(),
+    };
     let mut patch = git_out(dir, &["diff", &base]);
 
     let status_out = git_out(dir, &["status", "--porcelain"]);
@@ -283,15 +305,15 @@ fn parse_numstat(diff_out: &str) -> (i64, i64, HashSet<String>) {
 }
 
 /// Parse `git rev-list --left-right --count <origin>...HEAD` ("behind\tahead")
-/// into commits ahead(+)/behind(-) of origin/main.
-fn parse_ahead_behind(ahead_behind: &str) -> i64 {
+/// into `(ahead, behind)` counts vs origin/main.
+fn parse_ahead_behind(ahead_behind: &str) -> (i64, i64) {
     if ahead_behind.is_empty() {
-        return 0;
+        return (0, 0);
     }
     let mut parts = ahead_behind.split('\t');
     let behind = parts.next().and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(0);
     let ahead = parts.next().and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(0);
-    ahead - behind
+    (ahead, behind)
 }
 
 #[cfg(test)]
@@ -326,19 +348,20 @@ mod tests {
     }
 
     #[test]
-    fn ahead_behind_parsed_as_signed_delta() {
-        // "behind\tahead"
-        assert_eq!(parse_ahead_behind("0\t3"), 3);
-        assert_eq!(parse_ahead_behind("2\t0"), -2);
-        assert_eq!(parse_ahead_behind("1\t4"), 3);
-        assert_eq!(parse_ahead_behind(""), 0);
+    fn ahead_behind_parsed_as_separate_counts() {
+        // "behind\tahead" → (ahead, behind)
+        assert_eq!(parse_ahead_behind("0\t3"), (3, 0));
+        assert_eq!(parse_ahead_behind("2\t0"), (0, 2));
+        assert_eq!(parse_ahead_behind("1\t4"), (4, 1));
+        assert_eq!(parse_ahead_behind(""), (0, 0));
     }
 
     #[test]
-    fn branch_and_delta_flow_through() {
-        let info = compute_git_info_from_outputs("feature/x", "/repo/.git", "", "", "0\t5");
+    fn branch_and_ahead_behind_flow_through() {
+        let info = compute_git_info_from_outputs("feature/x", "/repo/.git", "", "", "2\t5");
         assert_eq!(info.branch, "feature/x");
-        assert_eq!(info.commits_delta, 5);
+        assert_eq!(info.commits_ahead, 5);
+        assert_eq!(info.commits_behind, 2);
     }
 
     #[test]

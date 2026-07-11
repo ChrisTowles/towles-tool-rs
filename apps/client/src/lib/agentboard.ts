@@ -89,7 +89,10 @@ export type FolderData = {
   filesChanged: number;
   linesAdded: number;
   linesRemoved: number;
-  commitsDelta: number;
+  /** Commits on this branch that origin/main doesn't have. */
+  commitsAhead: number;
+  /** Commits on origin/main that this branch doesn't have. */
+  commitsBehind: number;
   sessions: SessionData[];
   needs: number;
   /** User-authored "what am I working toward here" (persisted per folder). */
@@ -436,7 +439,7 @@ export function isSoloRepo(r: RepoData): boolean {
 /** A folder (checkout) is "quiet" when nothing about it needs attention right
  * now: no live session, no session that catches the eye (waiting/errored/
  * unseen), and no unpushed local commits or dirty working tree. Being
- * *behind* origin (`commitsDelta < 0`) doesn't count — that's just staleness,
+ * *behind* origin (`commitsBehind > 0`) doesn't count — that's just staleness,
  * not work in progress. A worktree that was created but never had a session
  * opened in it falls out of this naturally (empty `sessions`, clean tree) —
  * no special case needed. Richer than "no live session": a folder can be
@@ -446,7 +449,7 @@ export function isFolderQuiet(f: FolderData): boolean {
   return (
     liveSessions(f).length === 0 &&
     f.filesChanged === 0 &&
-    f.commitsDelta <= 0 &&
+    f.commitsAhead === 0 &&
     f.sessions.every((s) => !sessionCatchesEye(s))
   );
 }

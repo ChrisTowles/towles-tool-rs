@@ -154,14 +154,37 @@ export function WorktreeBadge() {
   );
 }
 
+/** Commits ahead/behind origin/main, next to the branch name — `↑3 ↓2`.
+ * Quiet mono (git data, not an attention signal): ahead means unmerged local
+ * commits, behind is just staleness. Renders nothing when even with main. */
+export function AheadBehind({
+  stats: { commitsAhead, commitsBehind },
+}: {
+  stats: Pick<FolderData, "commitsAhead" | "commitsBehind">;
+}) {
+  if (commitsAhead === 0 && commitsBehind === 0) return null;
+  const parts = [
+    commitsAhead > 0 && `↑${commitsAhead}`,
+    commitsBehind > 0 && `↓${commitsBehind}`,
+  ].filter(Boolean);
+  return (
+    <span
+      className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70"
+      title={`${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} ahead of origin/main, ${commitsBehind} behind`}
+    >
+      {parts.join(" ")}
+    </span>
+  );
+}
+
 /** The diff entry point — a real, always-visible button (never hidden behind
  * a hover or dropped when the tree is clean, so the feature stays findable).
  * Clean folders read a quiet `diff`; dirty ones carry the ± tally. */
 export function DiffButton({
-  stats: { filesChanged, linesAdded, linesRemoved, commitsDelta },
+  stats: { filesChanged, linesAdded, linesRemoved, commitsAhead },
   onOpen,
 }: {
-  stats: Pick<FolderData, "filesChanged" | "linesAdded" | "linesRemoved" | "commitsDelta">;
+  stats: Pick<FolderData, "filesChanged" | "linesAdded" | "linesRemoved" | "commitsAhead">;
   onOpen: () => void;
 }) {
   const clean = linesAdded === 0 && linesRemoved === 0;
@@ -175,8 +198,8 @@ export function DiffButton({
       className="flex h-5 shrink-0 items-center gap-1 rounded-md border border-border/70 px-1.5 font-mono text-[10.5px] text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground"
       title={
         clean
-          ? "No working-tree changes — view diff vs pushed base"
-          : `${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsDelta} commit${commitsDelta === 1 ? "" : "s"} ahead — view diff`
+          ? "No working-tree changes — view diff"
+          : `${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} ahead — view diff`
       }
     >
       <GitCompare className="size-3" />

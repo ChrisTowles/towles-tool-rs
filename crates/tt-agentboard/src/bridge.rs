@@ -199,7 +199,8 @@ fn build_folder(
         files_changed: git.files_changed,
         lines_added: git.lines_added,
         lines_removed: git.lines_removed,
-        commits_delta: git.commits_delta,
+        commits_ahead: git.commits_ahead,
+        commits_behind: git.commits_behind,
         sessions: session_data,
         needs,
         purpose: folder_meta.purpose_for(&entry.dir).map(str::to_string),
@@ -317,7 +318,7 @@ mod tests {
                 files_changed: 3,
                 lines_added: 10,
                 lines_removed: 2,
-                commits_delta: 1,
+                commits_ahead: 1,
                 origin_url: Some("git@github.com:me/alpha.git".into()),
                 ..Default::default()
             },

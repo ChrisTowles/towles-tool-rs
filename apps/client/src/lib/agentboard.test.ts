@@ -403,7 +403,8 @@ function folder(overrides: Partial<FolderData>): FolderData {
     filesChanged: 0,
     linesAdded: 0,
     linesRemoved: 0,
-    commitsDelta: 0,
+    commitsAhead: 0,
+    commitsBehind: 0,
     sessions: [],
     needs: 0,
     ...overrides,
@@ -428,11 +429,11 @@ describe("isFolderQuiet", () => {
   });
 
   it("is not quiet with unpushed local commits", () => {
-    expect(isFolderQuiet(folder({ commitsDelta: 2 }))).toBe(false);
+    expect(isFolderQuiet(folder({ commitsAhead: 2 }))).toBe(false);
   });
 
   it("stays quiet when only behind origin — that's staleness, not work", () => {
-    expect(isFolderQuiet(folder({ commitsDelta: -4 }))).toBe(true);
+    expect(isFolderQuiet(folder({ commitsBehind: 4 }))).toBe(true);
   });
 
   it("is not quiet with a session that catches the eye (unseen/waiting/errored)", () => {

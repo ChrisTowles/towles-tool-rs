@@ -63,7 +63,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub use bridge::{StatePayload, assemble_state};
 pub use collapse::{CollapsePayload, CollapseStore, default_collapse_path};
 pub use folder_meta::{FolderMeta, FolderMetaStore, default_folder_meta_path};
-pub use git_info::{GitInfo, GitInfoCache, compute_git_info, diff_patch};
+pub use git_info::{DiffMode, GitInfo, GitInfoCache, compute_git_info, diff_patch};
 pub use metadata::SessionMetadataStore;
 pub use repos::{
     RepoEntry, add_repo, add_repo_persisted, default_repos_path, load_repos, load_scan_roots,
