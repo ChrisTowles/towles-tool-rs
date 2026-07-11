@@ -1,17 +1,15 @@
 //! Towles Tool desktop app (Tauri 2). Hosts the agentboard bridge: an engine
 //! (tracker/metadata/order/git/watcher) driven by tokio tasks that emits state
 //! snapshots as the `agentboard://state` event and exposes client commands.
-//! Also owns the embedded terminals (`terminal`): PTYs the app spawns,
-//! persisted across app restarts by a shpool daemon when available
-//! (`shpool`), rendered by ghostty-web in the agentboard screen.
+//! Also owns the embedded terminals (`terminal`): PTYs the app spawns and
+//! kills on window close, rendered by xterm.js in the agentboard screen.
 
 mod agentboard;
+mod claude_sessions;
 mod doctor;
-mod graph;
 mod journal;
 mod scheduler;
 mod settings;
-mod shpool;
 mod store;
 mod terminal;
 
@@ -210,19 +208,10 @@ pub fn run() {
             Ok(())
         })
         .manage(terminal::TermState::default())
-        .on_window_event(|window, event| match event {
-            // With live shells that shpool can keep alive, closing needs an
-            // answer first (keep detached vs kill); the frontend dialog
-            // resolves via `app_close`, which destroys the window for real.
-            WindowEvent::CloseRequested { api, .. } => {
-                if terminal::ask_before_close(window.app_handle(), window.label()) {
-                    api.prevent_close();
-                }
-            }
-            WindowEvent::Destroyed => {
+        .on_window_event(|window, event| {
+            if let WindowEvent::Destroyed = event {
                 terminal::on_window_destroyed(window.app_handle(), window.label());
             }
-            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             app_slot,
@@ -262,19 +251,18 @@ pub fn run() {
             journal::journal_search,
             journal::journal_create,
             journal::journal_open,
-            graph::graph_spend_summary,
+            claude_sessions::claude_sessions_summary,
+            claude_sessions::claude_sessions_list,
             doctor::doctor_run,
             settings::settings_get,
             settings::settings_set,
             terminal::term_start,
             terminal::term_write,
             terminal::term_resize,
+            terminal::term_scroll,
+            terminal::term_select,
+            terminal::term_copy,
             terminal::term_kill,
-            terminal::app_close,
-            shpool::shpool_status,
-            shpool::shpool_install,
-            shpool::shpool_sessions,
-            shpool::shpool_kill_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Towles Tool application");

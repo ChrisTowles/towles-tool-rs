@@ -122,6 +122,14 @@ cite the yaak or slot-1 source path in the commit.
       passed explicitly into `find_recent_sessions`/`calculate_cutoff_ms` instead
       of reading the clock internally (deterministic tests); session `startTime`
       is emitted locale-free; JSON key order follows the struct field order.
+  **2026-07-10 rename:** `ttr graph` → `ttr claude-sessions` (command module
+  `commands/claude_sessions.rs`; the `tt-graph` crate name is unchanged — it's
+  an internal implementation detail, not user-facing). The app screen (`Graph`
+  → `Claude Sessions`) gained a "Recent sessions" list (title, project, date,
+  tokens, sorted by recency) alongside the existing project/model bar charts,
+  via a new `claude_sessions_list` Tauri command — the underlying discovery
+  pass already scanned every repo under `~/.claude/projects`, so this just
+  surfaces per-session `SessionResult` data the app wasn't showing yet.
 
 - [~] **5 — Claude plugin carry-over.** `packages/core/` (plugin manifest, hooks,
   skills, README) is copied across **verbatim** from slot-1 — pure markdown/JSON,

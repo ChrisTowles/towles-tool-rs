@@ -6,8 +6,7 @@
 //! Run records serialize to the TS `DoctorRunResult` shape (camelCase) so the
 //! `--track`/`--diff` history file stays interoperable with the TypeScript CLI.
 //! The tool list follows the current product: the tmux agentboard was removed
-//! (2026-07-04, hard cutover), so `tmux`/`ttyd` are no longer checked; `shpool`
-//! (terminal persistence) is checked as optional instead.
+//! (2026-07-04, hard cutover), so `tmux`/`ttyd` are no longer checked.
 
 use serde::{Deserialize, Serialize};
 
@@ -64,8 +63,7 @@ pub struct AgentBoardCheck {
     pub hint: Option<String>,
 }
 
-/// Tools to probe: (binary, version arg, optional). `shpool` is optional —
-/// without it terminals work but don't survive an app restart.
+/// Tools to probe: (binary, version arg, optional).
 pub const TOOLS: &[(&str, &str, bool)] = &[
     ("git", "--version", false),
     ("gh", "--version", false),
@@ -73,7 +71,6 @@ pub const TOOLS: &[(&str, &str, bool)] = &[
     ("bun", "--version", false),
     ("claude", "--version", false),
     ("cargo", "--version", false),
-    ("shpool", "version", true),
 ];
 
 /// Everything one doctor run produced: the interop-shaped [`DoctorRunResult`]
@@ -274,7 +271,6 @@ mod tests {
     #[test]
     fn tools_list_reflects_the_post_pivot_product() {
         let names: Vec<&str> = TOOLS.iter().map(|(n, _, _)| *n).collect();
-        assert!(names.contains(&"shpool"), "terminal persistence is checked");
         assert!(!names.contains(&"tmux"), "tmux agentboard was removed (hard cutover)");
         assert!(!names.contains(&"ttyd"));
     }

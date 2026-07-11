@@ -4,10 +4,10 @@ use common::cli_cmd;
 use std::path::Path;
 use tempfile::TempDir;
 
-/// A `ttr graph` command with HOME redirected into the sandbox, so it reads the
-/// fixture `~/.claude/projects` instead of the real one. stdout is not a TTY under
-/// assert_cmd, so auto-open is already suppressed.
-fn graph_cmd(temp: &Path) -> assert_cmd::Command {
+/// A `ttr claude-sessions` command with HOME redirected into the sandbox, so it
+/// reads the fixture `~/.claude/projects` instead of the real one. stdout is not
+/// a TTY under assert_cmd, so auto-open is already suppressed.
+fn claude_sessions_cmd(temp: &Path) -> assert_cmd::Command {
     let mut cmd = cli_cmd(temp);
     cmd.env("HOME", temp);
     cmd
@@ -31,7 +31,7 @@ fn write_session(home: &Path, project: &str, session_id: &str, input: i64, outpu
 }
 
 #[test]
-fn graph_json_emits_rows() {
+fn claude_sessions_json_emits_rows() {
     let temp = TempDir::new().unwrap();
     write_session(
         temp.path(),
@@ -41,8 +41,8 @@ fn graph_json_emits_rows() {
         500,
     );
 
-    let assert = graph_cmd(temp.path())
-        .args(["graph", "--format", "json", "--days", "0"])
+    let assert = claude_sessions_cmd(temp.path())
+        .args(["claude-sessions", "--format", "json", "--days", "0"])
         .assert()
         .success();
 
@@ -56,12 +56,12 @@ fn graph_json_emits_rows() {
 }
 
 #[test]
-fn graph_csv_emits_header_and_row() {
+fn claude_sessions_csv_emits_header_and_row() {
     let temp = TempDir::new().unwrap();
     write_session(temp.path(), "-home-user-proj", "bbbbbbbb-1111-2222-3333-444444444444", 200, 100);
 
-    graph_cmd(temp.path())
-        .args(["graph", "-f", "csv", "--days", "0"])
+    claude_sessions_cmd(temp.path())
+        .args(["claude-sessions", "-f", "csv", "--days", "0"])
         .assert()
         .success()
         .stdout(predicates::str::contains(
@@ -71,12 +71,12 @@ fn graph_csv_emits_header_and_row() {
 }
 
 #[test]
-fn graph_session_not_found_errors() {
+fn claude_sessions_session_not_found_errors() {
     let temp = TempDir::new().unwrap();
     write_session(temp.path(), "-home-user-proj", "cccccccc-1111-2222-3333-444444444444", 10, 5);
 
-    graph_cmd(temp.path())
-        .args(["graph", "-f", "json", "-s", "does-not-exist"])
+    claude_sessions_cmd(temp.path())
+        .args(["claude-sessions", "-f", "json", "-s", "does-not-exist"])
         .assert()
         .failure()
         .code(1)
@@ -84,11 +84,11 @@ fn graph_session_not_found_errors() {
 }
 
 #[test]
-fn graph_no_projects_dir_errors() {
+fn claude_sessions_no_projects_dir_errors() {
     let temp = TempDir::new().unwrap();
     // No ~/.claude/projects created.
-    graph_cmd(temp.path())
-        .args(["graph", "-f", "json"])
+    claude_sessions_cmd(temp.path())
+        .args(["claude-sessions", "-f", "json"])
         .assert()
         .failure()
         .code(1)
@@ -96,12 +96,12 @@ fn graph_no_projects_dir_errors() {
 }
 
 #[test]
-fn graph_no_sessions_errors() {
+fn claude_sessions_no_sessions_errors() {
     let temp = TempDir::new().unwrap();
     // Projects dir exists but is empty.
     std::fs::create_dir_all(temp.path().join(".claude").join("projects")).unwrap();
-    graph_cmd(temp.path())
-        .args(["graph", "-f", "json"])
+    claude_sessions_cmd(temp.path())
+        .args(["claude-sessions", "-f", "json"])
         .assert()
         .failure()
         .code(1)
@@ -109,7 +109,7 @@ fn graph_no_sessions_errors() {
 }
 
 #[test]
-fn graph_html_writes_report_under_reports_dir() {
+fn claude_sessions_html_writes_report_under_reports_dir() {
     let temp = TempDir::new().unwrap();
     write_session(
         temp.path(),
@@ -119,8 +119,8 @@ fn graph_html_writes_report_under_reports_dir() {
         500,
     );
 
-    graph_cmd(temp.path())
-        .args(["graph", "--days", "0", "--no-open"])
+    claude_sessions_cmd(temp.path())
+        .args(["claude-sessions", "--days", "0", "--no-open"])
         .assert()
         .success()
         .stdout(predicates::str::contains("Saved to"));
@@ -138,13 +138,13 @@ fn graph_html_writes_report_under_reports_dir() {
 }
 
 #[test]
-fn graph_html_single_session_filename_uses_short_id() {
+fn claude_sessions_html_single_session_filename_uses_short_id() {
     let temp = TempDir::new().unwrap();
     let id = "eeeeeeee-1111-2222-3333-444444444444";
     write_session(temp.path(), "-home-user-proj", id, 1000, 500);
 
-    graph_cmd(temp.path())
-        .args(["graph", "-s", id, "--no-open"])
+    claude_sessions_cmd(temp.path())
+        .args(["claude-sessions", "-s", id, "--no-open"])
         .assert()
         .success()
         .stdout(predicates::str::contains(format!("Generating treemap for session {id}")));
@@ -158,11 +158,11 @@ fn graph_html_single_session_filename_uses_short_id() {
 }
 
 #[test]
-fn graph_invalid_format_errors() {
+fn claude_sessions_invalid_format_errors() {
     let temp = TempDir::new().unwrap();
     std::fs::create_dir_all(temp.path().join(".claude").join("projects")).unwrap();
-    graph_cmd(temp.path())
-        .args(["graph", "-f", "xml"])
+    claude_sessions_cmd(temp.path())
+        .args(["claude-sessions", "-f", "xml"])
         .assert()
         .failure()
         .code(1)

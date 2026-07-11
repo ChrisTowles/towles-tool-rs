@@ -10,7 +10,7 @@ Rust:
 
 ```sh
 cargo run -p tt-cli -- <args>       # run the CLI (binary is `ttr`, not `tt`)
-cargo run -p tt-cli -- doctor       # e.g. doctor, config, journal, gh, install, graph
+cargo run -p tt-cli -- doctor       # e.g. doctor, config, journal, gh, install, claude-sessions
 cargo fmt --check                   # formatting (rustfmt, 100-col)
 cargo clippy --all -- -D warnings   # lint; warnings are errors
 cargo test --all                    # unit + assert_cmd black-box tests
@@ -88,7 +88,7 @@ Cargo workspace + npm workspace (`apps/client` only):
   `config show|validate|schema|reset`, `doctor [--json --track --diff]`,
   `journal daily-notes|note|meeting|list|search` (+ `today` alias),
   `gh pr|branch|branch-clean` (+ `pr` alias), `install [-o]`,
-  `graph [-s --days -f html|json|csv --open/--no-open]`,
+  `claude-sessions [-s --days -f html|json|csv --open/--no-open]`,
   `collect calendar|issues|prs|all`, `mcp serve`.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
   `npm run dev` (root) picks a free dev-server port automatically
@@ -114,15 +114,17 @@ Cargo workspace + npm workspace (`apps/client` only):
   `src/lib/mock-data.ts`. The three "Focus" screens are **Cockpit** (default
   day home — next-meeting countdown + PRs + issue queue), **Board** (cross-repo
   kanban over local todos grouped by status, with promote-to-issue), and
-  **Agentboard** (repos + per-repo terminals). Terminals render with
-  **ghostty-web** (Ghostty's VT engine as WASM, xterm.js-compatible API,
-  canvas renderer — `components/terminal-view.tsx`), and their shells run
-  inside a **shpool** daemon so they survive an app restart: the Rust side
-  (`crates-tauri/tt-app/src/{terminal,shpool}.rs`) wraps each PTY in
-  `shpool attach` on a per-user, slot-namespaced socket, stamps
-  `SessionData.detached` from `shpool list`, and asks keep-or-kill on window
-  close (`components/close-guard.tsx`). No shpool binary → direct PTY spawn
-  (no persistence). Product rules: the app is for getting in the zone —
+  **Agentboard** (repos + per-repo terminals). Terminals are a canvas
+  renderer (`components/terminal-view.tsx` + `src/lib/term-protocol.ts`)
+  over **libghostty-vt** terminal state in Rust (`crates/tt-vt`, one engine
+  thread per terminal): the PTY host (`crates-tauri/tt-app/src/terminal.rs`)
+  spawns shells with portable-pty, feeds bytes to the engine, and emits
+  `terminal://frame` events (dirty-row style runs + cursor + selection +
+  mode hints); input/resize/scroll/selection/copy go back as `term_*`
+  commands. Building tt-vt needs **zig 0.15.x** on PATH (dotfiles
+  `functions/18-zig.sh`). No cross-restart persistence; closing the app
+  kills the shells. Product rules: the
+  app is for getting in the zone —
   manage PRs and work issues across repos; calendar is only *time until the
   next meeting*. Agent status is **reported, never re-rendered** (interaction
   happens in the real PTY via the terminal view); the day

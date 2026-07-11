@@ -44,6 +44,11 @@ pub struct TranscriptEntry {
     /// Claude Code's auto-generated title (from an `ai-title` line). Fallback.
     #[serde(rename = "aiTitle", default)]
     pub ai_title: Option<String>,
+    /// The absolute working directory Claude Code was running in when this
+    /// entry was logged. Used to fork a session's transcript back into a real
+    /// shell rooted at the same repo checkout.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 impl TranscriptEntry {

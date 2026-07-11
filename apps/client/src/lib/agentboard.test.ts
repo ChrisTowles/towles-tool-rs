@@ -112,12 +112,6 @@ describe("sessionNeeds", () => {
     expect(sessionNeeds(session({ live: false, agentState: agent("waiting") }))).toBe(false);
   });
 
-  it("counts a detached shell whose agent waits", () => {
-    expect(
-      sessionNeeds(session({ live: false, detached: true, agentState: agent("waiting") })),
-    ).toBe(true);
-  });
-
   it("counts an unseen finished turn (it's your move), but not a seen one", () => {
     expect(
       sessionNeeds(session({ live: true, unseen: true, agentState: agent("complete") })),

@@ -20,7 +20,7 @@ export type ScreenId =
   | "journal-notes"
   | "journal-meetings"
   | "doctor"
-  | "graph"
+  | "claude-sessions"
   | "gh-prs"
   | "config";
 
@@ -80,11 +80,11 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     icon: Stethoscope,
     keywords: ["health", "checks", "tools"],
   },
-  graph: {
-    id: "graph",
-    title: "Graph",
+  "claude-sessions": {
+    id: "claude-sessions",
+    title: "Claude Sessions",
     icon: ChartColumn,
-    keywords: ["tokens", "usage", "sessions"],
+    keywords: ["tokens", "usage", "sessions", "claude code", "history", "repos"],
   },
   "gh-prs": {
     id: "gh-prs",
@@ -104,6 +104,6 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
 export const NAV_SECTIONS: { label: string; screens: ScreenId[] }[] = [
   { label: "Focus", screens: ["cockpit", "board", "agentboard"] },
   { label: "Journal", screens: ["journal-today", "journal-notes", "journal-meetings"] },
-  { label: "Tools", screens: ["doctor", "graph", "gh-prs"] },
+  { label: "Tools", screens: ["doctor", "claude-sessions", "gh-prs"] },
   { label: "App", screens: ["config"] },
 ];
