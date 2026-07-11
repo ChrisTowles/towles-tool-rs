@@ -48,6 +48,7 @@ import {
   diffPaneId,
   dropPane,
   isDiffPane,
+  isFolderQuiet,
   liveSessions,
   normalizeWins,
   paneRects,
@@ -153,14 +154,15 @@ export function AgentboardScreen() {
   const railCollapsed = !!collapsed[RAIL_COLLAPSE_KEY];
   const toggleRail = () => toggleCollapsed(RAIL_COLLAPSE_KEY);
 
-  // "Hide inactive" rail filter: drop folders with no live session (and any
-  // repo left with none), so a big rail can shrink to just what's actually
-  // running. A view filter, not a rail-structure change — local state only,
-  // unlike `collapsed` it doesn't need to survive a reload. Lookups used for
-  // panes/sessions (folderOf, sessionById, etc. below) stay on the full
-  // `repos` list; only the two render surfaces (RepoGroup list, RailIconStrip)
-  // read `visibleRepos`, since a pane already open for a now-hidden folder
-  // must keep working.
+  // "Hide inactive" rail filter: drop quiet folders (see `isFolderQuiet` —
+  // no live session, no dirty tree/unpushed commits, no session that catches
+  // the eye; and any repo left with none), so a big rail can shrink to just
+  // what's actually going on. A view filter, not a rail-structure change —
+  // local state only, unlike `collapsed` it doesn't need to survive a
+  // reload. Lookups used for panes/sessions (folderOf, sessionById, etc.
+  // below) stay on the full `repos` list; only the two render surfaces
+  // (RepoGroup list, RailIconStrip) read `visibleRepos`, since a pane already
+  // open for a now-hidden folder must keep working.
   const [hideInactive, setHideInactive] = useState(false);
 
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -178,18 +180,16 @@ export function AgentboardScreen() {
   const repos = state.repos;
 
   // Repos/folders the rail actually renders: every folder when the "hide
-  // inactive" filter is off, else only folders with a live session (a repo
+  // inactive" filter is off, else only folders that aren't quiet (a repo
   // with none left drops out entirely). The active folder always stays
-  // visible even if it just went idle, so switching away from what you're
+  // visible even if it just went quiet, so switching away from what you're
   // looking at never happens as a side effect of the filter.
   const visibleRepos = useMemo(() => {
     if (!hideInactive) return repos;
     return repos
       .map((r) => ({
         ...r,
-        folders: r.folders.filter(
-          (f) => liveSessions(f).length > 0 || f.dir === activeFolderDir,
-        ),
+        folders: r.folders.filter((f) => !isFolderQuiet(f) || f.dir === activeFolderDir),
       }))
       .filter((r) => r.folders.length > 0);
   }, [repos, hideInactive, activeFolderDir]);
@@ -605,8 +605,8 @@ export function AgentboardScreen() {
                         )}
                         title={
                           hideInactive
-                            ? "Showing only repos with a live session — click to show all"
-                            : "Hide repos with no live session"
+                            ? "Showing only repos with something going on — click to show all"
+                            : "Hide repos with nothing going on (no live session, no dirty tree, no unpushed commits)"
                         }
                       >
                         {hideInactive ? (
