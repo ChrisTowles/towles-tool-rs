@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  cycleNeedsYou,
   diffPaneDir,
   diffPaneId,
   dropPane,
@@ -11,7 +12,9 @@ import {
   placePane,
   prForFolder,
   sessionNeeds,
+  type AgentStatus,
   type FolderData,
+  type RepoData,
   type SessionData,
   type WindowsPayload,
 } from "./agentboard";
@@ -95,7 +98,7 @@ function session(overrides: Partial<SessionData>): SessionData {
   };
 }
 
-const agent = (status: SessionData["agents"][number]["status"]) => ({
+const agent = (status: AgentStatus) => ({
   agent: "claude-code",
   session: "",
   status,
@@ -286,5 +289,77 @@ describe("isFolderQuiet", () => {
 
   it("stays quiet with a non-live, fully-acknowledged session sitting around", () => {
     expect(isFolderQuiet(folder({ sessions: [session({ live: false })] }))).toBe(true);
+  });
+});
+
+function repo(key: string, folders: FolderData[]): RepoData {
+  return { key, name: key, folders, needs: 0 };
+}
+
+describe("cycleNeedsYou", () => {
+  // Board order: a1 (waiting), a2 (idle), b1 (unseen), b2 (error)
+  const repos = [
+    repo("a", [
+      folder({
+        dir: "a/f1",
+        sessions: [
+          session({ id: "a1", live: true, agentState: agent("waiting") }),
+          session({ id: "a2", live: true }),
+        ],
+      }),
+    ]),
+    repo("b", [
+      folder({
+        dir: "b/f1",
+        sessions: [
+          session({ id: "b1", live: true, unseen: true }),
+          session({ id: "b2", live: true, agentState: agent("error") }),
+        ],
+      }),
+    ]),
+  ];
+
+  it("returns null when nothing catches the eye", () => {
+    const calm = [
+      repo("a", [
+        folder({
+          dir: "a/f1",
+          sessions: [session({ id: "a1", live: true }), session({ id: "a2", live: true })],
+        }),
+      ]),
+    ];
+    expect(cycleNeedsYou(calm, null, "next")).toBeNull();
+  });
+
+  it("skips idle sessions and starts from the beginning when nothing is selected", () => {
+    expect(cycleNeedsYou(repos, null, "next")?.id).toBe("a1");
+  });
+
+  it("cycles forward across folders and repos, skipping idle sessions", () => {
+    expect(cycleNeedsYou(repos, "a1", "next")?.id).toBe("b1");
+    expect(cycleNeedsYou(repos, "b1", "next")?.id).toBe("b2");
+  });
+
+  it("wraps around from the last match back to the first", () => {
+    expect(cycleNeedsYou(repos, "b2", "next")?.id).toBe("a1");
+  });
+
+  it("cycles backward, wrapping from the first match to the last", () => {
+    expect(cycleNeedsYou(repos, "b1", "prev")?.id).toBe("a1");
+    expect(cycleNeedsYou(repos, "a1", "prev")?.id).toBe("b2");
+  });
+
+  it("starts from the end when nothing is selected and direction is prev", () => {
+    expect(cycleNeedsYou(repos, null, "prev")?.id).toBe("b2");
+  });
+
+  it("treats an unrecognized fromSessionId the same as nothing selected", () => {
+    expect(cycleNeedsYou(repos, "not-a-real-id", "next")?.id).toBe("a1");
+  });
+
+  it("anchors on the currently idle session's board position, not just other targets", () => {
+    // From "a2" (idle, sits between a1 and b1) — next should be b1, prev should be a1.
+    expect(cycleNeedsYou(repos, "a2", "next")?.id).toBe("b1");
+    expect(cycleNeedsYou(repos, "a2", "prev")?.id).toBe("a1");
   });
 });
