@@ -1,7 +1,8 @@
 import { DotCount } from "@/components/agentboard-bits";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { agentRollup, useAgentboardState } from "@/lib/agentboard";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { agentRollup, rollupAlertColor, useAgentboardState } from "@/lib/agentboard";
 import { NAV_SECTIONS, SCREENS } from "@/lib/screens";
 import { useWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
@@ -55,6 +56,68 @@ export function AppSidebar() {
           </div>
         ))}
       </nav>
+    </ScrollArea>
+  );
+}
+
+/** The outer nav collapsed to a narrow icon strip (issue #70's sibling ask):
+ * one icon per screen, sections separated by hairlines, active screen gets
+ * the violet left border. The one count the expanded nav shows today — the
+ * Agentboard running-agent rollup — rides along as a corner badge, so
+ * collapsing the sidebar never hides "something needs you". */
+export function AppSidebarIcons() {
+  const { activeTab, openTab } = useWorkspace();
+  const state = useAgentboardState();
+  const rollup = agentRollup(state.repos, Date.now(), state.compactRecommendPercent);
+  const badgeColor = rollupAlertColor(rollup);
+
+  return (
+    <ScrollArea className="h-full">
+      <div className="flex flex-col items-center gap-1 py-2">
+        {NAV_SECTIONS.map((section, i) => (
+          <div key={section.label} className="flex flex-col items-center gap-1">
+            {i > 0 && <div className="my-1 h-px w-6 bg-border" />}
+            {section.screens.map((id) => {
+              const screen = SCREENS[id];
+              const active = activeTab === id;
+              const showBadge = id === "agentboard" && rollup.total > 0;
+              return (
+                <Tooltip key={id}>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={screen.title}
+                      aria-current={active || undefined}
+                      onClick={() => openTab(id)}
+                      className={cn(
+                        "relative flex size-9 shrink-0 items-center justify-center rounded-md border-l-2 border-transparent text-muted-foreground hover:bg-accent/50",
+                        active && "border-l-violet-500 bg-accent text-foreground",
+                      )}
+                    >
+                      <screen.icon className="size-4" />
+                      {showBadge && (
+                        <span
+                          className={cn(
+                            "absolute -right-1 -bottom-1 min-w-4 rounded-full px-0.5 text-center font-mono text-[9px] leading-[14px] text-white",
+                            badgeColor,
+                          )}
+                        >
+                          {rollup.total}
+                        </span>
+                      )}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right">
+                    {screen.title}
+                    {showBadge &&
+                      ` — ${rollup.total} agent${rollup.total === 1 ? "" : "s"}${rollup.waiting > 0 ? `, ${rollup.waiting} waiting` : ""}${rollup.error > 0 ? `, ${rollup.error} errored` : ""}`}
+                  </TooltipContent>
+                </Tooltip>
+              );
+            })}
+          </div>
+        ))}
+      </div>
     </ScrollArea>
   );
 }

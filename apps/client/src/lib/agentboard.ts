@@ -389,6 +389,17 @@ export function agentRollup(
   return r;
 }
 
+/** The one dot color for a whole rollup — same busy/waiting/error precedence
+ * as a collapsed rail row, so a collapsed nav icon's badge never disagrees
+ * with the rail's own collapsed dots. Null when nothing is running. */
+export function rollupAlertColor(r: AgentRollup): string | null {
+  if (r.error > 0) return "bg-red-500";
+  if (r.waiting > 0) return "bg-blue-500";
+  if (r.busy > 0) return "bg-yellow-500";
+  if (r.total > 0) return "bg-emerald-500";
+  return null;
+}
+
 const EMPTY_WINDOWS: WindowsPayload = { windows: [], activeWindows: {} };
 
 const EMPTY: StatePayload = {

@@ -1,4 +1,4 @@
-import { PanelLeft, Search, Settings } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Search, Settings } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -56,18 +56,23 @@ function SlotBadge() {
 }
 
 export function AppHeader() {
-  const { toggleSidebar, setPaletteOpen } = useWorkspace();
+  const { sidebarCollapsed, toggleSidebar, setPaletteOpen } = useWorkspace();
 
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b px-2">
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon-sm" aria-label="Toggle sidebar" onClick={toggleSidebar}>
-            <PanelLeft />
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={toggleSidebar}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
           </Button>
         </TooltipTrigger>
         <TooltipContent>
-          Toggle sidebar <Kbd>⌘B</Kbd>
+          {sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"} <Kbd>⌘B</Kbd>
         </TooltipContent>
       </Tooltip>
 

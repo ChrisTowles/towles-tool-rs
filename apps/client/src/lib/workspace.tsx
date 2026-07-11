@@ -4,7 +4,10 @@ import type { ScreenId } from "@/lib/screens";
 type WorkspaceState = {
   visited: ScreenId[];
   activeTab: ScreenId;
-  sidebarVisible: boolean;
+  /** Whole outer nav collapsed to an icon-only strip (mirrors the Agentboard
+   * rail's icon collapse) — never fully hidden, so a screen is always one
+   * click away. */
+  sidebarCollapsed: boolean;
   paletteOpen: boolean;
   openTab: (id: ScreenId) => void;
   toggleSidebar: () => void;
@@ -18,7 +21,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   // so their local state — e.g. Agentboard's terminals — survives switching.
   const [visited, setVisited] = useState<ScreenId[]>(["cockpit"]);
   const [activeTab, setActiveTab] = useState<ScreenId>("cockpit");
-  const [sidebarVisible, setSidebarVisible] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   const openTab = useCallback((id: ScreenId) => {
@@ -26,19 +29,19 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     setActiveTab(id);
   }, []);
 
-  const toggleSidebar = useCallback(() => setSidebarVisible((v) => !v), []);
+  const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
 
   const value = useMemo(
     () => ({
       visited,
       activeTab,
-      sidebarVisible,
+      sidebarCollapsed,
       paletteOpen,
       openTab,
       toggleSidebar,
       setPaletteOpen,
     }),
-    [visited, activeTab, sidebarVisible, paletteOpen, openTab, toggleSidebar],
+    [visited, activeTab, sidebarCollapsed, paletteOpen, openTab, toggleSidebar],
   );
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
