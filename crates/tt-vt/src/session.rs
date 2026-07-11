@@ -6,13 +6,24 @@
 //!
 //! Batching falls out of the loop shape: one blocking `recv`, then drain
 //! everything already queued, then a single render pass. Under PTY floods
-//! the drain naturally coalesces many chunks into one frame.
+//! the drain naturally coalesces many chunks into one frame. On top of that,
+//! renders are throttled to [`MIN_FRAME_INTERVAL`]: an input arriving while
+//! the terminal is idle renders immediately, but a steady trickle of chunks
+//! keeps being absorbed until the interval elapses. Without this, every
+//! chunk gets its own frame event and the UI event queue backs up faster
+//! than the webview can paint — input latency then grows with sustained
+//! output and only recovers once the flood stops.
 
 use std::sync::mpsc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use crate::engine::{Engine, EngineOptions, Select, VtError};
 use crate::frame::Frame;
+
+/// Minimum time between render passes (~60 fps). Caps how fast frames can be
+/// produced so the UI side can never fall behind unboundedly.
+const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 pub enum Input {
     /// Raw PTY output bytes.
@@ -76,6 +87,8 @@ impl Session {
                 }
             };
 
+            // Start in the past so the first input renders immediately.
+            let mut last_render = Instant::now() - MIN_FRAME_INTERVAL;
             while let Ok(first) = rx.recv() {
                 let mut apply = |input: Input| match input {
                     Input::Bytes(b) => engine.feed(&b),
@@ -95,8 +108,23 @@ impl Session {
                     }
                 };
                 apply(first);
-                while let Ok(more) = rx.try_recv() {
-                    apply(more);
+                // Absorb further input until the frame interval since the
+                // last render has passed. An idle terminal renders its first
+                // input with no delay; a flood coalesces into ~60 fps frames.
+                loop {
+                    while let Ok(more) = rx.try_recv() {
+                        apply(more);
+                    }
+                    let elapsed = last_render.elapsed();
+                    if elapsed >= MIN_FRAME_INTERVAL {
+                        break;
+                    }
+                    match rx.recv_timeout(MIN_FRAME_INTERVAL - elapsed) {
+                        Ok(more) => apply(more),
+                        // Timeout: interval reached. Disconnected: render
+                        // what we have; the outer recv ends the loop.
+                        Err(_) => break,
+                    }
                 }
 
                 let reply = engine.take_pty_output();
@@ -104,7 +132,10 @@ impl Session {
                     sink(Event::PtyReply(reply));
                 }
                 match engine.render() {
-                    Ok(Some(frame)) => sink(Event::Frame(frame)),
+                    Ok(Some(frame)) => {
+                        sink(Event::Frame(frame));
+                        last_render = Instant::now();
+                    }
                     Ok(None) => {}
                     // Render errors are terminal-state bugs, not
                     // recoverable I/O; stop the session.
