@@ -8,6 +8,7 @@ mod agentboard;
 mod claude_sessions;
 mod doctor;
 mod journal;
+mod resources;
 mod scheduler;
 mod settings;
 mod store;
@@ -208,6 +209,7 @@ pub fn run() {
             Ok(())
         })
         .manage(terminal::TermState::default())
+        .manage(resources::ResourceState::default())
         .on_window_event(|window, event| {
             if let WindowEvent::Destroyed = event {
                 terminal::on_window_destroyed(window.app_handle(), window.label());
@@ -215,6 +217,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_slot,
+            resources::app_resource_usage,
             agentboard::ab_get_state,
             agentboard::ab_mark_seen,
             agentboard::ab_dismiss_agent,
