@@ -301,6 +301,24 @@ export function isSoloRepo(r: RepoData): boolean {
   return r.folders.length === 1;
 }
 
+/** A folder (checkout) is "quiet" when nothing about it needs attention right
+ * now: no live session, no session that catches the eye (waiting/errored/
+ * unseen), and no unpushed local commits or dirty working tree. Being
+ * *behind* origin (`commitsDelta < 0`) doesn't count — that's just staleness,
+ * not work in progress. A worktree that was created but never had a session
+ * opened in it falls out of this naturally (empty `sessions`, clean tree) —
+ * no special case needed. Richer than "no live session": a folder can be
+ * mid-work (dirty tree, unpushed commits, a finished-but-unseen turn) with
+ * nothing currently *running*. */
+export function isFolderQuiet(f: FolderData): boolean {
+  return (
+    liveSessions(f).length === 0 &&
+    f.filesChanged === 0 &&
+    f.commitsDelta <= 0 &&
+    f.sessions.every((s) => !sessionCatchesEye(s))
+  );
+}
+
 /** The `~/code/<scope>/` prefix of a checkout dir (`w/` work, `p/` personal,
  * `f/` fork), or null when the dir lives outside that layout. */
 export function pathScope(dir: string): string | null {

@@ -4,12 +4,14 @@ import {
   diffPaneId,
   dropPane,
   isDiffPane,
+  isFolderQuiet,
   normalizeWins,
   paneRects,
   pathScope,
   placePane,
   prForFolder,
   sessionNeeds,
+  type FolderData,
   type SessionData,
   type WindowsPayload,
 } from "./agentboard";
@@ -229,5 +231,60 @@ describe("paneRects", () => {
 
   it("returns nothing for an empty window", () => {
     expect(paneRects(0)).toEqual([]);
+  });
+});
+
+function folder(overrides: Partial<FolderData>): FolderData {
+  return {
+    name: "proj",
+    dir: "/home/me/code/p/proj",
+    branch: "main",
+    isWorktree: false,
+    filesChanged: 0,
+    linesAdded: 0,
+    linesRemoved: 0,
+    commitsDelta: 0,
+    sessions: [],
+    needs: 0,
+    ...overrides,
+  };
+}
+
+describe("isFolderQuiet", () => {
+  it("is quiet with no sessions and a clean, non-ahead tree", () => {
+    expect(isFolderQuiet(folder({}))).toBe(true);
+  });
+
+  it("is quiet for a worktree checkout that was created but never used", () => {
+    expect(isFolderQuiet(folder({ isWorktree: true, sessions: [] }))).toBe(true);
+  });
+
+  it("is not quiet with a live session", () => {
+    expect(isFolderQuiet(folder({ sessions: [session({ live: true })] }))).toBe(false);
+  });
+
+  it("is not quiet with a dirty working tree", () => {
+    expect(isFolderQuiet(folder({ filesChanged: 3 }))).toBe(false);
+  });
+
+  it("is not quiet with unpushed local commits", () => {
+    expect(isFolderQuiet(folder({ commitsDelta: 2 }))).toBe(false);
+  });
+
+  it("stays quiet when only behind origin — that's staleness, not work", () => {
+    expect(isFolderQuiet(folder({ commitsDelta: -4 }))).toBe(true);
+  });
+
+  it("is not quiet with a session that catches the eye (unseen/waiting/errored)", () => {
+    expect(
+      isFolderQuiet(folder({ sessions: [session({ live: true, unseen: true })] })),
+    ).toBe(false);
+    expect(
+      isFolderQuiet(folder({ sessions: [session({ live: true, agentState: agent("waiting") })] })),
+    ).toBe(false);
+  });
+
+  it("stays quiet with a non-live, fully-acknowledged session sitting around", () => {
+    expect(isFolderQuiet(folder({ sessions: [session({ live: false })] }))).toBe(true);
   });
 });
