@@ -127,6 +127,16 @@ export const SHORTCUTS = defineShortcuts([
     description: "Add another session as a pane in this window",
     when: "a folder is focused",
   },
+  {
+    // Handled by the focused TerminalView itself (via `matchesShortcut`), not
+    // a window-level handler: only the terminal that owns the keystroke may
+    // open its overlay. Ctrl+F stays with the shell; the shifted chord is ours.
+    id: "term-search",
+    scope: "agentboard",
+    keys: "mod+shift+f",
+    description: "Search terminal scrollback",
+    when: "a terminal is focused",
+  },
 ]);
 
 const IS_MAC =
@@ -148,6 +158,15 @@ export function shortcutKeys(id: string): string[] {
 /** One string for tooltips/titles: "⌘⇧W" on mac, "Ctrl+Shift+W" elsewhere. */
 export function shortcutHint(id: string): string {
   return shortcutKeys(id).join(IS_MAC ? "" : "+");
+}
+
+/** Whether a keydown matches a registry shortcut — for components that own
+ * their keystrokes (the terminal view) and match locally instead of through
+ * the window-level `useShortcuts` listener. */
+export function matchesShortcut(id: string, e: KeyboardEvent): boolean {
+  const s = SHORTCUTS[id];
+  if (!s) throw new Error(`Unknown shortcut id "${id}"`);
+  return matches(s.spec, e);
 }
 
 function matches(spec: KeySpec, e: KeyboardEvent): boolean {

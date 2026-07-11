@@ -118,4 +118,8 @@ pub struct Frame {
     pub title: Option<String>,
     /// Rows available above the viewport (drives the scrollbar).
     pub scrollback_rows: usize,
+    /// Absolute row index of the viewport's top (0 = oldest scrollback row);
+    /// equals `scrollback_rows` at the live bottom. Maps absolute search
+    /// match rows onto viewport rows.
+    pub viewport_top: usize,
 }

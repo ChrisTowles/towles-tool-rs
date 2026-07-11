@@ -281,6 +281,8 @@ pub fn run() {
             terminal::term_request_full,
             terminal::term_select,
             terminal::term_copy,
+            terminal::term_search,
+            terminal::term_scroll_to,
             terminal::term_kill,
         ])
         .run(tauri::generate_context!())

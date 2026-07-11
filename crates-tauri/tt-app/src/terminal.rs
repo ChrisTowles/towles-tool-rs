@@ -29,7 +29,9 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tt_vt::{EngineOptions, Event as VtEvent, Frame, Input as VtInput, Select as VtSelect};
+use tt_vt::{
+    EngineOptions, Event as VtEvent, Frame, Input as VtInput, SearchMatch, Select as VtSelect,
+};
 
 pub const FRAME_EVENT: &str = "terminal://frame";
 pub const EXIT_EVENT: &str = "terminal://exit";
@@ -38,6 +40,10 @@ const MAIN_WINDOW_LABEL: &str = "main";
 /// Scrollback kept per terminal, in rows. Lives in the Rust engine, not the
 /// webview (xterm.js used to hold this in the JS heap).
 const MAX_SCROLLBACK: usize = 10_000;
+
+/// Cap on scrollback search results per query — enough for "n/N matches"
+/// navigation without shipping a megabyte of positions for `query = "e"`.
+const SEARCH_MATCH_LIMIT: usize = 1000;
 
 /// Queued-keystroke cap per terminal. When the shell stops draining its PTY
 /// (flow-stopped, stopped job) further input errors instead of blocking or
@@ -405,6 +411,45 @@ pub async fn term_copy(app: AppHandle, term_id: String) -> Result<String, String
     })
     .await
     .map_err(|e| format!("copy task failed: {e}"))?
+}
+
+/// Case-insensitive substring search over the terminal's full scrollback +
+/// active area. Returns match positions (absolute row, column, width) top to
+/// bottom, capped at [`SEARCH_MATCH_LIMIT`]. The engine thread answers over
+/// a bounded channel; a dead engine yields an error rather than a hang.
+#[tauri::command]
+pub async fn term_search(
+    app: AppHandle,
+    term_id: String,
+    query: String,
+) -> Result<Vec<SearchMatch>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (reply_tx, reply_rx) = sync_channel::<Vec<SearchMatch>>(1);
+        {
+            let state = app.state::<TermState>();
+            let guard = state.0.lock().unwrap();
+            let session = guard.get(&term_id).ok_or("no shell running")?;
+            session
+                .vt
+                .send(VtInput::Search { query, limit: SEARCH_MATCH_LIMIT, reply: reply_tx })
+                .map_err(|_| "terminal engine gone")?;
+        }
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| "terminal engine did not answer".to_string())
+    })
+    .await
+    .map_err(|e| format!("search task failed: {e}"))?
+}
+
+/// Scroll the viewport so the given absolute row (0 = oldest scrollback row)
+/// is visible — search prev/next navigation jumps the viewport to a match.
+#[tauri::command]
+pub fn term_scroll_to(state: State<TermState>, term_id: String, row: usize) -> Result<(), String> {
+    let guard = state.0.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::ScrollTo(row));
+    Ok(())
 }
 
 /// Kill one shell (the frontend calls this when a terminal unmounts — an
