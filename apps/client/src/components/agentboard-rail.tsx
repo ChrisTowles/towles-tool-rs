@@ -351,11 +351,12 @@ export function RepoGroup({
     />
   );
 
-  // Sessions render grouped by the window (pane group) they belong to: each
-  // window that holds panes gets a thin label, then its sessions; sessions in
-  // no window ("loose" shells) list on their own below. Grouping is purely
-  // visual — the ⊟/click mechanics that move panes in and out of windows are
-  // unchanged.
+  // Sessions render grouped by the window (pane group) they belong to: a
+  // window holding multiple panes gets a vertical color spine running beside
+  // its rows (no text label — window names carry no signal in the rail);
+  // sessions in no window ("loose" shells) list on their own below. Grouping
+  // is purely visual — the ⊟/click mechanics that move panes in and out of
+  // windows are unchanged.
   const sessionRows = (folder: FolderData) => {
     if (folder.sessions.length === 0) {
       return (
@@ -394,13 +395,15 @@ export function RepoGroup({
     return (
       <>
         {groups.map(({ win, sessions }) => (
-          <div key={win.id}>
-            <WindowLabel
-              win={win}
-              folderWins={folderWins}
-              count={sessions.length}
-              onFocus={() => actions.focusWindow(win.id)}
-            />
+          <div key={win.id} className="relative">
+            {sessions.length > 1 && (
+              <WindowSpine
+                win={win}
+                folderWins={folderWins}
+                count={sessions.length}
+                onFocus={() => actions.focusWindow(win.id)}
+              />
+            )}
             {sessions.map((s) => sessionRow(folder, s))}
           </div>
         ))}
@@ -742,10 +745,11 @@ function RepoMenu({
   );
 }
 
-/** Thin header above a window's panes in the rail: a color chip + window name
- * + pane count, clicking focuses that window in the pane area. Deliberately
- * small — grouping should add structure to the rail, not bulk. */
-function WindowLabel({
+/** Vertical color spine beside a multi-pane window's rows in the rail: the
+ * window's group color as a thin bar bracketing its sessions, clicking
+ * focuses that window in the pane area. Replaces the old text label — window
+ * names carry no signal in the rail; the color + tooltip is enough. */
+function WindowSpine({
   win,
   folderWins,
   count,
@@ -760,14 +764,11 @@ function WindowLabel({
     <button
       type="button"
       onClick={onFocus}
-      title={`window “${win.name}” — click to focus`}
-      className="flex w-full items-center gap-1.5 pt-1 pr-3 pb-0.5 pl-9 text-left"
+      title={`window “${win.name}” — ${count} panes, click to focus`}
+      aria-label={`Focus window ${win.name}`}
+      className="absolute inset-y-1 left-4 z-10 flex w-2 justify-center"
     >
-      <span className={cn("size-2 shrink-0 rounded-[3px]", windowColor(folderWins, win.id))} />
-      <span className="truncate font-mono text-[10px] uppercase tracking-wide text-muted-foreground/70">
-        {win.name}
-      </span>
-      <span className="font-mono text-[9.5px] text-muted-foreground/50">{count}⊞</span>
+      <span className={cn("h-full w-[3px] rounded-full", windowColor(folderWins, win.id))} />
     </button>
   );
 }
