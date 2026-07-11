@@ -36,6 +36,10 @@ pub struct TranscriptEntry {
     pub request_id: Option<String>,
     #[serde(rename = "gitBranch", default)]
     pub git_branch: Option<String>,
+    /// `true` on lines belonging to a subagent's side conversation (Task tool
+    /// runs); those user lines are agent-authored, not the human's.
+    #[serde(rename = "isSidechain", default)]
+    pub is_sidechain: Option<bool>,
     #[serde(default)]
     pub slug: Option<String>,
     /// The user-set session title (from a `custom-title` line). Authoritative.
@@ -44,9 +48,10 @@ pub struct TranscriptEntry {
     /// Claude Code's auto-generated title (from an `ai-title` line). Fallback.
     #[serde(rename = "aiTitle", default)]
     pub ai_title: Option<String>,
-    /// The absolute working directory Claude Code was running in when this
-    /// entry was logged. Used to fork a session's transcript back into a real
-    /// shell rooted at the same repo checkout.
+    /// The real absolute working directory Claude Code was launched from.
+    /// Constant for the life of a session (not affected by `cd`s a subprocess
+    /// runs) — the precise filesystem path a "resume this session elsewhere"
+    /// action needs, unlike the lossy, hyphen-encoded project directory name.
     #[serde(default)]
     pub cwd: Option<String>,
 }

@@ -1,122 +1,159 @@
-//! Tauri bridge for the Claude Sessions screen: Claude Code session history
-//! across every repo, computed from `tt-graph` over Claude Code session JSONL
-//! files. Mirrors the `ttr claude-sessions` CLI boundary in
-//! `crates-cli/tt-cli/src/commands/claude_sessions.rs`, minus the treemap/HTML-
-//! report path — the app screen answers "where have I spent my tokens" and
-//! "what have I been working on" with aggregate bars plus a recent-sessions
-//! list, instead of porting the full session/turn drill-down.
+//! Tauri bridge for the Claude Sessions screen: token spend by day/repo/model
+//! plus session search, computed from `tt-graph` over Claude Code session
+//! JSONL files. One scan parses each transcript once
+//! (`scan_sessions_detailed`) and is cached in managed state so search
+//! keystrokes never re-read the disk.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
 use tt_graph::{
-    ModelBar, ProjectBar, build_model_totals, build_project_totals, extract_project_name,
-    find_recent_sessions, parse_transcript_file,
+    BarChartDay, LedgerTotals, ModelBar, ProjectBar, SessionDetail, build_ledger_days,
+    build_ledger_model_totals, build_ledger_project_totals, ledger_totals, scan_sessions_detailed,
+    search_sessions,
 };
 
 /// Max sessions scanned, matching the CLI's `SESSION_LIMIT`.
 const SESSION_LIMIT: usize = 500;
+/// Sessions returned in the summary's ranked list.
+const TOP_SESSIONS: usize = 50;
+/// Max search hits returned.
+const SEARCH_LIMIT: usize = 100;
 
 /// `~/.claude`, honoring `$HOME` so tests/multiple slots can redirect it.
 fn claude_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude")
 }
 
-/// Token spend broken down by project and by model over the selected window.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpendSummary {
-    pub by_project: Vec<ProjectBar>,
-    pub by_model: Vec<ModelBar>,
+/// The last scan, kept so `claude_sessions_search` filters in memory. Keyed
+/// by the `days` window it was scanned for.
+struct CachedScan {
+    days: f64,
+    details: Vec<SessionDetail>,
 }
 
-/// One Claude Code session, for the recent-sessions list.
+/// Managed state: the cached scan behind an `Arc` so blocking-pool closures can
+/// own a handle.
+#[derive(Clone, Default)]
+pub struct ClaudeSessionsCache(Arc<Mutex<Option<CachedScan>>>);
+
+/// One session row for the frontend (ranked list and search results).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionListItem {
+pub struct ClaudeSessionRow {
     pub session_id: String,
     pub title: Option<String>,
-    /// Human-readable project label decoded from the `~/.claude/projects`
-    /// directory name (e.g. `towles-tool-rs-slot-0`).
     pub project: String,
-    /// `YYYY-MM-DD` in the local timezone.
     pub date: String,
-    pub tokens: i64,
-    /// Modification time in milliseconds since the Unix epoch.
-    pub mtime: i64,
-    /// The real absolute working directory this session ran in, read back
-    /// from the transcript's own `cwd` field. `None` for older transcripts
-    /// logged before Claude Code recorded it — the fork actions need a real
-    /// path, so the frontend hides them when this is absent.
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    /// The session's real launch directory, for "Open in Agentboard". `None`
+    /// for transcripts predating the `cwd` field.
     pub cwd: Option<String>,
+    /// Prompt-text context around the match; only set on search hits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
 }
 
-/// Filter to sessions from the last `days` (0 = no limit), matching the CLI's
-/// `--days` semantics.
-///
-/// `build_model_totals` re-parses every matched session's transcript (up to
-/// `SESSION_LIMIT` files, some multi-MB), so this runs on a blocking-pool
-/// thread rather than the main thread — a plain sync `#[tauri::command]` here
-/// would otherwise freeze the whole window for the duration of the scan (see
-/// `scheduler.rs`'s `run_batch` for the same pattern).
-#[tauri::command]
-pub async fn claude_sessions_summary(days: f64) -> Result<SpendSummary, String> {
-    tauri::async_runtime::spawn_blocking(move || claude_sessions_summary_blocking(days))
-        .await
-        .map_err(|e| format!("claude sessions scan task panicked: {e}"))?
+impl ClaudeSessionRow {
+    fn from_detail(d: &SessionDetail, snippet: Option<String>) -> Self {
+        ClaudeSessionRow {
+            session_id: d.session_id.clone(),
+            title: d.title.clone(),
+            project: d.project.clone(),
+            date: d.date.clone(),
+            input_tokens: d.usage.input_tokens,
+            output_tokens: d.usage.output_tokens,
+            cache_read_tokens: d.usage.cache_read_tokens,
+            cache_creation_tokens: d.usage.cache_creation_tokens,
+            cwd: d.cwd.clone(),
+            snippet,
+        }
+    }
 }
 
-fn claude_sessions_summary_blocking(days: f64) -> Result<SpendSummary, String> {
-    let sessions = scan_sessions(days)?;
-
-    Ok(SpendSummary {
-        by_project: build_project_totals(&sessions),
-        by_model: build_model_totals(&sessions),
-    })
+/// Everything the Claude Sessions screen renders from one scan.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeSessionsSummary {
+    pub totals: LedgerTotals,
+    pub days: Vec<BarChartDay>,
+    pub by_project: Vec<ProjectBar>,
+    pub by_model: Vec<ModelBar>,
+    /// Top sessions by input+output tokens — the outlier list.
+    pub top_sessions: Vec<ClaudeSessionRow>,
 }
 
-/// Recent Claude Code sessions across every repo, most-recent first. Cheap:
-/// reuses the lightweight discovery pass, no per-session re-parse.
-#[tauri::command]
-pub async fn claude_sessions_list(days: f64) -> Result<Vec<SessionListItem>, String> {
-    tauri::async_runtime::spawn_blocking(move || claude_sessions_list_blocking(days))
-        .await
-        .map_err(|e| format!("claude sessions scan task panicked: {e}"))?
-}
-
-fn claude_sessions_list_blocking(days: f64) -> Result<Vec<SessionListItem>, String> {
-    let sessions = scan_sessions(days)?;
-
-    Ok(sessions
-        .into_iter()
-        .map(|s| {
-            let cwd = session_cwd(&s.path);
-            SessionListItem {
-                session_id: s.session_id,
-                title: s.title,
-                project: extract_project_name(&s.project),
-                date: s.date,
-                tokens: s.tokens,
-                mtime: s.mtime,
-                cwd,
-            }
-        })
-        .collect())
-}
-
-/// The real working directory a session ran in, read back from the first
-/// transcript entry that recorded one.
-fn session_cwd(path: &std::path::Path) -> Option<String> {
-    parse_transcript_file(path).into_iter().find_map(|e| e.cwd)
-}
-
-fn scan_sessions(days: f64) -> Result<Vec<tt_graph::SessionResult>, String> {
+fn scan(days: f64) -> Result<Vec<SessionDetail>, String> {
     let projects_dir = claude_dir().join("projects");
     if !projects_dir.exists() {
         return Err("No Claude projects directory found at ~/.claude/projects/".to_string());
     }
-
     let now_ms = chrono::Local::now().timestamp_millis();
-    find_recent_sessions(&projects_dir, SESSION_LIMIT, days, now_ms).map_err(|e| e.to_string())
+    scan_sessions_detailed(&projects_dir, SESSION_LIMIT, days, now_ms).map_err(|e| e.to_string())
+}
+
+/// Scan (blocking pool — multi-MB parses would freeze the main thread), cache
+/// the details for search, and return the aggregates.
+#[tauri::command]
+pub async fn claude_sessions_summary(
+    days: f64,
+    cache: tauri::State<'_, ClaudeSessionsCache>,
+) -> Result<ClaudeSessionsSummary, String> {
+    let handle = cache.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let details = scan(days)?;
+
+        let mut ranked: Vec<&SessionDetail> = details.iter().collect();
+        ranked.sort_by_key(|d| std::cmp::Reverse(d.billable()));
+        let top_sessions = ranked
+            .iter()
+            .take(TOP_SESSIONS)
+            .map(|d| ClaudeSessionRow::from_detail(d, None))
+            .collect();
+
+        let summary = ClaudeSessionsSummary {
+            totals: ledger_totals(&details),
+            days: build_ledger_days(&details),
+            by_project: build_ledger_project_totals(&details),
+            by_model: build_ledger_model_totals(&details),
+            top_sessions,
+        };
+        *handle.lock().expect("claude sessions cache poisoned") =
+            Some(CachedScan { days, details });
+        Ok(summary)
+    })
+    .await
+    .map_err(|e| format!("claude sessions scan task panicked: {e}"))?
+}
+
+/// Search the cached scan's titles + prompt text; rescans only when the cache
+/// is missing or was built for a different window. Hits come back newest-first.
+#[tauri::command]
+pub async fn claude_sessions_search(
+    days: f64,
+    query: String,
+    cache: tauri::State<'_, ClaudeSessionsCache>,
+) -> Result<Vec<ClaudeSessionRow>, String> {
+    let handle = cache.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = handle.lock().expect("claude sessions cache poisoned");
+        if !guard.as_ref().is_some_and(|c| c.days == days) {
+            let details = scan(days)?;
+            *guard = Some(CachedScan { days, details });
+        }
+        let details = &guard.as_ref().expect("cache populated above").details;
+        let hits = search_sessions(details, &query);
+        Ok(hits
+            .into_iter()
+            .take(SEARCH_LIMIT)
+            .map(|h| ClaudeSessionRow::from_detail(&details[h.index], h.snippet))
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("claude sessions search task panicked: {e}"))?
 }

@@ -21,14 +21,18 @@
 //! malformed lines skipped, unreadable files → empty) and deterministic (no
 //! clock, no `$HOME` reads — callers pass paths in).
 
+pub mod cwd;
 pub mod models;
 pub mod parse;
+pub mod prompts;
 pub mod title;
 pub mod types;
 pub mod usage;
 
+pub use cwd::{session_cwd, session_cwd_file, session_cwd_str};
 pub use models::{CONTEXT_1M, CONTEXT_200K, context_window};
 pub use parse::{parse_transcript, parse_transcript_file};
+pub use prompts::{user_prompt_blob, user_prompts};
 pub use title::{session_title, session_title_file, session_title_str};
 pub use types::{CacheCreation, Content, Message, ToolUse, TranscriptEntry, Usage};
 pub use usage::{UsageTotals, usage_totals, usage_totals_file, usage_totals_str};
