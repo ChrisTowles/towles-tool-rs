@@ -125,6 +125,19 @@ fn metadata_file_id(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
     None
 }
 
+/// How many leading bytes identify a journal (see `SessionState::head`).
+const HEAD_PROBE_LEN: usize = 64;
+
+/// The first `len` bytes of `path` (fewer if the file is shorter), or `None`
+/// if it can't be read.
+fn read_head(path: &Path, len: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).ok()?;
+    let mut buf = Vec::with_capacity(len);
+    f.take(len as u64).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
 /// Everything in `path` from byte `offset` on, or `None` if it can't be read.
 fn read_from_offset(path: &Path, offset: u64) -> Option<Vec<u8>> {
     use std::io::{Read, Seek, SeekFrom};
@@ -353,9 +366,14 @@ struct SessionState {
     file_offset: u64,
     /// `(dev, ino)` of the journal the offset belongs to. A same-path
     /// replacement that GREW the file passes the shrink check but invalidates
-    /// the offset; the inode is the reliable identity (unix only; elsewhere
-    /// the shrink check is the sole rotation signal).
+    /// the offset; the inode catches most of those (unix only).
     file_id: Option<(u64, u64)>,
+    /// First bytes of the journal the offset belongs to (≤ `HEAD_PROBE_LEN`).
+    /// The inode is NOT a reliable identity: ext4 hands a just-freed inode to
+    /// the next file created, so a remove+recreate at the same path can keep
+    /// the same `(dev, ino)`. Journals are append-only, so a changed head is
+    /// the definitive replacement signal.
+    head: Vec<u8>,
     journal_path: Option<PathBuf>,
     thread_name: Option<String>,
     usage: Option<ClaudeUsageSummary>,
@@ -379,6 +397,7 @@ impl Default for SessionState {
             journal_status: AgentStatus::Idle,
             file_offset: 0,
             file_id: None,
+            head: Vec::new(),
             journal_path: None,
             thread_name: None,
             usage: None,
@@ -492,9 +511,15 @@ impl ClaudeCodeAgentWatcher {
         // Adopted fix #1: shrunk file → reset to 0 and re-derive from scratch
         // (all journal-derived state is stale, not just the offset). A
         // same-path replacement that grew past the old offset is the same
-        // situation with a different symptom, caught by the inode change.
+        // situation with a different symptom, caught by the inode change —
+        // except when the recreated file reuses the freed inode (ext4 does),
+        // which the head comparison catches (see `SessionState::head`).
+        let head_changed = !state.head.is_empty()
+            && state.file_offset > 0
+            && read_head(&path, state.head.len()).is_some_and(|h| h != state.head);
         let rotated = size < state.file_offset
-            || (file_id.is_some() && state.file_id.is_some() && file_id != state.file_id);
+            || (file_id.is_some() && state.file_id.is_some() && file_id != state.file_id)
+            || head_changed;
         if rotated {
             state.file_offset = 0;
             state.journal_status = AgentStatus::Idle;
@@ -502,6 +527,7 @@ impl ClaudeCodeAgentWatcher {
             state.usage = None;
             state.last_tool = None;
             state.loop_state = None;
+            state.head.clear();
         }
         state.file_id = file_id;
         if size == state.file_offset {
@@ -520,6 +546,9 @@ impl ClaudeCodeAgentWatcher {
         }
         let text = String::from_utf8_lossy(&fresh[..consumed]);
         let parsed = parse_transcript(&text);
+        if state.file_offset == 0 {
+            state.head = fresh[..consumed.min(HEAD_PROBE_LEN)].to_vec();
+        }
         state.file_offset += consumed as u64;
 
         for entry in &parsed {
@@ -997,6 +1026,38 @@ mod tests {
         let new_user = r#"{"timestamp":"2026-07-03T11:00:00.000Z","message":{"role":"user","content":"a rewritten journal with a much longer opening prompt than before"}}"#;
         write_journal(&f.projects, "/home/u/proj", "sid-rot", &[new_user, RUNNING_LINE, DONE_LINE]);
         *f.agents.lock().unwrap() = vec![cli_agent(100, "/home/u/proj", "sid-rot", "idle")];
+        f.watcher.scan(&mut ctx, 2_000);
+        let ev = ctx.events.last().unwrap();
+        assert_eq!(
+            ev.thread_name.as_deref(),
+            Some("a rewritten journal with a much longer opening prompt than before")
+        );
+        assert_eq!(ev.status, AgentStatus::Complete);
+    }
+
+    #[test]
+    fn rewritten_journal_with_same_inode_detected_by_head_change() {
+        let mut f = fixture();
+        write_journal(&f.projects, "/home/u/proj", "sid-same", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(100, "/home/u/proj", "sid-same", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/proj".into(), "proj".into()));
+        f.watcher.scan(&mut ctx, 1_000);
+        assert_eq!(ctx.events.last().unwrap().thread_name.as_deref(), Some("fix the flaky test"));
+
+        // Rewrite the journal LARGER, in place (`fs::write` truncates the
+        // existing file, so the inode is guaranteed unchanged — the case
+        // remove+recreate only hits when the fs reuses the freed inode). The
+        // shrink and inode checks both pass; only the head change gives the
+        // replacement away.
+        let new_user = r#"{"timestamp":"2026-07-03T11:00:00.000Z","message":{"role":"user","content":"a rewritten journal with a much longer opening prompt than before"}}"#;
+        write_journal(
+            &f.projects,
+            "/home/u/proj",
+            "sid-same",
+            &[new_user, RUNNING_LINE, DONE_LINE],
+        );
+        *f.agents.lock().unwrap() = vec![cli_agent(100, "/home/u/proj", "sid-same", "idle")];
         f.watcher.scan(&mut ctx, 2_000);
         let ev = ctx.events.last().unwrap();
         assert_eq!(
