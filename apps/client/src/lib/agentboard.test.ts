@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentRollup,
+  cacheWarnMs,
   changedFolderDirs,
   cycleNeedsYou,
   diffPaneDir,
@@ -7,6 +9,7 @@ import {
   dropEmptyWindows,
   dropPane,
   isDiffPane,
+  isCacheExpiring,
   isFolderQuiet,
   normalizeWins,
   paneRects,
@@ -566,5 +569,68 @@ describe("cycleNeedsYou", () => {
     // From "a2" (idle, sits between a1 and b1) — next should be b1, prev should be a1.
     expect(cycleNeedsYou(repos, "a2", "next")?.id).toBe("b1");
     expect(cycleNeedsYou(repos, "a2", "prev")?.id).toBe("a1");
+  });
+});
+
+describe("cache expiry warning", () => {
+  const FIVE_MIN = 300_000;
+  const ONE_HOUR = 3_600_000;
+  const now = 1_000_000_000;
+  const details = (ttlMs: number, msLeft: number) => ({
+    cacheTtlMs: ttlMs,
+    cacheExpiresAt: now + msLeft,
+  });
+
+  it("warns inside the last 2m of a 5m cache", () => {
+    expect(isCacheExpiring(details(FIVE_MIN, 90_000), now)).toBe(true);
+    expect(isCacheExpiring(details(FIVE_MIN, 120_000), now)).toBe(true);
+    expect(isCacheExpiring(details(FIVE_MIN, 180_000), now)).toBe(false);
+  });
+
+  it("warns inside the last 10m of a 1h cache", () => {
+    expect(isCacheExpiring(details(ONE_HOUR, 9 * 60_000), now)).toBe(true);
+    expect(isCacheExpiring(details(ONE_HOUR, 11 * 60_000), now)).toBe(false);
+  });
+
+  it("stops warning once the cache is cold — that's isCold's job", () => {
+    expect(isCacheExpiring(details(FIVE_MIN, 0), now)).toBe(false);
+    expect(isCacheExpiring(details(FIVE_MIN, -60_000), now)).toBe(false);
+  });
+
+  it("never warns without cache activity", () => {
+    expect(isCacheExpiring(null, now)).toBe(false);
+    expect(isCacheExpiring({ cacheTtlMs: FIVE_MIN }, now)).toBe(false);
+  });
+
+  it("falls back to the 5m warn window for an unknown TTL", () => {
+    expect(cacheWarnMs(null)).toBe(120_000);
+    expect(cacheWarnMs(ONE_HOUR)).toBe(600_000);
+  });
+});
+
+describe("agentRollup expiring count", () => {
+  const now = 1_000_000_000;
+  const repoOf = (sessions: SessionData[]): RepoData =>
+    repo("r", [{ ...folder({}), sessions }]);
+
+  it("counts running agents whose warm cache is inside the warn window", () => {
+    const expiring = session({
+      live: true,
+      agentState: {
+        ...agent("idle"),
+        details: { cacheTtlMs: 300_000, cacheExpiresAt: now + 60_000 },
+      },
+    });
+    const warm = session({
+      id: "s2",
+      live: true,
+      agentState: {
+        ...agent("busy"),
+        details: { cacheTtlMs: 300_000, cacheExpiresAt: now + 240_000 },
+      },
+    });
+    const r = agentRollup([repoOf([expiring, warm])], now, 30);
+    expect(r.total).toBe(2);
+    expect(r.expiring).toBe(1);
   });
 });

@@ -12,6 +12,7 @@ import {
 } from "@/components/agentboard-bits";
 import {
   isAgent,
+  isCacheExpiring,
   isCold,
   pathScope,
   type FolderData,
@@ -20,6 +21,7 @@ import {
   type SessionData,
 } from "@/lib/agentboard";
 import type { PrItem } from "@/lib/data";
+import { cn } from "@/lib/utils";
 
 /** The working-context band atop the main pane: *where am I working and why*.
  * Leads with the focused checkout name — large, first, the anchor of the whole
@@ -67,7 +69,8 @@ export function WorkingContext({
 
 /** Cache health for one pane, shown only while Claude is actually running in
  * it (a live agent for this session). Cache warmth only — no context percent —
- * so the pane chrome stays quiet: `⧗ 42m left` / `◔ 3m left` while warm,
+ * so the pane chrome stays quiet: `⧗ 42m left` / `◔ 3m left` while warm
+ * (amber once inside the warn window — nudge Claude before the cache lapses),
  * `❄ cache cold` once the prompt cache has expired. Nothing when no agent is
  * running here or the session never touched a cache. */
 function PaneCacheInfo({ session, now }: { session: SessionData; now: number }) {
@@ -76,10 +79,20 @@ function PaneCacheInfo({ session, now }: { session: SessionData; now: number }) 
   // dies, so `isAgent && live` == "Claude running here right now".
   if (!session.live || !isAgent(session) || !d?.cacheExpiresAt) return null;
   const cold = isCold(d, now);
+  const expiring = isCacheExpiring(d, now);
   return (
     <span
-      title={cold ? "prompt cache expired" : "prompt cache warm — time left"}
-      className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70"
+      title={
+        cold
+          ? "prompt cache expired"
+          : expiring
+            ? "prompt cache expires soon — any message re-warms it; a cold resume re-reads everything at full price"
+            : "prompt cache warm — time left"
+      }
+      className={cn(
+        "shrink-0 font-mono text-[10.5px]",
+        expiring ? "text-amber-500" : "text-muted-foreground/70",
+      )}
     >
       {cold
         ? "❄ cache cold"

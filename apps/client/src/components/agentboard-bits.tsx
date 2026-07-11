@@ -5,6 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import {
   abInvoke,
   ctxPct,
+  isCacheExpiring,
   isCold,
   needsCompact,
   statusColor,
@@ -290,13 +291,23 @@ export function CacheBadge({
     );
   }
 
+  const expiring = isCacheExpiring(d, now);
   const warmth = cold
     ? "❄"
     : `${d.cacheTtlMs === 3_600_000 ? "⧗" : "◔"}${fmtMins(d.cacheExpiresAt! - now)}`;
   return (
     <span
-      title={cold ? "prompt cache expired" : "prompt cache warm — time left"}
-      className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70"
+      title={
+        cold
+          ? "prompt cache expired"
+          : expiring
+            ? "prompt cache expires soon — any message re-warms it; a cold resume re-reads everything at full price"
+            : "prompt cache warm — time left"
+      }
+      className={cn(
+        "shrink-0 font-mono text-[10.5px]",
+        expiring ? "text-amber-500" : "text-muted-foreground/70",
+      )}
     >
       {pct}% {warmth}
     </span>
