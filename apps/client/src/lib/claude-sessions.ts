@@ -28,6 +28,9 @@ export type ClaudeSession = {
   date: string;
   tokens: number;
   mtime: number;
+  /** Real absolute working directory the session ran in, or `null` for older
+   * transcripts logged before Claude Code recorded it (no fork target then). */
+  cwd: string | null;
 };
 
 export const claudeSessionsSummary = (days: number) =>

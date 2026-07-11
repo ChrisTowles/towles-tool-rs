@@ -496,7 +496,7 @@ export async function termWriteRetry(termId: string, data: string): Promise<bool
 
 /** Single-quote a string for safe injection into a shell command line typed
  * into a PTY (POSIX `'...'` escaping — embedded `'` becomes `'\''`). */
-function shellQuote(text: string): string {
+export function shellQuote(text: string): string {
   return `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
@@ -506,6 +506,17 @@ function shellQuote(text: string): string {
 export function claudeCommand(prompt: string): string {
   const trimmed = prompt.trim();
   return trimmed ? `claude ${shellQuote(trimmed)}\r` : "claude\r";
+}
+
+/** The `claude` invocation to fork a past session (from the Claude Sessions
+ * history) into a new session id, typed into a fresh PTY rooted at the
+ * session's original cwd. `compact` passes `/compact` as the initial prompt
+ * — same mechanism as `claudeCommand`'s prompt argument, just a fixed slash
+ * command instead of user text — so the fork starts already summarized. */
+export function forkSessionCommand(sessionId: string, compact: boolean): string {
+  const parts = ["claude", "--resume", shellQuote(sessionId), "--fork-session"];
+  if (compact) parts.push(shellQuote("/compact"));
+  return `${parts.join(" ")}\r`;
 }
 
 // --- Session lifecycle + layout shared types ---

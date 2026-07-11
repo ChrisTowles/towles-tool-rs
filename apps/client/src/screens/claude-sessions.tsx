@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as echarts from "echarts";
-import { History, RefreshCw } from "lucide-react";
+import { GitFork, History, RefreshCw, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -9,14 +9,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { IconBtn } from "@/components/agentboard-bits";
 import { Panel, Empty } from "@/components/store-bits";
+import { TerminalView } from "@/components/terminal-view";
 import { fmtAge } from "@/lib/data";
+import { forkSessionCommand, termWriteRetry } from "@/lib/agentboard";
 import {
   claudeSessionsList,
   claudeSessionsSummary,
   type ClaudeSession,
   type SpendSummary,
 } from "@/lib/claude-sessions";
+
+/** An in-flight fork: a fresh PTY spawned at a past session's original cwd,
+ * about to be handed `claude --resume <id> --fork-session` (see
+ * `forkSessionCommand`). Closing the dialog kills the shell — `TerminalView`
+ * unmounting is what tears down the PTY. */
+type ForkTarget = { termId: string; cwd: string; command: string; label: string };
 
 const DAY_OPTIONS = [
   { label: "Last 7 days", value: "7" },
@@ -138,7 +148,17 @@ function SpendBarChart({ bars }: { bars: { label: string; totalTokens: number }[
   return <div ref={ref} style={{ height: Math.max(120, bars.length * 36) }} />;
 }
 
-function SessionRow({ session, now }: { session: ClaudeSession; now: number }) {
+function SessionRow({
+  session,
+  now,
+  onFork,
+}: {
+  session: ClaudeSession;
+  now: number;
+  /** Undefined when the session has no recorded cwd (older transcript) — the
+   * row hides the fork actions rather than forking into an unknown folder. */
+  onFork?: (compact: boolean) => void;
+}) {
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 text-sm">
       <div className="min-w-0 flex-1">
@@ -150,6 +170,16 @@ function SessionRow({ session, now }: { session: ClaudeSession; now: number }) {
       <span className="shrink-0 font-mono text-xs text-muted-foreground">
         {formatTokens(session.tokens)}
       </span>
+      {onFork && (
+        <div className="flex shrink-0 items-center gap-1">
+          <IconBtn title="Fork session here" onClick={() => onFork(false)}>
+            <GitFork className="size-3.5" />
+          </IconBtn>
+          <IconBtn title="Fork + compact here" onClick={() => onFork(true)}>
+            <Sparkles className="size-3.5" />
+          </IconBtn>
+        </div>
+      )}
     </div>
   );
 }
@@ -163,11 +193,31 @@ export function ClaudeSessionsScreen() {
   const [sessions, setSessions] = useState<ClaudeSession[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(() => Date.now());
+  const [forkTarget, setForkTarget] = useState<ForkTarget | null>(null);
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(id);
   }, []);
+
+  // The dialog below mounts a fresh TerminalView for `forkTarget.termId` in
+  // the same render as this effect fires — `termWriteRetry` covers the beat
+  // before `term_start` actually registers the PTY (same pattern as
+  // Agentboard's `launchClaudeIn`).
+  useEffect(() => {
+    if (!forkTarget) return;
+    void termWriteRetry(forkTarget.termId, forkTarget.command);
+  }, [forkTarget]);
+
+  function openFork(session: ClaudeSession, compact: boolean) {
+    if (!session.cwd) return;
+    setForkTarget({
+      termId: crypto.randomUUID(),
+      cwd: session.cwd,
+      command: forkSessionCommand(session.sessionId, compact),
+      label: session.title ?? "session",
+    });
+  }
 
   async function refresh(d: string) {
     setLoading(true);
@@ -243,7 +293,14 @@ export function ClaudeSessionsScreen() {
             {shownSessions.length === 0 ? (
               <Empty>No sessions in this range.</Empty>
             ) : (
-              shownSessions.map((s) => <SessionRow key={s.sessionId} session={s} now={now} />)
+              shownSessions.map((s) => (
+                <SessionRow
+                  key={s.sessionId}
+                  session={s}
+                  now={now}
+                  onFork={s.cwd ? (compact) => openFork(s, compact) : undefined}
+                />
+              ))
             )}
             {truncatedSessions > 0 && (
               <p className="px-3 py-2 text-xs text-muted-foreground">
@@ -255,6 +312,30 @@ export function ClaudeSessionsScreen() {
       ) : (
         <p className="text-sm text-muted-foreground">Not available outside the app.</p>
       )}
+
+      <Dialog
+        open={forkTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setForkTarget(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Fork — {forkTarget?.label}</DialogTitle>
+          </DialogHeader>
+          {forkTarget && (
+            // data-term-host marks terminal territory for the shortcut guard
+            // (see agentboard.tsx) — keys typed here belong to the shell.
+            <div className="h-[420px] overflow-hidden rounded-md border" data-term-host>
+              <TerminalView
+                termId={forkTarget.termId}
+                cwd={forkTarget.cwd}
+                onExit={() => setForkTarget(null)}
+              />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

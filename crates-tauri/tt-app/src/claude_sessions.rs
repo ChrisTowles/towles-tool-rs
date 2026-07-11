@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use tt_graph::{
     ModelBar, ProjectBar, build_model_totals, build_project_totals, extract_project_name,
-    find_recent_sessions,
+    find_recent_sessions, parse_transcript_file,
 };
 
 /// Max sessions scanned, matching the CLI's `SESSION_LIMIT`.
@@ -45,6 +45,11 @@ pub struct SessionListItem {
     pub tokens: i64,
     /// Modification time in milliseconds since the Unix epoch.
     pub mtime: i64,
+    /// The real absolute working directory this session ran in, read back
+    /// from the transcript's own `cwd` field. `None` for older transcripts
+    /// logged before Claude Code recorded it — the fork actions need a real
+    /// path, so the frontend hides them when this is absent.
+    pub cwd: Option<String>,
 }
 
 /// Filter to sessions from the last `days` (0 = no limit), matching the CLI's
@@ -85,15 +90,25 @@ fn claude_sessions_list_blocking(days: f64) -> Result<Vec<SessionListItem>, Stri
 
     Ok(sessions
         .into_iter()
-        .map(|s| SessionListItem {
-            session_id: s.session_id,
-            title: s.title,
-            project: extract_project_name(&s.project),
-            date: s.date,
-            tokens: s.tokens,
-            mtime: s.mtime,
+        .map(|s| {
+            let cwd = session_cwd(&s.path);
+            SessionListItem {
+                session_id: s.session_id,
+                title: s.title,
+                project: extract_project_name(&s.project),
+                date: s.date,
+                tokens: s.tokens,
+                mtime: s.mtime,
+                cwd,
+            }
         })
         .collect())
+}
+
+/// The real working directory a session ran in, read back from the first
+/// transcript entry that recorded one.
+fn session_cwd(path: &std::path::Path) -> Option<String> {
+    parse_transcript_file(path).into_iter().find_map(|e| e.cwd)
 }
 
 fn scan_sessions(days: f64) -> Result<Vec<tt_graph::SessionResult>, String> {
