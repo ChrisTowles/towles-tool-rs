@@ -1,9 +1,10 @@
 import { invokeToast } from "@/lib/tauri";
 
 /**
- * Client-side bridge to the Claude Sessions screen (the Rust `tt-graph` crate,
- * surfaced via `crates-tauri/tt-app/src/claude_sessions.rs`). Plain
- * request/response, no live event stream.
+ * Client-side bridge to the Claude Sessions screen (the Rust `tt-graph`
+ * ledger module, surfaced via `crates-tauri/tt-app/src/claude_sessions.rs`).
+ * Plain request/response; the backend caches the scan so search stays
+ * in-memory.
  */
 
 export type ProjectBar = {
@@ -16,9 +17,17 @@ export type ModelBar = {
   totalTokens: number;
 };
 
-export type SpendSummary = {
-  byProject: ProjectBar[];
-  byModel: ModelBar[];
+export type LedgerDay = {
+  date: string;
+  projects: ProjectBar[];
+};
+
+export type LedgerTotals = {
+  sessions: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
 };
 
 export type ClaudeSession = {
@@ -26,15 +35,27 @@ export type ClaudeSession = {
   title: string | null;
   project: string;
   date: string;
-  tokens: number;
-  mtime: number;
-  /** Real absolute working directory the session ran in, or `null` for older
-   * transcripts logged before Claude Code recorded it (no fork target then). */
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  /** Real launch directory, for "Open in Agentboard"; null for transcripts
+   * that predate the field. */
   cwd: string | null;
+  /** Prompt-text context around the match; only present on search hits. */
+  snippet?: string;
+};
+
+export type ClaudeSessionsSummary = {
+  totals: LedgerTotals;
+  days: LedgerDay[];
+  byProject: ProjectBar[];
+  byModel: ModelBar[];
+  topSessions: ClaudeSession[];
 };
 
 export const claudeSessionsSummary = (days: number) =>
-  invokeToast<SpendSummary>("claude_sessions_summary", { days });
+  invokeToast<ClaudeSessionsSummary>("claude_sessions_summary", { days });
 
-export const claudeSessionsList = (days: number) =>
-  invokeToast<ClaudeSession[]>("claude_sessions_list", { days });
+export const claudeSessionsSearch = (days: number, query: string) =>
+  invokeToast<ClaudeSession[]>("claude_sessions_search", { days, query });

@@ -266,6 +266,38 @@ pub fn ab_add_session(
     record
 }
 
+/// The repo dir + new session id opened by [`ab_open_session_for_cwd`], so the
+/// client can select the session immediately.
+#[derive(serde::Serialize)]
+pub struct OpenedSession {
+    pub folder_dir: String,
+    pub session_id: String,
+}
+
+/// Resolve a Claude Code session's real `cwd` to a repo (adding it to the rail
+/// first if it isn't already registered), then add a new session there. Used
+/// by the Claude Sessions screen's "Open in Agentboard" action.
+#[tauri::command]
+pub fn ab_open_session_for_cwd(state: State<Ab>, cwd: String) -> Result<OpenedSession, String> {
+    if !std::path::Path::new(&cwd).exists() {
+        return Err(format!("{cwd} no longer exists on disk"));
+    }
+    let mut engine = state.engine.lock().unwrap();
+    let entries = tt_agentboard::repos::repo_entries(&engine.repo_dirs());
+    let dir = tt_agentboard::repos::resolve_repo_dir(&cwd, &entries).unwrap_or_else(|| {
+        tt_agentboard::repos::find_repo_root(std::path::Path::new(&cwd))
+            .to_string_lossy()
+            .to_string()
+    });
+    if engine.add_repo(&dir) {
+        state.scan.notify_one();
+    }
+    let record = engine.add_session(&dir, None, now_ms());
+    drop(engine);
+    state.emit.notify_one();
+    Ok(OpenedSession { folder_dir: dir, session_id: record.id })
+}
+
 #[tauri::command]
 pub fn ab_rename_session(state: State<Ab>, id: String, name: String) {
     state.engine.lock().unwrap().rename_session(&id, &name);

@@ -28,6 +28,7 @@ use thiserror::Error;
 pub mod analyzer;
 pub mod format;
 pub mod labels;
+pub mod ledger;
 pub mod parser;
 pub mod render;
 pub mod sessions;
@@ -53,6 +54,11 @@ pub use analyzer::{
 };
 pub use format::{SessionRow, build_session_rows, format_csv, format_json};
 pub use labels::extract_session_label;
+pub use ledger::{
+    LedgerTotals, SearchHit, SessionDetail, build_ledger_days, build_ledger_model_totals,
+    build_ledger_project_totals, ledger_totals, normalize_repo_name, scan_sessions_detailed,
+    search_sessions,
+};
 pub use parser::{HasMtime, calculate_cutoff_ms, filter_by_days};
 pub use render::generate_treemap_html;
 pub use sessions::{

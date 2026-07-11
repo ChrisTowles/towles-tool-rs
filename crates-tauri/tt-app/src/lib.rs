@@ -210,6 +210,7 @@ pub fn run() {
         })
         .manage(terminal::TermState::default())
         .manage(resources::ResourceState::default())
+        .manage(claude_sessions::ClaudeSessionsCache::default())
         .on_window_event(|window, event| {
             if let WindowEvent::Destroyed = event {
                 terminal::on_window_destroyed(window.app_handle(), window.label());
@@ -255,7 +256,8 @@ pub fn run() {
             journal::journal_create,
             journal::journal_open,
             claude_sessions::claude_sessions_summary,
-            claude_sessions::claude_sessions_list,
+            claude_sessions::claude_sessions_search,
+            agentboard::ab_open_session_for_cwd,
             doctor::doctor_run,
             settings::settings_get,
             settings::settings_set,

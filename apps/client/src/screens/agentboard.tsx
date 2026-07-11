@@ -44,7 +44,9 @@ import {
   abInvoke,
   changedFolderDirs,
   claudeCommand,
+  claudeResumeCommand,
   claudeTitleName,
+  consumePendingOpenSession,
   cycleNeedsYou,
   diffPaneDir,
   diffPaneId,
@@ -54,6 +56,7 @@ import {
   isFolderQuiet,
   liveSessions,
   normalizeWins,
+  onOpenSessionRequest,
   paneRects,
   placePane,
   prForFolder,
@@ -68,6 +71,7 @@ import {
   type FolderData,
   type Overlay,
   type PaneRect,
+  type PendingOpenSession,
   type RemoveTarget,
   type RepoCandidate,
   type RepoData,
@@ -415,6 +419,23 @@ export function AgentboardScreen() {
     setStartClaudePrompt("");
     void launchClaudeIn(target, prompt);
   }
+
+  // Claude Sessions' "Open in Agentboard" handoff (see `lib/agentboard.ts`'s
+  // pending-open-session bridge doc comment for why this can't be a plain
+  // function call): select the resolved folder/session, then type the resume
+  // command into its PTY. `termWriteRetry` covers the beat before `term_start`
+  // registers the freshly-created session (same pattern as `launchClaudeIn`).
+  useEffect(() => {
+    const handle = (req: PendingOpenSession) => {
+      selectSession(req.folderDir, req.sessionId);
+      toast(`✦ resuming ${req.label} — claude --resume ${req.resumeId.slice(0, 8)}`);
+      void termWriteRetry(req.sessionId, claudeResumeCommand(req.resumeId));
+    };
+    const pending = consumePendingOpenSession();
+    if (pending) handle(pending);
+    return onOpenSessionRequest(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function fetchCandidates(): Promise<RepoCandidate[]> {
     return (await abInvoke<RepoCandidate[]>("ab_discover_repos")) ?? [];

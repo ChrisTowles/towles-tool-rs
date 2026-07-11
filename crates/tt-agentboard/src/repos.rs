@@ -223,13 +223,11 @@ pub fn repo_entries(repo_paths: &[String]) -> Vec<RepoEntry> {
         .collect()
 }
 
-/// Resolve a watcher's project dir to a session name (longest prefix match).
-///
-/// Handles both forms the watchers produce: claude-code passes Claude's *encoded*
-/// folder name (`/`→`-`, adopted fix #3 — matched encoded↔encoded to sidestep the
-/// lossy decode); amp/codex/opencode pass a real absolute path (matched directly
-/// against repo dirs). An input starting with `/` is treated as a real path.
-pub fn resolve_session_name(dir: &str, entries: &[RepoEntry]) -> Option<String> {
+/// Resolve a watcher's project dir to its matching repo entry (longest prefix
+/// match). Shared by [`resolve_session_name`] (session-name form) and
+/// [`resolve_repo_dir`] (dir form) — see [`resolve_session_name`]'s doc for
+/// the encoded/real-path duality this handles.
+fn resolve_repo_entry<'a>(dir: &str, entries: &'a [RepoEntry]) -> Option<&'a RepoEntry> {
     let real_path = dir.starts_with('/');
     let sep = if real_path { '/' } else { '-' };
     let mut best: Option<(&RepoEntry, usize)> = None;
@@ -243,7 +241,41 @@ pub fn resolve_session_name(dir: &str, entries: &[RepoEntry]) -> Option<String> 
             }
         }
     }
-    best.map(|(entry, _)| entry.name.clone())
+    best.map(|(entry, _)| entry)
+}
+
+/// Resolve a watcher's project dir to a session name (longest prefix match).
+///
+/// Handles both forms the watchers produce: claude-code passes Claude's *encoded*
+/// folder name (`/`→`-`, adopted fix #3 — matched encoded↔encoded to sidestep the
+/// lossy decode); amp/codex/opencode pass a real absolute path (matched directly
+/// against repo dirs). An input starting with `/` is treated as a real path.
+pub fn resolve_session_name(dir: &str, entries: &[RepoEntry]) -> Option<String> {
+    resolve_repo_entry(dir, entries).map(|e| e.name.clone())
+}
+
+/// Resolve a real absolute path to an already-registered repo's `dir` (longest
+/// prefix match, so a path *under* a registered checkout still resolves to
+/// it). The "is this already on the rail" half of opening a past session in
+/// Agentboard — see [`find_repo_root`] for the "it isn't yet" half. `dir` must
+/// be a real path, not Claude's encoded form (see [`resolve_session_name`]).
+pub fn resolve_repo_dir(dir: &str, entries: &[RepoEntry]) -> Option<String> {
+    resolve_repo_entry(dir, entries).map(|e| e.dir.clone())
+}
+
+/// Walk up from `start` looking for a git repo root: a dir containing `.git`
+/// (a normal clone's dir, or the file a worktree uses — same test
+/// [`discover_git_repos`] applies). Returns `start` unchanged if no ancestor
+/// has one, so the caller always gets a usable path back rather than an
+/// `Option` to unwrap — registering that path as a folder is still better
+/// than failing outright, just less clean than the true repo root.
+pub fn find_repo_root(start: &Path) -> PathBuf {
+    for ancestor in start.ancestors() {
+        if ancestor.join(".git").exists() {
+            return ancestor.to_path_buf();
+        }
+    }
+    start.to_path_buf()
 }
 
 #[cfg(test)]
@@ -454,5 +486,47 @@ mod tests {
         // A repo whose name contains a literal dash encodes unambiguously here.
         let entries = repo_entries(&paths(&["/home/u/my-proj"]));
         assert_eq!(resolve_session_name("-home-u-my-proj", &entries).as_deref(), Some("my-proj"));
+    }
+
+    #[test]
+    fn resolve_repo_dir_matches_exact_and_subdir() {
+        let entries = repo_entries(&paths(&["/home/u/proj"]));
+        assert_eq!(resolve_repo_dir("/home/u/proj", &entries).as_deref(), Some("/home/u/proj"));
+        // A session cwd nested under the repo still resolves to the repo's dir.
+        assert_eq!(
+            resolve_repo_dir("/home/u/proj/crates/sub", &entries).as_deref(),
+            Some("/home/u/proj")
+        );
+        assert_eq!(resolve_repo_dir("/var/tmp", &entries), None);
+    }
+
+    #[test]
+    fn find_repo_root_walks_up_to_git() {
+        let root = TempDir::new().unwrap();
+        let repo = root.path().join("p/proj");
+        let sub = repo.join("crates/sub");
+        std::fs::create_dir_all(sub.join("deeper")).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+
+        assert_eq!(find_repo_root(&sub.join("deeper")), repo);
+        assert_eq!(find_repo_root(&repo), repo); // already the root
+    }
+
+    #[test]
+    fn find_repo_root_handles_worktree_git_file() {
+        let root = TempDir::new().unwrap();
+        let wt = root.path().join("w/wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: /elsewhere").unwrap();
+
+        assert_eq!(find_repo_root(&wt), wt);
+    }
+
+    #[test]
+    fn find_repo_root_falls_back_to_start_when_no_git_found() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join("no/git/here");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(find_repo_root(&dir), dir);
     }
 }

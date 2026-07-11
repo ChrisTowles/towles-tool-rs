@@ -1,7 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
-import { GitFork, History, RefreshCw, Sparkles } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Loader2,
+  RefreshCw,
+  Search,
+  TerminalSquare,
+} from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -9,24 +19,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { IconBtn } from "@/components/agentboard-bits";
-import { Panel, Empty } from "@/components/store-bits";
-import { TerminalView } from "@/components/terminal-view";
-import { fmtAge } from "@/lib/data";
-import { forkSessionCommand, termWriteRetry } from "@/lib/agentboard";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { abOpenSessionForCwd, requestOpenSession } from "@/lib/agentboard";
 import {
-  claudeSessionsList,
+  claudeSessionsSearch,
   claudeSessionsSummary,
   type ClaudeSession,
-  type SpendSummary,
+  type ClaudeSessionsSummary,
+  type LedgerDay,
 } from "@/lib/claude-sessions";
-
-/** An in-flight fork: a fresh PTY spawned at a past session's original cwd,
- * about to be handed `claude --resume <id> --fork-session` (see
- * `forkSessionCommand`). Closing the dialog kills the shell — `TerminalView`
- * unmounting is what tears down the PTY. */
-type ForkTarget = { termId: string; cwd: string; command: string; label: string };
+import { cn } from "@/lib/utils";
+import { useWorkspace } from "@/lib/workspace";
 
 const DAY_OPTIONS = [
   { label: "Last 7 days", value: "7" },
@@ -35,11 +40,12 @@ const DAY_OPTIONS = [
   { label: "All time", value: "0" },
 ];
 
-/** Cap the project ranking so one sprawling history doesn't dwarf the chart. */
-const MAX_PROJECT_BARS = 12;
+/** Repos stacked individually in the day chart; the rest fold into "Other". */
+const MAX_STACKED_REPOS = 4;
 
-/** Cap the recent-sessions list so one sprawling history doesn't dwarf the panel. */
-const MAX_SESSIONS_SHOWN = 20;
+/** A session whose in+out volume is ≥ this multiple of the visible median gets
+ * the amber outlier treatment — "this one is not like the others". */
+const OUTLIER_FACTOR = 5;
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -63,73 +69,19 @@ function useDomThemeVersion(): number {
   return version;
 }
 
-/** A horizontal ranked bar chart: one series, category identity lives on the axis
- * label rather than per-bar hue (the app's chart tokens are grayscale by design —
- * hue is reserved for agent status elsewhere in the UI). */
-function SpendBarChart({ bars }: { bars: { label: string; totalTokens: number }[] }) {
+/** Shared echarts lifecycle: init, first-layout resize, theme re-render. */
+function useEChart(render: (chart: echarts.ECharts) => void, deps: unknown[]) {
   const ref = useRef<HTMLDivElement>(null);
   const themeVersion = useDomThemeVersion();
 
   useEffect(() => {
     const el = ref.current;
-    if (!el || bars.length === 0) return;
-
+    if (!el) return;
     const chart = echarts.init(el);
-    const foreground = cssVar("--foreground");
-    const muted = cssVar("--muted-foreground");
-    const border = cssVar("--border");
-    const card = cssVar("--card");
-    const barColor = cssVar("--chart-2");
-
-    chart.setOption({
-      grid: { left: 8, right: 48, top: 8, bottom: 8, containLabel: true },
-      tooltip: {
-        trigger: "item",
-        backgroundColor: card,
-        borderColor: border,
-        textStyle: { color: foreground },
-        valueFormatter: (v: unknown) => `${(v as number).toLocaleString()} tokens`,
-      },
-      xAxis: {
-        type: "value",
-        axisLine: { show: false },
-        axisTick: { show: false },
-        splitLine: { lineStyle: { color: border } },
-        // The bar-end labels already show the exact value; a numeric axis
-        // below would just repeat it (and its ticks overlap in a narrow card).
-        axisLabel: { show: false },
-      },
-      yAxis: {
-        type: "category",
-        data: bars.map((b) => b.label),
-        inverse: true,
-        axisLine: { lineStyle: { color: border } },
-        axisTick: { show: false },
-        // Fixed width + truncation: a single very long project/model name
-        // must not blow out the label column and starve the bar area — the
-        // tooltip shows the untruncated name on hover.
-        axisLabel: { color: foreground, width: 150, overflow: "truncate" },
-      },
-      series: [
-        {
-          type: "bar",
-          data: bars.map((b) => b.totalTokens),
-          barMaxWidth: 22,
-          itemStyle: { color: barColor, borderRadius: [0, 4, 4, 0] },
-          label: {
-            show: true,
-            position: "right",
-            color: muted,
-            formatter: (p: { value: number }) => formatTokens(p.value),
-          },
-        },
-      ],
-    });
-
+    render(chart);
     // A tab switch mounts this container before layout has settled, so the
-    // container can be 0×0 at echarts.init() time (it warns and renders
-    // nothing). A ResizeObserver catches the first real layout pass, not just
-    // later window-level resizes.
+    // container can be 0×0 at echarts.init() time. A ResizeObserver catches
+    // the first real layout pass, not just later window-level resizes.
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);
     const observer = new ResizeObserver(onResize);
@@ -139,94 +91,424 @@ function SpendBarChart({ bars }: { bars: { label: string; totalTokens: number }[
       observer.disconnect();
       chart.dispose();
     };
-  }, [bars, themeVersion]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, themeVersion]);
 
-  if (bars.length === 0) {
+  return ref;
+}
+
+/** Rank repos by window total and fold everything past the top N into "Other". */
+function stackSeries(days: LedgerDay[]): { repos: string[]; rows: Map<string, number[]> } {
+  const totals = new Map<string, number>();
+  for (const day of days)
+    for (const p of day.projects) totals.set(p.project, (totals.get(p.project) ?? 0) + p.totalTokens);
+  const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => p);
+  const top = ranked.slice(0, MAX_STACKED_REPOS);
+  const hasOther = ranked.length > top.length;
+  const repos = hasOther ? [...top, "Other"] : top;
+
+  const rows = new Map<string, number[]>(repos.map((r) => [r, days.map(() => 0)]));
+  days.forEach((day, i) => {
+    for (const p of day.projects) {
+      const key = top.includes(p.project) ? p.project : "Other";
+      const row = rows.get(key);
+      if (row) row[i] += p.totalTokens;
+    }
+  });
+  return { repos, rows };
+}
+
+/** Stacked day×repo bars. Series identity rides the grayscale chart tokens
+ * (hue stays reserved for status, per the app's design language); the legend
+ * and tooltip carry the names. */
+function DayStackChart({ days }: { days: LedgerDay[] }) {
+  const ref = useEChart(
+    (chart) => {
+      const { repos, rows } = stackSeries(days);
+      const foreground = cssVar("--foreground");
+      const muted = cssVar("--muted-foreground");
+      const border = cssVar("--border");
+      const card = cssVar("--card");
+      // Darkest-first so the biggest repo is the most legible on both themes;
+      // "Other" (last) lands on the faintest step.
+      const shades = ["--chart-2", "--chart-3", "--chart-4", "--chart-5", "--chart-1"].map(cssVar);
+
+      chart.setOption({
+        grid: { left: 8, right: 8, top: 8, bottom: 44, containLabel: true },
+        legend: {
+          bottom: 0,
+          textStyle: { color: muted, fontSize: 11 },
+          itemWidth: 10,
+          itemHeight: 10,
+        },
+        tooltip: {
+          trigger: "axis",
+          axisPointer: { type: "shadow" },
+          backgroundColor: card,
+          borderColor: border,
+          textStyle: { color: foreground },
+          valueFormatter: (v: unknown) => `${(v as number).toLocaleString()} tokens`,
+        },
+        xAxis: {
+          type: "category",
+          data: days.map((d) => d.date.slice(5)),
+          axisLine: { lineStyle: { color: border } },
+          axisTick: { show: false },
+          axisLabel: { color: muted, fontSize: 10.5 },
+        },
+        yAxis: {
+          type: "value",
+          splitLine: { lineStyle: { color: border } },
+          axisLabel: { color: muted, formatter: (v: number) => formatTokens(v) },
+        },
+        series: repos.map((repo, i) => ({
+          name: repo,
+          type: "bar",
+          stack: "day",
+          barMaxWidth: 26,
+          data: rows.get(repo),
+          itemStyle: { color: shades[i % shades.length] },
+        })),
+      });
+    },
+    [days],
+  );
+
+  if (days.length === 0)
     return <p className="text-sm text-muted-foreground">No sessions in this range.</p>;
-  }
+  return <div ref={ref} style={{ height: 240 }} />;
+}
 
+/** A horizontal ranked bar chart: one series, identity on the axis label. */
+function RankedBarChart({ bars }: { bars: { label: string; totalTokens: number }[] }) {
+  const ref = useEChart(
+    (chart) => {
+      const foreground = cssVar("--foreground");
+      const muted = cssVar("--muted-foreground");
+      const border = cssVar("--border");
+      const card = cssVar("--card");
+      chart.setOption({
+        grid: { left: 8, right: 48, top: 8, bottom: 8, containLabel: true },
+        tooltip: {
+          trigger: "item",
+          backgroundColor: card,
+          borderColor: border,
+          textStyle: { color: foreground },
+          valueFormatter: (v: unknown) => `${(v as number).toLocaleString()} tokens`,
+        },
+        xAxis: {
+          type: "value",
+          axisLine: { show: false },
+          axisTick: { show: false },
+          splitLine: { lineStyle: { color: border } },
+          axisLabel: { show: false },
+        },
+        yAxis: {
+          type: "category",
+          data: bars.map((b) => b.label),
+          inverse: true,
+          axisLine: { lineStyle: { color: border } },
+          axisTick: { show: false },
+          axisLabel: { color: foreground, width: 150, overflow: "truncate" },
+        },
+        series: [
+          {
+            type: "bar",
+            data: bars.map((b) => b.totalTokens),
+            barMaxWidth: 22,
+            itemStyle: { color: cssVar("--chart-2"), borderRadius: [0, 4, 4, 0] },
+            label: {
+              show: true,
+              position: "right",
+              color: muted,
+              formatter: (p: { value: number }) => formatTokens(p.value),
+            },
+          },
+        ],
+      });
+    },
+    [bars],
+  );
+
+  if (bars.length === 0)
+    return <p className="text-sm text-muted-foreground">No sessions in this range.</p>;
   return <div ref={ref} style={{ height: Math.max(120, bars.length * 36) }} />;
 }
 
-function SessionRow({
-  session,
-  now,
-  onFork,
-}: {
-  session: ClaudeSession;
-  now: number;
-  /** Undefined when the session has no recorded cwd (older transcript) — the
-   * row hides the fork actions rather than forking into an unknown folder. */
-  onFork?: (compact: boolean) => void;
-}) {
+function StatTile({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return (
-    <div className="flex items-center gap-3 px-3 py-2.5 text-sm">
-      <div className="min-w-0 flex-1">
-        <div className="truncate">{session.title ?? "Untitled session"}</div>
-        <div className="truncate font-mono text-xs text-muted-foreground">
-          {session.project} · {fmtAge(session.mtime, now)}
-        </div>
+    <div className="rounded-lg border border-border bg-card px-3.5 py-2.5">
+      <div className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+        {label}
       </div>
-      <span className="shrink-0 font-mono text-xs text-muted-foreground">
-        {formatTokens(session.tokens)}
-      </span>
-      {onFork && (
-        <div className="flex shrink-0 items-center gap-1">
-          <IconBtn title="Fork session here" onClick={() => onFork(false)}>
-            <GitFork className="size-3.5" />
-          </IconBtn>
-          <IconBtn title="Fork + compact here" onClick={() => onFork(true)}>
-            <Sparkles className="size-3.5" />
-          </IconBtn>
-        </div>
-      )}
+      <div className="mt-0.5 font-mono text-xl font-semibold text-foreground">{value}</div>
+      {detail && <div className="text-[11px] text-muted-foreground">{detail}</div>}
     </div>
   );
 }
 
-/** Claude Sessions — Claude Code session history across every repo: where tokens
- * have gone (by project and by model), and what you've actually been working on,
- * over a selectable window. */
-export function ClaudeSessionsScreen() {
-  const [days, setDays] = useState("7");
-  const [summary, setSummary] = useState<SpendSummary | null>(null);
-  const [sessions, setSessions] = useState<ClaudeSession[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [now, setNow] = useState(() => Date.now());
-  const [forkTarget, setForkTarget] = useState<ForkTarget | null>(null);
+type SessionSortKey = "title" | "project" | "date" | "billable" | "cacheRead" | "cacheWrite";
+type SortDir = "asc" | "desc";
 
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
+/** First-click direction per column: names/repos alphabetize ascending; dates
+ * and token volumes lead with the most recent/largest — the more useful
+ * default for a table you opened to spot outliers. */
+const DEFAULT_SORT_DIR: Record<SessionSortKey, SortDir> = {
+  title: "asc",
+  project: "asc",
+  date: "desc",
+  billable: "desc",
+  cacheRead: "desc",
+  cacheWrite: "desc",
+};
 
-  // The dialog below mounts a fresh TerminalView for `forkTarget.termId` in
-  // the same render as this effect fires — `termWriteRetry` covers the beat
-  // before `term_start` actually registers the PTY (same pattern as
-  // Agentboard's `launchClaudeIn`).
-  useEffect(() => {
-    if (!forkTarget) return;
-    void termWriteRetry(forkTarget.termId, forkTarget.command);
-  }, [forkTarget]);
-
-  function openFork(session: ClaudeSession, compact: boolean) {
-    if (!session.cwd) return;
-    setForkTarget({
-      termId: crypto.randomUUID(),
-      cwd: session.cwd,
-      command: forkSessionCommand(session.sessionId, compact),
-      label: session.title ?? "session",
-    });
+function sessionSortValue(s: ClaudeSession, key: SessionSortKey): string | number {
+  switch (key) {
+    case "title":
+      return (s.title ?? s.sessionId).toLowerCase();
+    case "project":
+      return s.project.toLowerCase();
+    case "date":
+      return s.date;
+    case "billable":
+      return s.inputTokens + s.outputTokens;
+    case "cacheRead":
+      return s.cacheReadTokens;
+    case "cacheWrite":
+      return s.cacheCreationTokens;
   }
+}
+
+function SortableTh({
+  sortKey,
+  active,
+  dir,
+  align = "left",
+  onSort,
+  children,
+}: {
+  sortKey: SessionSortKey;
+  active: boolean;
+  dir: SortDir;
+  align?: "left" | "right";
+  onSort: (key: SessionSortKey) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <th
+      className={cn(
+        "cursor-pointer select-none py-1.5 pr-3 font-medium hover:text-foreground",
+        align === "right" && "text-right",
+      )}
+      aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : "none"}
+      onClick={() => onSort(sortKey)}
+    >
+      <span
+        className={cn(
+          "inline-flex items-center gap-1",
+          align === "right" && "flex-row-reverse",
+        )}
+      >
+        {children}
+        {active ? (
+          dir === "asc" ? (
+            <ArrowUp className="size-3" />
+          ) : (
+            <ArrowDown className="size-3" />
+          )
+        ) : (
+          <ArrowUpDown className="size-3 opacity-30" />
+        )}
+      </span>
+    </th>
+  );
+}
+
+function SessionTable({
+  sessions,
+  searching,
+}: {
+  sessions: ClaudeSession[];
+  searching: boolean;
+}) {
+  const [sort, setSort] = useState<{ key: SessionSortKey; dir: SortDir } | null>(null);
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const { openTab } = useWorkspace();
+
+  const medianBillable = useMemo(() => {
+    const sorted = sessions.map((s) => s.inputTokens + s.outputTokens).sort((a, b) => a - b);
+    return sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+  }, [sessions]);
+
+  const rows = useMemo(() => {
+    if (!sort) return sessions;
+    const { key, dir } = sort;
+    return [...sessions].sort((a, b) => {
+      const av = sessionSortValue(a, key);
+      const bv = sessionSortValue(b, key);
+      const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return dir === "asc" ? cmp : -cmp;
+    });
+  }, [sessions, sort]);
+
+  const toggleSort = (key: SessionSortKey) =>
+    setSort((prev) =>
+      prev?.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: DEFAULT_SORT_DIR[key] },
+    );
+
+  // Resolve `s.cwd` to an Agentboard folder (registering the repo first if
+  // it isn't on the rail yet — the backend handles that), then hand off
+  // selecting + resuming it to Agentboard itself (see `lib/agentboard.ts`'s
+  // pending-open-session bridge for why this can't just call into Agentboard
+  // directly: it may not be mounted yet).
+  async function openInAgentboard(s: ClaudeSession) {
+    if (!s.cwd) {
+      toast.error("No working directory recorded for this session");
+      return;
+    }
+    setOpeningId(s.sessionId);
+    try {
+      const opened = await abOpenSessionForCwd(s.cwd);
+      openTab("agentboard");
+      requestOpenSession({
+        folderDir: opened.folderDir,
+        sessionId: opened.sessionId,
+        resumeId: s.sessionId,
+        label: s.title ?? s.sessionId.slice(0, 8),
+      });
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setOpeningId(null);
+    }
+  }
+
+  if (sessions.length === 0)
+    return (
+      <p className="px-1 py-3 text-sm text-muted-foreground">
+        {searching ? "No sessions match." : "No sessions in this range."}
+      </p>
+    );
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border text-left text-[10.5px] uppercase tracking-wider text-muted-foreground">
+            <SortableTh sortKey="title" active={sort?.key === "title"} dir={sort?.dir ?? "asc"} onSort={toggleSort}>
+              Session
+            </SortableTh>
+            <SortableTh sortKey="project" active={sort?.key === "project"} dir={sort?.dir ?? "asc"} onSort={toggleSort}>
+              Repo
+            </SortableTh>
+            <SortableTh sortKey="date" active={sort?.key === "date"} dir={sort?.dir ?? "desc"} onSort={toggleSort}>
+              Date
+            </SortableTh>
+            <SortableTh
+              sortKey="billable"
+              active={sort?.key === "billable"}
+              dir={sort?.dir ?? "desc"}
+              align="right"
+              onSort={toggleSort}
+            >
+              In+Out
+            </SortableTh>
+            <SortableTh
+              sortKey="cacheRead"
+              active={sort?.key === "cacheRead"}
+              dir={sort?.dir ?? "desc"}
+              align="right"
+              onSort={toggleSort}
+            >
+              Cache R
+            </SortableTh>
+            <SortableTh
+              sortKey="cacheWrite"
+              active={sort?.key === "cacheWrite"}
+              dir={sort?.dir ?? "desc"}
+              align="right"
+              onSort={toggleSort}
+            >
+              Cache W
+            </SortableTh>
+            <th className="py-1.5 pl-3 font-medium" aria-label="Actions" />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((s) => {
+            const billable = s.inputTokens + s.outputTokens;
+            const outlier = medianBillable > 0 && billable >= OUTLIER_FACTOR * medianBillable;
+            const opening = openingId === s.sessionId;
+            return (
+              <tr key={s.sessionId} className="border-b border-border/60 hover:bg-accent/50">
+                <td className="max-w-[340px] py-1.5 pr-3">
+                  <div className="truncate text-foreground">
+                    {s.title ?? <span className="font-mono text-xs">{s.sessionId.slice(0, 8)}</span>}
+                  </div>
+                  {s.snippet && (
+                    <div className="truncate text-[11px] text-muted-foreground">{s.snippet}</div>
+                  )}
+                </td>
+                <td className="py-1.5 pr-3 font-mono text-xs text-muted-foreground">{s.project}</td>
+                <td className="py-1.5 pr-3 font-mono text-xs text-muted-foreground">{s.date}</td>
+                <td
+                  className={cn(
+                    "py-1.5 pr-3 text-right font-mono text-xs",
+                    outlier ? "font-semibold text-amber-500" : "text-foreground",
+                  )}
+                >
+                  {formatTokens(billable)}
+                </td>
+                <td className="py-1.5 pr-3 text-right font-mono text-xs text-muted-foreground">
+                  {formatTokens(s.cacheReadTokens)}
+                </td>
+                <td className="py-1.5 pr-3 text-right font-mono text-xs text-muted-foreground">
+                  {formatTokens(s.cacheCreationTokens)}
+                </td>
+                <td className="py-1.5 pl-3 text-right">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        disabled={!s.cwd || opening}
+                        onClick={() => void openInAgentboard(s)}
+                        className="text-violet-500 hover:text-violet-400 disabled:text-muted-foreground/40"
+                      >
+                        {opening ? <Loader2 className="animate-spin" /> : <TerminalSquare />}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {s.cwd
+                        ? "Open in Agentboard (resumes this session)"
+                        : "No working directory recorded for this session"}
+                    </TooltipContent>
+                  </Tooltip>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Claude Sessions — where the tokens went (day × repo × model) and which
+ * sessions are the outliers, with title + prompt-text search over the
+ * scanned window. */
+export function ClaudeSessionsScreen() {
+  const [days, setDays] = useState("30");
+  const [summary, setSummary] = useState<ClaudeSessionsSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<ClaudeSession[] | null>(null);
 
   async function refresh(d: string) {
     setLoading(true);
-    const [nextSummary, nextSessions] = await Promise.all([
-      claudeSessionsSummary(Number(d)),
-      claudeSessionsList(Number(d)),
-    ]);
-    setSummary(nextSummary);
-    setSessions(nextSessions);
+    setSummary(await claudeSessionsSummary(Number(d)));
     setLoading(false);
   }
 
@@ -235,14 +517,26 @@ export function ClaudeSessionsScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [days]);
 
-  const byProject = summary?.byProject.slice(0, MAX_PROJECT_BARS) ?? [];
-  const truncatedProjects = (summary?.byProject.length ?? 0) - byProject.length;
-  const byModel = summary?.byModel ?? [];
-  const shownSessions = sessions?.slice(0, MAX_SESSIONS_SHOWN) ?? [];
-  const truncatedSessions = (sessions?.length ?? 0) - shownSessions.length;
+  // Debounced search; empty query falls back to the ranked outlier list.
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) {
+      setResults(null);
+      return;
+    }
+    const t = setTimeout(() => {
+      void claudeSessionsSearch(Number(days), q).then((r) => setResults(r ?? []));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [query, days]);
+
+  const totals = summary?.totals;
+  const searching = query.trim().length > 0;
+  const sessions = searching ? (results ?? []) : (summary?.topSessions ?? []);
 
   return (
-    <div className="flex flex-col gap-4">
+    <ScrollArea className="h-full">
+      <div className="flex flex-col gap-4 p-6">
       <div className="flex items-center justify-between gap-2">
         <h2 className="font-heading text-lg font-semibold">Claude Sessions</h2>
         <div className="flex items-center gap-2">
@@ -266,76 +560,80 @@ export function ClaudeSessionsScreen() {
       </div>
 
       {loading && !summary ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      ) : summary ? (
-        <div className="flex flex-col gap-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="rounded-lg border border-border bg-card p-3.5">
-              <h3 className="mb-3 text-sm font-medium text-foreground">Tokens by project</h3>
-              <SpendBarChart bars={byProject.map((b) => ({ label: b.project, ...b }))} />
-              {truncatedProjects > 0 && (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  +{truncatedProjects} more project{truncatedProjects === 1 ? "" : "s"} not shown
-                </p>
-              )}
-            </div>
-            <div className="rounded-lg border border-border bg-card p-3.5">
-              <h3 className="mb-3 text-sm font-medium text-foreground">Tokens by model</h3>
-              <SpendBarChart bars={byModel.map((b) => ({ label: b.model, ...b }))} />
-            </div>
+        <p className="text-sm text-muted-foreground">Scanning sessions…</p>
+      ) : summary && totals ? (
+        <>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatTile label="Sessions" value={String(totals.sessions)} />
+            <StatTile
+              label="In + Out"
+              value={formatTokens(totals.inputTokens + totals.outputTokens)}
+              detail={`${formatTokens(totals.inputTokens)} in · ${formatTokens(totals.outputTokens)} out`}
+            />
+            <StatTile label="Cache read" value={formatTokens(totals.cacheReadTokens)} />
+            <StatTile label="Cache write" value={formatTokens(totals.cacheCreationTokens)} />
           </div>
 
-          <Panel
-            title="Recent sessions"
-            note={sessions ? `${sessions.length}` : undefined}
-            icon={<History className="size-4 text-muted-foreground" />}
-          >
-            {shownSessions.length === 0 ? (
-              <Empty>No sessions in this range.</Empty>
-            ) : (
-              shownSessions.map((s) => (
-                <SessionRow
-                  key={s.sessionId}
-                  session={s}
-                  now={now}
-                  onFork={s.cwd ? (compact) => openFork(s, compact) : undefined}
-                />
-              ))
-            )}
-            {truncatedSessions > 0 && (
-              <p className="px-3 py-2 text-xs text-muted-foreground">
-                +{truncatedSessions} more session{truncatedSessions === 1 ? "" : "s"} not shown
-              </p>
-            )}
-          </Panel>
-        </div>
+          <Tabs defaultValue="overview" className="gap-4">
+            <TabsList className="w-fit">
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="sessions">
+                Sessions{searching ? " · search" : ""}
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="overview" className="flex flex-col gap-4">
+              <div className="rounded-lg border border-border bg-card p-3.5">
+                <h3 className="mb-3 text-sm font-medium text-foreground">Tokens by day</h3>
+                <DayStackChart days={summary.days} />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="rounded-lg border border-border bg-card p-3.5">
+                  <h3 className="mb-3 text-sm font-medium text-foreground">By repo</h3>
+                  <RankedBarChart
+                    bars={summary.byProject.map((b) => ({ label: b.project, ...b }))}
+                  />
+                </div>
+                <div className="rounded-lg border border-border bg-card p-3.5">
+                  <h3 className="mb-3 text-sm font-medium text-foreground">By model</h3>
+                  <RankedBarChart bars={summary.byModel.map((b) => ({ label: b.model, ...b }))} />
+                </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="sessions">
+              <div className="rounded-lg border border-border bg-card p-3.5">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-medium text-foreground">
+                    {searching ? "Search results" : "Top sessions"}
+                  </h3>
+                  <div className="relative w-72">
+                    <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Search titles & prompts…"
+                      className="h-8 pl-8 text-sm"
+                    />
+                  </div>
+                </div>
+                <SessionTable sessions={sessions} searching={searching} />
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  {searching
+                    ? "Matches session titles and what you typed, newest first."
+                    : "Ranked by input+output tokens; amber marks outliers vs the median."}{" "}
+                  Click <TerminalSquare className="inline size-3 align-[-2px]" /> to resume a
+                  session in Agentboard — adds the repo to the rail first if it isn't there yet.
+                </p>
+              </div>
+            </TabsContent>
+          </Tabs>
+        </>
       ) : (
         <p className="text-sm text-muted-foreground">Not available outside the app.</p>
       )}
-
-      <Dialog
-        open={forkTarget != null}
-        onOpenChange={(open) => {
-          if (!open) setForkTarget(null);
-        }}
-      >
-        <DialogContent className="sm:max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>Fork — {forkTarget?.label}</DialogTitle>
-          </DialogHeader>
-          {forkTarget && (
-            // data-term-host marks terminal territory for the shortcut guard
-            // (see agentboard.tsx) — keys typed here belong to the shell.
-            <div className="h-[420px] overflow-hidden rounded-md border" data-term-host>
-              <TerminalView
-                termId={forkTarget.termId}
-                cwd={forkTarget.cwd}
-                onExit={() => setForkTarget(null)}
-              />
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-    </div>
+      </div>
+    </ScrollArea>
   );
 }

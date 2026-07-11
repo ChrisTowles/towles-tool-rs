@@ -669,15 +669,55 @@ export function claudeCommand(prompt: string): string {
   return trimmed ? `claude ${shellQuote(trimmed)}\r` : "claude\r";
 }
 
-/** The `claude` invocation to fork a past session (from the Claude Sessions
- * history) into a new session id, typed into a fresh PTY rooted at the
- * session's original cwd. `compact` passes `/compact` as the initial prompt
- * — same mechanism as `claudeCommand`'s prompt argument, just a fixed slash
- * command instead of user text — so the fork starts already summarized. */
-export function forkSessionCommand(sessionId: string, compact: boolean): string {
-  const parts = ["claude", "--resume", shellQuote(sessionId), "--fork-session"];
-  if (compact) parts.push(shellQuote("/compact"));
-  return `${parts.join(" ")}\r`;
+/** The `claude` invocation to resume a past session (from the Claude Sessions
+ * history) in place, typed into the folder's PTY. */
+export function claudeResumeCommand(sessionId: string): string {
+  return `claude --resume ${shellQuote(sessionId)}\r`;
+}
+
+/** Result of [`abOpenSessionForCwd`]: the resolved repo dir + the new
+ * Agentboard session id, so the caller can select it immediately. */
+export type OpenedSession = { folderDir: string; sessionId: string };
+
+/** Resolve a Claude Code session's real `cwd` to an Agentboard repo (adding
+ * it to the rail first if it isn't already registered) and open a new
+ * session there. Throws on failure so the caller can surface it. */
+export const abOpenSessionForCwd = (cwd: string) =>
+  invokeOrThrow<OpenedSession>("ab_open_session_for_cwd", { cwd });
+
+/** A cross-screen handoff: "select this folder/session in Agentboard, then
+ * type a resume command into it." Agentboard may not be mounted yet when the
+ * request is made (e.g. the Claude Sessions screen is the active tab), so
+ * this can't be a plain function call — it's a one-shot mailbox: `requestOpenSession`
+ * either delivers immediately (a listener is already mounted) or stashes the
+ * request for Agentboard's mount effect to consume via `consumePendingOpenSession`. */
+export type PendingOpenSession = {
+  folderDir: string;
+  sessionId: string;
+  resumeId: string;
+  label: string;
+};
+
+let pendingOpenSession: PendingOpenSession | null = null;
+const openSessionListeners = new Set<(req: PendingOpenSession) => void>();
+
+export function requestOpenSession(req: PendingOpenSession) {
+  if (openSessionListeners.size > 0) {
+    for (const l of openSessionListeners) l(req);
+    return;
+  }
+  pendingOpenSession = req;
+}
+
+export function consumePendingOpenSession(): PendingOpenSession | null {
+  const req = pendingOpenSession;
+  pendingOpenSession = null;
+  return req;
+}
+
+export function onOpenSessionRequest(cb: (req: PendingOpenSession) => void): () => void {
+  openSessionListeners.add(cb);
+  return () => openSessionListeners.delete(cb);
 }
 
 // --- Session lifecycle + layout shared types ---
