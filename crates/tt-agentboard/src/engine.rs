@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::metadata::{LogInput, ProgressInput, StatusInput};
+use crate::procenv::InstanceScope;
 use crate::session_order::ReorderDelta;
 use crate::types::{AgentEvent, AgentStatus, MetadataTone};
 use crate::{
@@ -91,6 +92,9 @@ pub struct Engine {
     /// thread, so an agent that exits stays on the pane it ran in instead of
     /// drifting to its folder's default session.
     thread_sessions: HashMap<String, String>,
+    /// Which app instances' agents this host reports (see
+    /// [`crate::procenv::InstanceScope`]).
+    scope: InstanceScope,
 }
 
 /// Everything [`Engine::compute_payload_with`] needs that is derived from the
@@ -106,8 +110,10 @@ pub struct AgentSnapshot {
 
 /// Gather the live-agent inputs for a payload rebuild. Runs the (cached)
 /// `claude agents` fetch and the `/proc` scans; call it WITHOUT holding the
-/// engine lock so a slow claude CLI can't stall `ab_*` commands.
-pub fn collect_agent_snapshot(now: i64) -> AgentSnapshot {
+/// engine lock so a slow claude CLI can't stall `ab_*` commands. `scope` must
+/// match the engine's (see [`Engine::new`]) so snapshot attribution and the
+/// watcher's admission agree on which agents are ours.
+pub fn collect_agent_snapshot(now: i64, scope: &InstanceScope) -> AgentSnapshot {
     // CLI-derived liveness drives the pruning pins (§4; T7 replaced the
     // ~/.claude/sessions pid files; the waiting synthesis is gone — the
     // claude watcher emits CLI-authoritative statuses directly).
@@ -119,11 +125,13 @@ pub fn collect_agent_snapshot(now: i64) -> AgentSnapshot {
     // from the agent's process env (/proc), keyed by its thread id (==
     // sessionId). Agents with no injected id (e.g. started in an external
     // terminal, or non-Claude kinds without a pid source) stay unmapped and
-    // fall back to their folder's default session in `assemble_state`.
+    // fall back to their folder's default session in `assemble_state`. Agents
+    // out of `scope` (another app instance's PTYs) stay unmapped too — the
+    // watcher drops their events entirely, so nothing falls back for them.
     let tt_session_by_thread: HashMap<String, String> = cli_agents
         .iter()
         .filter_map(|a| {
-            crate::procenv::read_session_id(a.pid).map(|sid| (a.session_id.clone(), sid))
+            crate::procenv::session_id_in_scope(a.pid, scope).map(|sid| (a.session_id.clone(), sid))
         })
         .collect();
     // Supplement CLI detection: app-spawned Claude sessions the CLI snapshot
@@ -132,7 +140,7 @@ pub fn collect_agent_snapshot(now: i64) -> AgentSnapshot {
     // transcript the process has open. Keyed by session id; consumed only
     // for sessions the tracker left idle. First live process per id wins.
     let mut session_agents: HashMap<String, AgentEvent> = HashMap::new();
-    for proc in crate::procenv::scan_session_agents() {
+    for proc in crate::procenv::scan_session_agents(scope) {
         if session_agents.contains_key(&proc.session_id) {
             continue;
         }
@@ -160,7 +168,11 @@ pub fn collect_agent_snapshot(now: i64) -> AgentSnapshot {
 
 impl Engine {
     /// Build from the real config locations (`~/.claude`, `~/.config/towles-tool`).
-    pub fn new() -> Self {
+    /// `scope` picks which app instances' agents this host reports: the app
+    /// passes [`InstanceScope::this_app`] (its own PTYs only — sessions.json is
+    /// shared, so another instance's PTY can carry the same session id); the
+    /// MCP server passes [`InstanceScope::Any`].
+    pub fn new(scope: InstanceScope) -> Self {
         let projects_dir =
             dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude").join("projects");
         let repos_path = default_repos_path();
@@ -189,7 +201,7 @@ impl Engine {
             collapse: crate::collapse::CollapseStore::new(Some(crate::default_collapse_path())),
             git_cache: GitInfoCache::new(),
             watchers: vec![
-                Box::new(ClaudeCodeAgentWatcher::with_defaults()),
+                Box::new(ClaudeCodeAgentWatcher::with_defaults(scope.clone())),
                 Box::new(AmpAgentWatcher::with_defaults()),
                 Box::new(CodexAgentWatcher::with_defaults()),
                 Box::new(OpenCodeAgentWatcher::with_defaults()),
@@ -199,6 +211,7 @@ impl Engine {
             compact_recommend_percent,
             seeded_once: false,
             thread_sessions: HashMap::new(),
+            scope,
         }
     }
 
@@ -304,7 +317,7 @@ impl Engine {
     /// loop (the MCP server). Hot loops should call [`collect_agent_snapshot`]
     /// unlocked and pass it to [`Engine::compute_payload_with`].
     pub fn compute_payload(&mut self, now: i64) -> StatePayload {
-        let snapshot = collect_agent_snapshot(now);
+        let snapshot = collect_agent_snapshot(now, &self.scope);
         self.compute_payload_with(&snapshot, now)
     }
 
@@ -607,12 +620,6 @@ impl Engine {
     }
     pub fn clear_logs(&mut self, session: &str) {
         self.metadata.clear_logs(session);
-    }
-}
-
-impl Default for Engine {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

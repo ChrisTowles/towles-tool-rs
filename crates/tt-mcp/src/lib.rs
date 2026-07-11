@@ -155,7 +155,10 @@ impl Dispatcher {
     fn agent_sessions(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
         let status_filter = args.get("status").and_then(Value::as_str).map(str::to_string);
         let scanned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut engine = tt_agentboard::engine::Engine::new();
+            // The MCP server has no PTYs of its own — report agents from any
+            // app instance.
+            let mut engine =
+                tt_agentboard::engine::Engine::new(tt_agentboard::procenv::InstanceScope::Any);
             engine.scan_once(now_ms);
             engine.compute_payload(now_ms)
         }));
