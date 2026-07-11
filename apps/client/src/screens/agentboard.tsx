@@ -170,16 +170,19 @@ export function AgentboardScreen() {
   const railCollapsed = !!collapsed[RAIL_COLLAPSE_KEY];
   const toggleRail = () => toggleCollapsed(RAIL_COLLAPSE_KEY);
 
-  // "Hide inactive" rail filter: drop quiet folders (see `isFolderQuiet` —
+  // "Hide inactive" rail filter: demote quiet folders (see `isFolderQuiet` —
   // no live session, no dirty tree/unpushed commits, no session that catches
-  // the eye; and any repo left with none), so a big rail can shrink to just
-  // what's actually going on. A view filter, not a rail-structure change —
-  // local state only, unlike `collapsed` it doesn't need to survive a
-  // reload. Lookups used for panes/sessions (folderOf, sessionById, etc.
-  // below) stay on the full `repos` list; only the two render surfaces
-  // (RepoGroup list, RailIconStrip) read `visibleRepos`, since a pane already
-  // open for a now-hidden folder must keep working.
+  // the eye, no agent activity within the grace window) behind a per-repo
+  // "N quiet" stub row, so a big rail shrinks to what's actually going on
+  // without anything silently disappearing. A view filter, not a
+  // rail-structure change — local state only, unlike `collapsed` it doesn't
+  // need to survive a reload. Lookups used for panes/sessions (folderOf,
+  // sessionById, etc. below) stay on the full `repos` list; only the two
+  // render surfaces (RepoGroup list, RailIconStrip) apply the filter, since
+  // a pane already open for a now-quiet folder must keep working.
   const [hideInactive, setHideInactive] = useState(false);
+  // Per-repo "show me the quiet ones anyway" toggle (the stub row).
+  const [quietRevealed, setQuietRevealed] = useState<Record<string, boolean>>({});
 
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renamingWin, setRenamingWin] = useState<string | null>(null);
@@ -195,20 +198,36 @@ export function AgentboardScreen() {
 
   const repos = state.repos;
 
-  // Repos/folders the rail actually renders: every folder when the "hide
-  // inactive" filter is off, else only folders that aren't quiet (a repo
-  // with none left drops out entirely). The active folder always stays
-  // visible even if it just went quiet, so switching away from what you're
-  // looking at never happens as a side effect of the filter.
+  // Quiet checkout dirs per repo key, when the "hide inactive" filter is on.
+  // The active folder never counts as quiet, so switching away from what
+  // you're looking at never happens as a side effect of the filter. `now`
+  // ticks every 30s, which is plenty for the 45-minute quiet grace window.
+  const quietDirs = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    if (!hideInactive) return m;
+    for (const r of repos) {
+      const q = new Set(
+        r.folders
+          .filter((f) => isFolderQuiet(f, now) && f.dir !== activeFolderDir)
+          .map((f) => f.dir),
+      );
+      if (q.size > 0) m.set(r.key, q);
+    }
+    return m;
+  }, [repos, hideInactive, activeFolderDir, now]);
+
+  // The collapsed icon strip has no room for stub rows, so there the filter
+  // still just drops quiet (un-revealed) folders and any repo left empty.
   const visibleRepos = useMemo(() => {
     if (!hideInactive) return repos;
     return repos
-      .map((r) => ({
-        ...r,
-        folders: r.folders.filter((f) => !isFolderQuiet(f) || f.dir === activeFolderDir),
-      }))
+      .map((r) => {
+        const q = quietDirs.get(r.key);
+        if (!q || quietRevealed[r.key]) return r;
+        return { ...r, folders: r.folders.filter((f) => !q.has(f.dir)) };
+      })
       .filter((r) => r.folders.length > 0);
-  }, [repos, hideInactive, activeFolderDir]);
+  }, [repos, hideInactive, quietDirs, quietRevealed]);
 
   // Index every session by id → its folder / its data, for cwd + pane chrome.
   const folderOf = useMemo(() => {
@@ -796,25 +815,15 @@ export function AgentboardScreen() {
                           </Button>
                         </div>
                       )}
-                      {repos.length > 0 && visibleRepos.length === 0 && (
-                        <div className="flex flex-col items-center gap-3 px-3 py-10 text-center">
-                          <EyeOff className="size-8 text-muted-foreground" />
-                          <p className="text-sm text-muted-foreground">
-                            No active work right now.
-                          </p>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setHideInactive(false)}
-                          >
-                            <Eye className="size-3.5" /> Show all repos
-                          </Button>
-                        </div>
-                      )}
-                      {visibleRepos.map((repo) => (
+                      {repos.map((repo) => (
                         <RepoGroup
                           key={repo.key}
                           repo={repo}
+                          quietDirs={quietDirs.get(repo.key)}
+                          quietRevealed={!!quietRevealed[repo.key]}
+                          onToggleQuiet={() =>
+                            setQuietRevealed((m) => ({ ...m, [repo.key]: !m[repo.key] }))
+                          }
                           now={now}
                           compactPct={state.compactRecommendPercent}
                           prs={snapshot.prs}
