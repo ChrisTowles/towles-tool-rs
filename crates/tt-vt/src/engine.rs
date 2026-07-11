@@ -164,6 +164,14 @@ impl Engine {
         Ok(())
     }
 
+    /// Force the next render to emit a full frame even when libghostty
+    /// reports nothing dirty. The UI calls this when a hidden pane becomes
+    /// visible again: its canvas may hold stale content, and dirty-only
+    /// frames would never resend rows the engine considers clean (#47).
+    pub fn request_full(&mut self) {
+        self.force_full = true;
+    }
+
     /// Plain text of the active selection, if any.
     pub fn copy_selection(&mut self) -> Result<Option<String>> {
         let bytes = self.term.format_selection_alloc(None, FormatOptions::new())?;
