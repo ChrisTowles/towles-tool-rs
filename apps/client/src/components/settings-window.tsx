@@ -516,9 +516,24 @@ export function SettingsWindow() {
           <TabsContent value="agentboard" className="flex flex-col gap-5 p-4">
             <TabHeading
               title="Agentboard"
-              note="Where the add-repo picker looks for your git repos."
+              note="Repo discovery and needs-you notifications."
             />
             <AgentboardSettings />
+            {settings ? (
+              <ToggleRow
+                label="Needs-you notifications"
+                description="Desktop notification when an agent session flips to needs-you while the app is unfocused. Status only — act in the session's terminal."
+                checked={settings.agentboard?.notifyNeedsYou ?? true}
+                onCheckedChange={(v) =>
+                  update((s) => ({
+                    ...s,
+                    agentboard: { ...s.agentboard, notifyNeedsYou: v },
+                  }))
+                }
+              />
+            ) : (
+              <SettingsLoading />
+            )}
           </TabsContent>
 
           <TabsContent value="journal" className="flex flex-col gap-5 p-4">

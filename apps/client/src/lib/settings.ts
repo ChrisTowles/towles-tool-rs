@@ -51,8 +51,12 @@ export type UserSettings = {
   preferredEditor: string;
   journalSettings: JournalSettings;
   collectors: CollectorsSettings;
-  /** TS-owned UI block; opaque here, preserved on save. */
-  agentboard?: Record<string, unknown>;
+  /**
+   * Mostly TS-owned UI block, carried through opaquely so a save never drops
+   * it. `notifyNeedsYou` is the one app-edited key: desktop notification when
+   * a session flips into needs-you (unset = on).
+   */
+  agentboard?: { notifyNeedsYou?: boolean } & Record<string, unknown>;
 };
 
 export type SaveState = "idle" | "saving" | "saved" | "error";

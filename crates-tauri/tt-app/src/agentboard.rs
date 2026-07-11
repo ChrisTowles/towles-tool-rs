@@ -68,6 +68,38 @@ pub fn stamped_payload(app: &AppHandle) -> StatePayload {
     payload
 }
 
+/// Fire a desktop notification for each session that just flipped into
+/// needs-you (edge-detected by `tt_agentboard::NeedsYouWatch` in the emitter
+/// loop). Status-report only — there are no approve/reply actions; acting on
+/// the agent happens in the real PTY. Skipped entirely when the app window is
+/// focused (the rail/day-bar already show it) or when the user turned the
+/// `agentboard.notifyNeedsYou` setting off (default on).
+pub fn notify_needs_you(app: &AppHandle, edges: &[tt_agentboard::NeedsYouEdge]) {
+    use tauri_plugin_notification::NotificationExt;
+
+    if edges.is_empty() {
+        return;
+    }
+    let focused = app.get_webview_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(false);
+    if focused {
+        return;
+    }
+    let enabled = tt_config::load()
+        .map(|s| s.agentboard.notify_needs_you.unwrap_or(tt_config::DEFAULT_NOTIFY_NEEDS_YOU))
+        .unwrap_or(tt_config::DEFAULT_NOTIFY_NEEDS_YOU);
+    if !enabled {
+        return;
+    }
+    for edge in edges {
+        let _ = app
+            .notification()
+            .builder()
+            .title(format!("{} — {}", edge.repo, edge.session))
+            .body("Agent session needs you")
+            .show();
+    }
+}
+
 // --- Tauri commands ---
 
 /// Pull the current snapshot (initial mount).

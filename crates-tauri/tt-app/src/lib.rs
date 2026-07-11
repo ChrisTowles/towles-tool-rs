@@ -58,7 +58,9 @@ pub fn run() {
         unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
     }
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init());
 
     // WebdriverIO E2E plugins, only under `--features wdio` (see e2e/):
     // tauri-plugin-wdio exposes the execute/mock IPC surface, and
@@ -115,6 +117,9 @@ pub fn run() {
                     // Compared with `ts` zeroed: the stamp changes every
                     // rebuild, the rest only when state does.
                     let mut last: Option<tt_agentboard::StatePayload> = None;
+                    // Edge detector for needs-you desktop notifications: fires
+                    // once per flip into needs-you, never on the level.
+                    let mut needs_watch = tt_agentboard::NeedsYouWatch::new();
                     loop {
                         emit.notified().await;
                         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -130,6 +135,8 @@ pub fn run() {
                         probe.ts = 0;
                         if last.as_ref() != Some(&probe) {
                             last = Some(probe);
+                            let edges = needs_watch.observe(&payload);
+                            agentboard::notify_needs_you(&handle, &edges);
                             let _ = handle.emit(STATE_EVENT, payload);
                         }
                     }
