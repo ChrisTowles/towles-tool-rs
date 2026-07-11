@@ -88,7 +88,9 @@ pub fn store_add_task(
     due_ts: Option<i64>,
 ) -> Result<(), String> {
     with_store(&state, |store| {
-        store.add_task(&text, due_ts, now_ms()).map_err(|e| format!("add_task failed: {e}"))
+        store
+            .add_task(&text, due_ts, None, None, now_ms())
+            .map_err(|e| format!("add_task failed: {e}"))
     })?;
     emit_snapshot(&app, &state);
     Ok(())
@@ -254,7 +256,7 @@ mod tests {
     #[test]
     fn snapshot_reflects_writes() {
         let store = Store::open_in_memory().unwrap();
-        store.add_task("buy milk", Some(500), 1).unwrap();
+        store.add_task("buy milk", Some(500), None, None, 1).unwrap();
         let state = StoreState::from_option(Some(store));
         let snap = snapshot_of(&state).unwrap();
         assert_eq!(snap.tasks.len(), 1);

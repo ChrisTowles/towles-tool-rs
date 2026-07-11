@@ -32,7 +32,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Kanban columns a todo can live in, in board order.
 pub const TASK_STATUSES: [&str; 5] = ["backlog", "next", "doing", "review", "done"];
@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     issue_number INTEGER,
     issue_url TEXT,
     created_at INTEGER NOT NULL,
-    completed_at INTEGER
+    completed_at INTEGER,
+    notes TEXT
 );
 CREATE TABLE IF NOT EXISTS issues (
     repo TEXT NOT NULL,
@@ -108,8 +109,8 @@ CREATE TABLE IF NOT EXISTS dm_status (
 
 // Column lists, kept in sync with the row-mapping closures below.
 const EVENT_COLS: &str = "id, external_id, title, start_ts, end_ts, attendees, location, join_url";
-const TASK_COLS: &str =
-    "id, text, status, position, due_ts, repo, issue_number, issue_url, created_at, completed_at";
+const TASK_COLS: &str = "id, text, status, position, due_ts, repo, issue_number, issue_url, \
+     created_at, completed_at, notes";
 const ISSUE_COLS: &str = "repo, number, title, labels, state, url, updated_ts";
 const PR_COLS: &str = "repo, number, title, branch, state, checks, review_state, url, updated_ts";
 const RUN_COLS: &str = "collector, ran_at, ok, message";
@@ -162,6 +163,8 @@ pub struct TaskItem {
     pub created_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -335,6 +338,7 @@ impl Store {
     fn migrate(&self) -> Result<()> {
         self.conn.execute_batch(SCHEMA_V1)?;
         self.migrate_tasks_v2()?;
+        self.migrate_tasks_notes_v4()?;
         self.conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -404,6 +408,27 @@ impl Store {
             ))?;
         }
         self.conn.execute_batch("DROP TABLE IF EXISTS emails;")?;
+        Ok(())
+    }
+
+    /// v4: free-form `notes` on todos. Dbs created before v4 (including ones the
+    /// v2 rebuild just produced) lack the column; a nullable ADD COLUMN brings
+    /// them forward in place. Idempotent via the `PRAGMA table_info` check.
+    fn migrate_tasks_notes_v4(&self) -> Result<()> {
+        let mut has_notes = false;
+        {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(tasks)")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(1)?;
+                if name == "notes" {
+                    has_notes = true;
+                }
+            }
+        }
+        if !has_notes {
+            self.conn.execute_batch("ALTER TABLE tasks ADD COLUMN notes TEXT;")?;
+        }
         Ok(())
     }
 
@@ -496,16 +521,26 @@ impl Store {
     }
 
     /// Add a manually-entered todo. Lands in the `backlog` column at the end.
-    pub fn add_task(&self, text: &str, due_ts: Option<i64>, now_ms: i64) -> Result<TaskItem> {
+    /// `repo` associates it with a repository without linking an issue; `notes`
+    /// is free-form context.
+    pub fn add_task(
+        &self,
+        text: &str,
+        due_ts: Option<i64>,
+        repo: Option<&str>,
+        notes: Option<&str>,
+        now_ms: i64,
+    ) -> Result<TaskItem> {
         let position: i64 = self.conn.query_row(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE status = 'backlog'",
             [],
             |r| r.get(0),
         )?;
         self.conn.execute(
-            "INSERT INTO tasks (text, status, position, due_ts, created_at, completed_at)
-             VALUES (?1, 'backlog', ?2, ?3, ?4, NULL)",
-            params![text, position, due_ts, now_ms],
+            "INSERT INTO tasks (text, status, position, due_ts, repo, notes, created_at,
+                                completed_at)
+             VALUES (?1, 'backlog', ?2, ?3, ?4, ?5, ?6, NULL)",
+            params![text, position, due_ts, repo, notes, now_ms],
         )?;
         self.task_by_id(self.conn.last_insert_rowid())
     }
@@ -780,6 +815,7 @@ impl Store {
                 issue_url: r.get(7)?,
                 created_at: r.get(8)?,
                 completed_at: r.get(9)?,
+                notes: r.get(10)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -890,7 +926,7 @@ mod tests {
         let path = dir.path().join("tt.db");
         {
             let s = Store::open(&path).unwrap();
-            s.add_task("survives", None, 1).unwrap();
+            s.add_task("survives", None, None, None, 1).unwrap();
         }
         // Re-open: migrate runs again without error, data intact.
         let s = Store::open(&path).unwrap();
@@ -938,7 +974,7 @@ mod tests {
 
         // Writes must work too: the legacy NOT-NULL `source` column has to be
         // gone, or every INSERT that omits it fails.
-        let added = s.add_task("new todo", None, 3).unwrap();
+        let added = s.add_task("new todo", None, None, None, 3).unwrap();
         assert_eq!(added.status, "backlog");
         assert!(!task_columns(&s).contains(&"source".to_string()));
 
@@ -996,7 +1032,7 @@ mod tests {
         assert_eq!(t.position, 2);
         assert_eq!(t.repo.as_deref(), Some("o/r"));
         assert_eq!(t.issue_number, Some(7));
-        s.add_task("post-repair todo", None, 9).unwrap();
+        s.add_task("post-repair todo", None, None, None, 9).unwrap();
         assert!(!task_columns(&s).contains(&"source".to_string()));
     }
 
@@ -1070,8 +1106,8 @@ mod tests {
     #[test]
     fn add_task_lands_in_backlog_and_orders_by_position() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("first", None, 100).unwrap();
-        let b = s.add_task("second", None, 200).unwrap();
+        let a = s.add_task("first", None, None, None, 100).unwrap();
+        let b = s.add_task("second", None, None, None, 200).unwrap();
         assert_eq!(a.status, "backlog");
         assert_eq!(a.position, 0);
         assert_eq!(b.position, 1);
@@ -1083,7 +1119,7 @@ mod tests {
     #[test]
     fn set_task_status_moves_columns_and_stamps_done() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("ship it", None, 1).unwrap();
+        let t = s.add_task("ship it", None, None, None, 1).unwrap();
         s.set_task_status(t.id, "doing", 5).unwrap();
         let doing = s.open_tasks().unwrap();
         assert_eq!(doing[0].status, "doing");
@@ -1103,16 +1139,64 @@ mod tests {
     }
 
     #[test]
+    fn add_task_stores_repo_and_notes() {
+        let s = Store::open_in_memory().unwrap();
+        let t =
+            s.add_task("port the CLI", None, Some("o/r"), Some("start with doctor"), 1).unwrap();
+        assert_eq!(t.repo.as_deref(), Some("o/r"));
+        assert_eq!(t.notes.as_deref(), Some("start with doctor"));
+        // No issue link yet: repo alone does not make it issue-linked.
+        assert_eq!(t.issue_number, None);
+        let bare = s.add_task("no context", None, None, None, 2).unwrap();
+        assert_eq!(bare.repo, None);
+        assert_eq!(bare.notes, None);
+    }
+
+    #[test]
+    fn migrate_adds_notes_column_to_pre_v4_tasks_table() {
+        // A v2/v3-era db: kanban-shaped tasks table, but no `notes` column.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tt.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'backlog',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    due_ts INTEGER,
+                    repo TEXT,
+                    issue_number INTEGER,
+                    issue_url TEXT,
+                    created_at INTEGER NOT NULL,
+                    completed_at INTEGER
+                );
+                INSERT INTO tasks (text, created_at) VALUES ('pre-v4 todo', 1);",
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        assert!(task_columns(&s).contains(&"notes".to_string()));
+        let existing = s.open_tasks().unwrap();
+        assert_eq!(existing[0].text, "pre-v4 todo");
+        assert_eq!(existing[0].notes, None);
+        let t = s.add_task("with notes", None, None, Some("context"), 2).unwrap();
+        assert_eq!(t.notes.as_deref(), Some("context"));
+    }
+
+    #[test]
     fn set_task_status_rejects_unknown() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("x", None, 1).unwrap();
+        let t = s.add_task("x", None, None, None, 1).unwrap();
         assert!(s.set_task_status(t.id, "bogus", 2).is_err());
     }
 
     #[test]
     fn link_task_issue_stores_reference() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("wire up board", None, 1).unwrap();
+        let t = s.add_task("wire up board", None, None, None, 1).unwrap();
         s.link_task_issue(t.id, "o/r", 42, "https://github.com/o/r/issues/42").unwrap();
         let linked = s.open_tasks().unwrap()[0].clone();
         assert_eq!(linked.repo.as_deref(), Some("o/r"));
@@ -1196,7 +1280,7 @@ mod tests {
             1,
         )
         .unwrap();
-        s.add_task("do thing", Some(9), 1).unwrap();
+        s.add_task("do thing", Some(9), None, None, 1).unwrap();
         s.replace_issues(&[issue("o/r", 5, 6)]).unwrap();
         s.replace_prs(&[PrInput {
             repo: "o/r".to_string(),
