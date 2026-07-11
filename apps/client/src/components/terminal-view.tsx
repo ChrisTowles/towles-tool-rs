@@ -12,11 +12,11 @@ import {
   encodePaste,
   isWideRun,
   rgb,
-  urlAt,
   type Cursor,
   type Frame,
   type Run,
 } from "@/lib/term-protocol";
+import { linkAt, type TermLink } from "@/lib/term-links";
 import { openExternalUrl } from "@/lib/open-url";
 
 const FONT_SIZE = 13;
@@ -85,6 +85,8 @@ export function TerminalView({
       cursor: null as Cursor | null,
       modes: { appCursorKeys: false, bracketedPaste: false, altScreen: false, mouseTracking: false },
       scrolledBack: false,
+      /** URL under the mouse — underlined and Ctrl/Cmd-clickable. */
+      hoveredLink: null as TermLink | null,
     };
 
     const setFont = (flags: number) => {
@@ -133,6 +135,16 @@ export function TerminalView({
           if (flags & OVERLINE) line(y * cellH + 1);
         }
       }
+      // Hovered link: underline its cells on this row so it reads clickable.
+      for (const seg of grid.hoveredLink?.segments ?? []) {
+        if (seg.y !== y) continue;
+        ctx.strokeStyle = theme.fg;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(seg.start * cellW, y * cellH + baseline + 2);
+        ctx.lineTo((seg.end + 1) * cellW, y * cellH + baseline + 2);
+        ctx.stroke();
+      }
       const sel = grid.lines[y]?.sel;
       if (sel) {
         ctx.globalAlpha = 0.3;
@@ -171,6 +183,26 @@ export function TerminalView({
       }
     };
 
+    const setHoveredLink = (link: TermLink | null) => {
+      const prev = grid.hoveredLink;
+      if (!prev && !link) return;
+      if (
+        prev &&
+        link &&
+        prev.url === link.url &&
+        prev.segments[0].y === link.segments[0].y &&
+        prev.segments[0].start === link.segments[0].start
+      ) {
+        return;
+      }
+      grid.hoveredLink = link;
+      canvas.style.cursor = link ? "pointer" : "default";
+      canvas.title = link ? `${link.url}\nCtrl+Click (⌘+Click) to open` : "";
+      const rows = new Set([...(prev?.segments ?? []), ...(link?.segments ?? [])].map((s) => s.y));
+      for (const y of rows) paintRow(y);
+      paintCursor();
+    };
+
     const paintAll = () => {
       ctx.fillStyle = theme.bg;
       ctx.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
@@ -195,6 +227,18 @@ export function TerminalView({
         grid.lines.length = frame.rows;
       }
       for (const row of frame.changed) grid.lines[row.y] = { runs: row.runs, sel: row.sel };
+      // Text under a hovered link may have changed; drop the highlight rather
+      // than underline stale cells (the next mousemove re-detects).
+      if (
+        grid.hoveredLink &&
+        (frame.full ||
+          resized ||
+          grid.hoveredLink.segments.some((s) => frame.changed.some((r) => r.y === s.y)))
+      ) {
+        grid.hoveredLink = null;
+        canvas.style.cursor = "default";
+        canvas.title = "";
+      }
       grid.cursor = frame.cursor;
       grid.modes = frame.modes;
       if (frame.title !== undefined) onTitleRef.current?.(termId, frame.title);
@@ -341,8 +385,6 @@ export function TerminalView({
         x: Math.max(0, Math.min(grid.cols - 1, Math.floor(e.offsetX / cellW))),
         y: Math.max(0, Math.min(grid.rows - 1, Math.floor(e.offsetY / cellH))),
       });
-      const urlAtCell = (cell: { x: number; y: number }) =>
-        urlAt(grid.lines.map((l) => l?.runs ?? []), cell.x, cell.y, grid.cols);
       let anchor: { x: number; y: number } | null = null;
       let dragged = false;
       const onMouseDown = (e: MouseEvent) => {
@@ -350,11 +392,12 @@ export function TerminalView({
         if (e.button !== 0) return;
         e.preventDefault(); // keep focus on the hidden input
         const cell = cellOf(e);
-        // Ctrl/Cmd+click on a URL opens it in the OS browser.
+        // Ctrl/Cmd+click on a URL opens it in the system browser (VS Code
+        // terminal convention); plain click keeps its select/focus meaning.
         if (e.ctrlKey || e.metaKey) {
-          const url = urlAtCell(cell);
-          if (url) {
-            void openExternalUrl(url);
+          const link = linkAt(grid.lines, grid.cols, cell.x, cell.y);
+          if (link) {
+            void openExternalUrl(link.url);
             return;
           }
         }
@@ -366,21 +409,21 @@ export function TerminalView({
         }
       };
       const onMouseMove = (e: MouseEvent) => {
+        const cell = cellOf(e);
         if (!anchor) {
-          // Hover affordance: pointer cursor while Ctrl/Cmd is over a URL.
-          canvas.style.cursor =
-            (e.ctrlKey || e.metaKey) && urlAtCell(cellOf(e)) ? "pointer" : "";
+          setHoveredLink(linkAt(grid.lines, grid.cols, cell.x, cell.y));
           return;
         }
-        const cell = cellOf(e);
         if (!dragged && cell.x === anchor.x && cell.y === anchor.y) return;
         dragged = true;
+        setHoveredLink(null);
         select("drag", anchor, cell);
       };
       const onMouseUp = () => {
         if (anchor && !dragged) select("clear");
         anchor = null;
       };
+      const onMouseLeave = () => setHoveredLink(null);
 
       input.addEventListener("keydown", onKeyDown);
       input.addEventListener("paste", onPaste);
@@ -388,6 +431,7 @@ export function TerminalView({
       host.addEventListener("wheel", onWheel, { passive: false });
       canvas.addEventListener("mousedown", onMouseDown);
       canvas.addEventListener("mousemove", onMouseMove);
+      canvas.addEventListener("mouseleave", onMouseLeave);
       window.addEventListener("mouseup", onMouseUp);
       disposers.push(() => {
         input.removeEventListener("keydown", onKeyDown);
@@ -396,6 +440,7 @@ export function TerminalView({
         host.removeEventListener("wheel", onWheel);
         canvas.removeEventListener("mousedown", onMouseDown);
         canvas.removeEventListener("mousemove", onMouseMove);
+        canvas.removeEventListener("mouseleave", onMouseLeave);
         window.removeEventListener("mouseup", onMouseUp);
       });
       focusInput();
