@@ -108,6 +108,18 @@ export const SHORTCUTS = defineShortcuts([
     keys: "mod+shift+b",
     description: "Collapse the folder rail to icons (and back)",
   },
+  {
+    id: "ab-jump-next",
+    scope: "agentboard",
+    keys: "mod+shift+n",
+    description: "Jump to next session needing you",
+  },
+  {
+    id: "ab-jump-prev",
+    scope: "agentboard",
+    keys: "mod+shift+p",
+    description: "Jump to previous session needing you",
+  },
 ]);
 
 const IS_MAC =
