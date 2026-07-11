@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ExternalLink, MoreHorizontal, Plus } from "lucide-react";
+import { ExternalLink, GripVertical, MoreHorizontal, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +27,7 @@ import {
   type TaskItem,
   type TaskStatus,
 } from "@/lib/data";
+import { encodeTaskDrag, isTaskDrag, TASK_DRAG_TYPE, taskDropAction } from "@/lib/kanban-dnd";
 import { openExternalUrl } from "@/lib/open-url";
 
 /**
@@ -42,6 +43,8 @@ export function BoardScreen() {
   const [statusOverrides, setStatusOverrides] = useState<Record<number, TaskStatus>>({});
   const [addedTasks, setAddedTasks] = useState<TaskItem[]>([]);
   const [draft, setDraft] = useState("");
+  // Column currently hovered by a card drag (drop-target highlight).
+  const [dropTarget, setDropTarget] = useState<TaskStatus | null>(null);
 
   // Repos we know about (from collected PRs/issues + already-linked todos) — the
   // promote-to-issue targets.
@@ -118,7 +121,31 @@ export function BoardScreen() {
       <ScrollArea className="min-h-0 flex-1">
         <div className="grid min-w-[900px] grid-cols-5 gap-3 p-3">
           {TASK_STATUSES.map((status) => (
-            <div key={status} className="flex flex-col rounded-lg border bg-muted/30">
+            <div
+              key={status}
+              onDragOver={(e) => {
+                if (!isTaskDrag(e.dataTransfer.types)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                setDropTarget(status);
+              }}
+              onDragLeave={(e) => {
+                // Ignore moves between children of the same column.
+                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                setDropTarget((cur) => (cur === status ? null : cur));
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDropTarget(null);
+                const action = taskDropAction(e.dataTransfer.getData(TASK_DRAG_TYPE), status);
+                if (action) move(action.id, action.status);
+              }}
+              className={cn(
+                "flex flex-col rounded-lg border bg-muted/30",
+                dropTarget === status &&
+                  "border-violet-500/60 bg-violet-500/5 dark:bg-violet-500/10",
+              )}
+            >
               <div className="flex items-center justify-between px-2.5 py-2">
                 <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   {TASK_STATUS_LABEL[status]}
@@ -136,6 +163,7 @@ export function BoardScreen() {
                     repos={repos}
                     onMove={move}
                     onPromote={promote}
+                    onDragEnd={() => setDropTarget(null)}
                   />
                 ))}
               </div>
@@ -153,22 +181,44 @@ function Card({
   repos,
   onMove,
   onPromote,
+  onDragEnd,
 }: {
   task: TaskItem;
   now: number;
   repos: string[];
   onMove: (id: number, status: TaskStatus) => void;
   onPromote: (id: number, repo: string) => void;
+  onDragEnd: () => void;
 }) {
+  const [dragging, setDragging] = useState(false);
   const overdue = task.dueTs !== undefined && task.dueTs < now && task.status !== "done";
   return (
     <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData(
+          TASK_DRAG_TYPE,
+          encodeTaskDrag({ id: task.id, status: task.status }),
+        );
+        e.dataTransfer.effectAllowed = "move";
+        setDragging(true);
+      }}
+      onDragEnd={() => {
+        setDragging(false);
+        onDragEnd();
+      }}
       className={cn(
-        "rounded-md border bg-background p-2.5 text-sm shadow-sm",
+        "group rounded-md border bg-background p-2.5 text-sm shadow-sm",
+        "cursor-grab active:cursor-grabbing",
         task.status === "done" && "opacity-60",
+        dragging && "opacity-40",
       )}
     >
       <div className="flex items-start gap-1.5">
+        <GripVertical
+          aria-hidden
+          className="-ml-1 mt-0.5 size-3.5 shrink-0 text-muted-foreground/40 opacity-0 transition-opacity group-hover:opacity-100"
+        />
         <span className={cn("min-w-0 flex-1", task.status === "done" && "line-through")}>
           {task.text}
         </span>
