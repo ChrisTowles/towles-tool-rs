@@ -5,8 +5,9 @@ import { invokeOk, isTauri } from "./tauri";
  * Client-side view of the personal-HQ store (the Rust `tt-store` crate, surfaced
  * by the Tauri app). Mirrors the serialized snapshot (camelCase) that the
  * `store_snapshot` command returns and the `store://snapshot` event broadcasts.
- * Timestamps are epoch milliseconds. Before the store answers (or outside Tauri)
- * the hook holds an empty snapshot with `live: false`.
+ * Timestamps are epoch milliseconds. Before the store answers the hook holds an
+ * empty snapshot with `live: false`; outside Tauri (plain-Vite browser dev) it
+ * holds {@link mockSnapshot} instead, still with `live: false`.
  */
 
 export type CalEvent = {
@@ -121,9 +122,93 @@ export const EMPTY_SNAPSHOT: StoreSnapshot = {
 };
 
 /**
+ * Static mock snapshot for plain-Vite browser dev (no Tauri host), so screens
+ * like Cockpit render representative rows — including one PR per checks state
+ * (`passing | failing | pending | none`) — instead of empty panels. Timestamps
+ * are relative to load time; `live` stays false so the "not connected" banner
+ * still shows.
+ */
+export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
+  return {
+    events: [
+      {
+        id: 1,
+        externalId: "mock-standup",
+        title: "Team standup",
+        startTs: now + 25 * MINUTE,
+        endTs: now + 40 * MINUTE,
+        attendees: [],
+        location: "Meet",
+      },
+    ],
+    tasks: [],
+    issues: [
+      {
+        repo: "octo/widgets",
+        number: 118,
+        title: "Flaky terminal resize on hidden panes",
+        labels: ["bug"],
+        state: "open",
+        url: "https://github.com/octo/widgets/issues/118",
+        updatedTs: now - 5 * 60 * MINUTE,
+      },
+    ],
+    prs: [
+      {
+        repo: "octo/widgets",
+        number: 42,
+        title: "feat: add treemap rendering",
+        branch: "feat/treemap",
+        state: "open",
+        checks: "passing",
+        reviewState: "",
+        url: "https://github.com/octo/widgets/pull/42",
+        updatedTs: now - 30 * MINUTE,
+      },
+      {
+        repo: "octo/widgets",
+        number: 43,
+        title: "fix: race in collector scheduler",
+        branch: "fix/scheduler-race",
+        state: "open",
+        checks: "failing",
+        reviewState: "review_requested",
+        url: "https://github.com/octo/widgets/pull/43",
+        updatedTs: now - 2 * 60 * MINUTE,
+      },
+      {
+        repo: "octo/gizmos",
+        number: 7,
+        title: "chore: bump toolchain",
+        branch: "chore/toolchain",
+        state: "open",
+        checks: "pending",
+        reviewState: "",
+        url: "https://github.com/octo/gizmos/pull/7",
+        updatedTs: now - 10 * MINUTE,
+      },
+      {
+        repo: "octo/gizmos",
+        number: 8,
+        title: "docs: attribution notes",
+        branch: "docs/attribution",
+        state: "open",
+        checks: "none",
+        reviewState: "",
+        url: "https://github.com/octo/gizmos/pull/8",
+        updatedTs: now - 26 * 60 * MINUTE,
+      },
+    ],
+    runs: [],
+    dms: [],
+  };
+}
+
+/**
  * Subscribe to the live store snapshot: pull the initial one via
  * `store_snapshot`, then track `store://snapshot` events. Until the real store
- * answers (or outside Tauri), the snapshot is empty and `live` is false.
+ * answers, the snapshot is empty and `live` is false; outside Tauri entirely
+ * (plain-Vite browser dev) it falls back to {@link mockSnapshot}.
  */
 export function useStoreSnapshot(): { snapshot: StoreSnapshot; live: boolean } {
   const [snapshot, setSnapshot] = useState<StoreSnapshot>(EMPTY_SNAPSHOT);
@@ -132,6 +217,12 @@ export function useStoreSnapshot(): { snapshot: StoreSnapshot; live: boolean } {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
+
+    if (!isTauri()) {
+      // Browser dev: render mock rows so screens are visually workable.
+      setSnapshot(mockSnapshot());
+      return;
+    }
     // A `store://snapshot` event can beat the initial `store_snapshot` invoke;
     // once one has, its data is fresher, so don't let the invoke roll it back.
     let eventArrived = false;

@@ -1104,6 +1104,41 @@ mod tests {
     }
 
     #[test]
+    fn replace_prs_round_trips_every_checks_state() {
+        let pr = |number: i64, checks: &str| PrInput {
+            repo: "o/r".to_string(),
+            number,
+            title: format!("pr {number}"),
+            branch: format!("b{number}"),
+            state: "open".to_string(),
+            checks: checks.to_string(),
+            review_state: String::new(),
+            url: "https://x".to_string(),
+            updated_ts: number,
+        };
+        let s = Store::open_in_memory().unwrap();
+        s.replace_prs(&[
+            pr(1, "passing"),
+            pr(2, "failing"),
+            pr(3, "pending"),
+            pr(4, "none"),
+        ])
+        .unwrap();
+        let mut got: Vec<(i64, String)> =
+            s.prs().unwrap().into_iter().map(|p| (p.number, p.checks)).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                (1, "passing".to_string()),
+                (2, "failing".to_string()),
+                (3, "pending".to_string()),
+                (4, "none".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn add_task_lands_in_backlog_and_orders_by_position() {
         let s = Store::open_in_memory().unwrap();
         let a = s.add_task("first", None, None, None, 100).unwrap();
