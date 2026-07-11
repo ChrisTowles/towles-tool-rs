@@ -309,6 +309,9 @@ export function RepoGroup({
   onRemoveRepo,
   onRenameCommit,
   onOpenDiff,
+  quietDirs,
+  quietRevealed,
+  onToggleQuiet,
 }: {
   repo: RepoData;
   now: number;
@@ -330,8 +333,17 @@ export function RepoGroup({
   onRenameCommit: (sessionId: string, name: string) => void;
   /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: (dir: string) => void;
+  /** Dirs the hide-inactive filter tucks behind a "N quiet" stub (empty/
+   * undefined when the filter is off). Quiet folders demote to the stub
+   * instead of vanishing — nothing ever silently disappears from the rail. */
+  quietDirs?: Set<string>;
+  /** Whether this repo's quiet folders are temporarily shown. */
+  quietRevealed?: boolean;
+  onToggleQuiet?: () => void;
 }) {
   const solo = isSoloRepo(repo);
+  const quiet = quietDirs ?? new Set<string>();
+  const showQuiet = quietRevealed ?? false;
 
   const sessionRow = (folder: FolderData, s: SessionData) => (
     <SessionRow
@@ -416,6 +428,9 @@ export function RepoGroup({
   if (solo) {
     const folder = repo.folders[0];
     const isCollapsed = collapsed[repo.key];
+    if (quiet.has(folder.dir) && !showQuiet) {
+      return <QuietRepoStub name={repo.name} count={1} onToggle={onToggleQuiet} />;
+    }
     return (
       <div className="border-b">
         <FolderHeader
@@ -439,12 +454,21 @@ export function RepoGroup({
             folder is collapsed (renders nothing when unset). */}
         <PurposeRow folder={folder} />
         {!isCollapsed && <div className="pb-2">{sessionRows(folder)}</div>}
+        {quiet.size > 0 && showQuiet && (
+          <QuietToggleRow count={quiet.size} revealed onToggle={onToggleQuiet} />
+        )}
       </div>
     );
   }
 
-  // Multi-checkout repo: repo header, then each folder as a sub-header.
+  // Multi-checkout repo: repo header, then each folder as a sub-header. Quiet
+  // folders (hide-inactive filter) tuck behind a stub toggle row; a repo with
+  // *only* quiet folders shrinks to a single dim stub line.
   const repoCollapsed = collapsed[repo.key];
+  const shownFolders = showQuiet ? repo.folders : repo.folders.filter((f) => !quiet.has(f.dir));
+  if (shownFolders.length === 0) {
+    return <QuietRepoStub name={repo.name} count={quiet.size} onToggle={onToggleQuiet} />;
+  }
   return (
     <div className="border-b">
       <div className="sticky top-0 z-10 flex w-full items-center gap-2 border-b border-l-2 border-border border-l-transparent bg-card px-3 py-2 hover:bg-accent/50">
@@ -474,7 +498,7 @@ export function RepoGroup({
         />
       </div>
       {!repoCollapsed &&
-        repo.folders.map((folder) => {
+        shownFolders.map((folder) => {
           const key = `${repo.key}::${folder.dir}`;
           const fCollapsed = collapsed[key];
           return (
@@ -503,7 +527,62 @@ export function RepoGroup({
             </div>
           );
         })}
+      {!repoCollapsed && quiet.size > 0 && (
+        <QuietToggleRow count={quiet.size} revealed={showQuiet} onToggle={onToggleQuiet} />
+      )}
     </div>
+  );
+}
+
+/** A repo whose checkouts are all quiet (hide-inactive filter), demoted to
+ * one dim row instead of removed — the repo stays findable, just out of the
+ * way. Clicking restores the full group until toggled back. */
+function QuietRepoStub({
+  name,
+  count,
+  onToggle,
+}: {
+  name: string;
+  count: number;
+  onToggle?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title="Nothing going on here right now — click to show"
+      className="flex w-full items-center gap-2 border-b bg-card px-3 py-1.5 text-left text-muted-foreground/60 hover:bg-accent/40 hover:text-muted-foreground"
+    >
+      <Chevron collapsed />
+      <FolderGit2 className="size-3.5 shrink-0 opacity-60" />
+      <span className="min-w-0 truncate text-sm">{name}</span>
+      <span className="ml-auto shrink-0 font-mono text-[10px]">
+        {count === 1 ? "quiet" : `${count} quiet`}
+      </span>
+    </button>
+  );
+}
+
+/** The stub/toggle row under a repo's visible folders: "N quiet" when its
+ * quiet checkouts are tucked away, "hide N quiet" while they're shown. */
+function QuietToggleRow({
+  count,
+  revealed,
+  onToggle,
+}: {
+  count: number;
+  revealed: boolean;
+  onToggle?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="flex w-full items-center gap-1.5 py-1 pr-3 pl-6 text-left font-mono text-[10.5px] text-muted-foreground/50 hover:text-muted-foreground"
+    >
+      <Chevron collapsed={!revealed} />
+      {revealed ? `hide ${count} quiet` : `${count} quiet`}
+    </button>
   );
 }
 

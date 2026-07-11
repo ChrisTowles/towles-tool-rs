@@ -14,6 +14,7 @@ import {
   placePane,
   prForFolder,
   pruneWins,
+  QUIET_GRACE_MS,
   sessionNeeds,
   type AgentStatus,
   type FolderData,
@@ -412,41 +413,87 @@ function folder(overrides: Partial<FolderData>): FolderData {
 }
 
 describe("isFolderQuiet", () => {
+  // Far enough past the ts:1 the `agent()` helper stamps that the grace
+  // window (QUIET_GRACE_MS) has long expired for those events.
+  const NOW = 100 * 60 * 60_000;
+
   it("is quiet with no sessions and a clean, non-ahead tree", () => {
-    expect(isFolderQuiet(folder({}))).toBe(true);
+    expect(isFolderQuiet(folder({}), NOW)).toBe(true);
   });
 
   it("is quiet for a worktree checkout that was created but never used", () => {
-    expect(isFolderQuiet(folder({ isWorktree: true, sessions: [] }))).toBe(true);
+    expect(isFolderQuiet(folder({ isWorktree: true, sessions: [] }), NOW)).toBe(true);
   });
 
   it("is not quiet with a live session", () => {
-    expect(isFolderQuiet(folder({ sessions: [session({ live: true })] }))).toBe(false);
+    expect(isFolderQuiet(folder({ sessions: [session({ live: true })] }), NOW)).toBe(false);
   });
 
   it("is not quiet with a dirty working tree", () => {
-    expect(isFolderQuiet(folder({ filesChanged: 3 }))).toBe(false);
+    expect(isFolderQuiet(folder({ filesChanged: 3 }), NOW)).toBe(false);
   });
 
   it("is not quiet with unpushed local commits", () => {
-    expect(isFolderQuiet(folder({ commitsAhead: 2 }))).toBe(false);
+    expect(isFolderQuiet(folder({ commitsAhead: 2 }), NOW)).toBe(false);
   });
 
   it("stays quiet when only behind origin — that's staleness, not work", () => {
-    expect(isFolderQuiet(folder({ commitsBehind: 4 }))).toBe(true);
+    expect(isFolderQuiet(folder({ commitsBehind: 4 }), NOW)).toBe(true);
   });
 
   it("is not quiet with a session that catches the eye (unseen/waiting/errored)", () => {
     expect(
-      isFolderQuiet(folder({ sessions: [session({ live: true, unseen: true })] })),
+      isFolderQuiet(folder({ sessions: [session({ live: true, unseen: true })] }), NOW),
     ).toBe(false);
     expect(
-      isFolderQuiet(folder({ sessions: [session({ live: true, agentState: agent("waiting") })] })),
+      isFolderQuiet(
+        folder({ sessions: [session({ live: true, agentState: agent("waiting") })] }),
+        NOW,
+      ),
     ).toBe(false);
   });
 
   it("stays quiet with a non-live, fully-acknowledged session sitting around", () => {
-    expect(isFolderQuiet(folder({ sessions: [session({ live: false })] }))).toBe(true);
+    expect(isFolderQuiet(folder({ sessions: [session({ live: false })] }), NOW)).toBe(true);
+  });
+
+  it("stays active through the grace window after an agent stops", () => {
+    const stopped = folder({
+      sessions: [session({ live: false, agentState: { ...agent("complete"), ts: NOW - 60_000 } })],
+    });
+    expect(isFolderQuiet(stopped, NOW)).toBe(false);
+    expect(isFolderQuiet(stopped, NOW - 60_000 + QUIET_GRACE_MS)).toBe(true);
+  });
+
+  it("counts agent history and details.lastActivityAt toward recency", () => {
+    const history = folder({
+      sessions: [session({ agents: [{ ...agent("complete"), ts: NOW - 60_000 }] })],
+    });
+    expect(isFolderQuiet(history, NOW)).toBe(false);
+
+    const details = folder({
+      sessions: [
+        session({
+          agentState: { ...agent("complete"), ts: 1, details: { lastActivityAt: NOW - 60_000 } },
+        }),
+      ],
+    });
+    expect(isFolderQuiet(details, NOW)).toBe(false);
+  });
+
+  it("counts agent-pushed folder metadata toward recency", () => {
+    const status = folder({ metadata: { status: { text: "wrapping up", ts: NOW - 60_000 } } });
+    expect(isFolderQuiet(status, NOW)).toBe(false);
+    const logs = folder({ metadata: { logs: [{ message: "done", ts: NOW - 60_000 }] } });
+    expect(isFolderQuiet(logs, NOW)).toBe(false);
+  });
+
+  it("goes quiet once all activity is older than the grace window", () => {
+    const old = folder({
+      sessions: [session({ agentState: { ...agent("complete"), ts: NOW - QUIET_GRACE_MS } })],
+      metadata: { status: { text: "old news", ts: NOW - QUIET_GRACE_MS - 1 } },
+    });
+    expect(isFolderQuiet(old, NOW)).toBe(true);
   });
 });
 

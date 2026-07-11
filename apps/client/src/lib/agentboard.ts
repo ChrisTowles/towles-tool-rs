@@ -436,21 +436,47 @@ export function isSoloRepo(r: RepoData): boolean {
   return r.folders.length === 1;
 }
 
+/** How long after its last sign of agent life a folder still counts as
+ * active for the hide-inactive filter, so stopping a session doesn't make
+ * its folder vanish from the rail the same instant. */
+export const QUIET_GRACE_MS = 45 * 60_000;
+
+/** The newest agent-activity timestamp a folder carries: agent events on its
+ * sessions (current state + history) and agent-pushed folder metadata
+ * (status/logs). 0 when the folder has never seen agent activity — a
+ * never-started session record carries no timestamps, so a stale worktree
+ * can't pin itself visible forever. */
+export function folderLastActivityAt(f: FolderData): number {
+  let last = 0;
+  for (const s of f.sessions) {
+    for (const ev of [s.agentState, ...s.agents]) {
+      if (!ev) continue;
+      last = Math.max(last, ev.ts, ev.details?.lastActivityAt ?? 0);
+    }
+  }
+  if (f.metadata?.status) last = Math.max(last, f.metadata.status.ts);
+  for (const l of f.metadata?.logs ?? []) last = Math.max(last, l.ts);
+  return last;
+}
+
 /** A folder (checkout) is "quiet" when nothing about it needs attention right
  * now: no live session, no session that catches the eye (waiting/errored/
- * unseen), and no unpushed local commits or dirty working tree. Being
+ * unseen), no unpushed local commits or dirty working tree, and no agent
+ * activity within the `QUIET_GRACE_MS` grace window (so a folder eases off
+ * the rail a while after work stops, rather than the moment it does). Being
  * *behind* origin (`commitsBehind > 0`) doesn't count — that's just staleness,
  * not work in progress. A worktree that was created but never had a session
- * opened in it falls out of this naturally (empty `sessions`, clean tree) —
- * no special case needed. Richer than "no live session": a folder can be
- * mid-work (dirty tree, unpushed commits, a finished-but-unseen turn) with
- * nothing currently *running*. */
-export function isFolderQuiet(f: FolderData): boolean {
+ * opened in it falls out of this naturally (empty `sessions`, clean tree, no
+ * activity timestamps) — no special case needed. Richer than "no live
+ * session": a folder can be mid-work (dirty tree, unpushed commits, a
+ * finished-but-unseen turn) with nothing currently *running*. */
+export function isFolderQuiet(f: FolderData, now: number): boolean {
   return (
     liveSessions(f).length === 0 &&
     f.filesChanged === 0 &&
     f.commitsAhead === 0 &&
-    f.sessions.every((s) => !sessionCatchesEye(s))
+    f.sessions.every((s) => !sessionCatchesEye(s)) &&
+    now - folderLastActivityAt(f) >= QUIET_GRACE_MS
   );
 }
 
