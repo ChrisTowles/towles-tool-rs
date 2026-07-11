@@ -102,6 +102,12 @@ export const SHORTCUTS = defineShortcuts([
     description: "Open the focused folder's diff pane",
     when: "a folder is focused",
   },
+  {
+    id: "ab-toggle-rail",
+    scope: "agentboard",
+    keys: "mod+shift+b",
+    description: "Collapse the folder rail to icons (and back)",
+  },
 ]);
 
 const IS_MAC =

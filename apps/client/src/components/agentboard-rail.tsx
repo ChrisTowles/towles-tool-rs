@@ -4,6 +4,7 @@ import {
   Folder,
   FolderGit2,
   MoreVertical,
+  PanelLeftOpen,
   Plus,
   StickyNote,
   Trash2,
@@ -34,6 +35,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import {
@@ -91,6 +93,107 @@ function CollapsedLive({ sessions }: { sessions: SessionData[] }) {
       <span className={cn("size-2 rounded-full", color)} />
       <span className="font-mono text-[10px] text-muted-foreground/70">{n}</span>
     </span>
+  );
+}
+
+/** The whole rail collapsed to a narrow icon strip: an expand toggle, a live
+ * session tally, then one icon per checkout (FolderGit2 for a solo repo,
+ * Folder per checkout of a multi-checkout repo, repos separated by hairlines).
+ * Each icon keeps the signals a collapsed folder header shows — the ambient
+ * live-status dot and the amber needs-you count — so collapsing the rail
+ * never hides work waiting on you. Clicking an icon focuses that folder. */
+export function RailIconStrip({
+  repos,
+  activeFolderDir,
+  onSelectFolder,
+  onExpand,
+  expandHint,
+}: {
+  repos: RepoData[];
+  activeFolderDir: string | null;
+  onSelectFolder: (dir: string) => void;
+  onExpand: () => void;
+  /** Keyboard hint for the expand tooltip, e.g. "⌘⇧B". */
+  expandHint: string;
+}) {
+  const allSessions = repos.flatMap((r) => r.folders.flatMap((f) => f.sessions));
+  const liveColor = collapsedLiveColor(allSessions);
+  const liveN = allSessions.filter((s) => s.live).length;
+
+  const folderIcon = (repo: RepoData, folder: FolderData, solo: boolean) => {
+    const active = folder.dir === activeFolderDir;
+    const needs = solo ? repo.needs : folder.needs;
+    const live = collapsedLiveColor(folder.sessions);
+    const label = solo ? repo.name : `${repo.name} / ${folder.name}`;
+    return (
+      <Tooltip key={folder.dir}>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={label}
+            aria-current={active || undefined}
+            onClick={() => onSelectFolder(folder.dir)}
+            className={cn(
+              "relative flex size-9 shrink-0 items-center justify-center rounded-md border-l-2 border-transparent text-muted-foreground hover:bg-accent/50",
+              active && "border-l-violet-500 bg-accent text-foreground",
+              // Attention outranks focus on the accent edge (folder-rail rule).
+              needs > 0 && "border-l-amber-500",
+            )}
+          >
+            {solo ? <FolderGit2 className="size-4" /> : <Folder className="size-4" />}
+            {live && <span className={cn("absolute top-1 right-1 size-2 rounded-full", live)} />}
+            {needs > 0 && (
+              <span className="absolute -right-1 -bottom-1 min-w-4 rounded-full border border-amber-500/50 bg-background px-0.5 text-center font-mono text-[9px] leading-[14px] text-amber-500">
+                {needs}
+              </span>
+            )}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">
+          {label} — ⎇ {folder.branch}
+          {needs > 0 && ` · ${needs} need${needs === 1 ? "s" : ""} you`}
+        </TooltipContent>
+      </Tooltip>
+    );
+  };
+
+  return (
+    <div className="flex h-full w-12 shrink-0 flex-col items-center border-r bg-background py-2">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label="Expand the folder rail"
+            onClick={onExpand}
+            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          >
+            <PanelLeftOpen className="size-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Expand rail ({expandHint})</TooltipContent>
+      </Tooltip>
+      {liveColor && (
+        <span
+          className="flex items-center gap-1 py-1 font-mono text-[10px] text-muted-foreground/70"
+          title={`${liveN} running session${liveN === 1 ? "" : "s"}`}
+        >
+          <span className={cn("size-2 rounded-full", liveColor)} />
+          {liveN}
+        </span>
+      )}
+      <div className="my-1.5 h-px w-6 shrink-0 bg-border" />
+      <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto">
+        {repos.map((repo, i) => {
+          const solo = isSoloRepo(repo);
+          return (
+            <div key={repo.key} className="flex flex-col items-center gap-1">
+              {i > 0 && <div className="my-0.5 h-px w-6 bg-border" />}
+              {(solo ? [repo.folders[0]] : repo.folders).map((f) => folderIcon(repo, f, solo))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

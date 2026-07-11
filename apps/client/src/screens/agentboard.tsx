@@ -4,11 +4,12 @@ import {
   FolderGit2,
   FolderPlus,
   GitPullRequest,
+  PanelLeftClose,
   Plus,
   TerminalSquare,
 } from "lucide-react";
 import { PaneHeader, WorkingContext } from "@/components/agentboard-pane";
-import { RepoGroup, RollupChip } from "@/components/agentboard-rail";
+import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffPane } from "@/components/diff-pane";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
@@ -95,6 +96,11 @@ import { toast } from "sonner";
  * lib/shortcuts.tsx (⌘D new session, ⌘⇧W close session, ⌘⇧G diff pane),
  * active only while this tab is shown.
  */
+/** Sentinel key in the persisted collapse map for "the whole rail is collapsed
+ * to icons" — rides the same `ab_save_collapsed` store as the per-row keys
+ * (`repo:<name>` / `<repoKey>::<dir>`), which it can never collide with. */
+const RAIL_COLLAPSE_KEY = "__rail__";
+
 export function AgentboardScreen() {
   const state = useAgentboardState();
   const { snapshot } = useStoreSnapshot();
@@ -140,6 +146,10 @@ export function AgentboardScreen() {
       return { ...c, [key]: next };
     });
   }
+
+  // Whole-rail icon collapse (issue #70): same persisted map, sentinel key.
+  const railCollapsed = !!collapsed[RAIL_COLLAPSE_KEY];
+  const toggleRail = () => toggleCollapsed(RAIL_COLLAPSE_KEY);
 
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renamingWin, setRenamingWin] = useState<string | null>(null);
@@ -471,6 +481,7 @@ export function AgentboardScreen() {
         "ab-toggle-diff": () => {
           if (activeFolderDir) openDiff(activeFolderDir);
         },
+        "ab-toggle-rail": toggleRail,
       }),
       // newSession/closeSession/openDiff are stable within a render pass; the
       // state they close over is what matters.
@@ -517,376 +528,406 @@ export function AgentboardScreen() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
-        {/* Rail: rollup tally + header + attention strip + Repo → Folder → Session tree. */}
-        <ResizablePanel defaultSize="360px" minSize="240px" maxSize="560px">
-          <div className="flex h-full flex-col border-r">
-            <RollupChip state={state} now={now} />
-            <div className="flex items-center justify-between border-b px-3 py-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Repos
-              </span>
-              <button
-                type="button"
-                onClick={() => setAddRepoOpen(true)}
-                className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-violet-500 hover:bg-accent/50"
-                title="Toggle which repos show up on the rail"
-              >
-                <FolderPlus className="size-3.5" /> Manage repos
-              </button>
-            </div>
-
-            {attention.length > 0 && (
-              <div className="flex flex-col gap-1 border-b p-2">
-                {attention.map((a) => (
-                  <button
-                    key={a.key}
-                    type="button"
-                    onClick={a.onClick}
-                    className={cn(
-                      "flex items-center gap-2 rounded-md border border-l-2 px-2 py-1.5 text-left hover:bg-accent/50",
-                      a.kind === "pr" ? "border-l-red-500" : "border-l-blue-500",
-                    )}
-                  >
-                    {a.kind === "pr" ? (
-                      <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
-                    ) : (
-                      <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
-                    )}
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs font-medium">
-                        {a.title}
-                      </span>
-                      <span className="block truncate text-[11px] text-muted-foreground">
-                        {a.sub}
-                      </span>
+      <div className="flex min-h-0 flex-1">
+        {/* Rail collapsed to icons: fixed-width strip outside the panel group.
+            The group itself is NOT keyed on the collapse — remounting it would
+            remount the terminal pool below and respawn every shell. The rail
+            panel + handle just unmount; the main panel keeps its identity. */}
+        {railCollapsed && (
+          <RailIconStrip
+            repos={repos}
+            activeFolderDir={activeFolderDir}
+            onSelectFolder={selectFolder}
+            onExpand={toggleRail}
+            expandHint={shortcutHint("ab-toggle-rail")}
+          />
+        )}
+        <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
+          {/* Rail: rollup tally + header + attention strip + Repo → Folder → Session tree. */}
+          {!railCollapsed && (
+            <>
+              <ResizablePanel defaultSize="280px" minSize="220px" maxSize="480px">
+                <div className="flex h-full flex-col border-r">
+                  <RollupChip state={state} now={now} />
+                  <div className="flex items-center justify-between border-b px-3 py-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Repos
                     </span>
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* min-h-0 is load-bearing: without it this flex child grows past the
-                rail's height and folders below the fold become unreachable. */}
-            <ScrollArea className="min-h-0 flex-1">
-              <div className="flex flex-col">
-                {repos.length === 0 && (
-                  <div className="flex flex-col items-center gap-3 px-3 py-10 text-center">
-                    <FolderGit2 className="size-8 text-muted-foreground" />
-                    <p className="text-sm text-muted-foreground">
-                      No repos on the rail yet.
-                    </p>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setAddRepoOpen(true)}
-                    >
-                      <FolderPlus className="size-3.5" /> Manage repos
-                    </Button>
-                  </div>
-                )}
-                {repos.map((repo) => (
-                  <RepoGroup
-                    key={repo.key}
-                    repo={repo}
-                    now={now}
-                    compactPct={state.compactRecommendPercent}
-                    prs={snapshot.prs}
-                    selectedSessionId={selected?.sessionId ?? null}
-                    activeFolderDir={activeFolderDir}
-                    collapsed={collapsed}
-                    renaming={renaming}
-                    titles={titles}
-                    overlays={overlays}
-                    wins={wins}
-                    actions={actions}
-                    onToggle={toggleCollapsed}
-                    onSelectFolder={selectFolder}
-                    onSelect={selectSession}
-                    onNewSession={newSession}
-                    onRemoveRepo={requestRemoveRepo}
-                    onRenameCommit={commitRename}
-                    onOpenDiff={openDiff}
-                  />
-                ))}
-              </div>
-            </ScrollArea>
-          </div>
-        </ResizablePanel>
-        <ResizableHandle />
-
-        {/* Main area: window strip + the active window's panes tiled side-by-side.
-            Scoped to `activeFolderDir` — a window may only ever hold panes from
-            the one folder it belongs to, so switching folders switches the
-            whole strip, not just which panes happen to show. */}
-        <ResizablePanel>
-          <div className="flex h-full min-w-0 flex-col">
-            {activeFolder && activeRepo && (
-              <WorkingContext
-                repo={activeRepo}
-                folder={activeFolder}
-                pr={prForFolder(snapshot.prs, activeRepo.originUrl, activeFolder.branch)}
-                onOpenDiff={openDiff}
-              />
-            )}
-            {wins && activeFolderDir && (
-              <div className="flex items-center gap-1 border-b bg-card px-2 py-1">
-                {windowsForFolder.map((w) => (
-                  <button
-                    key={w.id}
-                    type="button"
-                    onClick={() => actions.focusWindow(w.id)}
-                    onDoubleClick={() => setRenamingWin(w.id)}
-                    title="double-click to rename"
-                    aria-pressed={w.id === activeWin?.id}
-                    className={cn(
-                      "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
-                      w.id === activeWin?.id
-                        ? "bg-accent text-foreground"
-                        : "text-muted-foreground hover:bg-accent/50",
-                    )}
-                  >
-                    <span className={cn("size-2 rounded-[3px]", windowColor(windowsForFolder, w.id))} />
-                    {renamingWin === w.id ? (
-                      <input
-                        autoFocus
-                        defaultValue={w.name}
-                        onClick={(e) => e.stopPropagation()}
-                        onBlur={(e) => {
-                          const name = e.target.value.trim() || w.name;
-                          setRenamingWin(null);
-                          updateWins([w.folderDir], (cur) => ({
-                            ...cur,
-                            windows: cur.windows.map((x) => (x.id === w.id ? { ...x, name } : x)),
-                          }));
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                          if (e.key === "Escape") setRenamingWin(null);
-                        }}
-                        className="w-24 rounded-sm border border-input bg-background px-1 text-[11px] outline-none"
-                      />
-                    ) : (
-                      w.name
-                    )}
-                    <span className="font-mono text-[10px] text-muted-foreground/60">
-                      {w.panes.length}⊞
-                    </span>
-                    {windowsForFolder.length > 1 && (
-                      // span-with-role, not <button>: it nests inside the
-                      // window chip's real <button>, and interactive elements
-                      // may not nest. Keyboard support added by hand instead.
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        title="close window (panes ungroup; sessions stay in the rail)"
-                        aria-label={`close window ${w.name}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          updateWins([w.folderDir], (cur) => ({
-                            ...cur,
-                            windows: cur.windows.filter((x) => x.id !== w.id),
-                          }));
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key !== "Enter" && e.key !== " ") return;
-                          e.preventDefault();
-                          e.stopPropagation();
-                          updateWins([w.folderDir], (cur) => ({
-                            ...cur,
-                            windows: cur.windows.filter((x) => x.id !== w.id),
-                          }));
-                        }}
-                        className="text-muted-foreground/50 hover:text-red-500"
+                    <span className="flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setAddRepoOpen(true)}
+                        className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-violet-500 hover:bg-accent/50"
+                        title="Toggle which repos show up on the rail"
                       >
-                        ✕
-                      </span>
-                    )}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() =>
-                    updateWins([activeFolderDir], (cur) => {
-                      const id = `w${Date.now()}`;
-                      const count = cur.windows.filter((w) => w.folderDir === activeFolderDir).length;
-                      return {
-                        windows: [
-                          ...cur.windows,
-                          { id, name: `window ${count + 1}`, folderDir: activeFolderDir, panes: [] },
-                        ],
-                        activeWindows: { ...cur.activeWindows, [activeFolderDir]: id },
-                      };
-                    })
-                  }
-                  className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
-                >
-                  <Plus className="size-3" /> window
-                </button>
-                {activeFolderDir && (
-                  <button
-                    type="button"
-                    onClick={() => void newSession(activeFolderDir)}
-                    className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
-                    title={`New session in the focused folder (${shortcutHint("ab-new-session")})`}
-                  >
-                    <Plus className="size-3" /> session
-                  </button>
-                )}
-                {selected && (
-                  <button
-                    type="button"
-                    onClick={() => void closeSession(selected.sessionId)}
-                    className="ml-auto shrink-0 rounded-md px-2 py-1 font-mono text-[10.5px] text-muted-foreground hover:bg-accent/50"
-                    title={`Close session (${shortcutHint("ab-close-session")})`}
-                    aria-label="Close the selected session"
-                  >
-                    Close {shortcutHint("ab-close-session")}
-                  </button>
-                )}
-              </div>
-            )}
+                        <FolderPlus className="size-3.5" /> Manage repos
+                      </button>
+                      <button
+                        type="button"
+                        onClick={toggleRail}
+                        aria-label="Collapse the rail to icons"
+                        className="rounded-md p-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                        title={`Collapse the rail to icons (${shortcutHint("ab-toggle-rail")})`}
+                      >
+                        <PanelLeftClose className="size-3.5" />
+                      </button>
+                    </span>
+                  </div>
 
-            {/* One flat pool of mounted terminals (never remounted — a remount
-                would respawn the shell). The active window's pane order assigns
-                each a percent-rect; panes in other windows stay hidden. */}
-            <div className="relative min-h-0 flex-1 overflow-hidden p-2">
-              {(() => {
-                const panes = activeWin?.panes ?? [];
-                const rects = paneRects(panes.length);
-                const rectFor = (id: string) => {
-                  const i = panes.indexOf(id);
-                  return i < 0 ? undefined : rects[i];
-                };
-                const paneStyle = (r: PaneRect) => ({
-                  left: `${r.left}%`,
-                  top: `${r.top}%`,
-                  width: `${r.width}%`,
-                  height: `${r.height}%`,
-                });
-                return (
-                  <>
-                    {open.map((id) => {
-                      const r = rectFor(id);
-                      const s = sessionById.get(id);
-                      return (
-                        <div
-                          key={id}
-                          hidden={!r}
-                          style={r ? paneStyle(r) : undefined}
-                          className="absolute p-1.5"
+                  {attention.length > 0 && (
+                    <div className="flex flex-col gap-1 border-b p-2">
+                      {attention.map((a) => (
+                        <button
+                          key={a.key}
+                          type="button"
+                          onClick={a.onClick}
+                          className={cn(
+                            "flex items-center gap-2 rounded-md border border-l-2 px-2 py-1.5 text-left hover:bg-accent/50",
+                            a.kind === "pr" ? "border-l-red-500" : "border-l-blue-500",
+                          )}
                         >
-                          <div
-                            onClick={() =>
-                              selectSession(folderOf.get(id)?.dir ?? cwds.current[id] ?? "", id)
-                            }
-                            className={cn(
-                              "flex h-full flex-col overflow-hidden rounded-lg border bg-card",
-                              selected?.sessionId === id && "border-violet-500/60",
-                            )}
+                          {a.kind === "pr" ? (
+                            <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
+                          ) : (
+                            <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
+                          )}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-xs font-medium">
+                              {a.title}
+                            </span>
+                            <span className="block truncate text-[11px] text-muted-foreground">
+                              {a.sub}
+                            </span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* min-h-0 is load-bearing: without it this flex child grows past the
+                      rail's height and folders below the fold become unreachable. */}
+                  <ScrollArea className="min-h-0 flex-1">
+                    <div className="flex flex-col">
+                      {repos.length === 0 && (
+                        <div className="flex flex-col items-center gap-3 px-3 py-10 text-center">
+                          <FolderGit2 className="size-8 text-muted-foreground" />
+                          <p className="text-sm text-muted-foreground">
+                            No repos on the rail yet.
+                          </p>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setAddRepoOpen(true)}
                           >
-                            {s && (
-                              <PaneHeader
-                                session={s}
-                                label={labelFor(s)}
-                                now={now}
-                                actions={actions}
-                                onUngroup={() => actions.ungroup(id)}
-                              />
-                            )}
-                            {/* data-term-host marks terminal territory for the
-                                shortcut guard — keys typed here belong to the
-                                shell (Ctrl+D is EOF, not "new session"). */}
-                            <div className="min-h-0 flex-1" data-term-host>
-                              <TerminalView
-                                termId={id}
-                                cwd={folderOf.get(id)?.dir ?? cwds.current[id]}
-                                onExit={() => closeSession(id)}
-                                onTitle={onTitle}
-                              />
-                            </div>
-                          </div>
+                            <FolderPlus className="size-3.5" /> Manage repos
+                          </Button>
                         </div>
-                      );
-                    })}
-                    {/* Diff panes: a folder's patch tiled beside its terminals. */}
-                    {panes.filter(isDiffPane).map((id) => {
-                      const r = rectFor(id);
-                      const dir = diffPaneDir(id) ?? "";
-                      return (
-                        <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
-                          <DiffPane
-                            folder={folderByDir.get(dir)}
-                            onClose={() => removePane(id)}
-                          />
-                        </div>
-                      );
-                    })}
-                    {/* Panes restored from disk but not started this run. */}
-                    {panes
-                      .filter((id) => !open.includes(id) && !isDiffPane(id))
-                      .map((id) => {
+                      )}
+                      {repos.map((repo) => (
+                        <RepoGroup
+                          key={repo.key}
+                          repo={repo}
+                          now={now}
+                          compactPct={state.compactRecommendPercent}
+                          prs={snapshot.prs}
+                          selectedSessionId={selected?.sessionId ?? null}
+                          activeFolderDir={activeFolderDir}
+                          collapsed={collapsed}
+                          renaming={renaming}
+                          titles={titles}
+                          overlays={overlays}
+                          wins={wins}
+                          actions={actions}
+                          onToggle={toggleCollapsed}
+                          onSelectFolder={selectFolder}
+                          onSelect={selectSession}
+                          onNewSession={newSession}
+                          onRemoveRepo={requestRemoveRepo}
+                          onRenameCommit={commitRename}
+                          onOpenDiff={openDiff}
+                        />
+                      ))}
+                    </div>
+                  </ScrollArea>
+                </div>
+              </ResizablePanel>
+              <ResizableHandle />
+            </>
+          )}
+
+          {/* Main area: window strip + the active window's panes tiled side-by-side.
+              Scoped to `activeFolderDir` — a window may only ever hold panes from
+              the one folder it belongs to, so switching folders switches the
+              whole strip, not just which panes happen to show. */}
+          <ResizablePanel key="main">
+            <div className="flex h-full min-w-0 flex-col">
+              {activeFolder && activeRepo && (
+                <WorkingContext
+                  repo={activeRepo}
+                  folder={activeFolder}
+                  pr={prForFolder(snapshot.prs, activeRepo.originUrl, activeFolder.branch)}
+                  onOpenDiff={openDiff}
+                />
+              )}
+              {wins && activeFolderDir && (
+                <div className="flex items-center gap-1 border-b bg-card px-2 py-1">
+                  {windowsForFolder.map((w) => (
+                    <button
+                      key={w.id}
+                      type="button"
+                      onClick={() => actions.focusWindow(w.id)}
+                      onDoubleClick={() => setRenamingWin(w.id)}
+                      title="double-click to rename"
+                      aria-pressed={w.id === activeWin?.id}
+                      className={cn(
+                        "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
+                        w.id === activeWin?.id
+                          ? "bg-accent text-foreground"
+                          : "text-muted-foreground hover:bg-accent/50",
+                      )}
+                    >
+                      <span className={cn("size-2 rounded-[3px]", windowColor(windowsForFolder, w.id))} />
+                      {renamingWin === w.id ? (
+                        <input
+                          autoFocus
+                          defaultValue={w.name}
+                          onClick={(e) => e.stopPropagation()}
+                          onBlur={(e) => {
+                            const name = e.target.value.trim() || w.name;
+                            setRenamingWin(null);
+                            updateWins([w.folderDir], (cur) => ({
+                              ...cur,
+                              windows: cur.windows.map((x) => (x.id === w.id ? { ...x, name } : x)),
+                            }));
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            if (e.key === "Escape") setRenamingWin(null);
+                          }}
+                          className="w-24 rounded-sm border border-input bg-background px-1 text-[11px] outline-none"
+                        />
+                      ) : (
+                        w.name
+                      )}
+                      <span className="font-mono text-[10px] text-muted-foreground/60">
+                        {w.panes.length}⊞
+                      </span>
+                      {windowsForFolder.length > 1 && (
+                        // span-with-role, not <button>: it nests inside the
+                        // window chip's real <button>, and interactive elements
+                        // may not nest. Keyboard support added by hand instead.
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          title="close window (panes ungroup; sessions stay in the rail)"
+                          aria-label={`close window ${w.name}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateWins([w.folderDir], (cur) => ({
+                              ...cur,
+                              windows: cur.windows.filter((x) => x.id !== w.id),
+                            }));
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter" && e.key !== " ") return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            updateWins([w.folderDir], (cur) => ({
+                              ...cur,
+                              windows: cur.windows.filter((x) => x.id !== w.id),
+                            }));
+                          }}
+                          className="text-muted-foreground/50 hover:text-red-500"
+                        >
+                          ✕
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateWins([activeFolderDir], (cur) => {
+                        const id = `w${Date.now()}`;
+                        const count = cur.windows.filter((w) => w.folderDir === activeFolderDir).length;
+                        return {
+                          windows: [
+                            ...cur.windows,
+                            { id, name: `window ${count + 1}`, folderDir: activeFolderDir, panes: [] },
+                          ],
+                          activeWindows: { ...cur.activeWindows, [activeFolderDir]: id },
+                        };
+                      })
+                    }
+                    className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
+                  >
+                    <Plus className="size-3" /> window
+                  </button>
+                  {activeFolderDir && (
+                    <button
+                      type="button"
+                      onClick={() => void newSession(activeFolderDir)}
+                      className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
+                      title={`New session in the focused folder (${shortcutHint("ab-new-session")})`}
+                    >
+                      <Plus className="size-3" /> session
+                    </button>
+                  )}
+                  {selected && (
+                    <button
+                      type="button"
+                      onClick={() => void closeSession(selected.sessionId)}
+                      className="ml-auto shrink-0 rounded-md px-2 py-1 font-mono text-[10.5px] text-muted-foreground hover:bg-accent/50"
+                      title={`Close session (${shortcutHint("ab-close-session")})`}
+                      aria-label="Close the selected session"
+                    >
+                      Close {shortcutHint("ab-close-session")}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* One flat pool of mounted terminals (never remounted — a remount
+                  would respawn the shell). The active window's pane order assigns
+                  each a percent-rect; panes in other windows stay hidden. */}
+              <div className="relative min-h-0 flex-1 overflow-hidden p-2">
+                {(() => {
+                  const panes = activeWin?.panes ?? [];
+                  const rects = paneRects(panes.length);
+                  const rectFor = (id: string) => {
+                    const i = panes.indexOf(id);
+                    return i < 0 ? undefined : rects[i];
+                  };
+                  const paneStyle = (r: PaneRect) => ({
+                    left: `${r.left}%`,
+                    top: `${r.top}%`,
+                    width: `${r.width}%`,
+                    height: `${r.height}%`,
+                  });
+                  return (
+                    <>
+                      {open.map((id) => {
                         const r = rectFor(id);
                         const s = sessionById.get(id);
-                        const dir = folderOf.get(id)?.dir;
                         return (
-                          <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
-                            <div className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground">
-                              <span className="text-sm">{s ? labelFor(s) : "session"}</span>
-                              {s && dir ? (
-                                <div className="flex gap-3 font-mono text-xs">
-                                  <button
-                                    type="button"
-                                    onClick={() => actions.start(dir, s)}
-                                    className="hover:text-green-500"
-                                  >
-                                    ▶ shell
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => actions.startClaude(dir, s)}
-                                    className="text-violet-500 hover:text-violet-400"
-                                  >
-                                    ✦ Claude
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => actions.ungroup(id)}
-                                    className="hover:text-red-500"
-                                  >
-                                    ⊟ remove
-                                  </button>
-                                </div>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => actions.ungroup(id)}
-                                  className="font-mono text-xs hover:text-red-500"
-                                >
-                                  session gone — ⊟ remove pane
-                                </button>
+                          <div
+                            key={id}
+                            hidden={!r}
+                            style={r ? paneStyle(r) : undefined}
+                            className="absolute p-1.5"
+                          >
+                            <div
+                              onClick={() =>
+                                selectSession(folderOf.get(id)?.dir ?? cwds.current[id] ?? "", id)
+                              }
+                              className={cn(
+                                "flex h-full flex-col overflow-hidden rounded-lg border bg-card",
+                                selected?.sessionId === id && "border-violet-500/60",
                               )}
+                            >
+                              {s && (
+                                <PaneHeader
+                                  session={s}
+                                  label={labelFor(s)}
+                                  now={now}
+                                  actions={actions}
+                                  onUngroup={() => actions.ungroup(id)}
+                                />
+                              )}
+                              {/* data-term-host marks terminal territory for the
+                                  shortcut guard — keys typed here belong to the
+                                  shell (Ctrl+D is EOF, not "new session"). */}
+                              <div className="min-h-0 flex-1" data-term-host>
+                                <TerminalView
+                                  termId={id}
+                                  cwd={folderOf.get(id)?.dir ?? cwds.current[id]}
+                                  onExit={() => closeSession(id)}
+                                  onTitle={onTitle}
+                                />
+                              </div>
                             </div>
                           </div>
                         );
                       })}
-                    {panes.length === 0 && (
-                      <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-                        <TerminalSquare className="size-10" />
-                        <p className="text-sm">
-                          {activeFolderDir
-                            ? "Empty window — click a session in the rail to open it here."
-                            : "Select a folder in the rail to see its sessions."}
-                        </p>
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
+                      {/* Diff panes: a folder's patch tiled beside its terminals. */}
+                      {panes.filter(isDiffPane).map((id) => {
+                        const r = rectFor(id);
+                        const dir = diffPaneDir(id) ?? "";
+                        return (
+                          <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
+                            <DiffPane
+                              folder={folderByDir.get(dir)}
+                              onClose={() => removePane(id)}
+                            />
+                          </div>
+                        );
+                      })}
+                      {/* Panes restored from disk but not started this run. */}
+                      {panes
+                        .filter((id) => !open.includes(id) && !isDiffPane(id))
+                        .map((id) => {
+                          const r = rectFor(id);
+                          const s = sessionById.get(id);
+                          const dir = folderOf.get(id)?.dir;
+                          return (
+                            <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
+                              <div className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground">
+                                <span className="text-sm">{s ? labelFor(s) : "session"}</span>
+                                {s && dir ? (
+                                  <div className="flex gap-3 font-mono text-xs">
+                                    <button
+                                      type="button"
+                                      onClick={() => actions.start(dir, s)}
+                                      className="hover:text-green-500"
+                                    >
+                                      ▶ shell
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => actions.startClaude(dir, s)}
+                                      className="text-violet-500 hover:text-violet-400"
+                                    >
+                                      ✦ Claude
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => actions.ungroup(id)}
+                                      className="hover:text-red-500"
+                                    >
+                                      ⊟ remove
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => actions.ungroup(id)}
+                                    className="font-mono text-xs hover:text-red-500"
+                                  >
+                                    session gone — ⊟ remove pane
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      {panes.length === 0 && (
+                        <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+                          <TerminalSquare className="size-10" />
+                          <p className="text-sm">
+                            {activeFolderDir
+                              ? "Empty window — click a session in the rail to open it here."
+                              : "Select a folder in the rail to see its sessions."}
+                          </p>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
             </div>
-          </div>
-        </ResizablePanel>
-      </ResizablePanelGroup>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </div>
 
       <CommandDialog
         open={addRepoOpen}
