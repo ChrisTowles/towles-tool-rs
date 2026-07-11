@@ -105,6 +105,8 @@ impl Dispatcher {
             "calendar_today" => self.calendar_today(now_ms),
             "calendar_next" => self.calendar_next(now_ms),
             "tasks_open" => self.tasks_open(),
+            "todo_create" => self.todo_create(args, now_ms),
+            "todo_set_status" => self.todo_set_status(args, now_ms),
             "issues_open" => self.issues_open(),
             "prs_status" => self.prs_status(),
             "agent_sessions" => self.agent_sessions(args, now_ms),
@@ -136,6 +138,50 @@ impl Dispatcher {
     fn tasks_open(&self) -> Result<Value, String> {
         let tasks = self.store.open_tasks().map_err(|e| e.to_string())?;
         Ok(json!({ "tasks": tasks }))
+    }
+
+    /// Create a kanban todo in the `backlog` column, optionally tagged with a
+    /// repo and free-form notes.
+    fn todo_create(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
+        let title = args
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .ok_or_else(|| "missing required argument: title".to_string())?;
+        let repo = args.get("repo").and_then(Value::as_str);
+        let notes = args.get("notes").and_then(Value::as_str);
+        let todo =
+            self.store.add_task(title, None, repo, notes, now_ms).map_err(|e| e.to_string())?;
+        Ok(json!({ "todo": todo }))
+    }
+
+    /// Move a todo to another kanban column; returns the updated todo.
+    fn todo_set_status(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
+        let id = args
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "missing required argument: id".to_string())?;
+        let status = args
+            .get("status")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "missing required argument: status".to_string())?;
+        if !tt_store::TASK_STATUSES.contains(&status) {
+            return Err(format!(
+                "unknown status: {status} (expected one of {})",
+                tt_store::TASK_STATUSES.join(", ")
+            ));
+        }
+        if self.store.get_task(id).map_err(|e| e.to_string())?.is_none() {
+            return Err(format!("no todo with id {id}"));
+        }
+        self.store.set_task_status(id, status, now_ms).map_err(|e| e.to_string())?;
+        let todo = self
+            .store
+            .get_task(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("no todo with id {id}"))?;
+        Ok(json!({ "todo": todo }))
     }
 
     fn issues_open(&self) -> Result<Value, String> {
@@ -367,6 +413,38 @@ fn tool_definitions() -> Value {
             "inputSchema": no_args(),
         },
         {
+            "name": "todo_create",
+            "description": "Create a kanban todo (lands in the backlog column).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "The todo's title." },
+                    "repo": {
+                        "type": "string",
+                        "description": "Repository the todo relates to, as owner/name.",
+                    },
+                    "notes": { "type": "string", "description": "Free-form context notes." },
+                },
+                "required": ["title"],
+            },
+        },
+        {
+            "name": "todo_set_status",
+            "description": "Move a kanban todo to another column.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "The todo's id." },
+                    "status": {
+                        "type": "string",
+                        "enum": tt_store::TASK_STATUSES,
+                        "description": "The kanban column to move the todo to.",
+                    },
+                },
+                "required": ["id", "status"],
+            },
+        },
+        {
             "name": "issues_open",
             "description": "Open GitHub issues assigned to me across tracked repos.",
             "inputSchema": no_args(),
@@ -455,7 +533,7 @@ mod tests {
                 NOW,
             )
             .unwrap();
-        store.add_task("open task", Some(NOW + HOUR_MS), NOW).unwrap();
+        store.add_task("open task", Some(NOW + HOUR_MS), None, None, NOW).unwrap();
         store.replace_issues(&[issue(390, "Refunds double-charge"), issue(391, "a11y")]).unwrap();
         store
             .replace_prs(&[PrInput {
@@ -541,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_contains_all_eight_tools() {
+    fn tools_list_contains_all_ten_tools() {
         let mut dispatcher = dispatcher();
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }).to_string();
         let response: Value =
@@ -556,6 +634,8 @@ mod tests {
             "calendar_today",
             "calendar_next",
             "tasks_open",
+            "todo_create",
+            "todo_set_status",
             "issues_open",
             "prs_status",
             "agent_sessions",
@@ -564,7 +644,7 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "missing tool {expected} in {names:?}");
         }
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 10);
     }
 
     #[test]
@@ -599,6 +679,112 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["text"], "open task");
         assert_eq!(tasks[0]["dueTs"], NOW + HOUR_MS);
+    }
+
+    /// Call a tool expecting an `isError` result; returns the error text.
+    fn call_tool_err(dispatcher: &mut Dispatcher, name: &str, args: Value) -> String {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": args },
+        })
+        .to_string();
+        let response = dispatcher.handle_at(&request, NOW).expect("tool call returns a response");
+        let response: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["result"]["isError"], true, "expected a tool error: {response}");
+        response["result"]["content"][0]["text"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn todo_create_lands_in_backlog_with_repo_and_notes() {
+        let mut dispatcher = dispatcher();
+        let result = call_tool(
+            &mut dispatcher,
+            "todo_create",
+            json!({ "title": "port the CLI", "repo": "o/r", "notes": "start with doctor" }),
+        );
+        assert_eq!(result["todo"]["text"], "port the CLI");
+        assert_eq!(result["todo"]["status"], "backlog");
+        assert_eq!(result["todo"]["repo"], "o/r");
+        assert_eq!(result["todo"]["notes"], "start with doctor");
+        assert_eq!(result["todo"]["createdAt"], NOW);
+
+        // The new todo shows up in the tasks_open read tool.
+        let open = call_tool(&mut dispatcher, "tasks_open", json!({}));
+        let texts: Vec<&str> =
+            open["tasks"].as_array().unwrap().iter().map(|t| t["text"].as_str().unwrap()).collect();
+        assert!(texts.contains(&"port the CLI"), "created todo missing: {texts:?}");
+    }
+
+    #[test]
+    fn todo_create_without_repo_or_notes() {
+        let mut dispatcher = dispatcher();
+        let result = call_tool(&mut dispatcher, "todo_create", json!({ "title": "bare" }));
+        assert_eq!(result["todo"]["text"], "bare");
+        assert_eq!(result["todo"]["repo"], Value::Null);
+        assert_eq!(result["todo"]["notes"], Value::Null);
+    }
+
+    #[test]
+    fn todo_create_requires_title() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(&mut dispatcher, "todo_create", json!({}));
+        assert!(message.contains("title"), "error should name the missing arg: {message}");
+        let message = call_tool_err(&mut dispatcher, "todo_create", json!({ "title": "  " }));
+        assert!(message.contains("title"), "blank title should be rejected: {message}");
+    }
+
+    #[test]
+    fn todo_set_status_moves_and_stamps_done() {
+        let mut dispatcher = dispatcher();
+        let created = call_tool(&mut dispatcher, "todo_create", json!({ "title": "ship it" }));
+        let id = created["todo"]["id"].as_i64().unwrap();
+
+        let result =
+            call_tool(&mut dispatcher, "todo_set_status", json!({ "id": id, "status": "doing" }));
+        assert_eq!(result["todo"]["status"], "doing");
+        assert_eq!(result["todo"]["completedAt"], Value::Null);
+
+        let result =
+            call_tool(&mut dispatcher, "todo_set_status", json!({ "id": id, "status": "done" }));
+        assert_eq!(result["todo"]["status"], "done");
+        assert_eq!(result["todo"]["completedAt"], NOW);
+    }
+
+    #[test]
+    fn todo_set_status_rejects_unknown_status() {
+        let mut dispatcher = dispatcher();
+        let created = call_tool(&mut dispatcher, "todo_create", json!({ "title": "x" }));
+        let id = created["todo"]["id"].as_i64().unwrap();
+        let message = call_tool_err(
+            &mut dispatcher,
+            "todo_set_status",
+            json!({ "id": id, "status": "bogus" }),
+        );
+        assert!(message.contains("bogus"), "error should echo the bad status: {message}");
+        assert!(message.contains("backlog"), "error should list valid statuses: {message}");
+    }
+
+    #[test]
+    fn todo_set_status_rejects_unknown_id() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(
+            &mut dispatcher,
+            "todo_set_status",
+            json!({ "id": 9999, "status": "doing" }),
+        );
+        assert!(message.contains("9999"), "error should name the missing id: {message}");
+    }
+
+    #[test]
+    fn todo_set_status_requires_id_and_status() {
+        let mut dispatcher = dispatcher();
+        let message =
+            call_tool_err(&mut dispatcher, "todo_set_status", json!({ "status": "doing" }));
+        assert!(message.contains("id"), "error should name the missing arg: {message}");
+        let message = call_tool_err(&mut dispatcher, "todo_set_status", json!({ "id": 1 }));
+        assert!(message.contains("status"), "error should name the missing arg: {message}");
     }
 
     #[test]
