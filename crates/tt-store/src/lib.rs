@@ -545,8 +545,10 @@ impl Store {
         self.task_by_id(self.conn.last_insert_rowid())
     }
 
-    /// Move a todo to a kanban column. Sets `completed_at` when entering `done`,
-    /// clears it otherwise. Unknown statuses are rejected.
+    /// Move a todo to a kanban column, appending it at the end of the target
+    /// column (position = max there + 1, ignoring the task itself). Sets
+    /// `completed_at` when entering `done`, clears it otherwise. Unknown
+    /// statuses are rejected.
     pub fn set_task_status(&self, id: i64, status: &str, now_ms: i64) -> Result<()> {
         if !TASK_STATUSES.contains(&status) {
             return Err(Error::Sqlite(rusqlite::Error::InvalidParameterName(format!(
@@ -554,10 +556,17 @@ impl Store {
             ))));
         }
         let completed_at: Option<i64> = if status == "done" { Some(now_ms) } else { None };
-        self.conn.execute(
-            "UPDATE tasks SET status = ?1, completed_at = ?2 WHERE id = ?3",
-            params![status, completed_at, id],
+        let tx = self.conn.unchecked_transaction()?;
+        let position: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE status = ?1 AND id <> ?2",
+            params![status, id],
+            |r| r.get(0),
         )?;
+        tx.execute(
+            "UPDATE tasks SET status = ?1, completed_at = ?2, position = ?3 WHERE id = ?4",
+            params![status, completed_at, position, id],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1219,6 +1228,33 @@ mod tests {
         assert_eq!(existing[0].notes, None);
         let t = s.add_task("with notes", None, None, Some("context"), 2).unwrap();
         assert_eq!(t.notes.as_deref(), Some("context"));
+    }
+
+    #[test]
+    fn set_task_status_appends_to_end_of_target_column() {
+        let s = Store::open_in_memory().unwrap();
+        let a = s.add_task("a", None, None, None, 1).unwrap();
+        let b = s.add_task("b", None, None, None, 2).unwrap();
+        let c = s.add_task("c", None, None, None, 3).unwrap();
+
+        // Moving into an empty column starts at 0; the next arrival lands after it.
+        s.set_task_status(a.id, "doing", 10).unwrap();
+        s.set_task_status(b.id, "doing", 11).unwrap();
+        let pos = |id: i64, tasks: &[TaskItem]| tasks.iter().find(|t| t.id == id).unwrap().position;
+        let tasks = s.snapshot().unwrap().tasks;
+        assert_eq!(pos(a.id, &tasks), 0);
+        assert_eq!(pos(b.id, &tasks), 1);
+
+        // A later drop into the same column lands at the end, not at its old slot.
+        s.set_task_status(c.id, "doing", 12).unwrap();
+        let tasks = s.snapshot().unwrap().tasks;
+        assert_eq!(pos(c.id, &tasks), 2);
+
+        // Bouncing a card out and back re-appends it after the survivors.
+        s.set_task_status(a.id, "review", 13).unwrap();
+        s.set_task_status(a.id, "doing", 14).unwrap();
+        let tasks = s.snapshot().unwrap().tasks;
+        assert_eq!(pos(a.id, &tasks), 3);
     }
 
     #[test]
