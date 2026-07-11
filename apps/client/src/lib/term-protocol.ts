@@ -64,6 +64,64 @@ export function rgb(packed: number): string {
   return `#${packed.toString(16).padStart(6, "0")}`;
 }
 
+/** Whether a run may contain wide (2-column) characters: its column width
+ * exceeds its character count. */
+export function isWideRun(run: Run): boolean {
+  return run.width > [...run.text].length;
+}
+
+/** Row text as one char per column (spaces where nothing is drawn), so string
+ * indices line up with terminal columns even across wide characters. */
+function rowColumns(runs: Run[], cols: number): string {
+  const chars: string[] = Array(cols).fill(" ");
+  for (const run of runs) {
+    let cx = run.x;
+    for (const ch of run.text) {
+      if (cx >= cols) break;
+      chars[cx] = ch;
+      cx += isWideRun(run) && ch.charCodeAt(0) > 0xff ? 2 : 1;
+    }
+  }
+  return chars.join("");
+}
+
+const URL_RE = /https?:\/\/[^\s"'`<>]+/g;
+
+/**
+ * The URL under terminal cell (x, y), or null. Rows that fill every column
+ * are treated as hard-wrapped and joined with their successors, so a long
+ * URL wrapped by the terminal is matched whole. Trailing punctuation and
+ * unbalanced closing parens are trimmed (URLs in prose end with `.` / `)`).
+ */
+export function urlAt(rows: Run[][], x: number, y: number, cols: number): string | null {
+  if (x < 0 || y < 0 || y >= rows.length) return null;
+  const text = (i: number) => rowColumns(rows[i] ?? [], cols);
+  const filled = (i: number) => text(i).trimEnd().length === cols;
+  let first = y;
+  while (first > 0 && filled(first - 1)) first--;
+  let last = y;
+  while (last < rows.length - 1 && filled(last)) last++;
+
+  let joined = "";
+  let clickIdx = -1;
+  for (let i = first; i <= last; i++) {
+    if (i === y) clickIdx = joined.length + x;
+    joined += text(i);
+  }
+
+  for (const m of joined.matchAll(URL_RE)) {
+    let url = m[0].replace(/[.,;:!?]+$/, "");
+    while (
+      url.endsWith(")") &&
+      (url.match(/\(/g)?.length ?? 0) < (url.match(/\)/g)?.length ?? 0)
+    ) {
+      url = url.slice(0, -1);
+    }
+    if (clickIdx >= m.index && clickIdx < m.index + url.length) return url;
+  }
+  return null;
+}
+
 /** xterm-style modifier parameter: 1 + shift(1) + alt(2) + ctrl(4) + meta(8). */
 function modParam(e: KeyboardEvent): number {
   return (
