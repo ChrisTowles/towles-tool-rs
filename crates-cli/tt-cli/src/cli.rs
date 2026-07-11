@@ -113,7 +113,10 @@ pub enum CollectCommands {
     /// Collect open and review-requested pull requests via `gh`
     Prs,
 
-    /// Run every collector (calendar, issues, PRs)
+    /// Poll the watched Slack DM via the Slack Web API (needs a token in settings)
+    Slack,
+
+    /// Run every collector (calendar, issues, PRs, Slack)
     All,
 }
 

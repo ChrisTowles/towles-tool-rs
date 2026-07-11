@@ -264,6 +264,8 @@ function CollectorsSettingsForm({
     setCollector("prs", patch);
   const setIssues = (patch: Partial<UserSettings["collectors"]["issues"]>) =>
     setCollector("issues", patch);
+  const setSlack = (patch: Partial<UserSettings["collectors"]["slack"]>) =>
+    setCollector("slack", patch);
   return (
     <div className="flex flex-col gap-6">
       <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
@@ -333,6 +335,58 @@ function CollectorsSettingsForm({
           value={c.issues.refreshMinutes}
           unit="min"
           onValue={(n) => setIssues({ refreshMinutes: n })}
+        />
+      </section>
+
+      <section className="flex flex-col gap-4">
+        <h3 className="text-sm font-semibold">Slack DM watch</h3>
+        <ToggleRow
+          label="Enabled"
+          description="Watches one DM (e.g. your wife) and raises the attention banner on unanswered messages."
+          checked={c.slack.enabled}
+          onCheckedChange={(v) => setSlack({ enabled: v })}
+        />
+        <FieldRow
+          label="User token"
+          description="Slack user OAuth token (xoxp-…) with im:history + im:read scopes."
+        >
+          <Input
+            type="password"
+            value={c.slack.token}
+            onChange={(e) => setSlack({ token: e.target.value })}
+            className="font-mono text-xs"
+            spellCheck={false}
+          />
+        </FieldRow>
+        <FieldRow
+          label="Watch member ID"
+          description="Slack member ID to watch (profile → three dots → Copy member ID)."
+        >
+          <Input
+            value={c.slack.watchUserId}
+            onChange={(e) => setSlack({ watchUserId: e.target.value })}
+            className="font-mono text-xs"
+            placeholder="U0123ABCD"
+            spellCheck={false}
+          />
+        </FieldRow>
+        <FieldRow
+          label="Display name"
+          description="Name shown in the banner."
+        >
+          <Input
+            value={c.slack.watchName}
+            onChange={(e) => setSlack({ watchName: e.target.value })}
+            placeholder="Sarah"
+            spellCheck={false}
+          />
+        </FieldRow>
+        <CadenceRow
+          label="Refresh every"
+          description="How often to poll the DM (min 30s)."
+          value={c.slack.refreshSeconds}
+          unit="sec"
+          onValue={(n) => setSlack({ refreshSeconds: n })}
         />
       </section>
     </div>

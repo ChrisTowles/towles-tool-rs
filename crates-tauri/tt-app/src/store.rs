@@ -111,6 +111,21 @@ pub fn store_set_task_status(
     Ok(())
 }
 
+/// Mark the watched DM's message at `ts` handled (banner dismissal), then re-emit.
+#[tauri::command]
+pub fn store_dm_dismiss(
+    app: AppHandle,
+    state: State<StoreState>,
+    channel: String,
+    ts: i64,
+) -> Result<(), String> {
+    with_store(&state, |store| {
+        store.dismiss_dm(&channel, ts).map_err(|e| format!("dismiss_dm failed: {e}"))
+    })?;
+    emit_snapshot(&app, &state);
+    Ok(())
+}
+
 /// Promote a local todo into a real GitHub issue in `repo` (owner/name), then
 /// link the resulting issue back to the todo and re-emit the snapshot.
 ///

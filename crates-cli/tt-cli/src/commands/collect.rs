@@ -27,8 +27,10 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
         }
     };
     let now = now_ms();
-    let calendar = load_calendar_settings(config_dir);
+    let collectors = load_collector_settings(config_dir);
+    let calendar = collectors.calendar;
     let provider = CalendarProvider::from_str_lenient(&calendar.provider);
+    let slack = slack_config(&collectors.slack);
 
     let summaries = match command {
         CollectCommands::Calendar => {
@@ -52,6 +54,13 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
                 now,
             )]
         }
+        CollectCommands::Slack => match &slack {
+            Some(config) => vec![tt_collect::collect_slack_dm(&store, config, now)],
+            None => {
+                note_skipped("slack collector disabled in settings (needs enabled + token)");
+                return 0;
+            }
+        },
         CollectCommands::All => {
             let mut summaries = Vec::new();
             if calendar.enabled {
@@ -62,6 +71,9 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
             let repos = tt_collect::tracked_repo_dirs();
             summaries.push(tt_collect::collect_issues(&store, &repos, now));
             summaries.push(tt_collect::collect_prs(&store, &repos, now));
+            if let Some(config) = &slack {
+                summaries.push(tt_collect::collect_slack_dm(&store, config, now));
+            }
             summaries
         }
     };
@@ -76,21 +88,36 @@ fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// Load the calendar collector settings. Defaults (enabled, Google) if the
-/// settings file can't be resolved or read.
-fn load_calendar_settings(config_dir: Option<&Path>) -> tt_config::CalendarCollector {
+/// Load the collector settings block. Defaults if the settings file can't be
+/// resolved or read.
+fn load_collector_settings(config_dir: Option<&Path>) -> tt_config::CollectorsSettings {
     let path = match config_dir {
         Some(dir) => dir.join(format!("{}.settings.json", tt_config::TOOL_NAME)),
         None => match tt_config::config_path() {
             Ok(path) => path,
-            Err(_) => return tt_config::CalendarCollector::default(),
+            Err(_) => return tt_config::CollectorsSettings::default(),
         },
     };
-    tt_config::load_from(&path).map(|s| s.collectors.calendar).unwrap_or_default()
+    tt_config::load_from(&path).map(|s| s.collectors).unwrap_or_default()
+}
+
+/// The Slack collector's runtime config, or `None` when disabled/unconfigured.
+fn slack_config(slack: &tt_config::SlackDmCollector) -> Option<tt_collect::SlackDmConfig> {
+    if !slack.enabled || slack.token.trim().is_empty() {
+        return None;
+    }
+    Some(tt_collect::SlackDmConfig {
+        token: slack.token.clone(),
+        watch_user_id: slack.watch_user_id.clone(),
+        watch_name: slack.watch_name.clone(),
+    })
 }
 
 fn note_disabled() {
-    let msg = "calendar collector disabled in settings";
+    note_skipped("calendar collector disabled in settings");
+}
+
+fn note_skipped(msg: &str) {
     if std::io::stdout().is_terminal() {
         println!("{}", console::style(msg).dim());
     } else {

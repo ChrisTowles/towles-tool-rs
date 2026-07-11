@@ -32,10 +32,19 @@ export type IssueCollector = {
   refreshMinutes: number;
 };
 
+export type SlackDmCollector = {
+  enabled: boolean;
+  token: string;
+  watchUserId: string;
+  watchName: string;
+  refreshSeconds: number;
+};
+
 export type CollectorsSettings = {
   calendar: CalendarCollector;
   prs: PrCollector;
   issues: IssueCollector;
+  slack: SlackDmCollector;
 };
 
 export type UserSettings = {

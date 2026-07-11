@@ -82,12 +82,30 @@ export type CollectRun = {
   message?: string;
 };
 
+/**
+ * Latest state of a watched Slack DM (the `slack:dm` collector). `fromMe`
+ * means the newest message is the user's own (already answered); `dismissedTs`
+ * is the last message the user marked handled. A banner shows only while
+ * `!fromMe && dismissedTs < ts`.
+ */
+export type DmItem = {
+  channel: string;
+  fromName: string;
+  text: string;
+  ts: number;
+  fromMe: boolean;
+  url?: string;
+  fetchedAt: number;
+  dismissedTs: number;
+};
+
 export type StoreSnapshot = {
   events: CalEvent[];
   tasks: TaskItem[];
   issues: IssueItem[];
   prs: PrItem[];
   runs: CollectRun[];
+  dms: DmItem[];
 };
 
 const MINUTE = 60_000;
@@ -99,6 +117,7 @@ export const EMPTY_SNAPSHOT: StoreSnapshot = {
   issues: [],
   prs: [],
   runs: [],
+  dms: [],
 };
 
 /**
@@ -223,5 +242,8 @@ export const storeSetTaskStatus = (id: number, status: TaskStatus) =>
 
 export const storePromoteTaskToIssue = (id: number, repo: string) =>
   invokeOk("store_promote_task_to_issue", { id, repo });
+
+export const storeDmDismiss = (channel: string, ts: number) =>
+  invokeOk("store_dm_dismiss", { channel, ts });
 
 export const journalLog = (text: string) => invokeOk("journal_log", { text });

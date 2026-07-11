@@ -19,11 +19,12 @@ use tt_collect::CalendarProvider;
 
 use crate::store::SNAPSHOT_EVENT;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Batch {
     Prs,
     Issues,
     Calendar,
+    SlackDm(tt_collect::SlackDmConfig),
 }
 
 /// Epoch milliseconds from the local wall clock (scheduler boundary clock).
@@ -52,6 +53,18 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
             let mut calendar_tick =
                 tokio::time::interval(Duration::from_millis(calendar_period_ms as u64));
             calendar_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut slack_tick = tokio::time::interval(Duration::from_secs(
+                collectors.slack.refresh_seconds.max(30),
+            ));
+            slack_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            // Enabled but unconfigured stays quiet: without a token every tick
+            // would just record the same failure.
+            let slack_on = collectors.slack.enabled && !collectors.slack.token.trim().is_empty();
+            let slack_config = tt_collect::SlackDmConfig {
+                token: collectors.slack.token.clone(),
+                watch_user_id: collectors.slack.watch_user_id.clone(),
+                watch_name: collectors.slack.watch_name.clone(),
+            };
 
             // Inner loop runs the current cadence until settings change, then
             // breaks to rebuild from the top with the new values.
@@ -66,6 +79,15 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                     }
                     _ = calendar_tick.tick(), if collectors.calendar.enabled => {
                         run_batch(&app, Batch::Calendar, provider, calendar_period_ms).await;
+                    }
+                    _ = slack_tick.tick(), if slack_on => {
+                        run_batch(
+                            &app,
+                            Batch::SlackDm(slack_config.clone()),
+                            provider,
+                            calendar_period_ms,
+                        )
+                        .await;
                     }
                 }
             }
@@ -127,6 +149,9 @@ fn run_batch_blocking(
                 return;
             }
             log_failure(tt_collect::collect_calendar(&store, provider, now));
+        }
+        Batch::SlackDm(config) => {
+            log_failure(tt_collect::collect_slack_dm(&store, &config, now));
         }
     }
 
