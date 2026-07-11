@@ -21,9 +21,9 @@ use std::time::{Duration, Instant};
 use crate::engine::{Engine, EngineOptions, Select, VtError};
 use crate::frame::Frame;
 
-/// Minimum time between render passes (~60 fps). Caps how fast frames can be
+/// Minimum time between render passes (~90 fps). Caps how fast frames can be
 /// produced so the UI side can never fall behind unboundedly.
-const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(1_000_000 / 90);
 
 pub enum Input {
     /// Raw PTY output bytes.
@@ -110,7 +110,7 @@ impl Session {
                 apply(first);
                 // Absorb further input until the frame interval since the
                 // last render has passed. An idle terminal renders its first
-                // input with no delay; a flood coalesces into ~60 fps frames.
+                // input with no delay; a flood coalesces into ~90 fps frames.
                 loop {
                     while let Ok(more) = rx.try_recv() {
                         apply(more);
