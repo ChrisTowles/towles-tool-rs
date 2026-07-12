@@ -8,4 +8,6 @@ dist/
 /crates-tauri/tt-app/gen/schemas/
 .claude/settings.local.json
 *.local
+# rendered per-slot by `ttr slot new`/`env` (port claims); .env.local via *.local
+.env
 .DS_Store
