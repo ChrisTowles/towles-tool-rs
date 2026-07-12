@@ -11,6 +11,7 @@
 
 pub mod engine;
 pub mod frame;
+pub mod osc52;
 pub mod search;
 pub mod session;
 
@@ -351,7 +352,7 @@ mod tests {
                 .expect("session produced an event")
             {
                 Event::Frame(f) => break f,
-                Event::PtyReply(_) => {}
+                Event::PtyReply(_) | Event::Clipboard(_) => {}
             }
         };
         assert_eq!(
@@ -359,6 +360,32 @@ mod tests {
             Some("hello".into())
         );
         drop(session); // joins the thread
+    }
+
+    #[test]
+    fn session_surfaces_osc52_clipboard_writes() {
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let session = Session::spawn(
+            EngineOptions { cols: 20, rows: 4, max_scrollback: 100 },
+            move |event| {
+                let _ = event_tx.send(event);
+            },
+        )
+        .expect("spawn session");
+
+        // A program copies "hi" via OSC 52 (aGk= is base64 for "hi").
+        assert!(session.send(Input::Bytes(b"\x1b]52;c;aGk=\x07".to_vec())));
+        let clip = loop {
+            match event_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("session produced an event")
+            {
+                Event::Clipboard(text) => break text,
+                Event::Frame(_) | Event::PtyReply(_) => {}
+            }
+        };
+        assert_eq!(clip, "hi");
+        drop(session);
     }
 
     #[test]

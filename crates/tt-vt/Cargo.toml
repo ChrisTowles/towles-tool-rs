@@ -5,6 +5,7 @@ edition = "2021"
 description = "Terminal state engine on libghostty-vt: feeds PTY bytes, emits dirty-row render frames"
 
 [dependencies]
+base64 = { workspace = true }
 libghostty-vt = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

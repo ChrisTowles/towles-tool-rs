@@ -74,27 +74,56 @@ struct Session {
     shell_kind: String,
 }
 
-/// All live terminals, keyed by the frontend's `term_id`.
+/// All live terminals, keyed by the frontend's `term_id`, plus which one
+/// currently holds keyboard focus.
 #[derive(Default)]
-pub struct TermState(Mutex<HashMap<String, Session>>);
+pub struct TermState {
+    sessions: Mutex<HashMap<String, Session>>,
+    /// `term_id` of the focused terminal, if any. Set by the frontend via
+    /// [`term_focus`]. Gates OSC 52 clipboard writes so a background pane can't
+    /// hijack the system clipboard.
+    focused: Mutex<Option<String>>,
+}
 
 impl TermState {
+    /// Whether `term_id` is the currently focused terminal.
+    fn is_focused(&self, term_id: &str) -> bool {
+        self.focused.lock().unwrap().as_deref() == Some(term_id)
+    }
+
+    /// Record focus gained/lost for `term_id`. A blur only clears focus when
+    /// this terminal still owns it, so a focus handoff (blur A, focus B)
+    /// delivered out of order can't wipe B's focus.
+    fn set_focus(&self, term_id: String, focused: bool) {
+        let mut current = self.focused.lock().unwrap();
+        if focused {
+            *current = Some(term_id);
+        } else if current.as_deref() == Some(term_id.as_str()) {
+            *current = None;
+        }
+    }
+
     /// Ids of every session with a live PTY right now. The agentboard bridge
     /// stamps these onto the emitted snapshot as `SessionData.live`.
     pub fn live_ids(&self) -> std::collections::HashSet<String> {
-        self.0.lock().unwrap().keys().cloned().collect()
+        self.sessions.lock().unwrap().keys().cloned().collect()
     }
 
     /// Each live session's shell kind. The agentboard bridge stamps these onto
     /// the emitted snapshot as `SessionData.shellKind`.
     pub fn shell_kinds(&self) -> HashMap<String, String> {
-        self.0.lock().unwrap().iter().map(|(id, s)| (id.clone(), s.shell_kind.clone())).collect()
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, s)| (id.clone(), s.shell_kind.clone()))
+            .collect()
     }
 
     /// Kill, reap, and drop the session with `term_id`, if any. The kill/wait
     /// runs after the map lock is released.
     fn kill(&self, term_id: &str) {
-        let session = self.0.lock().unwrap().remove(term_id);
+        let session = self.sessions.lock().unwrap().remove(term_id);
         if let Some(mut session) = session {
             let _ = session.child.kill();
             let _ = session.child.wait();
@@ -103,7 +132,8 @@ impl TermState {
 
     /// Kill, reap, and drop every session (window teardown).
     fn kill_all(&self) {
-        let sessions: Vec<Session> = self.0.lock().unwrap().drain().map(|(_, s)| s).collect();
+        let sessions: Vec<Session> =
+            self.sessions.lock().unwrap().drain().map(|(_, s)| s).collect();
         for mut session in sessions {
             let _ = session.child.kill();
             let _ = session.child.wait();
@@ -114,7 +144,7 @@ impl TermState {
     /// session for reaping. A newer generation means this id was replaced —
     /// leave the replacement alone.
     fn take_if_current(&self, term_id: &str, generation: u64) -> Option<Session> {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.sessions.lock().unwrap();
         if guard.get(term_id).is_some_and(|s| s.generation == generation) {
             return guard.remove(term_id);
         }
@@ -234,12 +264,22 @@ fn term_start_blocking(
             VtEvent::PtyReply(bytes) => {
                 let _ = pty_input.try_send(bytes);
             }
+            // A program in this shell copied text via OSC 52. Write it to the
+            // system clipboard, but ONLY when this terminal is the focused one:
+            // a background pane (another agent's shell) must not be able to
+            // silently overwrite the clipboard. Read-side OSC 52 is not handled.
+            VtEvent::Clipboard(text) => {
+                use tauri_plugin_clipboard_manager::ClipboardExt;
+                if app.state::<TermState>().is_focused(&term_id) {
+                    let _ = app.clipboard().write_text(text);
+                }
+            }
         }
     })
     .map_err(|e| format!("failed to start terminal engine: {e}"))?;
     let vt_tx = vt.sender();
 
-    state.0.lock().unwrap().insert(
+    state.sessions.lock().unwrap().insert(
         term_id.clone(),
         Session { master: pty.master, input: input_tx, vt: vt_tx, child, generation, shell_kind },
     );
@@ -309,7 +349,7 @@ fn notify_agentboard(app: &AppHandle) {
 /// blocks, even against a shell that has stopped reading its PTY.
 #[tauri::command]
 pub fn term_write(state: State<TermState>, term_id: String, data: String) -> Result<(), String> {
-    let guard = state.0.lock().unwrap();
+    let guard = state.sessions.lock().unwrap();
     let session = guard.get(&term_id).ok_or("no shell running")?;
     match session.input.try_send(data.into_bytes()) {
         Ok(()) => Ok(()),
@@ -331,7 +371,7 @@ pub fn term_resize(
     cell_height: Option<u16>,
 ) -> Result<(), String> {
     let (cw, ch) = (cell_width.unwrap_or(0), cell_height.unwrap_or(0));
-    let guard = state.0.lock().unwrap();
+    let guard = state.sessions.lock().unwrap();
     let session = guard.get(&term_id).ok_or("no shell running")?;
     session
         .master
@@ -354,7 +394,7 @@ pub fn term_scroll(
     term_id: String,
     delta: Option<isize>,
 ) -> Result<(), String> {
-    let guard = state.0.lock().unwrap();
+    let guard = state.sessions.lock().unwrap();
     let session = guard.get(&term_id).ok_or("no shell running")?;
     let _ = session.vt.send(VtInput::Scroll(delta));
     Ok(())
@@ -366,7 +406,7 @@ pub fn term_scroll(
 /// so a stale canvas would otherwise stay stale until a scroll (#47).
 #[tauri::command]
 pub fn term_request_full(state: State<TermState>, term_id: String) -> Result<(), String> {
-    let guard = state.0.lock().unwrap();
+    let guard = state.sessions.lock().unwrap();
     let session = guard.get(&term_id).ok_or("no shell running")?;
     let _ = session.vt.send(VtInput::RequestFull);
     Ok(())
@@ -377,7 +417,7 @@ pub fn term_request_full(state: State<TermState>, term_id: String) -> Result<(),
 /// view learns the scrollback depth collapsed.
 #[tauri::command]
 pub fn term_clear(state: State<TermState>, term_id: String) -> Result<(), String> {
-    let guard = state.0.lock().unwrap();
+    let guard = state.sessions.lock().unwrap();
     let session = guard.get(&term_id).ok_or("no shell running")?;
     let _ = session.vt.send(VtInput::ClearScrollback);
     Ok(())
@@ -409,7 +449,7 @@ pub fn term_select(
         "clear" => VtSelect::Clear,
         other => return Err(format!("unknown selection kind: {other}")),
     };
-    let guard = state.0.lock().unwrap();
+    let guard = state.sessions.lock().unwrap();
     let session = guard.get(&term_id).ok_or("no shell running")?;
     let _ = session.vt.send(VtInput::Select(op));
     Ok(())
@@ -424,7 +464,7 @@ pub async fn term_copy(app: AppHandle, term_id: String) -> Result<String, String
         let (reply_tx, reply_rx) = sync_channel::<Option<String>>(1);
         {
             let state = app.state::<TermState>();
-            let guard = state.0.lock().unwrap();
+            let guard = state.sessions.lock().unwrap();
             let session = guard.get(&term_id).ok_or("no shell running")?;
             if !session.vt.send(VtInput::Copy(reply_tx)) {
                 return Err("terminal engine gone".to_string());
@@ -453,7 +493,7 @@ pub async fn term_search(
         let (reply_tx, reply_rx) = sync_channel::<Vec<SearchMatch>>(1);
         {
             let state = app.state::<TermState>();
-            let guard = state.0.lock().unwrap();
+            let guard = state.sessions.lock().unwrap();
             let session = guard.get(&term_id).ok_or("no shell running")?;
             if !session.vt.send(VtInput::Search {
                 query,
@@ -475,10 +515,21 @@ pub async fn term_search(
 /// is visible — search prev/next navigation jumps the viewport to a match.
 #[tauri::command]
 pub fn term_scroll_to(state: State<TermState>, term_id: String, row: usize) -> Result<(), String> {
-    let guard = state.0.lock().unwrap();
+    let guard = state.sessions.lock().unwrap();
     let session = guard.get(&term_id).ok_or("no shell running")?;
     let _ = session.vt.send(VtInput::ScrollTo(row));
     Ok(())
+}
+
+/// Record which terminal holds keyboard focus. The terminal view calls this
+/// with `focused: true` when its hidden input gains focus and `false` when it
+/// loses it. Focus gates OSC 52 clipboard writes: only the focused terminal may
+/// set the system clipboard, so a background pane can't hijack it. The blur is
+/// no-op'd unless this terminal is still the focused one, so a focus handoff
+/// (blur A then focus B) can't clear B's focus if the events arrive reordered.
+#[tauri::command]
+pub fn term_focus(state: State<TermState>, term_id: String, focused: bool) {
+    state.set_focus(term_id, focused);
 }
 
 /// Kill one shell (the frontend calls this when a terminal unmounts — an
@@ -539,7 +590,31 @@ fn shell_kind_from_path(shell: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_shell, shell_kind_from_path, start_dir};
+    use super::{TermState, default_shell, shell_kind_from_path, start_dir};
+
+    #[test]
+    fn focus_gate_tracks_the_focused_terminal() {
+        let state = TermState::default();
+        assert!(!state.is_focused("a"), "nothing focused initially");
+
+        state.set_focus("a".into(), true);
+        assert!(state.is_focused("a"));
+        assert!(!state.is_focused("b"));
+
+        // Focus handoff a -> b: b becomes focused, a is not.
+        state.set_focus("b".into(), true);
+        assert!(state.is_focused("b"));
+        assert!(!state.is_focused("a"));
+
+        // A late/reordered blur from the previously-focused a must NOT clear
+        // b's focus — only the current owner's blur clears it.
+        state.set_focus("a".into(), false);
+        assert!(state.is_focused("b"), "stale blur from a leaves b focused");
+
+        // b's own blur clears focus.
+        state.set_focus("b".into(), false);
+        assert!(!state.is_focused("b"));
+    }
 
     #[test]
     fn prefers_shell_env() {

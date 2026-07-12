@@ -93,6 +93,9 @@ pub enum Event {
     Frame(Frame),
     /// Bytes the terminal wants written back to the PTY (query replies).
     PtyReply(Vec<u8>),
+    /// Text a program copied via an OSC 52 set-clipboard sequence. The host
+    /// writes it to the system clipboard, gated on this terminal being focused.
+    Clipboard(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -250,6 +253,9 @@ impl Session {
                 let reply = engine.take_pty_output();
                 if !reply.is_empty() {
                     sink(Event::PtyReply(reply));
+                }
+                for text in engine.take_clipboard() {
+                    sink(Event::Clipboard(text));
                 }
                 match engine.render() {
                     Ok(Some(frame)) => {
