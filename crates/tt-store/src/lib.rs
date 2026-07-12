@@ -661,6 +661,20 @@ impl Store {
         Ok(())
     }
 
+    /// Delete `done` todos completed before `before_ms`, returning how many rows
+    /// were removed. Open todos and recently-completed `done` todos are left
+    /// untouched. A `done` row with a NULL `completed_at` (legacy data) is never
+    /// swept, since its completion time is unknown. The cutoff is injected — the
+    /// clock read happens at the call boundary, not here.
+    pub fn clear_done_tasks(&self, before_ms: i64) -> Result<usize> {
+        let deleted = self.conn.execute(
+            "DELETE FROM tasks
+             WHERE status = 'done' AND completed_at IS NOT NULL AND completed_at < ?1",
+            params![before_ms],
+        )?;
+        Ok(deleted)
+    }
+
     /// Link a todo to a GitHub issue (after promoting it via `gh issue create`).
     pub fn link_task_issue(&self, id: i64, repo: &str, number: i64, url: &str) -> Result<()> {
         self.conn.execute(
@@ -1280,6 +1294,29 @@ mod tests {
         let reopened = s.open_tasks().unwrap();
         assert_eq!(reopened[0].status, "next");
         assert_eq!(reopened[0].completed_at, None);
+    }
+
+    #[test]
+    fn clear_done_tasks_sweeps_only_old_done() {
+        let s = Store::open_in_memory().unwrap();
+        let old = s.add_task("old done", None, None, None, 1).unwrap();
+        let recent = s.add_task("recent done", None, None, None, 2).unwrap();
+        let open = s.add_task("still open", None, None, None, 3).unwrap();
+        s.set_task_status(old.id, "done", 100).unwrap();
+        s.set_task_status(recent.id, "done", 5_000).unwrap();
+        s.set_task_status(open.id, "doing", 4).unwrap();
+
+        // Cutoff between the two done todos: only the old one is swept.
+        let deleted = s.clear_done_tasks(1_000).unwrap();
+        assert_eq!(deleted, 1);
+
+        let remaining: Vec<i64> = s.snapshot().unwrap().tasks.iter().map(|t| t.id).collect();
+        assert!(!remaining.contains(&old.id));
+        assert!(remaining.contains(&recent.id));
+        assert!(remaining.contains(&open.id));
+
+        // Nothing else old enough on a second sweep.
+        assert_eq!(s.clear_done_tasks(1_000).unwrap(), 0);
     }
 
     #[test]

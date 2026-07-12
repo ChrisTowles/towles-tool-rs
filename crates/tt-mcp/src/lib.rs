@@ -108,6 +108,7 @@ impl Dispatcher {
             "todo_create" => self.todo_create(args, now_ms),
             "todo_update" => self.todo_update(args),
             "todo_delete" => self.todo_delete(args),
+            "todo_clear_done" => self.todo_clear_done(args, now_ms),
             "todo_link_issue" => self.todo_link_issue(args),
             "todo_set_status" => self.todo_set_status(args, now_ms),
             "issues_open" => self.issues_open(),
@@ -224,6 +225,19 @@ impl Dispatcher {
             .ok_or_else(|| "missing required argument: id".to_string())?;
         self.store.delete_task(id).map_err(|e| e.to_string())?;
         Ok(json!({ "ok": true, "id": id }))
+    }
+
+    /// Sweep `done` todos completed more than `olderThanDays` (default 7) before
+    /// `now_ms`, returning how many were removed. The cutoff is derived from the
+    /// injected `now_ms`, never a clock read in the store.
+    fn todo_clear_done(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
+        let older_than_days = args.get("olderThanDays").and_then(Value::as_i64).unwrap_or(7);
+        if older_than_days < 0 {
+            return Err("olderThanDays must be zero or positive".to_string());
+        }
+        let before_ms = now_ms - older_than_days * 24 * 60 * 60 * 1000;
+        let deleted = self.store.clear_done_tasks(before_ms).map_err(|e| e.to_string())?;
+        Ok(json!({ "deleted": deleted }))
     }
 
     /// Link a todo to a GitHub issue (repo + number + url). `link_task_issue`
@@ -558,6 +572,19 @@ fn tool_definitions() -> Value {
             },
         },
         {
+            "name": "todo_clear_done",
+            "description": "Delete done todos completed more than olderThanDays (default 7) ago.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "olderThanDays": {
+                        "type": "integer",
+                        "description": "Only sweep todos completed at least this many days ago (default 7).",
+                    },
+                },
+            },
+        },
+        {
             "name": "todo_link_issue",
             "description": "Link a todo to a GitHub issue (sets its repo, number, and url).",
             "inputSchema": {
@@ -648,6 +675,7 @@ mod tests {
 
     const NOW: i64 = 1_700_000_000_000; // fixed epoch ms for deterministic tests
     const HOUR_MS: i64 = 3_600_000;
+    const DAY_MS: i64 = 24 * HOUR_MS;
 
     fn event(external_id: &str, start_ts: i64) -> EventInput {
         EventInput {
@@ -779,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_contains_all_fifteen_tools() {
+    fn tools_list_contains_all_sixteen_tools() {
         let mut dispatcher = dispatcher();
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }).to_string();
         let response: Value =
@@ -797,6 +825,7 @@ mod tests {
             "todo_create",
             "todo_update",
             "todo_delete",
+            "todo_clear_done",
             "todo_link_issue",
             "todo_set_status",
             "issues_open",
@@ -809,7 +838,7 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "missing tool {expected} in {names:?}");
         }
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 16);
     }
 
     #[test]
@@ -1029,6 +1058,44 @@ mod tests {
         assert!(message.contains("id"), "error should name the missing arg: {message}");
         let message = call_tool_err(&mut dispatcher, "todo_delete", json!({ "id": 9999 }));
         assert!(message.contains("9999"), "error should name the missing id: {message}");
+    }
+
+    #[test]
+    fn todo_clear_done_sweeps_only_old_done() {
+        let mut dispatcher = dispatcher();
+        let old = call_tool(&mut dispatcher, "todo_create", json!({ "title": "old" }));
+        let old_id = old["todo"]["id"].as_i64().unwrap();
+        let recent = call_tool(&mut dispatcher, "todo_create", json!({ "title": "recent" }));
+        let recent_id = recent["todo"]["id"].as_i64().unwrap();
+
+        // Complete "old" at NOW and "recent" ten days later.
+        call_tool_at(
+            &mut dispatcher,
+            "todo_set_status",
+            json!({ "id": old_id, "status": "done" }),
+            NOW,
+        );
+        call_tool_at(
+            &mut dispatcher,
+            "todo_set_status",
+            json!({ "id": recent_id, "status": "done" }),
+            NOW + 10 * DAY_MS,
+        );
+
+        // Sweep eight days out with the default 7-day window: only "old" qualifies.
+        let result = call_tool_at(&mut dispatcher, "todo_clear_done", json!({}), NOW + 8 * DAY_MS);
+        assert_eq!(result["deleted"], 1);
+
+        // "old" is gone; "recent" survives (still errors nothing on set_status).
+        let message = call_tool_err(
+            &mut dispatcher,
+            "todo_set_status",
+            json!({ "id": old_id, "status": "doing" }),
+        );
+        assert!(message.contains(&old_id.to_string()), "old id should be gone: {message}");
+        let survived =
+            call_tool_at(&mut dispatcher, "todo_clear_done", json!({}), NOW + 8 * DAY_MS);
+        assert_eq!(survived["deleted"], 0);
     }
 
     #[test]

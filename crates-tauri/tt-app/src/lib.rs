@@ -263,6 +263,7 @@ pub fn run() {
             store::store_set_task_position,
             store::store_update_task,
             store::store_delete_task,
+            store::store_clear_done,
             store::store_promote_task_to_issue,
             store::store_create_issue,
             gh_actions::cockpit_assign_issue,

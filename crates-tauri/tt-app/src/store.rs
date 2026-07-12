@@ -164,6 +164,23 @@ pub fn store_delete_task(app: AppHandle, state: State<StoreState>, id: i64) -> R
     Ok(())
 }
 
+/// How long a completed todo lingers in Done before "Clear done" can sweep it.
+const DONE_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+/// Sweep `done` todos completed more than [`DONE_RETENTION_MS`] ago, then
+/// re-emit the snapshot. The cutoff is derived from the wall clock here, at the
+/// command boundary — the store takes it as a plain `before_ms`. Returns the
+/// number of todos removed.
+#[tauri::command]
+pub fn store_clear_done(app: AppHandle, state: State<StoreState>) -> Result<usize, String> {
+    let before_ms = now_ms() - DONE_RETENTION_MS;
+    let deleted = with_store(&state, |store| {
+        store.clear_done_tasks(before_ms).map_err(|e| format!("clear_done_tasks failed: {e}"))
+    })?;
+    emit_snapshot(&app, &state);
+    Ok(deleted)
+}
+
 /// Mark the watched DM's message at `ts` handled (banner dismissal), then re-emit.
 #[tauri::command]
 pub fn store_dm_dismiss(

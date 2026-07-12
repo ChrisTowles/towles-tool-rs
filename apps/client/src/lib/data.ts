@@ -385,6 +385,9 @@ export const storeUpdateTask = (
 
 export const storeDeleteTask = (id: number) => invokeOk("store_delete_task", { id });
 
+/** Sweep Done todos older than the backend's retention window (default 7 days). */
+export const storeClearDone = () => invokeOk("store_clear_done");
+
 export const storePromoteTaskToIssue = (id: number, repo: string) =>
   invokeOk("store_promote_task_to_issue", { id, repo });
 
