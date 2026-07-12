@@ -79,20 +79,81 @@ pub struct CollectSummary {
 // Public collectors
 // ---------------------------------------------------------------------------
 
+/// The stable `record_run` key for the calendar collector.
+const CALENDAR_KEY: &str = "claude:calendar";
+
 /// Collect today's calendar events via `claude -p` (using the given provider's
 /// prompt) and replace the stored event set. Records `claude:calendar`.
 pub fn collect_calendar(store: &Store, provider: CalendarProvider, now_ms: i64) -> CollectSummary {
-    const KEY: &str = "claude:calendar";
     let events = match run_claude(provider.prompt()).and_then(|v| {
         serde_json::from_value::<Vec<EventInput>>(v)
             .map_err(|e| format!("invalid calendar JSON: {e}"))
     }) {
         Ok(events) => events,
-        Err(msg) => return finish(store, KEY, false, 0, Some(msg), now_ms),
+        Err(msg) => return finish(store, CALENDAR_KEY, false, 0, Some(msg), now_ms),
     };
-    match store.replace_events(&events, now_ms) {
-        Ok(count) => finish(store, KEY, true, count, None, now_ms),
-        Err(e) => finish(store, KEY, false, 0, Some(e.to_string()), now_ms),
+    store_calendar_events(store, &events, now_ms)
+}
+
+/// Apply a parsed calendar result to the store, guarding against a suspicious
+/// empty sweep.
+///
+/// `collect_calendar` normally does a full [`Store::replace_events`] snapshot,
+/// but a `claude -p` run can return a syntactically-valid empty `[]` when the
+/// model hedges or the calendar MCP is momentarily down. Replacing on that
+/// would wipe today's events and blank the Cockpit next-meeting countdown until
+/// the next tick. So when the result is empty *and* the store still holds
+/// events later today, treat the run as suspect: keep the existing rows and
+/// record `ok = false` with an explanatory message. A genuinely empty day (no
+/// future rows either) still clears normally and records `ok = true`.
+fn store_calendar_events(store: &Store, events: &[EventInput], now_ms: i64) -> CollectSummary {
+    if events.is_empty() {
+        match has_future_events_today(store, now_ms) {
+            Ok(true) => {
+                let msg = "calendar returned no events but future events remain for \
+                           today; kept existing events"
+                    .to_string();
+                return finish(store, CALENDAR_KEY, false, 0, Some(msg), now_ms);
+            }
+            Ok(false) => {}
+            Err(msg) => return finish(store, CALENDAR_KEY, false, 0, Some(msg), now_ms),
+        }
+    }
+    match store.replace_events(events, now_ms) {
+        Ok(count) => finish(store, CALENDAR_KEY, true, count, None, now_ms),
+        Err(e) => finish(store, CALENDAR_KEY, false, 0, Some(e.to_string()), now_ms),
+    }
+}
+
+/// Whether the store holds any event still upcoming today (local time).
+///
+/// "Today" is the local calendar day containing `now_ms`; the window is
+/// `[now_ms, local midnight)`, so only still-to-start events count. Reads the
+/// system time zone for the day boundary but never the wall clock — the instant
+/// is always the injected `now_ms`.
+fn has_future_events_today(store: &Store, now_ms: i64) -> Result<bool, String> {
+    let end_ms = local_day_end_ms(now_ms);
+    store.events_between(now_ms, end_ms).map(|events| !events.is_empty()).map_err(|e| e.to_string())
+}
+
+/// The epoch-ms instant of the next local midnight after `now_ms` — the
+/// exclusive end of the local calendar day containing `now_ms`.
+fn local_day_end_ms(now_ms: i64) -> i64 {
+    use chrono::{Duration, Local, TimeZone};
+    let now = match Local.timestamp_millis_opt(now_ms) {
+        chrono::LocalResult::Single(dt) => dt,
+        // Ambiguous/nonexistent local instants are a DST edge; fall back to
+        // one day out so the guard stays conservative (keeps events).
+        _ => return now_ms + Duration::days(1).num_milliseconds(),
+    };
+    let next_midnight = now.date_naive() + Duration::days(1);
+    match now.timezone().from_local_datetime(&next_midnight.and_hms_opt(0, 0, 0).unwrap()) {
+        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
+            dt.timestamp_millis()
+        }
+        // Midnight doesn't exist (spring-forward at 00:00, rare): step to the
+        // start of the following day instead.
+        chrono::LocalResult::None => now_ms + Duration::days(1).num_milliseconds(),
     }
 }
 
@@ -446,6 +507,93 @@ mod tests {
         assert_eq!(summary.message.as_deref(), Some("no repos configured"));
         let runs = store.runs().unwrap();
         assert_eq!(runs[0].collector, "issues");
+    }
+
+    fn cal_event(ext: &str, start_ts: i64) -> EventInput {
+        EventInput {
+            external_id: ext.to_string(),
+            title: format!("event {ext}"),
+            start_ts,
+            end_ts: Some(start_ts + 30 * 60 * 1000),
+            attendees: vec![],
+            location: None,
+            join_url: None,
+        }
+    }
+
+    /// Local noon on a fixed day, so a `now + 1h` event stays inside the same
+    /// local calendar day on any machine's time zone (avoids midnight flakiness).
+    fn local_noon_ms() -> i64 {
+        use chrono::{Local, TimeZone};
+        Local.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap().timestamp_millis()
+    }
+
+    #[test]
+    fn calendar_non_empty_result_replaces_events() {
+        let store = Store::open_in_memory().unwrap();
+        let now = local_noon_ms();
+        store.replace_events(&[cal_event("old", now + 60 * 60 * 1000)], now).unwrap();
+
+        let fresh = cal_event("new", now + 2 * 60 * 60 * 1000);
+        let summary = store_calendar_events(&store, std::slice::from_ref(&fresh), now);
+
+        assert!(summary.ok);
+        assert_eq!(summary.count, 1);
+        let stored = store.events_between(now, now + 24 * 60 * 60 * 1000).unwrap();
+        assert_eq!(stored.len(), 1, "full replace swapped the old row for the new one");
+        assert_eq!(stored[0].external_id, "new");
+    }
+
+    #[test]
+    fn calendar_empty_result_with_future_events_preserves_and_fails() {
+        let store = Store::open_in_memory().unwrap();
+        let now = local_noon_ms();
+        store.replace_events(&[cal_event("keep", now + 60 * 60 * 1000)], now).unwrap();
+
+        let summary = store_calendar_events(&store, &[], now);
+
+        assert!(!summary.ok, "a suspicious empty result is recorded as a failed run");
+        assert_eq!(summary.count, 0);
+        assert!(summary.message.unwrap().contains("kept existing events"));
+        let stored = store.events_between(now, now + 24 * 60 * 60 * 1000).unwrap();
+        assert_eq!(stored.len(), 1, "existing future events survive the empty sweep");
+        assert_eq!(stored[0].external_id, "keep");
+        // The failed run is recorded under the calendar key.
+        let runs = store.runs().unwrap();
+        assert_eq!(runs[0].collector, "claude:calendar");
+        assert!(!runs[0].ok);
+    }
+
+    #[test]
+    fn calendar_empty_result_with_no_future_events_clears_ok() {
+        let store = Store::open_in_memory().unwrap();
+        let now = local_noon_ms();
+        // Only a past event today; nothing still upcoming.
+        store.replace_events(&[cal_event("past", now - 60 * 60 * 1000)], now).unwrap();
+
+        let summary = store_calendar_events(&store, &[], now);
+
+        assert!(summary.ok, "a genuinely empty day is not suspect");
+        assert_eq!(summary.count, 0);
+        assert!(
+            store
+                .events_between(now - 24 * 60 * 60 * 1000, now + 24 * 60 * 60 * 1000)
+                .unwrap()
+                .is_empty(),
+            "the empty result clears the stale past row"
+        );
+        let runs = store.runs().unwrap();
+        assert_eq!(runs[0].collector, "claude:calendar");
+        assert!(runs[0].ok);
+    }
+
+    #[test]
+    fn calendar_empty_result_on_empty_store_is_clean_noop() {
+        let store = Store::open_in_memory().unwrap();
+        let now = local_noon_ms();
+        let summary = store_calendar_events(&store, &[], now);
+        assert!(summary.ok);
+        assert_eq!(summary.count, 0);
     }
 
     fn issue(repo: &str, number: i64) -> tt_store::IssueInput {
