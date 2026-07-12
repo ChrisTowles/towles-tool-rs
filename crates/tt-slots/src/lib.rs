@@ -24,5 +24,8 @@ pub mod template;
 
 pub use guards::{RmBlocked, check_removal, docker_resource_matches};
 pub use layout::{MARKER_FILE, PRIMARY_SUFFIX, SLOTS_DIR, marker_contents, slot_name_from_branch};
-pub use ops::{CreateOpts, CreatedSlot, OpsError, SlotRoot, create_slot, discover_root};
+pub use ops::{
+    CreateOpts, CreatedSlot, OpsError, RemoveOpts, RemovedSlot, SlotRoot, create_slot,
+    discover_root, remove_slot,
+};
 pub use template::{RenderOutcome, SlotContext, TemplateError, render};

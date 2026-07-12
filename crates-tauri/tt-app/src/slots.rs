@@ -1,11 +1,12 @@
-//! `slot_*` commands: worktree-slot creation from the app (Agentboard's
-//! new-slot modal). Thin over `tt_slots::ops`, which is shared with the
-//! `ttr slot` CLI — the app never reimplements slot logic.
+//! `slot_*` commands: worktree-slot creation/removal from the app
+//! (Agentboard's new-slot modal and the rail's delete-worktree action). Thin
+//! over `tt_slots::ops`, which is shared with the `ttr slot` CLI — the app
+//! never reimplements slot logic.
 
 use serde::Serialize;
 use std::path::PathBuf;
 
-use tt_slots::ops::{self, CreateOpts};
+use tt_slots::ops::{self, CreateOpts, RemoveOpts};
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -58,4 +59,37 @@ pub async fn slot_create(
         base: created.base,
         warnings: created.warnings,
     })
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SlotRemoved {
+    pub name: String,
+    pub messages: Vec<String>,
+}
+
+/// Remove the worktree slot at `dir`, guarded — a dirty tree, commits
+/// unreachable from any branch/remote, or a foreign listener on the slot's
+/// claimed ports block with an explanatory error (no force path in the app;
+/// use `ttr slot rm --force`). Cleans up docker resources and the worktree
+/// registration. Long-running → off the main thread.
+#[tauri::command]
+pub async fn slot_remove(dir: String) -> Result<SlotRemoved, String> {
+    let removed = tauri::async_runtime::spawn_blocking(move || {
+        let path = PathBuf::from(&dir);
+        let sr = ops::discover_root(Some(&path)).map_err(|e| e.to_string())?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| format!("bad slot path {dir}"))?
+            .to_string();
+        if sr.slot_dir(&name) != path {
+            return Err(format!("{dir} is not a worktree slot of {}", sr.repo));
+        }
+        ops::remove_slot(&RemoveOpts { root: Some(sr.root.clone()), name, force: false })
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("slot task failed: {e}"))??;
+    Ok(SlotRemoved { name: removed.name, messages: removed.messages })
 }

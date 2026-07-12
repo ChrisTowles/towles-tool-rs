@@ -103,6 +103,7 @@ import {
   windowColor,
 } from "@/lib/agentboard";
 import { deadPaneAction, exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
+import { invokeOrThrow } from "@/lib/tauri";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { useFocusTarget } from "@/lib/focus-target";
@@ -189,6 +190,8 @@ export function AgentboardScreen() {
   const [splitOpen, setSplitOpen] = useState(false);
   // Pending remove awaiting confirmation because it would kill live sessions.
   const [confirmRemove, setConfirmRemove] = useState<RemoveTarget | null>(null);
+  // Pending worktree deletion — always confirmed (it deletes from disk).
+  const [confirmDeleteWt, setConfirmDeleteWt] = useState<RemoveTarget | null>(null);
   // Session awaiting the "what are you working toward?" prompt before Claude
   // actually launches — see `commitStartClaude`.
   const [startClaudeTarget, setStartClaudeTarget] = useState<StartClaudeTarget | null>(null);
@@ -682,6 +685,30 @@ export function AgentboardScreen() {
     await refreshCandidates();
   }
 
+  // Delete a worktree slot from disk. Always confirms (unlike untracking,
+  // this touches the filesystem); the Rust side's guards still protect real
+  // work — a dirty tree or commits unreachable from any branch/remote block
+  // with the reason instead of deleting.
+  function requestDeleteWorktree(dir: string, label: string) {
+    const folder = repos.flatMap((r) => r.folders).find((f) => f.dir === dir);
+    const sessionIds = folder ? liveSessions(folder).map((s) => s.id) : [];
+    setAddRepoOpen(false);
+    setConfirmDeleteWt({ label, dirs: [dir], sessionIds });
+  }
+
+  async function performDeleteWorktree(target: RemoveTarget) {
+    for (const id of target.sessionIds) await closeSession(id);
+    try {
+      const removed = await invokeOrThrow<{ name: string; messages: string[] }>("slot_remove", {
+        dir: target.dirs[0],
+      });
+      for (const message of removed?.messages ?? []) toast(message);
+      toast.success(`Deleted worktree ${removed?.name ?? target.label}`);
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }
+
   // Remove a repo (or, for a multi-checkout repo, all its checkouts) from
   // the rail. Immediate when nothing's running; confirms first (see the
   // AlertDialog below) when any of its sessions are live, since confirming
@@ -1028,6 +1055,7 @@ export function AgentboardScreen() {
                           onNewSession={newSession}
                           onNewSlot={setNewSlotRepo}
                           onRemoveRepo={requestRemoveRepo}
+                          onDeleteWorktree={requestDeleteWorktree}
                           onRenameCommit={commitRename}
                           onOpenDiff={openDiff}
                         />
@@ -1470,6 +1498,42 @@ export function AgentboardScreen() {
               }}
             >
               Stop &amp; remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={confirmDeleteWt != null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDeleteWt(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete worktree {confirmDeleteWt?.label}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Removes the checkout from disk (guarded — uncommitted changes or commits on no
+              branch/remote will block with the reason). Its branch survives in the primary.
+              {confirmDeleteWt && confirmDeleteWt.sessionIds.length > 0 && (
+                <>
+                  {" "}
+                  {confirmDeleteWt.sessionIds.length}{" "}
+                  {confirmDeleteWt.sessionIds.length === 1 ? "session is" : "sessions are"} still
+                  running and will be stopped.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmDeleteWt) void performDeleteWorktree(confirmDeleteWt);
+                setConfirmDeleteWt(null);
+              }}
+            >
+              Delete worktree
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

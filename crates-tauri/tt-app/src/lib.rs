@@ -265,6 +265,7 @@ pub fn run() {
             agentboard::ab_get_diff,
             slots::slot_base_branches,
             slots::slot_create,
+            slots::slot_remove,
             store::store_snapshot,
             store::store_add_task,
             store::store_set_task_status,

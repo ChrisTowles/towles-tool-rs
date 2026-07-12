@@ -326,6 +326,7 @@ export function RepoGroup({
   onNewSession,
   onNewSlot,
   onRemoveRepo,
+  onDeleteWorktree,
   onRenameCommit,
   onOpenDiff,
   quietDirs,
@@ -351,6 +352,8 @@ export function RepoGroup({
   /** Open the new-slot modal for a slot-convention repo (worktree hub). */
   onNewSlot: (repo: { name: string; dir: string }) => void;
   onRemoveRepo: (dirs: string[], label: string) => void;
+  /** Delete a worktree slot from disk (guarded `slot_remove`). */
+  onDeleteWorktree: (dir: string, label: string) => void;
   onRenameCommit: (sessionId: string, name: string) => void;
   /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: (dir: string) => void;
@@ -474,6 +477,9 @@ export function RepoGroup({
               : undefined
           }
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
+          onDeleteWorktree={
+            folder.isWorktree ? () => onDeleteWorktree(folder.dir, repo.name) : undefined
+          }
           onOpenDiff={() => onOpenDiff(folder.dir)}
         />
         {/* The note is a folder label — visible under the header even when the
@@ -553,6 +559,11 @@ export function RepoGroup({
                 }}
                 onNewSession={() => onNewSession(folder.dir)}
                 onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
+                onDeleteWorktree={
+                  folder.isWorktree
+                    ? () => onDeleteWorktree(folder.dir, folder.name)
+                    : undefined
+                }
                 onOpenDiff={() => onOpenDiff(folder.dir)}
               />
               {/* Note is a folder label — shown under the header even when the
@@ -634,6 +645,7 @@ function FolderHeader({
   onNewSession,
   onNewSlot,
   onRemoveRepo,
+  onDeleteWorktree,
   onOpenDiff,
 }: {
   scope: "repo" | "folder";
@@ -655,6 +667,10 @@ function FolderHeader({
    * own button). */
   onNewSlot?: () => void;
   onRemoveRepo?: () => void;
+  /** Deletes this worktree slot from disk (guarded, `slot_remove`) — set
+   * only on worktree checkouts, where untracking makes no sense (they are
+   * auto-discovered from the primary and would reappear next poll). */
+  onDeleteWorktree?: () => void;
   /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: () => void;
 }) {
@@ -731,7 +747,14 @@ function FolderHeader({
           </IconBtn>
         )}
         {onRemoveRepo && (
-          <RepoMenu path={folder.dir} onRemove={onRemoveRepo} dir={folder.dir} folder={folder} />
+          <RepoMenu
+            path={folder.dir}
+            onRemove={onRemoveRepo}
+            dir={folder.dir}
+            folder={folder}
+            isWorktree={folder.isWorktree}
+            onDeleteWorktree={onDeleteWorktree}
+          />
         )}
       </div>
       {/* ml-11 lines the git row up under the name (chevron + icon + gaps). */}
@@ -793,12 +816,19 @@ function RepoMenu({
   onRemove,
   dir,
   folder,
+  isWorktree,
+  onDeleteWorktree,
 }: {
   path?: string;
   onRemove: () => void;
   dir: string;
   /** When set, the menu offers note editing for this checkout. */
   folder?: FolderData;
+  /** Worktree checkouts swap "Remove from rail" (meaningless — they are
+   * auto-discovered from the primary and would reappear next poll) for a
+   * guarded on-disk delete. */
+  isWorktree?: boolean;
+  onDeleteWorktree?: () => void;
 }) {
   const [issueOpen, setIssueOpen] = useState(false);
   const [issueTitle, setIssueTitle] = useState("");
@@ -864,13 +894,25 @@ function RepoMenu({
           <DropdownMenuItem onSelect={() => setIssueOpen(true)} className="whitespace-nowrap">
             <CircleDot className="size-3.5" /> Create issue…
           </DropdownMenuItem>
-          <DropdownMenuItem
-            variant="destructive"
-            onSelect={onRemove}
-            className="whitespace-nowrap"
-          >
-            <Trash2 className="size-3.5" /> Remove from rail
-          </DropdownMenuItem>
+          {isWorktree ? (
+            onDeleteWorktree && (
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={onDeleteWorktree}
+                className="whitespace-nowrap"
+              >
+                <Trash2 className="size-3.5" /> Delete worktree…
+              </DropdownMenuItem>
+            )
+          ) : (
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={onRemove}
+              className="whitespace-nowrap"
+            >
+              <Trash2 className="size-3.5" /> Remove from rail
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
       <Dialog open={noteOpen} onOpenChange={setNoteOpen}>
