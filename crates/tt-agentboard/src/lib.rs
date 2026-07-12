@@ -69,8 +69,8 @@ pub use metadata::SessionMetadataStore;
 pub use notify::{NeedsYouEdge, NeedsYouWatch};
 pub use repos::{
     RepoEntry, add_repo, add_repo_persisted, default_repos_path, load_repos, load_scan_roots,
-    remove_repo_by_dir, remove_repo_persisted, repo_entries, resolve_session_name, save_repos,
-    save_scan_roots, try_load_repos,
+    missing_repo_dirs, remove_repo_by_dir, remove_repo_persisted, repo_entries,
+    resolve_session_name, save_repos, save_scan_roots, try_load_repos, untrack_missing_persisted,
 };
 pub use session_order::{ReorderDelta, SessionOrder, default_session_order_path};
 pub use sessions::{SessionRecord, SessionStore, default_sessions_path};

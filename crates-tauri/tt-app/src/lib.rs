@@ -244,6 +244,7 @@ pub fn run() {
             agentboard::ab_set_theme,
             agentboard::ab_add_repo,
             agentboard::ab_remove_repo,
+            agentboard::ab_untrack_missing,
             agentboard::ab_discover_repos,
             agentboard::ab_get_scan_roots,
             agentboard::ab_set_scan_roots,

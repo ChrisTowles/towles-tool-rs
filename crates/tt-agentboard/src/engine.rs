@@ -25,6 +25,7 @@ use crate::{
     SessionRecord, SessionStore, StatePayload, WatcherContext, add_repo_persisted, assemble_state,
     default_repos_path, default_sessions_path, instance_key, load_repos, load_scan_roots,
     remove_repo_persisted, repo_entries, resolve_session_name, save_scan_roots,
+    untrack_missing_persisted,
 };
 
 // Prune schedule constants (BRIDGE-SPEC §4).
@@ -571,6 +572,18 @@ impl Engine {
                 removed
             }
             Err(_) => false,
+        }
+    }
+
+    /// Untrack every repo whose directory is gone from disk (the rail's
+    /// "missing" ghosts). Returns the dropped dirs; empty on IO failure.
+    pub fn untrack_missing(&mut self) -> Vec<String> {
+        match untrack_missing_persisted(&self.repos_path) {
+            Ok((merged, removed)) => {
+                self.repo_paths = merged;
+                removed
+            }
+            Err(_) => Vec::new(),
         }
     }
 
