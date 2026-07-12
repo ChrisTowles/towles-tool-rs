@@ -182,6 +182,7 @@ fn build_folder(
                 live: false,      // stamped by the app from its PTY registry
                 shell_kind: None, // stamped by the app from its PTY registry
                 unseen,
+                needs_since_ms: None, // stamped app-side by `recompute_needs`
                 agent_state,
                 agents,
                 purpose: r.purpose.clone(),
@@ -240,19 +241,63 @@ pub fn needs_reason(s: &SessionData) -> Option<NeedsYouReason> {
     }
 }
 
+/// Remembers when each session FIRST entered "needs you", so a re-stamp of the
+/// payload doesn't reset the clock on a block that's been waiting a while — the
+/// attention feed needs a stable age to order oldest-first. Preserved across
+/// recomputes while a session keeps needing you, dropped the moment it stops
+/// (so a later re-entry re-stamps a fresh time) or vanishes.
+///
+/// Held app-side and threaded into [`recompute_needs`]; the epoch-ms clock is
+/// passed in (never read here) so the library stays Tauri-free and testable.
+#[derive(Debug, Default)]
+pub struct NeedsSince {
+    stamps: HashMap<String, i64>,
+}
+
+impl NeedsSince {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// When this session first entered needs-you, if it's currently needing.
+    pub fn get(&self, session_id: &str) -> Option<i64> {
+        self.stamps.get(session_id).copied()
+    }
+}
+
 /// Recompute every folder's and repo's `needs` from its sessions with
-/// [`session_needs`]. The engine assembles `needs` before the app has stamped
-/// `live` (so every count is a 0 placeholder); the app calls this after
-/// stamping so every payload it emits carries truthful counts.
-pub fn recompute_needs(payload: &mut StatePayload) {
+/// [`session_needs`], and stamp each session's `needs_since_ms`. The engine
+/// assembles `needs` before the app has stamped `live` (so every count is a 0
+/// placeholder); the app calls this after stamping so every payload it emits
+/// carries truthful counts.
+///
+/// `since` carries the first-entered timestamp forward: a session that already
+/// needed you keeps its original `needs_since_ms` (so its waiting-age only
+/// grows), a newly-needing session is stamped `now_ms`, and one that stopped
+/// needing (or vanished) is forgotten — a later re-entry re-stamps fresh.
+/// `now_ms` is injected (no clock read here).
+pub fn recompute_needs(payload: &mut StatePayload, since: &mut NeedsSince, now_ms: i64) {
+    let mut next: HashMap<String, i64> = HashMap::new();
     for repo in &mut payload.repos {
         let mut repo_needs = 0;
         for folder in &mut repo.folders {
-            folder.needs = folder.sessions.iter().filter(|s| session_needs(s)).count() as i64;
-            repo_needs += folder.needs;
+            let mut folder_needs = 0;
+            for s in &mut folder.sessions {
+                if session_needs(s) {
+                    let stamp = since.stamps.get(&s.id).copied().unwrap_or(now_ms);
+                    s.needs_since_ms = Some(stamp);
+                    next.insert(s.id.clone(), stamp);
+                    folder_needs += 1;
+                } else {
+                    s.needs_since_ms = None;
+                }
+            }
+            folder.needs = folder_needs;
+            repo_needs += folder_needs;
         }
         repo.needs = repo_needs;
     }
+    since.stamps = next;
 }
 
 /// Priority ordering for picking a session's headline agent state: attention
@@ -447,6 +492,7 @@ mod tests {
             live,
             shell_kind: None,
             unseen,
+            needs_since_ms: None,
             agent_state: status.map(|status| AgentEvent {
                 agent: "claude-code".into(),
                 session: "s".into(),
@@ -534,16 +580,73 @@ mod tests {
             0,
         );
         // Simulate the app stamping the session's shell as live, then recompute.
+        let mut since = NeedsSince::new();
         payload.repos[0].folders[0].sessions[0].live = true;
-        recompute_needs(&mut payload);
+        recompute_needs(&mut payload, &mut since, 1_000);
         assert_eq!(payload.repos[0].folders[0].needs, 1);
         assert_eq!(payload.repos[0].needs, 1);
+        assert_eq!(payload.repos[0].folders[0].sessions[0].needs_since_ms, Some(1_000));
 
         // Stamp it back to no shell: needs falls to 0 at both levels.
         payload.repos[0].folders[0].sessions[0].live = false;
-        recompute_needs(&mut payload);
+        recompute_needs(&mut payload, &mut since, 2_000);
         assert_eq!(payload.repos[0].folders[0].needs, 0);
         assert_eq!(payload.repos[0].needs, 0);
+        assert_eq!(payload.repos[0].folders[0].sessions[0].needs_since_ms, None);
+    }
+
+    #[test]
+    fn needs_since_stamps_on_entry_holds_and_restamps_on_reentry() {
+        let mut tracker = AgentTracker::new();
+        tracker.apply_event(ev("alpha", AgentStatus::Waiting, "ta"), false);
+        let metadata = SessionMetadataStore::new();
+        let mut store = SessionStore::new(None);
+        store.ensure_default("/r/alpha", 1);
+        let git = HashMap::new();
+        let entries = vec![RepoEntry { name: "alpha".into(), dir: "/r/alpha".into() }];
+        let build = |tracker: &AgentTracker| {
+            assemble_state(
+                &entries,
+                &git,
+                tracker,
+                &metadata,
+                &store,
+                &FolderMetaStore::default(),
+                &no_attr,
+                &HashMap::new(),
+                None,
+                "code",
+                30,
+                0,
+            )
+        };
+        let mut since = NeedsSince::new();
+
+        // Enters needs-you at t=100: stamped 100.
+        let mut p = build(&tracker);
+        p.repos[0].folders[0].sessions[0].live = true;
+        recompute_needs(&mut p, &mut since, 100);
+        assert_eq!(p.repos[0].folders[0].sessions[0].needs_since_ms, Some(100));
+
+        // Still waiting at t=500: the original stamp is preserved (age grows).
+        let mut p = build(&tracker);
+        p.repos[0].folders[0].sessions[0].live = true;
+        recompute_needs(&mut p, &mut since, 500);
+        assert_eq!(p.repos[0].folders[0].sessions[0].needs_since_ms, Some(100));
+
+        // Back to work at t=800: stamp cleared.
+        let mut busy = AgentTracker::new();
+        busy.apply_event(ev("alpha", AgentStatus::Busy, "ta"), false);
+        let mut p = build(&busy);
+        p.repos[0].folders[0].sessions[0].live = true;
+        recompute_needs(&mut p, &mut since, 800);
+        assert_eq!(p.repos[0].folders[0].sessions[0].needs_since_ms, None);
+
+        // Blocked again at t=1200: a fresh stamp, not the stale 100.
+        let mut p = build(&tracker);
+        p.repos[0].folders[0].sessions[0].live = true;
+        recompute_needs(&mut p, &mut since, 1_200);
+        assert_eq!(p.repos[0].folders[0].sessions[0].needs_since_ms, Some(1_200));
     }
 
     #[test]

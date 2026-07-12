@@ -30,6 +30,10 @@ pub struct NeedsYouEdge {
     pub session: String,
     /// Why the session needs you, for the notification body wording.
     pub reason: NeedsYouReason,
+    /// Epoch ms when the session entered needs-you (from
+    /// `SessionData::needs_since_ms`), or `None` if the snapshot didn't stamp
+    /// it. Edges within one `observe` are ordered oldest-first by this.
+    pub needs_since_ms: Option<i64>,
 }
 
 /// Tracks each session's previous needs-you state across snapshots and yields
@@ -70,12 +74,19 @@ impl NeedsYouWatch {
                             repo: repo.name.clone(),
                             session: s.name.clone(),
                             reason,
+                            needs_since_ms: s.needs_since_ms,
                         });
                     }
                     current.insert(s.id.clone(), needs);
                 }
             }
         }
+
+        // Oldest-first: when several sessions flip in the same snapshot, the
+        // one that's been waiting longest surfaces first. A missing stamp sorts
+        // last (treated as "just now"); ties keep render (repo→folder→session)
+        // order since the sort is stable.
+        edges.sort_by_key(|e| e.needs_since_ms.unwrap_or(i64::MAX));
 
         self.prev = current;
         self.primed = true;
@@ -96,6 +107,7 @@ mod tests {
             live,
             shell_kind: None,
             unseen: false,
+            needs_since_ms: None,
             agent_state: status.map(|s| AgentEvent {
                 agent: "claude".into(),
                 session: name.to_string(),
@@ -170,6 +182,7 @@ mod tests {
                 repo: "repo".into(),
                 session: "shell 1".into(),
                 reason: NeedsYouReason::WaitingForInput,
+                needs_since_ms: None,
             }]
         );
         // Still blocked next snapshot: no repeat.
@@ -237,6 +250,29 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].session, "shell 2");
         assert_eq!(edges[0].reason, NeedsYouReason::Errored);
+    }
+
+    #[test]
+    fn concurrent_flips_are_ordered_oldest_first() {
+        let mut w = NeedsYouWatch::new();
+        // Prime with both busy (nothing needing yet).
+        w.observe(&payload(
+            "repo",
+            vec![
+                session("fresh", "shell fresh", true, Some(AgentStatus::Busy)),
+                session("old", "shell old", true, Some(AgentStatus::Busy)),
+            ],
+        ));
+        // Both flip to waiting in the same snapshot, but `old` entered earlier
+        // (smaller needs_since_ms). Render order puts `fresh` first.
+        let mut fresh = session("fresh", "shell fresh", true, Some(AgentStatus::Waiting));
+        fresh.needs_since_ms = Some(5_000);
+        let mut old = session("old", "shell old", true, Some(AgentStatus::Waiting));
+        old.needs_since_ms = Some(1_000);
+        let edges = w.observe(&payload("repo", vec![fresh, old]));
+        let ids: Vec<&str> = edges.iter().map(|e| e.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["old", "fresh"]);
+        assert_eq!(edges[0].needs_since_ms, Some(1_000));
     }
 
     #[test]

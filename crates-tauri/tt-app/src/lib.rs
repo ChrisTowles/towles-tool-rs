@@ -103,6 +103,7 @@ pub fn run() {
                 emit: emit.clone(),
                 scan: scan.clone(),
                 _notifier: Mutex::new(notifier),
+                needs_since: Mutex::new(tt_agentboard::bridge::NeedsSince::new()),
             });
 
             let handle = app.handle().clone();

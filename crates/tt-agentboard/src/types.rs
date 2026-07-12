@@ -174,6 +174,14 @@ pub struct SessionData {
     pub shell_kind: Option<String>,
     /// True when the latest agent event is an unseen terminal state.
     pub unseen: bool,
+    /// Epoch ms when this session FIRST entered "needs you" (see
+    /// [`crate::bridge::session_needs`]), or `None` when it doesn't need you
+    /// right now. Stamped app-side by [`crate::bridge::recompute_needs`] and
+    /// preserved across recomputes while the session keeps needing you, so the
+    /// attention feed can order oldest-first. Assembled `None` here (the engine
+    /// runs before shell-liveness is stamped, so nothing needs you yet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_since_ms: Option<i64>,
     /// Latest/priority agent event attributed to this PTY, if any.
     pub agent_state: Option<AgentEvent>,
     /// All agent instances attributed to this PTY (newest-first).

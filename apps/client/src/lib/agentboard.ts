@@ -58,6 +58,12 @@ export type SessionData = {
    * time (stamped by the app, same as `live`). Null until the session starts. */
   shellKind?: string | null;
   unseen: boolean;
+  /** Epoch ms when this session first entered "needs you" (`sessionNeeds`),
+   * held across snapshots by the backend so its waiting-age is stable; null
+   * when it doesn't need you right now. Orders the attention feed oldest-first
+   * and drives the "waiting 12m" row label. Mirrors `needs_since_ms` in
+   * `crates/tt-agentboard/src/types.rs`. */
+  needsSinceMs?: number | null;
   agentState?: AgentEvent | null;
   agents: AgentEvent[];
   /** User-authored "what am I working toward here" — captured when starting
@@ -350,6 +356,38 @@ export function sessionNeeds(s: SessionData): boolean {
  * plain `idle` agent — no news since you last looked — stays calm. */
 export function sessionCatchesEye(s: SessionData): boolean {
   return sessionNeeds(s) || s.unseen;
+}
+
+/** A compact "waiting 12m" age label for a needing row, from its
+ * `needsSinceMs` stamp (the backend holds it stable across snapshots). Returns
+ * `null` when the session isn't currently needing you or the stamp is in the
+ * future, so callers can render nothing. Rounds like `fmtAge`: sub-minute →
+ * "waiting <1m", then minutes / hours / days. */
+export function fmtWaitingAge(sinceMs: number | null | undefined, now: number): string | null {
+  if (sinceMs == null) return null;
+  const diff = now - sinceMs;
+  if (diff < 0) return null;
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return "waiting <1m";
+  if (mins < 60) return `waiting ${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `waiting ${hrs}h`;
+  return `waiting ${Math.floor(hrs / 24)}d`;
+}
+
+/** Every session that currently needs you (`sessionNeeds`), board-wide, ordered
+ * oldest-first by `needsSinceMs` so the longest-blocked agent leads the
+ * attention feed. Sessions with no stamp (older snapshots) sort last; the sort
+ * is stable, so equal ages keep repo→folder→session render order. */
+export function needingSessionsOldestFirst(repos: RepoData[]): SessionData[] {
+  const needing: SessionData[] = [];
+  for (const r of repos) for (const f of r.folders) for (const s of f.sessions) {
+    if (sessionNeeds(s)) needing.push(s);
+  }
+  return needing
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => (a.s.needsSinceMs ?? Infinity) - (b.s.needsSinceMs ?? Infinity) || a.i - b.i)
+    .map(({ s }) => s);
 }
 
 /** The next (or previous) session that catches the eye (`sessionCatchesEye`),

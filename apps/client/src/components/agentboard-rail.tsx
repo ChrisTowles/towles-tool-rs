@@ -47,6 +47,7 @@ import {
   agentRollup,
   claudeTitleName,
   fmtElapsed,
+  fmtWaitingAge,
   isAgent,
   isSoloRepo,
   pathScope,
@@ -1022,6 +1023,17 @@ function SessionRow({
                 {fmtElapsed(now - eff.createdAt)}
               </span>
             )}
+            {(() => {
+              const age = fmtWaitingAge(eff.needsSinceMs, now);
+              return age ? (
+                <span
+                  className="shrink-0 font-mono text-[10.5px] text-amber-500/80"
+                  title="how long this has been needing you"
+                >
+                  {age}
+                </span>
+              ) : null;
+            })()}
             <span className="min-w-0 truncate text-[11px] text-muted-foreground">
               {sessionStatusText(eff)}
             </span>
