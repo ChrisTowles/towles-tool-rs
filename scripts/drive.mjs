@@ -13,6 +13,7 @@
 //   node scripts/drive.mjs invoke journal_log '{"text":"hi"}'
 //   node scripts/drive.mjs shot cockpit
 //   node scripts/drive.mjs click "[data-screen=board]"
+//   node scripts/drive.mjs clicktext "Board"
 //   node scripts/drive.mjs type "input[name=q]" "hello"
 //   node scripts/drive.mjs url /
 //
@@ -124,6 +125,7 @@ function usage(exitCode) {
       "  invoke <cmd> [jsonArgs]    call a real Rust IPC command",
       "  shot <name>                screenshot → e2e/screenshots/<name>.png",
       '  click "<css selector>"     click an element in the shared window',
+      '  clicktext "<text>"         click a button/link by its visible text',
       '  type "<css selector>" <text>   type into an element',
       "  url <path>                 navigate the window",
     ].join("\n"),
@@ -184,6 +186,45 @@ switch (verb) {
       if (!res.ok) fail(`click failed: ${JSON.stringify(json)}`);
     });
     console.log(`clicked ${sel}`);
+    break;
+  }
+  case "clicktext": {
+    const text = rest.join(" ").trim();
+    if (!text) fail(`usage: drive.mjs clicktext "<visible text>"`);
+    // Runs in the live window via the session-less eval path (no CSS selector
+    // needed): find every clickable element, match trimmed innerText/value,
+    // and dispatch a real click. Returns a structured result so ambiguous or
+    // missing text can report the candidate texts we actually found.
+    const result = await evalExpr(`(() => {
+      const target = ${JSON.stringify(text)};
+      const sel = 'button, a, [role=button], [role=link], [role=menuitem],' +
+        ' [role=menuitemradio], [role=tab], [role=option], summary,' +
+        ' input[type=button], input[type=submit], input[type=reset]';
+      const nodes = Array.from(document.querySelectorAll(sel));
+      const label = (n) => ((n.innerText ?? n.value ?? n.textContent ?? '') + '').trim();
+      const matches = nodes.filter((n) => label(n) === target);
+      if (matches.length === 1) {
+        matches[0].click();
+        return { clicked: true };
+      }
+      const candidates = [...new Set(nodes.map(label).filter(Boolean))].sort();
+      if (matches.length === 0) return { clicked: false, reason: 'none', candidates };
+      return { clicked: false, reason: 'ambiguous', count: matches.length, candidates };
+    })()`);
+    if (!result?.clicked) {
+      const list = (result?.candidates ?? []).map((c) => `  - ${c}`).join("\n");
+      if (result?.reason === "ambiguous") {
+        fail(
+          `\`${text}\` matched ${result.count} clickable elements (ambiguous).\n` +
+            `Clickable texts found:\n${list}`,
+        );
+      }
+      fail(
+        `no clickable element with visible text \`${text}\`.\n` +
+          `Clickable texts found:\n${list || "  (none)"}`,
+      );
+    }
+    console.log(`clicked "${text}"`);
     break;
   }
   case "type": {

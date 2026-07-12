@@ -31,6 +31,7 @@ node scripts/drive.mjs invoke journal_log '{"text":"hi"}'
 node scripts/drive.mjs eval "document.title"      # run JS in the live window
 node scripts/drive.mjs shot cockpit               # → e2e/screenshots/cockpit.png
 node scripts/drive.mjs click "nav button"         # click an element (CSS selector)
+node scripts/drive.mjs clicktext "Board"          # click a button/link by visible text
 node scripts/drive.mjs type "input" "board"       # type into an element
 node scripts/drive.mjs url /                       # navigate the window
 ```
@@ -47,10 +48,14 @@ Notes:
 - **Ports come from `.env.local`** (same as `npm run dev`): `wdPort = TT_DEV_PORT
   + 3000` (override `TT_E2E_WEBDRIVER_PORT`). Deterministic per slot so
   `drive.mjs` finds the server without arguments; different slots don't collide.
-- **CSS selectors only** (`click`/`type` use W3C `POST /element`), which can't
-  match by text. For a text-only element, tag it first:
-  `drive.mjs eval "document.querySelectorAll('button')[i].setAttribute('data-drive','x')"`
-  then `drive.mjs click "[data-drive=x]"`.
+- **`click`/`type` take CSS selectors only** (W3C `POST /element`), which can't
+  match by text. To click a text-only button/link, use `clicktext "<text>"`
+  instead — it matches trimmed visible text across clickable elements (buttons,
+  links, `[role=button]`, …) and dispatches a real click. Multiple matches or no
+  match fail with the list of clickable texts found, so you can pick a better
+  string. (For a non-clickable element you still need the tag-then-select trick:
+  `drive.mjs eval "document.querySelectorAll('div')[i].setAttribute('data-drive','x')"`
+  then `drive.mjs click "[data-drive=x]"`.)
 - `dev:drive` and `npm run e2e` **share a slot's ports**, so don't run both in the
   same slot at once.
 - Automation mode: launched with `TAURI_WEBVIEW_AUTOMATION=true`, WebKitGTK may
