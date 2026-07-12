@@ -10,6 +10,7 @@
 //! as `store://snapshot`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -80,6 +81,29 @@ enum Batch {
     SlackDm(tt_collect::SlackDmConfig),
 }
 
+/// One in-flight flag per collector. A batch is fire-and-forget spawned so the
+/// select! loop never parks on it (a calendar run can take the full
+/// `CLAUDE_TIMEOUT`); the flag makes sure a slow run doesn't stack a second run
+/// of the *same* collector on the next tick. Persisted across settings reloads
+/// (like the attention watchers) so an in-flight batch is still tracked after a
+/// cadence rebuild.
+#[derive(Default)]
+struct BatchGuards {
+    prs: Arc<AtomicBool>,
+    issues: Arc<AtomicBool>,
+    calendar: Arc<AtomicBool>,
+    slack: Arc<AtomicBool>,
+}
+
+/// Try to claim a collector's in-flight slot for this tick. Returns `true` when
+/// the slot was free (now marked in-flight, caller runs the batch and must
+/// release it when done); `false` when a previous run is still ongoing and this
+/// tick should be skipped. A pure CAS on the guard — the only decision the
+/// fire-and-forget path makes, unit-tested below.
+fn claim_in_flight(guard: &AtomicBool) -> bool {
+    guard.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok()
+}
+
 /// Epoch milliseconds from the local wall clock (scheduler boundary clock).
 fn now_ms() -> i64 {
     chrono::Local::now().timestamp_millis()
@@ -96,6 +120,9 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
         let mut meeting_watch = MeetingStartWatch::new();
         let mut review_watch = ReviewRequestedWatch::new();
         let mut stale_watch = StaleCollectorWatch::new();
+        // In-flight guards also persist across reloads: a batch spawned under the
+        // old cadence must still block a duplicate under the new one.
+        let guards = BatchGuards::default();
         loop {
             // (Re)load config and rebuild the tick intervals for this cycle.
             let collectors = tt_config::load().map(|s| s.collectors).unwrap_or_default();
@@ -138,22 +165,28 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                 tokio::select! {
                     _ = reload.notified() => break,
                     _ = pr_tick.tick(), if collectors.prs.enabled => {
-                        run_batch(&app, Batch::Prs, provider, calendar_period_ms).await;
+                        spawn_batch(&app, Batch::Prs, provider, calendar_period_ms, &guards.prs);
                     }
                     _ = issue_tick.tick(), if collectors.issues.enabled => {
-                        run_batch(&app, Batch::Issues, provider, calendar_period_ms).await;
+                        spawn_batch(&app, Batch::Issues, provider, calendar_period_ms, &guards.issues);
                     }
                     _ = calendar_tick.tick(), if collectors.calendar.enabled => {
-                        run_batch(&app, Batch::Calendar, provider, calendar_period_ms).await;
+                        spawn_batch(
+                            &app,
+                            Batch::Calendar,
+                            provider,
+                            calendar_period_ms,
+                            &guards.calendar,
+                        );
                     }
                     _ = slack_tick.tick(), if slack_on => {
-                        run_batch(
+                        spawn_batch(
                             &app,
                             Batch::SlackDm(slack_config.clone()),
                             provider,
                             calendar_period_ms,
-                        )
-                        .await;
+                            &guards.slack,
+                        );
                     }
                     _ = notify_tick.tick() => {
                         run_notify_check(
@@ -168,6 +201,28 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                 }
             }
         }
+    });
+}
+
+/// Fire-and-forget a collect batch so the select! loop stays hot. If the
+/// collector's previous run is still in flight the tick is skipped; otherwise the
+/// guard is claimed, the batch runs on its own task (blocking work stays on the
+/// blocking pool inside `run_batch`), and the guard is released when it finishes.
+fn spawn_batch(
+    app: &AppHandle,
+    batch: Batch,
+    provider: CalendarProvider,
+    calendar_period_ms: i64,
+    guard: &Arc<AtomicBool>,
+) {
+    if !claim_in_flight(guard) {
+        return;
+    }
+    let app = app.clone();
+    let guard = guard.clone();
+    tauri::async_runtime::spawn(async move {
+        run_batch(&app, batch, provider, calendar_period_ms).await;
+        guard.store(false, Ordering::Release);
     });
 }
 
@@ -412,6 +467,29 @@ fn claude_ran_within(store: &tt_store::Store, now: i64, max_age_ms: i64) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claim_in_flight_claims_a_free_slot_then_blocks_until_released() {
+        let guard = AtomicBool::new(false);
+        // First tick claims the free slot.
+        assert!(claim_in_flight(&guard), "a free slot is claimable");
+        // A second tick while the batch is still running is skipped.
+        assert!(!claim_in_flight(&guard), "an in-flight slot is not re-claimable");
+        assert!(!claim_in_flight(&guard), "repeated ticks keep skipping");
+        // Once the batch releases the guard, the next tick claims it again.
+        guard.store(false, Ordering::Release);
+        assert!(claim_in_flight(&guard), "a released slot is claimable again");
+    }
+
+    #[test]
+    fn claim_in_flight_is_independent_per_guard() {
+        let prs = AtomicBool::new(false);
+        let calendar = AtomicBool::new(false);
+        // A slow calendar run holding its guard must not block the PR tick.
+        assert!(claim_in_flight(&calendar), "calendar claims its own slot");
+        assert!(claim_in_flight(&prs), "prs is unaffected by calendar in-flight");
+        assert!(!claim_in_flight(&calendar), "calendar still in flight");
+    }
 
     #[test]
     fn claude_ran_within_counts_only_claude_collectors() {
