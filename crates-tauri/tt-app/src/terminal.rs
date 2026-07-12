@@ -31,6 +31,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tt_vt::{
     EngineOptions, Event as VtEvent, Frame, Input as VtInput, SearchMatch, Select as VtSelect,
+    Sender as VtSender,
 };
 
 pub const FRAME_EVENT: &str = "terminal://frame";
@@ -62,8 +63,9 @@ struct Session {
     /// Input queue consumed by this session's writer thread.
     input: SyncSender<Vec<u8>>,
     /// Feed for this terminal's tt-vt engine thread (resize/scroll from
-    /// commands; the PTY reader holds its own clone for output bytes).
-    vt: std::sync::mpsc::Sender<VtInput>,
+    /// commands; the PTY reader holds its own clone for output bytes). Control
+    /// inputs sent here never block behind queued output.
+    vt: VtSender,
     child: Box<dyn Child + Send + Sync>,
     generation: u64,
     /// The shell's display name, resolved once at spawn time — e.g. "zsh",
@@ -260,7 +262,10 @@ fn term_start_blocking(
     // Reader thread: pump PTY output into the terminal engine until EOF
     // (shell exited). Owns the engine handle: dropping `vt` after the map
     // entry is resolved joins the engine thread exactly once, whether the
-    // shell exited or this PTY was replaced.
+    // shell exited or this PTY was replaced. Feeding bytes blocks when the
+    // engine is behind (bounded byte queue); the read then stops, the kernel
+    // PTY buffer fills, and the shell is flow-controlled — output can't balloon
+    // engine memory.
     std::thread::spawn(move || {
         let mut buf = [0u8; 65536];
         loop {
@@ -421,7 +426,9 @@ pub async fn term_copy(app: AppHandle, term_id: String) -> Result<String, String
             let state = app.state::<TermState>();
             let guard = state.0.lock().unwrap();
             let session = guard.get(&term_id).ok_or("no shell running")?;
-            session.vt.send(VtInput::Copy(reply_tx)).map_err(|_| "terminal engine gone")?;
+            if !session.vt.send(VtInput::Copy(reply_tx)) {
+                return Err("terminal engine gone".to_string());
+            }
         }
         reply_rx
             .recv_timeout(std::time::Duration::from_secs(2))
@@ -448,10 +455,13 @@ pub async fn term_search(
             let state = app.state::<TermState>();
             let guard = state.0.lock().unwrap();
             let session = guard.get(&term_id).ok_or("no shell running")?;
-            session
-                .vt
-                .send(VtInput::Search { query, limit: SEARCH_MATCH_LIMIT, reply: reply_tx })
-                .map_err(|_| "terminal engine gone")?;
+            if !session.vt.send(VtInput::Search {
+                query,
+                limit: SEARCH_MATCH_LIMIT,
+                reply: reply_tx,
+            }) {
+                return Err("terminal engine gone".to_string());
+            }
         }
         reply_rx
             .recv_timeout(std::time::Duration::from_secs(2))
