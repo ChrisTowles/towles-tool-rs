@@ -579,6 +579,56 @@ impl Store {
         Ok(())
     }
 
+    /// Move a todo to `status` at an explicit `index` within that column,
+    /// renumbering the column's `position`s to be contiguous (`0..n`). `index`
+    /// is clamped to `[0, n]`, where `n` is the number of *other* todos already
+    /// in the column, so out-of-range values land the card at the top or
+    /// bottom rather than erroring. Sets `completed_at` when entering `done`
+    /// and clears it otherwise (matching [`Store::set_task_status`]).
+    ///
+    /// Unlike `set_task_status` (which always appends), this reaches an
+    /// arbitrary slot — it powers drag-to-reorder within a column and
+    /// position-aware drops across columns. The source column is left with a
+    /// gap in its `position`s, which is harmless: ordering is by relative
+    /// `position ASC`, and the next reorder there renumbers it. Returns
+    /// [`Error::TaskNotFound`] when no todo has `id`.
+    pub fn set_task_position(&self, id: i64, status: &str, index: i64, now_ms: i64) -> Result<()> {
+        if !TASK_STATUSES.contains(&status) {
+            return Err(Error::Sqlite(rusqlite::Error::InvalidParameterName(format!(
+                "unknown task status: {status}"
+            ))));
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        // The target column's todos in board order, excluding the mover.
+        let others: Vec<i64> = {
+            let mut stmt = tx.prepare(
+                "SELECT id FROM tasks WHERE status = ?1 AND id <> ?2
+                 ORDER BY position ASC, created_at ASC",
+            )?;
+            let rows = stmt.query_map(params![status, id], |r| r.get::<_, i64>(0))?;
+            rows.collect::<rusqlite::Result<Vec<i64>>>()?
+        };
+        let slot = index.clamp(0, others.len() as i64) as usize;
+        let mut order = others;
+        order.insert(slot, id);
+        {
+            let mut up = tx.prepare("UPDATE tasks SET position = ?1 WHERE id = ?2")?;
+            for (pos, tid) in order.iter().enumerate() {
+                up.execute(params![pos as i64, tid])?;
+            }
+        }
+        let completed_at: Option<i64> = if status == "done" { Some(now_ms) } else { None };
+        let affected = tx.execute(
+            "UPDATE tasks SET status = ?1, completed_at = ?2 WHERE id = ?3",
+            params![status, completed_at, id],
+        )?;
+        if affected == 0 {
+            return Err(Error::TaskNotFound(id));
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Edit a todo's free-form fields: its `text`, optional `notes`, and optional
     /// `due_ts`. This is a full replace of those three fields — passing `None`
     /// for `notes` or `due_ts` clears them (there is no "leave unchanged"
@@ -1312,6 +1362,103 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         let t = s.add_task("x", None, None, None, 1).unwrap();
         assert!(s.set_task_status(t.id, "bogus", 2).is_err());
+    }
+
+    /// The ids in `status`'s column, in board (displayed) order.
+    #[cfg(test)]
+    fn column_ids(s: &Store, status: &str) -> Vec<i64> {
+        s.snapshot()
+            .unwrap()
+            .tasks
+            .into_iter()
+            .filter(|t| t.status == status)
+            .map(|t| t.id)
+            .collect()
+    }
+
+    #[test]
+    fn set_task_position_reorders_within_a_column() {
+        let s = Store::open_in_memory().unwrap();
+        let a = s.add_task("a", None, None, None, 1).unwrap();
+        let b = s.add_task("b", None, None, None, 2).unwrap();
+        let c = s.add_task("c", None, None, None, 3).unwrap();
+        // Column starts [a, b, c] at positions 0,1,2.
+        assert_eq!(column_ids(&s, "backlog"), vec![a.id, b.id, c.id]);
+
+        // Move c to the top.
+        s.set_task_position(c.id, "backlog", 0, 10).unwrap();
+        assert_eq!(column_ids(&s, "backlog"), vec![c.id, a.id, b.id]);
+
+        // Move c to the bottom (index past the end clamps to last).
+        s.set_task_position(c.id, "backlog", 99, 11).unwrap();
+        assert_eq!(column_ids(&s, "backlog"), vec![a.id, b.id, c.id]);
+
+        // Move a into the middle.
+        s.set_task_position(a.id, "backlog", 1, 12).unwrap();
+        assert_eq!(column_ids(&s, "backlog"), vec![b.id, a.id, c.id]);
+
+        // Positions are contiguous 0..n after each move.
+        let positions: Vec<i64> = {
+            let mut ts = s.snapshot().unwrap().tasks;
+            ts.sort_by_key(|t| t.position);
+            ts.into_iter().map(|t| t.position).collect()
+        };
+        assert_eq!(positions, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn set_task_position_moves_across_columns_preserving_order() {
+        let s = Store::open_in_memory().unwrap();
+        let a = s.add_task("a", None, None, None, 1).unwrap();
+        let b = s.add_task("b", None, None, None, 2).unwrap();
+        s.set_task_status(a.id, "doing", 3).unwrap();
+        s.set_task_status(b.id, "doing", 4).unwrap();
+        // doing = [a, b].
+        let c = s.add_task("c", None, None, None, 5).unwrap();
+
+        // Drop c between a and b.
+        s.set_task_position(c.id, "doing", 1, 6).unwrap();
+        assert_eq!(column_ids(&s, "doing"), vec![a.id, c.id, b.id]);
+        assert!(column_ids(&s, "backlog").is_empty());
+    }
+
+    #[test]
+    fn set_task_position_stamps_and_clears_done() {
+        let s = Store::open_in_memory().unwrap();
+        let t = s.add_task("ship", None, None, None, 1).unwrap();
+        s.set_task_position(t.id, "done", 0, 20).unwrap();
+        let done = s.snapshot().unwrap().tasks.into_iter().find(|x| x.id == t.id).unwrap();
+        assert_eq!(done.status, "done");
+        assert_eq!(done.completed_at, Some(20));
+
+        s.set_task_position(t.id, "next", 0, 30).unwrap();
+        let reopened = s.open_tasks().unwrap();
+        assert_eq!(reopened[0].status, "next");
+        assert_eq!(reopened[0].completed_at, None);
+    }
+
+    #[test]
+    fn set_task_position_is_stable_under_repeated_moves() {
+        let s = Store::open_in_memory().unwrap();
+        let a = s.add_task("a", None, None, None, 1).unwrap();
+        let b = s.add_task("b", None, None, None, 2).unwrap();
+        let c = s.add_task("c", None, None, None, 3).unwrap();
+        // Dropping a card onto its own slot leaves the order unchanged.
+        for _ in 0..5 {
+            s.set_task_position(b.id, "backlog", 1, 10).unwrap();
+        }
+        assert_eq!(column_ids(&s, "backlog"), vec![a.id, b.id, c.id]);
+    }
+
+    #[test]
+    fn set_task_position_rejects_unknown_status_and_missing_id() {
+        let s = Store::open_in_memory().unwrap();
+        let t = s.add_task("x", None, None, None, 1).unwrap();
+        assert!(s.set_task_position(t.id, "bogus", 0, 2).is_err());
+        assert!(matches!(
+            s.set_task_position(9999, "backlog", 0, 2),
+            Err(Error::TaskNotFound(9999))
+        ));
     }
 
     #[test]

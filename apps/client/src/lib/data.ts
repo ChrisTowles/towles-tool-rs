@@ -363,6 +363,10 @@ export const storeAddTask = (text: string, dueTs?: number) =>
 export const storeSetTaskStatus = (id: number, status: TaskStatus) =>
   invokeOk("store_set_task_status", { id, status });
 
+/** Move a todo to `status` at slot `index` within that column (drag-to-reorder). */
+export const storeSetTaskPosition = (id: number, status: TaskStatus, index: number) =>
+  invokeOk("store_set_task_position", { id, status, index });
+
 export const storeUpdateTask = (
   id: number,
   text: string,

@@ -113,6 +113,26 @@ pub fn store_set_task_status(
     Ok(())
 }
 
+/// Move a todo to `status` at an explicit slot (`index`) within that column,
+/// renumbering the column's positions — powers drag-to-reorder and
+/// position-aware cross-column drops. Then re-emit the snapshot.
+#[tauri::command]
+pub fn store_set_task_position(
+    app: AppHandle,
+    state: State<StoreState>,
+    id: i64,
+    status: String,
+    index: i64,
+) -> Result<(), String> {
+    with_store(&state, |store| {
+        store
+            .set_task_position(id, &status, index, now_ms())
+            .map_err(|e| format!("set_task_position failed: {e}"))
+    })?;
+    emit_snapshot(&app, &state);
+    Ok(())
+}
+
 /// Edit a todo's text, notes, and due date (a full replace of those fields —
 /// `null` clears notes/due), then re-emit the snapshot.
 #[tauri::command]
