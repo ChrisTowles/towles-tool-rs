@@ -14,6 +14,11 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod attention;
+pub use attention::{
+    MeetingStartEdge, MeetingStartWatch, ReviewRequestedEdge, ReviewRequestedWatch,
+};
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("IO error: {0}")]

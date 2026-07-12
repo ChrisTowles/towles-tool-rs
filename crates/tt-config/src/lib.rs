@@ -121,6 +121,19 @@ pub struct AgentboardSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notify_needs_you: Option<bool>,
 
+    /// Fire a desktop notification when the next meeting's countdown reaches
+    /// zero (it starts). `None` = the built-in default (on). Only written once
+    /// the user changes it, so the shared settings file stays clean for the TS
+    /// CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify_meeting_start: Option<bool>,
+
+    /// Fire a desktop notification when a PR newly enters the review-requested
+    /// set. `None` = the built-in default (on). Only written once the user
+    /// changes it, so the shared settings file stays clean for the TS CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify_review_requested: Option<bool>,
+
     /// Copy the terminal's active selection to the clipboard as soon as a
     /// selection gesture ends (copy-on-select). `None` = the built-in default
     /// (on). Only written once the user changes it, so the shared settings
@@ -134,6 +147,12 @@ pub const DEFAULT_COMPACT_RECOMMEND_PERCENT: u8 = 30;
 
 /// Built-in default for [`AgentboardSettings::notify_needs_you`]: notifications on.
 pub const DEFAULT_NOTIFY_NEEDS_YOU: bool = true;
+
+/// Built-in default for [`AgentboardSettings::notify_meeting_start`]: on.
+pub const DEFAULT_NOTIFY_MEETING_START: bool = true;
+
+/// Built-in default for [`AgentboardSettings::notify_review_requested`]: on.
+pub const DEFAULT_NOTIFY_REVIEW_REQUESTED: bool = true;
 
 /// Built-in default for [`AgentboardSettings::copy_on_select`]: on.
 pub const DEFAULT_COPY_ON_SELECT: bool = true;
