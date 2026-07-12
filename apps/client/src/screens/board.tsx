@@ -1,5 +1,12 @@
 import { Fragment, useMemo, useRef, useState } from "react";
-import { CalendarPlus, ExternalLink, GripVertical, MoreHorizontal, Plus } from "lucide-react";
+import {
+  CalendarPlus,
+  ExternalLink,
+  GripVertical,
+  MoreHorizontal,
+  Plus,
+  Search,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,6 +56,7 @@ import {
   TASK_DRAG_TYPE,
 } from "@/lib/kanban-dnd";
 import { dueState, overdueByStatus } from "@/lib/board-metrics";
+import { matchesTaskFilter } from "@/lib/board-filter";
 import { useFocusTarget } from "@/lib/focus-target";
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
@@ -98,6 +106,8 @@ export function BoardScreen() {
   const [deletedIds, setDeletedIds] = useState<Set<number>>(() => new Set());
   const [addedTasks, setAddedTasks] = useState<TaskItem[]>([]);
   const [draft, setDraft] = useState("");
+  // Quick filter: case-insensitive substring over each todo's text + repo tag.
+  const [filter, setFilter] = useState("");
   // The insertion slot the current drag would land in: drives both the column
   // highlight (`dropSlot.status`) and the drop line before `beforeId`.
   const [dropSlot, setDropSlot] = useState<DropSlot | null>(null);
@@ -130,6 +140,14 @@ export function BoardScreen() {
     [snapshot.tasks, addedTasks, editOverrides, statusOverrides, posOverrides, deletedIds],
   );
 
+  // The cards actually rendered: everything matching the quick filter (an empty
+  // filter matches all). `n hidden` below is the count the filter removes.
+  const visible = useMemo(
+    () => merged.filter((t) => matchesTaskFilter(t, filter)),
+    [merged, filter],
+  );
+  const hiddenCount = merged.length - visible.length;
+
   const columns = useMemo(() => {
     const byStatus: Record<TaskStatus, TaskItem[]> = {
       backlog: [],
@@ -138,15 +156,15 @@ export function BoardScreen() {
       review: [],
       done: [],
     };
-    for (const t of merged) byStatus[t.status]?.push(t);
+    for (const t of visible) byStatus[t.status]?.push(t);
     for (const s of TASK_STATUSES) {
       byStatus[s].sort((a, b) => a.position - b.position || a.createdAt - b.createdAt);
     }
     return byStatus;
-  }, [merged]);
+  }, [visible]);
 
   // Overdue cards per column, for the header's red load pip.
-  const overdue = useMemo(() => overdueByStatus(merged, now), [merged, now]);
+  const overdue = useMemo(() => overdueByStatus(visible, now), [visible, now]);
 
   function move(id: number, status: TaskStatus) {
     setStatusOverrides((prev) => ({ ...prev, [id]: status }));
@@ -233,7 +251,24 @@ export function BoardScreen() {
         <span className="text-xs text-muted-foreground">
           {repos.length} repos · {snapshot.tasks.length} todos
         </span>
+        {filter.trim() !== "" && hiddenCount > 0 && (
+          <span className="text-xs text-muted-foreground">{hiddenCount} hidden</span>
+        )}
         <div className="ml-auto flex items-center gap-1.5">
+          <div className="relative w-44">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setFilter("");
+              }}
+              placeholder="Filter…"
+              className="h-7 pl-7 text-sm"
+              spellCheck={false}
+              aria-label="Filter todos"
+            />
+          </div>
           <Input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
