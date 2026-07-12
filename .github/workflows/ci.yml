@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to keep CI fast.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # crates/tt-vt builds `libghostty-vt`, whose build script compiles
+      # libghostty from a ghostty source checkout and needs zig 0.15.x on PATH
+      # (GHOSTTY_SOURCE_DIR). That is impractical to provision in CI, so tt-vt
+      # is excluded here along with crates-tauri/tt-app, the only crate that
+      # depends on it (and which also needs webkit2gtk/GTK system libs for the
+      # Tauri shell). Everything else — every Tauri-free crate under crates/
+      # plus crates-cli/tt-cli — is covered.
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --workspace --exclude tt-vt --exclude tt-app --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace --exclude tt-vt --exclude tt-app
