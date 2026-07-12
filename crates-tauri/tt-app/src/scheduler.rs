@@ -16,7 +16,10 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use tokio::time::MissedTickBehavior;
 use tt_collect::CalendarProvider;
-use tt_store::{MeetingStartWatch, ReviewRequestedWatch, StaleCollectorWatch, WatchedCollector};
+use tt_store::{
+    ChecksFailedWatch, MeetingStartWatch, ReviewRequestedWatch, StaleCollectorWatch,
+    WatchedCollector,
+};
 
 use crate::store::SNAPSHOT_EVENT;
 
@@ -95,6 +98,7 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
         // survive a cadence rebuild so a reload never re-fires a stale edge.
         let mut meeting_watch = MeetingStartWatch::new();
         let mut review_watch = ReviewRequestedWatch::new();
+        let mut checks_watch = ChecksFailedWatch::new();
         let mut stale_watch = StaleCollectorWatch::new();
         loop {
             // (Re)load config and rebuild the tick intervals for this cycle.
@@ -160,6 +164,7 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                             &app,
                             &mut meeting_watch,
                             &mut review_watch,
+                            &mut checks_watch,
                             &mut stale_watch,
                             &watched,
                         )
@@ -246,6 +251,7 @@ async fn run_notify_check(
     app: &AppHandle,
     meeting_watch: &mut MeetingStartWatch,
     review_watch: &mut ReviewRequestedWatch,
+    checks_watch: &mut ChecksFailedWatch,
     stale_watch: &mut StaleCollectorWatch,
     watched: &[WatchedCollector],
 ) {
@@ -268,6 +274,9 @@ async fn run_notify_check(
     }
     for edge in review_watch.observe(&prs) {
         notify_review_requested(app, &edge);
+    }
+    for edge in checks_watch.observe(&prs) {
+        notify_checks_failed(app, &edge);
     }
     for edge in stale_watch.observe(now, watched, &runs) {
         notify_stale_collector(app, &edge);
@@ -317,6 +326,32 @@ fn notify_review_requested(app: &AppHandle, edge: &tt_store::ReviewRequestedEdge
         .notification()
         .builder()
         .title(format!("Review requested — {}#{}", edge.repo, edge.number))
+        .body(&edge.title)
+        .show();
+}
+
+/// Fire a "CI failing" desktop notification when one of your PRs' checks flip
+/// into failing. Suppressed when the main window is focused (the day bar already
+/// surfaces PR check state) or when the `agentboard.notifyChecksFailed` setting
+/// is off (default on).
+fn notify_checks_failed(app: &AppHandle, edge: &tt_store::ChecksFailedEdge) {
+    use tauri_plugin_notification::NotificationExt;
+
+    if window_focused(app) {
+        return;
+    }
+    let enabled = tt_config::load()
+        .map(|s| {
+            s.agentboard.notify_checks_failed.unwrap_or(tt_config::DEFAULT_NOTIFY_CHECKS_FAILED)
+        })
+        .unwrap_or(tt_config::DEFAULT_NOTIFY_CHECKS_FAILED);
+    if !enabled {
+        return;
+    }
+    let _ = app
+        .notification()
+        .builder()
+        .title(format!("CI failing on {}#{}", edge.repo, edge.number))
         .body(&edge.title)
         .show();
 }

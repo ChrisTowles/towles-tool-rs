@@ -163,6 +163,12 @@ pub struct AgentboardSettings {
     /// for the TS CLI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notify_stale_collector: Option<bool>,
+
+    /// Fire a desktop notification when one of your authored PRs has its CI flip
+    /// into failing. `None` = the built-in default (on). Only written once the
+    /// user changes it, so the shared settings file stays clean for the TS CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify_checks_failed: Option<bool>,
 }
 
 /// Built-in default for [`AgentboardSettings::compact_recommend_percent`].
@@ -182,6 +188,9 @@ pub const DEFAULT_COPY_ON_SELECT: bool = true;
 
 /// Built-in default for [`AgentboardSettings::notify_stale_collector`]: on.
 pub const DEFAULT_NOTIFY_STALE_COLLECTOR: bool = true;
+
+/// Built-in default for [`AgentboardSettings::notify_checks_failed`]: on.
+pub const DEFAULT_NOTIFY_CHECKS_FAILED: bool = true;
 
 /// Data-hub collector settings (the Rust CLI/app's tt.db collectors; the TS CLI
 /// ignores this block). Each collector is configured independently — enable

@@ -57,13 +57,15 @@ export type UserSettings = {
    * session flips into needs-you; unset = on), `notifyMeetingStart` (fired when
    * the next meeting's countdown reaches zero; unset = on),
    * `notifyReviewRequested` (fired when a PR newly needs your review; unset =
-   * on), and `copyOnSelect` (terminal
+   * on), `notifyChecksFailed` (fired when one of your PRs' CI flips to failing;
+   * unset = on), and `copyOnSelect` (terminal
    * copies the selection to the clipboard on selection end; unset = off).
    */
   agentboard?: {
     notifyNeedsYou?: boolean;
     notifyMeetingStart?: boolean;
     notifyReviewRequested?: boolean;
+    notifyChecksFailed?: boolean;
     copyOnSelect?: boolean;
   } & Record<string, unknown>;
 };
