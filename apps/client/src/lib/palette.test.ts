@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { AgentStatus, FolderData, RepoData, SessionData } from "./agentboard";
-import type { PrItem } from "./data";
-import { paletteRepoEntries, paletteSessionEntries, palettePrEntries } from "./palette";
+import type { IssueItem, PrItem } from "./data";
+import {
+  paletteRepoEntries,
+  paletteSessionEntries,
+  palettePrEntries,
+  paletteIssueEntries,
+} from "./palette";
 
 const agent = (status: AgentStatus) => ({ agent: "claude-code", session: "", status, ts: 1 });
 
@@ -128,5 +133,41 @@ describe("palettePrEntries", () => {
       pr({ number: 3, state: "closed", updatedTs: 999 }),
     ]);
     expect(entries.map((e) => e.number)).toEqual([2, 1]);
+  });
+});
+
+function issue(overrides: Partial<IssueItem>): IssueItem {
+  return {
+    repo: "octo/widgets",
+    number: 1,
+    title: "an issue",
+    labels: [],
+    state: "open",
+    url: "https://github.com/octo/widgets/issues/1",
+    updatedTs: 0,
+    ...overrides,
+  };
+}
+
+describe("paletteIssueEntries", () => {
+  it("keeps only open issues, newest-updated first", () => {
+    const entries = paletteIssueEntries([
+      issue({ number: 1, updatedTs: 100 }),
+      issue({ number: 2, updatedTs: 300 }),
+      issue({ number: 3, state: "closed", updatedTs: 999 }),
+    ]);
+    expect(entries.map((e) => e.number)).toEqual([2, 1]);
+  });
+
+  it("includes repo, number, title, and labels as fuzzy-match keywords", () => {
+    const [entry] = paletteIssueEntries([
+      issue({ number: 42, title: "fix the parser", labels: ["bug", "p1"] }),
+    ]);
+    expect(entry.keywords).toEqual(["octo/widgets", "#42", "fix the parser", "bug", "p1"]);
+    expect(entry.url).toBe("https://github.com/octo/widgets/issues/1");
+  });
+
+  it("returns nothing for an empty snapshot", () => {
+    expect(paletteIssueEntries([])).toEqual([]);
   });
 });

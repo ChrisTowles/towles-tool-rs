@@ -1,4 +1,5 @@
 import {
+  CircleDot,
   FolderGit2,
   GitPullRequest,
   Moon,
@@ -24,16 +25,21 @@ import { requestAgentboardNav, useAgentboardState } from "@/lib/agentboard";
 import { useStoreSnapshot } from "@/lib/data";
 import { openSettings } from "@/lib/open-settings";
 import { openExternalUrl } from "@/lib/open-url";
-import { paletteRepoEntries, paletteSessionEntries, palettePrEntries } from "@/lib/palette";
+import {
+  paletteRepoEntries,
+  paletteSessionEntries,
+  palettePrEntries,
+  paletteIssueEntries,
+} from "@/lib/palette";
 import { SCREENS, type ScreenId } from "@/lib/screens";
 import { shortcutHint } from "@/lib/shortcuts";
 import { useWorkspace } from "@/lib/workspace";
 
 /**
  * ⌘K launcher. Beyond the static "go to screen" list and app actions it pulls
- * three live sections from the same read-only hooks the screens use: recent
- * screens (MRU), Agentboard checkouts/sessions to jump to, and open PRs to
- * open in the browser. Shortcut hints come from `shortcutHint()` so glyphs are
+ * live sections from the same read-only hooks the screens use: recent
+ * screens (MRU), Agentboard checkouts/sessions to jump to, and open PRs and
+ * issues to open in the browser. Shortcut hints come from `shortcutHint()` so glyphs are
  * platform-correct (Ctrl on Linux, ⌘ on mac) instead of hardcoded.
  */
 export function CommandPalette() {
@@ -75,11 +81,12 @@ export function CommandPalette() {
   const repoEntries = paletteRepoEntries(repos);
   const sessionEntries = paletteSessionEntries(repos);
   const prEntries = palettePrEntries(snapshot.prs);
+  const issueEntries = paletteIssueEntries(snapshot.issues);
 
   return (
     <CommandDialog open={paletteOpen} onOpenChange={setPaletteOpen}>
       <Command>
-        <CommandInput placeholder="Search screens, repos, sessions, PRs…" />
+        <CommandInput placeholder="Search screens, repos, sessions, PRs, issues…" />
         <CommandList>
           <CommandEmpty>Nothing matches.</CommandEmpty>
           {recentScreens.length > 0 && (
@@ -173,6 +180,28 @@ export function CommandPalette() {
                     onSelect={() => run(() => void openExternalUrl(entry.url))}
                   >
                     <GitPullRequest />
+                    <span className="truncate">
+                      {entry.repo}
+                      <span className="text-muted-foreground"> #{entry.number}</span>
+                    </span>
+                    <span className="ml-1 truncate text-muted-foreground">{entry.title}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </>
+          )}
+          {issueEntries.length > 0 && (
+            <>
+              <CommandSeparator />
+              <CommandGroup heading="Open issue">
+                {issueEntries.map((entry) => (
+                  <CommandItem
+                    key={entry.key}
+                    value={`issue ${entry.repo} ${entry.number} ${entry.title}`}
+                    keywords={entry.keywords}
+                    onSelect={() => run(() => void openExternalUrl(entry.url))}
+                  >
+                    <CircleDot />
                     <span className="truncate">
                       {entry.repo}
                       <span className="text-muted-foreground"> #{entry.number}</span>

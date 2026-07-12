@@ -1,9 +1,9 @@
 import { sessionLabel, sessionNeeds, type RepoData } from "./agentboard";
-import type { PrItem } from "./data";
+import type { IssueItem, PrItem } from "./data";
 
 /**
  * Pure builders for the command palette's dynamic sections (repos, sessions,
- * open PRs). Kept out of the component so the ordering/labelling rules are
+ * open PRs, open issues). Kept out of the component so the ordering/labelling rules are
  * unit-testable without a DOM: the palette itself just maps these to
  * `<CommandItem>`s. All are read-only projections of the agentboard state and
  * store snapshot — nothing here writes.
@@ -46,6 +46,16 @@ export type PalettePrEntry = {
   number: number;
   title: string;
   checks: string;
+  keywords: string[];
+};
+
+/** An open issue to open in the browser. */
+export type PaletteIssueEntry = {
+  key: string;
+  url: string;
+  repo: string;
+  number: number;
+  title: string;
   keywords: string[];
 };
 
@@ -110,6 +120,23 @@ export function palettePrEntries(prs: PrItem[]): PalettePrEntry[] {
       title: p.title,
       checks: p.checks,
       keywords: [p.repo, `#${p.number}`, p.title, p.branch].filter(Boolean),
+    }));
+}
+
+/** One entry per open issue, newest-updated first. Non-open issues are dropped —
+ * the palette action opens the issue page, which only makes sense while it's live. */
+export function paletteIssueEntries(issues: IssueItem[]): PaletteIssueEntry[] {
+  return issues
+    .filter((i) => i.state === "open")
+    .slice()
+    .sort((a, b) => b.updatedTs - a.updatedTs)
+    .map((i) => ({
+      key: `${i.repo}#${i.number}`,
+      url: i.url,
+      repo: i.repo,
+      number: i.number,
+      title: i.title,
+      keywords: [i.repo, `#${i.number}`, i.title, ...i.labels].filter(Boolean),
     }));
 }
 
