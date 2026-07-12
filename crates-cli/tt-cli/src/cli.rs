@@ -80,9 +80,9 @@ pub enum Commands {
     /// MCP server exposing the local store and agent sessions to claude
     Mcp(McpArgs),
 
-    /// Worktree slots: parallel checkouts of one repo from a bare hub
-    /// (<root>/<repo>.git + <root>/<repo>-slot-N), each with rendered per-slot
-    /// ports/env so concurrent slots never collide
+    /// Worktree slots: a primary checkout (<root>/<repo>-primary, always the
+    /// default branch) plus branch-named worktrees under <root>/slots/, each
+    /// with rendered per-slot ports/env so concurrent slots never collide
     Slot(SlotArgs),
 }
 
@@ -95,14 +95,15 @@ pub struct SlotArgs {
 
 #[derive(Subcommand)]
 pub enum SlotCommands {
-    /// Create the next free slot: worktree + rendered .env (port claims,
-    /// inherited sibling secrets) + slot-setup.sh hook
+    /// Create the slot for a branch: worktree under slots/ + rendered .env
+    /// (port claims, inherited sibling secrets) + setup step (TT_SLOT_SETUP
+    /// from the rendered .env, else lockfile-detected install)
     New {
-        /// Create and check out this branch (default: detached at the base branch)
+        /// Branch to create and check out (the slot is named after its last segment)
         #[arg(long, short = 'b')]
-        branch: Option<String>,
+        branch: String,
 
-        /// Base ref for the new branch / detached checkout (default: the hub's HEAD branch)
+        /// Base ref for the new branch (default: the primary's branch)
         #[arg(long, value_name = "REF")]
         base: Option<String>,
 
@@ -110,45 +111,45 @@ pub enum SlotCommands {
         #[arg(long)]
         json: bool,
 
-        /// Slot root directory (default: walk up from cwd to a dir holding <repo>.git)
+        /// Slot root directory (default: walk up from cwd to a dir holding <repo>-primary)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
 
-    /// List slots with branch, dirty count, and claimed ports
+    /// List the primary and slots with branch, dirty count, and claimed ports
     Ls {
-        /// Emit slots as a JSON array
+        /// Emit checkouts as a JSON array
         #[arg(long)]
         json: bool,
 
-        /// Slot root directory (default: walk up from cwd to a dir holding <repo>.git)
+        /// Slot root directory (default: walk up from cwd to a dir holding <repo>-primary)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
 
     /// Remove a slot: guarded (clean tree, no commits unreachable from a
-    /// remote, nothing foreign on its ports), then docker compose down -v,
-    /// anchored container/volume sweep, worktree remove
+    /// branch or remote, nothing foreign on its ports), then docker compose
+    /// down -v, anchored container/volume sweep, worktree remove
     Rm {
-        /// Slot directory name, e.g. blog-slot-3
+        /// Slot directory name under slots/, e.g. slot-migrate
         name: String,
 
         /// Skip guards (each skip is printed) and force worktree removal
         #[arg(long)]
         force: bool,
 
-        /// Slot root directory (default: walk up from cwd to a dir holding <repo>.git)
+        /// Slot root directory (default: walk up from cwd to a dir holding <repo>-primary)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
 
-    /// (Re)render a slot's .env from the template — idempotent: existing port
-    /// claims and keys the template doesn't know are preserved
+    /// (Re)render a checkout's .env from the template — idempotent: existing
+    /// port claims and keys the template doesn't know are preserved
     Env {
-        /// Slot directory name, e.g. blog-slot-3
+        /// Slot directory name under slots/, or `primary`
         name: String,
 
-        /// Slot root directory (default: walk up from cwd to a dir holding <repo>.git)
+        /// Slot root directory (default: walk up from cwd to a dir holding <repo>-primary)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },

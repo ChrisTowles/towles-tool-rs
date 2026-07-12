@@ -297,10 +297,13 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
   );
 }
 
-/** A repo follows the worktree-slot convention when any checkout dir is named
- * `<repo>-slot-N` — those repos get the new-slot affordance. */
+/** A repo follows the worktree-slot convention when any checkout is a
+ * `<repo>-primary` dir or lives under a `slots/` dir — those repos get the
+ * new-slot affordance. */
 function isSlotRepo(repo: RepoData): boolean {
-  return repo.folders.some((f) => /-slot-\d+$/.test(f.dir.split("/").pop() ?? ""));
+  return repo.folders.some(
+    (f) => /-primary$/.test(f.dir.split("/").pop() ?? "") || /\/slots\/[^/]+$/.test(f.dir),
+  );
 }
 
 export function RepoGroup({

@@ -1,35 +1,47 @@
-//! Slot naming and hub-layout rules: `<root>/<repo>.git` + `<root>/<repo>-slot-N/`.
+//! Slot naming and layout rules: `<root>/<repo>-primary/` + `<root>/slots/<name>/`.
+//!
+//! The primary is a normal clone that always holds the default branch (it is
+//! where the user runs the app themselves); slots are branch-named, ephemeral
+//! worktrees created from the primary and removed when their branch merges.
 
-/// The per-slot marker file, written at render time and ignored via the hub's
-/// `info/exclude` (so no repo `.gitignore` change is needed). Records the
-/// slot's identity for other tooling (state scoping, agents landing cold).
+/// The per-slot marker file, written at render time and ignored via the
+/// primary's `.git/info/exclude` (so no repo `.gitignore` change is needed).
+/// Records the slot's identity for other tooling (state scoping, agents
+/// landing cold).
 pub const MARKER_FILE: &str = ".tt-slot";
 
-/// Repo name from a hub directory name: `blog.git` → `blog`.
-pub fn repo_from_hub(hub_dir_name: &str) -> Option<&str> {
-    let repo = hub_dir_name.strip_suffix(".git")?;
+/// Directory-name suffix that marks a repo's primary checkout.
+pub const PRIMARY_SUFFIX: &str = "-primary";
+
+/// Directory under the root that holds the worktree slots.
+pub const SLOTS_DIR: &str = "slots";
+
+/// Repo name from a primary directory name: `blog-primary` → `blog`.
+pub fn repo_from_primary(dir_name: &str) -> Option<&str> {
+    let repo = dir_name.strip_suffix(PRIMARY_SUFFIX)?;
     (!repo.is_empty()).then_some(repo)
 }
 
-/// Directory name for slot `n` of `repo`.
-pub fn slot_dir_name(repo: &str, n: u32) -> String {
-    format!("{repo}-slot-{n}")
+/// Slot directory name for a branch: the segment after the last `/` (branch
+/// type prefixes like `feat/` carry no information inside `slots/`), reduced
+/// to `[A-Za-z0-9._-]`. Falls back to the whole branch when the last segment
+/// sanitizes to nothing.
+pub fn slot_name_from_branch(branch: &str) -> Option<String> {
+    let last = branch.rsplit('/').next().unwrap_or(branch);
+    let name = sanitize_segment(last);
+    if !name.is_empty() {
+        return Some(name);
+    }
+    let whole = sanitize_segment(branch);
+    (!whole.is_empty()).then_some(whole)
 }
 
-/// Parse a slot directory name for `repo`: `blog-slot-3` → `Some(3)`.
-/// Rejects anything else, including parked `*.old` dirs and other repos' slots.
-pub fn parse_slot(repo: &str, dir_name: &str) -> Option<u32> {
-    let suffix = dir_name.strip_prefix(repo)?.strip_prefix("-slot-")?;
-    (!suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| suffix.parse().ok())
-        .flatten()
-}
-
-/// First unused slot number given the sibling directory names (fills gaps).
-pub fn next_slot_number(repo: &str, existing_dir_names: &[String]) -> u32 {
-    let taken: std::collections::BTreeSet<u32> =
-        existing_dir_names.iter().filter_map(|name| parse_slot(repo, name)).collect();
-    (0..).find(|n| !taken.contains(n)).unwrap_or(0)
+fn sanitize_segment(raw: &str) -> String {
+    raw.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+        .collect::<String>()
+        .trim_matches(['-', '.'])
+        .to_string()
 }
 
 /// Contents of the `.tt-slot` marker. Line-oriented `key=value` so any
@@ -43,37 +55,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repo_from_hub_strips_git_suffix() {
-        assert_eq!(repo_from_hub("blog.git"), Some("blog"));
-        assert_eq!(repo_from_hub("towles-tool-rs.git"), Some("towles-tool-rs"));
-        assert_eq!(repo_from_hub("blog"), None);
-        assert_eq!(repo_from_hub(".git"), None);
+    fn repo_from_primary_strips_suffix() {
+        assert_eq!(repo_from_primary("blog-primary"), Some("blog"));
+        assert_eq!(repo_from_primary("towles-tool-rs-primary"), Some("towles-tool-rs"));
+        assert_eq!(repo_from_primary("blog"), None);
+        assert_eq!(repo_from_primary("-primary"), None);
     }
 
     #[test]
-    fn parse_slot_accepts_only_this_repos_slots() {
-        assert_eq!(parse_slot("blog", "blog-slot-0"), Some(0));
-        assert_eq!(parse_slot("blog", "blog-slot-12"), Some(12));
-        assert_eq!(parse_slot("blog", "blog-slot-3.old"), None);
-        assert_eq!(parse_slot("blog", "blog-x-slot-1"), None);
-        assert_eq!(parse_slot("blog", "other-slot-1"), None);
-        assert_eq!(parse_slot("blog", "blog-slot-"), None);
-        assert_eq!(parse_slot("blog", "blog.git"), None);
+    fn slot_name_takes_last_branch_segment() {
+        assert_eq!(slot_name_from_branch("feat/slot-migrate"), Some("slot-migrate".into()));
+        assert_eq!(slot_name_from_branch("fix/rail-overflow"), Some("rail-overflow".into()));
+        assert_eq!(slot_name_from_branch("standalone"), Some("standalone".into()));
+        assert_eq!(slot_name_from_branch("chris/wip/thing"), Some("thing".into()));
     }
 
     #[test]
-    fn next_slot_number_fills_gaps() {
-        let names: Vec<String> = ["blog-slot-0", "blog-slot-2", "blog-slot-3.old", "junk"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(next_slot_number("blog", &names), 1);
-        assert_eq!(next_slot_number("blog", &[]), 0);
+    fn slot_name_sanitizes_and_falls_back() {
+        assert_eq!(slot_name_from_branch("feat/hello world!"), Some("hello-world".into()));
+        // last segment sanitizes to nothing → whole branch, slugged
+        assert_eq!(slot_name_from_branch("feat/---"), Some("feat".into()));
+        assert_eq!(slot_name_from_branch("///"), None);
     }
 
     #[test]
     fn marker_is_line_oriented() {
-        let m = marker_contents("blog-slot-2", "main", "main");
-        assert_eq!(m, "name=blog-slot-2\nbase=main\nstream=main\n");
+        let m = marker_contents("slot-migrate", "main", "main");
+        assert_eq!(m, "name=slot-migrate\nbase=main\nstream=main\n");
     }
 }

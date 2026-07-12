@@ -388,7 +388,8 @@ pub const STATE_SCOPE_ENV: &str = "TT_STATE_SCOPE";
 /// Resolution order:
 /// 1. [`STATE_SCOPE_ENV`] if set (empty forces unscoped, non-empty forces that name).
 /// 2. Otherwise walk up from the current working directory to a checkout of *this*
-///    repo and use its root directory name (e.g. `towles-tool-rs-slot-2`).
+///    repo and use its root directory name (e.g. `towles-tool-rs-primary`), repo-
+///    qualified for `slots/<name>` checkouts (e.g. `towles-tool-rs-slot-migrate`).
 ///
 /// A checkout is recognised by a `crates/tt-config` directory at its root — a
 /// marker unique to this workspace — so an installed `ttr` run from an arbitrary
@@ -402,14 +403,53 @@ pub fn state_scope() -> Option<String> {
     }
 }
 
-/// Derive a slot scope from `dir`: the name of the nearest ancestor that is a
-/// checkout of this repo (contains a `crates/tt-config` directory), or `None`.
-/// Split out from [`state_scope`] so it can be unit-tested against temp dirs
-/// without touching the real cwd/env.
+/// Derive a slot scope from `dir`: the nearest ancestor that is a checkout of
+/// this repo (contains a `crates/tt-config` directory), or `None`. Split out
+/// from [`state_scope`] so it can be unit-tested against temp dirs without
+/// touching the real cwd/env.
+///
+/// Branch-named slots live under a shared `slots/` dir (`<root>/slots/<name>`,
+/// see the tt-slots crate), so a bare dir name like `slot-migrate` is not
+/// unique across repos/roots — those scopes are qualified with the repo name
+/// taken from the sibling `<repo>-primary` checkout (falling back to the
+/// root's dir name).
 pub fn slot_scope_from_dir(dir: &Path) -> Option<String> {
     for ancestor in dir.ancestors() {
-        if ancestor.join("crates").join("tt-config").is_dir() {
-            return ancestor.file_name().and_then(|n| n.to_str()).map(sanitize_scope);
+        if !ancestor.join("crates").join("tt-config").is_dir() {
+            continue;
+        }
+        let name = ancestor.file_name().and_then(|n| n.to_str())?;
+        let in_slots_dir = ancestor
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == "slots");
+        if !in_slots_dir {
+            return Some(sanitize_scope(name));
+        }
+        let root = ancestor.parent().and_then(Path::parent);
+        let repo = root.and_then(primary_repo_name).or_else(|| {
+            root.and_then(|r| r.file_name()).and_then(|n| n.to_str()).map(str::to_string)
+        });
+        return Some(sanitize_scope(&match repo {
+            Some(repo) => format!("{repo}-{name}"),
+            None => name.to_string(),
+        }));
+    }
+    None
+}
+
+/// The repo name from a `<repo>-primary` checkout directly under `root`.
+fn primary_repo_name(root: &Path) -> Option<String> {
+    for entry in std::fs::read_dir(root).ok()?.filter_map(|e| e.ok()) {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if let Some(repo) = name.strip_suffix("-primary")
+            && !repo.is_empty()
+            && entry.path().join(".git").exists()
+        {
+            return Some(repo.to_string());
         }
     }
     None
@@ -819,14 +859,36 @@ mod tests {
 
     #[test]
     fn slot_checkout_dir_derives_scope() {
-        let dir = slot_checkout("towles-tool-rs-slot-7");
-        let root = dir.path().join("towles-tool-rs-slot-7");
+        let dir = slot_checkout("towles-tool-rs-primary");
+        let root = dir.path().join("towles-tool-rs-primary");
         // From the root and from a nested subdir, the scope is the root's name.
-        assert_eq!(slot_scope_from_dir(&root), Some("towles-tool-rs-slot-7".to_string()));
+        assert_eq!(slot_scope_from_dir(&root), Some("towles-tool-rs-primary".to_string()));
         assert_eq!(
             slot_scope_from_dir(&root.join("crates").join("tt-store").join("src")),
-            Some("towles-tool-rs-slot-7".to_string())
+            Some("towles-tool-rs-primary".to_string())
         );
+    }
+
+    #[test]
+    fn slots_dir_checkout_is_repo_qualified() {
+        // <tmp>/towles-tool-rs-primary/.git + <tmp>/slots/slot-migrate/crates/tt-config:
+        // the slot's scope carries the repo name so same-named slots of
+        // different repos never share state.
+        let dir = TempDir::new().unwrap();
+        let primary = dir.path().join("towles-tool-rs-primary");
+        std::fs::create_dir_all(primary.join(".git")).unwrap();
+        let slot = dir.path().join("slots").join("slot-migrate");
+        std::fs::create_dir_all(slot.join("crates").join("tt-config")).unwrap();
+        assert_eq!(slot_scope_from_dir(&slot), Some("towles-tool-rs-slot-migrate".to_string()));
+    }
+
+    #[test]
+    fn slots_dir_without_primary_falls_back_to_root_name() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("my-repos");
+        let slot = root.join("slots").join("thing");
+        std::fs::create_dir_all(slot.join("crates").join("tt-config")).unwrap();
+        assert_eq!(slot_scope_from_dir(&slot), Some("my-repos-thing".to_string()));
     }
 
     #[test]

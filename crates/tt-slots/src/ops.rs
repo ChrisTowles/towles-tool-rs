@@ -17,7 +17,11 @@ use thiserror::Error;
 use crate::{TemplateError, envfile, layout};
 
 pub const TEMPLATE_SIDECAR: &str = "slot-env.template";
-pub const SETUP_HOOK: &str = "slot-setup.sh";
+/// Declared setup command, read from the slot's rendered `.env`
+/// (e.g. `TT_SLOT_SETUP=bun install`). Spawned directly — no shell — so a
+/// repo needing more than one command should point this at its own task
+/// runner (`make setup`, `npm run bootstrap`).
+pub const SETUP_ENV_KEY: &str = "TT_SLOT_SETUP";
 const LOCK_FILE: &str = "tt-slots.lock";
 const LOCK_STALE: Duration = Duration::from_secs(60);
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -26,15 +30,18 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(600);
 #[derive(Debug, Error)]
 pub enum OpsError {
     #[error(
-        "no slot root found walking up from {0} — a slot root holds exactly one <repo>.git bare hub"
+        "no slot root found walking up from {0} — a slot root holds exactly one <repo>-primary checkout"
     )]
-    NoHub(String),
+    NoPrimary(String),
 
-    #[error("{dir} contains {count} bare hubs — expected exactly one")]
-    MultipleHubs { dir: String, count: usize },
+    #[error("{dir} contains {count} <repo>-primary checkouts — expected exactly one")]
+    MultiplePrimaries { dir: String, count: usize },
 
-    #[error("{name} is not a slot of {repo} (expected {repo}-slot-N)")]
-    NotASlot { name: String, repo: String },
+    #[error("cannot derive a slot name from branch {0}")]
+    BadBranchName(String),
+
+    #[error("slot {name} already exists at {dir}")]
+    SlotExists { name: String, dir: String },
 
     #[error("git: {0}")]
     Git(String),
@@ -54,29 +61,43 @@ pub enum OpsError {
 
 pub type Result<T> = std::result::Result<T, OpsError>;
 
-/// A discovered slot root: the parent directory, its bare hub, and repo name.
+/// A discovered slot root: the parent directory, the repo's primary checkout,
+/// and the repo name.
 pub struct SlotRoot {
     pub root: PathBuf,
-    pub hub: PathBuf,
+    pub primary: PathBuf,
     pub repo: String,
 }
 
 impl SlotRoot {
-    pub fn slot_dir(&self, name: &str) -> PathBuf {
-        self.root.join(name)
+    /// The directory holding the worktree slots (may not exist yet).
+    pub fn slots_dir(&self) -> PathBuf {
+        self.root.join(layout::SLOTS_DIR)
     }
 
-    /// Existing slot dirs as (number, name, path), sorted by number.
-    pub fn slots(&self) -> Vec<(u32, String, PathBuf)> {
-        let mut slots: Vec<(u32, String, PathBuf)> = dir_names(&self.root)
+    pub fn slot_dir(&self, name: &str) -> PathBuf {
+        self.slots_dir().join(name)
+    }
+
+    /// Existing slot dirs as (name, path), sorted by name.
+    pub fn slots(&self) -> Vec<(String, PathBuf)> {
+        let mut slots: Vec<(String, PathBuf)> = dir_names(&self.slots_dir())
             .into_iter()
-            .filter_map(|name| {
-                layout::parse_slot(&self.repo, &name)
-                    .map(|n| (n, name.clone(), self.root.join(&name)))
+            .map(|name| {
+                let path = self.slots_dir().join(&name);
+                (name, path)
             })
             .collect();
-        slots.sort_by_key(|(n, _, _)| *n);
+        slots.sort();
         slots
+    }
+
+    /// The primary plus every slot — every checkout whose `.env` can hold
+    /// port claims.
+    pub fn checkouts(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.primary.clone()];
+        dirs.extend(self.slots().into_iter().map(|(_, dir)| dir));
+        dirs
     }
 }
 
@@ -92,8 +113,15 @@ fn dir_names(dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Whether `dir/name` is a repo's primary checkout: named `<repo>-primary`
+/// and containing a `.git` (a normal clone, not bare).
+fn is_primary(dir: &Path, name: &str) -> bool {
+    layout::repo_from_primary(name).is_some() && dir.join(name).join(".git").exists()
+}
+
 /// Find the slot root: `explicit` if given, else walk up from the current
-/// working directory looking for a directory holding exactly one bare hub.
+/// working directory looking for a directory holding exactly one
+/// `<repo>-primary` checkout.
 pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
     let start = match explicit {
         Some(dir) => dir.to_path_buf(),
@@ -102,27 +130,29 @@ pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
         }
     };
     for dir in start.ancestors() {
-        let hubs: Vec<String> = dir_names(dir)
-            .into_iter()
-            .filter(|name| layout::repo_from_hub(name).is_some())
-            .collect();
-        if hubs.len() == 1 {
-            let repo = layout::repo_from_hub(&hubs[0]).unwrap_or_default().to_string();
-            return Ok(SlotRoot { root: dir.to_path_buf(), hub: dir.join(&hubs[0]), repo });
+        let primaries: Vec<String> =
+            dir_names(dir).into_iter().filter(|name| is_primary(dir, name)).collect();
+        if primaries.len() == 1 {
+            let repo = layout::repo_from_primary(&primaries[0]).unwrap_or_default().to_string();
+            return Ok(SlotRoot {
+                root: dir.to_path_buf(),
+                primary: dir.join(&primaries[0]),
+                repo,
+            });
         }
-        if hubs.len() > 1 && explicit.is_some() {
-            return Err(OpsError::MultipleHubs {
+        if primaries.len() > 1 {
+            return Err(OpsError::MultiplePrimaries {
                 dir: dir.display().to_string(),
-                count: hubs.len(),
+                count: primaries.len(),
             });
         }
     }
-    Err(OpsError::NoHub(start.display().to_string()))
+    Err(OpsError::NoPrimary(start.display().to_string()))
 }
 
-pub fn git_hub(hub: &Path, args: &[&str]) -> Result<tt_exec::Output> {
-    let hub_s = hub.to_string_lossy();
-    let mut full: Vec<&str> = vec!["-C", hub_s.as_ref()];
+pub fn git_primary(primary: &Path, args: &[&str]) -> Result<tt_exec::Output> {
+    let primary_s = primary.to_string_lossy();
+    let mut full: Vec<&str> = vec!["-C", primary_s.as_ref()];
     full.extend_from_slice(args);
     tt_exec::run("git", &full).map_err(|e| OpsError::Git(e.to_string()))
 }
@@ -132,9 +162,9 @@ pub fn git_slot(dir: &Path, args: &[&str]) -> Result<tt_exec::Output> {
         .map_err(|e| OpsError::Git(e.to_string()))
 }
 
-/// The hub's default branch (its HEAD), falling back to `main`.
-pub fn base_branch(hub: &Path) -> String {
-    git_hub(hub, &["symbolic-ref", "--short", "HEAD"])
+/// The primary's checked-out branch (the repo default), falling back to `main`.
+pub fn base_branch(primary: &Path) -> String {
+    git_primary(primary, &["symbolic-ref", "--short", "HEAD"])
         .ok()
         .filter(|o| o.ok())
         .map(|o| o.stdout.trim().to_string())
@@ -142,10 +172,10 @@ pub fn base_branch(hub: &Path) -> String {
         .unwrap_or_else(|| "main".to_string())
 }
 
-/// Every branch in the hub, default branch first, the rest sorted.
-pub fn hub_branches(hub: &Path) -> Result<Vec<String>> {
-    let default = base_branch(hub);
-    let out = git_hub(hub, &["for-each-ref", "refs/heads", "--format=%(refname:short)"])?;
+/// Every local branch, default branch first, the rest sorted.
+pub fn primary_branches(primary: &Path) -> Result<Vec<String>> {
+    let default = base_branch(primary);
+    let out = git_primary(primary, &["for-each-ref", "refs/heads", "--format=%(refname:short)"])?;
     if !out.ok() {
         return Err(OpsError::Git(out.stderr.trim().to_string()));
     }
@@ -176,8 +206,8 @@ struct ClaimLock {
 }
 
 impl ClaimLock {
-    fn acquire(hub: &Path) -> Result<Self> {
-        let path = hub.join(LOCK_FILE);
+    fn acquire(primary: &Path) -> Result<Self> {
+        let path = primary.join(".git").join(LOCK_FILE);
         for _ in 0..100 {
             match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(_) => return Ok(Self { path }),
@@ -216,20 +246,22 @@ pub struct RenderSummary {
     pub warnings: Vec<String>,
 }
 
-/// Render the slot's `.env`: template → text (reusing existing claims), then
-/// merge back any keys the template doesn't know (inherited secrets, local
-/// adds), write the `.tt-slot` marker, and keep it ignored via the hub.
+/// Render a checkout's `.env`: template → text (reusing existing claims),
+/// then merge back any keys the template doesn't know (inherited secrets,
+/// local adds). Works for slots and for the primary itself — the primary is
+/// where the user runs the app, so it claims ports like any slot. Slot dirs
+/// also get the `.tt-slot` marker.
 pub fn render_slot_env(sr: &SlotRoot, dir: &Path) -> Result<RenderSummary> {
     let name = dir
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| OpsError::Io(format!("bad slot path {}", dir.display())))?
         .to_string();
-    let number = layout::parse_slot(&sr.repo, &name)
-        .ok_or_else(|| OpsError::NotASlot { name: name.clone(), repo: sr.repo.clone() })?;
+    let is_slot = dir.parent().is_some_and(|p| p == sr.slots_dir());
 
     // template: the repo's own .env.example when it carries ${tt:...} tokens
-    // (the committed convention), else the hub-side sidecar
+    // (the committed convention), else the root-side sidecar (repos that
+    // don't commit tt artifacts)
     let repo_template = dir.join(".env.example");
     let sidecar = sr.root.join(TEMPLATE_SIDECAR);
     let template_path = match fs::read_to_string(&repo_template) {
@@ -245,14 +277,14 @@ pub fn render_slot_env(sr: &SlotRoot, dir: &Path) -> Result<RenderSummary> {
     let template = fs::read_to_string(&template_path)
         .map_err(|e| OpsError::Io(format!("cannot read {}: {e}", template_path.display())))?;
 
-    let _lock = ClaimLock::acquire(&sr.hub)?;
+    let _lock = ClaimLock::acquire(&sr.primary)?;
 
     let env_path = dir.join(".env");
     let old_text = fs::read_to_string(&env_path).unwrap_or_default();
     let existing: BTreeMap<String, String> = envfile::parse(&old_text).into_iter().collect();
 
     let mut sibling_claims = BTreeSet::new();
-    for (_, _, sib_dir) in sr.slots() {
+    for sib_dir in sr.checkouts() {
         if sib_dir == dir {
             continue;
         }
@@ -261,11 +293,7 @@ pub fn render_slot_env(sr: &SlotRoot, dir: &Path) -> Result<RenderSummary> {
         }
     }
 
-    let ctx = crate::SlotContext {
-        slot_name: &name,
-        slot_number: number,
-        base_branch: &base_branch(&sr.hub),
-    };
+    let ctx = crate::SlotContext { slot_name: &name, base_branch: &base_branch(&sr.primary) };
     let outcome =
         crate::render(&template, &ctx, &existing, &sibling_claims, |p| !port_occupied(p))?;
 
@@ -273,10 +301,12 @@ pub fn render_slot_env(sr: &SlotRoot, dir: &Path) -> Result<RenderSummary> {
     fs::write(&env_path, &merged)
         .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", env_path.display())))?;
 
-    let marker = layout::marker_contents(&name, ctx.base_branch, "main");
-    fs::write(dir.join(layout::MARKER_FILE), marker)
-        .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", layout::MARKER_FILE)))?;
-    ensure_hub_excludes(&sr.hub)?;
+    if is_slot {
+        let marker = layout::marker_contents(&name, ctx.base_branch, "main");
+        fs::write(dir.join(layout::MARKER_FILE), marker)
+            .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", layout::MARKER_FILE)))?;
+    }
+    ensure_excludes(&sr.primary)?;
 
     let mut warnings = Vec::new();
     if let Ok(out) = git_slot(dir, &["check-ignore", "-q", ".env"])
@@ -295,10 +325,10 @@ pub fn render_slot_env(sr: &SlotRoot, dir: &Path) -> Result<RenderSummary> {
     })
 }
 
-/// Ignore the marker in every worktree via the hub's `info/exclude` — no repo
-/// `.gitignore` commit needed.
-fn ensure_hub_excludes(hub: &Path) -> Result<()> {
-    let info = hub.join("info");
+/// Ignore the marker in every worktree via the primary's `.git/info/exclude`
+/// — no repo `.gitignore` commit needed.
+fn ensure_excludes(primary: &Path) -> Result<()> {
+    let info = primary.join(".git").join("info");
     let exclude = info.join("exclude");
     let current = fs::read_to_string(&exclude).unwrap_or_default();
     if current.lines().any(|l| l.trim() == layout::MARKER_FILE) {
@@ -317,52 +347,87 @@ fn ensure_hub_excludes(hub: &Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// setup
+
+/// The setup command for a fresh slot, as argv. `env` is the slot's rendered
+/// `.env`; `has_file` probes the slot's checkout. Declared `TT_SLOT_SETUP`
+/// wins (whitespace-split — point it at a task runner for anything fancier);
+/// else the package manager is detected from the committed lockfile. `None`
+/// means nothing to run (e.g. a pure-cargo repo whose deps resolve on build).
+pub fn setup_command(
+    env: &BTreeMap<String, String>,
+    mut has_file: impl FnMut(&str) -> bool,
+) -> Option<Vec<String>> {
+    if let Some(declared) = env.get(SETUP_ENV_KEY) {
+        let argv: Vec<String> = declared.split_whitespace().map(str::to_string).collect();
+        return (!argv.is_empty()).then_some(argv);
+    }
+    let by_lockfile = [
+        ("bun.lock", ["bun", "install"]),
+        ("bun.lockb", ["bun", "install"]),
+        ("pnpm-lock.yaml", ["pnpm", "install"]),
+        ("yarn.lock", ["yarn", "install"]),
+        ("package-lock.json", ["npm", "install"]),
+    ];
+    for (lockfile, argv) in by_lockfile {
+        if has_file(lockfile) {
+            return Some(argv.iter().map(|s| s.to_string()).collect());
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // creation
 
 #[derive(Debug, Default)]
 pub struct CreateOpts {
     /// Slot root; `None` walks up from the current working directory.
     pub root: Option<PathBuf>,
-    /// Branch to create and check out; `None` parks detached at the base.
-    pub branch: Option<String>,
-    /// Base ref for the new branch / detached checkout; `None` = hub HEAD.
+    /// Branch to create and check out. Slots are branch-named and ephemeral —
+    /// there is no detached/parked mode.
+    pub branch: String,
+    /// Base ref for the new branch; `None` = the primary's branch.
     pub base: Option<String>,
-    /// Run the repo's committed `slot-setup.sh` in the new slot (deps install
-    /// etc.) — the hook is versioned with the repo, not a hub-root sidecar.
-    pub run_setup_hook: bool,
+    /// Run the setup step in the new slot (declared `TT_SLOT_SETUP` from the
+    /// rendered `.env`, else lockfile-detected package-manager install).
+    pub run_setup: bool,
 }
 
 pub struct CreatedSlot {
     pub name: String,
     pub dir: PathBuf,
-    pub branch: Option<String>,
+    pub branch: String,
     pub base: String,
     pub ports: Vec<(String, u16)>,
     pub inherited: usize,
     pub warnings: Vec<String>,
 }
 
-/// Create the next free slot: worktree (branch or detached at base), rendered
-/// `.env` with port claims, sibling-secrets inheritance, setup hook.
+/// Create the slot for `branch`: worktree under `slots/`, rendered `.env`
+/// with port claims, sibling-secrets inheritance, setup step.
 pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     let sr = discover_root(opts.root.as_deref())?;
     let mut warnings = Vec::new();
-    let _ = git_hub(&sr.hub, &["worktree", "prune"]);
-    if let Ok(out) = git_hub(&sr.hub, &["fetch", "--quiet", "origin"])
+    let _ = git_primary(&sr.primary, &["worktree", "prune"]);
+    if let Ok(out) = git_primary(&sr.primary, &["fetch", "--quiet", "origin"])
         && !out.ok()
     {
         warnings.push("fetch failed (offline?) — using local refs".into());
     }
-    let base = opts.base.clone().unwrap_or_else(|| base_branch(&sr.hub));
-    let number = layout::next_slot_number(&sr.repo, &dir_names(&sr.root));
-    let name = layout::slot_dir_name(&sr.repo, number);
+    let base = opts.base.clone().unwrap_or_else(|| base_branch(&sr.primary));
+    let name = layout::slot_name_from_branch(&opts.branch)
+        .ok_or_else(|| OpsError::BadBranchName(opts.branch.clone()))?;
     let dir = sr.slot_dir(&name);
+    if dir.exists() {
+        return Err(OpsError::SlotExists { name, dir: dir.display().to_string() });
+    }
+    fs::create_dir_all(sr.slots_dir())
+        .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", sr.slots_dir().display())))?;
     let dir_s = dir.to_string_lossy().to_string();
 
-    let add_result = match &opts.branch {
-        Some(b) => git_hub(&sr.hub, &["worktree", "add", "-b", b, &dir_s, &base])?,
-        None => git_hub(&sr.hub, &["worktree", "add", "--detach", &dir_s, &base])?,
-    };
+    let add_result =
+        git_primary(&sr.primary, &["worktree", "add", "-b", &opts.branch, &dir_s, &base])?;
     if !add_result.ok() {
         return Err(OpsError::Git(format!(
             "git worktree add failed:\n{}",
@@ -373,9 +438,10 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     let summary = render_slot_env(&sr, &dir)?;
     warnings.extend(summary.warnings);
 
-    // inherit secrets from the lowest-numbered sibling that has a .env
+    // inherit secrets from the first sibling checkout that has a .env
+    // (the primary first — it is the longest-lived)
     let mut inherited = 0;
-    for (_, _, sib_dir) in sr.slots() {
+    for sib_dir in sr.checkouts() {
         if sib_dir == dir {
             continue;
         }
@@ -390,20 +456,24 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
         }
     }
 
-    if opts.run_setup_hook {
-        // The hook is committed in the repo (so it's versioned and travels to
-        // teammates), checked out into the slot itself — not a hub-root file.
-        let hook = dir.join(SETUP_HOOK);
-        if is_executable(&hook) {
-            let hook_s = hook.to_string_lossy().to_string();
-            match tt_exec::run_in_dir_with_timeout(&hook_s, &[], &dir, SETUP_TIMEOUT) {
+    if opts.run_setup {
+        let env_map: BTreeMap<String, String> =
+            envfile::parse(&fs::read_to_string(dir.join(".env")).unwrap_or_default())
+                .into_iter()
+                .collect();
+        if let Some(argv) = setup_command(&env_map, |f| dir.join(f).is_file()) {
+            let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+            match tt_exec::run_in_dir_with_timeout(&argv[0], &args, &dir, SETUP_TIMEOUT) {
                 Ok(out) if out.ok() => {}
                 Ok(out) => warnings.push(format!(
-                    "slot-setup.sh failed (exit {}) — slot kept, fix and re-run it\n{}",
+                    "setup `{}` failed (exit {}) — slot kept, fix and re-run it\n{}",
+                    argv.join(" "),
                     out.exit_code,
                     out.stderr.trim()
                 )),
-                Err(e) => warnings.push(format!("slot-setup.sh failed — slot kept: {e}")),
+                Err(e) => {
+                    warnings.push(format!("setup `{}` failed — slot kept: {e}", argv.join(" ")))
+                }
             }
         }
     }
@@ -419,16 +489,32 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     })
 }
 
-fn is_executable(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::metadata(path)
-            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
-    #[cfg(not(unix))]
-    {
-        path.is_file()
+
+    #[test]
+    fn declared_setup_wins_over_lockfiles() {
+        let cmd = setup_command(&env(&[(SETUP_ENV_KEY, "make setup")]), |_| true);
+        assert_eq!(cmd, Some(vec!["make".to_string(), "setup".to_string()]));
+    }
+
+    #[test]
+    fn lockfile_detection_orders_bun_first() {
+        let cmd = setup_command(&env(&[]), |f| f == "bun.lock" || f == "package-lock.json");
+        assert_eq!(cmd, Some(vec!["bun".to_string(), "install".to_string()]));
+        let cmd = setup_command(&env(&[]), |f| f == "package-lock.json");
+        assert_eq!(cmd, Some(vec!["npm".to_string(), "install".to_string()]));
+    }
+
+    #[test]
+    fn no_lockfile_means_no_setup() {
+        assert_eq!(setup_command(&env(&[]), |_| false), None);
+        // declared-but-empty disables setup rather than running junk
+        assert_eq!(setup_command(&env(&[(SETUP_ENV_KEY, "  ")]), |_| true), None);
     }
 }
