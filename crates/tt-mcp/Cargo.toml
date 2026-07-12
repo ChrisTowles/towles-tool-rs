@@ -9,6 +9,7 @@ tt-store = { workspace = true }
 tt-journal = { workspace = true }
 tt-config = { workspace = true }
 tt-agentboard = { workspace = true }
+tt-collect = { workspace = true }
 chrono = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
