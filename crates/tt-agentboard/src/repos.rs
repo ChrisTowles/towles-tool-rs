@@ -29,10 +29,11 @@ struct ReposConfig {
     scan_roots: Vec<String>,
 }
 
-/// Default location: `<agentboard_dir>/repos.json` (slot-scoped when running in
-/// a slot checkout; see [`tt_config::agentboard_dir`]).
+/// Default location: `<agentboard_shared_dir>/repos.json` — which repos exist
+/// on this machine is a shared fact, so every checkout's app reads one copy
+/// (see [`tt_config::agentboard_shared_dir`]).
 pub fn default_repos_path() -> PathBuf {
-    tt_config::agentboard_dir_lossy().join("repos.json")
+    tt_config::agentboard_shared_dir_lossy().join("repos.json")
 }
 
 /// Load the full config. Defaulted (both fields empty) on missing/corrupt file.

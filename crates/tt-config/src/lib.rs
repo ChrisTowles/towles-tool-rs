@@ -382,6 +382,32 @@ fn default_template_dir() -> String {
 /// - unset: auto-detect from the current working directory (see [`state_scope`]).
 pub const STATE_SCOPE_ENV: &str = "TT_STATE_SCOPE";
 
+/// How the active scope was determined. The distinction matters because
+/// shared stores (settings, tracked repos) ignore an *auto-detected* scope —
+/// they describe the user/machine, not one checkout — but a *forced* scope
+/// isolates everything, so tests and quarantined slots never touch the real
+/// shared files.
+enum Scope {
+    /// No scope — the shared daily-driver defaults.
+    None,
+    /// Auto-detected from the cwd (a checkout of this repo): instance state
+    /// is scoped, shared stores stay shared.
+    Auto(String),
+    /// Forced via [`STATE_SCOPE_ENV`]: full isolation, shared stores included.
+    Forced(String),
+}
+
+fn detect_scope() -> Scope {
+    match std::env::var(STATE_SCOPE_ENV) {
+        Ok(v) if !v.trim().is_empty() => Scope::Forced(sanitize_scope(&v)),
+        Ok(_) => Scope::None,
+        Err(_) => match std::env::current_dir().ok().as_deref().and_then(slot_scope_from_dir) {
+            Some(s) => Scope::Auto(s),
+            None => Scope::None,
+        },
+    }
+}
+
 /// The active slot scope for the running process, or `None` for the shared
 /// (unscoped) defaults.
 ///
@@ -396,10 +422,9 @@ pub const STATE_SCOPE_ENV: &str = "TT_STATE_SCOPE";
 /// project directory stays unscoped and keeps sharing the daily-driver config.
 /// The dir-name rule mirrors `scripts/slot-port.mjs` and the app's `slot_label`.
 pub fn state_scope() -> Option<String> {
-    match std::env::var(STATE_SCOPE_ENV) {
-        Ok(v) if !v.trim().is_empty() => Some(sanitize_scope(&v)),
-        Ok(_) => None,
-        Err(_) => std::env::current_dir().ok().as_deref().and_then(slot_scope_from_dir),
+    match detect_scope() {
+        Scope::None => None,
+        Scope::Auto(s) | Scope::Forced(s) => Some(s),
     }
 }
 
@@ -465,18 +490,35 @@ fn sanitize_scope(raw: &str) -> String {
         .collect()
 }
 
-/// Nest `base` under `slots/<scope>` when scoped, else return `base` unchanged.
-fn scoped_under(base: PathBuf) -> PathBuf {
-    match state_scope() {
-        Some(scope) => base.join("slots").join(scope),
-        None => base,
+/// The one nesting rule, pure for tests: instance state nests under any
+/// scope; shared stores nest only under a forced scope.
+fn nest(base: PathBuf, scope: &Scope, instance: bool) -> PathBuf {
+    match scope {
+        Scope::None => base,
+        Scope::Auto(s) if instance => base.join("slots").join(s),
+        Scope::Auto(_) => base,
+        Scope::Forced(s) => base.join("slots").join(s),
     }
 }
 
-/// Config directory, scope-aware. Unscoped: `~/.config/towles-tool` (matches the
-/// TS CLI on every platform). Scoped: `~/.config/towles-tool/slots/<scope>`.
+/// Nest `base` under `slots/<scope>` for *instance* state (sessions, windows,
+/// tt.db — anything one running checkout owns): any scope applies.
+fn instance_under(base: PathBuf) -> PathBuf {
+    nest(base, &detect_scope(), true)
+}
+
+/// Nest `base` under `slots/<scope>` for *shared* stores (settings, tracked
+/// repos — they describe the user/machine, so every checkout reads one copy):
+/// only a forced [`STATE_SCOPE_ENV`] scopes them.
+fn shared_under(base: PathBuf) -> PathBuf {
+    nest(base, &detect_scope(), false)
+}
+
+/// Config directory for shared stores (the settings file). Shared across
+/// checkouts: `~/.config/towles-tool` (matches the TS CLI on every platform);
+/// a forced `TT_STATE_SCOPE` nests it under `slots/<scope>`.
 pub fn config_dir() -> Result<PathBuf> {
-    Ok(scoped_under(home_dir()?.join(".config").join(TOOL_NAME)))
+    Ok(shared_under(home_dir()?.join(".config").join(TOOL_NAME)))
 }
 
 /// Full path to the settings file:
@@ -485,10 +527,12 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(config_dir()?.join(format!("{TOOL_NAME}.settings.json")))
 }
 
-/// Data directory, scope-aware. Unscoped: `<data_dir>/towles-tool`
-/// (e.g. `~/.local/share/towles-tool`). Scoped: `…/towles-tool/slots/<scope>`.
+/// Data directory, instance-scoped (holds tt.db). Unscoped:
+/// `<data_dir>/towles-tool` (e.g. `~/.local/share/towles-tool`). In a slot
+/// checkout: `…/towles-tool/slots/<scope>` — a branch's schema experiments
+/// must not touch the daily driver's database.
 pub fn data_dir() -> Result<PathBuf> {
-    Ok(scoped_under(dirs::data_dir().ok_or(Error::NoDataDir)?.join(TOOL_NAME)))
+    Ok(instance_under(dirs::data_dir().ok_or(Error::NoDataDir)?.join(TOOL_NAME)))
 }
 
 /// Full path to the data-hub SQLite store: `<data_dir>/tt.db`.
@@ -496,9 +540,15 @@ pub fn store_db_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("tt.db"))
 }
 
-/// Agentboard persistence directory (repos.json, sessions.json, …):
-/// `<config_dir>/agentboard`.
+/// Agentboard *instance* persistence directory (sessions.json, windows.json,
+/// collapse.json, … — one running app's state): scoped in a slot checkout.
 pub fn agentboard_dir() -> Result<PathBuf> {
+    Ok(instance_under(home_dir()?.join(".config").join(TOOL_NAME)).join("agentboard"))
+}
+
+/// Agentboard *shared* persistence directory (repos.json — which repos exist
+/// on this machine is the same fact from every checkout).
+pub fn agentboard_shared_dir() -> Result<PathBuf> {
     Ok(config_dir()?.join("agentboard"))
 }
 
@@ -507,6 +557,11 @@ pub fn agentboard_dir() -> Result<PathBuf> {
 /// `Result` (they historically fell back to `.`).
 pub fn agentboard_dir_lossy() -> PathBuf {
     agentboard_dir().unwrap_or_else(|_| PathBuf::from(".").join("agentboard"))
+}
+
+/// Infallible [`agentboard_shared_dir`] (see [`agentboard_dir_lossy`]).
+pub fn agentboard_shared_dir_lossy() -> PathBuf {
+    agentboard_shared_dir().unwrap_or_else(|_| PathBuf::from(".").join("agentboard"))
 }
 
 /// Load settings from the standard location, creating defaults if the file is missing.
@@ -920,18 +975,36 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let base = PathBuf::from("/home/x/.config/towles-tool");
 
-        // Non-empty → that scope.
+        // Non-empty → that scope — and a FORCED scope nests shared stores
+        // too, so tests and quarantined slots never touch real shared files.
         // SAFETY: guarded by ENV_LOCK; no other threads read env concurrently here.
         unsafe { std::env::set_var(STATE_SCOPE_ENV, "my-scope") };
         assert_eq!(state_scope(), Some("my-scope".to_string()));
-        assert_eq!(scoped_under(base.clone()), base.join("slots").join("my-scope"));
+        assert_eq!(instance_under(base.clone()), base.join("slots").join("my-scope"));
+        assert_eq!(shared_under(base.clone()), base.join("slots").join("my-scope"));
 
         // Empty → forced unscoped, regardless of cwd.
         unsafe { std::env::set_var(STATE_SCOPE_ENV, "") };
         assert_eq!(state_scope(), None);
-        assert_eq!(scoped_under(base.clone()), base);
+        assert_eq!(instance_under(base.clone()), base);
+        assert_eq!(shared_under(base.clone()), base);
 
         unsafe { std::env::remove_var(STATE_SCOPE_ENV) };
+    }
+
+    /// An auto-detected checkout scope splits: instance state nests, shared
+    /// stores (settings, repos.json) stay at the machine-wide default. Uses
+    /// the pure resolvers with a hand-built Scope since auto-detection reads
+    /// the real cwd.
+    #[test]
+    fn auto_scope_nests_instance_but_not_shared() {
+        let base = PathBuf::from("/home/x/.config/towles-tool");
+        let auto = Scope::Auto("towles-tool-rs-thing".into());
+        assert_eq!(
+            nest(base.clone(), &auto, true),
+            base.join("slots").join("towles-tool-rs-thing")
+        );
+        assert_eq!(nest(base.clone(), &auto, false), base);
     }
 
     #[test]
