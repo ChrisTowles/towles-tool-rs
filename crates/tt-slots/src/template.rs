@@ -1,13 +1,13 @@
-//! Renderer for the `{tt:...}` env-template grammar.
+//! Renderer for the `${tt:...}` env-template grammar.
 //!
 //! Tokens (anywhere in a non-comment line):
-//! - `{tt:port A-B}`  — port-pool claim: reuse the slot's existing in-range
+//! - `${tt:port A-B}`  — port-pool claim: reuse the slot's existing in-range
 //!   claim when no sibling holds it, else the first port in `A..=B` that no
 //!   sibling claims and that passes the caller's `port_free` probe.
-//! - `{tt:slot}`      — the slot number, e.g. `2`
-//! - `{tt:slot-name}` — the slot directory basename, e.g. `blog-slot-2`
-//! - `{tt:base}`      — the base branch this slot's work PRs into
-//! - `{tt:var NAME}`  — the rendered value of `NAME` from an earlier line
+//! - `${tt:slot}`      — the slot number, e.g. `2`
+//! - `${tt:slot-name}` — the slot directory basename, e.g. `blog-slot-2`
+//! - `${tt:base}`      — the base branch this slot's work PRs into
+//! - `${tt:var NAME}`  — the rendered value of `NAME` from an earlier line
 //!
 //! Unknown or malformed tokens are hard errors (typos must not render as
 //! literal text into a config file). Comment lines pass through untouched so
@@ -31,7 +31,7 @@ pub enum TemplateError {
     #[error("line {line}: invalid port range {lo}-{hi}")]
     InvalidRange { line: usize, lo: u16, hi: u16 },
 
-    #[error("line {line}: {{tt:var {name}}} referenced before {name} is defined")]
+    #[error("line {line}: ${{tt:var {name}}} referenced before {name} is defined")]
     VarBeforeDef { line: usize, name: String },
 
     #[error("line {line}: unknown or malformed token `{token}`")]
@@ -83,7 +83,7 @@ pub fn render(
         let key = envfile::line_key(raw_line).map(str::to_string);
         let mut line = raw_line.to_string();
 
-        while let Some(start) = line.find("{tt:") {
+        while let Some(start) = line.find("${tt:") {
             let Some(rel_end) = line[start..].find('}') else {
                 return Err(TemplateError::UnknownToken {
                     line: line_no,
@@ -92,7 +92,7 @@ pub fn render(
             };
             let end = start + rel_end;
             let token = line[start..=end].to_string();
-            let inner = &line[start + 4..end];
+            let inner = &line[start + 5..end];
 
             let replacement = if let Some(range) = inner.strip_prefix("port ") {
                 let (lo, hi) = parse_range(range).ok_or_else(|| TemplateError::UnknownToken {
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn claims_first_free_port_and_substitutes_identity() {
         let out = render_ok(
-            "UI_PORT={tt:port 3000-3009}\nNAME={tt:slot-name}\nN={tt:slot}\nBASE={tt:base}\n",
+            "UI_PORT=${tt:port 3000-3009}\nNAME=${tt:slot-name}\nN=${tt:slot}\nBASE=${tt:base}\n",
             &[],
             &[3000, 3001],
         )
@@ -230,8 +230,10 @@ mod tests {
         let existing: BTreeMap<String, String> =
             [("UI_PORT".to_string(), "3005".to_string())].into();
         let out =
-            render("UI_PORT={tt:port 3000-3009}\n", &ctx(), &existing, &BTreeSet::new(), |_| false)
-                .unwrap();
+            render("UI_PORT=${tt:port 3000-3009}\n", &ctx(), &existing, &BTreeSet::new(), |_| {
+                false
+            })
+            .unwrap();
         assert!(out.text.contains("UI_PORT=3005"));
         assert_eq!(out.reused, vec![("UI_PORT".to_string(), 3005)]);
         assert!(out.claimed.is_empty());
@@ -240,28 +242,28 @@ mod tests {
     #[test]
     fn sibling_claim_beats_reuse() {
         let out =
-            render_ok("UI_PORT={tt:port 3000-3009}\n", &[("UI_PORT", "3005")], &[3005]).unwrap();
+            render_ok("UI_PORT=${tt:port 3000-3009}\n", &[("UI_PORT", "3005")], &[3005]).unwrap();
         assert!(out.text.contains("UI_PORT=3000"), "got: {}", out.text);
         assert_eq!(out.claimed.len(), 1);
     }
 
     #[test]
     fn two_claims_on_the_same_pool_do_not_collide() {
-        let out = render_ok("A={tt:port 4000-4009}\nB={tt:port 4000-4009}\n", &[], &[]).unwrap();
+        let out = render_ok("A=${tt:port 4000-4009}\nB=${tt:port 4000-4009}\n", &[], &[]).unwrap();
         assert!(out.text.contains("A=4000"));
         assert!(out.text.contains("B=4001"));
     }
 
     #[test]
     fn pool_exhaustion_is_a_hard_error() {
-        let err = render_ok("A={tt:port 5000-5001}\n", &[], &[5000, 5001]).unwrap_err();
+        let err = render_ok("A=${tt:port 5000-5001}\n", &[], &[5000, 5001]).unwrap_err();
         assert_eq!(err, TemplateError::PoolExhausted { line: 1, lo: 5000, hi: 5001 });
     }
 
     #[test]
     fn var_reference_uses_rendered_value() {
         let out = render_ok(
-            "DB_PORT={tt:port 5432-5441}\nURL=postgres://localhost:{tt:var DB_PORT}/db\n",
+            "DB_PORT=${tt:port 5432-5441}\nURL=postgres://localhost:${tt:var DB_PORT}/db\n",
             &[("DB_PORT", "5439")],
             &[],
         )
@@ -271,28 +273,31 @@ mod tests {
 
     #[test]
     fn var_before_definition_errors() {
-        let err = render_ok("URL={tt:var DB_PORT}\nDB_PORT=5432\n", &[], &[]).unwrap_err();
+        let err = render_ok("URL=${tt:var DB_PORT}\nDB_PORT=5432\n", &[], &[]).unwrap_err();
         assert_eq!(err, TemplateError::VarBeforeDef { line: 1, name: "DB_PORT".to_string() });
     }
 
     #[test]
     fn unknown_token_is_a_hard_error() {
-        let err = render_ok("X={tt:prot 3000-3010}\n", &[], &[]).unwrap_err();
+        let err = render_ok("X=${tt:prot 3000-3010}\n", &[], &[]).unwrap_err();
         assert!(matches!(err, TemplateError::UnknownToken { line: 1, .. }));
     }
 
     #[test]
     fn comment_lines_pass_through_without_claiming() {
-        let out =
-            render_ok("# example: UI_PORT={tt:port 3000-3000}\nA={tt:port 3000-3000}\n", &[], &[])
-                .unwrap();
-        assert!(out.text.contains("# example: UI_PORT={tt:port 3000-3000}"));
+        let out = render_ok(
+            "# example: UI_PORT=${tt:port 3000-3000}\nA=${tt:port 3000-3000}\n",
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(out.text.contains("# example: UI_PORT=${tt:port 3000-3000}"));
         assert!(out.text.contains("A=3000"));
     }
 
     #[test]
     fn invalid_range_errors() {
-        let err = render_ok("A={tt:port 9000-8000}\n", &[], &[]).unwrap_err();
+        let err = render_ok("A=${tt:port 9000-8000}\n", &[], &[]).unwrap_err();
         assert_eq!(err, TemplateError::InvalidRange { line: 1, lo: 9000, hi: 8000 });
     }
 }

@@ -3,7 +3,7 @@
 //! Layout: `<root>/<repo>.git` (bare hub) + `<root>/<repo>-slot-N/` worktrees.
 //! This layer gathers real-world state (git, bind tests, docker) and delegates
 //! every decision to `tt-slots`; see that crate's docs for the convention and
-//! the `{tt:...}` template grammar. Ported from the shell probe at
+//! the `${tt:...}` template grammar. Ported from the shell probe at
 //! `~/code/p/blog-repos/slots.sh`.
 
 use std::collections::BTreeMap;
@@ -197,12 +197,12 @@ fn render_slot_env(sr: &SlotRoot, dir: &Path) -> Result<RenderSummary, String> {
         format!("{name} is not a slot of {} (expected {}-slot-N)", sr.repo, sr.repo)
     })?;
 
-    // template: the repo's own .env.example when it carries {tt:...} tokens
+    // template: the repo's own .env.example when it carries ${tt:...} tokens
     // (the committed convention), else the hub-side sidecar
     let repo_template = dir.join(".env.example");
     let sidecar = sr.root.join(TEMPLATE_SIDECAR);
     let template_path = match fs::read_to_string(&repo_template) {
-        Ok(text) if text.contains("{tt:") => repo_template,
+        Ok(text) if text.contains("${tt:") => repo_template,
         _ if sidecar.is_file() => sidecar,
         _ => {
             return Err(format!(
