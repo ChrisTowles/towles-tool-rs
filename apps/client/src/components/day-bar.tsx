@@ -2,7 +2,7 @@ import { CircleAlert, ListTodo } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useAgentboardState } from "@/lib/agentboard";
-import { fmtAge, useStoreSnapshot } from "@/lib/data";
+import { dmsNeedingAttention, fmtAge, useStoreSnapshot } from "@/lib/data";
 import { useNow } from "@/lib/now";
 import { useWorkspace } from "@/lib/workspace";
 
@@ -26,7 +26,8 @@ export function DayBar() {
   const failingPrs = snapshot.prs.filter(
     (p) => p.checks === "failing" || p.reviewState === "review_requested",
   ).length;
-  const needsYou = waitingAgents + failingPrs;
+  const pendingDms = dmsNeedingAttention(snapshot).length;
+  const needsYou = waitingAgents + failingPrs + pendingDms;
 
   const claudeRuns = snapshot.runs.filter((r) => r.collector.startsWith("claude"));
   const newestRun = claudeRuns.reduce((max, r) => Math.max(max, r.ranAt), 0);
@@ -58,6 +59,9 @@ export function DayBar() {
         {needsYou > 0 ? `${needsYou} need you` : "all clear"}
         {failingPrs > 0 && (
           <span className="text-red-500">· PR ✗</span>
+        )}
+        {pendingDms > 0 && (
+          <span className="text-rose-500 dark:text-rose-400">· DM</span>
         )}
       </button>
 

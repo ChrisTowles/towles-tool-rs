@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { Check, MessageCircleHeart } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { fmtAge, storeDmDismiss, useStoreSnapshot, type DmItem } from "@/lib/data";
+import { dmsNeedingAttention, fmtAge, storeDmDismiss, useStoreSnapshot } from "@/lib/data";
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
 import { isTauri } from "@/lib/tauri";
@@ -11,11 +11,6 @@ import { isTauri } from "@/lib/tauri";
 const WARN_MS = 5 * 60_000;
 /** Unanswered this long → the banner pulses and the OS taskbar flashes. */
 const ALARM_MS = 10 * 60_000;
-
-/** A DM needs attention while its newest message is theirs and undismissed. */
-function pendingDms(dms: DmItem[]): DmItem[] {
-  return dms.filter((d) => !d.fromMe && d.dismissedTs < d.ts);
-}
 
 /**
  * Full-width strip under the day bar for a watched Slack DM (the `slack:dm`
@@ -31,7 +26,7 @@ export function DmBanner() {
   // The message ts we already flashed the taskbar for — flash once per message.
   const flashedTs = useRef(0);
 
-  const dm = pendingDms(snapshot.dms)[0];
+  const dm = dmsNeedingAttention(snapshot)[0];
   const age = dm ? now - dm.ts : 0;
   const alarm = !!dm && age >= ALARM_MS;
   const warn = !!dm && age >= WARN_MS;
