@@ -120,6 +120,88 @@ fn meeting_with_title_creates_file() {
     assert!(content.contains("## Agenda"));
 }
 
+/// Path to this week's daily-notes file inside the sandbox.
+fn daily_note_path(sb: &Sandbox) -> PathBuf {
+    let monday = monday_of_this_week();
+    sb.base.join(format!(
+        "journal/{:04}/{:02}/daily-notes/{:04}-{:02}-{:02}-daily-notes.md",
+        monday.year(),
+        monday.month(),
+        monday.year(),
+        monday.month(),
+        monday.day(),
+    ))
+}
+
+#[test]
+fn jot_arg_creates_daily_note_and_appends_bullet() {
+    let sb = sandbox();
+    cmd(&sb)
+        .args(["journal", "jot", "shipped the parser"])
+        .assert()
+        .success()
+        .stdout(contains("Jotted to"));
+
+    let path = daily_note_path(&sb);
+    assert!(path.exists(), "expected daily-notes file at {}", path.display());
+    let content = std::fs::read_to_string(&path).unwrap();
+    // Weekly scaffold plus a `- HH:MM <text>` bullet (timestamp is HH:MM, so ':' present).
+    assert!(content.contains("# Journal for Week"));
+    assert!(content.contains(":"));
+    assert!(content.contains("shipped the parser"));
+    let bullet = content.lines().find(|l| l.contains("shipped the parser")).unwrap();
+    assert!(bullet.starts_with("- "), "bullet should start with `- `, got: {bullet}");
+}
+
+#[test]
+fn jot_reads_from_stdin_when_dash() {
+    let sb = sandbox();
+    cmd(&sb).args(["journal", "jot", "-"]).write_stdin("piped thought").assert().success();
+
+    let content = std::fs::read_to_string(daily_note_path(&sb)).unwrap();
+    assert!(content.contains("piped thought"));
+    // No editor is spawned: `preferredEditor` is `true` in the sandbox, which would
+    // succeed silently, but the command must not depend on it — success above proves it.
+}
+
+#[test]
+fn jot_reads_from_stdin_when_arg_omitted() {
+    let sb = sandbox();
+    cmd(&sb).args(["journal", "jot"]).write_stdin("no-arg thought\n").assert().success();
+
+    let content = std::fs::read_to_string(daily_note_path(&sb)).unwrap();
+    assert!(content.contains("no-arg thought"));
+    // Trailing whitespace is trimmed; the bullet is a single clean line.
+    assert!(content.contains("- "));
+    assert!(!content.contains("no-arg thought \n"));
+}
+
+#[test]
+fn jot_appends_multiple_bullets_in_order() {
+    let sb = sandbox();
+    cmd(&sb).args(["journal", "jot", "first"]).assert().success();
+    cmd(&sb).args(["journal", "jot", "second"]).assert().success();
+
+    let content = std::fs::read_to_string(daily_note_path(&sb)).unwrap();
+    let first = content.find("first").unwrap();
+    let second = content.find("second").unwrap();
+    assert!(first < second, "bullets should preserve capture order");
+}
+
+#[test]
+fn jot_rejects_empty_stdin() {
+    let sb = sandbox();
+    cmd(&sb)
+        .args(["journal", "jot"])
+        .write_stdin("   \n")
+        .assert()
+        .failure()
+        .stderr(contains("Nothing to jot"));
+
+    // Nothing was written.
+    assert!(!daily_note_path(&sb).exists());
+}
+
 #[test]
 fn list_shows_created_entries() {
     let sb = sandbox();
