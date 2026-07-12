@@ -216,26 +216,109 @@ struct Sweep<T> {
     skipped: Vec<String>,
 }
 
+/// Max repos swept concurrently. Each PR repo costs ~2 `gh` subprocesses, so a
+/// serial sweep of N repos is ~2N sequential network round-trips; fanning the
+/// per-repo work across a small pool cuts wall time without hammering the `gh`
+/// API. Kept modest deliberately — the win is overlapping network latency, not
+/// saturating CPU.
+const SWEEP_CONCURRENCY: usize = 4;
+
+/// One repo's place in the sweep, tagged so results can be re-sorted into input
+/// order after the parallel workers finish.
+enum RepoOutcome<T> {
+    Skipped(String),
+    Ok((String, Vec<T>)),
+    Err(String),
+}
+
 /// Run `collect_repo` over every existing repo dir, partitioning outcomes.
-fn sweep_repos<T>(
+///
+/// The per-repo `gh` calls are fanned across a bounded pool of scoped threads
+/// (see [`SWEEP_CONCURRENCY`]) so their network latency overlaps. Each repo's
+/// outcome is independent — one repo's error never sinks another's rows — and
+/// the returned [`Sweep`] preserves input order (results are re-sorted by
+/// position), so downstream dedup and full-vs-partial replace behave exactly as
+/// they did serially.
+fn sweep_repos<T: Send>(
     repo_dirs: &[PathBuf],
-    collect_repo: impl Fn(&std::path::Path) -> Result<(String, Vec<T>), String>,
+    collect_repo: impl Fn(&std::path::Path) -> Result<(String, Vec<T>), String> + Sync,
 ) -> Sweep<T> {
-    let mut sweep = Sweep { successes: Vec::new(), errors: Vec::new(), skipped: Vec::new() };
-    for dir in repo_dirs {
+    let outcomes = parallel_map(repo_dirs, SWEEP_CONCURRENCY, |dir| {
         // Tracked repos can go stale (moved/deleted dirs); a missing cwd makes
         // `Command` fail with a misleading "gh not found" error, so skip them
         // here and surface the skip in the run message instead.
         if !dir.is_dir() {
-            sweep.skipped.push(format!("skipped missing repo dir {}", dir.display()));
-            continue;
+            return RepoOutcome::Skipped(format!("skipped missing repo dir {}", dir.display()));
         }
         match collect_repo(dir) {
-            Ok(result) => sweep.successes.push(result),
-            Err(e) => sweep.errors.push(e),
+            Ok(result) => RepoOutcome::Ok(result),
+            Err(e) => RepoOutcome::Err(e),
+        }
+    });
+
+    let mut sweep = Sweep { successes: Vec::new(), errors: Vec::new(), skipped: Vec::new() };
+    for outcome in outcomes {
+        match outcome {
+            RepoOutcome::Skipped(msg) => sweep.skipped.push(msg),
+            RepoOutcome::Ok(result) => sweep.successes.push(result),
+            RepoOutcome::Err(e) => sweep.errors.push(e),
         }
     }
     sweep
+}
+
+/// Apply `f` to every item across up to `max_workers` scoped threads, returning
+/// the results in the input order regardless of completion order.
+///
+/// A simple shared atomic cursor hands each idle worker the next index (a bounded
+/// work queue), so a slow repo doesn't stall the others. Each worker keeps its
+/// own `(index, output)` pairs; after the scope joins they are merged and sorted
+/// by index, making the output deterministic. Panics in `f` propagate on join —
+/// but the collectors never panic (their contract), so in practice they don't.
+fn parallel_map<In, Out>(
+    items: &[In],
+    max_workers: usize,
+    f: impl Fn(&In) -> Out + Sync,
+) -> Vec<Out>
+where
+    In: Sync,
+    Out: Send,
+{
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let len = items.len();
+    if len == 0 {
+        return Vec::new();
+    }
+
+    let next = AtomicUsize::new(0);
+    let workers = max_workers.clamp(1, len);
+    let f = &f;
+
+    let mut collected: Vec<(usize, Out)> = Vec::with_capacity(len);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut local: Vec<(usize, Out)> = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= len {
+                            break;
+                        }
+                        local.push((i, f(&items[i])));
+                    }
+                    local
+                })
+            })
+            .collect();
+        for handle in handles {
+            collected.extend(handle.join().expect("sweep worker thread panicked"));
+        }
+    });
+
+    collected.sort_by_key(|(i, _)| *i);
+    collected.into_iter().map(|(_, out)| out).collect()
 }
 
 /// Apply a sweep's results to the store and record the run.
@@ -741,6 +824,63 @@ mod tests {
         let issues = store.issues().unwrap();
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].repo, "o/a", "full replace drops repos no longer tracked");
+    }
+
+    #[test]
+    fn parallel_map_preserves_input_order() {
+        // Reversed sleeps so completion order differs from input order; the
+        // result must still come back sorted by input position.
+        let inputs: Vec<usize> = (0..12).collect();
+        let out = parallel_map(&inputs, 4, |&n| {
+            std::thread::sleep(std::time::Duration::from_millis(((12 - n) % 5) as u64));
+            n * 10
+        });
+        assert_eq!(out, (0..12).map(|n| n * 10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn parallel_sweep_contains_failures_and_keeps_order() {
+        // Five tracked dirs; the middle one is missing (skipped) and one existing
+        // repo errors. The surviving repos' results must come back in input order
+        // and the failure must not sink them.
+        let root = tempfile::tempdir().unwrap();
+        let make = |name: &str| {
+            let p = root.path().join(name);
+            std::fs::create_dir(&p).unwrap();
+            p
+        };
+        let repo_dirs = vec![
+            make("repo0"),
+            make("repo1"),
+            root.path().join("gone"), // never created → skipped
+            make("repo3"),            // stubbed to error below
+            make("repo4"),
+        ];
+
+        // Stub collector: repo3 fails; every other existing repo yields one issue
+        // whose number encodes its input position, so ordering is checkable.
+        let collect =
+            |dir: &std::path::Path| -> Result<(String, Vec<tt_store::IssueInput>), String> {
+                let name = dir.file_name().unwrap().to_string_lossy().to_string();
+                if name == "repo3" {
+                    return Err("gh failed in repo3: boom".to_string());
+                }
+                let n: i64 = name.trim_start_matches("repo").parse().unwrap();
+                Ok((name.clone(), vec![issue(&name, n)]))
+            };
+
+        let sweep = sweep_repos(&repo_dirs, collect);
+
+        // Order preserved: successes follow input order, minus the skip and error.
+        let repos: Vec<&str> = sweep.successes.iter().map(|(r, _)| r.as_str()).collect();
+        assert_eq!(repos, ["repo0", "repo1", "repo4"], "successes keep input order");
+        let numbers: Vec<i64> = sweep.successes.iter().map(|(_, v)| v[0].number).collect();
+        assert_eq!(numbers, [0, 1, 4], "each surviving repo's rows are intact");
+
+        assert_eq!(sweep.errors.len(), 1);
+        assert!(sweep.errors[0].contains("repo3"), "the failing repo is reported");
+        assert_eq!(sweep.skipped.len(), 1);
+        assert!(sweep.skipped[0].contains("gone"), "the missing dir is skipped, not errored");
     }
 
     #[test]
