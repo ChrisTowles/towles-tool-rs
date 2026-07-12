@@ -16,6 +16,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { useAgentboardState } from "@/lib/agentboard";
 import { buildAttentionFeed, type AttentionItem, type AttentionKind } from "@/lib/attention-feed";
+import {
+  alwaysOnHealth,
+  worstCollectorState,
+  type CollectorState,
+} from "@/lib/collector-health";
 import { fmtAge, useStoreSnapshot } from "@/lib/data";
 import { pickTopTask } from "@/lib/day-top-task";
 import { useNow } from "@/lib/now";
@@ -41,9 +46,10 @@ export function DayBar() {
   const feed = buildAttentionFeed(snapshot, agentState);
   const needsYou = feed.length;
 
-  const claudeRuns = snapshot.runs.filter((r) => r.collector.startsWith("claude"));
-  const newestRun = claudeRuns.reduce((max, r) => Math.max(max, r.ranAt), 0);
-  const fresh = newestRun > 0 && now - newestRun < 30 * 60_000;
+  // Freshness dot: colour from the worst always-on collector (prs/issues), not
+  // from calendar — which is off by default and would otherwise pin the dot amber.
+  const collectorHealth = alwaysOnHealth(snapshot.runs, now);
+  const dotState = worstCollectorState(collectorHealth);
 
   function navigate(item: AttentionItem) {
     setFeedOpen(false);
@@ -97,19 +103,14 @@ export function DayBar() {
 
       <Tooltip>
         <TooltipTrigger asChild>
-          <span
-            className={cn(
-              "size-2 rounded-full",
-              fresh ? "bg-green-500" : "bg-amber-500",
-            )}
-          />
+          <span className={cn("size-2 rounded-full", DOT_COLOR[dotState])} />
         </TooltipTrigger>
         <TooltipContent>
           <div className="flex flex-col gap-0.5">
-            {claudeRuns.length === 0 && <span>No collector runs yet</span>}
-            {claudeRuns.map((r) => (
-              <span key={r.collector}>
-                {r.collector} · {fmtAge(r.ranAt, now)}
+            {collectorHealth.map((h) => (
+              <span key={h.key}>
+                {h.label} · {STATE_LABEL[h.state]}
+                {h.run ? ` (${fmtAge(h.run.ranAt, now)})` : ""}
               </span>
             ))}
           </div>
@@ -118,6 +119,23 @@ export function DayBar() {
     </div>
   );
 }
+
+/** Dot tint per collector state — green only when fresh, red when a collector is
+ * failing, amber for the in-between (stale data, or nothing collected yet). */
+const DOT_COLOR: Record<CollectorState, string> = {
+  fresh: "bg-green-500",
+  stale: "bg-amber-500",
+  "never-ran": "bg-amber-500",
+  failing: "bg-red-500",
+};
+
+/** Short human label per collector state for the freshness tooltip. */
+const STATE_LABEL: Record<CollectorState, string> = {
+  fresh: "fresh",
+  stale: "stale",
+  "never-ran": "no runs yet",
+  failing: "failing",
+};
 
 /** Icon + accent (paired dark variant) per attention kind. */
 const KIND_META: Record<AttentionKind, { icon: LucideIcon; tone: string }> = {

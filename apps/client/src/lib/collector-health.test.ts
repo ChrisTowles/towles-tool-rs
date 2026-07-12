@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  ALWAYS_ON_COLLECTORS,
+  alwaysOnHealth,
   classifyRun,
   collectorHealth,
   dataRefreshedAt,
   DEFAULT_STALE_MS,
   KNOWN_COLLECTORS,
+  worstCollectorState,
+  type CollectorHealth,
   type CollectorState,
 } from "./collector-health";
 import type { CollectRun } from "./data";
@@ -132,5 +136,62 @@ describe("dataRefreshedAt", () => {
       run({ collector: "issues", ranAt: NOW - 2000, ok: false }),
     ];
     expect(dataRefreshedAt(runs, NOW)).toBeUndefined();
+  });
+});
+
+describe("worstCollectorState", () => {
+  const h = (state: CollectorState): CollectorHealth => ({
+    key: "prs",
+    label: "Pull requests",
+    state,
+    run: undefined,
+  });
+
+  it("is fresh for an empty list (nothing to judge)", () => {
+    expect(worstCollectorState([])).toBe("fresh");
+  });
+
+  it("stays fresh when every collector is fresh", () => {
+    expect(worstCollectorState([h("fresh"), h("fresh")])).toBe("fresh");
+  });
+
+  it("prefers stale over fresh", () => {
+    expect(worstCollectorState([h("fresh"), h("stale")])).toBe("stale");
+  });
+
+  it("prefers never-ran over stale", () => {
+    expect(worstCollectorState([h("stale"), h("never-ran")])).toBe("never-ran");
+  });
+
+  it("failing beats everything", () => {
+    expect(worstCollectorState([h("failing"), h("never-ran"), h("stale"), h("fresh")])).toBe(
+      "failing",
+    );
+  });
+});
+
+describe("alwaysOnHealth", () => {
+  it("covers only the always-on collectors, in declared order", () => {
+    const health = alwaysOnHealth([], NOW);
+    expect(health.map((x) => x.key)).toEqual([...ALWAYS_ON_COLLECTORS]);
+    expect(ALWAYS_ON_COLLECTORS).not.toContain("claude:calendar");
+  });
+
+  it("ignores a disabled calendar collector when colouring the dot", () => {
+    // Calendar never runs (off by default); prs/issues are fresh. The dot must
+    // read fresh, not amber, despite calendar's perpetual never-ran.
+    const runs: CollectRun[] = [
+      run({ collector: "prs", ranAt: NOW - 1000 }),
+      run({ collector: "issues", ranAt: NOW - 1000 }),
+    ];
+    expect(worstCollectorState(alwaysOnHealth(runs, NOW))).toBe("fresh");
+  });
+
+  it("surfaces a failing always-on collector as the dot state", () => {
+    const runs: CollectRun[] = [
+      run({ collector: "prs", ranAt: NOW - 1000, ok: false }),
+      run({ collector: "issues", ranAt: NOW - 1000 }),
+    ];
+    expect(worstCollectorState(alwaysOnHealth(runs, NOW))).toBe("failing");
   });
 });
