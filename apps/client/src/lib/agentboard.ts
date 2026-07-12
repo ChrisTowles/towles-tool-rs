@@ -765,6 +765,42 @@ export function onOpenSessionRequest(cb: (req: PendingOpenSession) => void): () 
   return () => openSessionListeners.delete(cb);
 }
 
+/**
+ * A read-only "reveal this folder/session in Agentboard" handoff — the command
+ * palette's jump-to-repo/session entries. Unlike {@link requestOpenSession},
+ * this only focuses/selects (no PTY writes, no `claude --resume`): a `folder`
+ * request focuses the checkout, a `session` request also selects that session's
+ * pane. Same one-shot-mailbox shape as the open-session bridge, because
+ * Agentboard may not be mounted yet when the palette fires (its screen mounts
+ * on first visit): deliver now if a listener is mounted, else stash for the
+ * screen's mount effect to consume via {@link consumePendingAgentboardNav}.
+ */
+export type AgentboardNav =
+  | { kind: "folder"; folderDir: string }
+  | { kind: "session"; folderDir: string; sessionId: string };
+
+let pendingNav: AgentboardNav | null = null;
+const navListeners = new Set<(req: AgentboardNav) => void>();
+
+export function requestAgentboardNav(req: AgentboardNav) {
+  if (navListeners.size > 0) {
+    for (const l of navListeners) l(req);
+    return;
+  }
+  pendingNav = req;
+}
+
+export function consumePendingAgentboardNav(): AgentboardNav | null {
+  const req = pendingNav;
+  pendingNav = null;
+  return req;
+}
+
+export function onAgentboardNavRequest(cb: (req: AgentboardNav) => void): () => void {
+  navListeners.add(cb);
+  return () => navListeners.delete(cb);
+}
+
 // --- Session lifecycle + layout shared types ---
 
 /** The lifecycle actions a session row can trigger. All are PTY writes — the
