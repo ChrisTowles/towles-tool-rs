@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentOrNextEvent, eventIsLive, type CalEvent } from "./data";
+import { currentOrNextEvent, eventIsLive, fmtCountdown, type CalEvent } from "./data";
 
 const ev = (id: number, startTs: number, endTs?: number): CalEvent => ({
   id,
@@ -50,5 +50,29 @@ describe("eventIsLive", () => {
 
   it("is never live without an endTs", () => {
     expect(eventIsLive(ev(1, 300), 400)).toBe(false);
+  });
+});
+
+describe("fmtCountdown", () => {
+  it("is `now` at zero or in the past", () => {
+    expect(fmtCountdown(0)).toBe("now");
+    expect(fmtCountdown(-5000)).toBe("now");
+  });
+
+  it("uses minute/hour granularity above the ~2m threshold (unchanged)", () => {
+    expect(fmtCountdown(120_000)).toBe("2m"); // exactly at the threshold
+    expect(fmtCountdown(22 * 60_000)).toBe("22m");
+    expect(fmtCountdown(65 * 60_000)).toBe("1h 05m");
+  });
+
+  it("switches to m:ss under the threshold", () => {
+    expect(fmtCountdown(119_000)).toBe("1:59");
+    expect(fmtCountdown(90_000)).toBe("1:30");
+    expect(fmtCountdown(59_000)).toBe("0:59");
+    expect(fmtCountdown(5_000)).toBe("0:05");
+  });
+
+  it("rounds a partial second up so it never shows 0:00 while positive", () => {
+    expect(fmtCountdown(500)).toBe("0:01");
   });
 });

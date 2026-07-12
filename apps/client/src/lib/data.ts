@@ -281,13 +281,22 @@ export function fmtDay(ms: number): string {
   });
 }
 
-/** `<1m` / `22m` / `1h 05m` — a positive duration; `now` for anything
- * non-positive. Sub-minute positive spans render `<1m` instead of rounding to
- * `0m`, so a meeting 20s out reads "in <1m", never "in 0m". */
+/** Below this span the countdown switches to `m:ss` and (in the Cockpit) ticks
+ * every second, so the final approach reads "1:30 … 0:59 … 0:05" instead of a
+ * coarse "1m" that the 15s shared clock can leave stale 20s out. */
+export const COUNTDOWN_SECONDS_THRESHOLD = 2 * MINUTE;
+
+/** `0:59` / `1:30` (under {@link COUNTDOWN_SECONDS_THRESHOLD}) / `22m` /
+ * `1h 05m` — a positive duration; `now` for anything non-positive. */
 export function fmtCountdown(msUntil: number): string {
   if (msUntil <= 0) return "now";
+  if (msUntil < COUNTDOWN_SECONDS_THRESHOLD) {
+    const secs = Math.ceil(msUntil / 1000);
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
   const mins = Math.round(msUntil / MINUTE);
-  if (mins < 1) return "<1m";
   if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);
   const m = mins % 60;
