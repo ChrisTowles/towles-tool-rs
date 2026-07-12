@@ -13,6 +13,7 @@ import {
   encodePaste,
   isWideRun,
   rgb,
+  scrollbackKey,
   stepMatch,
   viewportMatches,
   TERM_CLEAR_COMMAND,
@@ -477,6 +478,44 @@ export function TerminalView({
         if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "c")) {
           e.preventDefault();
           copySelection();
+          return;
+        }
+        // Scrollback navigation: Shift+PageUp/PageDown scroll one page,
+        // Shift+Home/End jump to the top / live bottom — driven through the
+        // same `term_scroll` path as the wheel. On the alternate screen a
+        // fullscreen TUI owns these keys, so we forward the unshifted key as
+        // ordinary input instead (mirroring the wheel handler's alt-scroll
+        // branch).
+        const scrollback = scrollbackKey(e);
+        if (scrollback) {
+          e.preventDefault();
+          if (grid.modes.altScreen) {
+            const base = encodeKey(
+              { key: e.key, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false },
+              grid.modes,
+            );
+            if (base !== null) write(base);
+            return;
+          }
+          const page = Math.max(1, grid.rows - 1);
+          switch (scrollback) {
+            case "page-up":
+              grid.scrolledBack = true;
+              scroll(-page);
+              break;
+            case "page-down":
+              scroll(page); // engine clamps at the live bottom
+              break;
+            case "top":
+              if (grid.viewportTop > 0) {
+                grid.scrolledBack = true;
+                scroll(-grid.viewportTop);
+              }
+              break;
+            case "bottom":
+              backToLive();
+              break;
+          }
           return;
         }
         const seq = encodeKey(e, grid.modes);
