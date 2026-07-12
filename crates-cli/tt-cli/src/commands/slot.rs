@@ -1,15 +1,15 @@
 //! `ttr slot` — worktree-slot lifecycle over a primary checkout.
 //!
-//! Thin CLI shell: creation/rendering lives in `tt_slots::ops` (shared with
-//! the app's `slot_create` command); removal guards and docker cleanup stay
-//! here since only the CLI removes slots today. See the tt-slots crate docs
-//! for the convention and the `${tt:...}` template grammar.
+//! Thin CLI shell: creation/rendering/removal all live in `tt_slots::ops`
+//! (shared with the app's `slot_create`/`slot_remove` commands). See the
+//! tt-slots crate docs for the convention and the `${tt:...}` template
+//! grammar.
 
 use std::fs;
 use std::path::Path;
 
-use tt_slots::ops::{self, CreateOpts, SlotRoot};
-use tt_slots::{RmBlocked, envfile, guards};
+use tt_slots::ops::{self, CreateOpts, RemoveOpts, SlotRoot};
+use tt_slots::{envfile, guards};
 
 use crate::cli::SlotCommands;
 use crate::ui;
@@ -170,143 +170,11 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
 }
 
 fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
-    let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
-    if name == "primary" || sr.primary.file_name().and_then(|n| n.to_str()) == Some(name) {
-        return Err(
-            "refusing to remove the primary checkout — it owns every slot's git state".to_string()
-        );
+    let opts = RemoveOpts { root: root.map(Path::to_path_buf), name: name.to_string(), force };
+    let removed = ops::remove_slot(&opts).map_err(|e| e.to_string())?;
+    for message in &removed.messages {
+        ui::warning(message);
     }
-    let dir = sr.slot_dir(name);
-    if !dir.is_dir() {
-        return Err(format!("no slot {name} in {}", sr.slots_dir().display()));
-    }
-    let dir_s = dir.to_string_lossy().to_string();
-
-    // broken worktree: git can't even report status
-    if ops::git_slot(&dir, &["status", "--porcelain"]).map(|o| !o.ok()).unwrap_or(true) {
-        if !force {
-            return Err(format!(
-                "{name}'s worktree is broken (git fails inside it) — re-run with --force to remove anyway"
-            ));
-        }
-        ui::warning(
-            "skipping guards (--force): worktree is broken — removing directory + registration",
-        );
-        docker_cleanup(name, &dir);
-        fs::remove_dir_all(&dir).map_err(|e| format!("cannot remove {dir_s}: {e}"))?;
-        let _ = ops::git_primary(&sr.primary, &["worktree", "prune"]);
-        ui::success(&format!("removed {name} (broken)"));
-        return Ok(());
-    }
-
-    let dirty = ops::git_slot(&dir, &["status", "--porcelain"])
-        .map(|o| guards::dirty_entry_count(&o.stdout))
-        .unwrap_or(0);
-    let unreachable = ops::git_slot(
-        &dir,
-        &[
-            "rev-list",
-            "--count",
-            "HEAD",
-            "--not",
-            "--branches",
-            "--remotes",
-        ],
-    )
-    .ok()
-    .filter(|o| o.ok())
-    .and_then(|o| guards::unreachable_commit_count(&o.stdout))
-    .unwrap_or(0);
-    let env_text = fs::read_to_string(dir.join(".env")).unwrap_or_default();
-    let foreign: Vec<u16> = envfile::port_claims(&env_text)
-        .into_iter()
-        .filter(|&p| ops::port_occupied(p) && !docker_owns_port(name, p))
-        .collect();
-
-    let blocked = guards::check_removal(dirty, unreachable, &foreign);
-    if !blocked.is_empty() {
-        if !force {
-            let reasons: Vec<String> = blocked.iter().map(RmBlocked::to_string).collect();
-            return Err(format!("refused to remove {name}:\n  {}", reasons.join("\n  ")));
-        }
-        for reason in &blocked {
-            ui::warning(&format!("skipping guard (--force): {reason}"));
-        }
-    }
-
-    docker_cleanup(name, &dir);
-
-    let remove = if force {
-        ops::git_primary(&sr.primary, &["worktree", "remove", "--force", &dir_s])
-    } else {
-        ops::git_primary(&sr.primary, &["worktree", "remove", &dir_s])
-    };
-    match remove {
-        Ok(out) if out.ok() => {}
-        result => {
-            let detail = match result {
-                Ok(out) => out.stderr.trim().to_string(),
-                Err(e) => e.to_string(),
-            };
-            if !force {
-                return Err(format!("git worktree remove failed:\n{detail}"));
-            }
-            ui::warning(&format!("git worktree remove failed ({detail}) — removing directory"));
-            fs::remove_dir_all(&dir).map_err(|e| format!("cannot remove {dir_s}: {e}"))?;
-        }
-    }
-    let _ = ops::git_primary(&sr.primary, &["worktree", "prune"]);
-    ui::success(&format!("removed {name} (ports released with its .env)"));
+    ui::success(&format!("removed {} (ports released with its .env)", removed.name));
     Ok(())
-}
-
-/// Whether a docker container owned by this slot publishes `port`.
-fn docker_owns_port(slot_name: &str, port: u16) -> bool {
-    let publish = format!("publish={port}");
-    tt_exec::run("docker", &["ps", "--filter", &publish, "--format", "{{.Names}}"])
-        .map(|out| {
-            out.ok()
-                && out
-                    .stdout
-                    .lines()
-                    .any(|line| guards::docker_resource_matches(line.trim(), slot_name))
-        })
-        .unwrap_or(false)
-}
-
-/// Compose down (containers, networks, volumes) then an anchored sweep of
-/// anything else named after the slot. Best-effort: a missing docker is fine.
-fn docker_cleanup(slot_name: &str, dir: &Path) {
-    let has_compose = [
-        "docker-compose.yml",
-        "docker-compose.yaml",
-        "compose.yml",
-        "compose.yaml",
-    ]
-    .iter()
-    .any(|f| dir.join(f).is_file());
-    if has_compose {
-        let _ = tt_exec::run_in_dir_with_timeout(
-            "docker",
-            &["compose", "down", "--volumes", "--remove-orphans"],
-            dir,
-            std::time::Duration::from_secs(120),
-        );
-    }
-    if let Ok(out) = tt_exec::run("docker", &["ps", "-a", "--format", "{{.Names}}"]) {
-        for container in out.stdout.lines().map(str::trim) {
-            if guards::docker_resource_matches(container, slot_name) {
-                ui::info(&format!("removing container {container}"));
-                let _ = tt_exec::run("docker", &["rm", "-f", container]);
-            }
-        }
-    }
-    if let Ok(out) = tt_exec::run("docker", &["volume", "ls", "--format", "{{.Name}}"]) {
-        for volume in out.stdout.lines().map(str::trim) {
-            if guards::docker_resource_matches(volume, slot_name) {
-                ui::info(&format!("removing volume {volume}"));
-                let _ = tt_exec::run("docker", &["volume", "rm", volume]);
-            }
-        }
-    }
 }
