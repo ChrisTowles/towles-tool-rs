@@ -57,6 +57,23 @@ pub fn journal_get_today() -> Result<TodayNote, String> {
     Ok(TodayNote { relative_path: relative_to(&base_folder, &info.full_path), content })
 }
 
+/// Replace the full content of a journal entry (path relative to the base folder).
+///
+/// `expected_original` is the content the UI last loaded; the save refuses to overwrite
+/// (returning an error the UI surfaces as "file changed on disk") when the file has
+/// changed since then, so a concurrent `journal_log` append or external edit is not
+/// silently lost. The underlying write is atomic (temp file + rename).
+#[tauri::command]
+pub fn journal_save(
+    relative_path: String,
+    expected_original: String,
+    content: String,
+) -> Result<(), String> {
+    let settings = load_settings()?;
+    let full_path = PathBuf::from(&settings.journal_settings.base_folder).join(&relative_path);
+    tt_journal::save::save_file(&full_path, &expected_original, &content).map_err(|e| e.to_string())
+}
+
 /// A listed journal entry, mirroring `entries::JournalEntry` minus the absolute path.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
