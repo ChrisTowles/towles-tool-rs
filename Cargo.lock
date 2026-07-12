@@ -5109,6 +5109,7 @@ dependencies = [
  "tt-config",
  "tt-doctor",
  "tt-exec",
+ "tt-git",
  "tt-graph",
  "tt-journal",
  "tt-store",

@@ -1,6 +1,27 @@
 import { useEffect, useState } from "react";
-import { CalendarClock, CircleAlert, CircleDot, GitPullRequest, Video } from "lucide-react";
+import {
+  CalendarClock,
+  CircleAlert,
+  CircleDot,
+  ExternalLink,
+  GitBranchPlus,
+  GitPullRequest,
+  MoreHorizontal,
+  Send,
+  Video,
+} from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
@@ -8,10 +29,29 @@ import {
   eventIsLive,
   fmtClock,
   fmtCountdown,
+  type IssueItem,
   useStoreSnapshot,
 } from "@/lib/data";
+import { useAgentboardState } from "@/lib/agentboard";
+import { invokeOrThrow } from "@/lib/tauri";
 import { openExternalUrl } from "@/lib/open-url";
 import { Empty, IssueRow, Panel, PrRow, prNeedsYou, prRank } from "@/components/store-bits";
+
+/** A checkout the app already tracks (agentboard folder) that a Cockpit issue
+ * can be dispatched into — its repo `origin` matches the issue's repo. */
+type SlotTarget = { dir: string; branch: string; name: string };
+
+/**
+ * Does an agentboard repo's `origin` URL name the same GitHub repo as an issue's
+ * `owner/name`? Folds the ssh/https/scp forms enough to compare the trailing
+ * `owner/name` — the Rust guard (`validate_slot_for_repo`) re-checks
+ * authoritatively before any dispatch, so this only needs to filter the menu.
+ */
+function repoMatches(originUrl: string | null | undefined, repo: string): boolean {
+  if (!originUrl) return false;
+  const norm = originUrl.toLowerCase().replace(/\.git$/, "").replace(/:/g, "/");
+  return norm.endsWith(`/${repo.toLowerCase()}`);
+}
 
 /**
  * Cockpit — the day home. One dense screen: how long until the next meeting, the
@@ -20,7 +60,16 @@ import { Empty, IssueRow, Panel, PrRow, prNeedsYou, prRank } from "@/components/
  */
 export function CockpitScreen() {
   const { snapshot, live } = useStoreSnapshot();
+  const agentState = useAgentboardState();
   const [now, setNow] = useState(() => Date.now());
+
+  // Candidate slot checkouts for an issue: the folders of every tracked repo
+  // whose origin matches the issue's repo. Empty when none are tracked, which
+  // disables the assign/branch actions with an explanatory item.
+  const slotsFor = (repo: string): SlotTarget[] =>
+    agentState.repos
+      .filter((r) => repoMatches(r.originUrl, repo))
+      .flatMap((r) => r.folders.map((f) => ({ dir: f.dir, branch: f.branch, name: f.name })));
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 30_000);
@@ -148,12 +197,123 @@ export function CockpitScreen() {
               snapshot.issues
                 .slice()
                 .sort((a, b) => b.updatedTs - a.updatedTs)
-                .map((issue) => <IssueRow key={`${issue.repo}#${issue.number}`} issue={issue} now={now} />)
+                .map((issue) => (
+                  <IssueRow
+                    key={`${issue.repo}#${issue.number}`}
+                    issue={issue}
+                    now={now}
+                    actions={<IssueActions issue={issue} slots={slotsFor(issue.repo)} />}
+                  />
+                ))
             )}
           </Panel>
         </div>
       </ScrollArea>
     </div>
+  );
+}
+
+/**
+ * Per-issue action menu for the Cockpit issue queue: open the issue in the
+ * browser, or dispatch it into a tracked slot checkout (assign via
+ * `gh issue develop`, or just create a local branch from the issue title). The
+ * slot submenus list the checkouts whose repo matches the issue; the Rust
+ * command re-runs the clean-tree guard and reports success/failure via toast.
+ */
+function IssueActions({ issue, slots }: { issue: IssueItem; slots: SlotTarget[] }) {
+  async function run(cmd: string, args: Record<string, unknown>) {
+    try {
+      const msg = await invokeOrThrow<string>(cmd, args);
+      toast.success(msg);
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-7 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
+          aria-label="Issue actions"
+        >
+          <MoreHorizontal className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-52">
+        <DropdownMenuItem onSelect={() => void openExternalUrl(issue.url)}>
+          <ExternalLink className="size-4" />
+          Open in browser
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <SlotSubmenu
+          icon={<Send className="size-4" />}
+          label="Assign to slot"
+          slots={slots}
+          onPick={(slot) =>
+            void run("cockpit_assign_issue", {
+              repo: issue.repo,
+              number: issue.number,
+              slotDir: slot.dir,
+            })
+          }
+        />
+        <SlotSubmenu
+          icon={<GitBranchPlus className="size-4" />}
+          label="Create branch"
+          slots={slots}
+          onPick={(slot) =>
+            void run("cockpit_create_issue_branch", {
+              repo: issue.repo,
+              number: issue.number,
+              title: issue.title,
+              slotDir: slot.dir,
+            })
+          }
+        />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** A submenu that lists candidate slot checkouts, or a disabled hint when the
+ * issue's repo isn't tracked as an agentboard repo. */
+function SlotSubmenu({
+  icon,
+  label,
+  slots,
+  onPick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  slots: SlotTarget[];
+  onPick: (slot: SlotTarget) => void;
+}) {
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>
+        {icon}
+        {label}
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="w-64">
+        {slots.length === 0 ? (
+          <DropdownMenuItem disabled>No matching slot checkout</DropdownMenuItem>
+        ) : (
+          slots.map((slot) => (
+            <DropdownMenuItem key={slot.dir} onSelect={() => onPick(slot)}>
+              <div className="flex min-w-0 flex-col">
+                <span className="truncate">{slot.name}</span>
+                <span className="truncate font-mono text-xs text-muted-foreground">
+                  {slot.branch}
+                </span>
+              </div>
+            </DropdownMenuItem>
+          ))
+        )}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
   );
 }
 

@@ -57,9 +57,44 @@ pub fn stash_count(stash_list: &str) -> usize {
     stash_list.lines().filter(|l| !l.trim().is_empty()).count()
 }
 
+/// Extract the GitHub `owner/name` slug from a git remote URL. Reuses
+/// [`normalize_remote_url`] to fold the ssh/https/scp forms, then keeps the last
+/// two path segments (`github.com/owner/name` → `owner/name`), lowercased.
+/// `None` when the URL lacks two path segments (e.g. a bare host or a local
+/// path), so the caller can treat it as "not a GitHub checkout".
+pub fn repo_slug_from_remote(url: &str) -> Option<String> {
+    let normalized = normalize_remote_url(url);
+    let mut segments = normalized.split('/').filter(|s| !s.is_empty());
+    // Drop everything before the final owner/name pair.
+    let parts: Vec<&str> = segments.by_ref().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let name = parts[parts.len() - 1];
+    let owner = parts[parts.len() - 2];
+    Some(format!("{owner}/{name}"))
+}
+
+/// The in-progress-work half of the guard, shared by both entry points: reject
+/// a dirty working tree first, then a non-empty stash. Order matters — the
+/// failures surface most-to-least obvious.
+fn check_clean(status_porcelain: &str, stash_list: &str) -> Result<(), SlotBlocked> {
+    let entries = dirty_entry_count(status_porcelain);
+    if entries > 0 {
+        return Err(SlotBlocked::DirtyTree { entries });
+    }
+    let count = stash_count(stash_list);
+    if count > 0 {
+        return Err(SlotBlocked::StashNotEmpty { count });
+    }
+    Ok(())
+}
+
 /// The full assignment guard, in the order the failures should surface:
 /// wrong repo first (the assignment makes no sense at all), then in-progress
-/// work (uncommitted changes, then stashes).
+/// work (uncommitted changes, then stashes). Matches two full remote URLs — the
+/// CLI's `ttr gh assign` compares the slot against the current checkout's
+/// `origin`.
 pub fn validate_slot(
     expected_remote: &str,
     slot_remote: &str,
@@ -71,15 +106,25 @@ pub fn validate_slot(
     if expected != found {
         return Err(SlotBlocked::RemoteMismatch { expected, found });
     }
-    let entries = dirty_entry_count(status_porcelain);
-    if entries > 0 {
-        return Err(SlotBlocked::DirtyTree { entries });
+    check_clean(status_porcelain, stash_list)
+}
+
+/// The assignment guard keyed by a GitHub `owner/name` slug rather than a full
+/// remote URL. Used by the desktop app, where the "expected" repo comes from
+/// an issue's `repo` field (`owner/name`), not a current-directory checkout.
+/// Same failure order as [`validate_slot`].
+pub fn validate_slot_for_repo(
+    expected_repo: &str,
+    slot_remote: &str,
+    status_porcelain: &str,
+    stash_list: &str,
+) -> Result<(), SlotBlocked> {
+    let expected = expected_repo.trim().to_lowercase();
+    let found = repo_slug_from_remote(slot_remote).unwrap_or_default();
+    if expected != found {
+        return Err(SlotBlocked::RemoteMismatch { expected, found });
     }
-    let count = stash_count(stash_list);
-    if count > 0 {
-        return Err(SlotBlocked::StashNotEmpty { count });
-    }
-    Ok(())
+    check_clean(status_porcelain, stash_list)
 }
 
 #[cfg(test)]
@@ -167,5 +212,87 @@ mod tests {
         assert_eq!(err, SlotBlocked::StashNotEmpty { count: 1 });
         // Error text is user-facing; keep the singular/plural readable.
         assert!(err.to_string().contains("1 stash entry"));
+    }
+
+    #[test]
+    fn repo_slug_extracts_owner_name_from_every_form() {
+        let forms = [
+            "git@github.com:ChrisTowles/towles-tool-rs.git",
+            "https://github.com/ChrisTowles/towles-tool-rs.git",
+            "https://github.com/christowles/towles-tool-rs",
+            "ssh://git@github.com/ChrisTowles/towles-tool-rs",
+        ];
+        for form in forms {
+            assert_eq!(
+                repo_slug_from_remote(form).as_deref(),
+                Some("christowles/towles-tool-rs"),
+                "failed for {form}"
+            );
+        }
+    }
+
+    #[test]
+    fn repo_slug_is_none_without_two_segments() {
+        assert_eq!(repo_slug_from_remote("github.com"), None);
+        assert_eq!(repo_slug_from_remote(""), None);
+    }
+
+    #[test]
+    fn validate_for_repo_matches_issue_slug_against_slot_remote() {
+        assert_eq!(
+            validate_slot_for_repo(
+                "ChrisTowles/towles-tool-rs",
+                "git@github.com:christowles/towles-tool-rs.git",
+                "",
+                "",
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn validate_for_repo_rejects_a_different_repo() {
+        let err = validate_slot_for_repo(
+            "ChrisTowles/towles-tool-rs",
+            "git@github.com:someone/other-repo.git",
+            "",
+            "",
+        )
+        .unwrap_err();
+        assert!(matches!(err, SlotBlocked::RemoteMismatch { .. }));
+    }
+
+    #[test]
+    fn validate_for_repo_rejects_wrong_repo_before_dirty_checks() {
+        // Repo mismatch wins over a dirty tree — same precedence as validate_slot.
+        let err = validate_slot_for_repo(
+            "u/repo",
+            "git@github.com:other/elsewhere.git",
+            "?? junk.txt\n",
+            "",
+        )
+        .unwrap_err();
+        assert!(matches!(err, SlotBlocked::RemoteMismatch { .. }));
+    }
+
+    #[test]
+    fn validate_for_repo_rejects_dirty_and_stashed_matching_slots() {
+        let dirty = validate_slot_for_repo(
+            "u/repo",
+            "https://github.com/u/repo.git",
+            " M a.rs\n?? b.txt\n",
+            "",
+        )
+        .unwrap_err();
+        assert_eq!(dirty, SlotBlocked::DirtyTree { entries: 2 });
+
+        let stashed = validate_slot_for_repo(
+            "u/repo",
+            "https://github.com/u/repo.git",
+            "",
+            "stash@{0}: WIP on main: abc123 wip\n",
+        )
+        .unwrap_err();
+        assert_eq!(stashed, SlotBlocked::StashNotEmpty { count: 1 });
     }
 }

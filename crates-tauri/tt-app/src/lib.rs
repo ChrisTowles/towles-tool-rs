@@ -7,6 +7,7 @@
 mod agentboard;
 mod claude_sessions;
 mod doctor;
+mod gh_actions;
 mod journal;
 mod resources;
 mod scheduler;
@@ -263,6 +264,8 @@ pub fn run() {
             store::store_delete_task,
             store::store_promote_task_to_issue,
             store::store_create_issue,
+            gh_actions::cockpit_assign_issue,
+            gh_actions::cockpit_create_issue_branch,
             store::store_dm_dismiss,
             store::journal_log,
             journal::journal_get_today,
