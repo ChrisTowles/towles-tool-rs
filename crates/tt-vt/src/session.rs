@@ -53,6 +53,9 @@ pub enum Input {
     /// Force the next render to be a full frame (re-shown pane needs a
     /// complete repaint; see [`Engine::request_full`]).
     RequestFull,
+    /// Drop scrollback history, keeping the visible screen (see
+    /// [`Engine::clear_scrollback`]).
+    ClearScrollback,
 }
 
 #[derive(Debug)]
@@ -126,6 +129,7 @@ impl Session {
                         let _ = engine.scroll_to(row);
                     }
                     Input::RequestFull => engine.request_full(),
+                    Input::ClearScrollback => engine.clear_scrollback(),
                 };
                 apply(first);
                 // Absorb further input until the frame interval since the

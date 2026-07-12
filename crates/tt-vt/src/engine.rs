@@ -181,6 +181,18 @@ impl Engine {
         self.force_full = true;
     }
 
+    /// Drop the scrollback history while leaving the visible screen intact
+    /// (right-click "Clear scrollback"). Feeds xterm's "erase saved lines"
+    /// sequence (CSI 3 J), which discards rows scrolled off the top but does
+    /// not touch the active viewport. Clearing scrollback doesn't dirty any
+    /// visible row, so the next render is forced full — that way the frame
+    /// carries the collapsed `scrollback_rows`/`viewport_top` to the UI (it
+    /// derives "scrolled back" and search highlighting from those).
+    pub fn clear_scrollback(&mut self) {
+        self.feed(b"\x1b[3J");
+        self.force_full = true;
+    }
+
     /// Case-insensitively search the full screen (scrollback + active area)
     /// for `query`, top to bottom, up to `limit` matches. Rows come from a
     /// one-shot plain-text format pass (fast pre-filter); matching rows are

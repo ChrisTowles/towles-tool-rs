@@ -53,6 +53,12 @@ export interface Frame {
   viewportTop: number;
 }
 
+/** Tauri IPC command that drops a terminal's scrollback while leaving the
+ * visible screen intact (right-click "Clear scrollback"). Handled by
+ * `term_clear` in crates-tauri/tt-app/src/terminal.rs, which forces a full
+ * frame so the view learns the scrollback depth collapsed. */
+export const TERM_CLEAR_COMMAND = "term_clear";
+
 /** One scrollback search hit (mirrors tt-vt's `SearchMatch`): absolute row
  * (0 = oldest scrollback row), starting column, width in columns. */
 export interface SearchMatch {

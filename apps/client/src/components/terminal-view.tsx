@@ -15,6 +15,7 @@ import {
   rgb,
   stepMatch,
   viewportMatches,
+  TERM_CLEAR_COMMAND,
   type Cursor,
   type Frame,
   type Run,
@@ -34,6 +35,7 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
   ContextMenuShortcut,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
@@ -100,6 +102,9 @@ export function TerminalView({
     paste: () => void;
     selectAll: () => void;
     hasSelection: () => boolean;
+    clearScrollback: () => void;
+    /** The URL under a canvas pixel (right-click point), or null. */
+    linkAtPoint: (offsetX: number, offsetY: number) => TermLink | null;
   } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -107,8 +112,10 @@ export function TerminalView({
   const [matchCount, setMatchCount] = useState(0);
   const [currentMatch, setCurrentMatch] = useState(-1);
   // Right-click menu: `copyEnabled` is sampled from the live selection when the
-  // menu opens (Copy is dead when there's nothing selected).
+  // menu opens (Copy is dead when there's nothing selected). `menuLink` is the
+  // URL under the click point, sampled on contextmenu (drives "Open link").
   const [copyEnabled, setCopyEnabled] = useState(false);
+  const [menuLink, setMenuLink] = useState<TermLink | null>(null);
   // Copy-on-select preference, read live by the render effect's mouse handlers.
   const copyOnSelectRef = useCopyOnSelect();
 
@@ -520,6 +527,12 @@ export function TerminalView({
         paste: pasteClipboard,
         selectAll: () => void select("all"),
         hasSelection: () => rowsHaveSelection(grid.lines),
+        clearScrollback: () => void invoke(TERM_CLEAR_COMMAND, { termId }).catch(() => {}),
+        linkAtPoint: (offsetX, offsetY) => {
+          const x = Math.max(0, Math.min(grid.cols - 1, Math.floor(offsetX / cellW)));
+          const y = Math.max(0, Math.min(grid.rows - 1, Math.floor(offsetY / cellH)));
+          return linkAt(grid.lines, grid.cols, x, y);
+        },
       };
 
       // Mouse selection: drag = range, double-click = word, triple = line,
@@ -686,7 +699,18 @@ export function TerminalView({
         }}
       >
         <ContextMenuTrigger asChild>
-          <canvas ref={canvasRef} className="block" />
+          <canvas
+            ref={canvasRef}
+            className="block"
+            // Sample the link under the click before the menu opens, so
+            // "Open link" shows only when the right-click landed on a URL.
+            onContextMenu={(e) =>
+              setMenuLink(
+                bridgeRef.current?.linkAtPoint(e.nativeEvent.offsetX, e.nativeEvent.offsetY) ??
+                  null,
+              )
+            }
+          />
         </ContextMenuTrigger>
         <ContextMenuContent
           onCloseAutoFocus={(e) => {
@@ -694,6 +718,14 @@ export function TerminalView({
             bridgeRef.current?.focusTerm();
           }}
         >
+          {menuLink && (
+            <>
+              <ContextMenuItem onSelect={() => void openExternalUrl(menuLink.url)}>
+                Open link
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+            </>
+          )}
           <ContextMenuItem
             disabled={!copyEnabled}
             onSelect={() => bridgeRef.current?.copy()}
@@ -706,6 +738,14 @@ export function TerminalView({
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => bridgeRef.current?.selectAll()}>
             Select all
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => setSearchOpen(true)}>
+            Search scrollback
+            <ContextMenuShortcut>{IS_MAC ? "⇧⌘F" : "Ctrl+Shift+F"}</ContextMenuShortcut>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => bridgeRef.current?.clearScrollback()}>
+            Clear scrollback
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
