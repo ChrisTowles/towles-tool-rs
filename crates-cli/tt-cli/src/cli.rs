@@ -67,6 +67,9 @@ pub enum Commands {
     /// Create a pull request from the current branch (alias for `gh pr`)
     Pr(PrArgs),
 
+    /// List my open PRs with CI status across repos (alias for `gh pr-list`)
+    Prs,
+
     /// Agentboard: manage the watched-repo list (app + collectors read it)
     #[command(alias = "ag")]
     Agentboard(AgentboardArgs),
@@ -235,6 +238,10 @@ pub enum GhCommands {
 
     /// Create a pull request from the current branch
     Pr(PrArgs),
+
+    /// List my open PRs across tracked repos with CI check status
+    #[command(alias = "prs")]
+    PrList,
 
     /// Assign an open issue to a sibling slot checkout of this repo
     /// (hard-fails unless the slot is clean: no changes, no stashes)

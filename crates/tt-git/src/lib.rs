@@ -12,6 +12,7 @@
 //! - [`issues`] — `gh issue list` arg building + JSON parsing (`gh-cli-wrapper.ts`).
 //! - [`picker`] — issue-picker column layout and rendering (`branch.ts`, `render.ts`).
 //! - [`slot_assign`] — clean-tree/remote guard for assigning an issue to a slot checkout.
+//! - [`pr_list`] — `ttr gh pr-list` rendering + the "needs you" PR semantics.
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -21,6 +22,7 @@ pub mod branch_name;
 pub mod issues;
 pub mod picker;
 pub mod pr;
+pub mod pr_list;
 pub mod slot_assign;
 
 #[derive(Debug, Error)]
