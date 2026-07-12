@@ -6,6 +6,8 @@
 //! the `${tt:...}` template grammar. Ported from the shell probe at
 //! `~/code/p/blog-repos/slots.sh`.
 
+mod migrate;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::net::TcpListener;
@@ -33,6 +35,9 @@ pub fn run(command: SlotCommands) -> i32 {
         SlotCommands::Ls { json, root } => cmd_ls(json, root.as_deref()),
         SlotCommands::Rm { name, force, root } => cmd_rm(&name, force, root.as_deref()),
         SlotCommands::Env { name, root } => cmd_env(&name, root.as_deref()),
+        SlotCommands::Migrate { repo, dry_run, root } => {
+            migrate::cmd_migrate(repo.as_deref(), dry_run, root.as_deref())
+        }
     };
     match result {
         Ok(()) => 0,
@@ -182,6 +187,16 @@ struct RenderSummary {
     reused: usize,
     claimed: usize,
     preserved: usize,
+}
+
+/// Whether a slot-env template exists to render `.env` from — a tokenized
+/// `.env.example` in the slot or the hub-side `slot-env.template` sidecar.
+/// Migration renders only when one is present; without it there is nothing to
+/// claim ports from, so `.env` is left as carried.
+fn slot_env_template_available(sr: &SlotRoot, dir: &Path) -> bool {
+    let tokenized =
+        fs::read_to_string(dir.join(".env.example")).map(|t| t.contains("${tt:")).unwrap_or(false);
+    tokenized || sr.root.join(TEMPLATE_SIDECAR).is_file()
 }
 
 /// Render the slot's `.env`: template → text (reusing existing claims), then

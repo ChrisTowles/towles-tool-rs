@@ -8,8 +8,9 @@
 //!
 //! This crate holds the pure logic: the `${tt:...}` template renderer with
 //! port-pool claims ([`template`]), env-file parsing/merging ([`envfile`]),
-//! slot naming ([`layout`]), and removal guards ([`guards`]). The CLI layer
-//! (`tt-cli/src/commands/slot.rs`) gathers real-world state — git output,
+//! slot naming ([`layout`]), removal guards ([`guards`]), and the
+//! full-clones→hub migration planner ([`migrate`]). The CLI layer
+//! (`tt-cli/src/commands/slot/`) gathers real-world state — git output,
 //! bind-tests, docker listings — and hands it here for decisions, mirroring
 //! the `tt_git::slot_assign` pattern.
 //!
@@ -20,6 +21,7 @@
 pub mod envfile;
 pub mod guards;
 pub mod layout;
+pub mod migrate;
 pub mod template;
 
 pub use guards::{RmBlocked, check_removal, docker_resource_matches};

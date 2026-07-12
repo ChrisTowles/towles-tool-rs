@@ -106,6 +106,8 @@ Cargo workspace + npm workspace (`apps/client` only):
   `gh pr|branch|branch-clean|assign` (+ `pr` alias), `install [-o]`,
   `claude-sessions [-s --days -f html|json|csv --open/--no-open]`,
   `agentboard repos|sessions` (+ `ag` alias),
+  `slot new|ls|rm|env|migrate` (worktree slots over a bare hub; `migrate`
+  converts a root of full clones into that layout),
   `collect calendar|issues|prs|slack|all`, `mcp serve`.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
   `npm run dev` (root) picks a free dev-server port automatically

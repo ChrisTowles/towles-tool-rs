@@ -148,6 +148,26 @@ pub enum SlotCommands {
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
+
+    /// Convert a root of full clones (<repo>-slot-N + optional primary
+    /// <repo>) into the bare hub + worktree layout: the donor's .git becomes
+    /// the hub (stashes survive), every clone-local branch tip is swept in
+    /// and verified before anything is deleted, dirty trees are saved as
+    /// patches and re-applied, .env/.env.local are carried over, and idle
+    /// slots are parked detached at the default branch
+    Migrate {
+        /// Repo name when it cannot be inferred from <repo>-slot-N dir names
+        #[arg(long)]
+        repo: Option<String>,
+
+        /// Print the plan without touching anything
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Root directory holding the clones (default: walk up from cwd)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
 }
 
 #[derive(Args)]
