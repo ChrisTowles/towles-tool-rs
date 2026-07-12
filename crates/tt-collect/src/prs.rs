@@ -13,7 +13,8 @@ use tt_store::PrInput;
 use crate::gh;
 
 /// The `--json` field set requested from `gh pr list`.
-const PR_LIST_FIELDS: &str = "number,title,headRefName,state,statusCheckRollup,url,updatedAt";
+const PR_LIST_FIELDS: &str =
+    "number,title,headRefName,state,statusCheckRollup,reviewDecision,url,updatedAt";
 
 /// Collect and dedup the authored + review-requested open PRs for one repo dir.
 ///
@@ -55,7 +56,10 @@ fn gh_pr_list(dir: &Path, extra: &[&str]) -> Result<serde_json::Value, String> {
 }
 
 /// Map a parsed `gh pr list` JSON array to [`PrInput`]s. Non-array input yields
-/// an empty list. `review_requested` sets each row's `review_state`.
+/// an empty list. Review-requested rows get `review_state = "review_requested"`;
+/// authored rows derive it from GitHub's `reviewDecision` (see
+/// [`review_decision_state`]) so an approved PR reads differently from one with
+/// changes requested.
 pub(crate) fn map_pr_list(
     list: &serde_json::Value,
     repo: &str,
@@ -80,7 +84,9 @@ pub(crate) fn map_pr_list(
                 review_state: if review_requested {
                     "review_requested".to_string()
                 } else {
-                    String::new()
+                    review_decision_state(
+                        item.get("reviewDecision").and_then(|v| v.as_str()).unwrap_or_default(),
+                    )
                 },
                 url: str_field(item, "url"),
                 updated_ts: parse_iso_ms(
@@ -89,6 +95,20 @@ pub(crate) fn map_pr_list(
             })
         })
         .collect()
+}
+
+/// Map GitHub's `reviewDecision` to a stored `review_state` for an authored PR.
+///
+/// `reviewDecision` is `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED`, or
+/// empty (no reviews required). Unknown/empty values map to `""` so an authored
+/// PR with no verdict stays indistinguishable from a quiet one, as before.
+fn review_decision_state(decision: &str) -> String {
+    match decision.to_ascii_uppercase().as_str() {
+        "APPROVED" => "approved".to_string(),
+        "CHANGES_REQUESTED" => "changes_requested".to_string(),
+        "REVIEW_REQUIRED" => "review_required".to_string(),
+        _ => String::new(),
+    }
 }
 
 fn str_field(item: &serde_json::Value, key: &str) -> String {
@@ -170,6 +190,7 @@ mod tests {
             "headRefName": "feat/thing",
             "state": "OPEN",
             "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "",
             "url": "https://github.com/o/r/pull/42",
             "updatedAt": "2024-01-02T03:04:05Z"
         }]);
@@ -188,6 +209,43 @@ mod tests {
 
         let review = map_pr_list(&list, "o/r", true);
         assert_eq!(review[0].review_state, "review_requested");
+    }
+
+    #[test]
+    fn review_decision_state_maps_each_verdict() {
+        assert_eq!(review_decision_state("APPROVED"), "approved");
+        assert_eq!(review_decision_state("CHANGES_REQUESTED"), "changes_requested");
+        assert_eq!(review_decision_state("REVIEW_REQUIRED"), "review_required");
+        // Empty (no reviews required) and anything unknown stay indistinguishable.
+        assert_eq!(review_decision_state(""), "");
+        assert_eq!(review_decision_state("SOMETHING_ELSE"), "");
+    }
+
+    #[test]
+    fn map_pr_list_derives_authored_review_state_from_decision() {
+        let row = |decision: &str| {
+            json!([{
+                "number": 1,
+                "title": "t",
+                "headRefName": "b",
+                "state": "OPEN",
+                "statusCheckRollup": [],
+                "reviewDecision": decision,
+                "url": "u",
+                "updatedAt": "2024-01-02T03:04:05Z"
+            }])
+        };
+        assert_eq!(map_pr_list(&row("APPROVED"), "o/r", false)[0].review_state, "approved");
+        assert_eq!(
+            map_pr_list(&row("CHANGES_REQUESTED"), "o/r", false)[0].review_state,
+            "changes_requested"
+        );
+        assert_eq!(
+            map_pr_list(&row("REVIEW_REQUIRED"), "o/r", false)[0].review_state,
+            "review_required"
+        );
+        // A review-requested row ignores reviewDecision and keeps its own state.
+        assert_eq!(map_pr_list(&row("APPROVED"), "o/r", true)[0].review_state, "review_requested");
     }
 
     #[test]
