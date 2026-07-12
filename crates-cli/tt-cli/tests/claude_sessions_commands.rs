@@ -71,6 +71,40 @@ fn claude_sessions_csv_emits_header_and_row() {
 }
 
 #[test]
+fn claude_sessions_md_emits_table_header_and_totals() {
+    let temp = TempDir::new().unwrap();
+    write_session(temp.path(), "-home-user-proj", "ffffffff-1111-2222-3333-444444444444", 200, 100);
+
+    claude_sessions_cmd(temp.path())
+        .args(["claude-sessions", "-f", "md", "--days", "0"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("| Project | Model | Tokens | Est. cost |"))
+        .stdout(predicates::str::contains("| **Total** |"));
+}
+
+#[test]
+fn claude_sessions_md_empty_exits_zero_with_header_and_no_report() {
+    let temp = TempDir::new().unwrap();
+    // Projects dir exists but is empty: markdown still prints the header and a
+    // zeroed totals row, exits 0, and writes no report file.
+    std::fs::create_dir_all(temp.path().join(".claude").join("projects")).unwrap();
+
+    claude_sessions_cmd(temp.path())
+        .args(["claude-sessions", "-f", "md"])
+        .assert()
+        .success()
+        .code(0)
+        .stdout(predicates::str::contains("| Project | Model | Tokens | Est. cost |"))
+        .stdout(predicates::str::contains("| **Total** | | **0** | **$0.00** |"));
+
+    assert!(
+        !temp.path().join(".claude").join("reports").exists(),
+        "markdown output must not create a reports directory"
+    );
+}
+
+#[test]
 fn claude_sessions_session_not_found_errors() {
     let temp = TempDir::new().unwrap();
     write_session(temp.path(), "-home-user-proj", "cccccccc-1111-2222-3333-444444444444", 10, 5);
