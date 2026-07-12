@@ -38,6 +38,9 @@ export type Shortcut = {
    * session is selected"). */
   when?: string;
   allowInEditable?: boolean;
+  /** Registered + matched like any other, but omitted from the `?` overlay —
+   * used to collapse a run of near-identical bindings (mod+1…mod+9) to one line. */
+  hideInHelp?: boolean;
   spec: KeySpec;
 };
 
@@ -80,6 +83,23 @@ export const SHORTCUTS = defineShortcuts([
   { id: "settings", scope: "global", keys: "mod+,", description: "Settings" },
   { id: "sidebar", scope: "global", keys: "mod+b", description: "Collapse sidebar to icons" },
   { id: "quicklog", scope: "global", keys: "mod+j", description: "Quick journal log" },
+  {
+    id: "close-tab",
+    scope: "global",
+    keys: "mod+w",
+    description: "Close the current tab",
+    when: "more than one tab is open",
+  },
+  // Jump to the Nth open tab. One binding per digit so each is validated and
+  // matched through the same machinery as every other shortcut; the tab bar's
+  // tooltips surface them per-tab, so the help overlay lists just the first.
+  ...Array.from({ length: 9 }, (_, i) => ({
+    id: `tab-${i + 1}`,
+    scope: "global" as const,
+    keys: `mod+${i + 1}`,
+    description: i === 0 ? "Jump to tab 1–9" : `Jump to tab ${i + 1}`,
+    hideInHelp: i > 0,
+  })),
   { id: "help", scope: "global", keys: "?", description: "Keyboard shortcuts (this overlay)" },
   {
     id: "ab-new-session",
@@ -246,6 +266,7 @@ export function ShortcutHelp({
   const byScope = useMemo(() => {
     const m = new Map<ShortcutScope, Shortcut[]>();
     for (const s of Object.values(SHORTCUTS)) {
+      if (s.hideInHelp) continue;
       const list = m.get(s.scope) ?? [];
       list.push(s);
       m.set(s.scope, list);
