@@ -1,0 +1,16 @@
+{
+  "$comment": "Single source of truth for the model -> context-window table used by the claude-sessions token report and the live agent engine. Updating a window is a DATA edit here, not a code change. Context windows are a property of the model AND the platform it runs on, and both move over time, so there is no way to derive this offline; the transcript only gives us the model id string. Match is case-insensitive `contains` on the lowercased model id, so `claude-opus-4-8`, `claude-opus-4-8-v1`, etc. all hit a family whose `contains` is `opus-4-8`. First matching family wins, so order most-specific-first if two needles could overlap. Anything not matched is reported as UNKNOWN (a guess at `defaultWindow`), which callers surface instead of silently trusting.",
+  "lastReviewed": "2026-07-12",
+  "defaultWindow": 200000,
+  "bedrockWindow": 200000,
+  "markerWindow": 1000000,
+  "families": [
+    { "contains": "fable-5", "window": 1000000, "note": "Fable 5 (1M-native)" },
+    { "contains": "mythos", "window": 1000000, "note": "Mythos 5 and mythos-preview (1M-native)" },
+    { "contains": "opus-4-6", "window": 1000000, "note": "Opus 4.6 (1M-native)" },
+    { "contains": "opus-4-7", "window": 1000000, "note": "Opus 4.7 (1M-native)" },
+    { "contains": "opus-4-8", "window": 1000000, "note": "Opus 4.8 (1M-native)" },
+    { "contains": "sonnet-4-6", "window": 1000000, "note": "Sonnet 4.6 (1M-native)" },
+    { "contains": "sonnet-5", "window": 1000000, "note": "Sonnet 5 (1M-native)" }
+  ]
+}

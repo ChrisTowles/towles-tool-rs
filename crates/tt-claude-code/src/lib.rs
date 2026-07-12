@@ -30,7 +30,10 @@ pub mod types;
 pub mod usage;
 
 pub use cwd::{session_cwd, session_cwd_file, session_cwd_str};
-pub use models::{CONTEXT_1M, CONTEXT_200K, context_window};
+pub use models::{
+    CONTEXT_1M, CONTEXT_200K, ResolvedWindow, WindowSource, context_window, model_known,
+    resolve_window,
+};
 pub use parse::{parse_transcript, parse_transcript_file};
 pub use prompts::{user_prompt_blob, user_prompts};
 pub use title::{session_title, session_title_file, session_title_str};
