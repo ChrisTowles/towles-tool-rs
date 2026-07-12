@@ -21,6 +21,7 @@ import {
   type Frame,
   type Run,
   type SearchMatch,
+  type TermExit,
 } from "@/lib/term-protocol";
 import { linkAt, type TermLink } from "@/lib/term-links";
 import {
@@ -59,8 +60,9 @@ const LINE_HEIGHT = 1.25;
  * spawns a shell in `cwd` sized to the measured grid, render frames arrive
  * as `terminal://frame` events (dirty-row style runs + cursor + modes), and
  * input/resize/scroll go back through `term_write`/`term_resize`/
- * `term_scroll`. When the shell exits, `onExit` tells the parent to close
- * the pane; unmounting kills the shell (`term_kill`).
+ * `term_scroll`. When the shell exits, `onExit` hands the parent the exit
+ * status (code + signal) so it can report how the shell died; unmounting kills
+ * the shell (`term_kill`).
  *
  * Many of these can be mounted at once (one per agentboard terminal); each
  * filters the shared frame/exit events by its own `termId`.
@@ -73,7 +75,7 @@ export function TerminalView({
 }: {
   termId: string;
   cwd?: string;
-  onExit: () => void;
+  onExit: (exit: TermExit) => void;
   /** Fires when the PTY sets its window title (OSC 0/2) — e.g. Claude Code
    * emits `✳ <session title>`, which the rail uses as the live session label. */
   onTitle?: (termId: string, title: string) => void;
@@ -438,8 +440,8 @@ export function TerminalView({
       if (disposed) return onFrame();
       unlisteners.push(onFrame);
 
-      const onExitEvent = await listen<{ termId: string }>("terminal://exit", (e) => {
-        if (e.payload.termId === termId) onExitRef.current();
+      const onExitEvent = await listen<TermExit>("terminal://exit", (e) => {
+        if (e.payload.termId === termId) onExitRef.current(e.payload);
       });
       if (disposed) return onExitEvent();
       unlisteners.push(onExitEvent);
