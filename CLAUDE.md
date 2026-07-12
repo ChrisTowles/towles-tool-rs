@@ -65,7 +65,14 @@ Cargo workspace + npm workspace (`apps/client` only):
     `~/.config/towles-tool/towles-tool.settings.json`. **This file is shared
     with the TypeScript CLI**, so serde types must tolerate unknown fields
     (`#[serde(default)]` / no `deny_unknown_fields`) to avoid breaking the other
-    tool.
+    tool. Also the **single resolver for every mutable state path** (settings,
+    `tt.db`, agentboard `*.json`): `state_scope()` detects when the process runs
+    from a slot checkout (cwd walks up to a dir containing `crates/tt-config`)
+    and, when scoped, nests state under `…/towles-tool/slots/<scope>/…` so
+    concurrent slots don't clobber one shared file. Unscoped (installed daily
+    driver) = the historic defaults, untouched. `TT_STATE_SCOPE` overrides
+    (empty = force unscoped); the CLI `--config-dir` flag still wins for the
+    settings path. Never build these paths ad-hoc — call the resolver.
   - `tt-exec` — process/command wrappers.
   - `tt-journal` — journal/note filesystem logic and date-token path templating.
   - `tt-git` — GitHub/git helpers: branch-name slugging, PR content, merged-branch

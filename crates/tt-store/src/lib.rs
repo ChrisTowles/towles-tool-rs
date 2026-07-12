@@ -328,10 +328,11 @@ impl Store {
         Ok(store)
     }
 
-    /// Open the store at the default location:
-    /// `<data_dir>/towles-tool/tt.db` (e.g. `~/.local/share/towles-tool/tt.db`).
+    /// Open the store at the resolved default location. Unscoped this is
+    /// `<data_dir>/towles-tool/tt.db` (e.g. `~/.local/share/towles-tool/tt.db`);
+    /// in a slot checkout it nests under `…/slots/<scope>/` (see [`tt_config`]).
     pub fn open_default() -> Result<Store> {
-        let path = dirs::data_dir().ok_or(Error::NoDataDir)?.join("towles-tool").join("tt.db");
+        let path = tt_config::store_db_path().map_err(|_| Error::NoDataDir)?;
         Store::open(&path)
     }
 

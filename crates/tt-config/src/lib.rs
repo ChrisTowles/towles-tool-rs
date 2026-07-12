@@ -1,4 +1,5 @@
-//! Configuration model for the towles-tool CLI.
+//! Configuration model for the towles-tool CLI, plus the resolver for every
+//! mutable state path the CLI and app touch.
 //!
 //! This mirrors the zod settings schema used by the TypeScript CLI and reads/writes
 //! the *same* file (`~/.config/towles-tool/towles-tool.settings.json`). Because the
@@ -12,6 +13,17 @@
 //! `camelCase` (matching what the TypeScript CLI reads/writes), and writes to
 //! the shared file go through [`save_merge`]/[`save_merge_to`] so TS-owned keys
 //! survive.
+//!
+//! ## Slot-scoped state
+//!
+//! Chris runs many worktree slot clones of this repo concurrently
+//! (`…/towles-tool-rs-slot-N`). To stop concurrent dev instances from clobbering
+//! one shared settings file / tt.db / agentboard dir, this module derives a
+//! *scope* from the running instance and, when scoped, nests all mutable state
+//! under `…/towles-tool/slots/<scope>/…`. See [`state_scope`] for the rule.
+//! When unscoped (the installed daily driver) the paths are exactly the historic
+//! defaults, so the shared settings file the TypeScript CLI also reads is
+//! untouched.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -32,6 +44,9 @@ pub enum Error {
 
     #[error("Could not determine home directory")]
     NoHomeDir,
+
+    #[error("Could not determine data directory")]
+    NoDataDir,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -289,14 +304,98 @@ fn default_template_dir() -> String {
         .to_string()
 }
 
-/// Config directory: `~/.config/towles-tool` (matches the TS CLI on every platform).
-pub fn config_dir() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".config").join(TOOL_NAME))
+/// Environment variable that overrides slot-scope detection.
+///
+/// - set to a non-empty value: force that scope name (still sanitized).
+/// - set to empty (`TT_STATE_SCOPE=`): force *unscoped* — the shared defaults.
+/// - unset: auto-detect from the current working directory (see [`state_scope`]).
+pub const STATE_SCOPE_ENV: &str = "TT_STATE_SCOPE";
+
+/// The active slot scope for the running process, or `None` for the shared
+/// (unscoped) defaults.
+///
+/// Resolution order:
+/// 1. [`STATE_SCOPE_ENV`] if set (empty forces unscoped, non-empty forces that name).
+/// 2. Otherwise walk up from the current working directory to a checkout of *this*
+///    repo and use its root directory name (e.g. `towles-tool-rs-slot-2`).
+///
+/// A checkout is recognised by a `crates/tt-config` directory at its root — a
+/// marker unique to this workspace — so an installed `ttr` run from an arbitrary
+/// project directory stays unscoped and keeps sharing the daily-driver config.
+/// The dir-name rule mirrors `scripts/slot-port.mjs` and the app's `slot_label`.
+pub fn state_scope() -> Option<String> {
+    match std::env::var(STATE_SCOPE_ENV) {
+        Ok(v) if !v.trim().is_empty() => Some(sanitize_scope(&v)),
+        Ok(_) => None,
+        Err(_) => std::env::current_dir().ok().as_deref().and_then(slot_scope_from_dir),
+    }
 }
 
-/// Full path to the settings file: `~/.config/towles-tool/towles-tool.settings.json`.
+/// Derive a slot scope from `dir`: the name of the nearest ancestor that is a
+/// checkout of this repo (contains a `crates/tt-config` directory), or `None`.
+/// Split out from [`state_scope`] so it can be unit-tested against temp dirs
+/// without touching the real cwd/env.
+pub fn slot_scope_from_dir(dir: &Path) -> Option<String> {
+    for ancestor in dir.ancestors() {
+        if ancestor.join("crates").join("tt-config").is_dir() {
+            return ancestor.file_name().and_then(|n| n.to_str()).map(sanitize_scope);
+        }
+    }
+    None
+}
+
+/// Reduce a scope name to a single safe path segment: anything outside
+/// `[A-Za-z0-9._-]` becomes `-`. Slot dir names already qualify; this only
+/// guards a hand-set `TT_STATE_SCOPE`.
+fn sanitize_scope(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+        .collect()
+}
+
+/// Nest `base` under `slots/<scope>` when scoped, else return `base` unchanged.
+fn scoped_under(base: PathBuf) -> PathBuf {
+    match state_scope() {
+        Some(scope) => base.join("slots").join(scope),
+        None => base,
+    }
+}
+
+/// Config directory, scope-aware. Unscoped: `~/.config/towles-tool` (matches the
+/// TS CLI on every platform). Scoped: `~/.config/towles-tool/slots/<scope>`.
+pub fn config_dir() -> Result<PathBuf> {
+    Ok(scoped_under(home_dir()?.join(".config").join(TOOL_NAME)))
+}
+
+/// Full path to the settings file:
+/// `<config_dir>/towles-tool.settings.json`.
 pub fn config_path() -> Result<PathBuf> {
     Ok(config_dir()?.join(format!("{TOOL_NAME}.settings.json")))
+}
+
+/// Data directory, scope-aware. Unscoped: `<data_dir>/towles-tool`
+/// (e.g. `~/.local/share/towles-tool`). Scoped: `…/towles-tool/slots/<scope>`.
+pub fn data_dir() -> Result<PathBuf> {
+    Ok(scoped_under(dirs::data_dir().ok_or(Error::NoDataDir)?.join(TOOL_NAME)))
+}
+
+/// Full path to the data-hub SQLite store: `<data_dir>/tt.db`.
+pub fn store_db_path() -> Result<PathBuf> {
+    Ok(data_dir()?.join("tt.db"))
+}
+
+/// Agentboard persistence directory (repos.json, sessions.json, …):
+/// `<config_dir>/agentboard`.
+pub fn agentboard_dir() -> Result<PathBuf> {
+    Ok(config_dir()?.join("agentboard"))
+}
+
+/// Infallible [`agentboard_dir`], falling back to `./agentboard` when the home
+/// directory can't be resolved. For callers that build default paths without a
+/// `Result` (they historically fell back to `.`).
+pub fn agentboard_dir_lossy() -> PathBuf {
+    agentboard_dir().unwrap_or_else(|_| PathBuf::from(".").join("agentboard"))
 }
 
 /// Load settings from the standard location, creating defaults if the file is missing.
@@ -604,5 +703,99 @@ mod tests {
         // be written with `save_merge_to`.
         assert!(raw.get("futureFlag").is_none());
         assert!(raw["journalSettings"].get("tsOnly").is_none());
+    }
+
+    /// Serializes the process-global `TT_STATE_SCOPE` mutations so env-touching
+    /// tests don't race each other (cargo runs tests on parallel threads).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A temp dir laid out like a slot checkout: `<root>/crates/tt-config`
+    /// (plus a nested crate dir to test detection from a subdirectory).
+    fn slot_checkout(root_name: &str) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join(root_name);
+        std::fs::create_dir_all(root.join("crates").join("tt-config")).unwrap();
+        std::fs::create_dir_all(root.join("crates").join("tt-store").join("src")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn slot_checkout_dir_derives_scope() {
+        let dir = slot_checkout("towles-tool-rs-slot-7");
+        let root = dir.path().join("towles-tool-rs-slot-7");
+        // From the root and from a nested subdir, the scope is the root's name.
+        assert_eq!(slot_scope_from_dir(&root), Some("towles-tool-rs-slot-7".to_string()));
+        assert_eq!(
+            slot_scope_from_dir(&root.join("crates").join("tt-store").join("src")),
+            Some("towles-tool-rs-slot-7".to_string())
+        );
+    }
+
+    #[test]
+    fn non_repo_dir_is_unscoped() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(slot_scope_from_dir(dir.path()), None);
+    }
+
+    #[test]
+    fn arbitrary_git_repo_is_unscoped() {
+        // A checkout that isn't THIS repo: it has a .git and Cargo.toml but no
+        // `crates/tt-config` marker, so it must not be scoped.
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("some-other-project");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("crates").join("their-crate")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        assert_eq!(slot_scope_from_dir(&root), None);
+    }
+
+    #[test]
+    fn sanitize_scope_keeps_slot_names_and_strips_others() {
+        assert_eq!(sanitize_scope("towles-tool-rs-slot-2"), "towles-tool-rs-slot-2");
+        assert_eq!(sanitize_scope("  weird/name space "), "weird-name-space");
+    }
+
+    #[test]
+    fn env_override_forces_scope_and_empty_forces_unscoped() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let base = PathBuf::from("/home/x/.config/towles-tool");
+
+        // Non-empty → that scope.
+        // SAFETY: guarded by ENV_LOCK; no other threads read env concurrently here.
+        unsafe { std::env::set_var(STATE_SCOPE_ENV, "my-scope") };
+        assert_eq!(state_scope(), Some("my-scope".to_string()));
+        assert_eq!(scoped_under(base.clone()), base.join("slots").join("my-scope"));
+
+        // Empty → forced unscoped, regardless of cwd.
+        unsafe { std::env::set_var(STATE_SCOPE_ENV, "") };
+        assert_eq!(state_scope(), None);
+        assert_eq!(scoped_under(base.clone()), base);
+
+        unsafe { std::env::remove_var(STATE_SCOPE_ENV) };
+    }
+
+    #[test]
+    fn config_dir_override_wins_via_env_but_scoped_paths_nest() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: guarded by ENV_LOCK.
+        unsafe { std::env::set_var(STATE_SCOPE_ENV, "slot-9") };
+        let cfg = config_dir().unwrap();
+        assert!(cfg.ends_with("towles-tool/slots/slot-9"), "got {}", cfg.display());
+        assert!(config_path().unwrap().ends_with("slot-9/towles-tool.settings.json"));
+        assert!(store_db_path().unwrap().ends_with("towles-tool/slots/slot-9/tt.db"));
+        assert!(agentboard_dir().unwrap().ends_with("slots/slot-9/agentboard"));
+        unsafe { std::env::remove_var(STATE_SCOPE_ENV) };
+    }
+
+    #[test]
+    fn unscoped_paths_match_historic_defaults() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: guarded by ENV_LOCK.
+        unsafe { std::env::set_var(STATE_SCOPE_ENV, "") };
+        assert!(config_dir().unwrap().ends_with(".config/towles-tool"));
+        assert!(config_path().unwrap().ends_with("towles-tool/towles-tool.settings.json"));
+        assert!(store_db_path().unwrap().ends_with("towles-tool/tt.db"));
+        assert!(agentboard_dir().unwrap().ends_with("towles-tool/agentboard"));
+        unsafe { std::env::remove_var(STATE_SCOPE_ENV) };
     }
 }

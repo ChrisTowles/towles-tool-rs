@@ -183,6 +183,19 @@ pub fn check_claude_plugins() -> Vec<PluginCheck> {
 pub fn check_agentboard() -> Vec<AgentBoardCheck> {
     let mut results = Vec::new();
 
+    // Which state scope this instance resolved to — makes it obvious when a slot
+    // checkout is reading its own scoped config/db instead of the shared default.
+    results.push(AgentBoardCheck {
+        name: "state scope".to_string(),
+        value: match tt_config::state_scope() {
+            Some(scope) => scope,
+            None => "default (shared)".to_string(),
+        },
+        ok: true,
+        warning: None,
+        hint: None,
+    });
+
     let repos_path = tt_agentboard::repos::default_repos_path();
     let repos = tt_agentboard::repos::load_repos(&repos_path);
     results.push(AgentBoardCheck {
@@ -199,7 +212,7 @@ pub fn check_agentboard() -> Vec<AgentBoardCheck> {
             .then(|| "Add repos in the app: Agentboard → manage repos".to_string()),
     });
 
-    let db_path = dirs::data_dir().unwrap_or_default().join("towles-tool").join("tt.db");
+    let db_path = tt_config::store_db_path().unwrap_or_default();
     let db_exists = db_path.exists();
     results.push(AgentBoardCheck {
         name: "data hub".to_string(),

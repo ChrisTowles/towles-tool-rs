@@ -18,14 +18,10 @@ pub enum ReorderDelta {
     Bottom,
 }
 
-/// Default persisted-order path: `~/.config/towles-tool/agentboard/session-order.json`.
+/// Default persisted-order path: `<agentboard_dir>/session-order.json`
+/// (slot-scoped in a slot checkout; see [`tt_config::agentboard_dir`]).
 pub fn default_session_order_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config")
-        .join("towles-tool")
-        .join("agentboard")
-        .join("session-order.json")
+    tt_config::agentboard_dir_lossy().join("session-order.json")
 }
 
 /// Maintains a custom session ordering, loaded on construction and saved after

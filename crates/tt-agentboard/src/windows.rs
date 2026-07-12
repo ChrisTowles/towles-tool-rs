@@ -42,14 +42,10 @@ pub struct WindowsStore {
     payload: WindowsPayload,
 }
 
-/// Default location: `~/.config/towles-tool/agentboard/windows.json`.
+/// Default location: `<agentboard_dir>/windows.json` (slot-scoped in a slot
+/// checkout; see [`tt_config::agentboard_dir`]).
 pub fn default_windows_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config")
-        .join("towles-tool")
-        .join("agentboard")
-        .join("windows.json")
+    tt_config::agentboard_dir_lossy().join("windows.json")
 }
 
 impl WindowsStore {

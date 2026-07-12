@@ -29,14 +29,10 @@ struct ReposConfig {
     scan_roots: Vec<String>,
 }
 
-/// Default location: `~/.config/towles-tool/agentboard/repos.json`.
+/// Default location: `<agentboard_dir>/repos.json` (slot-scoped when running in
+/// a slot checkout; see [`tt_config::agentboard_dir`]).
 pub fn default_repos_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config")
-        .join("towles-tool")
-        .join("agentboard")
-        .join("repos.json")
+    tt_config::agentboard_dir_lossy().join("repos.json")
 }
 
 /// Load the full config. Defaulted (both fields empty) on missing/corrupt file.
