@@ -27,7 +27,7 @@ use crate::metadata::SessionMetadataStore;
 use crate::repos::RepoEntry;
 use crate::sessions::SessionStore;
 use crate::tracker::AgentTracker;
-use crate::types::{AgentEvent, AgentStatus, FolderData, RepoData, SessionData};
+use crate::types::{AgentEvent, AgentStatus, FolderData, NeedsYouReason, RepoData, SessionData};
 
 /// The state snapshot emitted to the client: repos, each grouping its folders,
 /// each holding its PTY sessions.
@@ -220,13 +220,23 @@ fn build_folder(
 /// assemble time (always false) this is always `false` — assemble-time
 /// `needs` is a placeholder the app overwrites.
 pub fn session_needs(s: &SessionData) -> bool {
+    needs_reason(s).is_some()
+}
+
+/// Why a session needs you, or `None` if it doesn't. The single source of truth
+/// [`session_needs`] delegates to, so the boolean and the [`NeedsYouReason`]
+/// notifications show can never disagree about which status counts.
+pub fn needs_reason(s: &SessionData) -> Option<NeedsYouReason> {
     if !s.live {
-        return false;
+        return None;
     }
     match s.agent_state.as_ref().map(|e| e.status) {
-        Some(AgentStatus::Waiting) | Some(AgentStatus::Error) => true,
-        Some(AgentStatus::Complete) | Some(AgentStatus::Interrupted) => s.unseen,
-        _ => false,
+        Some(AgentStatus::Waiting) => Some(NeedsYouReason::WaitingForInput),
+        Some(AgentStatus::Error) => Some(NeedsYouReason::Errored),
+        Some(AgentStatus::Complete) | Some(AgentStatus::Interrupted) if s.unseen => {
+            Some(NeedsYouReason::Finished)
+        }
+        _ => None,
     }
 }
 

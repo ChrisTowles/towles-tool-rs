@@ -31,6 +31,19 @@ pub enum AgentStatus {
     Interrupted,
 }
 
+/// Why a session needs you, derived from the agent status that tripped
+/// [`crate::bridge::session_needs`]. Drives the notification body wording — a
+/// reported text label only, never an interaction affordance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeedsYouReason {
+    /// Agent is blocked on the user (`Waiting`).
+    WaitingForInput,
+    /// Agent hit an error (`Error`).
+    Errored,
+    /// Agent's turn ended (`Complete` / `Interrupted`) and hasn't been seen yet.
+    Finished,
+}
+
 impl AgentStatus {
     /// The "terminal" statuses (`TERMINAL_STATUSES` in TS): the agent finished a
     /// turn and is awaiting user acknowledgement.
