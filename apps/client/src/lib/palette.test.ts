@@ -1,0 +1,131 @@
+import { describe, expect, it } from "vitest";
+import type { AgentStatus, FolderData, RepoData, SessionData } from "./agentboard";
+import type { PrItem } from "./data";
+import { paletteRepoEntries, paletteSessionEntries, palettePrEntries } from "./palette";
+
+const agent = (status: AgentStatus) => ({ agent: "claude-code", session: "", status, ts: 1 });
+
+function session(overrides: Partial<SessionData>): SessionData {
+  return {
+    id: "s1",
+    name: "shell 1",
+    createdAt: 0,
+    live: false,
+    unseen: false,
+    agents: [],
+    ...overrides,
+  };
+}
+
+function folder(overrides: Partial<FolderData>): FolderData {
+  return {
+    name: "proj",
+    dir: "/home/me/code/p/proj",
+    branch: "main",
+    isWorktree: false,
+    filesChanged: 0,
+    linesAdded: 0,
+    linesRemoved: 0,
+    commitsAhead: 0,
+    commitsBehind: 0,
+    sessions: [],
+    needs: 0,
+    ...overrides,
+  };
+}
+
+function repo(name: string, folders: FolderData[]): RepoData {
+  return { key: name, name, folders, needs: 0 };
+}
+
+function pr(overrides: Partial<PrItem>): PrItem {
+  return {
+    repo: "octo/widgets",
+    number: 1,
+    title: "a pr",
+    branch: "feat/x",
+    state: "open",
+    checks: "passing",
+    reviewState: "",
+    url: "https://github.com/octo/widgets/pull/1",
+    updatedTs: 0,
+    ...overrides,
+  };
+}
+
+describe("paletteRepoEntries", () => {
+  it("emits one entry per checkout with rail order preserved when none need attention", () => {
+    const repos = [
+      repo("octo/widgets", [folder({ dir: "/a", name: "widgets" })]),
+      repo("octo/gizmos", [folder({ dir: "/b", name: "gizmos" })]),
+    ];
+    expect(paletteRepoEntries(repos).map((e) => e.folderDir)).toEqual(["/a", "/b"]);
+  });
+
+  it("surfaces checkouts that need attention first", () => {
+    const repos = [
+      repo("octo/widgets", [folder({ dir: "/a", name: "widgets" })]),
+      repo("octo/gizmos", [
+        folder({
+          dir: "/b",
+          name: "gizmos",
+          sessions: [session({ live: true, agentState: agent("waiting") })],
+        }),
+      ]),
+    ];
+    const entries = paletteRepoEntries(repos);
+    expect(entries[0].folderDir).toBe("/b");
+    expect(entries[0].needs).toBe(1);
+  });
+
+  it("skips checkouts without an on-disk dir", () => {
+    const repos = [repo("octo/widgets", [folder({ dir: "" })])];
+    expect(paletteRepoEntries(repos)).toEqual([]);
+  });
+});
+
+describe("paletteSessionEntries", () => {
+  it("lists sessions needing attention before the rest", () => {
+    const repos = [
+      repo("octo/widgets", [
+        folder({
+          dir: "/a",
+          sessions: [
+            session({ id: "calm", live: true }),
+            session({ id: "hot", live: true, agentState: agent("waiting") }),
+          ],
+        }),
+      ]),
+    ];
+    expect(paletteSessionEntries(repos).map((e) => e.sessionId)).toEqual(["hot", "calm"]);
+  });
+
+  it("labels a session by its agent thread name when running", () => {
+    const repos = [
+      repo("octo/widgets", [
+        folder({
+          dir: "/a",
+          sessions: [
+            session({
+              id: "s1",
+              live: true,
+              agentState: { ...agent("busy"), threadName: "fix the parser" },
+            }),
+          ],
+        }),
+      ]),
+    ];
+    expect(paletteSessionEntries(repos)[0].label).toBe("fix the parser");
+  });
+});
+
+describe("palettePrEntries", () => {
+  it("keeps only open PRs, newest-updated first", () => {
+    const entries = palettePrEntries([
+      pr({ number: 1, updatedTs: 100 }),
+      pr({ number: 2, updatedTs: 300 }),
+      pr({ number: 3, state: "closed", updatedTs: 999 }),
+    ]);
+    expect(entries.map((e) => e.number)).toEqual([2, 1]);
+  });
+});

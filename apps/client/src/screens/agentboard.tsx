@@ -47,6 +47,7 @@ import {
   claudeCommand,
   claudeResumeCommand,
   claudeTitleName,
+  consumePendingAgentboardNav,
   consumePendingOpenSession,
   cycleNeedsYou,
   diffPaneDir,
@@ -59,6 +60,7 @@ import {
   isFolderQuiet,
   liveSessions,
   normalizeWins,
+  onAgentboardNavRequest,
   onOpenSessionRequest,
   paneRects,
   placePane,
@@ -70,6 +72,7 @@ import {
   termWriteRetry,
   useAgentboardState,
   useNow,
+  type AgentboardNav,
   type AgentStatus,
   type FolderData,
   type Overlay,
@@ -518,6 +521,25 @@ export function AgentboardScreen() {
     const pending = consumePendingOpenSession();
     if (pending) handle(pending);
     return onOpenSessionRequest(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Command-palette "jump to repo/session" handoff (see `requestAgentboardNav`
+  // in lib/agentboard.ts). Read-only reveal: focus the folder, and for a
+  // session request select its pane too — no PTY writes, unlike the resume
+  // handoff above.
+  useEffect(() => {
+    const handle = (req: AgentboardNav) => {
+      if (req.kind === "session") {
+        selectSession(req.folderDir, req.sessionId);
+      } else {
+        setActiveFolderDir(req.folderDir);
+        ackFolder(req.folderDir);
+      }
+    };
+    const pending = consumePendingAgentboardNav();
+    if (pending) handle(pending);
+    return onAgentboardNavRequest(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
