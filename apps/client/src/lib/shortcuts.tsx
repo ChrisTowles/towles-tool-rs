@@ -84,6 +84,12 @@ export const SHORTCUTS = defineShortcuts([
   { id: "sidebar", scope: "global", keys: "mod+b", description: "Collapse sidebar to icons" },
   { id: "quicklog", scope: "global", keys: "mod+j", description: "Quick journal log" },
   {
+    id: "zen",
+    scope: "global",
+    keys: "mod+shift+f",
+    description: "Zen focus mode — hide chrome (Escape exits)",
+  },
+  {
     id: "close-tab",
     scope: "global",
     keys: "mod+w",
