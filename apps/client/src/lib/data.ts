@@ -375,8 +375,8 @@ export function useAppSlot(): string | null {
   return slot;
 }
 
-export const storeAddTask = (text: string, dueTs?: number) =>
-  invokeOk("store_add_task", { text, dueTs });
+export const storeAddTask = (text: string, dueTs?: number, repo?: string) =>
+  invokeOk("store_add_task", { text, dueTs, repo });
 
 export const storeSetTaskStatus = (id: number, status: TaskStatus) =>
   invokeOk("store_set_task_status", { id, status });

@@ -105,10 +105,11 @@ pub fn store_add_task(
     state: State<StoreState>,
     text: String,
     due_ts: Option<i64>,
+    repo: Option<String>,
 ) -> Result<(), String> {
     with_store(&state, |store| {
         store
-            .add_task(&text, due_ts, None, None, now_ms())
+            .add_task(&text, due_ts, repo.as_deref(), None, now_ms())
             .map_err(|e| format!("add_task failed: {e}"))
     })?;
     emit_snapshot(&app, &state);

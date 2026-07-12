@@ -59,6 +59,7 @@ import {
 } from "@/lib/kanban-dnd";
 import { dueState, overdueByStatus } from "@/lib/board-metrics";
 import { matchesTaskFilter } from "@/lib/board-filter";
+import { parseQuickAdd } from "@/lib/quick-add";
 import { useFocusTarget } from "@/lib/focus-target";
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
@@ -245,15 +246,28 @@ export function BoardScreen() {
     void storeClearDone();
   }
 
+  // Live preview of the quick-add tokens (`@today`/`@tomorrow`/`@YYYY-MM-DD` due
+  // dates, `#owner/repo` repo tag) parsed out of the New-todo draft, so the hint
+  // under the input shows what will be stored before the todo is added.
+  const parsedDraft = useMemo(() => parseQuickAdd(draft, now), [draft, now]);
+
   function addTask() {
-    const text = draft.trim();
+    const { text, dueTs, repo } = parsedDraft;
     if (!text) return;
     setAddedTasks((prev) => [
-      { id: -Date.now(), text, status: "backlog", position: -1, createdAt: Date.now() },
+      {
+        id: -Date.now(),
+        text,
+        status: "backlog",
+        position: -1,
+        dueTs,
+        repo,
+        createdAt: Date.now(),
+      },
       ...prev,
     ]);
     setDraft("");
-    void storeAddTask(text);
+    void storeAddTask(text, dueTs, repo);
   }
 
   return (
@@ -281,15 +295,30 @@ export function BoardScreen() {
               aria-label="Filter todos"
             />
           </div>
-          <Input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") addTask();
-            }}
-            placeholder="New todo…"
-            className="h-7 w-56 text-sm"
-          />
+          <div className="relative w-56">
+            <Input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addTask();
+              }}
+              placeholder="New todo… @tomorrow #owner/repo"
+              className="h-7 w-full text-sm"
+            />
+            {(parsedDraft.dueTs !== undefined || parsedDraft.repo) && (
+              <div className="absolute top-full left-0 z-10 mt-1 flex items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
+                {parsedDraft.dueTs !== undefined && (
+                  <span className="flex items-center gap-1">
+                    <CalendarPlus aria-hidden className="size-3" />
+                    {fmtDay(parsedDraft.dueTs)}
+                  </span>
+                )}
+                {parsedDraft.repo && (
+                  <span className="font-mono">#{parsedDraft.repo}</span>
+                )}
+              </div>
+            )}
+          </div>
           <Button variant="ghost" size="icon-sm" aria-label="Add todo" onClick={addTask}>
             <Plus />
           </Button>
