@@ -98,6 +98,7 @@ import {
 import { exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
+import { useFocusTarget } from "@/lib/focus-target";
 import { openExternalUrl } from "@/lib/open-url";
 import { useWorkspace } from "@/lib/workspace";
 import { toast } from "sonner";
@@ -134,6 +135,8 @@ export function AgentboardScreen() {
   const state = useAgentboardState();
   const { snapshot } = useStoreSnapshot();
   const { openTab, activeTab } = useWorkspace();
+  // Deep-link focus: a "needs you" popover row scrolls its repo into view here.
+  const focusRef = useFocusTarget<HTMLDivElement>("agentboard");
   const now = useNow(30_000);
 
   // One-shot "prompt cache about to expire" toast per session per cache
@@ -911,7 +914,7 @@ export function AgentboardScreen() {
                   {/* min-h-0 is load-bearing: without it this flex child grows past the
                       rail's height and folders below the fold become unreachable. */}
                   <ScrollArea className="min-h-0 flex-1">
-                    <div className="flex flex-col">
+                    <div ref={focusRef} className="flex flex-col">
                       {repos.length === 0 && (
                         <div className="flex flex-col items-center gap-3 px-3 py-10 text-center">
                           <FolderGit2 className="size-8 text-muted-foreground" />
