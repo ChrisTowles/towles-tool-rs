@@ -206,6 +206,87 @@ fn assign_runs_gh_develop_in_the_slot_when_clean() {
         .stdout(contains("checked out in"));
 }
 
+/// Write a stub `gh` on a fresh PATH dir that answers the calls `pr-list`
+/// makes: `--version`, `repo view`, and the authored / review-requested
+/// `pr list` searches. Returns the `PATH` string to hand to the command.
+fn stub_gh_for_pr_list(bin: &TempDir) -> String {
+    let stub = bin.path().join("gh");
+    let script = r#"#!/bin/sh
+case "$*" in
+  "--version"*) echo "gh version 2.0.0 (https://github.com/cli/cli)"; exit 0;;
+  *"repo view"*) echo '{"nameWithOwner":"o/r"}'; exit 0;;
+  *"review-requested:@me"*) echo '[{"number":7,"title":"Please review","headRefName":"feat/rev","state":"OPEN","statusCheckRollup":[{"conclusion":"SUCCESS"}],"url":"https://github.com/o/r/pull/7","updatedAt":"2024-01-02T03:04:05Z"}]'; exit 0;;
+  *"--author @me"*) echo '[{"number":42,"title":"Fix the thing","headRefName":"feat/x","state":"OPEN","statusCheckRollup":[{"conclusion":"FAILURE"}],"url":"https://github.com/o/r/pull/42","updatedAt":"2024-01-03T00:00:00Z"}]'; exit 0;;
+  *) echo '[]'; exit 0;;
+esac
+"#;
+    std::fs::write(&stub, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(&stub).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&stub, perms).unwrap();
+    format!("{}:{}", bin.path().display(), std::env::var("PATH").unwrap())
+}
+
+#[test]
+fn pr_list_with_no_repos_configured_is_a_clean_noop() {
+    // Empty HOME → no agentboard repos.json → nothing to list, exit 0.
+    let home = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    ttr(cwd.path())
+        .env("HOME", home.path())
+        .env("TT_STATE_SCOPE", "") // force unscoped config paths
+        .args(["gh", "pr-list"])
+        .assert()
+        .success()
+        .stdout(contains("No repos configured"));
+}
+
+#[test]
+fn pr_list_renders_prs_with_glyphs_and_needs_you() {
+    let home = TempDir::new().unwrap();
+    // A tracked repo dir (contents don't matter; gh is stubbed).
+    let repo = TempDir::new().unwrap();
+    let agentboard = home.path().join(".config/towles-tool/agentboard");
+    std::fs::create_dir_all(&agentboard).unwrap();
+    std::fs::write(
+        agentboard.join("repos.json"),
+        format!(r#"{{"repoPaths": ["{}"]}}"#, repo.path().display()),
+    )
+    .unwrap();
+
+    let bin = TempDir::new().unwrap();
+    let path = stub_gh_for_pr_list(&bin);
+
+    ttr(repo.path())
+        .env("HOME", home.path())
+        .env("TT_STATE_SCOPE", "")
+        .env("PATH", path)
+        .args(["gh", "pr-list"])
+        .assert()
+        .success()
+        .stdout(contains("o/r#42"))
+        .stdout(contains("Fix the thing"))
+        .stdout(contains("o/r#7"))
+        .stdout(contains("Please review"))
+        .stdout(contains("(review requested)"))
+        .stdout(contains("2 open PRs · 2 need you"));
+}
+
+#[test]
+fn prs_alias_reaches_pr_list() {
+    // The top-level `ttr prs` alias resolves to the same command.
+    let home = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    ttr(cwd.path())
+        .env("HOME", home.path())
+        .env("TT_STATE_SCOPE", "")
+        .args(["prs"])
+        .assert()
+        .success()
+        .stdout(contains("No repos configured"));
+}
+
 #[test]
 fn branch_clean_non_tty_without_force_does_not_delete() {
     let repo = repo_with_merged_branch();

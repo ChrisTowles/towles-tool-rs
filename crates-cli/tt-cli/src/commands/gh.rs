@@ -19,6 +19,7 @@ use std::time::Duration;
 use tt_git::branch_name::create_branch_name_from_issue;
 use tt_git::picker::{ChoiceValue, build_issue_choices, compute_column_layout};
 use tt_git::pr::generate_pr_content;
+use tt_git::pr_list::{PrRow, render_pr_list};
 use tt_git::{Issue, branch_clean, issues, slot_assign};
 
 pub fn run(command: GhCommands) -> i32 {
@@ -26,6 +27,7 @@ pub fn run(command: GhCommands) -> i32 {
         GhCommands::Branch { assigned_to_me } => branch(assigned_to_me),
         GhCommands::BranchClean(args) => branch_clean_cmd(args),
         GhCommands::Pr(args) => pr(args),
+        GhCommands::PrList => pr_list(),
         GhCommands::Assign(args) => assign(args),
     }
 }
@@ -159,6 +161,78 @@ fn pr(args: PrArgs) -> i32 {
             1
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// gh pr-list
+// ---------------------------------------------------------------------------
+
+/// `ttr gh pr-list` (alias `ttr prs`): print my open PRs across every tracked
+/// repo with their CI check rollup and a needs-you marker — the headless twin
+/// of the app's Cockpit "PRs need you" panel.
+///
+/// Fetching reuses the single `gh` code path in `tt_collect::collect_prs`: it
+/// runs the collector against a throwaway in-memory store, then reads the rows
+/// back and hands them to `tt_git::pr_list` for rendering (the one Rust home
+/// for the "needs you" semantics). A repo whose `gh` call fails contributes no
+/// rows and its error is surfaced on stderr; the exit code reflects whether the
+/// sweep was clean. Non-interactive by design — never prompts, never hangs.
+fn pr_list() -> i32 {
+    let repo_dirs = tt_collect::tracked_repo_dirs();
+    if repo_dirs.is_empty() {
+        ui::warning("No repos configured. Add one with `ttr agentboard repos add <dir>`.");
+        return 0;
+    }
+
+    if !gh_installed() {
+        ui::error("GitHub CLI not installed");
+        return 1;
+    }
+
+    let store = match tt_store::Store::open_in_memory() {
+        Ok(store) => store,
+        Err(e) => {
+            ui::error(&format!("Failed to open in-memory store: {e}"));
+            return 1;
+        }
+    };
+
+    let summary = tt_collect::collect_prs(&store, &repo_dirs, now_ms());
+    let prs = match store.prs() {
+        Ok(prs) => prs,
+        Err(e) => {
+            ui::error(&format!("Failed to read collected PRs: {e}"));
+            return 1;
+        }
+    };
+
+    let rows: Vec<PrRow> = prs
+        .iter()
+        .map(|p| PrRow {
+            repo: p.repo.clone(),
+            number: p.number,
+            title: p.title.clone(),
+            checks: p.checks.clone(),
+            review_state: p.review_state.clone(),
+        })
+        .collect();
+
+    println!("{}", render_pr_list(&rows));
+
+    // A failed sweep still lists whatever succeeded; note the failure and let
+    // the exit code carry it.
+    if !summary.ok {
+        ui::warning(summary.message.as_deref().unwrap_or("some repos failed to refresh"));
+        return 1;
+    }
+    0
+}
+
+/// Current wall-clock time in epoch milliseconds. Read at the CLI boundary so
+/// the library collectors stay clock-injected.
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------

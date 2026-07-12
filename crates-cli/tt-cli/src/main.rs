@@ -21,6 +21,7 @@ fn main() {
         Commands::ClaudeSessions(args) => commands::claude_sessions::run(args),
         Commands::Gh(args) => commands::gh::run(args.command),
         Commands::Pr(args) => commands::gh::run(GhCommands::Pr(args)),
+        Commands::Prs => commands::gh::run(GhCommands::PrList),
         Commands::Agentboard(args) => commands::agentboard::run(args.command),
         Commands::Collect(args) => commands::collect::run(args.command, config_dir.as_deref()),
         Commands::Mcp(args) => commands::mcp::run(args.command),
