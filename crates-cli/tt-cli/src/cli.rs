@@ -369,6 +369,12 @@ pub struct BranchCleanArgs {
     #[arg(long)]
     pub dry_run: bool,
 
+    /// Clean branches whose upstream is gone (deleted on the remote) instead of
+    /// ancestor-merged ones — catches GitHub rebase-and-merge branches. Deletes
+    /// with `git branch -D` since they aren't ancestor-merged.
+    #[arg(long)]
+    pub gone: bool,
+
     /// Base branch to check against
     #[arg(long, short = 'b', default_value = "main")]
     pub base: String,

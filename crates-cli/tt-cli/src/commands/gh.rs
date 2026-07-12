@@ -244,17 +244,28 @@ fn now_ms() -> i64 {
 fn branch_clean_cmd(args: BranchCleanArgs) -> i32 {
     let current = current_branch().unwrap_or_default();
 
-    let Some(merged) = git(&["branch", "--merged", &args.base]) else {
-        return 1;
+    // `--gone` targets branches whose upstream was deleted on the remote (via
+    // `git branch -vv`), catching GitHub rebase-and-merge branches that
+    // `git branch --merged` never lists because the merge landed new SHAs.
+    // Those aren't ancestor-merged, so they need `git branch -D`.
+    let (to_delete, delete_flag, kind) = if args.gone {
+        let Some(vv) = git(&["branch", "-vv"]) else {
+            return 1;
+        };
+        (branch_clean::branches_gone(&vv.stdout, &args.base, &current), "-D", "gone")
+    } else {
+        let Some(merged) = git(&["branch", "--merged", &args.base]) else {
+            return 1;
+        };
+        (branch_clean::branches_to_delete(&merged.stdout, &args.base, &current), "-d", "merged")
     };
-    let to_delete = branch_clean::branches_to_delete(&merged.stdout, &args.base, &current);
 
     if to_delete.is_empty() {
-        ui::info("No merged branches to clean up");
+        ui::info(&format!("No {kind} branches to clean up"));
         return 0;
     }
 
-    println!("Found {} merged branch(es):", to_delete.len());
+    println!("Found {} {kind} branch(es):", to_delete.len());
     for branch in &to_delete {
         println!("  - {branch}");
     }
@@ -281,7 +292,7 @@ fn branch_clean_cmd(args: BranchCleanArgs) -> i32 {
     let mut deleted = 0;
     let mut failed = 0;
     for branch in &to_delete {
-        match tt_exec::run("git", &["branch", "-d", branch]) {
+        match tt_exec::run("git", &["branch", delete_flag, branch]) {
             Ok(out) if out.ok() => {
                 println!("✓ Deleted {branch}");
                 deleted += 1;
