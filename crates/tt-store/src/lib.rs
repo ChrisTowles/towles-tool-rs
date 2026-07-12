@@ -702,15 +702,24 @@ impl Store {
         )
     }
 
-    /// The earliest event starting at/after `after_ms`, if any.
-    pub fn next_event(&self, after_ms: i64) -> Result<Option<CalEvent>> {
+    /// The meeting to surface at `now_ms`: the one in progress right now, or
+    /// the soonest still to start — whichever begins first.
+    ///
+    /// An event counts as in progress while `start_ts <= now_ms < end_ts`, so
+    /// a meeting stays selected until it actually ends rather than vanishing
+    /// the instant it starts. An event with no `end_ts` is treated as a point
+    /// in time and is only returned while still in the future
+    /// (`start_ts >= now_ms`). Returns `None` once the last event has ended.
+    pub fn current_or_next_event(&self, now_ms: i64) -> Result<Option<CalEvent>> {
         Ok(self
             .query_events(
                 &format!(
                     "SELECT {EVENT_COLS} FROM events
-                     WHERE start_ts >= ?1 ORDER BY start_ts ASC LIMIT 1"
+                     WHERE (end_ts IS NOT NULL AND end_ts > ?1)
+                        OR (end_ts IS NULL AND start_ts >= ?1)
+                     ORDER BY start_ts ASC LIMIT 1"
                 ),
-                [after_ms],
+                [now_ms],
             )?
             .into_iter()
             .next())
@@ -1276,13 +1285,52 @@ mod tests {
     }
 
     #[test]
-    fn events_between_and_next_event() {
+    fn events_between_windows_by_start() {
         let s = Store::open_in_memory().unwrap();
         s.replace_events(&[event("a", 100), event("b", 300), event("c", 500)], 1).unwrap();
         let win = s.events_between(150, 500).unwrap();
         assert_eq!(win.iter().map(|e| e.external_id.as_str()).collect::<Vec<_>>(), vec!["b"]);
-        assert_eq!(s.next_event(200).unwrap().unwrap().external_id, "b");
-        assert!(s.next_event(600).unwrap().is_none());
+    }
+
+    #[test]
+    fn current_or_next_event_across_the_meeting_lifecycle() {
+        // The `event` helper spans [start, start + 1000). Two non-overlapping
+        // meetings: "b" runs [300, 1300), "c" runs [1500, 2500).
+        let s = Store::open_in_memory().unwrap();
+        s.replace_events(&[event("b", 300), event("c", 1500)], 1).unwrap();
+
+        // Future: before it starts, "b" is the next meeting.
+        assert_eq!(s.current_or_next_event(200).unwrap().unwrap().external_id, "b");
+        // At the exact start it is already live.
+        assert_eq!(s.current_or_next_event(300).unwrap().unwrap().external_id, "b");
+        // In progress (start <= now < end): "b" stays selected, not skipped.
+        assert_eq!(s.current_or_next_event(800).unwrap().unwrap().external_id, "b");
+        // Ended (now >= end_ts): "b" drops out and the next meeting "c" takes over.
+        assert_eq!(s.current_or_next_event(1300).unwrap().unwrap().external_id, "c");
+        // After the last meeting ends there is nothing left.
+        assert!(s.current_or_next_event(3000).unwrap().is_none());
+    }
+
+    #[test]
+    fn current_or_next_event_without_end_is_a_point_in_time() {
+        let s = Store::open_in_memory().unwrap();
+        s.replace_events(
+            &[EventInput {
+                external_id: "no-end".to_string(),
+                title: "Open-ended".to_string(),
+                start_ts: 500,
+                end_ts: None,
+                attendees: vec![],
+                location: None,
+                join_url: None,
+            }],
+            1,
+        )
+        .unwrap();
+        // With no duration there is no live window: shown up to its start, then gone.
+        assert_eq!(s.current_or_next_event(400).unwrap().unwrap().external_id, "no-end");
+        assert_eq!(s.current_or_next_event(500).unwrap().unwrap().external_id, "no-end");
+        assert!(s.current_or_next_event(600).unwrap().is_none());
     }
 
     #[test]

@@ -123,13 +123,19 @@ impl Dispatcher {
         Ok(json!({ "events": events, "now": now_ms }))
     }
 
-    /// The next event starting strictly after `now_ms`, with minutes-until.
+    /// The meeting in progress at `now_ms`, or the next one still to start —
+    /// with minutes-until (negative while a meeting is live) and a `live` flag.
     fn calendar_next(&self, now_ms: i64) -> Result<Value, String> {
-        let after = now_ms.saturating_add(1);
-        match self.store.next_event(after).map_err(|e| e.to_string())? {
+        match self.store.current_or_next_event(now_ms).map_err(|e| e.to_string())? {
             Some(event) => {
                 let minutes_until = (event.start_ts - now_ms) / 60_000;
-                Ok(json!({ "event": event, "minutesUntil": minutes_until, "now": now_ms }))
+                let live = event.start_ts <= now_ms && event.end_ts.is_some_and(|end| now_ms < end);
+                Ok(json!({
+                    "event": event,
+                    "minutesUntil": minutes_until,
+                    "live": live,
+                    "now": now_ms,
+                }))
             }
             None => Ok(json!({ "event": Value::Null, "now": now_ms })),
         }
@@ -404,7 +410,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "calendar_next",
-            "description": "The next upcoming calendar event and minutes until it starts.",
+            "description": "The meeting in progress now, or the next one to start, with minutes until it starts (negative while live) and a `live` flag.",
             "inputSchema": no_args(),
         },
         {
@@ -558,6 +564,12 @@ mod tests {
 
     /// Call a tool and return the parsed inner JSON result (the `text` payload).
     fn call_tool(dispatcher: &mut Dispatcher, name: &str, args: Value) -> Value {
+        call_tool_at(dispatcher, name, args, NOW)
+    }
+
+    /// Like {@link call_tool} but at an explicit `now_ms`, so time-dependent
+    /// tools (e.g. `calendar_next`) can be exercised across the meeting lifecycle.
+    fn call_tool_at(dispatcher: &mut Dispatcher, name: &str, args: Value, now_ms: i64) -> Value {
         let request = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -565,7 +577,8 @@ mod tests {
             "params": { "name": name, "arguments": args },
         })
         .to_string();
-        let response = dispatcher.handle_at(&request, NOW).expect("tool call returns a response");
+        let response =
+            dispatcher.handle_at(&request, now_ms).expect("tool call returns a response");
         let response: Value = serde_json::from_str(&response).unwrap();
         assert_eq!(response["result"]["isError"], Value::Null, "unexpected tool error");
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -664,11 +677,24 @@ mod tests {
     }
 
     #[test]
-    fn calendar_next_returns_soonest_with_minutes_until() {
+    fn calendar_next_surfaces_an_in_progress_meeting() {
+        // The "today" event runs [NOW, NOW + 1000), so it is live at NOW and
+        // must not be skipped in favor of the later "soon" event.
         let mut dispatcher = dispatcher();
         let result = call_tool(&mut dispatcher, "calendar_next", json!({}));
+        assert_eq!(result["event"]["externalId"], "today");
+        assert_eq!(result["minutesUntil"], 0);
+        assert_eq!(result["live"], true);
+    }
+
+    #[test]
+    fn calendar_next_moves_on_once_the_live_meeting_ends() {
+        // After "today" has ended (now past NOW + 1000) the next meeting "soon"
+        // (NOW + 1h) becomes the answer, and it is not live.
+        let mut dispatcher = dispatcher();
+        let result = call_tool_at(&mut dispatcher, "calendar_next", json!({}), NOW + 2000);
         assert_eq!(result["event"]["externalId"], "soon");
-        assert_eq!(result["minutesUntil"], 60);
+        assert_eq!(result["live"], false);
     }
 
     #[test]
