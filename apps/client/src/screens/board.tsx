@@ -47,6 +47,8 @@ import {
   reorderedPosition,
   TASK_DRAG_TYPE,
 } from "@/lib/kanban-dnd";
+import { dueState, overdueByStatus } from "@/lib/board-metrics";
+import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
 
 /** Optimistic edits (text/due) applied over a snapshot todo until it re-arrives. */
@@ -84,7 +86,7 @@ function dueDateToMs(value: string): number | undefined {
  */
 export function BoardScreen() {
   const { snapshot } = useStoreSnapshot();
-  const now = Date.now();
+  const now = useNow();
 
   const [statusOverrides, setStatusOverrides] = useState<Record<number, TaskStatus>>({});
   const [posOverrides, setPosOverrides] = useState<Record<number, PosOverride>>({});
@@ -138,6 +140,9 @@ export function BoardScreen() {
     }
     return byStatus;
   }, [merged]);
+
+  // Overdue cards per column, for the header's red load pip.
+  const overdue = useMemo(() => overdueByStatus(merged, now), [merged, now]);
 
   function move(id: number, status: TaskStatus) {
     setStatusOverrides((prev) => ({ ...prev, [id]: status }));
@@ -270,8 +275,18 @@ export function BoardScreen() {
                 <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   {TASK_STATUS_LABEL[status]}
                 </span>
-                <span className="rounded-full bg-background px-1.5 font-mono text-[10px] text-muted-foreground">
-                  {columns[status].length}
+                <span className="flex items-center gap-1">
+                  {overdue[status] > 0 && (
+                    <span
+                      title={`${overdue[status]} overdue`}
+                      className="rounded-full border border-transparent bg-red-500/15 px-1.5 font-mono text-[10px] text-red-600 dark:text-red-400"
+                    >
+                      {overdue[status]} late
+                    </span>
+                  )}
+                  <span className="rounded-full bg-background px-1.5 font-mono text-[10px] text-muted-foreground">
+                    {columns[status].length}
+                  </span>
                 </span>
               </div>
               <div className="flex flex-col gap-2 p-2 pt-0">
@@ -345,7 +360,8 @@ function Card({
   const [editValue, setEditValue] = useState(task.text);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const overdue = task.dueTs !== undefined && task.dueTs < now && task.status !== "done";
+  // A shipped card is never "late", so done cards carry no due accent.
+  const due = task.status === "done" ? "none" : dueState(task.dueTs, now);
 
   function startRename() {
     setEditValue(task.text);
@@ -397,8 +413,12 @@ function Card({
         onDragEnd();
       }}
       className={cn(
-        "group rounded-md border bg-background p-2.5 text-sm shadow-sm",
+        "group rounded-md border border-l-2 bg-background p-2.5 text-sm shadow-sm",
         "cursor-grab active:cursor-grabbing",
+        due === "overdue" &&
+          "border-l-red-500 bg-red-500/[0.03] dark:bg-red-500/[0.07]",
+        due === "today" &&
+          "border-l-amber-500 bg-amber-500/[0.03] dark:bg-amber-500/[0.07]",
         task.status === "done" && "opacity-60",
         dragging && "opacity-40",
       )}
@@ -531,7 +551,10 @@ function Card({
               variant="outline"
               className={cn(
                 "gap-1 text-[10px]",
-                overdue && "border-transparent bg-red-500/15 text-red-600 dark:text-red-400",
+                due === "overdue" &&
+                  "border-transparent bg-red-500/15 text-red-600 dark:text-red-400",
+                due === "today" &&
+                  "border-transparent bg-amber-500/15 text-amber-600 dark:text-amber-400",
               )}
             >
               <CalendarPlus aria-hidden className="size-3" />
