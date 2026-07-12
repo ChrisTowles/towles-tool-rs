@@ -16,7 +16,8 @@
     "tauri": "tauri",
     "client:dev": "npm run dev --workspace @towles-tool/client",
     "e2e": "node scripts/e2e.mjs",
-    "e2e:run": "node scripts/e2e.mjs --no-build"
+    "e2e:run": "node scripts/e2e.mjs --no-build",
+    "test:scripts": "node --test \"scripts/*.test.mjs\""
   },
   "comment:overrides": "@wdio/tauri-service@1.2.0 exact-pins @wdio/native-utils@2.4.0 but imports installMockSyncOverride, only added in 2.5.0 — a broken pin. Force 2.5.0 until upstream fixes it.",
   "overrides": {
