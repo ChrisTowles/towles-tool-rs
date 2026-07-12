@@ -62,11 +62,7 @@ function Workspace() {
             <AppSidebarIcons />
           </div>
         )}
-        <ResizablePanelGroup
-          key={sidebarCollapsed ? "sidebar-icons" : "sidebar-full"}
-          orientation="horizontal"
-          className="min-h-0 flex-1"
-        >
+        <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
           {!sidebarCollapsed && (
             <>
               <ResizablePanel defaultSize="190px" minSize="160px" maxSize="240px">
