@@ -115,6 +115,13 @@ pub fn assemble_state(
         }
     }
 
+    // The primary checkout (`<repo>-primary`, the worktree-slot convention's
+    // long-lived main checkout) always leads its repo group; the stable sort
+    // keeps the engine's name order for everything else.
+    for repo in &mut repos {
+        repo.folders.sort_by_key(|f| !is_primary_checkout(&f.dir));
+    }
+
     StatePayload {
         repos,
         theme,
@@ -316,6 +323,13 @@ fn status_rank(s: AgentStatus) -> u8 {
         AgentStatus::Complete => 1,
         AgentStatus::Idle => 0,
     }
+}
+
+/// Whether `dir` is a repo's primary checkout under the worktree-slot
+/// convention: its basename is `<repo>-primary`.
+fn is_primary_checkout(dir: &str) -> bool {
+    let base = dir.trim_end_matches('/').rsplit('/').next().unwrap_or(dir);
+    base.strip_suffix("-primary").is_some_and(|repo| !repo.is_empty())
 }
 
 /// The repo segment of an origin URL: strips a trailing `.git` / `/` and takes
@@ -525,6 +539,53 @@ mod tests {
         assert!(!session_needs(&session(true, Some(AgentStatus::Busy), false)));
         assert!(!session_needs(&session(true, Some(AgentStatus::Idle), false)));
         assert!(!session_needs(&session(true, None, false)));
+    }
+
+    #[test]
+    fn is_primary_checkout_matches_only_primary_dirs() {
+        assert!(is_primary_checkout("/a/b/demo-primary"));
+        assert!(!is_primary_checkout("/a/slots/thing"));
+        assert!(!is_primary_checkout("/a/-primary"));
+        assert!(!is_primary_checkout("/a/primary"));
+    }
+
+    #[test]
+    fn primary_checkout_sorts_first_in_its_repo_group() {
+        let tracker = AgentTracker::new();
+        let metadata = SessionMetadataStore::new();
+        let mut store = SessionStore::new(None);
+        store.ensure_default("/r/slots/apple", 1);
+        store.ensure_default("/r/demo-primary", 1);
+        let info = crate::git_info::GitInfo {
+            origin_url: Some("https://github.com/x/demo.git".into()),
+            ..Default::default()
+        };
+        let mut git = HashMap::new();
+        git.insert("/r/slots/apple".to_string(), info.clone());
+        git.insert("/r/demo-primary".to_string(), info);
+        // Entries arrive name-sorted, which puts the slot ("apple") ahead of
+        // the primary — the group re-sort must still lead with the primary.
+        let entries = vec![
+            RepoEntry { name: "apple".into(), dir: "/r/slots/apple".into() },
+            RepoEntry { name: "demo-primary".into(), dir: "/r/demo-primary".into() },
+        ];
+        let payload = assemble_state(
+            &entries,
+            &git,
+            &tracker,
+            &metadata,
+            &store,
+            &FolderMetaStore::default(),
+            &no_attr,
+            &HashMap::new(),
+            None,
+            "code",
+            30,
+            0,
+        );
+        assert_eq!(payload.repos.len(), 1, "same origin groups into one repo");
+        let dirs: Vec<&str> = payload.repos[0].folders.iter().map(|f| f.dir.as_str()).collect();
+        assert_eq!(dirs, vec!["/r/demo-primary", "/r/slots/apple"]);
     }
 
     #[test]
