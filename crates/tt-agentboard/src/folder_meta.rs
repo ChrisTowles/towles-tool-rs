@@ -37,14 +37,10 @@ pub struct FolderMetaStore {
     dirty: HashSet<String>,
 }
 
-/// Default location: `~/.config/towles-tool/agentboard/folder_meta.json`.
+/// Default location: `<agentboard_dir>/folder_meta.json` (slot-scoped in a slot
+/// checkout; see [`tt_config::agentboard_dir`]).
 pub fn default_folder_meta_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config")
-        .join("towles-tool")
-        .join("agentboard")
-        .join("folder_meta.json")
+    tt_config::agentboard_dir_lossy().join("folder_meta.json")
 }
 
 impl FolderMetaStore {

@@ -42,6 +42,15 @@ fn show(config_dir: Option<&Path>) -> i32 {
     };
 
     ui::info(&format!("Settings file: {}", path.display()));
+    let scope = if config_dir.is_some() {
+        "(--config-dir override)".to_string()
+    } else {
+        match tt_config::state_scope() {
+            Some(s) => s,
+            None => "default (shared)".to_string(),
+        }
+    };
+    ui::info(&format!("State scope: {scope}"));
     println!();
     match serde_json::to_string_pretty(&settings) {
         Ok(json) => {

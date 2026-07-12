@@ -39,14 +39,10 @@ pub struct CollapseStore {
     dirty_key: Option<String>,
 }
 
-/// Default location: `~/.config/towles-tool/agentboard/collapse.json`.
+/// Default location: `<agentboard_dir>/collapse.json` (slot-scoped in a slot
+/// checkout; see [`tt_config::agentboard_dir`]).
 pub fn default_collapse_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config")
-        .join("towles-tool")
-        .join("agentboard")
-        .join("collapse.json")
+    tt_config::agentboard_dir_lossy().join("collapse.json")
 }
 
 impl CollapseStore {

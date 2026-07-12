@@ -61,14 +61,10 @@ pub struct SessionStore {
     dirty: HashSet<String>,
 }
 
-/// Default location: `~/.config/towles-tool/agentboard/sessions.json`.
+/// Default location: `<agentboard_dir>/sessions.json` (slot-scoped in a slot
+/// checkout; see [`tt_config::agentboard_dir`]).
 pub fn default_sessions_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config")
-        .join("towles-tool")
-        .join("agentboard")
-        .join("sessions.json")
+    tt_config::agentboard_dir_lossy().join("sessions.json")
 }
 
 impl SessionStore {

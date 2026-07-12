@@ -5,9 +5,15 @@ use std::path::Path;
 
 /// Build a `ttr` command pointed at an isolated config directory, so tests never
 /// touch the real `~/.config/towles-tool`.
+///
+/// Also forces `TT_STATE_SCOPE=` empty so state-path resolution stays *unscoped*
+/// (the daily-driver defaults) even though the test binary runs from inside a
+/// slot checkout, whose cwd would otherwise auto-derive a slot scope. These
+/// black-box tests assert on the documented default paths.
 pub fn cli_cmd(config_dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("ttr").expect("binary `ttr` should build");
     cmd.arg("--config-dir").arg(config_dir);
+    cmd.env(tt_config::STATE_SCOPE_ENV, "");
     cmd
 }
 

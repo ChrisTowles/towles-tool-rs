@@ -8,8 +8,9 @@ publish = false
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-dirs = { workspace = true }
 thiserror = { workspace = true }
+# Central resolver for the (optionally slot-scoped) tt.db path.
+tt-config = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.14.0"
