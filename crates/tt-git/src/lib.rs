@@ -13,6 +13,7 @@
 //! - [`picker`] — issue-picker column layout and rendering (`branch.ts`, `render.ts`).
 //! - [`slot_assign`] — clean-tree/remote guard for assigning an issue to a slot checkout.
 //! - [`pr_list`] — `ttr gh pr-list` rendering + the "needs you" PR semantics.
+//! - [`sync`] — clean-tree/ahead-behind/rebase decisions for `gh sync` + `gh co`.
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -24,6 +25,7 @@ pub mod picker;
 pub mod pr;
 pub mod pr_list;
 pub mod slot_assign;
+pub mod sync;
 
 #[derive(Debug, Error)]
 pub enum Error {

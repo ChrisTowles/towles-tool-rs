@@ -256,6 +256,28 @@ pub enum GhCommands {
     /// Assign an open issue to a sibling slot checkout of this repo
     /// (hard-fails unless the slot is clean: no changes, no stashes)
     Assign(AssignArgs),
+
+    /// Get the current checkout current with main: fetch + rebase onto
+    /// origin/<base> (hard-fails on a dirty tree or a rebase conflict)
+    Sync(SyncArgs),
+
+    /// Check out the branch for a PR number (resolves via `gh pr view`,
+    /// guards on a clean tree, fetches the branch if needed)
+    #[command(alias = "pr-checkout")]
+    Co(CoArgs),
+}
+
+#[derive(Args)]
+pub struct SyncArgs {
+    /// Base branch to rebase onto
+    #[arg(long, short = 'b', default_value = "main")]
+    pub base: String,
+}
+
+#[derive(Args)]
+pub struct CoArgs {
+    /// PR number whose head branch to check out
+    pub number: u64,
 }
 
 #[derive(Args)]
