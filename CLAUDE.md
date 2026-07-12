@@ -94,8 +94,9 @@ Rules when working in a slot:
   declared in `.env.example` (spawned directly, no shell — `npm install`
   here), falling back to lockfile detection in repos that don't declare one.
 - **Never touch sibling slot directories** — other agents work there
-  concurrently. Mutable state (settings, tt.db, agentboard files) is already
-  scoped per checkout via `tt_config::state_scope()`.
+  concurrently. Instance state (tt.db, sessions/windows) is scoped per
+  checkout via `tt_config::state_scope()`; shared stores (settings, tracked
+  repos) are one machine-wide copy.
 - Slot logic lives in `crates/tt-slots` (template grammar, removal guards,
   pure decisions) with shared orchestration in `tt_slots::ops`; the CLI and
   the app's `slot_create` command are thin shells over it. Change behavior
@@ -113,14 +114,19 @@ Cargo workspace + npm workspace (`apps/client` only):
     `~/.config/towles-tool/towles-tool.settings.json`. **This file is shared
     with the TypeScript CLI**, so serde types must tolerate unknown fields
     (`#[serde(default)]` / no `deny_unknown_fields`) to avoid breaking the other
-    tool. Also the **single resolver for every mutable state path** (settings,
-    `tt.db`, agentboard `*.json`): `state_scope()` detects when the process runs
-    from a slot checkout (cwd walks up to a dir containing `crates/tt-config`)
-    and, when scoped, nests state under `…/towles-tool/slots/<scope>/…` so
-    concurrent slots don't clobber one shared file. Unscoped (installed daily
-    driver) = the historic defaults, untouched. `TT_STATE_SCOPE` overrides
-    (empty = force unscoped); the CLI `--config-dir` flag still wins for the
-    settings path. Never build these paths ad-hoc — call the resolver.
+    tool. Also the **single resolver for every mutable state path**, split in
+    two: **shared stores** (settings, agentboard `repos.json` — facts about
+    the user/machine) are one machine-wide copy from every checkout, while
+    **instance state** (`tt.db`, agentboard sessions/windows/collapse — one
+    running checkout's world) nests under `…/towles-tool/slots/<scope>/…` when
+    `state_scope()` detects the process runs from a checkout of this repo (cwd
+    walks up to a dir containing `crates/tt-config`; `slots/<name>` checkouts
+    get repo-qualified scopes). A branch's schema experiments therefore never
+    touch the daily driver's `tt.db`, but tracking a repo shows up everywhere.
+    An explicitly set `TT_STATE_SCOPE` isolates *everything*, shared stores
+    included (tests must never write real settings); empty = force unscoped.
+    The CLI `--config-dir` flag still wins for the settings path. Never build
+    these paths ad-hoc — call the resolver.
   - `tt-exec` — process/command wrappers.
   - `tt-journal` — journal/note filesystem logic and date-token path templating.
   - `tt-git` — GitHub/git helpers: branch-name slugging, PR content, merged-branch

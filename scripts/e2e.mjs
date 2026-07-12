@@ -129,6 +129,9 @@ async function main() {
   const code = run("npx", ["wdio", "run", "e2e/wdio.conf.ts"], {
     env: {
       ...process.env,
+      // Forced scope = full state isolation (shared stores included) — the
+      // spawned app can never read or write the real settings/repos files.
+      TT_STATE_SCOPE: `e2e-${path.basename(repoRoot)}`,
       TT_DEV_PORT: String(devPort),
       TT_E2E_WEBDRIVER_PORT: String(wdPort),
       // The service's execute/mock channel (DirectEvalClient) reads the eval
