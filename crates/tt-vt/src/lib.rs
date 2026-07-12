@@ -17,7 +17,7 @@ pub mod session;
 pub use engine::{Engine, EngineOptions, Select, VtError};
 pub use frame::{Frame, Modes};
 pub use search::SearchMatch;
-pub use session::{Event, Input, Session, SpawnError};
+pub use session::{Event, Input, Sender, Session, SpawnError};
 
 #[cfg(test)]
 mod tests {

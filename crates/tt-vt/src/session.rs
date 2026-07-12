@@ -1,10 +1,10 @@
 //! Per-terminal thread wrapper around [`Engine`].
 //!
 //! libghostty-vt state is `!Send`, so each terminal gets a dedicated thread
-//! that owns its engine. Callers talk to it through a channel and receive
+//! that owns its engine. Callers talk to it through channels and receive
 //! [`Event`]s on a sink callback (invoked on the session thread).
 //!
-//! Batching falls out of the loop shape: one blocking `recv`, then drain
+//! Batching falls out of the loop shape: one blocking wait, then drain
 //! everything already queued, then a single render pass. Under PTY floods
 //! the drain naturally coalesces many chunks into one frame. On top of that,
 //! renders are throttled to [`MIN_FRAME_INTERVAL`]: an input arriving while
@@ -13,6 +13,28 @@
 //! chunk gets its own frame event and the UI event queue backs up faster
 //! than the webview can paint — input latency then grows with sustained
 //! output and only recovers once the flood stops.
+//!
+//! # Backpressure and the control fast-path
+//!
+//! Two problems the throttle alone doesn't solve, both handled here by
+//! splitting the byte and control inputs onto separate channels:
+//!
+//! * **Bounded memory.** The frame *emitter* is throttled, but a firehose
+//!   (`cat huge.log`) into a slow webview would let raw PTY bytes queue
+//!   without bound. Bytes ride a *bounded* channel
+//!   ([`MAX_QUEUED_BYTE_CHUNKS`]); once it fills, the feeder — the PTY reader
+//!   thread — blocks in [`Sender::send`], so the kernel's PTY buffer fills and
+//!   applies real flow control to the shell. The engine's queue can never
+//!   grow past a few MB.
+//! * **Responsive UI.** Resize/scroll/copy/selection must never wait behind a
+//!   backlog of bytes. Control rides its own *unbounded* channel that the
+//!   engine drains *first* on every pass, so a saturated byte queue can neither
+//!   block a control send nor delay it behind queued output.
+//!
+//! The engine thread blocks on a third, dumb `wake` channel that every send
+//! pings after enqueuing its payload; on wake it drains control then bytes.
+//! The wake channel carries no ordering, so control priority holds regardless
+//! of the order sends happened in.
 
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -25,6 +47,13 @@ use crate::search::SearchMatch;
 /// Minimum time between render passes (~90 fps). Caps how fast frames can be
 /// produced so the UI side can never fall behind unboundedly.
 const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(1_000_000 / 90);
+
+/// Cap on unconsumed PTY byte chunks queued for the engine. At the PTY
+/// reader's 64 KiB read size this bounds the in-flight backlog to ~4 MB —
+/// far more than any interactive burst, so normal output never blocks, but a
+/// firehose into a stalled engine blocks the reader instead of ballooning
+/// memory. Control inputs are never counted against this bound.
+const MAX_QUEUED_BYTE_CHUNKS: usize = 64;
 
 pub enum Input {
     /// Raw PTY output bytes.
@@ -76,8 +105,55 @@ pub enum SpawnError {
     ThreadDied,
 }
 
+/// Cloneable handle for feeding a session. [`Input::Bytes`] rides a bounded
+/// channel — sending blocks when the engine is behind, which is the
+/// backpressure that reaches the PTY reader. Every other (control) input rides
+/// an unbounded channel the engine drains first, so control is never blocked
+/// behind queued bytes.
+#[derive(Clone)]
+pub struct Sender {
+    bytes: mpsc::SyncSender<Vec<u8>>,
+    control: mpsc::Sender<Input>,
+    wake: mpsc::Sender<()>,
+}
+
+impl Sender {
+    /// Send an input to the engine. Bytes may block under backpressure;
+    /// control never does. Returns false once the session thread is gone.
+    pub fn send(&self, input: Input) -> bool {
+        match input {
+            Input::Bytes(bytes) => {
+                if self.bytes.send(bytes).is_err() {
+                    return false;
+                }
+            }
+            control => {
+                if self.control.send(control).is_err() {
+                    return false;
+                }
+            }
+        }
+        // Payload is enqueued; wake the engine. A failed wake means the engine
+        // is gone — the payload send above would then have failed too, so on
+        // success here there is nothing to report.
+        let _ = self.wake.send(());
+        true
+    }
+
+    /// Replace the channels with dead stand-ins so dropping this handle lets
+    /// the engine thread's wake loop end (once every clone is gone too).
+    fn disconnect(&mut self) {
+        let (bytes, _) = mpsc::sync_channel(0);
+        self.bytes = bytes;
+        let (control, _) = mpsc::channel();
+        self.control = control;
+        let (wake, _) = mpsc::channel();
+        self.wake = wake;
+    }
+}
+
 pub struct Session {
-    tx: mpsc::Sender<Input>,
+    sender: Sender,
     join: Option<JoinHandle<()>>,
 }
 
@@ -88,7 +164,9 @@ impl Session {
         opts: EngineOptions,
         mut sink: impl FnMut(Event) + Send + 'static,
     ) -> Result<Self, SpawnError> {
-        let (tx, rx) = mpsc::channel::<Input>();
+        let (bytes_tx, bytes_rx) = mpsc::sync_channel::<Vec<u8>>(MAX_QUEUED_BYTE_CHUNKS);
+        let (control_tx, control_rx) = mpsc::channel::<Input>();
+        let (wake_tx, wake_rx) = mpsc::channel::<()>();
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), VtError>>(1);
 
         let join = std::thread::Builder::new().name("tt-vt-session".into()).spawn(move || {
@@ -103,52 +181,70 @@ impl Session {
                 }
             };
 
+            let apply_control = |engine: &mut Engine, input: Input| match input {
+                // Bytes never route through the control channel (see
+                // `Sender::send`); feed defensively rather than panic.
+                Input::Bytes(b) => engine.feed(&b),
+                Input::Resize { cols, rows, cell_width_px, cell_height_px } => {
+                    // A failed resize (zero cols during layout races)
+                    // keeps the old grid; the next resize fixes it.
+                    let _ = engine.resize(cols, rows, cell_width_px, cell_height_px);
+                }
+                Input::Scroll(delta) => engine.scroll(delta),
+                // Out-of-bounds coordinates (layout races) are ignored;
+                // the selection just doesn't change.
+                Input::Select(op) => {
+                    let _ = engine.select(op);
+                }
+                Input::Copy(reply) => {
+                    let _ = reply.try_send(engine.copy_selection().ok().flatten());
+                }
+                Input::Search { query, limit, reply } => {
+                    let _ = reply.try_send(engine.search(&query, limit).unwrap_or_default());
+                }
+                Input::ScrollTo(row) => {
+                    let _ = engine.scroll_to(row);
+                }
+                Input::RequestFull => engine.request_full(),
+                Input::ClearScrollback => engine.clear_scrollback(),
+            };
+
             // Start in the past so the first input renders immediately.
             let mut last_render = Instant::now() - MIN_FRAME_INTERVAL;
-            while let Ok(first) = rx.recv() {
-                let mut apply = |input: Input| match input {
-                    Input::Bytes(b) => engine.feed(&b),
-                    Input::Resize { cols, rows, cell_width_px, cell_height_px } => {
-                        // A failed resize (zero cols during layout races)
-                        // keeps the old grid; the next resize fixes it.
-                        let _ = engine.resize(cols, rows, cell_width_px, cell_height_px);
-                    }
-                    Input::Scroll(delta) => engine.scroll(delta),
-                    // Out-of-bounds coordinates (layout races) are ignored;
-                    // the selection just doesn't change.
-                    Input::Select(op) => {
-                        let _ = engine.select(op);
-                    }
-                    Input::Copy(reply) => {
-                        let _ = reply.try_send(engine.copy_selection().ok().flatten());
-                    }
-                    Input::Search { query, limit, reply } => {
-                        let _ = reply.try_send(engine.search(&query, limit).unwrap_or_default());
-                    }
-                    Input::ScrollTo(row) => {
-                        let _ = engine.scroll_to(row);
-                    }
-                    Input::RequestFull => engine.request_full(),
-                    Input::ClearScrollback => engine.clear_scrollback(),
-                };
-                apply(first);
-                // Absorb further input until the frame interval since the
-                // last render has passed. An idle terminal renders its first
-                // input with no delay; a flood coalesces into ~90 fps frames.
+            // Block for a wake, then drain and render. Buffered wakes are
+            // delivered before disconnect, so a dropped session still drains
+            // its queued input before the loop ends.
+            while wake_rx.recv().is_ok() {
+                let mut applied = false;
+                // Absorb input until the frame interval since the last render
+                // has passed. An idle terminal renders its first input with no
+                // delay; a flood coalesces into ~90 fps frames. Control is
+                // drained before bytes on every pass so UI ops never wait
+                // behind queued output.
                 loop {
-                    while let Ok(more) = rx.try_recv() {
-                        apply(more);
+                    while let Ok(input) = control_rx.try_recv() {
+                        apply_control(&mut engine, input);
+                        applied = true;
+                    }
+                    while let Ok(bytes) = bytes_rx.try_recv() {
+                        engine.feed(&bytes);
+                        applied = true;
                     }
                     let elapsed = last_render.elapsed();
                     if elapsed >= MIN_FRAME_INTERVAL {
                         break;
                     }
-                    match rx.recv_timeout(MIN_FRAME_INTERVAL - elapsed) {
-                        Ok(more) => apply(more),
-                        // Timeout: interval reached. Disconnected: render
-                        // what we have; the outer recv ends the loop.
+                    match wake_rx.recv_timeout(MIN_FRAME_INTERVAL - elapsed) {
+                        Ok(()) => continue,
+                        // Timeout: interval reached. Disconnected: render what
+                        // we have; the outer recv ends the loop.
                         Err(_) => break,
                     }
+                }
+                // A lone wake token whose payload an earlier pass already
+                // drained: nothing changed, so skip the render.
+                if !applied {
+                    continue;
                 }
 
                 let reply = engine.take_pty_output();
@@ -169,29 +265,167 @@ impl Session {
         })?;
 
         ready_rx.recv().map_err(|_| SpawnError::ThreadDied)??;
-        Ok(Self { tx, join: Some(join) })
+        Ok(Self {
+            sender: Sender { bytes: bytes_tx, control: control_tx, wake: wake_tx },
+            join: Some(join),
+        })
     }
 
-    /// Send input to the engine. Returns false if the session thread is gone.
+    /// Send input to the engine. Bytes block under backpressure (see
+    /// [`Sender::send`]); control never does. Returns false if the session
+    /// thread is gone.
     pub fn send(&self, input: Input) -> bool {
-        self.tx.send(input).is_ok()
+        self.sender.send(input)
     }
 
     /// A cloneable sender for feeding this session from other threads (e.g. a
     /// PTY reader). The engine thread exits once the [`Session`] is dropped
     /// AND every cloned sender is gone.
-    pub fn sender(&self) -> mpsc::Sender<Input> {
-        self.tx.clone()
+    pub fn sender(&self) -> Sender {
+        self.sender.clone()
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // Closing the channel ends the thread's recv loop.
-        let (tx, _) = mpsc::channel();
-        drop(std::mem::replace(&mut self.tx, tx));
+        // Drop our senders so the thread's wake loop can end once every cloned
+        // sender is gone, then join it.
+        self.sender.disconnect();
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Generous upper bound on a signal that *should* arrive — a failure here
+    /// means a real hang, not a slow machine.
+    const TIMEOUT: Duration = Duration::from_secs(5);
+    /// Shorter bound for confirming progress has *stopped* (the feeder blocked).
+    /// Successive accepted chunks arrive microseconds apart, so a gap this long
+    /// means the bounded queue is genuinely full.
+    const STALL_TIMEOUT: Duration = Duration::from_millis(500);
+
+    /// A sink that parks the engine thread inside the very first frame it
+    /// emits (and never again), so the test can observe the engine stalled.
+    /// Returns the session plus a "parked" signal and a release trigger.
+    fn spawn_parked() -> (Session, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (entered_tx, entered_rx) = mpsc::sync_channel::<()>(1);
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let mut parked = false;
+        let session = Session::spawn(
+            EngineOptions { cols: 40, rows: 8, max_scrollback: 100 },
+            move |event| {
+                if let Event::Frame(_) = event {
+                    if !parked {
+                        parked = true;
+                        let _ = entered_tx.send(());
+                        // Block the engine thread here until the test releases.
+                        let _ = release_rx.recv();
+                    }
+                }
+            },
+        )
+        .expect("spawn session");
+        (session, entered_rx, release_tx)
+    }
+
+    #[test]
+    fn stalled_sink_bounds_the_byte_feed() {
+        let (session, entered_rx, release_tx) = spawn_parked();
+
+        // First chunk triggers a frame; the sink parks the engine thread so it
+        // stops draining the byte queue.
+        assert!(session.send(Input::Bytes(b"hi".to_vec())));
+        entered_rx.recv_timeout(TIMEOUT).expect("engine parked in the sink");
+
+        // Feed from another thread, reporting how many chunks the bounded byte
+        // path accepts before it blocks.
+        let feeder = session.sender();
+        let (count_tx, count_rx) = mpsc::channel::<usize>();
+        let handle = std::thread::spawn(move || {
+            let mut n = 0;
+            // Cap well above the bound so a broken (unbounded) feed still
+            // terminates the thread instead of hanging the test.
+            while n < MAX_QUEUED_BYTE_CHUNKS + 100 {
+                if !feeder.send(Input::Bytes(vec![b'x'])) {
+                    break;
+                }
+                n += 1;
+                let _ = count_tx.send(n);
+            }
+        });
+
+        // Drain progress until it stalls: the feeder blocks once the bounded
+        // queue is full.
+        let mut accepted = 0;
+        while let Ok(n) = count_rx.recv_timeout(STALL_TIMEOUT) {
+            accepted = n;
+        }
+        assert_eq!(
+            accepted, MAX_QUEUED_BYTE_CHUNKS,
+            "the stalled engine bounds the byte feed to the channel capacity"
+        );
+        assert!(!handle.is_finished(), "the feeder is blocked on backpressure, not finished");
+
+        // Release the engine: it drains, frees the queue, and the feeder runs
+        // to its safety cap and exits.
+        let _ = release_tx.send(());
+        handle.join().expect("feeder joins once backpressure lifts");
+        drop(session);
+    }
+
+    #[test]
+    fn control_is_not_blocked_by_a_saturated_byte_queue() {
+        let (session, entered_rx, release_tx) = spawn_parked();
+
+        assert!(session.send(Input::Bytes(b"hi".to_vec())));
+        entered_rx.recv_timeout(TIMEOUT).expect("engine parked in the sink");
+
+        // Saturate the byte queue (bounded), then stop; the last send blocks.
+        let feeder = session.sender();
+        let (satc_tx, satc_rx) = mpsc::channel::<usize>();
+        let sat = std::thread::spawn(move || {
+            let mut n = 0;
+            while n < MAX_QUEUED_BYTE_CHUNKS + 3 {
+                if !feeder.send(Input::Bytes(vec![b'x'])) {
+                    break;
+                }
+                n += 1;
+                let _ = satc_tx.send(n);
+            }
+        });
+        // Wait until the queue is full (the feeder is now blocked on its next
+        // send).
+        let mut accepted = 0;
+        while accepted < MAX_QUEUED_BYTE_CHUNKS {
+            accepted = satc_rx.recv_timeout(TIMEOUT).expect("byte queue fills");
+        }
+
+        // With bytes saturated, a control send must still complete promptly —
+        // it rides its own unbounded channel, never blocked behind bytes.
+        let control = session.sender();
+        let (done_tx, done_rx) = mpsc::channel::<bool>();
+        std::thread::spawn(move || {
+            let ok = control.send(Input::Scroll(Some(-1)));
+            let _ = done_tx.send(ok);
+        });
+        assert!(
+            done_rx.recv_timeout(TIMEOUT).expect("control send blocked behind saturated bytes"),
+            "control send accepted while the byte queue is full"
+        );
+
+        // Release the engine and confirm control is actually processed while a
+        // byte backlog is pending: a Copy reply comes back.
+        let _ = release_tx.send(());
+        let (reply_tx, reply_rx) = mpsc::sync_channel::<Option<String>>(1);
+        assert!(session.send(Input::Copy(reply_tx)));
+        reply_rx.recv_timeout(TIMEOUT).expect("engine processed the control input");
+
+        sat.join().expect("saturating feeder drains once backpressure lifts");
+        drop(session);
     }
 }
