@@ -41,6 +41,71 @@ fn doctor_text_runs() {
     doctor_cmd(temp_dir.path()).args(["doctor"]).assert().success();
 }
 
+/// The shared settings file is resolved from `$HOME/.config/towles-tool` (unscoped,
+/// which `cli_cmd` forces). Writing corrupt JSON there must surface as a doctor row.
+#[test]
+fn doctor_flags_a_corrupt_settings_file() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let settings_path =
+        temp_dir.path().join(".config").join("towles-tool").join("towles-tool.settings.json");
+    std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    std::fs::write(&settings_path, "{ not valid json").unwrap();
+
+    doctor_cmd(temp_dir.path())
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("settings: failed to parse"));
+}
+
+/// Write an executable `claude` stub into a PATH dir and return that dir. The stub
+/// prints `list_output` for `claude mcp list` and exits 0 for anything else, so
+/// doctor's MCP-registration probe sees exactly what we choose without touching a
+/// real Claude install.
+#[cfg(unix)]
+fn stub_claude(dir: &std::path::Path, mcp_list_output: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).unwrap();
+    // Use the `echo` builtin (not `cat`): the test restricts PATH to this stub
+    // dir, so no external binary is reachable.
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = mcp ] && [ \"$2\" = list ]; then\n  echo '{mcp_list_output}'\nfi\nexit 0\n"
+    );
+    let path = dir.join("claude");
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_reports_registered_mcp_server() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let bin = temp_dir.path().join("bin");
+    stub_claude(&bin, "tt: ttr mcp serve - Connected");
+
+    doctor_cmd(temp_dir.path())
+        .env("PATH", &bin)
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("tt mcp server: registered"));
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_reports_unregistered_mcp_server() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let bin = temp_dir.path().join("bin");
+    stub_claude(&bin, "chrome-devtools: npx chrome-devtools-mcp - Connected");
+
+    doctor_cmd(temp_dir.path())
+        .env("PATH", &bin)
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("tt mcp server: not registered"));
+}
+
 #[test]
 fn doctor_diff_without_history_warns() {
     let temp_dir = TempDir::new().expect("temp dir");
