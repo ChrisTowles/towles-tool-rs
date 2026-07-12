@@ -10,7 +10,7 @@
 //!   no-op cancel. This keeps CI/tests from hanging on a prompt.
 //! - The per-command `--debug` flag is replaced by the global `-v/--verbose` flag.
 
-use crate::cli::{AssignArgs, BranchCleanArgs, GhCommands, PrArgs};
+use crate::cli::{AssignArgs, BranchCleanArgs, CoArgs, GhCommands, PrArgs, SyncArgs};
 use crate::ui;
 use std::fmt;
 use std::io::IsTerminal;
@@ -20,7 +20,7 @@ use tt_git::branch_name::create_branch_name_from_issue;
 use tt_git::picker::{ChoiceValue, build_issue_choices, compute_column_layout};
 use tt_git::pr::generate_pr_content;
 use tt_git::pr_list::{PrRow, render_pr_list};
-use tt_git::{Issue, branch_clean, issues, slot_assign};
+use tt_git::{Issue, branch_clean, issues, slot_assign, sync};
 
 pub fn run(command: GhCommands) -> i32 {
     match command {
@@ -29,6 +29,8 @@ pub fn run(command: GhCommands) -> i32 {
         GhCommands::Pr(args) => pr(args),
         GhCommands::PrList => pr_list(),
         GhCommands::Assign(args) => assign(args),
+        GhCommands::Sync(args) => sync_cmd(args),
+        GhCommands::Co(args) => co(args),
     }
 }
 
@@ -403,6 +405,177 @@ fn assign(args: AssignArgs) -> i32 {
         }
         Err(e) => {
             ui::error(&format!("Failed to run gh in {}: {e}", slot.display()));
+            1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// gh sync (bring the current checkout current with the base branch)
+// ---------------------------------------------------------------------------
+
+/// The shared clean-tree guard for `sync` and `co`: read `git status
+/// --porcelain` and hard-fail with a readable summary if anything is dirty.
+/// Returns `false` (after logging) when the tree is dirty or git can't be run,
+/// so the caller aborts before touching the branch.
+fn require_clean_tree(action: &str) -> bool {
+    let Some(status) = git(&["status", "--porcelain"]) else {
+        return false;
+    };
+    if let Some(dirty) = sync::dirty_tree(&status.stdout) {
+        ui::error(&format!(
+            "Working tree is not clean; commit or stash before {action}.\n{}",
+            dirty.summary()
+        ));
+        return false;
+    }
+    true
+}
+
+/// Ahead/behind of HEAD vs `upstream`, or `None` if it can't be computed
+/// (e.g. the upstream ref doesn't exist yet). Purely informational.
+fn ahead_behind(upstream: &str) -> Option<sync::AheadBehind> {
+    let range = format!("{upstream}...HEAD");
+    let out = git(&["rev-list", "--left-right", "--count", &range])?;
+    if !out.ok() {
+        return None;
+    }
+    sync::parse_ahead_behind(&out.stdout)
+}
+
+fn report_ahead_behind(label: &str, upstream: &str) {
+    if let Some(ab) = ahead_behind(upstream) {
+        ui::info(&format!("{label}: {} ahead, {} behind {upstream}", ab.ahead, ab.behind));
+    }
+}
+
+/// `ttr gh sync [--base main]`: fetch `origin/<base>` and rebase the current
+/// branch onto it. Hard-fails before any fetch/rebase if the tree is dirty, and
+/// gives a distinct, actionable error when the rebase stops on a conflict.
+fn sync_cmd(args: SyncArgs) -> i32 {
+    if !require_clean_tree("syncing") {
+        return 1;
+    }
+
+    let upstream = format!("origin/{}", args.base);
+
+    ui::info(&format!("Fetching {upstream}..."));
+    match tt_exec::run("git", &["fetch", "origin", &args.base]) {
+        Ok(out) if out.ok() => {}
+        Ok(out) => {
+            ui::error(&format!("git fetch failed: {}", out.stderr.trim()));
+            return 1;
+        }
+        Err(e) => {
+            ui::error(&format!("Failed to run git: {e}"));
+            return 1;
+        }
+    }
+
+    report_ahead_behind("Before", &upstream);
+
+    ui::info(&format!("Rebasing onto {upstream}..."));
+    let outcome = match tt_exec::run("git", &["rebase", &upstream]) {
+        Ok(out) => sync::classify_rebase(out.exit_code, &out.stdout, &out.stderr),
+        Err(e) => {
+            ui::error(&format!("Failed to run git: {e}"));
+            return 1;
+        }
+    };
+    match outcome {
+        sync::RebaseOutcome::Clean => {}
+        sync::RebaseOutcome::Conflict => {
+            ui::error(
+                "Rebase stopped on conflicts. Resolve them and run `git rebase --continue`, \
+                 or run `git rebase --abort` to bail out and leave the branch unchanged.",
+            );
+            return 1;
+        }
+        sync::RebaseOutcome::Failed(msg) => {
+            ui::error(&format!("Rebase failed: {msg}"));
+            return 1;
+        }
+    }
+
+    report_ahead_behind("After", &upstream);
+    ui::success(&format!("In sync with {upstream}"));
+    0
+}
+
+// ---------------------------------------------------------------------------
+// gh co (check out a PR's branch)
+// ---------------------------------------------------------------------------
+
+/// `ttr gh co <number>` (alias `pr-checkout`): resolve the PR's head branch via
+/// `gh pr view`, run the same clean-tree guard, then check the branch out —
+/// fetching it from origin first if it isn't known locally.
+fn co(args: CoArgs) -> i32 {
+    if !gh_installed() {
+        ui::error("GitHub CLI not installed");
+        return 1;
+    }
+    if !require_clean_tree("checking out") {
+        return 1;
+    }
+
+    let number = args.number.to_string();
+    let branch = match tt_exec::run("gh", &["pr", "view", &number, "--json", "headRefName"]) {
+        Ok(out) if out.ok() => match sync::parse_head_ref_name(&out.stdout) {
+            Ok(branch) => branch,
+            Err(e) => {
+                ui::error(&format!("Could not resolve PR #{number}: {e}"));
+                return 1;
+            }
+        },
+        Ok(out) => {
+            ui::error(&format!("gh pr view failed: {}", out.stderr.trim()));
+            return 1;
+        }
+        Err(e) => {
+            ui::error(&format!("Failed to run gh: {e}"));
+            return 1;
+        }
+    };
+
+    ui::info(&format!("PR #{number} is branch {branch}"));
+
+    // Try a plain checkout first; if the branch isn't local yet, fetch it and retry.
+    match tt_exec::run("git", &["checkout", &branch]) {
+        Ok(out) if out.ok() => {
+            ui::success(&format!("Checked out {branch}"));
+            return 0;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            ui::error(&format!("Failed to run git: {e}"));
+            return 1;
+        }
+    }
+
+    ui::info("Branch not found locally; fetching from origin...");
+    match tt_exec::run("git", &["fetch", "origin", &branch]) {
+        Ok(out) if out.ok() => {}
+        Ok(out) => {
+            ui::error(&format!("git fetch failed: {}", out.stderr.trim()));
+            return 1;
+        }
+        Err(e) => {
+            ui::error(&format!("Failed to run git: {e}"));
+            return 1;
+        }
+    }
+
+    match tt_exec::run("git", &["checkout", &branch]) {
+        Ok(out) if out.ok() => {
+            ui::success(&format!("Checked out {branch}"));
+            0
+        }
+        Ok(out) => {
+            ui::error(&format!("git checkout failed: {}", out.stderr.trim()));
+            1
+        }
+        Err(e) => {
+            ui::error(&format!("Failed to run git: {e}"));
             1
         }
     }

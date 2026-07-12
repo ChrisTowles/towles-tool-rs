@@ -287,6 +287,87 @@ fn prs_alias_reaches_pr_list() {
         .stdout(contains("No repos configured"));
 }
 
+/// Build an `origin` bare remote for `local`, push `main`, then advance the
+/// remote by one commit so `local` is one commit behind. Returns the local repo
+/// (its `origin` already points at the bare remote).
+fn repo_behind_remote() -> TempDir {
+    let remote_dir = TempDir::new().expect("remote dir");
+    // Leak the bare remote for the test's lifetime — the local repo's `origin`
+    // points into it, and we don't need to clean it up in a unit test.
+    let remote = Box::leak(Box::new(remote_dir)).path();
+    StdCommand::new("git")
+        .args(["init", "-q", "--bare", "--initial-branch=main"])
+        .arg(remote)
+        .status()
+        .unwrap();
+
+    let local = TempDir::new().expect("local dir");
+    let p = local.path();
+    git(p, &["init", "-q"]);
+    git(p, &["config", "user.email", "test@example.com"]);
+    git(p, &["config", "user.name", "Test"]);
+    std::fs::write(p.join("README.md"), "hello").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-q", "-m", "init"]);
+    git(p, &["branch", "-M", "main"]);
+    git(p, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(p, &["push", "-q", "-u", "origin", "main"]);
+
+    // Advance the remote via a throwaway clone so `local` falls one behind.
+    let other = TempDir::new().expect("other clone");
+    let o = other.path();
+    StdCommand::new("git").args(["clone", "-q", remote.to_str().unwrap()]).arg(o).status().unwrap();
+    git(o, &["config", "user.email", "test@example.com"]);
+    git(o, &["config", "user.name", "Test"]);
+    std::fs::write(o.join("upstream.txt"), "new").unwrap();
+    git(o, &["add", "."]);
+    git(o, &["commit", "-q", "-m", "upstream commit"]);
+    git(o, &["push", "-q", "origin", "main"]);
+
+    local
+}
+
+#[test]
+fn sync_fast_forwards_a_clean_behind_branch() {
+    let repo = repo_behind_remote();
+    ttr(repo.path())
+        .args(["gh", "sync"])
+        .assert()
+        .success()
+        .stdout(contains("Before: 0 ahead, 1 behind"))
+        .stdout(contains("After: 0 ahead, 0 behind"))
+        .stdout(contains("In sync with origin/main"));
+
+    // The upstream commit is now present locally.
+    assert!(repo.path().join("upstream.txt").exists());
+}
+
+#[test]
+fn sync_hard_fails_on_a_dirty_tree_before_rebasing() {
+    let repo = repo_behind_remote();
+    // Dirty the tree with an untracked file: the guard must trip first.
+    std::fs::write(repo.path().join("wip.txt"), "uncommitted").unwrap();
+    ttr(repo.path())
+        .args(["gh", "sync"])
+        .assert()
+        .failure()
+        .stderr(contains("Working tree is not clean"))
+        .stderr(contains("wip.txt"));
+
+    // The rebase never ran, so we're still behind (upstream commit absent).
+    assert!(!repo.path().join("upstream.txt").exists());
+}
+
+#[test]
+fn co_with_non_numeric_arg_is_a_clap_error() {
+    let repo = repo_with_remote(REMOTE);
+    ttr(repo.path())
+        .args(["gh", "co", "not-a-number"])
+        .assert()
+        .failure()
+        .stderr(contains("invalid value").or(contains("invalid digit")));
+}
+
 #[test]
 fn branch_clean_non_tty_without_force_does_not_delete() {
     let repo = repo_with_merged_branch();
