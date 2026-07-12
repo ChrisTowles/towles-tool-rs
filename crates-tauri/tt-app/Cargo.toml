@@ -21,6 +21,7 @@ tt-collect = { workspace = true }
 tt-config = { workspace = true }
 tt-doctor = { workspace = true }
 tt-exec = { workspace = true }
+tt-git = { workspace = true }
 tt-graph = { workspace = true }
 tt-journal = { workspace = true }
 tt-store = { workspace = true }

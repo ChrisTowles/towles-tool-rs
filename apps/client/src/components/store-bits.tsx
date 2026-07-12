@@ -111,25 +111,42 @@ export function PrRow({ pr, now }: { pr: PrItem; now: number }) {
   );
 }
 
-export function IssueRow({ issue, now }: { issue: IssueItem; now: number }) {
+/**
+ * One issue-queue row. The title/meta area is the click target (opens the issue
+ * in the browser); `actions`, when supplied, renders a trailing control (e.g.
+ * Cockpit's per-issue dropdown menu) that lives *outside* the anchor so nested
+ * interactive elements stay valid. Without it, a hover-revealed external-link
+ * glyph stands in.
+ */
+export function IssueRow({
+  issue,
+  now,
+  actions,
+}: {
+  issue: IssueItem;
+  now: number;
+  actions?: React.ReactNode;
+}) {
   return (
-    <a
-      href={issue.url}
-      target="_blank"
-      rel="noreferrer"
-      onClick={(e) => {
-        e.preventDefault();
-        void openExternalUrl(issue.url);
-      }}
-      className="group flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/40"
-    >
-      <CircleDot className="size-4 shrink-0 text-green-600 dark:text-green-500" />
-      <div className="min-w-0 flex-1">
-        <div className="truncate">{issue.title}</div>
-        <div className="truncate font-mono text-xs text-muted-foreground">
-          {issue.repo} #{issue.number} · {fmtAge(issue.updatedTs, now)}
+    <div className="group flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/40">
+      <a
+        href={issue.url}
+        target="_blank"
+        rel="noreferrer"
+        onClick={(e) => {
+          e.preventDefault();
+          void openExternalUrl(issue.url);
+        }}
+        className="flex min-w-0 flex-1 items-center gap-3"
+      >
+        <CircleDot className="size-4 shrink-0 text-green-600 dark:text-green-500" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate">{issue.title}</div>
+          <div className="truncate font-mono text-xs text-muted-foreground">
+            {issue.repo} #{issue.number} · {fmtAge(issue.updatedTs, now)}
+          </div>
         </div>
-      </div>
+      </a>
       <div className="flex shrink-0 items-center gap-1">
         {issue.labels.slice(0, 2).map((l) => (
           <Badge key={l} variant="outline" className="text-[10px]">
@@ -137,8 +154,10 @@ export function IssueRow({ issue, now }: { issue: IssueItem; now: number }) {
           </Badge>
         ))}
       </div>
-      <ExternalLink className="size-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100" />
-    </a>
+      {actions ?? (
+        <ExternalLink className="size-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100" />
+      )}
+    </div>
   );
 }
 
