@@ -32,7 +32,8 @@ fn ttr() -> Ttr {
 }
 
 /// Build `<tmp>/demo-repos/demo.git` (bare hub) from a seed repo whose
-/// committed `.env.example` carries `${tt:...}` tokens.
+/// committed `.env.example` carries `${tt:...}` tokens and whose committed
+/// `slot-setup.sh` drops a marker so tests can prove the hook ran in-slot.
 fn make_root(tmp: &Path) -> PathBuf {
     let seed = tmp.join("seed");
     std::fs::create_dir_all(&seed).unwrap();
@@ -42,7 +43,17 @@ fn make_root(tmp: &Path) -> PathBuf {
         "# demo slot env\nUI_PORT=${tt:port 42410-42429}\nNAME=${tt:slot-name}\nBASE=${tt:base}\nURL=http://localhost:${tt:var UI_PORT}/\nSECRET=\n",
     )
     .unwrap();
-    std::fs::write(seed.join(".gitignore"), ".env\n").unwrap();
+    std::fs::write(seed.join(".gitignore"), ".env\n.setup-ran\n").unwrap();
+    std::fs::write(seed.join("slot-setup.sh"), "#!/usr/bin/env bash\ntouch .setup-ran\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            seed.join("slot-setup.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
     git(&seed, &["add", "."]);
     git(&seed, &["commit", "-m", "seed"]);
 
@@ -73,6 +84,10 @@ fn lifecycle_new_env_ls_rm() {
     assert!((42410..=42429).contains(&ui_port));
     assert!(env.contains(&format!("URL=http://localhost:{ui_port}/")));
     assert!(slot0.join(".tt-slot").is_file());
+    assert!(
+        slot0.join(".setup-ran").is_file(),
+        "the repo's committed slot-setup.sh runs in the new slot"
+    );
     // marker must not dirty the tree (hub info/exclude covers it)
     let porcelain = Command::new("git")
         .args(["-C", slot0.to_str().unwrap(), "status", "--porcelain"])

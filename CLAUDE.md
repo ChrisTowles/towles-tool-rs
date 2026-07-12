@@ -197,7 +197,7 @@ Cargo workspace + npm workspace (`apps/client` only):
 ## Migration
 
 Features are ported from the TypeScript CLI at
-`~/code/p/towles-tool-repos/towles-tool-slot-1` per
+`~/code/p/towles-tool-repos/towles-tool-slot-0` per
 [docs/MIGRATION.md](docs/MIGRATION.md). Porting is selective: a TS feature is
 ported only if still wanted, and it lands on its natural surface (app screen
 or CLI command — see the no-CLI-parity convention below). When deriving code,
