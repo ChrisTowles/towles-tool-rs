@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Check, MessageCircleHeart } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { fmtAge, storeDmDismiss, useStoreSnapshot, type DmItem } from "@/lib/data";
+import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
 import { isTauri } from "@/lib/tauri";
 
@@ -26,14 +27,9 @@ function pendingDms(dms: DmItem[]): DmItem[] {
  */
 export function DmBanner() {
   const { snapshot } = useStoreSnapshot();
-  const [now, setNow] = useState(() => Date.now());
+  const now = useNow();
   // The message ts we already flashed the taskbar for — flash once per message.
   const flashedTs = useRef(0);
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 15_000);
-    return () => clearInterval(id);
-  }, []);
 
   const dm = pendingDms(snapshot.dms)[0];
   const age = dm ? now - dm.ts : 0;

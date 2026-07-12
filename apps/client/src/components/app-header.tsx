@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { PanelLeftClose, PanelLeftOpen, Search, Settings } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
@@ -7,6 +6,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { fmtClock, fmtCountdown, useAppSlot, useStoreSnapshot } from "@/lib/data";
+import { useNow } from "@/lib/now";
 import { openSettings } from "@/lib/open-settings";
 import { useWorkspace } from "@/lib/workspace";
 
@@ -60,18 +60,13 @@ function SlotBadge() {
 /**
  * Dead-center of the header: the clock, plus what the time means next — the
  * upcoming meeting's countdown (amber inside 15 minutes). Absolutely centered
- * so it stays put regardless of what sits left/right. Ticks every 30s (same
- * cadence as the day bar).
+ * so it stays put regardless of what sits left/right. Driven by the shared app
+ * clock (same `now` as the day bar).
  */
 function ClockCluster() {
   const { openTab } = useWorkspace();
   const { snapshot } = useStoreSnapshot();
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
+  const now = useNow();
 
   const nextEvent = snapshot.events
     .filter((e) => e.startTs > now)

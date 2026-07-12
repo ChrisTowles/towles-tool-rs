@@ -1,26 +1,21 @@
-import { useEffect, useState } from "react";
 import { CircleAlert, ListTodo } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useAgentboardState } from "@/lib/agentboard";
 import { fmtAge, useStoreSnapshot } from "@/lib/data";
+import { useNow } from "@/lib/now";
 import { useWorkspace } from "@/lib/workspace";
 
 /**
  * Persistent, quiet strip under the header: the top task and what needs you.
  * (The clock and next-meeting countdown live in the header's center cluster.)
- * Everything derived from `now` ticks every 30s.
+ * Everything derived from `now`, which comes from the shared app clock.
  */
 export function DayBar() {
   const { openTab } = useWorkspace();
   const { snapshot } = useStoreSnapshot();
   const agentState = useAgentboardState();
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
+  const now = useNow();
 
   const topTask = snapshot.tasks
     .filter((t) => t.status !== "done")

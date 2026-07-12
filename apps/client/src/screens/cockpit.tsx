@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import {
   CalendarClock,
   CircleAlert,
@@ -33,6 +32,7 @@ import {
   useStoreSnapshot,
 } from "@/lib/data";
 import { useAgentboardState } from "@/lib/agentboard";
+import { useNow } from "@/lib/now";
 import { invokeOrThrow } from "@/lib/tauri";
 import { openExternalUrl } from "@/lib/open-url";
 import { Empty, IssueRow, Panel, PrRow, prNeedsYou, prRank } from "@/components/store-bits";
@@ -56,12 +56,12 @@ function repoMatches(originUrl: string | null | undefined, repo: string): boolea
 /**
  * Cockpit — the day home. One dense screen: how long until the next meeting, the
  * PRs that need you, and the issue queue across repos. Read-only over the store
- * snapshot; the countdown ticks every 30s.
+ * snapshot; the countdown is driven by the shared app clock.
  */
 export function CockpitScreen() {
   const { snapshot, live } = useStoreSnapshot();
   const agentState = useAgentboardState();
-  const [now, setNow] = useState(() => Date.now());
+  const now = useNow();
 
   // Candidate slot checkouts for an issue: the folders of every tracked repo
   // whose origin matches the issue's repo. Empty when none are tracked, which
@@ -70,11 +70,6 @@ export function CockpitScreen() {
     agentState.repos
       .filter((r) => repoMatches(r.originUrl, repo))
       .flatMap((r) => r.folders.map((f) => ({ dir: f.dir, branch: f.branch, name: f.name })));
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
 
   const nextEvent = currentOrNextEvent(snapshot.events, now);
   const meetingLive = nextEvent ? eventIsLive(nextEvent, now) : false;
