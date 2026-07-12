@@ -4,6 +4,14 @@
 //! the *same* file (`~/.config/towles-tool/towles-tool.settings.json`). Because the
 //! file is shared, the model deliberately tolerates unknown fields and fills missing
 //! ones from defaults via `#[serde(default)]` — never `deny_unknown_fields`.
+//!
+//! The JSON schema ([`json_schema`]) is **derived from these structs** via
+//! `schemars` (`#[derive(JsonSchema)]`) rather than hand-maintained, so the
+//! schema cannot silently drift from the serde model. Two invariants keep the
+//! shared file safe and are enforced by tests: every schema property name is
+//! `camelCase` (matching what the TypeScript CLI reads/writes), and writes to
+//! the shared file go through [`save_merge`]/[`save_merge_to`] so TS-owned keys
+//! survive.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -291,12 +299,19 @@ pub fn load_from(path: &Path) -> Result<UserSettings> {
     Ok(settings)
 }
 
-/// Save settings to the standard location.
+/// Save settings to the standard location, **serializing only the fields this
+/// model captures**. Any keys the shared TypeScript CLI owns that this model
+/// does not model are dropped — for writes to the shared settings file prefer
+/// [`save_merge`], which preserves them.
 pub fn save(settings: &UserSettings) -> Result<()> {
     save_to(&config_path()?, settings)
 }
 
 /// Save settings to an explicit path, creating parent directories as needed.
+///
+/// Writes only the modeled fields, so any unmodeled keys already on disk (e.g.
+/// keys the shared TypeScript CLI owns) are dropped. For the shared settings
+/// file use [`save_merge_to`] instead.
 pub fn save_to(path: &Path, settings: &UserSettings) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -486,5 +501,89 @@ mod tests {
         assert!(props.get("preferredEditor").is_some());
         assert!(props.get("journalSettings").is_some());
         assert!(props.get("agentboard").is_some());
+    }
+
+    /// Drift guard: because the schema is derived from the serde structs, a
+    /// struct whose field names diverge from the shared file's `camelCase`
+    /// convention (e.g. a new struct missing `#[serde(rename_all = "camelCase")]`,
+    /// which would serialize `snake_case`) shows up as a `snake_case` property
+    /// name here. The TS CLI reads/writes this same file expecting `camelCase`,
+    /// so any underscore in a property name is a break waiting to happen.
+    #[test]
+    fn json_schema_property_names_are_camel_case() {
+        fn walk(node: &serde_json::Value, offenders: &mut Vec<String>) {
+            match node {
+                serde_json::Value::Object(map) => {
+                    if let Some(serde_json::Value::Object(props)) = map.get("properties") {
+                        for name in props.keys() {
+                            if name.contains('_') {
+                                offenders.push(name.clone());
+                            }
+                        }
+                    }
+                    for value in map.values() {
+                        walk(value, offenders);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        walk(item, offenders);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let schema = json_schema();
+        let mut offenders = Vec::new();
+        walk(&schema, &mut offenders);
+        assert!(
+            offenders.is_empty(),
+            "schema has non-camelCase property names (would break the shared TS-CLI file): {offenders:?}",
+        );
+    }
+
+    /// Drift guard: the schema must reach the nested collector tree, not just the
+    /// top level — a real read/write surface the TS CLI shares. Spot-check the
+    /// generated definitions and their `camelCase` fields.
+    #[test]
+    fn json_schema_covers_nested_collectors() {
+        let schema = json_schema();
+        let defs = &schema["definitions"];
+        assert!(defs.get("CollectorsSettings").is_some());
+        let cal = &defs["CalendarCollector"]["properties"];
+        assert!(cal.get("refreshMinutes").is_some());
+        assert!(cal.get("provider").is_some());
+        let prs = &defs["PrCollector"]["properties"];
+        assert!(prs.get("refreshSeconds").is_some());
+    }
+
+    /// Pins the shared-file write contract honestly: [`save_to`] serializes only
+    /// modeled fields and therefore **drops** unmodeled TS-owned keys, whereas
+    /// [`save_merge_to`] preserves them (see `save_merge_preserves_unknown_keys`).
+    /// If a future refactor makes `save_to` merge, this test forces the change to
+    /// be deliberate.
+    #[test]
+    fn save_to_drops_unknown_keys() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("towles-tool.settings.json");
+        std::fs::write(
+            &path,
+            r#"{"preferredEditor":"vim","futureFlag":true,"journalSettings":{"baseFolder":"/old","tsOnly":42}}"#,
+        )
+        .unwrap();
+
+        let settings = load_from(&path).unwrap();
+        save_to(&path, &settings).unwrap();
+
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Modeled fields survive.
+        assert_eq!(raw["preferredEditor"], "vim");
+        assert_eq!(raw["journalSettings"]["baseFolder"], "/old");
+        // Unmodeled TS-owned keys are dropped — the reason the shared file must
+        // be written with `save_merge_to`.
+        assert!(raw.get("futureFlag").is_none());
+        assert!(raw["journalSettings"].get("tsOnly").is_none());
     }
 }
