@@ -72,6 +72,27 @@ mod tests {
     }
 
     #[test]
+    fn cursor_only_move_still_renders_a_frame() {
+        let mut e = engine(20, 4);
+        e.feed(b"abc");
+        let frame = e.render().expect("render").expect("first frame");
+        assert_eq!(frame.cursor.x, 3);
+        assert!(e.render().expect("render").is_none(), "engine is clean");
+
+        // CUB: move the cursor left with no cell writes — libghostty-vt's
+        // dirty tracking only covers cell content, so without tracking the
+        // cursor separately this render would wrongly report nothing changed
+        // and the frontend would never learn the cursor moved.
+        e.feed(b"\x1b[D");
+        let frame = e.render().expect("render").expect("cursor move must still produce a frame");
+        assert!(!frame.full);
+        assert!(frame.changed.is_empty(), "no cell content changed, only the cursor");
+        assert_eq!(frame.cursor.x, 2);
+
+        assert!(e.render().expect("render").is_none(), "clean again after the cursor settles");
+    }
+
+    #[test]
     fn request_full_forces_a_full_frame_from_a_clean_engine() {
         let mut e = engine(20, 4);
         e.feed(b"one\r\ntwo");
