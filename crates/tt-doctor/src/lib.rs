@@ -64,6 +64,10 @@ pub struct AgentBoardCheck {
 }
 
 /// Tools to probe: (binary, version arg, optional).
+///
+/// `zig` is optional: it's only needed to build the `tt-vt` terminal engine
+/// (zig 0.15.x), so a missing zig is a warning, not a failure. Its version verb
+/// is `zig version` (no `--`), unlike the rest.
 pub const TOOLS: &[(&str, &str, bool)] = &[
     ("git", "--version", false),
     ("gh", "--version", false),
@@ -71,6 +75,7 @@ pub const TOOLS: &[(&str, &str, bool)] = &[
     ("bun", "--version", false),
     ("claude", "--version", false),
     ("cargo", "--version", false),
+    ("zig", "version", true),
 ];
 
 /// Everything one doctor run produced: the interop-shaped [`DoctorRunResult`]
@@ -144,6 +149,17 @@ pub fn extract_version(text: &str) -> Option<String> {
     let version: String =
         text[start..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
     if version.is_empty() { None } else { Some(version) }
+}
+
+/// Whether `claude mcp list` output lists the `tt` stdio server.
+///
+/// The list is plain text, one server per line: `<name>: <command> - <status>`.
+/// We match the leading `<name>` field exactly against `tt` so a server whose
+/// command merely mentions `tt` (or a differently named server) doesn't count.
+/// Shared with `ttr install`, which registers the server, so both agree on
+/// what "registered" means.
+pub fn tt_mcp_registered(list_output: &str) -> bool {
+    list_output.lines().any(|line| line.split(':').next().map(str::trim) == Some("tt"))
 }
 
 /// Whether `gh auth status` reports an authenticated account.
@@ -226,7 +242,74 @@ pub fn check_agentboard() -> Vec<AgentBoardCheck> {
         hint: None,
     });
 
+    results.push(check_settings_parse());
+    results.push(check_tt_mcp_registered());
+
     results
+}
+
+/// Whether the shared settings file parses. A corrupt settings JSON otherwise
+/// only surfaces when a command that loads it dies mid-run; this makes it a
+/// visible doctor row. A missing file is fine — it's created with defaults on
+/// first use — so only an existing-but-unparseable file fails.
+pub fn check_settings_parse() -> AgentBoardCheck {
+    let path = match tt_config::config_path() {
+        Ok(path) => path,
+        Err(e) => {
+            return AgentBoardCheck {
+                name: "settings".to_string(),
+                value: "path unresolved".to_string(),
+                ok: false,
+                warning: Some(e.to_string()),
+                hint: None,
+            };
+        }
+    };
+
+    if !path.exists() {
+        return AgentBoardCheck {
+            name: "settings".to_string(),
+            value: "not created yet".to_string(),
+            ok: true,
+            warning: Some("created with defaults on first use".to_string()),
+            hint: None,
+        };
+    }
+
+    match tt_config::load_from(&path) {
+        Ok(_) => AgentBoardCheck {
+            name: "settings".to_string(),
+            value: path.display().to_string(),
+            ok: true,
+            warning: None,
+            hint: None,
+        },
+        Err(e) => AgentBoardCheck {
+            name: "settings".to_string(),
+            value: "failed to parse".to_string(),
+            ok: false,
+            warning: Some(e.to_string()),
+            hint: Some(format!("Fix the JSON or reset it: {}", path.display())),
+        },
+    }
+}
+
+/// Whether the `tt` MCP server is registered with Claude Code (`claude mcp
+/// list`). Registered via `ttr install`; a missing registration is a warning
+/// with the fix, not a hard failure.
+pub fn check_tt_mcp_registered() -> AgentBoardCheck {
+    let registered = match tt_exec::run("claude", &["mcp", "list"]) {
+        Ok(out) if out.ok() => tt_mcp_registered(&out.stdout),
+        _ => false,
+    };
+
+    AgentBoardCheck {
+        name: "tt mcp server".to_string(),
+        value: if registered { "registered" } else { "not registered" }.to_string(),
+        ok: registered,
+        warning: (!registered).then(|| "not registered with Claude Code".to_string()),
+        hint: (!registered).then(|| "Run: ttr install".to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -286,5 +369,29 @@ mod tests {
         let names: Vec<&str> = TOOLS.iter().map(|(n, _, _)| *n).collect();
         assert!(!names.contains(&"tmux"), "tmux agentboard was removed (hard cutover)");
         assert!(!names.contains(&"ttyd"));
+    }
+
+    #[test]
+    fn zig_is_an_optional_tool() {
+        let zig = TOOLS.iter().find(|(n, _, _)| *n == "zig").expect("zig is probed");
+        assert_eq!(zig.1, "version", "zig's version verb is `zig version`, not `--version`");
+        assert!(zig.2, "zig is optional: only needed to build tt-vt");
+    }
+
+    #[test]
+    fn tt_mcp_registered_matches_the_name_field_only() {
+        let listed = "\
+chrome-devtools: npx chrome-devtools-mcp@latest - ✔ Connected
+tt: ttr mcp serve - ✔ Connected
+";
+        assert!(tt_mcp_registered(listed));
+    }
+
+    #[test]
+    fn tt_mcp_registered_is_false_when_absent_or_only_in_command() {
+        assert!(!tt_mcp_registered("chrome-devtools: npx chrome-devtools-mcp - ✔ Connected"));
+        // A different server whose command merely mentions `ttr mcp` must not match.
+        assert!(!tt_mcp_registered("other: ttr mcp serve - ✔ Connected"));
+        assert!(!tt_mcp_registered(""));
     }
 }

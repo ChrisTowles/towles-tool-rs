@@ -29,7 +29,11 @@ fn install_writes_recommended_settings() {
         .stdout(predicates::str::contains("Set cleanupPeriodDays: 99999"))
         .stdout(predicates::str::contains("Set alwaysThinkingEnabled: true"))
         .stdout(predicates::str::contains("Could not list Claude plugins"))
-        .stdout(predicates::str::contains("skipped (non-interactive)"));
+        .stdout(predicates::str::contains("skipped (non-interactive)"))
+        // The MCP server is registered the same way: non-interactive => skipped,
+        // and with PATH emptied `claude mcp list` can't run so it can't be found.
+        .stdout(predicates::str::contains("Could not list Claude MCP servers"))
+        .stdout(predicates::str::contains("tt MCP server skipped (non-interactive)"));
 
     let content =
         std::fs::read_to_string(settings_path(temp_dir.path())).expect("settings written");

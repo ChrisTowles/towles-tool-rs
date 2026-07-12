@@ -92,8 +92,71 @@ pub fn run(observability: bool) -> i32 {
     println!("\n{}\n", style("📦 Claude Plugins").bold());
     ensure_claude_plugins();
 
+    println!("\n{}\n", style("🔌 MCP Server").bold());
+    ensure_tt_mcp_server();
+
     println!("\n{}\n", style(style("✅ Installation complete!").bold()).green());
     0
+}
+
+/// Ensure the `tt` MCP server (`ttr mcp serve`) is registered with Claude Code,
+/// so any Claude session can reach the store + live agent sessions. Follows the
+/// plugin-install pattern: registration mutates external state, so it's gated on
+/// an interactive TTY — a non-interactive run prints a dim skip note and changes
+/// nothing. Registered for the `user` scope so it applies to every project.
+fn ensure_tt_mcp_server() {
+    let registered = match tt_exec::run("claude", &["mcp", "list"]) {
+        Ok(out) if out.ok() => tt_doctor::tt_mcp_registered(&out.stdout),
+        _ => {
+            println!("{}", style("⚠ Could not list Claude MCP servers").yellow());
+            false
+        }
+    };
+
+    if registered {
+        println!("{}", style("✓ tt MCP server already registered").dim());
+        return;
+    }
+
+    if !std::io::stdin().is_terminal() {
+        println!("{}", style("  tt MCP server skipped (non-interactive)").dim());
+        return;
+    }
+
+    let install = inquire::Confirm::new("Register the tt MCP server with Claude Code?")
+        .with_default(true)
+        .prompt()
+        .unwrap_or(false);
+    if !install {
+        println!("{}", style("  Skipped tt MCP server").dim());
+        return;
+    }
+
+    match tt_exec::run(
+        "claude",
+        &[
+            "mcp", "add", "--scope", "user", "tt", "--", "ttr", "mcp", "serve",
+        ],
+    ) {
+        Ok(out) if out.ok() => {
+            println!("{}", style("✓ tt MCP server registered").green());
+        }
+        Ok(out) => {
+            if !out.stdout.is_empty() {
+                println!("{}", out.stdout);
+            }
+            if !out.stderr.is_empty() {
+                println!("{}", style(&out.stderr).dim());
+            }
+            println!(
+                "{}",
+                style(format!("⚠ tt MCP registration exited with code {}", out.exit_code)).yellow()
+            );
+        }
+        Err(e) => {
+            println!("{}", style(format!("⚠ tt MCP registration failed: {e}")).yellow());
+        }
+    }
 }
 
 #[derive(Deserialize)]
