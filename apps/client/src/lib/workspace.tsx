@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ScreenId } from "@/lib/screens";
+import { focusTargetStore, type FocusTarget } from "@/lib/focus-target";
 import {
   ACTIVE_TAB_KEY,
   loadWorkspaceTabs,
@@ -19,6 +20,10 @@ type WorkspaceState = {
   sidebarCollapsed: boolean;
   paletteOpen: boolean;
   openTab: (id: ScreenId) => void;
+  /** Open (mounting if needed) the target's screen and stash a one-shot focus
+   * request, so the destination screen scrolls that row into view and flashes
+   * it. See {@link FocusTarget}. */
+  openTabWithFocus: (target: FocusTarget) => void;
   /** Unmount a screen (remove it from `visited`). The last remaining tab can't
    * be closed — some screen must always be shown. Closing the active tab moves
    * focus to the neighbor that slides into its place. */
@@ -68,6 +73,14 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     setActiveTab(id);
   }, []);
 
+  const openTabWithFocus = useCallback(
+    (target: FocusTarget) => {
+      openTab(target.screen);
+      focusTargetStore.set(target);
+    },
+    [openTab],
+  );
+
   const closeTab = useCallback(
     (id: ScreenId) => {
       // Never close the last tab — a screen is always shown.
@@ -100,11 +113,22 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       sidebarCollapsed,
       paletteOpen,
       openTab,
+      openTabWithFocus,
       closeTab,
       toggleSidebar,
       setPaletteOpen,
     }),
-    [visited, recent, activeTab, sidebarCollapsed, paletteOpen, openTab, closeTab, toggleSidebar],
+    [
+      visited,
+      recent,
+      activeTab,
+      sidebarCollapsed,
+      paletteOpen,
+      openTab,
+      openTabWithFocus,
+      closeTab,
+      toggleSidebar,
+    ],
   );
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;

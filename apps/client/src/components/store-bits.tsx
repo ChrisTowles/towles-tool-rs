@@ -99,7 +99,11 @@ export function PrRow({
 }) {
   const reviewRequested = pr.reviewState === "review_requested";
   return (
-    <div className="group flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/40">
+    <div
+      data-focus-kind="pr"
+      data-focus-id={`${pr.repo}#${pr.number}`}
+      className="group flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/40"
+    >
       <a
         href={pr.url}
         target="_blank"

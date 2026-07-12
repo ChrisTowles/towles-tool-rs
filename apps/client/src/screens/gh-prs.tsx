@@ -1,6 +1,7 @@
 import { CircleAlert, GitPullRequest, Inbox } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useStoreSnapshot, type PrItem } from "@/lib/data";
+import { useFocusTarget } from "@/lib/focus-target";
 import { useNow } from "@/lib/now";
 import {
   CollectorFreshness,
@@ -20,6 +21,8 @@ import {
 export function GhPrsScreen() {
   const { snapshot, live } = useStoreSnapshot();
   const now = useNow();
+  // Deep-link focus: a "needs you" popover row scrolls its PR into view here.
+  const focusRef = useFocusTarget<HTMLDivElement>("gh-prs");
 
   const needsYou = snapshot.prs
     .filter(prNeedsYou)
@@ -53,7 +56,7 @@ export function GhPrsScreen() {
       )}
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-4 p-4">
+        <div ref={focusRef} className="flex flex-col gap-4 p-4">
           <Panel
             title="Needs you"
             note={`${needsYou.length}`}

@@ -49,6 +49,7 @@ import {
   TASK_DRAG_TYPE,
 } from "@/lib/kanban-dnd";
 import { dueState, overdueByStatus } from "@/lib/board-metrics";
+import { useFocusTarget } from "@/lib/focus-target";
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
 
@@ -88,6 +89,8 @@ function dueDateToMs(value: string): number | undefined {
 export function BoardScreen() {
   const { snapshot } = useStoreSnapshot();
   const now = useNow();
+  // Deep-link focus: a promoted-todo / board deep link scrolls the card here.
+  const focusRef = useFocusTarget<HTMLDivElement>("board");
 
   const [statusOverrides, setStatusOverrides] = useState<Record<number, TaskStatus>>({});
   const [posOverrides, setPosOverrides] = useState<Record<number, PosOverride>>({});
@@ -247,7 +250,7 @@ export function BoardScreen() {
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="grid min-w-[900px] grid-cols-5 gap-3 p-3">
+        <div ref={focusRef} className="grid min-w-[900px] grid-cols-5 gap-3 p-3">
           {TASK_STATUSES.map((status) => (
             <div
               key={status}
@@ -400,6 +403,8 @@ function Card({
   return (
     <div
       draggable={!editing}
+      data-focus-kind="todo"
+      data-focus-id={String(task.id)}
       onDragStart={(e) => {
         e.dataTransfer.setData(
           TASK_DRAG_TYPE,

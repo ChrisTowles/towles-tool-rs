@@ -440,7 +440,7 @@ export function RepoGroup({
       return <QuietRepoStub name={repo.name} count={1} onToggle={onToggleQuiet} />;
     }
     return (
-      <div className="border-b">
+      <div className="border-b" data-focus-kind="repo" data-focus-id={repo.key}>
         <FolderHeader
           scope="repo"
           title={repo.name}
@@ -478,7 +478,7 @@ export function RepoGroup({
     return <QuietRepoStub name={repo.name} count={quiet.size} onToggle={onToggleQuiet} />;
   }
   return (
-    <div className="border-b">
+    <div className="border-b" data-focus-kind="repo" data-focus-id={repo.key}>
       <div className="sticky top-0 z-10 flex w-full items-center gap-2 border-b border-l-2 border-border border-l-transparent bg-card px-3 py-2 hover:bg-accent/50">
         <button
           type="button"
