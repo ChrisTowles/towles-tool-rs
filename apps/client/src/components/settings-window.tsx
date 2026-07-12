@@ -535,7 +535,7 @@ export function SettingsWindow() {
                 <ToggleRow
                   label="Copy on select"
                   description="Copy the terminal selection to the clipboard as soon as you finish selecting, without Ctrl/⌘+Shift+C."
-                  checked={settings.agentboard?.copyOnSelect ?? false}
+                  checked={settings.agentboard?.copyOnSelect ?? true}
                   onCheckedChange={(v) =>
                     update((s) => ({
                       ...s,
