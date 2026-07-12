@@ -27,6 +27,9 @@ pub enum Error {
 
     #[error("could not resolve a data directory")]
     NoDataDir,
+
+    #[error("no task with id {0}")]
+    TaskNotFound(i64),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -567,6 +570,38 @@ impl Store {
             params![status, completed_at, position, id],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Edit a todo's free-form fields: its `text`, optional `notes`, and optional
+    /// `due_ts`. This is a full replace of those three fields — passing `None`
+    /// for `notes` or `due_ts` clears them (there is no "leave unchanged"
+    /// sentinel). Status, position, and any issue link are left untouched.
+    /// Returns the updated todo, or [`Error::TaskNotFound`] when no todo has `id`.
+    pub fn update_task(
+        &self,
+        id: i64,
+        text: &str,
+        notes: Option<&str>,
+        due_ts: Option<i64>,
+    ) -> Result<TaskItem> {
+        let affected = self.conn.execute(
+            "UPDATE tasks SET text = ?1, notes = ?2, due_ts = ?3 WHERE id = ?4",
+            params![text, notes, due_ts, id],
+        )?;
+        if affected == 0 {
+            return Err(Error::TaskNotFound(id));
+        }
+        self.task_by_id(id)
+    }
+
+    /// Delete a todo permanently. Returns [`Error::TaskNotFound`] when no todo
+    /// has `id`.
+    pub fn delete_task(&self, id: i64) -> Result<()> {
+        let affected = self.conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+        if affected == 0 {
+            return Err(Error::TaskNotFound(id));
+        }
         Ok(())
     }
 
@@ -1282,6 +1317,59 @@ mod tests {
         assert_eq!(linked.repo.as_deref(), Some("o/r"));
         assert_eq!(linked.issue_number, Some(42));
         assert_eq!(linked.issue_url.as_deref(), Some("https://github.com/o/r/issues/42"));
+    }
+
+    #[test]
+    fn update_task_edits_text_notes_and_due() {
+        let s = Store::open_in_memory().unwrap();
+        let t = s.add_task("rough draft", None, None, None, 1).unwrap();
+        let updated = s.update_task(t.id, "polished", Some("ship friday"), Some(500)).unwrap();
+        assert_eq!(updated.text, "polished");
+        assert_eq!(updated.notes.as_deref(), Some("ship friday"));
+        assert_eq!(updated.due_ts, Some(500));
+        // Status/position are untouched by an edit.
+        assert_eq!(updated.status, "backlog");
+        assert_eq!(updated.position, t.position);
+        // And it persists.
+        assert_eq!(s.get_task(t.id).unwrap().unwrap().text, "polished");
+    }
+
+    #[test]
+    fn update_task_can_set_and_clear_due_date() {
+        let s = Store::open_in_memory().unwrap();
+        let t = s.add_task("call dentist", None, None, None, 1).unwrap();
+        assert_eq!(t.due_ts, None);
+        let with_due = s.update_task(t.id, "call dentist", None, Some(900)).unwrap();
+        assert_eq!(with_due.due_ts, Some(900));
+        // Passing None clears it back out.
+        let cleared = s.update_task(t.id, "call dentist", None, None).unwrap();
+        assert_eq!(cleared.due_ts, None);
+    }
+
+    #[test]
+    fn update_task_nonexistent_errors() {
+        let s = Store::open_in_memory().unwrap();
+        let err = s.update_task(999, "ghost", None, None).unwrap_err();
+        assert!(matches!(err, Error::TaskNotFound(999)));
+    }
+
+    #[test]
+    fn delete_task_removes_row() {
+        let s = Store::open_in_memory().unwrap();
+        let a = s.add_task("keep", None, None, None, 1).unwrap();
+        let b = s.add_task("toss", None, None, None, 2).unwrap();
+        s.delete_task(b.id).unwrap();
+        let open = s.open_tasks().unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, a.id);
+        assert!(s.get_task(b.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_task_nonexistent_errors() {
+        let s = Store::open_in_memory().unwrap();
+        let err = s.delete_task(999).unwrap_err();
+        assert!(matches!(err, Error::TaskNotFound(999)));
     }
 
     #[test]

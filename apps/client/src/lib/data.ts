@@ -52,6 +52,8 @@ export type TaskItem = {
   issueUrl?: string;
   createdAt: number;
   completedAt?: number;
+  /** Free-form context attached to the todo. */
+  notes?: string;
 };
 
 export type IssueItem = {
@@ -271,6 +273,14 @@ export function fmtClock(ms: number): string {
   });
 }
 
+/** `Jul 15` — calendar day for an epoch-ms timestamp (used for due dates). */
+export function fmtDay(ms: number): string {
+  return new Date(ms).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 /** `<1m` / `22m` / `1h 05m` — a positive duration; `now` for anything
  * non-positive. Sub-minute positive spans render `<1m` instead of rounding to
  * `0m`, so a meeting 20s out reads "in <1m", never "in 0m". */
@@ -352,6 +362,15 @@ export const storeAddTask = (text: string, dueTs?: number) =>
 
 export const storeSetTaskStatus = (id: number, status: TaskStatus) =>
   invokeOk("store_set_task_status", { id, status });
+
+export const storeUpdateTask = (
+  id: number,
+  text: string,
+  notes?: string,
+  dueTs?: number,
+) => invokeOk("store_update_task", { id, text, notes, dueTs });
+
+export const storeDeleteTask = (id: number) => invokeOk("store_delete_task", { id });
 
 export const storePromoteTaskToIssue = (id: number, repo: string) =>
   invokeOk("store_promote_task_to_issue", { id, repo });
