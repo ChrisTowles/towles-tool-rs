@@ -23,7 +23,7 @@ import {
   type SearchMatch,
   type TermExit,
 } from "@/lib/term-protocol";
-import { linkAt, type TermLink } from "@/lib/term-links";
+import { linkAt, linkLabel, type TermLink } from "@/lib/term-links";
 import {
   rowsHaveSelection,
   selectionKindForDetail,
@@ -106,7 +106,9 @@ export function TerminalView({
     selectAll: () => void;
     hasSelection: () => boolean;
     clearScrollback: () => void;
-    /** The URL under a canvas pixel (right-click point), or null. */
+    /** Open a path link in the preferred editor (resolved against the cwd). */
+    openPath: (link: Extract<TermLink, { kind: "path" }>) => void;
+    /** The link under a canvas pixel (right-click point), or null. */
     linkAtPoint: (offsetX: number, offsetY: number) => TermLink | null;
   } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -317,7 +319,7 @@ export function TerminalView({
       if (
         prev &&
         link &&
-        prev.url === link.url &&
+        linkLabel(prev) === linkLabel(link) &&
         prev.segments[0].y === link.segments[0].y &&
         prev.segments[0].start === link.segments[0].start
       ) {
@@ -325,7 +327,8 @@ export function TerminalView({
       }
       grid.hoveredLink = link;
       canvas.style.cursor = link ? "pointer" : "default";
-      canvas.title = link ? `${link.url}\nCtrl+Click (⌘+Click) to open` : "";
+      const openHint = link?.kind === "path" ? "open in editor" : "open";
+      canvas.title = link ? `${linkLabel(link)}\nCtrl+Click (⌘+Click) to ${openHint}` : "";
       const rows = new Set([...(prev?.segments ?? []), ...(link?.segments ?? [])].map((s) => s.y));
       for (const y of rows) paintRow(y);
       paintCursor();
@@ -569,6 +572,11 @@ export function TerminalView({
         selectAll: () => void select("all"),
         hasSelection: () => rowsHaveSelection(grid.lines),
         clearScrollback: () => void invoke(TERM_CLEAR_COMMAND, { termId }).catch(() => {}),
+        // Open a clicked file path in the editor. Relative paths resolve
+        // against this pane's `cwd` (the backend joins them). Report-only —
+        // this opens an editor, it never writes to the PTY.
+        openPath: (link) =>
+          void invoke("term_open_path", { path: link.path, cwd }).catch(() => {}),
         linkAtPoint: (offsetX, offsetY) => {
           const x = Math.max(0, Math.min(grid.cols - 1, Math.floor(offsetX / cellW)));
           const y = Math.max(0, Math.min(grid.rows - 1, Math.floor(offsetY / cellH)));
@@ -615,12 +623,14 @@ export function TerminalView({
         if (e.button !== 0) return;
         e.preventDefault(); // keep focus on the hidden input
         const cell = cellOf(e);
-        // Ctrl/Cmd+click on a URL opens it in the system browser (VS Code
-        // terminal convention); plain click keeps its select/focus meaning.
+        // Ctrl/Cmd+click on a link opens it (VS Code terminal convention):
+        // URLs in the system browser, file paths in the preferred editor.
+        // Plain click keeps its select/focus meaning.
         if (e.ctrlKey || e.metaKey) {
           const link = linkAt(grid.lines, grid.cols, cell.x, cell.y);
           if (link) {
-            void openExternalUrl(link.url);
+            if (link.kind === "url") void openExternalUrl(link.url);
+            else bridgeRef.current?.openPath(link);
             return;
           }
         }
@@ -772,8 +782,14 @@ export function TerminalView({
         >
           {menuLink && (
             <>
-              <ContextMenuItem onSelect={() => void openExternalUrl(menuLink.url)}>
-                Open link
+              <ContextMenuItem
+                onSelect={() =>
+                  menuLink.kind === "url"
+                    ? void openExternalUrl(menuLink.url)
+                    : bridgeRef.current?.openPath(menuLink)
+                }
+              >
+                {menuLink.kind === "url" ? "Open link" : "Open in editor"}
               </ContextMenuItem>
               <ContextMenuSeparator />
             </>
