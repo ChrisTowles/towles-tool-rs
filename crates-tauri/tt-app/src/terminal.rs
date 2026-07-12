@@ -548,6 +548,47 @@ pub fn on_window_destroyed(app: &AppHandle, label: &str) {
     }
 }
 
+/// Open a file path Ctrl/⌘-clicked in a terminal in the preferred editor.
+/// Relative paths resolve against `cwd` (the clicked pane's working dir) and a
+/// leading `~` expands to home. Spawns without waiting — like `journal_open` /
+/// `ab_open_in_editor`, so a non-forking editor (vim, `code --wait`) doesn't
+/// freeze the app. Report-only: it opens an editor, never writing to the PTY.
+#[tauri::command]
+pub fn term_open_path(path: String, cwd: Option<String>) -> Result<(), String> {
+    let settings = tt_config::load().map_err(|e| format!("failed to load settings: {e}"))?;
+    let editor = settings.preferred_editor.trim();
+    if editor.is_empty() {
+        return Err("No preferred editor configured".into());
+    }
+    let full = resolve_clicked_path(&path, cwd.as_deref());
+    if !full.exists() {
+        return Err(format!("No such file: {}", full.display()));
+    }
+    std::process::Command::new(editor)
+        .arg(&full)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to launch {editor}: {e}"))
+}
+
+/// Resolve a clicked path against the pane's `cwd`: absolute paths as-is, a
+/// leading `~/` to the home dir, everything else joined onto `cwd`.
+fn resolve_clicked_path(path: &str, cwd: Option<&str>) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
+    }
+    let p = Path::new(path);
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+    match cwd.filter(|c| !c.trim().is_empty()) {
+        Some(dir) => Path::new(dir).join(p),
+        None => p.to_path_buf(),
+    }
+}
+
 /// Resolve the shell's working directory: the requested `cwd` if it exists,
 /// otherwise the user's home. `None` lets portable-pty inherit the app's cwd.
 fn start_dir(cwd: Option<String>) -> Option<std::path::PathBuf> {
@@ -590,7 +631,8 @@ fn shell_kind_from_path(shell: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TermState, default_shell, shell_kind_from_path, start_dir};
+    use super::{TermState, default_shell, resolve_clicked_path, shell_kind_from_path, start_dir};
+    use std::path::PathBuf;
 
     #[test]
     fn focus_gate_tracks_the_focused_terminal() {
@@ -648,5 +690,33 @@ mod tests {
         assert_eq!(start_dir(Some("/no/such/dir/xyz".into())), dirs::home_dir());
         assert_eq!(start_dir(Some("   ".into())), dirs::home_dir());
         assert_eq!(start_dir(None), dirs::home_dir());
+    }
+
+    #[test]
+    fn resolve_clicked_path_joins_relative_onto_cwd() {
+        assert_eq!(
+            resolve_clicked_path("crates/tt-vt/src/search.rs", Some("/repo")),
+            PathBuf::from("/repo/crates/tt-vt/src/search.rs"),
+        );
+    }
+
+    #[test]
+    fn resolve_clicked_path_keeps_absolute_and_ignores_cwd() {
+        assert_eq!(
+            resolve_clicked_path("/home/ctowles/app.tsx", Some("/repo")),
+            PathBuf::from("/home/ctowles/app.tsx"),
+        );
+    }
+
+    #[test]
+    fn resolve_clicked_path_expands_leading_tilde() {
+        let home = dirs::home_dir().expect("home dir");
+        assert_eq!(resolve_clicked_path("~/src/a.rs", Some("/repo")), home.join("src/a.rs"));
+    }
+
+    #[test]
+    fn resolve_clicked_path_relative_without_cwd_stays_relative() {
+        assert_eq!(resolve_clicked_path("src/a.rs", None), PathBuf::from("src/a.rs"));
+        assert_eq!(resolve_clicked_path("src/a.rs", Some("  ")), PathBuf::from("src/a.rs"));
     }
 }
