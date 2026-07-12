@@ -55,16 +55,19 @@ both at once in one slot. Full docs + Linux gotchas: [e2e/README.md](e2e/README.
 
 ## Worktree slots — you are probably working in one
 
-This repo is checked out as **slots**: `~/code/p/towles-tool-repos/` holds a
-bare hub (`towles-tool-rs.git`) plus worktrees named `towles-tool-rs-slot-N`,
-one per parallel line of work (a `.tt-slot` marker file sits at each slot's
-root). Manage slots with `ttr slot` — never raw `git worktree` or new clones:
+This repo is checked out as **primary + slots**: `~/code/p/towles-tool-repos/`
+holds `towles-tool-rs-primary/` (a normal clone that always has `main` checked
+out — it is where Chris runs the app himself) plus branch-named worktrees under
+`slots/`, one per parallel line of work (a `.tt-slot` marker file sits at each
+slot's root). Slots are ephemeral: created from the primary for a branch,
+removed when the branch merges. Manage them with `ttr slot` — never raw
+`git worktree` or new clones:
 
 ```sh
-ttr slot new -b feat/thing [--base <ref>]  # next free slot on a new branch
-ttr slot new                               # parked slot, detached at the default branch
-ttr slot ls [--json]                       # fleet: branch, dirty count, claimed ports
+ttr slot new -b feat/thing [--base <ref>]  # creates slots/thing on that branch
+ttr slot ls [--json]                       # fleet: primary + slots, branch, dirty, ports
 ttr slot env <name>                        # (re)render .env — idempotent, keeps claims
+ttr slot env primary                       # same, for the primary checkout
 ttr slot rm <name> [--force]               # guarded removal + docker cleanup
 ```
 
@@ -75,17 +78,24 @@ Claude starts on the goal in the new slot's terminal.
 
 Rules when working in a slot:
 
-- **Detached HEAD means parked.** Create a branch before committing —
-  commits reachable from no branch or remote block `ttr slot rm` by design.
-- **One branch per worktree.** `main` normally lives in slot-0; start new
-  branches with `-b` (and `--base` when not branching off the default).
+- **The primary is load-bearing.** Every slot's git state lives in
+  `towles-tool-rs-primary/.git` — never delete, move, or re-clone the primary.
+  `main` stays checked out there (git itself blocks a second checkout of it);
+  slots never work on `main` directly.
+- **One branch per slot, named after it.** `ttr slot new -b feat/thing`
+  creates `slots/thing` (`--base` when not branching off the default). A slot
+  whose PR merged is done — `ttr slot rm` it; commits reachable from no
+  branch or remote block removal by design.
 - **Ports come from the rendered `.env`** — `.env.example` is the template
   (`${tt:port A-B}` pool claims, `${tt:slot-name}`, `${tt:var NAME}`), and a
   manual `.env.local` pin overrides it; shell env overrides both. Never
-  hardcode a port anywhere.
+  hardcode a port anywhere. The primary claims its ports the same way.
+- **No setup scripts.** `ttr slot new` runs the `TT_SLOT_SETUP` command
+  declared in `.env.example` (spawned directly, no shell — `npm install`
+  here), falling back to lockfile detection in repos that don't declare one.
 - **Never touch sibling slot directories** — other agents work there
   concurrently. Mutable state (settings, tt.db, agentboard files) is already
-  slot-scoped via `tt_config::state_scope()`.
+  scoped per checkout via `tt_config::state_scope()`.
 - Slot logic lives in `crates/tt-slots` (template grammar, removal guards,
   pure decisions) with shared orchestration in `tt_slots::ops`; the CLI and
   the app's `slot_create` command are thin shells over it. Change behavior
@@ -197,7 +207,7 @@ Cargo workspace + npm workspace (`apps/client` only):
 ## Migration
 
 Features are ported from the TypeScript CLI at
-`~/code/p/towles-tool-repos/towles-tool-slot-0` per
+`~/code/p/towles-tool-cli-repos/towles-tool-primary` per
 [docs/MIGRATION.md](docs/MIGRATION.md). Porting is selective: a TS feature is
 ported only if still wanted, and it lands on its natural surface (app screen
 or CLI command — see the no-CLI-parity convention below). When deriving code,

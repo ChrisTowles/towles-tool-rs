@@ -1,7 +1,8 @@
-// New-slot modal: give a goal, pick the base branch, and a worktree slot is
-// created for the repo's hub (`slot_create` → tt-slots ops, shared with
-// `ttr slot new`). The goal slugs the branch name (editable) and the caller
-// launches Claude with it in the new slot's first session.
+// New-slot modal: give a goal, pick the base branch, and a branch-named
+// worktree slot is created under the repo root's slots/ dir (`slot_create` →
+// tt-slots ops, shared with `ttr slot new`). The goal slugs the branch name
+// (editable) and the caller launches Claude with it in the new slot's first
+// session.
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -30,7 +31,7 @@ export type NewSlotRepo = { name: string; dir: string };
 export type SlotCreated = {
   name: string;
   dir: string;
-  branch: string | null;
+  branch: string;
   base: string;
   warnings: string[];
 };
@@ -109,8 +110,8 @@ export function NewSlotDialog({
         <DialogHeader>
           <DialogTitle>⬢ New slot{repo ? ` — ${repo.name}` : ""}</DialogTitle>
           <DialogDescription>
-            Creates the next free worktree slot, claims its ports, and starts Claude on
-            your goal.
+            Creates a worktree slot named after the branch, claims its ports, and starts
+            Claude on your goal.
           </DialogDescription>
         </DialogHeader>
         <Textarea

@@ -1,4 +1,4 @@
-//! `ttr slot` — worktree-slot lifecycle over a bare hub.
+//! `ttr slot` — worktree-slot lifecycle over a primary checkout.
 //!
 //! Thin CLI shell: creation/rendering lives in `tt_slots::ops` (shared with
 //! the app's `slot_create` command); removal guards and docker cleanup stay
@@ -8,8 +8,8 @@
 use std::fs;
 use std::path::Path;
 
-use tt_slots::ops::{self, CreateOpts};
-use tt_slots::{RmBlocked, envfile, guards, layout};
+use tt_slots::ops::{self, CreateOpts, SlotRoot};
+use tt_slots::{RmBlocked, envfile, guards};
 
 use crate::cli::SlotCommands;
 use crate::ui;
@@ -17,7 +17,7 @@ use crate::ui;
 pub fn run(command: SlotCommands) -> i32 {
     let result = match command {
         SlotCommands::New { branch, base, json, root } => {
-            cmd_new(branch.as_deref(), base.as_deref(), json, root.as_deref())
+            cmd_new(&branch, base.as_deref(), json, root.as_deref())
         }
         SlotCommands::Ls { json, root } => cmd_ls(json, root.as_deref()),
         SlotCommands::Rm { name, force, root } => cmd_rm(&name, force, root.as_deref()),
@@ -33,16 +33,16 @@ pub fn run(command: SlotCommands) -> i32 {
 }
 
 fn cmd_new(
-    branch: Option<&str>,
+    branch: &str,
     base: Option<&str>,
     json: bool,
     root: Option<&Path>,
 ) -> Result<(), String> {
     let opts = CreateOpts {
         root: root.map(Path::to_path_buf),
-        branch: branch.map(str::to_string),
+        branch: branch.to_string(),
         base: base.map(str::to_string),
-        run_setup_hook: true,
+        run_setup: true,
     };
     let created = ops::create_slot(&opts).map_err(|e| e.to_string())?;
     for warning in &created.warnings {
@@ -56,37 +56,40 @@ fn cmd_new(
             "name": created.name,
             "dir": dir_s,
             "branch": created.branch,
-            "detached": created.branch.is_none(),
             "base": created.base,
             "ports": ports,
             "inheritedKeys": created.inherited,
         });
         println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
     } else {
-        match &created.branch {
-            Some(b) => ui::success(&format!("created {} on branch {b}", created.name)),
-            None => ui::success(&format!(
-                "created {} (detached at {} — create a branch before committing)",
-                created.name, created.base
-            )),
-        }
+        ui::success(&format!("created {} on branch {}", created.name, created.branch));
         for (key, port) in &created.ports {
             println!("  {key}={port}");
         }
         if created.inherited > 0 {
-            println!("  inherited {} key(s) from a sibling slot", created.inherited);
+            println!("  inherited {} key(s) from a sibling checkout", created.inherited);
         }
         println!("slot: {dir_s}");
     }
     Ok(())
 }
 
+/// Resolve `name` to a checkout dir: `primary` or a dir under `slots/`.
+fn checkout_dir(sr: &SlotRoot, name: &str) -> Result<std::path::PathBuf, String> {
+    if name == "primary" || name == sr.primary.file_name().and_then(|n| n.to_str()).unwrap_or("") {
+        return Ok(sr.primary.clone());
+    }
+    let dir = sr.slot_dir(name);
+    if dir.is_dir() {
+        Ok(dir)
+    } else {
+        Err(format!("no slot {name} in {}", sr.slots_dir().display()))
+    }
+}
+
 fn cmd_env(name: &str, root: Option<&Path>) -> Result<(), String> {
     let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
-    let dir = sr.slot_dir(name);
-    if !dir.is_dir() {
-        return Err(format!("no slot {name} in {}", sr.root.display()));
-    }
+    let dir = checkout_dir(&sr, name)?;
     let summary = ops::render_slot_env(&sr, &dir).map_err(|e| e.to_string())?;
     for warning in &summary.warnings {
         ui::warning(warning);
@@ -100,9 +103,13 @@ fn cmd_env(name: &str, root: Option<&Path>) -> Result<(), String> {
 
 fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
     let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
-    let _ = ops::git_hub(&sr.hub, &["worktree", "prune"]);
+    let _ = ops::git_primary(&sr.primary, &["worktree", "prune"]);
+    let mut checkouts: Vec<(String, std::path::PathBuf, bool)> =
+        vec![("primary".to_string(), sr.primary.clone(), true)];
+    checkouts.extend(sr.slots().into_iter().map(|(name, dir)| (name, dir, false)));
+
     let mut rows = Vec::new();
-    for (_, name, dir) in sr.slots() {
+    for (name, dir, is_primary) in checkouts {
         let broken = !ops::git_slot(&dir, &["rev-parse", "--is-inside-work-tree"])
             .map(|o| o.ok())
             .unwrap_or(false);
@@ -131,13 +138,13 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
                 k.ends_with("PORT") && v.bytes().all(|b| b.is_ascii_digit()) && !v.is_empty()
             })
             .collect();
-        rows.push((name, branch, detached, broken, dirty, ports));
+        rows.push((name, branch, detached, broken, dirty, ports, is_primary));
     }
 
     if json {
         let items: Vec<serde_json::Value> = rows
             .iter()
-            .map(|(name, branch, detached, broken, dirty, ports)| {
+            .map(|(name, branch, detached, broken, dirty, ports, is_primary)| {
                 let port_map: serde_json::Map<String, serde_json::Value> =
                     ports.iter().map(|(k, v)| (k.clone(), v.clone().into())).collect();
                 serde_json::json!({
@@ -147,13 +154,14 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
                     "broken": broken,
                     "dirty": dirty,
                     "ports": port_map,
+                    "primary": is_primary,
                 })
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&items).unwrap_or_default());
     } else {
-        println!("{:<20} {:<36} {:<6} PORTS", "SLOT", "BRANCH", "DIRTY");
-        for (name, branch, _, _, dirty, ports) in &rows {
+        println!("{:<20} {:<36} {:<6} PORTS", "CHECKOUT", "BRANCH", "DIRTY");
+        for (name, branch, _, _, dirty, ports, _) in &rows {
             let ports_s: Vec<String> = ports.iter().map(|(k, v)| format!("{k}={v}")).collect();
             println!("{name:<20} {branch:<36} {dirty:<6} {}", ports_s.join(" "));
         }
@@ -163,11 +171,14 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
 
 fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
     let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
-    layout::parse_slot(&sr.repo, name)
-        .ok_or_else(|| format!("{name} is not a slot of {} — refusing", sr.repo))?;
+    if name == "primary" || sr.primary.file_name().and_then(|n| n.to_str()) == Some(name) {
+        return Err(
+            "refusing to remove the primary checkout — it owns every slot's git state".to_string()
+        );
+    }
     let dir = sr.slot_dir(name);
     if !dir.is_dir() {
-        return Err(format!("no slot {name} in {}", sr.root.display()));
+        return Err(format!("no slot {name} in {}", sr.slots_dir().display()));
     }
     let dir_s = dir.to_string_lossy().to_string();
 
@@ -183,7 +194,7 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
         );
         docker_cleanup(name, &dir);
         fs::remove_dir_all(&dir).map_err(|e| format!("cannot remove {dir_s}: {e}"))?;
-        let _ = ops::git_hub(&sr.hub, &["worktree", "prune"]);
+        let _ = ops::git_primary(&sr.primary, &["worktree", "prune"]);
         ui::success(&format!("removed {name} (broken)"));
         return Ok(());
     }
@@ -226,9 +237,9 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
     docker_cleanup(name, &dir);
 
     let remove = if force {
-        ops::git_hub(&sr.hub, &["worktree", "remove", "--force", &dir_s])
+        ops::git_primary(&sr.primary, &["worktree", "remove", "--force", &dir_s])
     } else {
-        ops::git_hub(&sr.hub, &["worktree", "remove", &dir_s])
+        ops::git_primary(&sr.primary, &["worktree", "remove", &dir_s])
     };
     match remove {
         Ok(out) if out.ok() => {}
@@ -244,7 +255,7 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
             fs::remove_dir_all(&dir).map_err(|e| format!("cannot remove {dir_s}: {e}"))?;
         }
     }
-    let _ = ops::git_hub(&sr.hub, &["worktree", "prune"]);
+    let _ = ops::git_primary(&sr.primary, &["worktree", "prune"]);
     ui::success(&format!("removed {name} (ports released with its .env)"));
     Ok(())
 }

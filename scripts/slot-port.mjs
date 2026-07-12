@@ -1,6 +1,6 @@
 // Deterministic per-slot Vite dev-server port.
 //
-// Multiple worktree slots of this repo (towles-tool-rs-slot-0, -slot-1, …) run
+// Multiple checkouts of this repo (towles-tool-rs-primary, slots/thing, …) run
 // `tauri dev` at the same time. If every slot defaults to 1420 they collide, so
 // we derive a stable base port from the slot's repo-root directory name: each
 // slot prefers its own port and keeps it run-to-run, and `dev-port.mjs` scans

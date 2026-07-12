@@ -4,8 +4,7 @@
 //! - `${tt:port A-B}`  — port-pool claim: reuse the slot's existing in-range
 //!   claim when no sibling holds it, else the first port in `A..=B` that no
 //!   sibling claims and that passes the caller's `port_free` probe.
-//! - `${tt:slot}`      — the slot number, e.g. `2`
-//! - `${tt:slot-name}` — the slot directory basename, e.g. `blog-slot-2`
+//! - `${tt:slot-name}` — the checkout directory basename, e.g. `slot-migrate`
 //! - `${tt:base}`      — the base branch this slot's work PRs into
 //! - `${tt:var NAME}`  — the rendered value of `NAME` from an earlier line
 //!
@@ -38,10 +37,9 @@ pub enum TemplateError {
     UnknownToken { line: usize, token: String },
 }
 
-/// Identity of the slot being rendered.
+/// Identity of the checkout being rendered (a slot or the primary).
 pub struct SlotContext<'a> {
     pub slot_name: &'a str,
-    pub slot_number: u32,
     pub base_branch: &'a str,
 }
 
@@ -123,8 +121,6 @@ pub fn render(
                         p.to_string()
                     }
                 }
-            } else if inner == "slot" {
-                ctx.slot_number.to_string()
             } else if inner == "slot-name" {
                 ctx.slot_name.to_string()
             } else if inner == "base" {
@@ -194,7 +190,7 @@ mod tests {
     use super::*;
 
     fn ctx() -> SlotContext<'static> {
-        SlotContext { slot_name: "blog-slot-2", slot_number: 2, base_branch: "main" }
+        SlotContext { slot_name: "slot-migrate", base_branch: "main" }
     }
 
     fn render_ok(
@@ -211,14 +207,13 @@ mod tests {
     #[test]
     fn claims_first_free_port_and_substitutes_identity() {
         let out = render_ok(
-            "UI_PORT=${tt:port 3000-3009}\nNAME=${tt:slot-name}\nN=${tt:slot}\nBASE=${tt:base}\n",
+            "UI_PORT=${tt:port 3000-3009}\nNAME=${tt:slot-name}\nBASE=${tt:base}\n",
             &[],
             &[3000, 3001],
         )
         .unwrap();
         assert!(out.text.contains("UI_PORT=3002"));
-        assert!(out.text.contains("NAME=blog-slot-2"));
-        assert!(out.text.contains("N=2"));
+        assert!(out.text.contains("NAME=slot-migrate"));
         assert!(out.text.contains("BASE=main"));
         assert_eq!(out.claimed, vec![("UI_PORT".to_string(), 3002)]);
     }

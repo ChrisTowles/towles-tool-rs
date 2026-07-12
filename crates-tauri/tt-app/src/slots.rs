@@ -12,39 +12,40 @@ use tt_slots::ops::{self, CreateOpts};
 pub struct SlotCreated {
     pub name: String,
     pub dir: String,
-    pub branch: Option<String>,
+    pub branch: String,
     pub base: String,
     pub warnings: Vec<String>,
 }
 
 /// Branches available as a base ref in the slot root containing `root`
-/// (a slot dir or the root itself), default branch first.
+/// (a checkout dir or the root itself), default branch first.
 #[tauri::command]
 pub fn slot_base_branches(root: String) -> Result<Vec<String>, String> {
     let sr = ops::discover_root(Some(&PathBuf::from(root))).map_err(|e| e.to_string())?;
-    ops::hub_branches(&sr.hub).map_err(|e| e.to_string())
+    ops::primary_branches(&sr.primary).map_err(|e| e.to_string())
 }
 
-/// Create the next free slot on `branch` off `base` (empty strings = detached
-/// at the hub default). Long-running — fetch, worktree add, the npm-install
-/// setup hook — so it runs off the main thread.
+/// Create the slot for `branch` off `base` (empty base = the primary's
+/// branch). Long-running — fetch, worktree add, the install setup step — so
+/// it runs off the main thread.
 #[tauri::command]
 pub async fn slot_create(
     root: String,
     branch: String,
     base: String,
 ) -> Result<SlotCreated, String> {
+    let branch = branch.trim().to_string();
+    if branch.is_empty() {
+        return Err("a slot needs a branch — slots are named after their branch".to_string());
+    }
     let opts = CreateOpts {
         root: Some(PathBuf::from(root)),
-        branch: {
-            let b = branch.trim();
-            (!b.is_empty()).then(|| b.to_string())
-        },
+        branch,
         base: {
             let b = base.trim();
             (!b.is_empty()).then(|| b.to_string())
         },
-        run_setup_hook: true,
+        run_setup: true,
     };
     let created = tauri::async_runtime::spawn_blocking(move || ops::create_slot(&opts))
         .await

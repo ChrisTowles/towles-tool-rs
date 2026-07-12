@@ -26,7 +26,7 @@ use agentboard::{Ab, Engine, STATE_EVENT, now_ms};
 use tt_agentboard::fs_notify::DirNotifier;
 
 /// Human-readable name of the checkout this binary was built from — the repo-root
-/// directory (e.g. `towles-tool-rs-slot-2`). Baked in at compile time from
+/// directory (e.g. `slot-migrate`, `towles-tool-rs-primary`). Baked in at compile time from
 /// `CARGO_MANIFEST_DIR` (`<root>/crates-tauri/tt-app`), so each slot's binary
 /// knows its own slot without any runtime cwd/env plumbing. Lets several slots'
 /// windows be told apart in the title bar, taskbar, and app header.
