@@ -20,20 +20,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # The Rust version + components are pinned by rust-toolchain.toml at the
+      # repo root. rustup honors that file for every cargo/rustc invocation, so
+      # we provision it explicitly here (installs the channel + rustfmt/clippy)
+      # rather than pinning a duplicate version in the workflow.
+      - name: Provision pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
 
       # crates/tt-vt builds `libghostty-vt`, whose build script compiles
       # libghostty from a ghostty source checkout and needs zig 0.15.x on PATH
-      # (GHOSTTY_SOURCE_DIR). That is impractical to provision in CI, so tt-vt
-      # is excluded here along with crates-tauri/tt-app, the only crate that
-      # depends on it (and which also needs webkit2gtk/GTK system libs for the
-      # Tauri shell). Everything else — every Tauri-free crate under crates/
-      # plus crates-cli/tt-cli — is covered.
+      # (GHOSTTY_SOURCE_DIR). That toolchain is provisioned only in the separate
+      # `rust-vt` job below, so tt-vt is excluded here — along with
+      # crates-tauri/tt-app, the only crate that depends on it (and which also
+      # needs webkit2gtk/GTK system libs for the Tauri shell, still uncovered by
+      # CI). Everything else — every other Tauri-free crate under crates/ plus
+      # crates-cli/tt-cli — is covered here.
       - name: rustfmt
         run: cargo fmt --check
 
@@ -42,3 +45,59 @@ jobs:
 
       - name: test
         run: cargo test --workspace --exclude tt-vt --exclude tt-app
+
+  rust-vt:
+    name: Rust tt-vt (zig + ghostty)
+    runs-on: ubuntu-latest
+    # Pinned ghostty commit that libghostty-vt-sys 0.2.0 builds against (see the
+    # GHOSTTY_COMMIT constant in that crate's build.rs). Keep this in sync when
+    # bumping libghostty-vt.
+    env:
+      GHOSTTY_COMMIT: fdbf9ff3a31d7531b691cb49c98fc465a1a503a0
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same repo-root rust-toolchain.toml pin as the `rust` job.
+      - name: Provision pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      # libghostty-vt's build script shells out to `zig build`; the crate tracks
+      # ghostty's Zig version (0.15.x). setup-zig also caches the zig compiler
+      # and its global package cache (~/.cache/zig), where ghostty's Zig
+      # dependencies land.
+      - name: Provision Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      # Cache the ghostty checkout so we only clone on a commit bump. The clone
+      # mirrors what build.rs would do itself when GHOSTTY_SOURCE_DIR is unset.
+      - name: Cache ghostty source
+        id: ghostty-cache
+        uses: actions/cache@v4
+        with:
+          path: ghostty-src
+          key: ghostty-src-${{ env.GHOSTTY_COMMIT }}
+
+      - name: Clone ghostty source
+        if: steps.ghostty-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/ghostty-org/ghostty.git ghostty-src
+          git -C ghostty-src checkout "$GHOSTTY_COMMIT"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Keep this job's cargo/zig build artifacts separate from the `rust`
+          # job's cache.
+          key: tt-vt
+
+      - name: clippy (tt-vt)
+        env:
+          GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-src
+        run: cargo clippy -p tt-vt -- -D warnings
+
+      - name: test (tt-vt)
+        env:
+          GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-src
+        run: cargo test -p tt-vt
