@@ -16,7 +16,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use tokio::time::MissedTickBehavior;
 use tt_collect::CalendarProvider;
-use tt_store::{MeetingStartWatch, ReviewRequestedWatch};
+use tt_store::{MeetingStartWatch, ReviewRequestedWatch, StaleCollectorWatch, WatchedCollector};
 
 use crate::store::SNAPSHOT_EVENT;
 
@@ -26,6 +26,51 @@ use crate::store::SNAPSHOT_EVENT;
 /// data already in tt.db, so the notification fires within one tick of the
 /// event regardless of when the data was last refreshed.
 const NOTIFY_TICK_SECS: u64 = 15;
+
+/// A collector counts as stale once its last healthy run has aged past this
+/// many times its own refresh cadence — enough missed cycles that it's clearly
+/// stuck, not just one skipped tick.
+const STALE_CADENCE_MULT: i64 = 4;
+
+/// Floor for a collector's staleness threshold, so a fast collector (Slack every
+/// minute) still gets a few minutes of grace before it alarms.
+const STALE_FLOOR_MS: i64 = 5 * 60_000;
+
+/// Build the [`WatchedCollector`] list for the stale-collector watch from the
+/// current settings: one entry per *enabled* collector (disabled ones are
+/// omitted, so they never fire), with a per-collector staleness threshold
+/// derived from that collector's refresh cadence.
+fn watched_collectors(collectors: &tt_config::CollectorsSettings) -> Vec<WatchedCollector> {
+    fn threshold(cadence_ms: i64) -> i64 {
+        (cadence_ms * STALE_CADENCE_MULT).max(STALE_FLOOR_MS)
+    }
+    let mut watched = Vec::new();
+    if collectors.prs.enabled {
+        watched.push(WatchedCollector {
+            key: "prs".to_string(),
+            stale_after_ms: threshold(collectors.prs.refresh_seconds.max(30) as i64 * 1000),
+        });
+    }
+    if collectors.issues.enabled {
+        watched.push(WatchedCollector {
+            key: "issues".to_string(),
+            stale_after_ms: threshold(collectors.issues.refresh_minutes.max(1) as i64 * 60_000),
+        });
+    }
+    if collectors.calendar.enabled {
+        watched.push(WatchedCollector {
+            key: "claude:calendar".to_string(),
+            stale_after_ms: threshold(collectors.calendar.refresh_minutes.max(1) as i64 * 60_000),
+        });
+    }
+    if collectors.slack.enabled {
+        watched.push(WatchedCollector {
+            key: "slack:dm".to_string(),
+            stale_after_ms: threshold(collectors.slack.refresh_seconds.max(30) as i64 * 1000),
+        });
+    }
+    watched
+}
 
 #[derive(Clone)]
 enum Batch {
@@ -50,9 +95,13 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
         // survive a cadence rebuild so a reload never re-fires a stale edge.
         let mut meeting_watch = MeetingStartWatch::new();
         let mut review_watch = ReviewRequestedWatch::new();
+        let mut stale_watch = StaleCollectorWatch::new();
         loop {
             // (Re)load config and rebuild the tick intervals for this cycle.
             let collectors = tt_config::load().map(|s| s.collectors).unwrap_or_default();
+            // Rebuilt each cycle so enable/cadence edits change what's watched;
+            // the watch's edge state persists across the rebuild.
+            let watched = watched_collectors(&collectors);
             let provider = CalendarProvider::from_str_lenient(&collectors.calendar.provider);
             let calendar_period_ms = collectors.calendar.refresh_minutes.max(1) as i64 * 60_000;
 
@@ -107,7 +156,14 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                         .await;
                     }
                     _ = notify_tick.tick() => {
-                        run_notify_check(&app, &mut meeting_watch, &mut review_watch).await;
+                        run_notify_check(
+                            &app,
+                            &mut meeting_watch,
+                            &mut review_watch,
+                            &mut stale_watch,
+                            &watched,
+                        )
+                        .await;
                     }
                 }
             }
@@ -190,17 +246,20 @@ async fn run_notify_check(
     app: &AppHandle,
     meeting_watch: &mut MeetingStartWatch,
     review_watch: &mut ReviewRequestedWatch,
+    stale_watch: &mut StaleCollectorWatch,
+    watched: &[WatchedCollector],
 ) {
     let read = tauri::async_runtime::spawn_blocking(|| {
         let store = tt_store::Store::open_default().ok()?;
         let now = now_ms();
         let next = store.current_or_next_event(now).ok().flatten();
         let prs = store.prs().unwrap_or_default();
-        Some((now, next, prs))
+        let runs = store.runs().unwrap_or_default();
+        Some((now, next, prs, runs))
     })
     .await;
 
-    let Ok(Some((now, next, prs))) = read else {
+    let Ok(Some((now, next, prs, runs))) = read else {
         return;
     };
 
@@ -209,6 +268,9 @@ async fn run_notify_check(
     }
     for edge in review_watch.observe(&prs) {
         notify_review_requested(app, &edge);
+    }
+    for edge in stale_watch.observe(now, watched, &runs) {
+        notify_stale_collector(app, &edge);
     }
 }
 
@@ -257,6 +319,57 @@ fn notify_review_requested(app: &AppHandle, edge: &tt_store::ReviewRequestedEdge
         .title(format!("Review requested — {}#{}", edge.repo, edge.number))
         .body(&edge.title)
         .show();
+}
+
+/// Fire a "collector went stale" desktop notification — a collector stopped
+/// refreshing or is failing repeatedly (expired `gh` auth, revoked Slack token).
+/// Unlike the meeting/review notifications this is *not* suppressed while the
+/// window is focused: there's no always-on in-app surface for collector health,
+/// so a focused user would otherwise never learn a collector died. Gated only by
+/// the `agentboard.notifyStaleCollector` setting (default on).
+fn notify_stale_collector(app: &AppHandle, edge: &tt_store::StaleCollectorEdge) {
+    use tauri_plugin_notification::NotificationExt;
+
+    let enabled = tt_config::load()
+        .map(|s| {
+            s.agentboard.notify_stale_collector.unwrap_or(tt_config::DEFAULT_NOTIFY_STALE_COLLECTOR)
+        })
+        .unwrap_or(tt_config::DEFAULT_NOTIFY_STALE_COLLECTOR);
+    if !enabled {
+        return;
+    }
+
+    let name = collector_label(&edge.key);
+    let mut body =
+        format!("{name} collector hasn't refreshed in {}", human_duration(edge.stale_for_ms));
+    if let Some(msg) = &edge.last_message {
+        body.push_str(&format!(" — {msg}"));
+    }
+    let _ = app.notification().builder().title("Collector went stale").body(body).show();
+}
+
+/// Human collector name for a notification body, from its `record_run` key.
+fn collector_label(key: &str) -> &str {
+    match key {
+        "prs" => "PRs",
+        "issues" => "issues",
+        "claude:calendar" => "calendar",
+        "slack:dm" => "Slack",
+        other => other,
+    }
+}
+
+/// Render an elapsed duration (ms) as a compact `Nh`/`Nm`/`Ns` string for a
+/// notification body, rounding down to the largest whole unit.
+fn human_duration(ms: i64) -> String {
+    let secs = ms.max(0) / 1000;
+    if secs >= 3600 {
+        format!("{}h", secs / 3600)
+    } else if secs >= 60 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{secs}s")
+    }
 }
 
 /// Whether the main window currently reports itself focused. Unknown states
@@ -330,5 +443,40 @@ mod tests {
     fn claude_ran_within_is_not_fresh_on_query_error_or_empty() {
         let store = tt_store::Store::open_in_memory().unwrap();
         assert!(!claude_ran_within(&store, 100, 50));
+    }
+
+    #[test]
+    fn watched_collectors_skips_disabled_and_derives_thresholds() {
+        let mut c = tt_config::CollectorsSettings::default();
+        // Defaults: prs+issues enabled, calendar+slack disabled.
+        c.calendar.enabled = false;
+        c.slack.enabled = false;
+        let watched = watched_collectors(&c);
+        let keys: Vec<&str> = watched.iter().map(|w| w.key.as_str()).collect();
+        assert_eq!(keys, vec!["prs", "issues"]);
+        // issues: 5m cadence * 4 = 20m.
+        let issues = watched.iter().find(|w| w.key == "issues").unwrap();
+        assert_eq!(issues.stale_after_ms, 20 * 60_000);
+        // prs: 120s cadence * 4 = 8m.
+        let prs = watched.iter().find(|w| w.key == "prs").unwrap();
+        assert_eq!(prs.stale_after_ms, 8 * 60_000);
+    }
+
+    #[test]
+    fn watched_collectors_thresholds_honor_the_floor() {
+        let mut c = tt_config::CollectorsSettings::default();
+        c.slack.enabled = true;
+        c.slack.refresh_seconds = 30; // 30s * 4 = 2m, below the 5m floor.
+        let watched = watched_collectors(&c);
+        let slack = watched.iter().find(|w| w.key == "slack:dm").unwrap();
+        assert_eq!(slack.stale_after_ms, STALE_FLOOR_MS);
+    }
+
+    #[test]
+    fn human_duration_rounds_to_largest_unit() {
+        assert_eq!(human_duration(45_000), "45s");
+        assert_eq!(human_duration(32 * 60_000), "32m");
+        assert_eq!(human_duration(2 * 3_600_000 + 60_000), "2h");
+        assert_eq!(human_duration(-5), "0s");
     }
 }

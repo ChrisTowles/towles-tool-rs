@@ -16,7 +16,8 @@ use thiserror::Error;
 
 pub mod attention;
 pub use attention::{
-    MeetingStartEdge, MeetingStartWatch, ReviewRequestedEdge, ReviewRequestedWatch,
+    FAIL_STREAK, MeetingStartEdge, MeetingStartWatch, ReviewRequestedEdge, ReviewRequestedWatch,
+    StaleCollectorEdge, StaleCollectorWatch, WatchedCollector,
 };
 
 #[derive(Debug, Error)]
