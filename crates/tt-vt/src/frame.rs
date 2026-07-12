@@ -123,3 +123,216 @@ pub struct Frame {
     /// match rows onto viewport rows.
     pub viewport_top: usize,
 }
+
+#[cfg(test)]
+mod tests {
+    //! These tests pin the *serialized* wire shape the renderer consumes
+    //! (`apps/client/src/lib/term-protocol.ts`). A silent serde rename or a
+    //! changed `skip_serializing_if` would break the frontend at runtime, not
+    //! at compile time, so we assert the JSON directly rather than round-trip.
+
+    use super::*;
+    use serde_json::{json, to_value};
+
+    fn cursor() -> Cursor {
+        Cursor { x: 3, y: 4, visible: true, shape: CursorShape::Block, blinking: false }
+    }
+
+    #[test]
+    fn flag_bits_are_a_stable_bitfield() {
+        // The renderer ANDs these exact values out of `Run.flags`; they must
+        // stay a contiguous power-of-two set.
+        assert_eq!(flags::BOLD, 1);
+        assert_eq!(flags::ITALIC, 2);
+        assert_eq!(flags::FAINT, 4);
+        assert_eq!(flags::UNDERLINE, 8);
+        assert_eq!(flags::INVERSE, 16);
+        assert_eq!(flags::INVISIBLE, 32);
+        assert_eq!(flags::STRIKETHROUGH, 64);
+        assert_eq!(flags::OVERLINE, 128);
+    }
+
+    #[test]
+    fn run_serializes_all_fields_when_present() {
+        let run = Run {
+            x: 5,
+            width: 10,
+            text: "hello".to_string(),
+            fg: Some(0x00ff00),
+            bg: Some(0x000000),
+            flags: flags::BOLD | flags::UNDERLINE,
+        };
+        assert_eq!(
+            to_value(&run).unwrap(),
+            json!({
+                "x": 5,
+                "width": 10,
+                "text": "hello",
+                "fg": 0x00ff00,
+                "bg": 0x000000,
+                "flags": 9,
+            }),
+        );
+    }
+
+    #[test]
+    fn run_omits_default_color_and_zero_flags() {
+        // `fg`/`bg` None means "terminal default" and `flags == 0` means plain
+        // text; all three are skipped to keep the common run compact. The TS
+        // reader treats their absence as exactly those defaults.
+        let run = Run { x: 0, width: 4, text: "text".to_string(), fg: None, bg: None, flags: 0 };
+        assert_eq!(to_value(&run).unwrap(), json!({ "x": 0, "width": 4, "text": "text" }),);
+    }
+
+    #[test]
+    fn wide_run_width_exceeds_char_count() {
+        // A CJK/emoji run occupies more columns than it has chars: two glyphs,
+        // four columns. `width` is authoritative for layout, independent of
+        // `text` length, and the serialized `width` must reflect the columns.
+        let run = Run { x: 0, width: 4, text: "漢字".to_string(), fg: None, bg: None, flags: 0 };
+        assert_eq!(run.text.chars().count(), 2);
+        assert!(run.width as usize > run.text.chars().count());
+        assert_eq!(to_value(&run).unwrap()["width"], json!(4));
+    }
+
+    #[test]
+    fn row_update_serializes_selection_as_inclusive_pair() {
+        let row = RowUpdate {
+            y: 2,
+            runs: vec![Run { x: 0, width: 1, text: "a".to_string(), fg: None, bg: None, flags: 0 }],
+            sel: Some((1, 6)),
+        };
+        assert_eq!(
+            to_value(&row).unwrap(),
+            json!({
+                "y": 2,
+                "runs": [{ "x": 0, "width": 1, "text": "a" }],
+                "sel": [1, 6],
+            }),
+        );
+    }
+
+    #[test]
+    fn row_update_omits_absent_selection() {
+        let row = RowUpdate { y: 0, runs: vec![], sel: None };
+        assert_eq!(to_value(&row).unwrap(), json!({ "y": 0, "runs": [] }));
+    }
+
+    #[test]
+    fn cursor_shape_serializes_lowercase() {
+        assert_eq!(to_value(CursorShape::Block).unwrap(), json!("block"));
+        assert_eq!(to_value(CursorShape::Bar).unwrap(), json!("bar"));
+        assert_eq!(to_value(CursorShape::Underline).unwrap(), json!("underline"));
+        assert_eq!(to_value(CursorShape::Hollow).unwrap(), json!("hollow"));
+    }
+
+    #[test]
+    fn modes_use_camel_case_keys() {
+        // These multi-word fields are where a serde rename would silently
+        // diverge from the TS `Modes` type.
+        let modes = Modes {
+            app_cursor_keys: true,
+            bracketed_paste: false,
+            alt_screen: true,
+            mouse_tracking: false,
+        };
+        assert_eq!(
+            to_value(modes).unwrap(),
+            json!({
+                "appCursorKeys": true,
+                "bracketedPaste": false,
+                "altScreen": true,
+                "mouseTracking": false,
+            }),
+        );
+    }
+
+    #[test]
+    fn colors_serialize_packed_rgb() {
+        let colors = Colors { fg: 0xd0d0d0, bg: 0x101010 };
+        assert_eq!(to_value(colors).unwrap(), json!({ "fg": 0xd0d0d0, "bg": 0x101010 }));
+    }
+
+    #[test]
+    fn full_frame_shape_is_pinned() {
+        let frame = Frame {
+            full: true,
+            cols: 80,
+            rows: 24,
+            changed: vec![RowUpdate {
+                y: 0,
+                runs: vec![Run {
+                    x: 0,
+                    width: 2,
+                    text: "hi".to_string(),
+                    fg: Some(0xffffff),
+                    bg: None,
+                    flags: flags::BOLD,
+                }],
+                sel: None,
+            }],
+            cursor: cursor(),
+            colors: Colors { fg: 0xffffff, bg: 0x000000 },
+            modes: Modes {
+                app_cursor_keys: false,
+                bracketed_paste: false,
+                alt_screen: false,
+                mouse_tracking: false,
+            },
+            title: Some("bash".to_string()),
+            scrollback_rows: 100,
+            viewport_top: 42,
+        };
+        assert_eq!(
+            to_value(&frame).unwrap(),
+            json!({
+                "full": true,
+                "cols": 80,
+                "rows": 24,
+                "changed": [{
+                    "y": 0,
+                    "runs": [{ "x": 0, "width": 2, "text": "hi", "fg": 0xffffff, "flags": 1 }],
+                }],
+                "cursor": {
+                    "x": 3, "y": 4, "visible": true, "shape": "block", "blinking": false,
+                },
+                "colors": { "fg": 0xffffff, "bg": 0x000000 },
+                "modes": {
+                    "appCursorKeys": false,
+                    "bracketedPaste": false,
+                    "altScreen": false,
+                    "mouseTracking": false,
+                },
+                "title": "bash",
+                "scrollbackRows": 100,
+                "viewportTop": 42,
+            }),
+        );
+    }
+
+    #[test]
+    fn frame_omits_absent_title() {
+        let frame = Frame {
+            full: false,
+            cols: 1,
+            rows: 1,
+            changed: vec![],
+            cursor: cursor(),
+            colors: Colors { fg: 0, bg: 0 },
+            modes: Modes {
+                app_cursor_keys: false,
+                bracketed_paste: false,
+                alt_screen: false,
+                mouse_tracking: false,
+            },
+            title: None,
+            scrollback_rows: 0,
+            viewport_top: 0,
+        };
+        let value = to_value(&frame).unwrap();
+        assert!(value.get("title").is_none(), "title omitted when None");
+        // The multi-word Frame keys survive even on a minimal frame.
+        assert!(value.get("scrollbackRows").is_some());
+        assert!(value.get("viewportTop").is_some());
+    }
+}
