@@ -53,6 +53,44 @@ both at once in one slot. Full docs + Linux gotchas: [e2e/README.md](e2e/README.
 > CLI parity is **not** a goal), then we hard-cut over (see
 > [docs/MIGRATION.md](docs/MIGRATION.md), item 8).
 
+## Worktree slots — you are probably working in one
+
+This repo is checked out as **slots**: `~/code/p/towles-tool-repos/` holds a
+bare hub (`towles-tool-rs.git`) plus worktrees named `towles-tool-rs-slot-N`,
+one per parallel line of work (a `.tt-slot` marker file sits at each slot's
+root). Manage slots with `ttr slot` — never raw `git worktree` or new clones:
+
+```sh
+ttr slot new -b feat/thing [--base <ref>]  # next free slot on a new branch
+ttr slot new                               # parked slot, detached at the default branch
+ttr slot ls [--json]                       # fleet: branch, dirty count, claimed ports
+ttr slot env <name>                        # (re)render .env — idempotent, keeps claims
+ttr slot rm <name> [--force]               # guarded removal + docker cleanup
+```
+
+The Agentboard rail shows the whole fleet automatically (worktrees of any
+tracked checkout are discovered per poll), and the `+` button on the repo
+header opens the same creation flow as a modal: goal → branch → base, then
+Claude starts on the goal in the new slot's terminal.
+
+Rules when working in a slot:
+
+- **Detached HEAD means parked.** Create a branch before committing —
+  commits reachable from no branch or remote block `ttr slot rm` by design.
+- **One branch per worktree.** `main` normally lives in slot-0; start new
+  branches with `-b` (and `--base` when not branching off the default).
+- **Ports come from the rendered `.env`** — `.env.example` is the template
+  (`${tt:port A-B}` pool claims, `${tt:slot-name}`, `${tt:var NAME}`), and a
+  manual `.env.local` pin overrides it; shell env overrides both. Never
+  hardcode a port anywhere.
+- **Never touch sibling slot directories** — other agents work there
+  concurrently. Mutable state (settings, tt.db, agentboard files) is already
+  slot-scoped via `tt_config::state_scope()`.
+- Slot logic lives in `crates/tt-slots` (template grammar, removal guards,
+  pure decisions) with shared orchestration in `tt_slots::ops`; the CLI and
+  the app's `slot_create` command are thin shells over it. Change behavior
+  there, not in the shells.
+
 ## Architecture
 
 Cargo workspace + npm workspace (`apps/client` only):
@@ -79,6 +117,11 @@ Cargo workspace + npm workspace (`apps/client` only):
     filtering, issue parsing, picker layout.
   - `tt-graph` — session-JSONL token accounting, treemap/bar-chart building, and
     JSON/CSV/HTML rendering.
+  - `tt-slots` — the worktree-slot convention (see the Worktree slots section):
+    the `${tt:...}` env-template renderer with port-pool claims, dotenv-lite
+    parse/merge, slot naming/layout, removal guards, and the shared
+    orchestration in `ops` that both `ttr slot` and the app's `slot_create`
+    call.
   - `tt-store` — the data-hub SQLite store (`~/.local/share/towles-tool/tt.db`):
     events, kanban todos (local, optionally issue-linked), issues, PR status,
     collector freshness. Collectors write events/issues/PRs; todos are
@@ -106,7 +149,8 @@ Cargo workspace + npm workspace (`apps/client` only):
   `gh pr|branch|branch-clean|assign` (+ `pr` alias), `install [-o]`,
   `claude-sessions [-s --days -f html|json|csv --open/--no-open]`,
   `agentboard repos|sessions` (+ `ag` alias),
-  `collect calendar|issues|prs|slack|all`, `mcp serve`.
+  `collect calendar|issues|prs|slack|all`, `mcp serve`,
+  `slot new|ls|rm|env` (worktree slots — see the Worktree slots section).
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
   `npm run dev` (root) picks a free dev-server port automatically
   (`scripts/dev-port.mjs`), scanning up from a per-slot base port derived from
