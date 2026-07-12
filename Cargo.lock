@@ -5452,6 +5452,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tt-agentboard",
+ "tt-collect",
  "tt-config",
  "tt-journal",
  "tt-store",

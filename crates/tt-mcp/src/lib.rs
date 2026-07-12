@@ -11,10 +11,11 @@
 //! the journal ([`tt_journal`]), and the agentboard engine ([`tt_agentboard`]).
 
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{Duration, Local, NaiveDate, TimeZone};
 use serde_json::{Value, json};
+use tt_collect::SlackDmConfig;
 use tt_config::JournalSettings;
 use tt_store::Store;
 
@@ -35,19 +36,45 @@ pub struct Dispatcher {
     /// disk. Tests inject a tempdir here so they never touch the real `$HOME`;
     /// the stdio/CLI path leaves it `None` and loads the shared settings file.
     journal_settings: Option<JournalSettings>,
+    /// When set, `collect_refresh` uses this instead of resolving the tracked
+    /// repos + Slack config from disk. Tests inject an empty set so the manual
+    /// sweep is a clean no-op that never shells out to `gh` or hits Slack; the
+    /// stdio/CLI path leaves it `None` and resolves from the shared config.
+    collect_config: Option<CollectConfig>,
+}
+
+/// The runtime inputs `collect_refresh` feeds to [`tt_collect::collect_manual`]:
+/// the tracked repo checkouts and the Slack DM config (`None` when disabled).
+struct CollectConfig {
+    repo_dirs: Vec<PathBuf>,
+    slack: Option<SlackDmConfig>,
 }
 
 impl Dispatcher {
-    /// Build a dispatcher over `store`; `journal_append` loads settings from the
-    /// shared config file on demand.
+    /// Build a dispatcher over `store`; `journal_append` and `collect_refresh`
+    /// resolve their config from the shared settings file on demand.
     pub fn new(store: Store) -> Dispatcher {
-        Dispatcher { store, journal_settings: None }
+        Dispatcher { store, journal_settings: None, collect_config: None }
     }
 
     /// Build a dispatcher with fixed [`JournalSettings`] (test hook — keeps
     /// `journal_append` off the real `$HOME`).
     pub fn with_journal_settings(store: Store, journal_settings: JournalSettings) -> Dispatcher {
-        Dispatcher { store, journal_settings: Some(journal_settings) }
+        Dispatcher { store, journal_settings: Some(journal_settings), collect_config: None }
+    }
+
+    /// Build a dispatcher with fixed `collect_refresh` inputs (test hook — keeps
+    /// the manual sweep off `gh`/Slack). An empty `repo_dirs` is a clean no-op.
+    pub fn with_collect_config(
+        store: Store,
+        repo_dirs: Vec<PathBuf>,
+        slack: Option<SlackDmConfig>,
+    ) -> Dispatcher {
+        Dispatcher {
+            store,
+            journal_settings: None,
+            collect_config: Some(CollectConfig { repo_dirs, slack }),
+        }
     }
 
     /// Handle one request line, reading the wall clock at the boundary. Returns
@@ -125,6 +152,7 @@ impl Dispatcher {
             "agent_sessions" => self.agent_sessions(args, now_ms),
             "journal_append" => self.journal_append(args, now_ms),
             "collect_status" => self.collect_status(now_ms),
+            "collect_refresh" => self.collect_refresh(now_ms),
             other => Err(format!("unknown tool: {other}")),
         }
     }
@@ -483,6 +511,51 @@ impl Dispatcher {
         }
         Ok(json!({ "runs": items }))
     }
+
+    /// Run the manual "refresh now" sweep so an agent can freshen the store
+    /// before answering "what needs me": issues, PRs, and — only when Slack is
+    /// configured — the watched DM. Calendar is deliberately excluded (its
+    /// per-run `claude` token cost keeps it on its scheduled cadence), matching
+    /// [`tt_collect::collect_manual`]. Returns one entry per collector with its
+    /// key, ok flag, item count, and message. The tracked repos + Slack config
+    /// resolve from the shared settings on demand (tests inject an empty set so
+    /// the sweep never shells out).
+    fn collect_refresh(&self, now_ms: i64) -> Result<Value, String> {
+        let (repo_dirs, slack) = match &self.collect_config {
+            Some(config) => (config.repo_dirs.clone(), config.slack.clone()),
+            None => {
+                let collectors = tt_config::load().map_err(|e| e.to_string())?.collectors;
+                (tt_collect::tracked_repo_dirs(), slack_config(&collectors.slack))
+            }
+        };
+        let summaries = tt_collect::collect_manual(&self.store, &repo_dirs, slack.as_ref(), now_ms);
+        let summaries: Vec<Value> = summaries
+            .iter()
+            .map(|summary| {
+                json!({
+                    "collector": summary.collector,
+                    "ok": summary.ok,
+                    "count": summary.count,
+                    "message": summary.message,
+                })
+            })
+            .collect();
+        Ok(json!({ "summaries": summaries }))
+    }
+}
+
+/// The Slack collector's runtime config, or `None` when disabled/unconfigured —
+/// mirrors the CLI's `collect` resolution so a manual refresh behaves the same
+/// on both surfaces.
+fn slack_config(slack: &tt_config::SlackDmCollector) -> Option<SlackDmConfig> {
+    if !slack.enabled || slack.token.trim().is_empty() {
+        return None;
+    }
+    Some(SlackDmConfig {
+        token: slack.token.clone(),
+        watch_user_id: slack.watch_user_id.clone(),
+        watch_name: slack.watch_name.clone(),
+    })
 }
 
 /// Run the stdio server: open the store (at `store_path` when given, else the
@@ -765,6 +838,11 @@ fn tool_definitions() -> Value {
             "description": "Collector run records with the age of each run in ms.",
             "inputSchema": no_args(),
         },
+        {
+            "name": "collect_refresh",
+            "description": "Refresh the store now by running the issues + PRs sweep (and the watched Slack DM when configured), deliberately never calendar. Returns one summary per collector (key, ok, count, message). Use before answering 'what needs me' so the data isn't stale.",
+            "inputSchema": no_args(),
+        },
     ])
 }
 
@@ -908,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_contains_all_eighteen_tools() {
+    fn tools_list_contains_all_nineteen_tools() {
         let mut dispatcher = dispatcher();
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }).to_string();
         let response: Value =
@@ -938,10 +1016,11 @@ mod tests {
             "agent_sessions",
             "journal_append",
             "collect_status",
+            "collect_refresh",
         ] {
             assert!(names.contains(&expected), "missing tool {expected} in {names:?}");
         }
-        assert_eq!(names.len(), 18);
+        assert_eq!(names.len(), 19);
     }
 
     #[test]
@@ -1495,6 +1574,23 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0]["collector"], "gcal");
         assert_eq!(runs[0]["ageMs"], 60_000);
+    }
+
+    #[test]
+    fn collect_refresh_over_no_repos_sweeps_issues_and_prs() {
+        // Empty repo dirs + no Slack config → the manual sweep is a clean no-op
+        // that never shells out: it still runs issues then prs (never calendar)
+        // and reports each as ok with a "no repos configured" note.
+        let mut dispatcher = Dispatcher::with_collect_config(seeded_store(), vec![], None);
+        let result = call_tool(&mut dispatcher, "collect_refresh", json!({}));
+        let summaries = result["summaries"].as_array().unwrap();
+        let keys: Vec<&str> = summaries.iter().map(|s| s["collector"].as_str().unwrap()).collect();
+        assert_eq!(keys, ["issues", "prs"], "manual sweep runs issues + PRs, never calendar");
+        for summary in summaries {
+            assert_eq!(summary["ok"], true, "no-repos sweep is a clean success: {summary}");
+            assert_eq!(summary["count"], 0);
+            assert_eq!(summary["message"], "no repos configured");
+        }
     }
 
     #[test]
