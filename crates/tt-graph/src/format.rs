@@ -134,6 +134,74 @@ pub fn format_csv(rows: &[SessionRow]) -> String {
     lines.join("\n")
 }
 
+/// Number of top rows shown by [`format_markdown`] before the remainder is
+/// collapsed into a trailing "…and N more" line.
+const MARKDOWN_TOP_N: usize = 20;
+
+/// Group an integer with comma thousands separators (`1500` → `1,500`), so token
+/// counts stay glanceable in the terminal table.
+fn group_thousands(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    if n < 0 { format!("-{out}") } else { out }
+}
+
+/// Format an estimated dollar cost as `$X.XX`, normalizing negative zero (which
+/// `{:.2}` would otherwise render as `-0.00`) to `0.00`.
+fn format_cost(cost: f64) -> String {
+    let cost = if cost == 0.0 { 0.0 } else { cost };
+    format!("${cost:.2}")
+}
+
+/// Render session rows as a glanceable GitHub-flavored Markdown table for the
+/// terminal: the top sessions by billable (total) tokens — project, model,
+/// tokens, estimated cost — capped at [`MARKDOWN_TOP_N`] and followed by a
+/// **Total** row summed over *all* rows (not just the shown top-N). Any remainder
+/// beyond the cap is noted in a trailing "…and N more session(s)" line.
+pub fn format_markdown(rows: &[SessionRow]) -> String {
+    let mut sorted: Vec<&SessionRow> = rows.iter().collect();
+    sorted.sort_by_key(|r| std::cmp::Reverse(r.total_tokens));
+
+    let total_tokens: i64 = rows.iter().map(|r| r.total_tokens).sum();
+    let total_cost: f64 = rows.iter().map(|r| r.cost).sum();
+
+    let mut lines = vec![
+        "| Project | Model | Tokens | Est. cost |".to_string(),
+        "| --- | --- | ---: | ---: |".to_string(),
+    ];
+
+    for r in sorted.iter().take(MARKDOWN_TOP_N) {
+        lines.push(format!(
+            "| {} | {} | {} | {} |",
+            r.project,
+            r.model,
+            group_thousands(r.total_tokens),
+            format_cost(r.cost),
+        ));
+    }
+
+    lines.push(format!(
+        "| **Total** | | **{}** | **{}** |",
+        group_thousands(total_tokens),
+        format_cost(total_cost),
+    ));
+
+    if sorted.len() > MARKDOWN_TOP_N {
+        let more = sorted.len() - MARKDOWN_TOP_N;
+        let plural = if more == 1 { "" } else { "s" };
+        lines.push(String::new());
+        lines.push(format!("…and {more} more session{plural}"));
+    }
+
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +333,84 @@ mod tests {
         assert_eq!(num_to_string(0.0), "0");
         assert_eq!(num_to_string(0.0525), "0.0525");
         assert_eq!(num_to_string(0.005), "0.005");
+    }
+
+    // ── formatMarkdown ──
+
+    fn tokened_row(project: &str, model: &str, total: i64, cost: f64) -> SessionRow {
+        SessionRow {
+            session_path: format!("/{project}.jsonl"),
+            project: project.to_string(),
+            model: model.to_string(),
+            input_tokens: total,
+            output_tokens: 0,
+            total_tokens: total,
+            cost,
+            date: "2025-06-15".to_string(),
+        }
+    }
+
+    #[test]
+    fn markdown_header_and_totals_for_empty() {
+        let md = format_markdown(&[]);
+        let lines: Vec<&str> = md.split('\n').collect();
+        assert_eq!(lines[0], "| Project | Model | Tokens | Est. cost |");
+        assert_eq!(lines[1], "| --- | --- | ---: | ---: |");
+        // Totals row present even with no sessions.
+        assert_eq!(lines[2], "| **Total** | | **0** | **$0.00** |");
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn markdown_formats_row_cost_and_grouped_tokens() {
+        let md = format_markdown(&[tokened_row("my-project", "Opus", 1_234_567, 12.5)]);
+        assert!(md.contains("| my-project | Opus | 1,234,567 | $12.50 |"), "{md}");
+    }
+
+    #[test]
+    fn markdown_sorts_by_tokens_and_sums_totals() {
+        let rows = [
+            tokened_row("small", "Haiku", 100, 0.01),
+            tokened_row("big", "Opus", 5_000, 1.0),
+            tokened_row("mid", "Sonnet", 1_000, 0.25),
+        ];
+        let md = format_markdown(&rows);
+        let lines: Vec<&str> = md.split('\n').collect();
+        // Data rows are lines[2..5]; highest tokens first.
+        assert!(lines[2].starts_with("| big |"), "{md}");
+        assert!(lines[3].starts_with("| mid |"), "{md}");
+        assert!(lines[4].starts_with("| small |"), "{md}");
+        // Totals sum over all rows: 6,100 tokens and $1.26.
+        assert_eq!(lines[5], "| **Total** | | **6,100** | **$1.26** |");
+    }
+
+    #[test]
+    fn markdown_caps_at_top_n_with_more_line() {
+        let rows: Vec<SessionRow> =
+            (0..25).map(|i| tokened_row(&format!("p{i}"), "Opus", (100 - i) as i64, 0.0)).collect();
+        let md = format_markdown(&rows);
+        // 2 header + 20 data + 1 totals + 1 blank + 1 "…and N more" = 25 lines.
+        let lines: Vec<&str> = md.split('\n').collect();
+        assert_eq!(lines.len(), 25);
+        assert_eq!(*lines.last().unwrap(), "…and 5 more sessions");
+        // Only the top-20 by tokens are shown; the smallest (p24) is excluded.
+        assert!(!md.contains("| p24 |"), "{md}");
+    }
+
+    #[test]
+    fn markdown_more_line_singular() {
+        let rows: Vec<SessionRow> =
+            (0..21).map(|i| tokened_row(&format!("p{i}"), "Opus", (100 - i) as i64, 0.0)).collect();
+        let md = format_markdown(&rows);
+        assert!(md.ends_with("…and 1 more session"), "{md}");
+    }
+
+    #[test]
+    fn markdown_groups_thousands_negative_safe() {
+        assert_eq!(group_thousands(0), "0");
+        assert_eq!(group_thousands(999), "999");
+        assert_eq!(group_thousands(1_000), "1,000");
+        assert_eq!(group_thousands(1_234_567), "1,234,567");
     }
 
     // ── estimateCost ──

@@ -52,7 +52,7 @@ pub use analyzer::{
     SessionAnalysis, aggregate_session_tools, analyze_session, extract_project_name,
     get_model_name, get_primary_model,
 };
-pub use format::{SessionRow, build_session_rows, format_csv, format_json};
+pub use format::{SessionRow, build_session_rows, format_csv, format_json, format_markdown};
 pub use labels::extract_session_label;
 pub use ledger::{
     LedgerTotals, SearchHit, SessionDetail, build_ledger_days, build_ledger_model_totals,
@@ -83,6 +83,7 @@ pub enum OutputFormat {
     Html,
     Json,
     Csv,
+    Markdown,
 }
 
 impl OutputFormat {
@@ -92,6 +93,7 @@ impl OutputFormat {
             "html" => Some(OutputFormat::Html),
             "json" => Some(OutputFormat::Json),
             "csv" => Some(OutputFormat::Csv),
+            "md" => Some(OutputFormat::Markdown),
             _ => None,
         }
     }

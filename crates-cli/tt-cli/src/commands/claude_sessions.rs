@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use tt_graph::{
     OutputFormat, build_all_sessions_treemap, build_bar_chart_data, build_session_rows,
     build_session_treemap, find_recent_sessions, find_session_path, format_csv, format_json,
-    generate_treemap_html, parse_transcript_file, session_result_for_path,
+    format_markdown, generate_treemap_html, parse_transcript_file, session_result_for_path,
 };
 
 /// Max sessions scanned for the all-sessions view (matches the TS `500`).
@@ -28,7 +28,7 @@ const SESSION_LIMIT: usize = 500;
 
 pub fn run(args: ClaudeSessionsArgs) -> i32 {
     let Some(format) = OutputFormat::parse(&args.format) else {
-        ui::error(&format!("Invalid format \"{}\". Use: html, json, csv", args.format));
+        ui::error(&format!("Invalid format \"{}\". Use: html, json, csv, md", args.format));
         return 1;
     };
 
@@ -43,7 +43,7 @@ pub fn run(args: ClaudeSessionsArgs) -> i32 {
     let days = args.days as f64;
 
     match format {
-        OutputFormat::Json | OutputFormat::Csv => {
+        OutputFormat::Json | OutputFormat::Csv | OutputFormat::Markdown => {
             run_rows(&projects_dir, args.session.as_deref(), days, now_ms, format)
         }
         OutputFormat::Html => run_html(&projects_dir, &args, days, now_ms, &now),
@@ -85,7 +85,10 @@ fn run_rows(
         },
     };
 
-    if sessions.is_empty() {
+    // Markdown is a glanceable summary: with no sessions it still prints the
+    // table header and a zeroed totals row (exit 0), rather than erroring like
+    // the machine-readable JSON/CSV formats do.
+    if sessions.is_empty() && format != OutputFormat::Markdown {
         ui::error("No sessions found");
         return 1;
     }
@@ -101,6 +104,7 @@ fn run_rows(
     let output = match format {
         OutputFormat::Json => format_json(&rows),
         OutputFormat::Csv => format_csv(&rows),
+        OutputFormat::Markdown => format_markdown(&rows),
         OutputFormat::Html => unreachable!(),
     };
     println!("{output}");

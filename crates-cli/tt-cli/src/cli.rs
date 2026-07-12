@@ -214,7 +214,7 @@ pub struct ClaudeSessionsArgs {
     #[arg(long, default_value_t = 7)]
     pub days: i64,
 
-    /// Output format: html, json, or csv
+    /// Output format: html, json, csv, or md
     #[arg(long, short = 'f', default_value = "html")]
     pub format: String,
 
