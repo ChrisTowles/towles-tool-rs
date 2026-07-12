@@ -81,33 +81,52 @@ export function prNeedsYou(pr: PrItem): boolean {
   return pr.checks === "failing" || pr.reviewState === "review_requested";
 }
 
-export function PrRow({ pr, now }: { pr: PrItem; now: number }) {
+/**
+ * One pull-request row. The title/meta area is the click target (opens the PR in
+ * the browser); `actions`, when supplied, renders a trailing control (e.g.
+ * Cockpit's per-PR dropdown menu) that lives *outside* the anchor so nested
+ * interactive elements stay valid. Without it, a hover-revealed external-link
+ * glyph stands in.
+ */
+export function PrRow({
+  pr,
+  now,
+  actions,
+}: {
+  pr: PrItem;
+  now: number;
+  actions?: React.ReactNode;
+}) {
   const reviewRequested = pr.reviewState === "review_requested";
   return (
-    <a
-      href={pr.url}
-      target="_blank"
-      rel="noreferrer"
-      onClick={(e) => {
-        e.preventDefault();
-        void openExternalUrl(pr.url);
-      }}
-      className="group flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/40"
-    >
-      <div className="min-w-0 flex-1">
-        <div className="truncate">{pr.title}</div>
-        <div className="truncate font-mono text-xs text-muted-foreground">
-          {pr.repo} #{pr.number} · {fmtAge(pr.updatedTs, now)}
+    <div className="group flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-accent/40">
+      <a
+        href={pr.url}
+        target="_blank"
+        rel="noreferrer"
+        onClick={(e) => {
+          e.preventDefault();
+          void openExternalUrl(pr.url);
+        }}
+        className="flex min-w-0 flex-1 items-center gap-3"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="truncate">{pr.title}</div>
+          <div className="truncate font-mono text-xs text-muted-foreground">
+            {pr.repo} #{pr.number} · {fmtAge(pr.updatedTs, now)}
+          </div>
         </div>
-      </div>
+      </a>
       {reviewRequested && (
         <Badge className="shrink-0 bg-blue-500/15 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400">
           review you
         </Badge>
       )}
       <ChecksBadge checks={pr.checks} />
-      <ExternalLink className="size-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100" />
-    </a>
+      {actions ?? (
+        <ExternalLink className="size-3.5 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100" />
+      )}
+    </div>
   );
 }
 
