@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { useAgentboardState } from "@/lib/agentboard";
 import { buildAttentionFeed, type AttentionItem, type AttentionKind } from "@/lib/attention-feed";
 import { fmtAge, useStoreSnapshot } from "@/lib/data";
+import { pickTopTask } from "@/lib/day-top-task";
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
 import { useWorkspace } from "@/lib/workspace";
@@ -33,9 +34,7 @@ export function DayBar() {
   const now = useNow();
   const [feedOpen, setFeedOpen] = useState(false);
 
-  const topTask = snapshot.tasks
-    .filter((t) => t.status !== "done")
-    .sort((a, b) => a.createdAt - b.createdAt)[0];
+  const topTask = pickTopTask(snapshot.tasks);
 
   // The attention feed is the single source for both the count and the popover
   // rows, so the badge number always equals the list length.
