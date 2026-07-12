@@ -28,13 +28,22 @@ pub struct Ab {
     pub scan: Arc<Notify>,
     /// Keeps the fs watcher alive.
     pub _notifier: Mutex<Option<DirNotifier>>,
+    /// First-entered "needs you" timestamps, carried across recomputes so a
+    /// session's waiting-age is stable (see `tt_agentboard::bridge::NeedsSince`).
+    /// Every payload the app stamps threads through this.
+    pub needs_since: Mutex<tt_agentboard::bridge::NeedsSince>,
 }
 
 /// Stamp `SessionData.live`/`shellKind` from the app's PTY registry. The
 /// engine assembles them false/None (the Tauri-free crate can't see PTYs);
 /// every payload leaving the app — command return or event — passes through
 /// here first.
-pub fn stamp_pty_state(payload: &mut StatePayload, terms: &crate::terminal::TermState) {
+pub fn stamp_pty_state(
+    payload: &mut StatePayload,
+    terms: &crate::terminal::TermState,
+    since: &mut tt_agentboard::bridge::NeedsSince,
+    now: i64,
+) {
     let live = terms.live_ids();
     let shell_kinds = terms.shell_kinds();
     for repo in &mut payload.repos {
@@ -46,8 +55,9 @@ pub fn stamp_pty_state(payload: &mut StatePayload, terms: &crate::terminal::Term
         }
     }
     // Now that `live` is truthful, recompute every folder/repo `needs` count
-    // — the engine assembled them as 0 placeholders pre-stamp.
-    tt_agentboard::bridge::recompute_needs(payload);
+    // — the engine assembled them as 0 placeholders pre-stamp — and stamp each
+    // session's `needs_since_ms` (first-entered time, held across recomputes).
+    tt_agentboard::bridge::recompute_needs(payload, since, now);
 }
 
 /// The stamped payload, recomputed now. Shared by `ab_get_state` and emitters.
@@ -64,7 +74,12 @@ pub fn stamped_payload(app: &AppHandle) -> StatePayload {
         let mut engine = ab.engine.lock().unwrap();
         engine.compute_payload_with(&snapshot, now_ms())
     };
-    stamp_pty_state(&mut payload, &app.state::<crate::terminal::TermState>());
+    stamp_pty_state(
+        &mut payload,
+        &app.state::<crate::terminal::TermState>(),
+        &mut ab.needs_since.lock().unwrap(),
+        now_ms(),
+    );
     payload
 }
 
@@ -128,7 +143,12 @@ pub fn ab_mark_seen(state: State<Ab>, app: AppHandle, name: String) {
         engine.mark_seen_patch(&name)
     };
     if let Some(mut payload) = patched {
-        stamp_pty_state(&mut payload, &app.state::<crate::terminal::TermState>());
+        stamp_pty_state(
+            &mut payload,
+            &app.state::<crate::terminal::TermState>(),
+            &mut state.needs_since.lock().unwrap(),
+            now_ms(),
+        );
         let _ = app.emit(STATE_EVENT, payload);
     }
 }

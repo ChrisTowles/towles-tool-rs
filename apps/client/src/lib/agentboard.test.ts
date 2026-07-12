@@ -8,9 +8,11 @@ import {
   diffPaneId,
   dropEmptyWindows,
   dropPane,
+  fmtWaitingAge,
   isDiffPane,
   isCacheExpiring,
   isFolderQuiet,
+  needingSessionsOldestFirst,
   normalizeWins,
   paneRects,
   pathScope,
@@ -570,6 +572,50 @@ describe("cycleNeedsYou", () => {
     // From "a2" (idle, sits between a1 and b1) — next should be b1, prev should be a1.
     expect(cycleNeedsYou(repos, "a2", "next")?.id).toBe("b1");
     expect(cycleNeedsYou(repos, "a2", "prev")?.id).toBe("a1");
+  });
+});
+
+describe("fmtWaitingAge", () => {
+  const NOW = 10_000_000;
+
+  it("returns null when there's no stamp or it's in the future", () => {
+    expect(fmtWaitingAge(null, NOW)).toBeNull();
+    expect(fmtWaitingAge(undefined, NOW)).toBeNull();
+    expect(fmtWaitingAge(NOW + 5_000, NOW)).toBeNull();
+  });
+
+  it("renders sub-minute, minutes, hours, and days", () => {
+    expect(fmtWaitingAge(NOW - 30_000, NOW)).toBe("waiting <1m");
+    expect(fmtWaitingAge(NOW - 12 * 60_000, NOW)).toBe("waiting 12m");
+    expect(fmtWaitingAge(NOW - 3 * 60 * 60_000, NOW)).toBe("waiting 3h");
+    expect(fmtWaitingAge(NOW - 2 * 24 * 60 * 60_000, NOW)).toBe("waiting 2d");
+  });
+});
+
+describe("needingSessionsOldestFirst", () => {
+  it("orders needing sessions oldest-first, stamp-less last, stable on ties", () => {
+    const repos = [
+      repo("a", [
+        folder({
+          dir: "a/f1",
+          sessions: [
+            session({ id: "fresh", live: true, agentState: agent("waiting"), needsSinceMs: 500 }),
+            session({ id: "nostamp", live: true, agentState: agent("error") }),
+          ],
+        }),
+      ]),
+      repo("b", [
+        folder({
+          dir: "b/f1",
+          sessions: [
+            session({ id: "old", live: true, agentState: agent("waiting"), needsSinceMs: 100 }),
+            // Not needing (busy) — excluded entirely.
+            session({ id: "busy", live: true, agentState: agent("busy"), needsSinceMs: 50 }),
+          ],
+        }),
+      ]),
+    ];
+    expect(needingSessionsOldestFirst(repos).map((s) => s.id)).toEqual(["old", "fresh", "nostamp"]);
   });
 });
 
