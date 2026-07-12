@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import {
   fmtDay,
   storeAddTask,
+  storeClearDone,
   storeDeleteTask,
   storePromoteTaskToIssue,
   storeSetTaskPosition,
@@ -207,6 +208,10 @@ export function BoardScreen() {
     void storeDeleteTask(id);
   }
 
+  function clearDone() {
+    void storeClearDone();
+  }
+
   function addTask() {
     const text = draft.trim();
     if (!text) return;
@@ -276,6 +281,17 @@ export function BoardScreen() {
                   {TASK_STATUS_LABEL[status]}
                 </span>
                 <span className="flex items-center gap-1">
+                  {status === "done" && columns.done.length > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-5 px-1.5 text-[10px] uppercase tracking-wide text-muted-foreground"
+                      title="Remove done todos completed over 7 days ago"
+                      onClick={clearDone}
+                    >
+                      Clear done
+                    </Button>
+                  )}
                   {overdue[status] > 0 && (
                     <span
                       title={`${overdue[status]} overdue`}
