@@ -7,6 +7,7 @@ import { DmBanner } from "@/components/dm-banner";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { QuickLog } from "@/components/quick-log";
 import { StatusBar } from "@/components/status-bar";
+import { TabBar } from "@/components/tab-bar";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -24,18 +25,25 @@ import { SCREEN_COMPONENTS } from "@/screens";
 /** Global (always-active) bindings + the `?` help overlay. Screen-scoped
  * bindings live with their screens (e.g. Agentboard), gated on their tab. */
 function Shortcuts() {
-  const { setPaletteOpen, toggleSidebar, paletteOpen, activeTab } = useWorkspace();
+  const { setPaletteOpen, toggleSidebar, paletteOpen, activeTab, visited, openTab, closeTab } =
+    useWorkspace();
 
   useShortcuts(
-    useMemo(
-      () => ({
+    useMemo(() => {
+      const handlers: Partial<Record<string, () => void>> = {
         palette: () => setPaletteOpen(!paletteOpen),
         settings: () => void openSettings(),
         sidebar: toggleSidebar,
         quicklog: () => window.dispatchEvent(new Event("quicklog:open")),
-      }),
-      [setPaletteOpen, toggleSidebar, paletteOpen],
-    ),
+        "close-tab": () => closeTab(activeTab),
+      };
+      // Register only the tab-jump bindings that map to an open tab, so an
+      // unused digit falls through instead of being swallowed as a no-op.
+      visited.slice(0, 9).forEach((id, i) => {
+        handlers[`tab-${i + 1}`] = () => openTab(id);
+      });
+      return handlers;
+    }, [setPaletteOpen, toggleSidebar, paletteOpen, activeTab, visited, openTab, closeTab]),
   );
 
   const activeScopes: ShortcutScope[] =
@@ -72,29 +80,32 @@ function Workspace() {
             </>
           )}
           <ResizablePanel key="main">
-            <div className="h-full">
-              {visited.map((id) => {
-                const Screen = SCREEN_COMPONENTS[id];
-                const hidden = id !== activeTab;
-                // Keep visited screens mounted so their local state survives switching.
-                // Full-bleed screens (e.g. terminals) skip the centered, scrolling
-                // content wrapper and own the whole content area.
-                return SCREENS[id].fullBleed ? (
-                  <div key={id} hidden={hidden} className="h-full">
-                    <ErrorBoundary label={SCREENS[id].title}>
-                      <Screen />
-                    </ErrorBoundary>
-                  </div>
-                ) : (
-                  <ScrollArea key={id} hidden={hidden} className="h-full">
-                    <div className="mx-auto max-w-3xl p-6">
+            <div className="flex h-full flex-col">
+              <TabBar />
+              <div className="min-h-0 flex-1">
+                {visited.map((id) => {
+                  const Screen = SCREEN_COMPONENTS[id];
+                  const hidden = id !== activeTab;
+                  // Keep visited screens mounted so their local state survives switching.
+                  // Full-bleed screens (e.g. terminals) skip the centered, scrolling
+                  // content wrapper and own the whole content area.
+                  return SCREENS[id].fullBleed ? (
+                    <div key={id} hidden={hidden} className="h-full">
                       <ErrorBoundary label={SCREENS[id].title}>
                         <Screen />
                       </ErrorBoundary>
                     </div>
-                  </ScrollArea>
-                );
-              })}
+                  ) : (
+                    <ScrollArea key={id} hidden={hidden} className="h-full">
+                      <div className="mx-auto max-w-3xl p-6">
+                        <ErrorBoundary label={SCREENS[id].title}>
+                          <Screen />
+                        </ErrorBoundary>
+                      </div>
+                    </ScrollArea>
+                  );
+                })}
+              </div>
             </div>
           </ResizablePanel>
         </ResizablePanelGroup>
