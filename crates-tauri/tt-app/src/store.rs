@@ -113,6 +113,37 @@ pub fn store_set_task_status(
     Ok(())
 }
 
+/// Edit a todo's text, notes, and due date (a full replace of those fields —
+/// `null` clears notes/due), then re-emit the snapshot.
+#[tauri::command]
+pub fn store_update_task(
+    app: AppHandle,
+    state: State<StoreState>,
+    id: i64,
+    text: String,
+    notes: Option<String>,
+    due_ts: Option<i64>,
+) -> Result<(), String> {
+    with_store(&state, |store| {
+        store
+            .update_task(id, &text, notes.as_deref(), due_ts)
+            .map(|_| ())
+            .map_err(|e| format!("update_task failed: {e}"))
+    })?;
+    emit_snapshot(&app, &state);
+    Ok(())
+}
+
+/// Delete a todo permanently, then re-emit the snapshot.
+#[tauri::command]
+pub fn store_delete_task(app: AppHandle, state: State<StoreState>, id: i64) -> Result<(), String> {
+    with_store(&state, |store| {
+        store.delete_task(id).map_err(|e| format!("delete_task failed: {e}"))
+    })?;
+    emit_snapshot(&app, &state);
+    Ok(())
+}
+
 /// Mark the watched DM's message at `ts` handled (banner dismissal), then re-emit.
 #[tauri::command]
 pub fn store_dm_dismiss(
@@ -261,6 +292,21 @@ mod tests {
         let snap = snapshot_of(&state).unwrap();
         assert_eq!(snap.tasks.len(), 1);
         assert_eq!(snap.tasks[0].text, "buy milk");
+    }
+
+    #[test]
+    fn snapshot_reflects_task_edit_and_delete() {
+        let store = Store::open_in_memory().unwrap();
+        let a = store.add_task("draft", None, None, None, 1).unwrap();
+        let b = store.add_task("scrap", None, None, None, 2).unwrap();
+        store.update_task(a.id, "final", Some("done"), Some(700)).unwrap();
+        store.delete_task(b.id).unwrap();
+        let state = StoreState::from_option(Some(store));
+        let snap = snapshot_of(&state).unwrap();
+        assert_eq!(snap.tasks.len(), 1);
+        assert_eq!(snap.tasks[0].text, "final");
+        assert_eq!(snap.tasks[0].notes.as_deref(), Some("done"));
+        assert_eq!(snap.tasks[0].due_ts, Some(700));
     }
 
     #[test]
