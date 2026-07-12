@@ -42,6 +42,7 @@ pub fn run(command: JournalCommands, config_dir: Option<&Path>) -> i32 {
         JournalCommands::Meeting { title, no_open } => {
             note_like(config_dir, JournalType::Meeting, title, no_open)
         }
+        JournalCommands::Jot { text } => jot(config_dir, text),
         JournalCommands::List { r#type, limit, sort } => list(config_dir, r#type, limit, sort),
         JournalCommands::Search { query, r#type, range } => {
             search(config_dir, query, r#type, range)
@@ -85,6 +86,64 @@ fn daily_notes(config_dir: Option<&Path>, no_open: bool) -> i32 {
 
     open_in_editor(&settings.preferred_editor, &journal.base_folder, &info.full_path, no_open);
     0
+}
+
+/// `ttr journal jot "<text>"` — append a timestamped bullet to today's daily note.
+///
+/// Reads the bullet text from the argument, or from stdin when the argument is omitted
+/// or is `-` (so `echo ... | ttr journal jot` and `ttr journal jot -` both work). Never
+/// spawns an editor. The clock is read here (the CLI boundary) and the resulting
+/// `HH:MM`/date is injected into the Tauri-free library fn.
+fn jot(config_dir: Option<&Path>, text: Option<String>) -> i32 {
+    let settings = match load_settings(config_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            ui::error(&e);
+            return 1;
+        }
+    };
+
+    let text = match resolve_jot_text(text) {
+        Ok(t) => t,
+        Err(e) => {
+            ui::error(&e);
+            return 1;
+        }
+    };
+
+    let now = Local::now();
+    let date = now.date_naive();
+    let time_hhmm = now.format("%H:%M").to_string();
+
+    match entries::append_to_daily(&settings.journal_settings, date, &time_hhmm, &text) {
+        Ok(path) => {
+            ui::info(&format!("Jotted to {}", path.display()));
+            0
+        }
+        Err(e) => {
+            ui::error(&format!("Error jotting to daily note: {e}"));
+            1
+        }
+    }
+}
+
+/// Resolve the bullet text: use the argument, else read from stdin. `-` also means stdin.
+/// Empty/whitespace-only input is rejected so we never write a blank bullet.
+fn resolve_jot_text(text: Option<String>) -> Result<String, String> {
+    let raw = match text {
+        Some(t) if t != "-" => t,
+        _ => {
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                .map_err(|e| format!("Could not read jot text from stdin: {e}"))?;
+            buf
+        }
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Nothing to jot: provide text as an argument or on stdin.".to_string());
+    }
+    Ok(trimmed.to_string())
 }
 
 fn note_like(

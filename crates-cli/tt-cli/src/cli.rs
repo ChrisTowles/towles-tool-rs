@@ -317,6 +317,12 @@ pub enum JournalCommands {
         no_open: bool,
     },
 
+    /// Append a timestamped bullet to today's daily note without opening an editor
+    Jot {
+        /// Text to capture. Use `-` (or omit) to read the bullet from stdin.
+        text: Option<String>,
+    },
+
     /// List recent journal entries
     List {
         /// Filter by entry type: daily-notes, meeting, note
