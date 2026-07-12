@@ -155,6 +155,14 @@ pub struct AgentboardSettings {
     /// file stays clean for the TS CLI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copy_on_select: Option<bool>,
+
+    /// Fire a desktop notification when a collector silently stops succeeding
+    /// (its last healthy run ages out, or it fails repeatedly — expired `gh`
+    /// auth, a revoked Slack token). `None` = the built-in default (on). Only
+    /// written once the user changes it, so the shared settings file stays clean
+    /// for the TS CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify_stale_collector: Option<bool>,
 }
 
 /// Built-in default for [`AgentboardSettings::compact_recommend_percent`].
@@ -171,6 +179,9 @@ pub const DEFAULT_NOTIFY_REVIEW_REQUESTED: bool = true;
 
 /// Built-in default for [`AgentboardSettings::copy_on_select`]: on.
 pub const DEFAULT_COPY_ON_SELECT: bool = true;
+
+/// Built-in default for [`AgentboardSettings::notify_stale_collector`]: on.
+pub const DEFAULT_NOTIFY_STALE_COLLECTOR: bool = true;
 
 /// Data-hub collector settings (the Rust CLI/app's tt.db collectors; the TS CLI
 /// ignores this block). Each collector is configured independently — enable
