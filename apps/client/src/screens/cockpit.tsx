@@ -24,6 +24,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
+  COUNTDOWN_SECONDS_THRESHOLD,
   currentOrNextEvent,
   eventIsLive,
   fmtClock,
@@ -32,7 +33,7 @@ import {
   useStoreSnapshot,
 } from "@/lib/data";
 import { useAgentboardState } from "@/lib/agentboard";
-import { useNow } from "@/lib/now";
+import { useNow, useNowInterval } from "@/lib/now";
 import { invokeOrThrow } from "@/lib/tauri";
 import { openExternalUrl } from "@/lib/open-url";
 import { Empty, IssueRow, Panel, PrRow, prNeedsYou, prRank } from "@/components/store-bits";
@@ -73,7 +74,11 @@ export function CockpitScreen() {
 
   const nextEvent = currentOrNextEvent(snapshot.events, now);
   const meetingLive = nextEvent ? eventIsLive(nextEvent, now) : false;
+  const msUntilStart = nextEvent && !meetingLive ? nextEvent.startTs - now : Infinity;
   const soon = nextEvent ? !meetingLive && nextEvent.startTs - now < 15 * 60_000 : false;
+  // In the final approach the countdown shows m:ss — sharpen the shared clock to
+  // 1s so it actually ticks second-by-second, then drop back once we pass it.
+  useNowInterval(msUntilStart > 0 && msUntilStart < COUNTDOWN_SECONDS_THRESHOLD ? 1000 : undefined);
   // Highlight amber while a meeting is live or imminent.
   const highlight = meetingLive || soon;
   const later = snapshot.events
