@@ -66,6 +66,12 @@ pub struct Engine {
     title_changed: Rc<StdCell<bool>>,
     /// Force the next render to be a full frame (selection changed).
     force_full: bool,
+    /// Cursor state as of the last emitted frame. libghostty-vt's dirty
+    /// tracking only covers cell/row content, not the cursor — a pure
+    /// cursor move (arrow keys with no cell writes) leaves `dirty()` clean,
+    /// so without this a frame would never go out and the cursor would
+    /// appear stuck until the next keystroke actually touched a cell.
+    last_cursor: Option<Cursor>,
 }
 
 impl Engine {
@@ -95,6 +101,7 @@ impl Engine {
             pty_out,
             title_changed,
             force_full: false,
+            last_cursor: None,
         })
     }
 
@@ -266,9 +273,26 @@ impl Engine {
         let snap = self.render.update(&self.term)?;
         let dirty = snap.dirty()?;
         let force_full = std::mem::take(&mut self.force_full);
-        if dirty == Dirty::Clean && title.is_none() && !force_full {
+
+        let cursor_pos = snap.cursor_viewport()?;
+        let cursor = Cursor {
+            x: cursor_pos.map_or(0, |c| c.x),
+            y: cursor_pos.map_or(0, |c| c.y),
+            visible: snap.cursor_visible()? && cursor_pos.is_some(),
+            shape: match snap.cursor_visual_style()? {
+                CursorVisualStyle::Bar => CursorShape::Bar,
+                CursorVisualStyle::Underline => CursorShape::Underline,
+                CursorVisualStyle::BlockHollow => CursorShape::Hollow,
+                _ => CursorShape::Block,
+            },
+            blinking: snap.cursor_blinking()?,
+        };
+        let cursor_moved = self.last_cursor != Some(cursor);
+
+        if dirty == Dirty::Clean && title.is_none() && !force_full && !cursor_moved {
             return Ok(None);
         }
+        self.last_cursor = Some(cursor);
         let full = dirty == Dirty::Full || force_full;
 
         let mut changed = Vec::new();
@@ -360,19 +384,6 @@ impl Engine {
         }
         snap.set_dirty(Dirty::Clean)?;
 
-        let cursor_pos = snap.cursor_viewport()?;
-        let cursor = Cursor {
-            x: cursor_pos.map_or(0, |c| c.x),
-            y: cursor_pos.map_or(0, |c| c.y),
-            visible: snap.cursor_visible()? && cursor_pos.is_some(),
-            shape: match snap.cursor_visual_style()? {
-                CursorVisualStyle::Bar => CursorShape::Bar,
-                CursorVisualStyle::Underline => CursorShape::Underline,
-                CursorVisualStyle::BlockHollow => CursorShape::Hollow,
-                _ => CursorShape::Block,
-            },
-            blinking: snap.cursor_blinking()?,
-        };
         let palette = snap.colors()?;
 
         Ok(Some(Frame {
