@@ -3,6 +3,7 @@ import {
   decodeTaskDrag,
   encodeTaskDrag,
   isTaskDrag,
+  reorderedPosition,
   TASK_DRAG_TYPE,
   taskDropAction,
 } from "./kanban-dnd";
@@ -59,5 +60,25 @@ describe("taskDropAction", () => {
   it("is a no-op for a foreign/garbage payload", () => {
     expect(taskDropAction("", "doing")).toBeNull();
     expect(taskDropAction("https://example.com", "doing")).toBeNull();
+  });
+});
+
+describe("reorderedPosition", () => {
+  it("lands at 0 in an empty column", () => {
+    expect(reorderedPosition(null, null)).toBe(0);
+  });
+
+  it("goes just before the first card at the top", () => {
+    expect(reorderedPosition(null, 0)).toBe(-1);
+  });
+
+  it("goes just after the last card at the bottom", () => {
+    expect(reorderedPosition(4, null)).toBe(5);
+  });
+
+  it("splits the gap between two neighbors and stays between them", () => {
+    const mid = reorderedPosition(1, 2);
+    expect(mid).toBeGreaterThan(1);
+    expect(mid).toBeLessThan(2);
   });
 });

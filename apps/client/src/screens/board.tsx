@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
 import { CalendarPlus, ExternalLink, GripVertical, MoreHorizontal, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,7 @@ import {
   storeAddTask,
   storeDeleteTask,
   storePromoteTaskToIssue,
+  storeSetTaskPosition,
   storeSetTaskStatus,
   storeUpdateTask,
   TASK_STATUS_LABEL,
@@ -39,11 +40,23 @@ import {
   type TaskItem,
   type TaskStatus,
 } from "@/lib/data";
-import { encodeTaskDrag, isTaskDrag, TASK_DRAG_TYPE, taskDropAction } from "@/lib/kanban-dnd";
+import {
+  decodeTaskDrag,
+  encodeTaskDrag,
+  isTaskDrag,
+  reorderedPosition,
+  TASK_DRAG_TYPE,
+} from "@/lib/kanban-dnd";
 import { openExternalUrl } from "@/lib/open-url";
 
 /** Optimistic edits (text/due) applied over a snapshot todo until it re-arrives. */
 type TaskEdit = { text?: string; dueTs?: number | undefined };
+
+/** Optimistic status + fractional position from a drag-reorder, until re-arrival. */
+type PosOverride = { status: TaskStatus; position: number };
+
+/** The slot a card would drop into: before `beforeId`, or at a column's end. */
+type DropSlot = { status: TaskStatus; beforeId: number | "end" };
 
 /** `YYYY-MM-DD` (local) for an `<input type="date">` value. */
 function toDateInputValue(ms: number): string {
@@ -74,12 +87,14 @@ export function BoardScreen() {
   const now = Date.now();
 
   const [statusOverrides, setStatusOverrides] = useState<Record<number, TaskStatus>>({});
+  const [posOverrides, setPosOverrides] = useState<Record<number, PosOverride>>({});
   const [editOverrides, setEditOverrides] = useState<Record<number, TaskEdit>>({});
   const [deletedIds, setDeletedIds] = useState<Set<number>>(() => new Set());
   const [addedTasks, setAddedTasks] = useState<TaskItem[]>([]);
   const [draft, setDraft] = useState("");
-  // Column currently hovered by a card drag (drop-target highlight).
-  const [dropTarget, setDropTarget] = useState<TaskStatus | null>(null);
+  // The insertion slot the current drag would land in: drives both the column
+  // highlight (`dropSlot.status`) and the drop line before `beforeId`.
+  const [dropSlot, setDropSlot] = useState<DropSlot | null>(null);
 
   // Repos we know about (from collected PRs/issues + already-linked todos) — the
   // promote-to-issue targets.
@@ -95,12 +110,18 @@ export function BoardScreen() {
     () =>
       [...addedTasks, ...snapshot.tasks]
         .filter((t) => !deletedIds.has(t.id))
-        .map((t) => ({
-          ...t,
-          ...editOverrides[t.id],
-          status: statusOverrides[t.id] ?? t.status,
-        })),
-    [snapshot.tasks, addedTasks, editOverrides, statusOverrides, deletedIds],
+        .map((t) => {
+          const pos = posOverrides[t.id];
+          return {
+            ...t,
+            ...editOverrides[t.id],
+            // A reorder override carries both the target column and a fractional
+            // position; it wins over a plain status move for the same card.
+            status: pos?.status ?? statusOverrides[t.id] ?? t.status,
+            position: pos ? pos.position : t.position,
+          };
+        }),
+    [snapshot.tasks, addedTasks, editOverrides, statusOverrides, posOverrides, deletedIds],
   );
 
   const columns = useMemo(() => {
@@ -120,7 +141,38 @@ export function BoardScreen() {
 
   function move(id: number, status: TaskStatus) {
     setStatusOverrides((prev) => ({ ...prev, [id]: status }));
+    // A plain column move appends; drop any stale reorder slot for this card.
+    setPosOverrides((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     void storeSetTaskStatus(id, status);
+  }
+
+  // Reorder `id` into `status` just before `beforeId` ("end" = append). Computes
+  // a fractional optimistic position from the neighbors so the card sorts into
+  // its new slot immediately, and sends the integer slot index to the backend
+  // (which renumbers the column). The backend orders by real positions, so the
+  // insertion index is taken from the currently-displayed column order.
+  function reorder(id: number, status: TaskStatus, beforeId: number | "end") {
+    if (beforeId === id) return;
+    const col = columns[status].filter((t) => t.id !== id);
+    const insertAt =
+      beforeId === "end" ? col.length : Math.max(0, col.findIndex((t) => t.id === beforeId));
+    const prev = col[insertAt - 1] ?? null;
+    const next = col[insertAt] ?? null;
+    const position = reorderedPosition(prev ? prev.position : null, next ? next.position : null);
+    setPosOverrides((p) => ({ ...p, [id]: { status, position } }));
+    // The reorder now owns this card's column; drop any plain status override.
+    setStatusOverrides((p) => {
+      if (!(id in p)) return p;
+      const nextOv = { ...p };
+      delete nextOv[id];
+      return nextOv;
+    });
+    void storeSetTaskPosition(id, status, insertAt);
   }
 
   function promote(id: number, repo: string) {
@@ -193,22 +245,24 @@ export function BoardScreen() {
                 if (!isTaskDrag(e.dataTransfer.types)) return;
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "move";
-                setDropTarget(status);
+                // Over the column's empty tail (cards handle their own hover and
+                // stop propagation), so the card would land at the end.
+                setDropSlot({ status, beforeId: "end" });
               }}
               onDragLeave={(e) => {
                 // Ignore moves between children of the same column.
                 if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-                setDropTarget((cur) => (cur === status ? null : cur));
+                setDropSlot((cur) => (cur?.status === status ? null : cur));
               }}
               onDrop={(e) => {
                 e.preventDefault();
-                setDropTarget(null);
-                const action = taskDropAction(e.dataTransfer.getData(TASK_DRAG_TYPE), status);
-                if (action) move(action.id, action.status);
+                setDropSlot(null);
+                const payload = decodeTaskDrag(e.dataTransfer.getData(TASK_DRAG_TYPE));
+                if (payload) reorder(payload.id, status, "end");
               }}
               className={cn(
                 "flex flex-col rounded-lg border bg-muted/30",
-                dropTarget === status &&
+                dropSlot?.status === status &&
                   "border-violet-500/60 bg-violet-500/5 dark:bg-violet-500/10",
               )}
             >
@@ -221,20 +275,28 @@ export function BoardScreen() {
                 </span>
               </div>
               <div className="flex flex-col gap-2 p-2 pt-0">
-                {columns[status].map((task) => (
-                  <Card
-                    key={task.id}
-                    task={task}
-                    now={now}
-                    repos={repos}
-                    onMove={move}
-                    onPromote={promote}
-                    onRename={rename}
-                    onSetDue={setDue}
-                    onDelete={remove}
-                    onDragEnd={() => setDropTarget(null)}
-                  />
+                {columns[status].map((task, i) => (
+                  <Fragment key={task.id}>
+                    <DropLine
+                      active={dropSlot?.status === status && dropSlot.beforeId === task.id}
+                    />
+                    <Card
+                      task={task}
+                      now={now}
+                      repos={repos}
+                      nextId={columns[status][i + 1]?.id ?? null}
+                      onMove={move}
+                      onReorderHover={setDropSlot}
+                      onReorder={reorder}
+                      onPromote={promote}
+                      onRename={rename}
+                      onSetDue={setDue}
+                      onDelete={remove}
+                      onDragEnd={() => setDropSlot(null)}
+                    />
+                  </Fragment>
                 ))}
+                <DropLine active={dropSlot?.status === status && dropSlot.beforeId === "end"} />
               </div>
             </div>
           ))}
@@ -244,11 +306,20 @@ export function BoardScreen() {
   );
 }
 
+/** The insertion indicator drawn between cards at the current drop slot. */
+function DropLine({ active }: { active: boolean }) {
+  if (!active) return null;
+  return <div aria-hidden className="h-0.5 rounded-full bg-violet-500" />;
+}
+
 function Card({
   task,
   now,
   repos,
+  nextId,
   onMove,
+  onReorderHover,
+  onReorder,
   onPromote,
   onRename,
   onSetDue,
@@ -258,7 +329,11 @@ function Card({
   task: TaskItem;
   now: number;
   repos: string[];
+  /** The card below this one in the column (for a bottom-half drop), or null. */
+  nextId: number | null;
   onMove: (id: number, status: TaskStatus) => void;
+  onReorderHover: (slot: DropSlot) => void;
+  onReorder: (id: number, status: TaskStatus, beforeId: number | "end") => void;
   onPromote: (id: number, repo: string) => void;
   onRename: (id: number, text: string) => void;
   onSetDue: (id: number, dueTs: number | undefined) => void;
@@ -282,6 +357,14 @@ function Card({
     onRename(task.id, editValue);
   }
 
+  // The insertion slot for a drag hovering this card: before it (pointer in the
+  // top half) or before the card below it (bottom half; "end" if it's last).
+  function slotBeforeId(e: React.DragEvent<HTMLDivElement>): number | "end" {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const inLowerHalf = e.clientY > rect.top + rect.height / 2;
+    return inLowerHalf ? (nextId ?? "end") : task.id;
+  }
+
   return (
     <div
       draggable={!editing}
@@ -292,6 +375,22 @@ function Card({
         );
         e.dataTransfer.effectAllowed = "move";
         setDragging(true);
+      }}
+      onDragOver={(e) => {
+        if (!isTaskDrag(e.dataTransfer.types)) return;
+        // Handle the drop here (position-aware); don't let the column's
+        // append-to-end handler also fire.
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = "move";
+        onReorderHover({ status: task.status, beforeId: slotBeforeId(e) });
+      }}
+      onDrop={(e) => {
+        if (!isTaskDrag(e.dataTransfer.types)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const payload = decodeTaskDrag(e.dataTransfer.getData(TASK_DRAG_TYPE));
+        if (payload) onReorder(payload.id, task.status, slotBeforeId(e));
       }}
       onDragEnd={() => {
         setDragging(false);

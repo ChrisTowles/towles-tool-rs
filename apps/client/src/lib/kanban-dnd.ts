@@ -71,3 +71,17 @@ export function taskDropAction(
   if (!payload || payload.status === target) return null;
   return { id: payload.id, status: target };
 }
+
+/**
+ * An optimistic `position` for a card dropped between two neighbors, so the
+ * Board's `position ASC` sort places it in the new slot before the backend
+ * round-trips. Fractional values are fine locally — the next `store://snapshot`
+ * replaces them with the store's renumbered integers. Pass `null` for a missing
+ * neighbor (dropping at the very top or bottom, or into an empty column).
+ */
+export function reorderedPosition(prevPos: number | null, nextPos: number | null): number {
+  if (prevPos === null && nextPos === null) return 0;
+  if (prevPos === null) return (nextPos as number) - 1;
+  if (nextPos === null) return prevPos + 1;
+  return (prevPos + nextPos) / 2;
+}
