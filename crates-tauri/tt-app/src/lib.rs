@@ -61,6 +61,7 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init());
 
     // WebdriverIO E2E plugins, only under `--features wdio` (see e2e/):
@@ -296,6 +297,7 @@ pub fn run() {
             terminal::term_search,
             terminal::term_scroll_to,
             terminal::term_clear,
+            terminal::term_focus,
             terminal::term_kill,
         ])
         .run(tauri::generate_context!())

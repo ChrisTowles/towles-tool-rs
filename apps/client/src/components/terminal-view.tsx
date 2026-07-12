@@ -650,10 +650,18 @@ export function TerminalView({
         anchor = null;
       };
       const onMouseLeave = () => setHoveredLink(null);
+      // Report focus so the backend can gate OSC 52 clipboard writes to the
+      // focused terminal — a background pane must not hijack the clipboard.
+      const setFocus = (focused: boolean) =>
+        void invoke("term_focus", { termId, focused }).catch(() => {});
+      const onFocus = () => setFocus(true);
+      const onBlur = () => setFocus(false);
 
       input.addEventListener("keydown", onKeyDown);
       input.addEventListener("paste", onPaste);
       input.addEventListener("compositionend", onComposed);
+      input.addEventListener("focus", onFocus);
+      input.addEventListener("blur", onBlur);
       host.addEventListener("wheel", onWheel, { passive: false });
       canvas.addEventListener("mousedown", onMouseDown);
       canvas.addEventListener("mousemove", onMouseMove);
@@ -663,11 +671,14 @@ export function TerminalView({
         input.removeEventListener("keydown", onKeyDown);
         input.removeEventListener("paste", onPaste);
         input.removeEventListener("compositionend", onComposed);
+        input.removeEventListener("focus", onFocus);
+        input.removeEventListener("blur", onBlur);
         host.removeEventListener("wheel", onWheel);
         canvas.removeEventListener("mousedown", onMouseDown);
         canvas.removeEventListener("mousemove", onMouseMove);
         canvas.removeEventListener("mouseleave", onMouseLeave);
         window.removeEventListener("mouseup", onMouseUp);
+        setFocus(false);
       });
       focusInput();
     })();

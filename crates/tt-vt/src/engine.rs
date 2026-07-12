@@ -15,6 +15,7 @@ use libghostty_vt::style::Underline;
 use libghostty_vt::terminal::{Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal};
 
 use crate::frame::{flags, Colors, Cursor, CursorShape, Frame, Modes};
+use crate::osc52::Osc52Scanner;
 use crate::search::{self, SearchMatch};
 
 /// A selection operation, in viewport cell coordinates.
@@ -64,6 +65,10 @@ pub struct Engine {
     /// filled synchronously during `feed` by the pty-write effect.
     pty_out: Rc<RefCell<Vec<u8>>>,
     title_changed: Rc<StdCell<bool>>,
+    /// Watches the byte feed for OSC 52 set-clipboard sequences (libghostty-vt
+    /// exposes no clipboard callback); decoded copies are drained by
+    /// [`Engine::take_clipboard`].
+    osc52: Osc52Scanner,
     /// Force the next render to be a full frame (selection changed).
     force_full: bool,
     /// Cursor state as of the last emitted frame. libghostty-vt's dirty
@@ -100,6 +105,7 @@ impl Engine {
             cells: CellIterator::new()?,
             pty_out,
             title_changed,
+            osc52: Osc52Scanner::new(),
             force_full: false,
             last_cursor: None,
         })
@@ -108,6 +114,14 @@ impl Engine {
     /// Feed raw PTY output into the terminal state machine.
     pub fn feed(&mut self, bytes: &[u8]) {
         self.term.vt_write(bytes);
+        self.osc52.feed(bytes);
+    }
+
+    /// Drain any OSC 52 set-clipboard writes recognized in the byte feed since
+    /// the last call, in order. The caller writes these to the system clipboard
+    /// (focus-gated); see [`crate::osc52`].
+    pub fn take_clipboard(&mut self) -> Vec<String> {
+        self.osc52.take()
     }
 
     /// Drain bytes the terminal produced in response to control sequences
