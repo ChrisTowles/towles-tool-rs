@@ -97,6 +97,7 @@ import {
   type SessionActions,
   type SessionData,
   type StartClaudeTarget,
+  type StatePayload,
   type WindowsPayload,
   windowColor,
 } from "@/lib/agentboard";
@@ -522,10 +523,22 @@ export function AgentboardScreen() {
   async function slotCreated(created: SlotCreated, goal: string) {
     toast(`created ${created.name}${created.branch ? ` on ${created.branch}` : ""}`);
     await abInvoke("ab_add_repo", { path: created.dir });
-    const rec = await abInvoke<SessionData>("ab_add_session", { dir: created.dir, name: null });
+    // A freshly tracked folder already gets a default not-started session —
+    // reuse it rather than adding a second one, which would open as a
+    // surprise split pane beside the empty default.
+    const fresh = await abInvoke<StatePayload>("ab_get_state", {});
+    const folder = fresh?.repos.flatMap((r) => r.folders).find((f) => f.dir === created.dir);
+    let rec = folder?.sessions[0] ?? null;
+    if (!rec) {
+      rec = await abInvoke<SessionData>("ab_add_session", { dir: created.dir, name: null });
+    }
     if (!rec) return;
     selectSession(created.dir, rec.id);
     if (goal) {
+      // Selecting mounts the TerminalView, which spawns the PTY; give zsh a
+      // beat to finish init or it can eat the queued claude command (the
+      // termWriteRetry window alone lost this race on slower creations).
+      await sleep(1500);
       await launchClaudeIn(
         { folderDir: created.dir, sessionId: rec.id, sessionName: rec.name, restart: false },
         goal,
