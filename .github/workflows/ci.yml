@@ -101,3 +101,75 @@ jobs:
         env:
           GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-src
         run: cargo test -p tt-vt
+
+  rust-app:
+    name: Rust tt-app (webkit2gtk + zig)
+    runs-on: ubuntu-latest
+    # tt-app is the Tauri shell: it needs webkit2gtk/GTK system libs (below) and,
+    # via its tt-vt dependency, zig + a ghostty checkout — so it can't ride the
+    # plain `rust` job. This job covers clippy for it; the wdio feature stays off
+    # (`--no-default-features`) so the E2E-only plugins aren't compiled in CI.
+    #
+    # Pinned ghostty commit that libghostty-vt-sys 0.2.0 builds against (see the
+    # GHOSTTY_COMMIT constant in that crate's build.rs). Keep this in sync when
+    # bumping libghostty-vt.
+    env:
+      GHOSTTY_COMMIT: fdbf9ff3a31d7531b691cb49c98fc465a1a503a0
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri v2 Linux prerequisites (see tauri.app/start/prerequisites). These
+      # provide the webkit2gtk/GTK/appindicator system libs the Tauri shell links
+      # against, which is why tt-app is excluded from the plain `rust` job.
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev
+
+      # Same repo-root rust-toolchain.toml pin as the `rust` job.
+      - name: Provision pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      # tt-app depends on tt-vt, whose build script shells out to `zig build`
+      # against a ghostty checkout — same provisioning as the `rust-vt` job.
+      - name: Provision Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      # Cache the ghostty checkout so we only clone on a commit bump. The clone
+      # mirrors what build.rs would do itself when GHOSTTY_SOURCE_DIR is unset.
+      - name: Cache ghostty source
+        id: ghostty-cache
+        uses: actions/cache@v4
+        with:
+          path: ghostty-src
+          key: ghostty-src-${{ env.GHOSTTY_COMMIT }}
+
+      - name: Clone ghostty source
+        if: steps.ghostty-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/ghostty-org/ghostty.git ghostty-src
+          git -C ghostty-src checkout "$GHOSTTY_COMMIT"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Keep this job's cargo/zig build artifacts separate from the other
+          # rust jobs' caches.
+          key: tt-app
+
+      - name: clippy (tt-app)
+        env:
+          GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-src
+        run: cargo clippy -p tt-app --no-default-features -- -D warnings
