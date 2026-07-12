@@ -20,8 +20,10 @@
 pub mod envfile;
 pub mod guards;
 pub mod layout;
+pub mod ops;
 pub mod template;
 
 pub use guards::{RmBlocked, check_removal, docker_resource_matches};
 pub use layout::{MARKER_FILE, marker_contents, next_slot_number, parse_slot, slot_dir_name};
+pub use ops::{CreateOpts, CreatedSlot, OpsError, SlotRoot, create_slot, discover_root};
 pub use template::{RenderOutcome, SlotContext, TemplateError, render};

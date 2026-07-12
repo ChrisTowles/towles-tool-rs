@@ -12,6 +12,7 @@ mod journal;
 mod resources;
 mod scheduler;
 mod settings;
+mod slots;
 mod store;
 mod terminal;
 
@@ -261,6 +262,8 @@ pub fn run() {
             agentboard::ab_clear_log,
             agentboard::ab_open_in_editor,
             agentboard::ab_get_diff,
+            slots::slot_base_branches,
+            slots::slot_create,
             store::store_snapshot,
             store::store_add_task,
             store::store_set_task_status,

@@ -25,6 +25,7 @@ tt-exec = { workspace = true }
 tt-git = { workspace = true }
 tt-graph = { workspace = true }
 tt-journal = { workspace = true }
+tt-slots = { workspace = true }
 tt-store = { workspace = true }
 tt-vt = { workspace = true }
 chrono = { workspace = true }

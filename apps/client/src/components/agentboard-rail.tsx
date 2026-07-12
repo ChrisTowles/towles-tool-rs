@@ -297,6 +297,12 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
   );
 }
 
+/** A repo follows the worktree-slot convention when any checkout dir is named
+ * `<repo>-slot-N` — those repos get the new-slot affordance. */
+function isSlotRepo(repo: RepoData): boolean {
+  return repo.folders.some((f) => /-slot-\d+$/.test(f.dir.split("/").pop() ?? ""));
+}
+
 export function RepoGroup({
   repo,
   now,
@@ -314,6 +320,7 @@ export function RepoGroup({
   onSelectFolder,
   onSelect,
   onNewSession,
+  onNewSlot,
   onRemoveRepo,
   onRenameCommit,
   onOpenDiff,
@@ -337,6 +344,8 @@ export function RepoGroup({
   onSelectFolder: (folderDir: string) => void;
   onSelect: (folderDir: string, sessionId: string) => void;
   onNewSession: (folderDir: string, launchClaude?: boolean) => void;
+  /** Open the new-slot modal for a slot-convention repo (worktree hub). */
+  onNewSlot: (repo: { name: string; dir: string }) => void;
   onRemoveRepo: (dirs: string[], label: string) => void;
   onRenameCommit: (sessionId: string, name: string) => void;
   /** Opens the folder's diff pane in its focused window. */
@@ -495,6 +504,15 @@ export function RepoGroup({
             {repo.needs > 0 && <NeedsBadge n={repo.needs} />}
           </span>
         </button>
+        {isSlotRepo(repo) && (
+          <IconBtn
+            title="New slot — goal, branch, base"
+            onClick={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir })}
+            className="hover:text-violet-500"
+          >
+            <Plus className="size-3.5" />
+          </IconBtn>
+        )}
         <RepoMenu
           onRemove={() =>
             onRemoveRepo(

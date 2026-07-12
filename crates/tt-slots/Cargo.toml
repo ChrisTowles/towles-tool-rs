@@ -6,3 +6,4 @@ publish = false
 
 [dependencies]
 thiserror = { workspace = true }
+tt-exec = { workspace = true }
