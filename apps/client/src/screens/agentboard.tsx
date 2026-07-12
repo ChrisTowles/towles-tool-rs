@@ -6,6 +6,7 @@ import {
   FolderGit2,
   FolderInput,
   FolderPlus,
+  FolderX,
   GitPullRequest,
   PanelLeftClose,
   Plus,
@@ -285,6 +286,12 @@ export function AgentboardScreen() {
       })
       .filter((r) => r.folders.length > 0);
   }, [repos, hideInactive, quietDirs, quietRevealed]);
+
+  // Ghost checkouts (dir gone from disk) drive the one-click cleanup button.
+  const missingRepoCount = useMemo(
+    () => repos.flatMap((r) => r.folders).filter((f) => f.dirMissing).length,
+    [repos],
+  );
 
   // Index every session by id → its folder / its data, for cwd + pane chrome.
   const folderOf = useMemo(() => {
@@ -654,6 +661,15 @@ export function AgentboardScreen() {
     toast(`Tracking ${path}`);
   }
 
+  // Sweep every "missing" ghost in one click. The Rust side re-probes the
+  // disk at call time, so a directory restored since the last poll survives;
+  // no sessions to kill — a missing dir has no live PTY.
+  async function cleanupMissing() {
+    const removed = await abInvoke<string[]>("ab_untrack_missing", {});
+    const n = removed?.length ?? 0;
+    toast(n > 0 ? `Untracked ${n} missing repo${n === 1 ? "" : "s"}.` : "Nothing to clean up.");
+  }
+
   // Actually remove: kill any live sessions first (killing a PTY is
   // client-mediated — see `closeSession`/`TerminalView`'s unmount effect),
   // then drop the checkout(s) from the watched list. Removes by `dir`, never
@@ -882,6 +898,17 @@ export function AgentboardScreen() {
                       >
                         <FolderInput className="size-3.5" />
                       </button>
+                      {missingRepoCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => void cleanupMissing()}
+                          aria-label={`Untrack ${missingRepoCount} missing repos`}
+                          className="rounded-md p-1 text-amber-500 hover:bg-accent/50 hover:text-amber-400"
+                          title={`Untrack ${missingRepoCount} repo${missingRepoCount === 1 ? "" : "s"} whose director${missingRepoCount === 1 ? "y is" : "ies are"} gone from disk`}
+                        >
+                          <FolderX className="size-3.5" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => setHideInactive((v) => !v)}

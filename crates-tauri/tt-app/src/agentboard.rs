@@ -198,6 +198,18 @@ pub fn ab_remove_repo(state: State<Ab>, dir: String) {
     state.emit.notify_one();
 }
 
+/// Untrack every tracked repo whose directory is gone from disk (the rail's
+/// "missing" ghosts — e.g. removed worktree slots). Returns the dropped dirs
+/// so the client can toast a count.
+#[tauri::command]
+pub fn ab_untrack_missing(state: State<Ab>) -> Vec<String> {
+    let removed = state.engine.lock().unwrap().untrack_missing();
+    if !removed.is_empty() {
+        state.emit.notify_one();
+    }
+    removed
+}
+
 /// Read the add-repo picker's configured scan roots (`scanRoots` in repos.json).
 /// Empty ⇒ the picker falls back to `~/code`.
 #[tauri::command]

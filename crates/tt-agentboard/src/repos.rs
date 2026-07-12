@@ -116,6 +116,27 @@ pub fn remove_repo_persisted(path: &Path, dir: &str) -> std::io::Result<(Vec<Str
     Ok((config.repo_paths, removed))
 }
 
+/// Tracked paths whose directory is gone (per `exists`). Pure — the caller
+/// supplies the probe so tests need no real filesystem.
+pub fn missing_repo_dirs(repo_paths: &[String], exists: impl Fn(&str) -> bool) -> Vec<String> {
+    repo_paths.iter().filter(|p| !exists(p)).cloned().collect()
+}
+
+/// Untrack every repo whose directory no longer exists on disk (the rail's
+/// "missing" ghosts — e.g. removed worktree slots), straight against the
+/// on-disk file (same reread-then-write rationale as [`add_repo_persisted`]).
+/// Returns the merged repo list plus the dirs that were dropped; a no-op when
+/// nothing is missing (the file is not rewritten).
+pub fn untrack_missing_persisted(path: &Path) -> std::io::Result<(Vec<String>, Vec<String>)> {
+    let mut config = load_config(path);
+    let missing = missing_repo_dirs(&config.repo_paths, |p| Path::new(p).exists());
+    if !missing.is_empty() {
+        config.repo_paths.retain(|p| !missing.contains(p));
+        save_config(path, &config)?;
+    }
+    Ok((config.repo_paths, missing))
+}
+
 /// Dirs skipped while scanning: hidden dirs plus common heavy build/dep dirs.
 fn is_skippable(name: &str) -> bool {
     name.starts_with('.') || matches!(name, "node_modules" | "target" | "dist" | "build")
@@ -325,6 +346,39 @@ mod tests {
         assert!(remove_repo_by_dir(&mut p, "/work/a/web"));
         assert!(remove_repo_by_dir(&mut p, "/work/b/web"));
         assert!(p.is_empty());
+    }
+
+    #[test]
+    fn missing_repo_dirs_filters_by_probe() {
+        let p = paths(&["/gone/a", "/here/b", "/gone/c"]);
+        assert_eq!(
+            missing_repo_dirs(&p, |d| d.starts_with("/here")),
+            paths(&["/gone/a", "/gone/c"])
+        );
+        assert!(missing_repo_dirs(&p, |_| true).is_empty());
+    }
+
+    #[test]
+    fn untrack_missing_persisted_drops_only_gone_dirs() {
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("real-repo");
+        std::fs::create_dir_all(&real).unwrap();
+        let real_s = real.to_string_lossy().to_string();
+        let gone = dir.path().join("gone-repo").to_string_lossy().to_string();
+
+        let path = dir.path().join("repos.json");
+        save_repos(&path, &[real_s.clone(), gone.clone()]).unwrap();
+
+        let (merged, removed) = untrack_missing_persisted(&path).unwrap();
+        assert_eq!(merged, vec![real_s.clone()]);
+        assert_eq!(removed, vec![gone]);
+        // persisted: a fresh load sees only the surviving repo
+        assert_eq!(load_repos(&path), vec![real_s]);
+
+        // second run is a clean no-op
+        let (merged, removed) = untrack_missing_persisted(&path).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert!(removed.is_empty());
     }
 
     #[test]
