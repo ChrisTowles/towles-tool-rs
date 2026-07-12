@@ -3,8 +3,11 @@ import {
   CircleAlert,
   CircleDot,
   ExternalLink,
+  GitBranch,
   GitBranchPlus,
   GitPullRequest,
+  Link as LinkIcon,
+  ListChecks,
   MoreHorizontal,
   Send,
   Video,
@@ -30,6 +33,7 @@ import {
   fmtClock,
   fmtCountdown,
   type IssueItem,
+  type PrItem,
   useStoreSnapshot,
 } from "@/lib/data";
 import { useAgentboardState } from "@/lib/agentboard";
@@ -181,7 +185,14 @@ export function CockpitScreen() {
               snapshot.prs
                 .slice()
                 .sort((a, b) => prRank(b) - prRank(a) || b.updatedTs - a.updatedTs)
-                .map((pr) => <PrRow key={`${pr.repo}#${pr.number}`} pr={pr} now={now} />)
+                .map((pr) => (
+                  <PrRow
+                    key={`${pr.repo}#${pr.number}`}
+                    pr={pr}
+                    now={now}
+                    actions={<PrActions pr={pr} />}
+                  />
+                ))
             )}
           </Panel>
 
@@ -273,6 +284,57 @@ function IssueActions({ issue, slots }: { issue: IssueItem; slots: SlotTarget[] 
             })
           }
         />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * Per-PR action menu for the Cockpit pull-requests panel. Navigation and
+ * clipboard only — open the PR (or its checks tab) in the browser, copy the
+ * branch name or PR URL. No merge/review/approve actions: PR state is reported
+ * here, never re-rendered or acted on (that happens on GitHub).
+ */
+function PrActions({ pr }: { pr: PrItem }) {
+  async function copy(text: string, what: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(`Copied ${what}`);
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-7 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
+          aria-label="PR actions"
+        >
+          <MoreHorizontal className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-52">
+        <DropdownMenuItem onSelect={() => void openExternalUrl(pr.url)}>
+          <ExternalLink className="size-4" />
+          Open in browser
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => void openExternalUrl(`${pr.url}/checks`)}>
+          <ListChecks className="size-4" />
+          Open checks
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => void copy(pr.branch, "branch name")}>
+          <GitBranch className="size-4" />
+          Copy branch name
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => void copy(pr.url, "PR URL")}>
+          <LinkIcon className="size-4" />
+          Copy PR URL
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
