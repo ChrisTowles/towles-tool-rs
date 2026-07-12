@@ -44,7 +44,7 @@ the mock dev server:
   the rebuild.
 
 Both are gated behind the `wdio` cargo feature + `VITE_WDIO` flag, so nothing
-ships in normal/release builds. Ports come from `.env.local` (`TT_DEV_PORT`;
+ships in normal/release builds. Ports come from the env files (`TT_DEV_PORT` in `.env.local`, or `.env` rendered by `ttr slot`;
 webdriver = `+3000`); `dev:drive` and `e2e` share a slot's ports, so don't run
 both at once in one slot. Full docs + Linux gotchas: [e2e/README.md](e2e/README.md).
 

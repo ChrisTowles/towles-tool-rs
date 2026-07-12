@@ -10,7 +10,7 @@ import { join } from "node:path";
 import {
   PORT_MIN,
   slotBasePort,
-  loadEnvLocal,
+  loadEnvFiles,
   resolveDevPort,
   resolveWebdriverPort,
 } from "./slot-port.mjs";
@@ -132,11 +132,11 @@ test("resolveDevPort ignores an empty TT_DEV_PORT and uses the base port", () =>
   });
 });
 
-test("loadEnvLocal strips matching double and single quotes", () => {
+test("loadEnvFiles strips matching double and single quotes", () => {
   withCleanEnv(["TT_QUOTED_D", "TT_QUOTED_S", "TT_BARE"], () => {
     const root = makeRepoRoot('TT_QUOTED_D="dq"\nTT_QUOTED_S=\'sq\'\nTT_BARE=bare\n');
     try {
-      loadEnvLocal(root);
+      loadEnvFiles(root);
       assert.equal(process.env.TT_QUOTED_D, "dq");
       assert.equal(process.env.TT_QUOTED_S, "sq");
       assert.equal(process.env.TT_BARE, "bare");
@@ -146,12 +146,12 @@ test("loadEnvLocal strips matching double and single quotes", () => {
   });
 });
 
-test("loadEnvLocal does not override an existing real env var", () => {
+test("loadEnvFiles does not override an existing real env var", () => {
   withCleanEnv(["TT_EXISTING"], () => {
     const root = makeRepoRoot("TT_EXISTING=fromfile\n");
     try {
       process.env.TT_EXISTING = "fromshell";
-      loadEnvLocal(root);
+      loadEnvFiles(root);
       assert.equal(process.env.TT_EXISTING, "fromshell");
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -159,11 +159,11 @@ test("loadEnvLocal does not override an existing real env var", () => {
   });
 });
 
-test("loadEnvLocal is a no-op when .env.local is missing", () => {
+test("loadEnvFiles is a no-op when .env.local is missing", () => {
   withCleanEnv(["TT_ABSENT"], () => {
     const root = makeRepoRoot();
     try {
-      assert.doesNotThrow(() => loadEnvLocal(root));
+      assert.doesNotThrow(() => loadEnvFiles(root));
       assert.equal(process.env.TT_ABSENT, undefined);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -181,5 +181,45 @@ test("resolveWebdriverPort: TT_E2E_WEBDRIVER_PORT overrides the offset", () => {
   withCleanEnv(["TT_E2E_WEBDRIVER_PORT"], () => {
     process.env.TT_E2E_WEBDRIVER_PORT = "9999";
     assert.equal(resolveWebdriverPort(1500), 9999);
+  });
+});
+
+// --- .env layering (rendered by `ttr slot`) ---
+
+test("resolveDevPort: rendered .env pins the port when .env.local is absent", () => {
+  withCleanEnv(["TT_DEV_PORT"], () => {
+    const root = makeRepoRoot();
+    writeFileSync(join(root, ".env"), "TT_DEV_PORT=1505\n");
+    try {
+      assert.equal(resolveDevPort(root), 1505);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+test("resolveDevPort: .env.local pin beats the rendered .env claim", () => {
+  withCleanEnv(["TT_DEV_PORT"], () => {
+    const root = makeRepoRoot("TT_DEV_PORT=4321\n");
+    writeFileSync(join(root, ".env"), "TT_DEV_PORT=1505\n");
+    try {
+      assert.equal(resolveDevPort(root), 4321);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+test("loadEnvFiles: keys merge across both files, first seen wins per key", () => {
+  withCleanEnv(["TT_DEV_PORT", "TT_ONLY_ENV"], () => {
+    const root = makeRepoRoot("TT_DEV_PORT=4321\n");
+    writeFileSync(join(root, ".env"), "TT_DEV_PORT=1505\nTT_ONLY_ENV=yes\n");
+    try {
+      loadEnvFiles(root);
+      assert.equal(process.env.TT_DEV_PORT, "4321");
+      assert.equal(process.env.TT_ONLY_ENV, "yes");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
