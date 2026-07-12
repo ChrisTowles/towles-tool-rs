@@ -1,7 +1,10 @@
+import { useState } from "react";
+import { toast } from "sonner";
 import {
   CircleDot,
   FolderGit2,
   GitPullRequest,
+  ListPlus,
   Moon,
   PanelLeft,
   PenLine,
@@ -22,7 +25,7 @@ import {
 } from "@/components/ui/command";
 import { useTheme } from "@/components/theme-provider";
 import { requestAgentboardNav, useAgentboardState } from "@/lib/agentboard";
-import { useStoreSnapshot } from "@/lib/data";
+import { storeAddTask, useStoreSnapshot } from "@/lib/data";
 import { openSettings } from "@/lib/open-settings";
 import { openExternalUrl } from "@/lib/open-url";
 import {
@@ -30,6 +33,7 @@ import {
   paletteSessionEntries,
   palettePrEntries,
   paletteIssueEntries,
+  paletteQuickAddEntry,
 } from "@/lib/palette";
 import { SCREENS, type ScreenId } from "@/lib/screens";
 import { shortcutHint } from "@/lib/shortcuts";
@@ -47,6 +51,7 @@ export function CommandPalette() {
   const { theme, setTheme } = useTheme();
   const { repos } = useAgentboardState();
   const { snapshot } = useStoreSnapshot();
+  const [query, setQuery] = useState("");
 
   const resolvedDark =
     theme === "system"
@@ -82,11 +87,28 @@ export function CommandPalette() {
   const sessionEntries = paletteSessionEntries(repos);
   const prEntries = palettePrEntries(snapshot.prs);
   const issueEntries = paletteIssueEntries(snapshot.issues);
+  const quickAdd = paletteQuickAddEntry(query);
+
+  const createTodo = (title: string) =>
+    run(() => {
+      void storeAddTask(title);
+      toast.success("Todo added", { description: title });
+    });
 
   return (
-    <CommandDialog open={paletteOpen} onOpenChange={setPaletteOpen}>
+    <CommandDialog
+      open={paletteOpen}
+      onOpenChange={(open) => {
+        setPaletteOpen(open);
+        if (!open) setQuery("");
+      }}
+    >
       <Command>
-        <CommandInput placeholder="Search screens, repos, sessions, PRs, issues…" />
+        <CommandInput
+          value={query}
+          onValueChange={setQuery}
+          placeholder="Search screens, repos, sessions, PRs, issues…"
+        />
         <CommandList>
           <CommandEmpty>Nothing matches.</CommandEmpty>
           {recentScreens.length > 0 && (
@@ -243,6 +265,24 @@ export function CommandPalette() {
               <CommandShortcut>{shortcutHint("settings")}</CommandShortcut>
             </CommandItem>
           </CommandGroup>
+          {quickAdd && (
+            <>
+              <CommandSeparator />
+              <CommandGroup heading="Create">
+                <CommandItem
+                  key={quickAdd.key}
+                  value={`create todo ${quickAdd.title}`}
+                  keywords={["todo", "task", "add", "new", quickAdd.title]}
+                  onSelect={() => createTodo(quickAdd.title)}
+                >
+                  <ListPlus />
+                  <span className="truncate">
+                    Create todo: <span className="text-muted-foreground">{quickAdd.title}</span>
+                  </span>
+                </CommandItem>
+              </CommandGroup>
+            </>
+          )}
         </CommandList>
       </Command>
     </CommandDialog>

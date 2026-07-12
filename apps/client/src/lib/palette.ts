@@ -49,6 +49,13 @@ export type PalettePrEntry = {
   keywords: string[];
 };
 
+/** A "create a todo from the current query" action. */
+export type PaletteQuickAddEntry = {
+  key: string;
+  /** Trimmed query — the title the todo is created with. */
+  title: string;
+};
+
 /** An open issue to open in the browser. */
 export type PaletteIssueEntry = {
   key: string;
@@ -138,6 +145,15 @@ export function paletteIssueEntries(issues: IssueItem[]): PaletteIssueEntry[] {
       title: i.title,
       keywords: [i.repo, `#${i.number}`, i.title, ...i.labels].filter(Boolean),
     }));
+}
+
+/** The quick-add action for the current palette query, or `null` when the query
+ * is empty/whitespace (nothing to name a todo). The trimmed query is preserved
+ * verbatim as the title — long text and internal whitespace stay intact. */
+export function paletteQuickAddEntry(query: string): PaletteQuickAddEntry | null {
+  const title = query.trim();
+  if (!title) return null;
+  return { key: "quick-add", title };
 }
 
 /** Stable partition: entries flagged by `needs` keep their relative order but

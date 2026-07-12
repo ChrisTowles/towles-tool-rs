@@ -6,6 +6,7 @@ import {
   paletteSessionEntries,
   palettePrEntries,
   paletteIssueEntries,
+  paletteQuickAddEntry,
 } from "./palette";
 
 const agent = (status: AgentStatus) => ({ agent: "claude-code", session: "", status, ts: 1 });
@@ -169,5 +170,23 @@ describe("paletteIssueEntries", () => {
 
   it("returns nothing for an empty snapshot", () => {
     expect(paletteIssueEntries([])).toEqual([]);
+  });
+});
+
+describe("paletteQuickAddEntry", () => {
+  it("returns null for an empty or whitespace-only query", () => {
+    expect(paletteQuickAddEntry("")).toBeNull();
+    expect(paletteQuickAddEntry("   ")).toBeNull();
+    expect(paletteQuickAddEntry("\t\n ")).toBeNull();
+  });
+
+  it("trims surrounding whitespace from the title", () => {
+    expect(paletteQuickAddEntry("  ship the release  ")?.title).toBe("ship the release");
+  });
+
+  it("preserves long text and internal whitespace verbatim", () => {
+    const long =
+      "follow up with the platform team about the flaky   deploy and reschedule the postmortem for next week";
+    expect(paletteQuickAddEntry(long)?.title).toBe(long);
   });
 });
