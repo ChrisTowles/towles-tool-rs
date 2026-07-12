@@ -141,6 +141,21 @@ export function NeedsBadge({ n, className }: { n: number; className?: string }) 
   );
 }
 
+/** Marks a tracked checkout whose directory no longer exists on disk — a
+ * "ghost". Deliberately grayscale (dashed, dimmed): a missing dir is a dead
+ * state, not the live-attention amber the needs-you math owns, so it reads as
+ * "gone/inert" rather than "look at me". Grayscale tokens carry light + dark. */
+export function GhostBadge() {
+  return (
+    <span
+      className="shrink-0 rounded-md border border-dashed border-muted-foreground/40 px-1 font-mono text-[10px] text-muted-foreground/70"
+      title="This checkout's directory is gone (moved or deleted). Untrack it, or restore the directory to bring it back."
+    >
+      ⚠ missing
+    </span>
+  );
+}
+
 /** Marks a folder as a git worktree checkout (linked to another checkout's
  * `.git`) — distinct from the `p/`/`w/` path-scope prefix, so a worktree's
  * WIP diff doesn't read as the repo's one canonical state. */

@@ -43,6 +43,11 @@ pub struct GitInfo {
     /// excluded), from `git worktree list`. Not part of the wire payload — the
     /// engine uses it to auto-discover worktrees that aren't in `repoPaths` yet.
     pub worktree_dirs: Vec<String>,
+    /// True when `dir` doesn't exist on disk (a tracked repo whose checkout was
+    /// moved or deleted). Distinguishes a genuinely-missing directory from a
+    /// present-but-non-git one — both otherwise yield an empty [`GitInfo`].
+    /// [`crate::bridge::build_folder`] copies this onto the wire `FolderData`.
+    pub dir_missing: bool,
 }
 
 /// Must stay above the git poll interval so the poll keeps entries warm.
@@ -134,6 +139,11 @@ fn git_out(dir: &str, args: &[&str]) -> String {
 pub fn compute_git_info(dir: &str) -> GitInfo {
     if dir.is_empty() {
         return GitInfo::default();
+    }
+    // A tracked checkout that was moved or deleted: flag it so the rail can show
+    // it as a ghost rather than a silent empty-stats folder.
+    if !std::path::Path::new(dir).is_dir() {
+        return GitInfo { dir_missing: true, ..Default::default() };
     }
     let branch = git_out(dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
     if branch.is_empty() {
@@ -227,9 +237,11 @@ pub fn compute_git_info_from_outputs(
         commits_ahead,
         commits_behind,
         // The pure parser has no origin/worktree-list knowledge; `compute_git_info`
-        // fills both in.
+        // fills both in. Existence is decided before shelling out, so a parsed
+        // result is never "missing".
         origin_url: None,
         worktree_dirs: Vec::new(),
+        dir_missing: false,
     }
 }
 
@@ -412,5 +424,30 @@ mod tests {
     #[test]
     fn worktree_list_empty_for_plain_clone_or_blank_output() {
         assert_eq!(parse_worktree_list(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn compute_flags_a_missing_dir() {
+        let root = tempfile::TempDir::new().unwrap();
+        let gone = root.path().join("moved-away");
+        let info = compute_git_info(gone.to_str().unwrap());
+        assert!(info.dir_missing);
+        assert!(info.branch.is_empty());
+    }
+
+    #[test]
+    fn compute_does_not_flag_an_existing_dir() {
+        let root = tempfile::TempDir::new().unwrap();
+        // Present but not a git repo: still not "missing".
+        let info = compute_git_info(root.path().to_str().unwrap());
+        assert!(!info.dir_missing);
+    }
+
+    #[test]
+    fn from_outputs_never_flags_missing() {
+        // The pure parser only sees git command strings; existence is decided
+        // by `compute_git_info` before any shell-out.
+        let info = compute_git_info_from_outputs("main", "/repo/.git", "", "", "");
+        assert!(!info.dir_missing);
     }
 }

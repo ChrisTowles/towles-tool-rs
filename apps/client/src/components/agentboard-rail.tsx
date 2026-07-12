@@ -3,6 +3,7 @@ import {
   CircleDot,
   Folder,
   FolderGit2,
+  FolderX,
   MoreVertical,
   PanelLeftOpen,
   Plus,
@@ -17,6 +18,7 @@ import {
   DiffButton,
   Dot,
   DotCount,
+  GhostBadge,
   Glyph,
   IconBtn,
   NeedsBadge,
@@ -625,6 +627,10 @@ function FolderHeader({
 }) {
   const scopePrefix = pathScope(folder.dir);
   const progress = folder.metadata?.progress;
+  // Ghost checkout: the tracked directory is gone. Dim the whole band and
+  // swap the git-facts line (branch/diff are meaningless) for an inline
+  // Untrack — a dead folder's one useful action, surfaced not buried.
+  const missing = folder.dirMissing;
   return (
     // Two lines: name (line 1) with the git facts — branch, worktree, diff,
     // PR — grouped underneath (line 2), so a long branch never squeezes the
@@ -641,10 +647,17 @@ function FolderHeader({
         <button
           type="button"
           onClick={onToggle}
-          className="flex min-w-0 flex-1 items-center gap-2"
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-2",
+            // Ghost: dim the identity cluster so it reads as inert. The action
+            // buttons (Untrack, kebab) sit outside this and stay full-strength.
+            missing && "opacity-60",
+          )}
         >
           <Chevron collapsed={collapsed} />
-          {scope === "repo" ? (
+          {missing ? (
+            <FolderX className="size-3.5 shrink-0 text-muted-foreground/70" />
+          ) : scope === "repo" ? (
             <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
           ) : (
             <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
@@ -660,41 +673,67 @@ function FolderHeader({
               scope === "repo"
                 ? "text-sm font-semibold"
                 : "text-sm font-medium text-muted-foreground",
+              missing && "line-through decoration-muted-foreground/40",
             )}
           >
             {title}
           </span>
+          {missing && <GhostBadge />}
         </button>
-        {collapsed && <CollapsedLive sessions={folder.sessions} />}
+        {collapsed && !missing && <CollapsedLive sessions={folder.sessions} />}
         {needs > 0 && <NeedsBadge n={needs} />}
-        <IconBtn title="New session (⌘D)" onClick={onNewSession} className="hover:text-violet-500">
-          <Plus className="size-3.5" />
-        </IconBtn>
+        {/* No "New session" on a ghost — there's no directory to spawn a shell in. */}
+        {!missing && (
+          <IconBtn title="New session (⌘D)" onClick={onNewSession} className="hover:text-violet-500">
+            <Plus className="size-3.5" />
+          </IconBtn>
+        )}
         {onRemoveRepo && (
           <RepoMenu path={folder.dir} onRemove={onRemoveRepo} dir={folder.dir} folder={folder} />
         )}
       </div>
       {/* ml-11 lines the git row up under the name (chevron + icon + gaps). */}
-      <div className="ml-11 flex items-center gap-1.5 pb-1.5">
-        <span
-          className="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
-          onClick={onToggle}
-        >
-          ⎇ {folder.branch}
-        </span>
-        <AheadBehind stats={folder} />
-        {folder.isWorktree && <WorktreeBadge />}
-        <DiffButton stats={folder} onOpen={onOpenDiff} />
-        {pr && <PrChip pr={pr} />}
-        {typeof progress?.percent === "number" && (
-          <span
-            title={progress.label ?? "agent-reported progress"}
-            className="shrink-0 rounded-md border border-violet-500/40 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500"
-          >
-            {Math.round(progress.percent)}%{progress.label ? ` ${progress.label}` : ""}
+      {missing ? (
+        <div className="ml-11 flex items-center gap-2 pb-1.5">
+          <span className="min-w-0 truncate text-[11px] text-muted-foreground/70 italic">
+            directory missing — moved or deleted
           </span>
-        )}
-      </div>
+          {onRemoveRepo && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRemoveRepo();
+              }}
+              title="Untrack this checkout — remove it from the rail"
+              className="flex h-5 shrink-0 items-center gap-1 rounded-md border border-border/70 px-1.5 font-mono text-[10.5px] text-muted-foreground transition-colors hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400"
+            >
+              <Trash2 className="size-3" /> Untrack
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="ml-11 flex items-center gap-1.5 pb-1.5">
+          <span
+            className="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
+            onClick={onToggle}
+          >
+            ⎇ {folder.branch}
+          </span>
+          <AheadBehind stats={folder} />
+          {folder.isWorktree && <WorktreeBadge />}
+          <DiffButton stats={folder} onOpen={onOpenDiff} />
+          {pr && <PrChip pr={pr} />}
+          {typeof progress?.percent === "number" && (
+            <span
+              title={progress.label ?? "agent-reported progress"}
+              className="shrink-0 rounded-md border border-violet-500/40 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500"
+            >
+              {Math.round(progress.percent)}%{progress.label ? ` ${progress.label}` : ""}
+            </span>
+          )}
+        </div>
+      )}
       {/* The agent's own status line (ab_set_status), when one was pushed. */}
       <div className="ml-11 empty:hidden [&:not(:empty)]:pb-1.5">
         <AgentStatusLine metadata={folder.metadata} now={now} />
