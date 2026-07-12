@@ -3,7 +3,7 @@
 // running this repo from multiple worktree slots at once doesn't collide.
 //
 // Port resolution, in order:
-//   1. TT_DEV_PORT — an explicit override (shell env or `.env.local` at the
+//   1. TT_DEV_PORT — an explicit override (shell env, `.env.local`, or rendered `.env` at the
 //      repo root). Used as-is.
 //   2. Otherwise scan upward from this slot's deterministic base port (derived
 //      from the repo-root directory name) for a free port, so different slots
@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { slotBasePort, loadEnvLocal } from "./slot-port.mjs";
+import { slotBasePort, loadEnvFiles } from "./slot-port.mjs";
 
 const MAX_ATTEMPTS = 100;
 const PORT_ENV = "TT_DEV_PORT";
@@ -47,7 +47,7 @@ async function findFreePort(start) {
   );
 }
 
-loadEnvLocal(repoRoot);
+loadEnvFiles(repoRoot);
 
 let port;
 const override = process.env[PORT_ENV];
@@ -64,7 +64,7 @@ if (override !== undefined && override !== "") {
   const base = slotBasePort(repoRoot);
   port = await findFreePort(base);
   console.log(
-    `[dev-port] using port ${port} (slot base ${base}; set ${PORT_ENV} in .env.local to pin one)`,
+    `[dev-port] using port ${port} (slot base ${base}; set ${PORT_ENV} in .env.local to pin one, or let ttr slot claim one in .env)`,
   );
 }
 
