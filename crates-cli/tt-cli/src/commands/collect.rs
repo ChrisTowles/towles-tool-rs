@@ -12,10 +12,11 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
 use tt_collect::{CalendarProvider, CollectSummary};
-use tt_store::Store;
+use tt_store::{CollectRun, Store};
 
-use crate::cli::CollectCommands;
+use crate::cli::{CollectCommands, CollectStatusArgs};
 use crate::ui;
 
 pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
@@ -28,6 +29,11 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
     };
     let now = now_ms();
     let collectors = load_collector_settings(config_dir);
+
+    if let CollectCommands::Status(args) = &command {
+        return run_status(&store, &collectors, now, args);
+    }
+
     let calendar = collectors.calendar;
     let provider = CalendarProvider::from_str_lenient(&calendar.provider);
     let slack = slack_config(&collectors.slack);
@@ -76,6 +82,8 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
             }
             summaries
         }
+        // Handled by the early return above; never reached here.
+        CollectCommands::Status(_) => return 0,
     };
 
     print_summaries(&summaries);
@@ -133,5 +141,189 @@ fn print_summaries(summaries: &[CollectSummary]) {
         } else {
             ui::error(&format!("{}: {}", s.collector, s.message.as_deref().unwrap_or("failed")));
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `collect status`
+// ---------------------------------------------------------------------------
+
+/// One collector's health line for `collect status`. `ran_at`/`age_ms`/`ok`/
+/// `message` are all `None` when the collector has never run.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusRow {
+    /// Stable collector key (the `record_run` key), e.g. `claude:calendar`.
+    collector: &'static str,
+    /// Whether the collector would run given current settings.
+    enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ran_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    age_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ok: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+/// Print each collector's enabled state and last-run health without running any
+/// collection. Reuses [`Store::runs`] (the same read MCP's `collect_status`
+/// uses) rather than issuing its own SQL.
+fn run_status(
+    store: &Store,
+    collectors: &tt_config::CollectorsSettings,
+    now: i64,
+    args: &CollectStatusArgs,
+) -> i32 {
+    let runs = match store.runs() {
+        Ok(runs) => runs,
+        Err(e) => {
+            ui::error(&format!("Failed to read collector runs: {e}"));
+            return 1;
+        }
+    };
+    let rows = status_rows(collectors, &runs, now);
+
+    if args.json {
+        match serde_json::to_string_pretty(&rows) {
+            Ok(json) => {
+                println!("{json}");
+                0
+            }
+            Err(e) => {
+                ui::error(&format!("Failed to serialize status: {e}"));
+                1
+            }
+        }
+    } else {
+        print_status_table(&rows);
+        0
+    }
+}
+
+/// Build the fixed, ordered set of collector rows, joining settings (enabled)
+/// with the store's last-run records (age/ok/message) by collector key.
+fn status_rows(
+    collectors: &tt_config::CollectorsSettings,
+    runs: &[CollectRun],
+    now: i64,
+) -> Vec<StatusRow> {
+    let enabled = [
+        ("claude:calendar", collectors.calendar.enabled),
+        ("issues", collectors.issues.enabled),
+        ("prs", collectors.prs.enabled),
+        ("slack:dm", collectors.slack.enabled && !collectors.slack.token.trim().is_empty()),
+    ];
+
+    enabled
+        .into_iter()
+        .map(|(collector, enabled)| {
+            let run = runs.iter().find(|r| r.collector == collector);
+            StatusRow {
+                collector,
+                enabled,
+                ran_at: run.map(|r| r.ran_at),
+                age_ms: run.map(|r| now - r.ran_at),
+                ok: run.map(|r| r.ok),
+                message: run.and_then(|r| r.message.clone()),
+            }
+        })
+        .collect()
+}
+
+/// Render the human table to stdout, one line per collector: state marker,
+/// collector key, ok/FAIL mark, last-run age, and any message. The whole table
+/// goes to stdout (a failed collector is a normal status row, not a CLI error),
+/// with the mark colored only when stdout is a terminal.
+fn print_status_table(rows: &[StatusRow]) {
+    let tty = std::io::stdout().is_terminal();
+    for row in rows {
+        let state = if row.enabled { "enabled " } else { "disabled" };
+        let last = match row.age_ms {
+            Some(age) => format_age(age),
+            None => "never".to_string(),
+        };
+        let mark = match row.ok {
+            Some(true) => "ok",
+            Some(false) => "FAIL",
+            None => "-",
+        };
+        let mark = if tty {
+            match row.ok {
+                Some(true) => console::style(format!("{mark:<4}")).green().to_string(),
+                Some(false) => console::style(format!("{mark:<4}")).red().bold().to_string(),
+                None => console::style(format!("{mark:<4}")).dim().to_string(),
+            }
+        } else {
+            format!("{mark:<4}")
+        };
+        let note = row.message.as_deref().map(|m| format!("  {m}")).unwrap_or_default();
+        println!("{state}  {:<16} {mark}  {last}{note}", row.collector);
+    }
+}
+
+/// Format an age in milliseconds as a compact "N<unit> ago" string. Pure so it
+/// can be unit-tested; the clock is read once at the CLI boundary and passed in.
+fn format_age(age_ms: i64) -> String {
+    if age_ms < 0 {
+        return "just now".to_string();
+    }
+    let secs = age_ms / 1000;
+    if secs < 60 {
+        return format!("{secs}s ago");
+    }
+    let mins = secs / 60;
+    if mins < 60 {
+        return format!("{mins}m ago");
+    }
+    let hours = mins / 60;
+    if hours < 24 {
+        return format!("{hours}h ago");
+    }
+    let days = hours / 24;
+    format!("{days}d ago")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_age_buckets_by_unit() {
+        assert_eq!(format_age(-5), "just now");
+        assert_eq!(format_age(0), "0s ago");
+        assert_eq!(format_age(45_000), "45s ago");
+        assert_eq!(format_age(32 * 60_000), "32m ago");
+        assert_eq!(format_age(3 * 3_600_000), "3h ago");
+        assert_eq!(format_age(2 * 86_400_000), "2d ago");
+    }
+
+    #[test]
+    fn status_rows_mark_never_run_and_join_by_key() {
+        let collectors = tt_config::CollectorsSettings::default();
+        let runs = vec![CollectRun {
+            collector: "issues".to_string(),
+            ran_at: 1_000,
+            ok: false,
+            message: Some("boom".to_string()),
+        }];
+        let rows = status_rows(&collectors, &runs, 61_000);
+
+        // Fixed order: calendar, issues, prs, slack.
+        assert_eq!(rows[0].collector, "claude:calendar");
+        assert_eq!(rows[0].age_ms, None); // never ran
+        assert_eq!(rows[0].ok, None);
+
+        assert_eq!(rows[1].collector, "issues");
+        assert_eq!(rows[1].age_ms, Some(60_000));
+        assert_eq!(rows[1].ok, Some(false));
+        assert_eq!(rows[1].message.as_deref(), Some("boom"));
+
+        // Defaults: issues + prs enabled, calendar + slack off.
+        assert!(!rows[0].enabled);
+        assert!(rows[1].enabled);
+        assert!(rows[2].enabled);
+        assert!(!rows[3].enabled);
     }
 }

@@ -118,6 +118,16 @@ pub enum CollectCommands {
 
     /// Run every collector (calendar, issues, PRs, Slack)
     All,
+
+    /// Show each collector's enabled state and last-run health (no collection)
+    Status(CollectStatusArgs),
+}
+
+#[derive(Args)]
+pub struct CollectStatusArgs {
+    /// Emit structured JSON instead of the human table
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args)]
