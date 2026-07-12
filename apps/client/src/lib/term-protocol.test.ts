@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { encodeKey, scrollbackKey, stepMatch, viewportMatches } from "./term-protocol";
+import {
+  encodeKey,
+  exitIsCrash,
+  exitLabel,
+  scrollbackKey,
+  stepMatch,
+  viewportMatches,
+} from "./term-protocol";
 
 type KeyEventLike = Parameters<typeof scrollbackKey>[0];
 
@@ -7,6 +14,37 @@ type KeyEventLike = Parameters<typeof scrollbackKey>[0];
 function key(k: string, mods: Partial<KeyEventLike> = {}): KeyEventLike {
   return { key: k, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...mods };
 }
+
+describe("exitLabel", () => {
+  it("labels a clean logout without a code", () => {
+    expect(exitLabel(0)).toBe("exited");
+    expect(exitLabel(0, null)).toBe("exited");
+  });
+
+  it("shows the numeric code for a nonzero exit", () => {
+    expect(exitLabel(2)).toBe("exited · code 2");
+    expect(exitLabel(127)).toBe("exited · code 127");
+  });
+
+  it("prefers the signal name over the placeholder code", () => {
+    expect(exitLabel(1, "Killed")).toBe("exited · Killed");
+    expect(exitLabel(0, "Terminated")).toBe("exited · Terminated");
+  });
+});
+
+describe("exitIsCrash", () => {
+  it("treats a code-0, no-signal exit as clean", () => {
+    expect(exitIsCrash(0)).toBe(false);
+    expect(exitIsCrash(0, null)).toBe(false);
+  });
+
+  it("treats a nonzero code or any signal as a crash", () => {
+    expect(exitIsCrash(2)).toBe(true);
+    expect(exitIsCrash(0, "Killed")).toBe(true);
+    expect(exitIsCrash(1, "Segmentation fault")).toBe(true);
+  });
+});
+
 
 describe("viewportMatches", () => {
   const matches = [

@@ -95,6 +95,7 @@ import {
   type WindowsPayload,
   windowColor,
 } from "@/lib/agentboard";
+import { exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
@@ -185,6 +186,10 @@ export function AgentboardScreen() {
   // Session ids whose PTY is mounted (kept alive for scrollback), + their cwd.
   const [open, setOpen] = useState<string[]>([]);
   const cwds = useRef<Record<string, string>>({});
+  // How a dead session's shell exited (code + signal), by session id. Set when
+  // a shell exits on its own so the dead pane reports "exited" vs "exited ·
+  // code 137"; cleared when the session is restarted or its pane removed.
+  const [exitInfo, setExitInfo] = useState<Record<string, TermExit>>({});
   // Folder-rail collapse/expand state (issue #52): hydrated once from
   // `ab_get_state`, then this local copy is the live truth — same pattern as
   // `wins` below, except each toggle saves incrementally (one key at a time)
@@ -437,6 +442,26 @@ export function AgentboardScreen() {
     // so we know which single folder to mark touched.
     const folderDir = wins?.windows.find((win) => win.panes.includes(paneId))?.folderDir;
     updateWins(folderDir ? [folderDir] : [], (w) => dropPane(w, paneId));
+    clearExit(paneId);
+  }
+
+  /** Forget a session's recorded exit status (on restart or pane removal). */
+  function clearExit(sessionId: string) {
+    setExitInfo((m) => {
+      if (!(sessionId in m)) return m;
+      const next = { ...m };
+      delete next[sessionId];
+      return next;
+    });
+  }
+
+  /** A shell exited on its own. Unmount its terminal (the PTY is gone) but keep
+   * the pane so the dead session stays on screen, reporting how it exited with
+   * the same restart/remove controls a never-started pane offers. Status
+   * reporting only — no auto-restart. */
+  function handleExit(sessionId: string, exit: TermExit) {
+    setExitInfo((m) => ({ ...m, [sessionId]: exit }));
+    setOpen((prev) => prev.filter((id) => id !== sessionId));
   }
 
   // Switch the main area to a folder without selecting one of its sessions
@@ -454,6 +479,8 @@ export function AgentboardScreen() {
     cwds.current[sessionId] = folderDir;
     setSelected({ folderDir, sessionId });
     setActiveFolderDir(folderDir);
+    // A fresh mount replaces any dead PTY here — drop its stale exit label.
+    clearExit(sessionId);
     setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
     addPaneToActive(folderDir, sessionId);
     ackFolder(folderDir);
@@ -1132,7 +1159,7 @@ export function AgentboardScreen() {
                                 <TerminalView
                                   termId={id}
                                   cwd={folderOf.get(id)?.dir ?? cwds.current[id]}
-                                  onExit={() => closeSession(id)}
+                                  onExit={(exit) => handleExit(id, exit)}
                                   onTitle={onTitle}
                                 />
                               </div>
@@ -1160,10 +1187,23 @@ export function AgentboardScreen() {
                           const r = rectFor(id);
                           const s = sessionById.get(id);
                           const dir = folderOf.get(id)?.dir;
+                          const exit = exitInfo[id];
                           return (
                             <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
                               <div className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground">
                                 <span className="text-sm">{s ? labelFor(s) : "session"}</span>
+                                {exit && (
+                                  <span
+                                    className={cn(
+                                      "font-mono text-xs",
+                                      exitIsCrash(exit.code, exit.signal)
+                                        ? "text-amber-500"
+                                        : "text-muted-foreground/70",
+                                    )}
+                                  >
+                                    {exitLabel(exit.code, exit.signal)}
+                                  </span>
+                                )}
                                 {s && dir ? (
                                   <div className="flex gap-3 font-mono text-xs">
                                     <button

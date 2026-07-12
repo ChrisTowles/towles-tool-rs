@@ -129,11 +129,17 @@ struct TermFrame {
     frame: Frame,
 }
 
-/// Emitted once when a shell exits so the frontend can close that terminal.
+/// Emitted once when a shell exits so the frontend can report how it died —
+/// a clean logout (code 0) versus a crash or signal. `signal` is portable-pty's
+/// resolved name ("Killed", "Terminated", …); the raw signal number isn't
+/// exposed, and a signal death leaves `code` at portable-pty's placeholder (1),
+/// so the frontend prefers `signal` when present.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TermExit {
     term_id: String,
+    code: i32,
+    signal: Option<String>,
 }
 
 /// Spawn a shell in a fresh PTY sized to the xterm.js grid, rooted at `cwd`
@@ -273,8 +279,10 @@ fn term_start_blocking(
         // would make the frontend close the NEW session.
         let state = app.state::<TermState>();
         if let Some(mut session) = state.take_if_current(&term_id, generation) {
-            let _ = session.child.wait();
-            let _ = app.emit_to(MAIN_WINDOW_LABEL, EXIT_EVENT, TermExit { term_id });
+            let status = session.child.wait().ok();
+            let code = status.as_ref().map(|s| s.exit_code() as i32).unwrap_or(0);
+            let signal = status.as_ref().and_then(|s| s.signal().map(str::to_string));
+            let _ = app.emit_to(MAIN_WINDOW_LABEL, EXIT_EVENT, TermExit { term_id, code, signal });
             notify_agentboard(&app); // shell exited — session no longer live
         }
         drop(vt);

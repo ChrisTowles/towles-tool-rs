@@ -53,6 +53,34 @@ export interface Frame {
   viewportTop: number;
 }
 
+/** Payload of a `terminal://exit` event (mirrors `TermExit` in
+ * crates-tauri/tt-app/src/terminal.rs): the dead shell's exit code and, when a
+ * signal ended it, that signal's resolved name. A signal death leaves `code`
+ * at portable-pty's placeholder, so consumers prefer `signal` when present. */
+export interface TermExit {
+  termId: string;
+  code: number;
+  /** Signal name ("Killed", "Terminated", …) when the shell was signalled;
+   * null/absent for a normal exit. */
+  signal?: string | null;
+}
+
+/** Human label for a dead shell's exit status — status reporting only, so the
+ * rail can tell a clean logout from a crash: "exited" for a code-0 logout,
+ * "exited · Killed" when a signal ended it, "exited · code 2" otherwise. */
+export function exitLabel(code: number, signal?: string | null): string {
+  if (signal) return `exited · ${signal}`;
+  if (code === 0) return "exited";
+  return `exited · code ${code}`;
+}
+
+/** Whether a shell's exit looks like a crash (nonzero code or a signal) rather
+ * than a clean logout — lets the rail tint the crash label without re-deriving
+ * the rule. */
+export function exitIsCrash(code: number, signal?: string | null): boolean {
+  return code !== 0 || signal != null;
+}
+
 /** Tauri IPC command that drops a terminal's scrollback while leaving the
  * visible screen intact (right-click "Clear scrollback"). Handled by
  * `term_clear` in crates-tauri/tt-app/src/terminal.rs, which forces a full
