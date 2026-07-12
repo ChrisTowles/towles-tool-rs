@@ -359,6 +359,17 @@ pub fn term_request_full(state: State<TermState>, term_id: String) -> Result<(),
     Ok(())
 }
 
+/// Drop the terminal's scrollback history, keeping the visible screen
+/// (right-click "Clear scrollback"). The engine forces a full frame so the
+/// view learns the scrollback depth collapsed.
+#[tauri::command]
+pub fn term_clear(state: State<TermState>, term_id: String) -> Result<(), String> {
+    let guard = state.0.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::ClearScrollback);
+    Ok(())
+}
+
 /// Apply a selection gesture from the terminal view, in viewport cell
 /// coordinates. `kind`: drag (anchor→head range), word (double-click),
 /// line (triple-click), all, clear.

@@ -185,6 +185,29 @@ mod tests {
     }
 
     #[test]
+    fn clear_scrollback_drops_history_but_keeps_the_visible_screen() {
+        let mut e = engine(10, 3);
+        for i in 0..20 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        let frame = e.render().expect("render").expect("frame");
+        // 20 lines through a 3-row viewport leaves a real scrollback tail.
+        assert!(frame.scrollback_rows > 0, "precondition: scrollback exists");
+        // The live viewport shows the most recent lines.
+        assert_eq!(row_text(&frame, 0), "line18");
+        assert_eq!(row_text(&frame, 1), "line19");
+
+        e.clear_scrollback();
+        let frame = e.render().expect("render").expect("clear forces a frame");
+        assert!(frame.full, "clearing scrollback forces a full repaint");
+        assert_eq!(frame.scrollback_rows, 0, "scrollback history dropped");
+        assert_eq!(frame.viewport_top, 0, "viewport top collapses with the history");
+        // The visible screen is untouched — same rows as before the clear.
+        assert_eq!(row_text(&frame, 0), "line18");
+        assert_eq!(row_text(&frame, 1), "line19");
+    }
+
+    #[test]
     fn selection_highlights_rows_and_copies_text() {
         let mut e = engine(20, 4);
         e.feed(b"alpha beta\r\ngamma");
