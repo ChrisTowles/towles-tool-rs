@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Stethoscope } from "lucide-react";
 import { invokeCmd, isTauri } from "@/lib/tauri";
+import { useAppVersion } from "@/lib/version";
 import { useWorkspace } from "@/lib/workspace";
 
 /** Mirror of the `app_resource_usage` command's payload. */
@@ -40,6 +41,7 @@ function useResourceUsage(): ResourceUsage | null {
 export function StatusBar() {
   const { openTab } = useWorkspace();
   const usage = useResourceUsage();
+  const version = useAppVersion();
 
   return (
     <footer className="flex h-7 shrink-0 items-center justify-between border-t px-3 text-xs text-muted-foreground">
@@ -69,7 +71,7 @@ export function StatusBar() {
         >
           {isTauri() ? "Tauri shell" : "browser"}
         </span>
-        <span>ttr v0.1.0</span>
+        <span>{version}</span>
       </div>
     </footer>
   );

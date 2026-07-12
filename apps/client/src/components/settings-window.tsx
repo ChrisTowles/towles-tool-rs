@@ -26,6 +26,7 @@ import { abInvoke } from "@/lib/agentboard";
 import { closeCurrentWindow } from "@/lib/open-settings";
 import { useUserSettings, type UserSettings } from "@/lib/settings";
 import { SHORTCUTS, shortcutKeys, type ShortcutScope } from "@/lib/shortcuts";
+import { useAppVersion } from "@/lib/version";
 
 /** Real, known location of the settings file (shared with the TypeScript CLI). */
 const SETTINGS_PATH = "~/.config/towles-tool/towles-tool.settings.json";
@@ -457,6 +458,7 @@ function AgentboardSettings() {
 export function SettingsWindow() {
   const { theme, setTheme } = useTheme();
   const { settings, saveState, update, save } = useUserSettings();
+  const version = useAppVersion();
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
@@ -624,7 +626,7 @@ export function SettingsWindow() {
             <div className="flex flex-col gap-2 text-sm">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Version</span>
-                <span className="font-mono">ttr v0.1.0</span>
+                <span className="font-mono">{version}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Identifier</span>

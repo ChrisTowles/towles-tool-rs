@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import {
   CalendarClock,
   CircleAlert,
@@ -19,6 +18,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useStoreSnapshot } from "@/lib/data";
+import { useNow } from "@/lib/now";
 import { openSettings } from "@/lib/open-settings";
 import { useUserSettings, type UserSettings } from "@/lib/settings";
 import { CollectorFreshness } from "@/components/store-bits";
@@ -34,12 +34,7 @@ import { CollectorFreshness } from "@/components/store-bits";
 export function ConfigScreen() {
   const { settings, loaded, saveState, update, save } = useUserSettings();
   const { snapshot } = useStoreSnapshot();
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
+  const now = useNow();
 
   if (loaded && !settings) {
     return (

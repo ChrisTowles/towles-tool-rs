@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
 import { CircleAlert, GitPullRequest, Inbox } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useStoreSnapshot, type PrItem } from "@/lib/data";
+import { useNow } from "@/lib/now";
 import {
   CollectorFreshness,
   Empty,
@@ -19,12 +19,7 @@ import {
  */
 export function GhPrsScreen() {
   const { snapshot, live } = useStoreSnapshot();
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
+  const now = useNow();
 
   const needsYou = snapshot.prs
     .filter(prNeedsYou)
