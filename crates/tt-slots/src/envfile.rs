@@ -35,13 +35,20 @@ pub fn parse(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Ports this env file claims: every assignment whose value is a bare decimal
-/// port number. The rendered `.env` is the claim record — stable until the
+/// Ports this env file claims: every `*PORT` assignment whose value is a bare
+/// decimal port number. The key filter is load-bearing: identity values like
+/// `SLOT=3` are small bare numbers too, and treating them as claims made the
+/// removal guard report "port 3 in use" (binding low ports always fails
+/// without root). The rendered `.env` is the claim record — stable until the
 /// slot is removed, at which point the ports self-release.
 pub fn port_claims(text: &str) -> BTreeSet<u16> {
     parse(text)
         .into_iter()
-        .filter(|(_, v)| (1..=5).contains(&v.len()) && v.bytes().all(|b| b.is_ascii_digit()))
+        .filter(|(k, v)| {
+            k.ends_with("PORT")
+                && (1..=5).contains(&v.len())
+                && v.bytes().all(|b| b.is_ascii_digit())
+        })
         .filter_map(|(_, v)| v.parse::<u16>().ok().filter(|&p| p > 0))
         .collect()
 }
@@ -108,11 +115,11 @@ mod tests {
     }
 
     #[test]
-    fn port_claims_only_bare_numbers() {
-        let text =
-            "UI_PORT=3000\nDB_PORT=5439\nNAME=slot-3\nURL=http://x:9999/\nZERO=0\nBIG=99999\n";
+    fn port_claims_only_port_keys_with_bare_numbers() {
+        let text = "UI_PORT=3000\nDB_PORT=5439\nSLOT=3\nNAME=slot-3\nURL=http://x:9999/\nZERO_PORT=0\nBIG_PORT=99999\n";
         let claims = port_claims(text);
         assert!(claims.contains(&3000) && claims.contains(&5439));
+        assert!(!claims.contains(&3), "SLOT=3 is identity, not a port claim");
         assert!(!claims.contains(&9999), "numbers inside URLs are not claims");
         assert!(!claims.contains(&0));
         assert_eq!(claims.len(), 2);
