@@ -6,7 +6,7 @@
 //! `tt_config::state_scope()` use), its per-slot config is a rendered `.env`,
 //! and its `.tt-slot` marker records name/base for other tooling.
 //!
-//! This crate holds the pure logic: the `{tt:...}` template renderer with
+//! This crate holds the pure logic: the `${tt:...}` template renderer with
 //! port-pool claims ([`template`]), env-file parsing/merging ([`envfile`]),
 //! slot naming ([`layout`]), and removal guards ([`guards`]). The CLI layer
 //! (`tt-cli/src/commands/slot.rs`) gathers real-world state — git output,

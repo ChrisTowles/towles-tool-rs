@@ -32,14 +32,14 @@ fn ttr() -> Ttr {
 }
 
 /// Build `<tmp>/demo-repos/demo.git` (bare hub) from a seed repo whose
-/// committed `.env.example` carries `{tt:...}` tokens.
+/// committed `.env.example` carries `${tt:...}` tokens.
 fn make_root(tmp: &Path) -> PathBuf {
     let seed = tmp.join("seed");
     std::fs::create_dir_all(&seed).unwrap();
     git(tmp, &["init", "seed"]);
     std::fs::write(
         seed.join(".env.example"),
-        "# demo slot env\nUI_PORT={tt:port 42410-42429}\nNAME={tt:slot-name}\nBASE={tt:base}\nURL=http://localhost:{tt:var UI_PORT}/\nSECRET=\n",
+        "# demo slot env\nUI_PORT=${tt:port 42410-42429}\nNAME=${tt:slot-name}\nBASE=${tt:base}\nURL=http://localhost:${tt:var UI_PORT}/\nSECRET=\n",
     )
     .unwrap();
     std::fs::write(seed.join(".gitignore"), ".env\n").unwrap();
