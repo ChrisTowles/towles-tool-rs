@@ -30,6 +30,11 @@ jobs:
         run: npm ci
         working-directory: .
 
+      # Dev-tooling scripts (per-slot port derivation) — run from the repo root.
+      - name: test scripts
+        run: npm run test:scripts
+        working-directory: .
+
       - name: typecheck
         run: npx tsc -b
 
