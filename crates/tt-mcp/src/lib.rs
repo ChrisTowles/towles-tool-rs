@@ -106,9 +106,14 @@ impl Dispatcher {
             "calendar_next" => self.calendar_next(now_ms),
             "tasks_open" => self.tasks_open(),
             "todo_create" => self.todo_create(args, now_ms),
+            "todo_update" => self.todo_update(args),
+            "todo_delete" => self.todo_delete(args),
+            "todo_link_issue" => self.todo_link_issue(args),
             "todo_set_status" => self.todo_set_status(args, now_ms),
             "issues_open" => self.issues_open(),
             "prs_status" => self.prs_status(),
+            "dm_status" => self.dm_status(),
+            "snapshot" => self.snapshot(),
             "agent_sessions" => self.agent_sessions(args, now_ms),
             "journal_append" => self.journal_append(args, now_ms),
             "collect_status" => self.collect_status(now_ms),
@@ -190,6 +195,72 @@ impl Dispatcher {
         Ok(json!({ "todo": todo }))
     }
 
+    /// Edit a todo's free-form fields (title/notes/due). This is a full replace
+    /// of those fields — omitting `notes` or `dueTs` clears them, matching
+    /// [`tt_store::Store::update_task`]. Status, position, and any issue link are
+    /// left untouched. Returns the updated todo, or an error when no todo has `id`.
+    fn todo_update(&self, args: &Value) -> Result<Value, String> {
+        let id = args
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "missing required argument: id".to_string())?;
+        let title = args
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .ok_or_else(|| "missing required argument: title".to_string())?;
+        let notes = args.get("notes").and_then(Value::as_str);
+        let due_ts = args.get("dueTs").and_then(Value::as_i64);
+        let todo = self.store.update_task(id, title, notes, due_ts).map_err(|e| e.to_string())?;
+        Ok(json!({ "todo": todo }))
+    }
+
+    /// Delete a todo permanently; errors when no todo has `id`.
+    fn todo_delete(&self, args: &Value) -> Result<Value, String> {
+        let id = args
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "missing required argument: id".to_string())?;
+        self.store.delete_task(id).map_err(|e| e.to_string())?;
+        Ok(json!({ "ok": true, "id": id }))
+    }
+
+    /// Link a todo to a GitHub issue (repo + number + url). `link_task_issue`
+    /// itself is a no-op update on a missing id, so existence is checked first to
+    /// surface a clear error instead of silently succeeding. Returns the updated
+    /// todo with its issue fields set.
+    fn todo_link_issue(&self, args: &Value) -> Result<Value, String> {
+        let id = args
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "missing required argument: id".to_string())?;
+        let repo = args
+            .get("repo")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|repo| !repo.is_empty())
+            .ok_or_else(|| "missing required argument: repo".to_string())?;
+        let number = args
+            .get("number")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "missing required argument: number".to_string())?;
+        let url = args
+            .get("url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "missing required argument: url".to_string())?;
+        if self.store.get_task(id).map_err(|e| e.to_string())?.is_none() {
+            return Err(format!("no todo with id {id}"));
+        }
+        self.store.link_task_issue(id, repo, number, url).map_err(|e| e.to_string())?;
+        let todo = self
+            .store
+            .get_task(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("no todo with id {id}"))?;
+        Ok(json!({ "todo": todo }))
+    }
+
     fn issues_open(&self) -> Result<Value, String> {
         let issues = self.store.issues().map_err(|e| e.to_string())?;
         Ok(json!({ "issues": issues }))
@@ -198,6 +269,30 @@ impl Dispatcher {
     fn prs_status(&self) -> Result<Value, String> {
         let prs = self.store.prs().map_err(|e| e.to_string())?;
         Ok(json!({ "prs": prs }))
+    }
+
+    /// Watched Slack DMs, each annotated with `needsReply` — true when the newest
+    /// message is not the user's own and is newer than the last dismissal
+    /// (`!fromMe && dismissedTs < ts`), matching the app's DM banner predicate.
+    fn dm_status(&self) -> Result<Value, String> {
+        let dms = self.store.dms().map_err(|e| e.to_string())?;
+        let mut items = Vec::with_capacity(dms.len());
+        for dm in &dms {
+            let mut value = serde_json::to_value(dm).map_err(|e| e.to_string())?;
+            if let Some(object) = value.as_object_mut() {
+                let needs_reply = !dm.from_me && dm.dismissed_ts < dm.ts;
+                object.insert("needsReply".to_string(), json!(needs_reply));
+            }
+            items.push(value);
+        }
+        Ok(json!({ "dms": items }))
+    }
+
+    /// The whole store in one call (events, tasks, issues, PRs, runs, DMs) for
+    /// "what's on my plate" summaries.
+    fn snapshot(&self) -> Result<Value, String> {
+        let snapshot = self.store.snapshot().map_err(|e| e.to_string())?;
+        serde_json::to_value(snapshot).map_err(|e| e.to_string())
     }
 
     /// Agentboard sessions from a one-shot engine scan, optionally filtered by
@@ -435,6 +530,48 @@ fn tool_definitions() -> Value {
             },
         },
         {
+            "name": "todo_update",
+            "description": "Edit a todo's title, notes, and due date (full replace: omitting notes/dueTs clears them). Status and any issue link are untouched.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "The todo's id." },
+                    "title": { "type": "string", "description": "The todo's title." },
+                    "notes": { "type": "string", "description": "Free-form context notes (omit to clear)." },
+                    "dueTs": {
+                        "type": "integer",
+                        "description": "Due date as epoch milliseconds (omit to clear).",
+                    },
+                },
+                "required": ["id", "title"],
+            },
+        },
+        {
+            "name": "todo_delete",
+            "description": "Delete a kanban todo permanently.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "The todo's id." },
+                },
+                "required": ["id"],
+            },
+        },
+        {
+            "name": "todo_link_issue",
+            "description": "Link a todo to a GitHub issue (sets its repo, number, and url).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "The todo's id." },
+                    "repo": { "type": "string", "description": "The issue's repository, as owner/name." },
+                    "number": { "type": "integer", "description": "The GitHub issue number." },
+                    "url": { "type": "string", "description": "The issue's URL." },
+                },
+                "required": ["id", "repo", "number", "url"],
+            },
+        },
+        {
             "name": "todo_set_status",
             "description": "Move a kanban todo to another column.",
             "inputSchema": {
@@ -458,6 +595,16 @@ fn tool_definitions() -> Value {
         {
             "name": "prs_status",
             "description": "Tracked pull-request status rows.",
+            "inputSchema": no_args(),
+        },
+        {
+            "name": "dm_status",
+            "description": "Watched Slack DMs, each annotated with needsReply (true when the newest message is not yours and newer than the last dismissal).",
+            "inputSchema": no_args(),
+        },
+        {
+            "name": "snapshot",
+            "description": "The whole store in one call (events, tasks, issues, prs, runs, dms) for a 'what's on my plate' summary.",
             "inputSchema": no_args(),
         },
         {
@@ -497,7 +644,7 @@ fn tool_definitions() -> Value {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use tt_store::{EventInput, IssueInput, PrInput};
+    use tt_store::{DmInput, EventInput, IssueInput, PrInput};
 
     const NOW: i64 = 1_700_000_000_000; // fixed epoch ms for deterministic tests
     const HOUR_MS: i64 = 3_600_000;
@@ -632,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_contains_all_ten_tools() {
+    fn tools_list_contains_all_fifteen_tools() {
         let mut dispatcher = dispatcher();
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }).to_string();
         let response: Value =
@@ -648,16 +795,21 @@ mod tests {
             "calendar_next",
             "tasks_open",
             "todo_create",
+            "todo_update",
+            "todo_delete",
+            "todo_link_issue",
             "todo_set_status",
             "issues_open",
             "prs_status",
+            "dm_status",
+            "snapshot",
             "agent_sessions",
             "journal_append",
             "collect_status",
         ] {
             assert!(names.contains(&expected), "missing tool {expected} in {names:?}");
         }
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 15);
     }
 
     #[test]
@@ -811,6 +963,182 @@ mod tests {
         assert!(message.contains("id"), "error should name the missing arg: {message}");
         let message = call_tool_err(&mut dispatcher, "todo_set_status", json!({ "id": 1 }));
         assert!(message.contains("status"), "error should name the missing arg: {message}");
+    }
+
+    #[test]
+    fn todo_update_replaces_title_notes_and_due() {
+        let mut dispatcher = dispatcher();
+        let created = call_tool(
+            &mut dispatcher,
+            "todo_create",
+            json!({ "title": "draft", "notes": "old notes" }),
+        );
+        let id = created["todo"]["id"].as_i64().unwrap();
+
+        let result = call_tool(
+            &mut dispatcher,
+            "todo_update",
+            json!({ "id": id, "title": "final", "notes": "new notes", "dueTs": NOW + HOUR_MS }),
+        );
+        assert_eq!(result["todo"]["text"], "final");
+        assert_eq!(result["todo"]["notes"], "new notes");
+        assert_eq!(result["todo"]["dueTs"], NOW + HOUR_MS);
+
+        // Omitting notes/dueTs is a full replace that clears them.
+        let cleared =
+            call_tool(&mut dispatcher, "todo_update", json!({ "id": id, "title": "final" }));
+        assert_eq!(cleared["todo"]["notes"], Value::Null);
+        assert_eq!(cleared["todo"]["dueTs"], Value::Null);
+    }
+
+    #[test]
+    fn todo_update_rejects_missing_args_and_unknown_id() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(&mut dispatcher, "todo_update", json!({ "title": "x" }));
+        assert!(message.contains("id"), "error should name the missing arg: {message}");
+        let message = call_tool_err(&mut dispatcher, "todo_update", json!({ "id": 1 }));
+        assert!(message.contains("title"), "error should name the missing arg: {message}");
+        let message =
+            call_tool_err(&mut dispatcher, "todo_update", json!({ "id": 9999, "title": "x" }));
+        assert!(message.contains("9999"), "error should name the missing id: {message}");
+    }
+
+    #[test]
+    fn todo_delete_removes_the_todo() {
+        let mut dispatcher = dispatcher();
+        let created = call_tool(&mut dispatcher, "todo_create", json!({ "title": "temp" }));
+        let id = created["todo"]["id"].as_i64().unwrap();
+
+        let result = call_tool(&mut dispatcher, "todo_delete", json!({ "id": id }));
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["id"], id);
+
+        // The todo is gone: set_status on it now errors with its id.
+        let message = call_tool_err(
+            &mut dispatcher,
+            "todo_set_status",
+            json!({ "id": id, "status": "doing" }),
+        );
+        assert!(message.contains(&id.to_string()), "deleted id should be gone: {message}");
+    }
+
+    #[test]
+    fn todo_delete_rejects_missing_and_unknown_id() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(&mut dispatcher, "todo_delete", json!({}));
+        assert!(message.contains("id"), "error should name the missing arg: {message}");
+        let message = call_tool_err(&mut dispatcher, "todo_delete", json!({ "id": 9999 }));
+        assert!(message.contains("9999"), "error should name the missing id: {message}");
+    }
+
+    #[test]
+    fn todo_link_issue_sets_issue_fields() {
+        let mut dispatcher = dispatcher();
+        let created = call_tool(&mut dispatcher, "todo_create", json!({ "title": "promote me" }));
+        let id = created["todo"]["id"].as_i64().unwrap();
+
+        let result = call_tool(
+            &mut dispatcher,
+            "todo_link_issue",
+            json!({
+                "id": id,
+                "repo": "o/r",
+                "number": 42,
+                "url": "https://github.com/o/r/issues/42",
+            }),
+        );
+        assert_eq!(result["todo"]["repo"], "o/r");
+        assert_eq!(result["todo"]["issueNumber"], 42);
+        assert_eq!(result["todo"]["issueUrl"], "https://github.com/o/r/issues/42");
+    }
+
+    #[test]
+    fn todo_link_issue_rejects_unknown_id_and_missing_args() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(
+            &mut dispatcher,
+            "todo_link_issue",
+            json!({ "id": 9999, "repo": "o/r", "number": 1, "url": "u" }),
+        );
+        assert!(message.contains("9999"), "error should name the missing id: {message}");
+
+        let created = call_tool(&mut dispatcher, "todo_create", json!({ "title": "x" }));
+        let id = created["todo"]["id"].as_i64().unwrap();
+        let message =
+            call_tool_err(&mut dispatcher, "todo_link_issue", json!({ "id": id, "repo": "o/r" }));
+        assert!(message.contains("number"), "error should name the missing arg: {message}");
+    }
+
+    #[test]
+    fn dm_status_flags_needs_reply() {
+        let store = seeded_store();
+        // Unanswered: their message, not dismissed → needsReply.
+        store
+            .upsert_dm(
+                &DmInput {
+                    channel: "D_UNANSWERED".to_string(),
+                    from_name: "Ada".to_string(),
+                    text: "ping?".to_string(),
+                    ts: NOW,
+                    from_me: false,
+                    url: None,
+                },
+                NOW,
+            )
+            .unwrap();
+        // Answered: my own most-recent message → not needsReply.
+        store
+            .upsert_dm(
+                &DmInput {
+                    channel: "D_ANSWERED".to_string(),
+                    from_name: "Bob".to_string(),
+                    text: "on it".to_string(),
+                    ts: NOW,
+                    from_me: true,
+                    url: None,
+                },
+                NOW,
+            )
+            .unwrap();
+        // Dismissed: their message but already marked handled → not needsReply.
+        store
+            .upsert_dm(
+                &DmInput {
+                    channel: "D_DISMISSED".to_string(),
+                    from_name: "Cy".to_string(),
+                    text: "fyi".to_string(),
+                    ts: NOW,
+                    from_me: false,
+                    url: None,
+                },
+                NOW,
+            )
+            .unwrap();
+        store.dismiss_dm("D_DISMISSED", NOW).unwrap();
+
+        let mut dispatcher = Dispatcher::new(store);
+        let result = call_tool(&mut dispatcher, "dm_status", json!({}));
+        let by_channel = |channel: &str| -> bool {
+            result["dms"].as_array().unwrap().iter().find(|d| d["channel"] == channel).unwrap()
+                    ["needsReply"]
+                    .as_bool()
+                    .unwrap()
+        };
+        assert!(by_channel("D_UNANSWERED"), "unanswered DM should need a reply");
+        assert!(!by_channel("D_ANSWERED"), "answered DM should not need a reply");
+        assert!(!by_channel("D_DISMISSED"), "dismissed DM should not need a reply");
+    }
+
+    #[test]
+    fn snapshot_returns_the_whole_store() {
+        let mut dispatcher = dispatcher();
+        let result = call_tool(&mut dispatcher, "snapshot", json!({}));
+        assert!(result["events"].is_array(), "snapshot missing events: {result}");
+        assert!(result["tasks"].is_array(), "snapshot missing tasks: {result}");
+        assert_eq!(result["issues"].as_array().unwrap().len(), 2);
+        assert_eq!(result["prs"].as_array().unwrap().len(), 1);
+        assert_eq!(result["runs"].as_array().unwrap().len(), 1);
+        assert!(result["dms"].is_array(), "snapshot missing dms: {result}");
     }
 
     #[test]
