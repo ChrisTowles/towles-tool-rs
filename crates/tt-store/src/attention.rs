@@ -594,4 +594,224 @@ mod tests {
         assert!(w.observe(0, &cfg, &[]).is_empty());
         assert!(w.observe(500 * MIN, &cfg, &[]).is_empty());
     }
+
+    // --- Boundary conditions ---------------------------------------------
+
+    #[test]
+    fn meeting_seen_exactly_at_start_never_fires() {
+        // First observation lands on `start_ts == now_ms`: the countdown never
+        // ran while we watched, so this is a level, not an edge. `> now_ms` is
+        // strict, so seen_before_start is false.
+        let mut w = MeetingStartWatch::new();
+        let ev = event("a", 1000);
+        assert_eq!(w.observe(1000, Some(&ev)), None);
+        assert_eq!(w.observe(1001, Some(&ev)), None);
+    }
+
+    #[test]
+    fn meeting_fires_on_the_exact_start_tick_not_before() {
+        // Seen 1ms before start, then observed on the exact start tick: `<=` is
+        // inclusive, so the edge lands precisely at start_ts.
+        let mut w = MeetingStartWatch::new();
+        let ev = event("a", 1000);
+        assert_eq!(w.observe(999, Some(&ev)), None);
+        let edge = w.observe(1000, Some(&ev)).expect("edge at exact start");
+        assert_eq!(edge.external_id, "a");
+        assert_eq!(edge.start_ts, 1000);
+    }
+
+    #[test]
+    fn meeting_edge_carries_title_for_notification_body() {
+        let mut w = MeetingStartWatch::new();
+        let mut ev = event("evt-1", 1000);
+        ev.title = "Standup".to_string();
+        assert_eq!(w.observe(500, Some(&ev)), None);
+        let edge = w.observe(1000, Some(&ev)).expect("edge");
+        assert_eq!(edge.title, "Standup");
+        assert_eq!(edge.external_id, "evt-1");
+    }
+
+    #[test]
+    fn meeting_disappearing_then_returning_before_start_can_fire() {
+        // `None` between observations doesn't reset the tracked meeting, but a
+        // meeting first seen in the future still fires when its start arrives.
+        let mut w = MeetingStartWatch::new();
+        let ev = event("a", 2000);
+        assert_eq!(w.observe(1000, Some(&ev)), None);
+        assert_eq!(w.observe(1500, None), None); // collector briefly returned nothing
+        let edge = w.observe(2000, Some(&ev)).expect("edge after data returns");
+        assert_eq!(edge.external_id, "a");
+    }
+
+    #[test]
+    fn stale_by_age_boundary_is_strict() {
+        // `by_age` is `now - ok_at > stale_after_ms` (strictly greater): exactly
+        // at the threshold is still fresh; one ms past is stale.
+        let mut w = StaleCollectorWatch::new();
+        let cfg = watched("issues", 30 * MIN);
+        let healthy = [run("issues", true, 0, None)];
+
+        assert!(w.observe(0, &cfg, &healthy).is_empty()); // prime
+        // Exactly at the threshold: not yet stale.
+        assert!(w.observe(30 * MIN, &cfg, &healthy).is_empty());
+        // One ms past: fires.
+        let edges = w.observe(30 * MIN + 1, &cfg, &healthy);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].stale_for_ms, 30 * MIN + 1);
+    }
+
+    #[test]
+    fn stale_by_failure_streak_boundary_is_at_exactly_fail_streak() {
+        // Table over the streak count: fires the first tick `fail_streak` reaches
+        // FAIL_STREAK (3), never before.
+        let mut w = StaleCollectorWatch::new();
+        let cfg = watched("prs", 30 * MIN);
+        assert!(w.observe(0, &cfg, &[run("prs", true, 0, None)]).is_empty());
+
+        // (tick minute, expected number of edges) — the third failure fires.
+        let steps: [(i64, usize); 3] = [(1, 0), (2, 0), (3, 1)];
+        for (min, want) in steps {
+            let runs = [run("prs", false, min * MIN, Some("boom"))];
+            let edges = w.observe(min * MIN, &cfg, &runs);
+            assert_eq!(edges.len(), want, "failure #{min} should yield {want} edge(s)");
+        }
+    }
+
+    #[test]
+    fn stale_by_failure_only_ever_failing_ages_from_latest_run() {
+        // A collector we never saw succeed can only go stale by failure streak.
+        // With no freshness baseline, `stale_for_ms` measures from the latest
+        // run's `ran_at`, and the failing message rides along.
+        let mut w = StaleCollectorWatch::new();
+        let cfg = watched("slack:dm", 30 * MIN);
+
+        assert!(
+            w.observe(MIN, &cfg, &[run("slack:dm", false, MIN, Some("invalid_auth"))]).is_empty()
+        );
+        assert!(
+            w.observe(2 * MIN, &cfg, &[run("slack:dm", false, 2 * MIN, Some("invalid_auth"))])
+                .is_empty()
+        );
+        let edges =
+            w.observe(3 * MIN, &cfg, &[run("slack:dm", false, 3 * MIN, Some("invalid_auth"))]);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].key, "slack:dm");
+        // No last_ok_at, so the age is measured from the latest run row itself.
+        assert_eq!(edges[0].stale_for_ms, 0);
+        assert_eq!(edges[0].last_message.as_deref(), Some("invalid_auth"));
+    }
+
+    #[test]
+    fn stale_by_age_edge_carries_failing_message_when_latest_run_failed() {
+        // Staleness fired on the age path, but the most recent run happened to be
+        // a (single, sub-streak) failure: `last_message` reflects that run, since
+        // the field keys off the current run's ok flag, not the stale cause.
+        let mut w = StaleCollectorWatch::new();
+        let cfg = watched("issues", 30 * MIN);
+
+        // Healthy prime at 0 sets the freshness baseline.
+        assert!(w.observe(0, &cfg, &[run("issues", true, 0, None)]).is_empty());
+        // One failure (streak = 1, below FAIL_STREAK) whose row is now the latest.
+        let failing = [run("issues", false, MIN, Some("transient blip"))];
+        assert!(w.observe(MIN, &cfg, &failing).is_empty());
+        // Age past the threshold: fires by age, but message comes from the run.
+        let edges = w.observe(31 * MIN, &cfg, &failing);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].stale_for_ms, 31 * MIN); // from the healthy run at 0
+        assert_eq!(edges[0].last_message.as_deref(), Some("transient blip"));
+    }
+
+    #[test]
+    fn stale_per_collector_thresholds_fire_at_their_own_boundary() {
+        // Two collectors with different thresholds go stale independently, each
+        // at its own strict boundary.
+        let mut w = StaleCollectorWatch::new();
+        let cfg = vec![
+            WatchedCollector { key: "prs".to_string(), stale_after_ms: 8 * MIN },
+            WatchedCollector { key: "issues".to_string(), stale_after_ms: 30 * MIN },
+        ];
+        let runs = [run("prs", true, 0, None), run("issues", true, 0, None)];
+        assert!(w.observe(0, &cfg, &runs).is_empty());
+
+        // Exactly 8m: `prs` still fresh (strict `>`).
+        assert!(w.observe(8 * MIN, &cfg, &runs).is_empty());
+        // Just past 8m: only `prs` fires.
+        let edges = w.observe(8 * MIN + 1, &cfg, &runs);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].key, "prs");
+        // Later, `issues` crosses its own 30m boundary independently.
+        let edges = w.observe(30 * MIN + 1, &cfg, &runs);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].key, "issues");
+    }
+
+    // --- Multi-edge / key formatting -------------------------------------
+
+    #[test]
+    fn review_reports_every_newly_requested_pr_in_one_snapshot() {
+        let mut w = ReviewRequestedWatch::new();
+        w.observe(&[]); // prime empty
+        let mut edges = w.observe(&[
+            pr("me/repo", 1, REVIEW_REQUESTED),
+            pr("me/repo", 2, "approved"),
+            pr("you/repo", 5, REVIEW_REQUESTED),
+        ]);
+        edges.sort_by_key(|e| e.number);
+        assert_eq!(edges.len(), 2);
+        assert_eq!((edges[0].repo.as_str(), edges[0].number), ("me/repo", 1));
+        assert_eq!((edges[1].repo.as_str(), edges[1].number), ("you/repo", 5));
+    }
+
+    #[test]
+    fn review_edge_carries_title_and_url() {
+        let mut w = ReviewRequestedWatch::new();
+        w.observe(&[]);
+        let mut p = pr("me/repo", 42, REVIEW_REQUESTED);
+        p.title = "Fix the thing".to_string();
+        p.url = "https://github.com/me/repo/pull/42".to_string();
+        let edges = w.observe(&[p]);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].title, "Fix the thing");
+        assert_eq!(edges[0].url, "https://github.com/me/repo/pull/42");
+    }
+
+    #[test]
+    fn review_same_number_in_different_repos_are_distinct_keys() {
+        // The dedupe key is `repo#number`, so #1 in two repos both fire and
+        // neither masks the other.
+        let mut w = ReviewRequestedWatch::new();
+        w.observe(&[]);
+        let edges = w.observe(&[
+            pr("me/repo", 1, REVIEW_REQUESTED),
+            pr("you/repo", 1, REVIEW_REQUESTED),
+        ]);
+        assert_eq!(edges.len(), 2);
+        // Holding steady next snapshot: neither repeats.
+        assert!(
+            w.observe(&[
+                pr("me/repo", 1, REVIEW_REQUESTED),
+                pr("you/repo", 1, REVIEW_REQUESTED),
+            ])
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn stale_reports_multiple_collectors_going_stale_together() {
+        // Both watched collectors cross their (shared) threshold on the same
+        // tick: both edges surface in one observation.
+        let mut w = StaleCollectorWatch::new();
+        let cfg = vec![
+            WatchedCollector { key: "prs".to_string(), stale_after_ms: 10 * MIN },
+            WatchedCollector { key: "issues".to_string(), stale_after_ms: 10 * MIN },
+        ];
+        let runs = [run("prs", true, 0, None), run("issues", true, 0, None)];
+        assert!(w.observe(0, &cfg, &runs).is_empty());
+
+        let mut edges = w.observe(11 * MIN, &cfg, &runs);
+        edges.sort_by(|a, b| a.key.cmp(&b.key));
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0].key, "issues");
+        assert_eq!(edges[1].key, "prs");
+    }
 }
