@@ -86,3 +86,28 @@ export function collectorHealth(
     return { key, label: COLLECTOR_LABELS[key], state: classifyRun(run, now, threshold), run };
   });
 }
+
+/**
+ * The collectors the Cockpit "Refreshed …" readout reflects — exactly the ones
+ * `storeCollectNow` kicks off (calendar is excluded there, since it spends claude
+ * tokens per tick).
+ */
+export const REFRESH_COLLECTORS: readonly CollectorKey[] = ["prs", "issues"];
+
+/**
+ * When the Cockpit's PR/issue data was last refreshed: the newest *successful*
+ * run timestamp (epoch ms) across {@link REFRESH_COLLECTORS}, or `undefined` when
+ * neither has a successful latest run yet. Derived from {@link collectorHealth}
+ * so it shares the newest-run-wins bookkeeping — a collector whose latest run
+ * errored contributes nothing (the readout then reports the other collector, or
+ * "not refreshed yet"). The caller turns this into an age with an injected `now`
+ * (via `fmtAge`), so nothing here reads the clock.
+ */
+export function dataRefreshedAt(runs: CollectRun[], now: number): number | undefined {
+  let newest: number | undefined;
+  for (const h of collectorHealth(runs, now)) {
+    if (!REFRESH_COLLECTORS.includes(h.key)) continue;
+    if (h.run?.ok) newest = newest === undefined ? h.run.ranAt : Math.max(newest, h.run.ranAt);
+  }
+  return newest;
+}
