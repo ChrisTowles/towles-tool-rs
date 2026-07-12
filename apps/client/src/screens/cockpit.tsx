@@ -1,8 +1,16 @@
 import { useEffect, useState } from "react";
-import { CalendarClock, CircleAlert, CircleDot, GitPullRequest } from "lucide-react";
+import { CalendarClock, CircleAlert, CircleDot, GitPullRequest, Video } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { fmtClock, fmtCountdown, useStoreSnapshot } from "@/lib/data";
+import {
+  currentOrNextEvent,
+  eventIsLive,
+  fmtClock,
+  fmtCountdown,
+  useStoreSnapshot,
+} from "@/lib/data";
+import { openExternalUrl } from "@/lib/open-url";
 import { Empty, IssueRow, Panel, PrRow, prNeedsYou, prRank } from "@/components/store-bits";
 
 /**
@@ -19,12 +27,15 @@ export function CockpitScreen() {
     return () => clearInterval(id);
   }, []);
 
-  const upcoming = snapshot.events
-    .filter((e) => e.startTs > now)
-    .sort((a, b) => a.startTs - b.startTs);
-  const nextEvent = upcoming[0];
-  const later = upcoming.slice(1, 3);
-  const soon = nextEvent && nextEvent.startTs - now < 15 * 60_000;
+  const nextEvent = currentOrNextEvent(snapshot.events, now);
+  const meetingLive = nextEvent ? eventIsLive(nextEvent, now) : false;
+  const soon = nextEvent ? !meetingLive && nextEvent.startTs - now < 15 * 60_000 : false;
+  // Highlight amber while a meeting is live or imminent.
+  const highlight = meetingLive || soon;
+  const later = snapshot.events
+    .filter((e) => e.startTs > now && e.id !== nextEvent?.id)
+    .sort((a, b) => a.startTs - b.startTs)
+    .slice(0, 2);
 
   const needsYouPrs = snapshot.prs.filter(prNeedsYou);
   const repos = new Set([
@@ -38,25 +49,43 @@ export function CockpitScreen() {
       <div className="flex shrink-0 flex-wrap items-center gap-x-8 gap-y-2 border-b px-5 py-4">
         <div className="flex items-center gap-3">
           <CalendarClock
-            className={cn("size-5", soon ? "text-amber-500" : "text-muted-foreground")}
+            className={cn("size-5", highlight ? "text-amber-500" : "text-muted-foreground")}
           />
           {nextEvent ? (
-            <div className="flex items-baseline gap-3">
+            <div className="flex items-center gap-3">
               <span
                 className={cn(
                   "font-mono text-3xl font-semibold tabular-nums",
-                  soon ? "text-amber-500" : "text-foreground",
+                  highlight ? "text-amber-500" : "text-foreground",
                 )}
               >
-                {fmtCountdown(nextEvent.startTs - now)}
+                {meetingLive ? "Now" : fmtCountdown(nextEvent.startTs - now)}
               </span>
-              <div className="flex flex-col">
+              <div className="flex min-w-0 flex-col">
                 <span className="text-sm font-medium">{nextEvent.title}</span>
                 <span className="text-xs text-muted-foreground">
-                  {fmtClock(nextEvent.startTs)}
+                  {meetingLive && nextEvent.endTs !== undefined
+                    ? `until ${fmtClock(nextEvent.endTs)}`
+                    : fmtClock(nextEvent.startTs)}
                   {nextEvent.location ? ` · ${nextEvent.location}` : ""}
                 </span>
               </div>
+              {nextEvent.joinUrl ? (
+                <Button
+                  size="sm"
+                  variant={meetingLive ? "default" : "outline"}
+                  className={cn(
+                    meetingLive &&
+                      "bg-amber-500 text-white hover:bg-amber-500/90 dark:bg-amber-500 dark:text-white",
+                  )}
+                  onClick={() => {
+                    if (nextEvent.joinUrl) void openExternalUrl(nextEvent.joinUrl);
+                  }}
+                >
+                  <Video />
+                  Join
+                </Button>
+              ) : null}
             </div>
           ) : (
             <span className="text-sm text-muted-foreground">No more meetings today.</span>

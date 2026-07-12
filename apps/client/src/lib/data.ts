@@ -139,6 +139,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         endTs: now + 40 * MINUTE,
         attendees: [],
         location: "Meet",
+        joinUrl: "https://meet.example.com/mock-standup",
       },
     ],
     tasks: [],
@@ -281,6 +282,27 @@ export function fmtCountdown(msUntil: number): string {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return `${h}h ${String(m).padStart(2, "0")}m`;
+}
+
+/**
+ * Whether an event is live — started but not yet ended (`startTs <= now < endTs`).
+ * An event with no `endTs` has no live window and is never live.
+ */
+export function eventIsLive(e: CalEvent, now: number): boolean {
+  return e.startTs <= now && e.endTs !== undefined && now < e.endTs;
+}
+
+/**
+ * The meeting to surface on the Cockpit strip: the one in progress right now,
+ * or the soonest still to start — whichever begins first. Mirrors tt-store's
+ * `current_or_next_event`, so an in-progress meeting stays visible instead of
+ * vanishing the instant it starts. An event with no `endTs` is a point in time,
+ * shown only up to its start.
+ */
+export function currentOrNextEvent(events: CalEvent[], now: number): CalEvent | undefined {
+  return events
+    .filter((e) => (e.endTs !== undefined ? now < e.endTs : e.startTs >= now))
+    .sort((a, b) => a.startTs - b.startTs)[0];
 }
 
 /** Whole minutes from `now` until `ts` (negative when `ts` is in the past). */
