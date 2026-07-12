@@ -53,10 +53,11 @@ export type UserSettings = {
   collectors: CollectorsSettings;
   /**
    * Mostly TS-owned UI block, carried through opaquely so a save never drops
-   * it. `notifyNeedsYou` is the one app-edited key: desktop notification when
-   * a session flips into needs-you (unset = on).
+   * it. The app edits two keys: `notifyNeedsYou` (desktop notification when a
+   * session flips into needs-you; unset = on) and `copyOnSelect` (terminal
+   * copies the selection to the clipboard on selection end; unset = off).
    */
-  agentboard?: { notifyNeedsYou?: boolean } & Record<string, unknown>;
+  agentboard?: { notifyNeedsYou?: boolean; copyOnSelect?: boolean } & Record<string, unknown>;
 };
 
 export type SaveState = "idle" | "saving" | "saved" | "error";
