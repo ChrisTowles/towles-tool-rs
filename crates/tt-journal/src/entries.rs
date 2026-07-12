@@ -172,6 +172,20 @@ pub fn append_to_daily(
     time_hhmm: &str,
     text: &str,
 ) -> Result<PathBuf> {
+    append_bullet_to_daily(journal_settings, date, &format!("- {time_hhmm} {text}"))
+}
+
+/// Append a fully-formed bullet line verbatim into the daily note for `date`.
+///
+/// Same path resolution and section placement as [`append_to_daily`], but the caller owns
+/// the whole line (e.g. the app's quick-log formats `- HH:MM [context] text` in the
+/// frontend). `bullet_line` must already be a complete `- HH:MM …` bullet so app and CLI
+/// captures interleave cleanly. Returns the path written to.
+pub fn append_bullet_to_daily(
+    journal_settings: &JournalSettings,
+    date: NaiveDate,
+    bullet_line: &str,
+) -> Result<PathBuf> {
     let template_dir = Path::new(&journal_settings.template_dir);
     ensure_templates_exist(template_dir)?;
 
@@ -185,17 +199,17 @@ pub fn append_to_daily(
     }
 
     let content = std::fs::read_to_string(&info.full_path)?;
-    let updated = insert_daily_line(&content, date, time_hhmm, text);
+    let updated = insert_daily_line(&content, date, bullet_line);
     std::fs::write(&info.full_path, &updated)?;
     Ok(info.full_path)
 }
 
-/// Insert `- HH:MM text` into `content` under today's `## <date>` day section.
+/// Insert a `- HH:MM …` bullet into `content` under today's `## <date>` day section.
 /// Pure string transformation, split out so it is trivially testable.
-fn insert_daily_line(content: &str, date: NaiveDate, time_hhmm: &str, text: &str) -> String {
+fn insert_daily_line(content: &str, date: NaiveDate, new_line: &str) -> String {
     let date_str = format_date(date);
     let header_prefix = format!("## {date_str}");
-    let new_line = format!("- {time_hhmm} {text}");
+    let new_line = new_line.to_string();
 
     let mut lines: Vec<String> = content.split('\n').map(|s| s.to_string()).collect();
 

@@ -307,19 +307,20 @@ fn parse_gh_issue_create_output(output: &std::process::Output) -> Result<(i64, S
     Ok((number, url))
 }
 
-/// Append a timestamped line to today's daily note. Independent of the store (writes a
-/// markdown file), so it works even when the store is unavailable. The local date and
-/// `HH:MM` are resolved here, at the boundary; journal settings come from `tt_config`.
+/// Append a pre-formatted timeline bullet to today's daily note. Independent of the store
+/// (writes a markdown file), so it works even when the store is unavailable. The frontend
+/// owns the line format (`- HH:MM [context] text`, from `formatLogLine`), so it is written
+/// verbatim; only the local date (for section placement) is resolved here. Journal
+/// settings come from `tt_config`.
 #[tauri::command]
 pub fn journal_log(app: AppHandle, state: State<StoreState>, text: String) -> Result<(), String> {
-    if text.trim().is_empty() {
+    let line = text.trim();
+    if line.is_empty() {
         return Err("journal text is required".into());
     }
     let settings = tt_config::load().map_err(|e| format!("failed to load settings: {e}"))?;
-    let now = chrono::Local::now();
-    let date = now.date_naive();
-    let time = now.format("%H:%M").to_string();
-    tt_journal::entries::append_to_daily(&settings.journal_settings, date, &time, &text)
+    let date = chrono::Local::now().date_naive();
+    tt_journal::entries::append_bullet_to_daily(&settings.journal_settings, date, line)
         .map_err(|e| format!("journal append failed: {e}"))?;
     // Journal writes don't change the store, but re-emit to match the write-command
     // contract (harmless no-op when the store is unavailable).
