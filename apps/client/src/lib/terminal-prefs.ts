@@ -2,8 +2,8 @@ import { useEffect, useRef, type RefObject } from "react";
 import { invokeCmd } from "./tauri";
 import type { UserSettings } from "./settings";
 
-/** Built-in default for `agentboard.copyOnSelect` — off, matching tt-config. */
-export const DEFAULT_COPY_ON_SELECT = false;
+/** Built-in default for `agentboard.copyOnSelect` — on, matching tt-config. */
+export const DEFAULT_COPY_ON_SELECT = true;
 
 /**
  * Track the `agentboard.copyOnSelect` preference in a ref the terminal's render
