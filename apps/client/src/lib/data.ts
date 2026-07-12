@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invokeOk, isTauri } from "./tauri";
+import { invokeOk, invokeToast, isTauri } from "./tauri";
 
 /**
  * Client-side view of the personal-HQ store (the Rust `tt-store` crate, surfaced
@@ -383,3 +383,15 @@ export const storeDmDismiss = (channel: string, ts: number) =>
   invokeOk("store_dm_dismiss", { channel, ts });
 
 export const journalLog = (text: string) => invokeOk("journal_log", { text });
+
+/**
+ * Force the issues, PRs, and (when configured) Slack collectors to run right
+ * now, bypassing the scheduler cadence — calendar is intentionally excluded
+ * (it spends claude tokens). Resolves `true` when this call kicked off a
+ * refresh, `false` when one was already in flight (overlap-guarded no-op) or in
+ * browser dev. The store snapshot re-emits from Rust when the run finishes.
+ */
+export async function storeCollectNow(): Promise<boolean> {
+  const result = await invokeToast<{ started: boolean }>("store_collect_now");
+  return result?.started ?? false;
+}

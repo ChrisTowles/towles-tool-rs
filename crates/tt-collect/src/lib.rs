@@ -239,6 +239,29 @@ pub fn collect_all(
     ]
 }
 
+/// Run the collectors a manual "refresh now" fires: issues, then PRs, then —
+/// only when a Slack config is supplied — the watched DM. Calendar is
+/// deliberately excluded: every calendar run spends `claude` tokens, so it
+/// stays on its scheduled cadence and is never triggered by a button press.
+/// `slack` is `Some` only when the collector is enabled and configured (the
+/// caller decides), so passing `None` cleanly skips it rather than recording a
+/// misconfiguration failure on every manual refresh.
+pub fn collect_manual(
+    store: &Store,
+    repo_dirs: &[PathBuf],
+    slack: Option<&SlackDmConfig>,
+    now_ms: i64,
+) -> Vec<CollectSummary> {
+    let mut summaries = vec![
+        collect_issues(store, repo_dirs, now_ms),
+        collect_prs(store, repo_dirs, now_ms),
+    ];
+    if let Some(config) = slack {
+        summaries.push(collect_slack_dm(store, config, now_ms));
+    }
+    summaries
+}
+
 /// The tracked repo directories from the agentboard repos config, or an empty
 /// vec if the config is missing/empty.
 pub fn tracked_repo_dirs() -> Vec<PathBuf> {
@@ -435,6 +458,33 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].collector, "prs");
         assert!(runs[0].ok);
+    }
+
+    #[test]
+    fn collect_manual_runs_issues_and_prs_but_never_calendar() {
+        let store = Store::open_in_memory().unwrap();
+        let summaries = collect_manual(&store, &[], None, 1);
+        let keys: Vec<&str> = summaries.iter().map(|s| s.collector.as_str()).collect();
+        assert_eq!(keys, ["issues", "prs"], "manual refresh runs issues + PRs, skips calendar");
+        assert!(!keys.contains(&"claude:calendar"), "calendar is never manually triggered");
+    }
+
+    #[test]
+    fn collect_manual_includes_slack_only_when_configured() {
+        let store = Store::open_in_memory().unwrap();
+        // `watch_user_id` left empty so `collect_slack_dm` records its
+        // misconfiguration failure and returns before any network call — enough
+        // to prove the slack summary is appended when a config is supplied.
+        let config = SlackDmConfig {
+            token: "xoxp-test".to_string(),
+            watch_user_id: String::new(),
+            watch_name: String::new(),
+        };
+        let keys: Vec<String> = collect_manual(&store, &[], Some(&config), 1)
+            .into_iter()
+            .map(|s| s.collector)
+            .collect();
+        assert_eq!(keys, ["issues", "prs", "slack:dm"]);
     }
 
     #[test]
