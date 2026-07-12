@@ -8,6 +8,7 @@
 use crate::tokens::{generate_journal_file_info, monday_of_week};
 use crate::{Error, JournalType, Result};
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tt_config::JournalSettings;
@@ -367,6 +368,33 @@ pub struct JournalEntry {
     pub size: u64,
 }
 
+/// Serializable view of a [`JournalEntry`] for `ttr journal list --json`.
+///
+/// A dedicated DTO (rather than deriving `Serialize` on `JournalEntry` directly) keeps
+/// the JSON shape stable and decoupled from internal fields: it emits the **absolute**
+/// path, the type as its wire string, and the date as `YYYY-MM-DD` — dropping the
+/// display-only `relative_path`.
+#[derive(Debug, Serialize)]
+pub struct JournalEntryJson {
+    pub path: String,
+    #[serde(rename = "type")]
+    pub ty: Option<&'static str>,
+    pub date: Option<String>,
+    pub size: u64,
+}
+
+impl JournalEntry {
+    /// Build the JSON view. `path` is emitted as the absolute file path.
+    pub fn to_json(&self) -> JournalEntryJson {
+        JournalEntryJson {
+            path: self.file_path.to_string_lossy().to_string(),
+            ty: self.ty.map(|t| t.as_str()),
+            date: self.date.map(format_date),
+            size: self.size,
+        }
+    }
+}
+
 /// How to sort listed entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortBy {
@@ -426,6 +454,35 @@ pub struct SearchMatch {
     pub line_number: usize,
     pub line: String,
     pub context: Vec<String>,
+}
+
+/// Serializable view of a [`SearchMatch`] for `ttr journal search --json`.
+///
+/// Emits the **absolute** path, the 1-based line number, the matched line, and the
+/// entry's inferred type/date (derived from the path, since a `SearchMatch` does not
+/// carry them). The display-only `context` field is intentionally omitted.
+#[derive(Debug, Serialize)]
+pub struct SearchMatchJson {
+    pub path: String,
+    pub line_number: usize,
+    pub line: String,
+    #[serde(rename = "type")]
+    pub ty: Option<&'static str>,
+    pub date: Option<String>,
+}
+
+impl SearchMatch {
+    /// Build the JSON view. `path` is emitted as the absolute file path; `type`/`date`
+    /// are inferred from that path.
+    pub fn to_json(&self) -> SearchMatchJson {
+        SearchMatchJson {
+            path: self.file_path.to_string_lossy().to_string(),
+            line_number: self.line_number,
+            line: self.line.clone(),
+            ty: infer_type_from_path(&self.file_path).map(|t| t.as_str()),
+            date: extract_date_from_filename(&self.file_path).map(format_date),
+        }
+    }
 }
 
 /// Options for [`search_journal_files`], mirroring `SearchOptions`.

@@ -340,6 +340,21 @@ pub enum JournalCommands {
         text: Option<String>,
     },
 
+    /// Open the most recent journal entry in the editor
+    Open {
+        /// Open the most recent entry (the default; accepted for explicitness)
+        #[arg(long)]
+        last: bool,
+
+        /// Filter by entry type: daily-notes, meeting, note
+        #[arg(long, short = 't')]
+        r#type: Option<String>,
+
+        /// Print the entry's absolute path instead of opening it in an editor
+        #[arg(long)]
+        no_open: bool,
+    },
+
     /// List recent journal entries
     List {
         /// Filter by entry type: daily-notes, meeting, note
@@ -353,6 +368,10 @@ pub enum JournalCommands {
         /// Sort by: date, name (default: date)
         #[arg(long, short = 's')]
         sort: Option<String>,
+
+        /// Emit entries as a JSON array instead of a table
+        #[arg(long)]
+        json: bool,
     },
 
     /// Search journal entries for matching text
@@ -367,6 +386,10 @@ pub enum JournalCommands {
         /// Filter by date range: YYYY-MM-DD..YYYY-MM-DD
         #[arg(long, short = 'r')]
         range: Option<String>,
+
+        /// Emit matches as a JSON array instead of grouped text
+        #[arg(long)]
+        json: bool,
     },
 }
 
