@@ -15,6 +15,11 @@ import { fmtMins } from "@/components/agentboard-bits";
 import { PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffPane } from "@/components/diff-pane";
+import {
+  NewSlotDialog,
+  type NewSlotRepo,
+  type SlotCreated,
+} from "@/components/new-slot-dialog";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import {
@@ -185,6 +190,8 @@ export function AgentboardScreen() {
   // Session awaiting the "what are you working toward?" prompt before Claude
   // actually launches — see `commitStartClaude`.
   const [startClaudeTarget, setStartClaudeTarget] = useState<StartClaudeTarget | null>(null);
+  // Repo the new-slot modal is open for (null = closed) — see NewSlotDialog.
+  const [newSlotRepo, setNewSlotRepo] = useState<NewSlotRepo | null>(null);
   const [startClaudePrompt, setStartClaudePrompt] = useState("");
   // Session ids whose PTY is mounted (kept alive for scrollback), + their cwd.
   const [open, setOpen] = useState<string[]>([]);
@@ -508,6 +515,22 @@ export function AgentboardScreen() {
     const folderDir = folderOf.get(target.id)?.dir;
     if (!folderDir) return;
     selectSession(folderDir, target.id);
+  }
+
+  // A slot the new-slot modal just created: track it in the rail, open its
+  // first session, and start Claude on the goal in that session's PTY.
+  async function slotCreated(created: SlotCreated, goal: string) {
+    toast(`created ${created.name}${created.branch ? ` on ${created.branch}` : ""}`);
+    await abInvoke("ab_add_repo", { path: created.dir });
+    const rec = await abInvoke<SessionData>("ab_add_session", { dir: created.dir, name: null });
+    if (!rec) return;
+    selectSession(created.dir, rec.id);
+    if (goal) {
+      await launchClaudeIn(
+        { folderDir: created.dir, sessionId: rec.id, sessionName: rec.name, restart: false },
+        goal,
+      );
+    }
   }
 
   async function newSession(folderDir: string, launchClaude = false) {
@@ -963,6 +986,7 @@ export function AgentboardScreen() {
                           onSelectFolder={selectFolder}
                           onSelect={selectSession}
                           onNewSession={newSession}
+                          onNewSlot={setNewSlotRepo}
                           onRemoveRepo={requestRemoveRepo}
                           onRenameCommit={commitRename}
                           onOpenDiff={openDiff}
@@ -1435,6 +1459,12 @@ export function AgentboardScreen() {
           />
         </DialogContent>
       </Dialog>
+
+      <NewSlotDialog
+        repo={newSlotRepo}
+        onClose={() => setNewSlotRepo(null)}
+        onCreated={slotCreated}
+      />
 
       <Dialog
         open={trackRepoOpen}

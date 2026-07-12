@@ -5315,6 +5315,7 @@ dependencies = [
  "tt-git",
  "tt-graph",
  "tt-journal",
+ "tt-slots",
  "tt-store",
  "tt-vt",
 ]
@@ -5463,6 +5464,7 @@ name = "tt-slots"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
+ "tt-exec",
 ]
 
 [[package]]

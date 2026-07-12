@@ -102,6 +102,10 @@ pub enum SlotCommands {
         #[arg(long, short = 'b')]
         branch: Option<String>,
 
+        /// Base ref for the new branch / detached checkout (default: the hub's HEAD branch)
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
+
         /// Emit the created slot as JSON
         #[arg(long)]
         json: bool,
