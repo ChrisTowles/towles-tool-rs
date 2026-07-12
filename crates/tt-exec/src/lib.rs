@@ -9,6 +9,37 @@ use std::process::Command;
 use std::time::Duration;
 use thiserror::Error;
 
+/// Env-var name prefixes that identify the running app instance and must not
+/// leak into a process spawned inside it: its dev-server port and session /
+/// instance stamps (`TT_`, e.g. `TT_DEV_PORT`, `TT_SESSION_ID`,
+/// `TT_APP_INSTANCE`), its Tauri build + automation config (`TAURI_`, e.g.
+/// `TAURI_CONFIG`, `TAURI_ENV_TARGET_TRIPLE`, `TAURI_ANDROID_*`), and the npm
+/// process that launched it (`npm_`, e.g. `npm_config_*`, `npm_lifecycle_*`).
+///
+/// A shell spawned inside the app that then starts a *nested* app instance
+/// (`npm run dev`, `tt-app`) must re-derive its own port and session identity;
+/// inheriting the parent's makes the nested instance collide on the parent's
+/// port and mis-attribute to the parent's session (issue #39).
+pub const APP_INSTANCE_ENV_PREFIXES: &[&str] = &["TT_", "TAURI_", "npm_"];
+
+/// Whether `key` names an app-instance env var a spawned process must not
+/// inherit — see [`APP_INSTANCE_ENV_PREFIXES`].
+pub fn is_app_instance_env(key: &str) -> bool {
+    APP_INSTANCE_ENV_PREFIXES.iter().any(|prefix| key.starts_with(prefix))
+}
+
+/// Filter the app-instance env vars out of `env`, returning the pairs a nested
+/// process should inherit. Pure and order-preserving; the caller applies the
+/// result to the child (see the app's `terminal.rs`). Everything not matched by
+/// [`is_app_instance_env`] survives (PATH, HOME, TERM, SHELL, …).
+pub fn scrub_app_instance_env<I, K, V>(env: I) -> Vec<(K, V)>
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<str>,
+{
+    env.into_iter().filter(|(key, _)| !is_app_instance_env(key.as_ref())).collect()
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Failed to spawn `{cmd}`: {source}")]
@@ -255,6 +286,81 @@ mod tests {
         // Canonicalize both sides: temp_dir is often a symlink (e.g. /tmp → /private/tmp).
         let reported = std::fs::canonicalize(output.stdout.trim()).unwrap();
         assert_eq!(reported, std::fs::canonicalize(&dir).unwrap());
+    }
+
+    #[test]
+    fn app_instance_env_prefixes_are_stripped() {
+        // Every documented app-instance var (issue #39) must be recognized.
+        for key in [
+            "TT_DEV_PORT",
+            "TT_SESSION_ID",
+            "TT_APP_INSTANCE",
+            "TT_E2E_WEBDRIVER_PORT",
+            "TAURI_CONFIG",
+            "TAURI_ENV_TARGET_TRIPLE",
+            "TAURI_ANDROID_HOME",
+            "TAURI_WEBVIEW_AUTOMATION",
+            "npm_config_registry",
+            "npm_lifecycle_event",
+            "npm_package_name",
+        ] {
+            assert!(is_app_instance_env(key), "{key} should be stripped");
+        }
+    }
+
+    #[test]
+    fn ordinary_env_survives() {
+        // Vars a shell needs, plus look-alikes that merely contain a prefix
+        // (not at the start), must all survive.
+        for key in [
+            "PATH",
+            "HOME",
+            "TERM",
+            "SHELL",
+            "USER",
+            "LANG",
+            "PWD",
+            "MY_TT_VAR",  // prefix not at the start
+            "NOTAURI",    // prefix not at the start
+            "SNAP_npm_x", // prefix not at the start
+            "TTY",        // "TT" without the underscore
+            "TAURITE",    // "TAURI" without the underscore
+        ] {
+            assert!(!is_app_instance_env(key), "{key} should survive");
+        }
+    }
+
+    #[test]
+    fn scrub_keeps_survivors_and_order_and_drops_instance_vars() {
+        let env = vec![
+            ("PATH", "/usr/bin"),
+            ("TT_DEV_PORT", "1440"),
+            ("HOME", "/home/me"),
+            ("TAURI_CONFIG", "{}"),
+            ("TT_SESSION_ID", "s281e9dda73868f6f"),
+            ("TERM", "xterm-256color"),
+            ("npm_config_registry", "https://reg"),
+        ];
+        let scrubbed = scrub_app_instance_env(env);
+        assert_eq!(
+            scrubbed,
+            vec![
+                ("PATH", "/usr/bin"),
+                ("HOME", "/home/me"),
+                ("TERM", "xterm-256color")
+            ]
+        );
+    }
+
+    #[test]
+    fn scrub_accepts_owned_pairs() {
+        // The app passes owned Strings from the inherited env.
+        let env = vec![
+            ("TT_DEV_PORT".to_string(), "1440".to_string()),
+            ("PATH".to_string(), "/usr/bin".to_string()),
+        ];
+        let scrubbed = scrub_app_instance_env(env);
+        assert_eq!(scrubbed, vec![("PATH".to_string(), "/usr/bin".to_string())]);
     }
 
     #[test]

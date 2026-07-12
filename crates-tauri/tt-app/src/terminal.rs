@@ -171,18 +171,18 @@ fn term_start_blocking(
     let shell_kind = shell_kind_from_path(&shell);
     let dir = start_dir(cwd);
     let mut cmd = CommandBuilder::new(shell);
-    // Drop any TT_* var inherited from the app process itself (e.g. TT_DEV_PORT,
-    // set by scripts/dev-port.mjs for *this* slot's own dev server) so a shell
-    // command run inside this terminal — like `npm run dev` for a different
-    // repo/slot — resolves its own port/session instead of colliding with the
-    // outer one.
-    let inherited_tt_vars: Vec<String> = cmd
-        .iter_full_env_as_str()
-        .filter(|(k, _)| k.starts_with("TT_"))
-        .map(|(k, _)| k.to_string())
-        .collect();
-    for key in inherited_tt_vars {
-        cmd.env_remove(key);
+    // Scrub the app instance's own env out of the shell's inherited environment
+    // (dev-server port + session/instance stamps, Tauri build config, the npm
+    // process that launched us) so a nested `npm run dev` / `tt-app` started
+    // inside this terminal re-derives its own port and session identity instead
+    // of colliding with the outer instance (issue #39). Everything else — PATH,
+    // HOME, SHELL, … — survives. We then re-stamp TERM and a fresh session id
+    // below.
+    let inherited: Vec<(String, String)> =
+        cmd.iter_full_env_as_str().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    cmd.env_clear();
+    for (key, value) in tt_exec::scrub_app_instance_env(inherited) {
+        cmd.env(key, value);
     }
     cmd.env("TERM", "xterm-256color");
     // Stamp the PTY with its session id so a Claude agent launched inside inherits
