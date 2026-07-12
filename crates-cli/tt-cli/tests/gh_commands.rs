@@ -41,6 +41,38 @@ fn repo_with_merged_branch() -> TempDir {
     dir
 }
 
+/// Create a temp repo on `main` whose `feature/gone` branch tracks an upstream
+/// that has been deleted on the remote (so `git branch -vv` reports it as
+/// `gone`) — the shape GitHub's rebase-and-merge leaves behind.
+/// Returns `(repo, remote)`; the caller must keep both alive for the test.
+fn repo_with_gone_branch() -> (TempDir, TempDir) {
+    let remote = TempDir::new().expect("temp dir");
+    git(remote.path(), &["init", "-q", "--bare"]);
+
+    let dir = TempDir::new().expect("temp dir");
+    let p = dir.path();
+    git(p, &["init", "-q"]);
+    git(p, &["config", "user.email", "test@example.com"]);
+    git(p, &["config", "user.name", "Test"]);
+    std::fs::write(p.join("README.md"), "hello").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-q", "-m", "init"]);
+    git(p, &["branch", "-M", "main"]);
+    let remote_url = remote.path().to_str().unwrap();
+    git(p, &["remote", "add", "origin", remote_url]);
+    git(p, &["push", "-q", "-u", "origin", "main"]);
+    // A feature branch pushed with an upstream, then deleted on the remote.
+    git(p, &["checkout", "-q", "-b", "feature/gone"]);
+    std::fs::write(p.join("f.txt"), "x").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-q", "-m", "feature work"]);
+    git(p, &["push", "-q", "-u", "origin", "feature/gone"]);
+    git(p, &["checkout", "-q", "main"]);
+    git(p, &["push", "-q", "origin", "--delete", "feature/gone"]);
+    git(p, &["fetch", "-q", "--prune", "origin"]);
+    (dir, remote)
+}
+
 fn ttr(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("ttr").expect("binary `ttr` should build");
     cmd.current_dir(dir);
@@ -385,4 +417,69 @@ fn branch_clean_non_tty_without_force_does_not_delete() {
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&out.stdout).contains("feature/done"));
+}
+
+#[test]
+fn branch_clean_gone_dry_run_lists_without_deleting() {
+    let (repo, _remote) = repo_with_gone_branch();
+    ttr(repo.path())
+        .args(["gh", "branch-clean", "--gone", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("feature/gone"))
+        .stdout(contains("Dry run"));
+
+    let out = StdCommand::new("git")
+        .args(["branch", "--list", "feature/gone"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("feature/gone"));
+}
+
+#[test]
+fn branch_clean_gone_non_tty_without_force_does_not_delete() {
+    let (repo, _remote) = repo_with_gone_branch();
+    // No --force and not a TTY: should cancel as a no-op, leaving the branch intact.
+    ttr(repo.path())
+        .args(["gh", "branch-clean", "--gone"])
+        .assert()
+        .success()
+        .stdout(contains("feature/gone"))
+        .stdout(contains("Deleted").not());
+
+    let out = StdCommand::new("git")
+        .args(["branch", "--list", "feature/gone"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("feature/gone"));
+}
+
+#[test]
+fn branch_clean_gone_force_deletes_gone_branch() {
+    let (repo, _remote) = repo_with_gone_branch();
+    ttr(repo.path())
+        .args(["gh", "branch-clean", "--gone", "--force"])
+        .assert()
+        .success()
+        .stdout(contains("Deleted"));
+
+    let out = StdCommand::new("git")
+        .args(["branch", "--list", "feature/gone"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("feature/gone"));
+}
+
+#[test]
+fn branch_clean_gone_ignores_merged_only_branch() {
+    // A merged (but upstream-present) branch is not `gone`, so --gone leaves it.
+    let repo = repo_with_merged_branch();
+    ttr(repo.path())
+        .args(["gh", "branch-clean", "--gone"])
+        .assert()
+        .success()
+        .stdout(contains("No gone branches to clean up"));
 }
