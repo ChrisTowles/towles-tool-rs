@@ -533,6 +533,28 @@ export function SettingsWindow() {
                   }
                 />
                 <ToggleRow
+                  label="Meeting-start notifications"
+                  description="Desktop notification when the next meeting's countdown reaches zero, while the app is unfocused."
+                  checked={settings.agentboard?.notifyMeetingStart ?? true}
+                  onCheckedChange={(v) =>
+                    update((s) => ({
+                      ...s,
+                      agentboard: { ...s.agentboard, notifyMeetingStart: v },
+                    }))
+                  }
+                />
+                <ToggleRow
+                  label="Review-requested notifications"
+                  description="Desktop notification when a PR newly needs your review, while the app is unfocused."
+                  checked={settings.agentboard?.notifyReviewRequested ?? true}
+                  onCheckedChange={(v) =>
+                    update((s) => ({
+                      ...s,
+                      agentboard: { ...s.agentboard, notifyReviewRequested: v },
+                    }))
+                  }
+                />
+                <ToggleRow
                   label="Copy on select"
                   description="Copy the terminal selection to the clipboard as soon as you finish selecting, without Ctrl/⌘+Shift+C."
                   checked={settings.agentboard?.copyOnSelect ?? true}

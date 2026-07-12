@@ -53,11 +53,19 @@ export type UserSettings = {
   collectors: CollectorsSettings;
   /**
    * Mostly TS-owned UI block, carried through opaquely so a save never drops
-   * it. The app edits two keys: `notifyNeedsYou` (desktop notification when a
-   * session flips into needs-you; unset = on) and `copyOnSelect` (terminal
+   * it. The app edits these keys: `notifyNeedsYou` (desktop notification when a
+   * session flips into needs-you; unset = on), `notifyMeetingStart` (fired when
+   * the next meeting's countdown reaches zero; unset = on),
+   * `notifyReviewRequested` (fired when a PR newly needs your review; unset =
+   * on), and `copyOnSelect` (terminal
    * copies the selection to the clipboard on selection end; unset = off).
    */
-  agentboard?: { notifyNeedsYou?: boolean; copyOnSelect?: boolean } & Record<string, unknown>;
+  agentboard?: {
+    notifyNeedsYou?: boolean;
+    notifyMeetingStart?: boolean;
+    notifyReviewRequested?: boolean;
+    copyOnSelect?: boolean;
+  } & Record<string, unknown>;
 };
 
 export type SaveState = "idle" | "saving" | "saved" | "error";

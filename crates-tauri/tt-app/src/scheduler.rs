@@ -12,12 +12,20 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use tokio::time::MissedTickBehavior;
 use tt_collect::CalendarProvider;
+use tt_store::{MeetingStartWatch, ReviewRequestedWatch};
 
 use crate::store::SNAPSHOT_EVENT;
+
+/// How often the day-model attention watchers check for a meeting whose
+/// countdown reached zero or a PR that newly entered the review-requested set.
+/// Independent of collector cadence (those can be slow or off): this reads the
+/// data already in tt.db, so the notification fires within one tick of the
+/// event regardless of when the data was last refreshed.
+const NOTIFY_TICK_SECS: u64 = 15;
 
 #[derive(Clone)]
 enum Batch {
@@ -37,6 +45,11 @@ fn now_ms() -> i64 {
 /// so edits in the Settings window take effect live — no relaunch needed.
 pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
     tauri::async_runtime::spawn(async move {
+        // Attention watchers persist across settings reloads: their edge state
+        // (which meeting is being tracked, which PRs are already requested) must
+        // survive a cadence rebuild so a reload never re-fires a stale edge.
+        let mut meeting_watch = MeetingStartWatch::new();
+        let mut review_watch = ReviewRequestedWatch::new();
         loop {
             // (Re)load config and rebuild the tick intervals for this cycle.
             let collectors = tt_config::load().map(|s| s.collectors).unwrap_or_default();
@@ -57,6 +70,10 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                 collectors.slack.refresh_seconds.max(30),
             ));
             slack_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            // Fixed cadence, independent of any collector's enable/refresh: the
+            // attention watchers only read existing tt.db rows.
+            let mut notify_tick = tokio::time::interval(Duration::from_secs(NOTIFY_TICK_SECS));
+            notify_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
             // Enabled but unconfigured stays quiet: without a token every tick
             // would just record the same failure.
             let slack_on = collectors.slack.enabled && !collectors.slack.token.trim().is_empty();
@@ -88,6 +105,9 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                             calendar_period_ms,
                         )
                         .await;
+                    }
+                    _ = notify_tick.tick() => {
+                        run_notify_check(&app, &mut meeting_watch, &mut review_watch).await;
                     }
                 }
             }
@@ -160,11 +180,96 @@ fn run_batch_blocking(
     }
 }
 
+/// Check the day-model attention watchers against the current tt.db state and
+/// fire notifications for any new edges. The SQLite reads run on a blocking
+/// worker (tt.db is shared, and a busy db can block); the watchers' edge state
+/// lives on the async side so it survives across ticks. Unlike the collector
+/// batches this runs even while the window is minimized — an unattended window
+/// is exactly when a desktop notification matters.
+async fn run_notify_check(
+    app: &AppHandle,
+    meeting_watch: &mut MeetingStartWatch,
+    review_watch: &mut ReviewRequestedWatch,
+) {
+    let read = tauri::async_runtime::spawn_blocking(|| {
+        let store = tt_store::Store::open_default().ok()?;
+        let now = now_ms();
+        let next = store.current_or_next_event(now).ok().flatten();
+        let prs = store.prs().unwrap_or_default();
+        Some((now, next, prs))
+    })
+    .await;
+
+    let Ok(Some((now, next, prs))) = read else {
+        return;
+    };
+
+    if let Some(edge) = meeting_watch.observe(now, next.as_ref()) {
+        notify_meeting_start(app, &edge);
+    }
+    for edge in review_watch.observe(&prs) {
+        notify_review_requested(app, &edge);
+    }
+}
+
+/// Fire a "meeting starting now" desktop notification. Suppressed when the main
+/// window is focused (the header countdown already shows it) or when the
+/// `agentboard.notifyMeetingStart` setting is off (default on).
+fn notify_meeting_start(app: &AppHandle, edge: &tt_store::MeetingStartEdge) {
+    use tauri_plugin_notification::NotificationExt;
+
+    if window_focused(app) {
+        return;
+    }
+    let enabled = tt_config::load()
+        .map(|s| {
+            s.agentboard.notify_meeting_start.unwrap_or(tt_config::DEFAULT_NOTIFY_MEETING_START)
+        })
+        .unwrap_or(tt_config::DEFAULT_NOTIFY_MEETING_START);
+    if !enabled {
+        return;
+    }
+    let _ = app.notification().builder().title("Meeting starting now").body(&edge.title).show();
+}
+
+/// Fire a "PR review requested" desktop notification. Suppressed when the main
+/// window is focused (the day bar already shows review-requested PRs) or when
+/// the `agentboard.notifyReviewRequested` setting is off (default on).
+fn notify_review_requested(app: &AppHandle, edge: &tt_store::ReviewRequestedEdge) {
+    use tauri_plugin_notification::NotificationExt;
+
+    if window_focused(app) {
+        return;
+    }
+    let enabled = tt_config::load()
+        .map(|s| {
+            s.agentboard
+                .notify_review_requested
+                .unwrap_or(tt_config::DEFAULT_NOTIFY_REVIEW_REQUESTED)
+        })
+        .unwrap_or(tt_config::DEFAULT_NOTIFY_REVIEW_REQUESTED);
+    if !enabled {
+        return;
+    }
+    let _ = app
+        .notification()
+        .builder()
+        .title(format!("Review requested — {}#{}", edge.repo, edge.number))
+        .body(&edge.title)
+        .show();
+}
+
+/// Whether the main window currently reports itself focused. Unknown states
+/// (no window, backend error) count as not-focused so a notification still
+/// fires rather than being silently swallowed.
+fn window_focused(app: &AppHandle) -> bool {
+    app.get_webview_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(false)
+}
+
 /// Whether the main window currently reports itself minimized. Unknown states
 /// (no window, backend error) count as visible so collection never silently
 /// starves.
 fn main_window_minimized(app: &AppHandle) -> bool {
-    use tauri::Manager;
     app.get_webview_window("main").map(|w| w.is_minimized().unwrap_or(false)).unwrap_or(false)
 }
 
