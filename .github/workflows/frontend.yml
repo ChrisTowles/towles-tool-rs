@@ -1,0 +1,44 @@
+name: Frontend
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to keep CI fast.
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  client:
+    name: Client (typecheck, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # npm workspaces: install from the repo root so apps/client resolves.
+      - name: npm ci
+        run: npm ci
+        working-directory: .
+
+      - name: typecheck
+        run: npx tsc -b
+
+      - name: test
+        run: npx vitest run
+
+      # `npm run build` here is apps/client's own `tsc -b && vite build`, which
+      # runs without the Tauri shell (the root `npm run build` is `tauri build`
+      # and is intentionally not run in CI — it needs the Tauri toolchain and
+      # webkit2gtk/GTK system libs).
+      - name: build
+        run: npm run build
