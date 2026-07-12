@@ -34,6 +34,16 @@ describe("tab shortcuts", () => {
     expect(matchesShortcut("tab-3", key({ key: "3" }))).toBe(false);
   });
 
+  it("zen is a global mod+shift+f binding shown in the help overlay", () => {
+    const zen = SHORTCUTS["zen"];
+    expect(zen).toBeDefined();
+    expect(zen.scope).toBe("global");
+    expect(zen.hideInHelp).toBeFalsy();
+    expect(matchesShortcut("zen", key({ ctrlKey: true, shiftKey: true, key: "f" }))).toBe(true);
+    // Plain mod+f (no shift) must not toggle zen.
+    expect(matchesShortcut("zen", key({ ctrlKey: true, key: "f" }))).toBe(false);
+  });
+
   it("close-tab is plain mod+w — distinct from the shift+w session-close chord", () => {
     expect(matchesShortcut("close-tab", key({ ctrlKey: true, key: "w" }))).toBe(true);
     // mod+shift+w belongs to ab-close-session, so it must NOT close the tab.

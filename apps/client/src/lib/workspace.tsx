@@ -18,6 +18,10 @@ type WorkspaceState = {
    * rail's icon collapse) — never fully hidden, so a screen is always one
    * click away. */
   sidebarCollapsed: boolean;
+  /** Zen focus mode: the chrome (sidebar, day bar, tab bar) is hidden so the
+   * active screen owns the whole window — the literal get-in-the-zone gesture.
+   * Not persisted: relaunch always comes back with the chrome shown. */
+  zen: boolean;
   paletteOpen: boolean;
   openTab: (id: ScreenId) => void;
   /** Open (mounting if needed) the target's screen and stash a one-shot focus
@@ -29,6 +33,8 @@ type WorkspaceState = {
    * focus to the neighbor that slides into its place. */
   closeTab: (id: ScreenId) => void;
   toggleSidebar: () => void;
+  toggleZen: () => void;
+  setZen: (on: boolean) => void;
   setPaletteOpen: (open: boolean) => void;
 };
 
@@ -58,6 +64,9 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== "false",
   );
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Deliberately in-memory only: zen is a per-moment gesture, not a preference,
+  // so a relaunch always restores the full chrome.
+  const [zen, setZen] = useState(false);
 
   // Persist the active tab and the visited (mounted) set so relaunch restores
   // where you were. Persisting `visited` too keeps a closed tab from
@@ -105,17 +114,22 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const toggleZen = useCallback(() => setZen((v) => !v), []);
+
   const value = useMemo(
     () => ({
       visited,
       recent,
       activeTab,
       sidebarCollapsed,
+      zen,
       paletteOpen,
       openTab,
       openTabWithFocus,
       closeTab,
       toggleSidebar,
+      toggleZen,
+      setZen,
       setPaletteOpen,
     }),
     [
@@ -123,11 +137,13 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       recent,
       activeTab,
       sidebarCollapsed,
+      zen,
       paletteOpen,
       openTab,
       openTabWithFocus,
       closeTab,
       toggleSidebar,
+      toggleZen,
     ],
   );
 

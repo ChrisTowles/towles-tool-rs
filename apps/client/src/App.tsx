@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { AppHeader } from "@/components/app-header";
 import { AppSidebar, AppSidebarIcons } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
@@ -8,6 +8,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { QuickLog } from "@/components/quick-log";
 import { StatusBar } from "@/components/status-bar";
 import { TabBar } from "@/components/tab-bar";
+import { ZenIndicator } from "@/components/zen-indicator";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -26,7 +27,7 @@ import { SCREEN_COMPONENTS } from "@/screens";
 /** Global (always-active) bindings + the `?` help overlay. Screen-scoped
  * bindings live with their screens (e.g. Agentboard), gated on their tab. */
 function Shortcuts() {
-  const { setPaletteOpen, toggleSidebar, paletteOpen, activeTab, visited, openTab, closeTab } =
+  const { setPaletteOpen, toggleSidebar, toggleZen, paletteOpen, activeTab, visited, openTab, closeTab } =
     useWorkspace();
 
   useShortcuts(
@@ -35,6 +36,7 @@ function Shortcuts() {
         palette: () => setPaletteOpen(!paletteOpen),
         settings: () => void openSettings(),
         sidebar: toggleSidebar,
+        zen: toggleZen,
         quicklog: () => window.dispatchEvent(new Event("quicklog:open")),
         "close-tab": () => closeTab(activeTab),
       };
@@ -44,7 +46,7 @@ function Shortcuts() {
         handlers[`tab-${i + 1}`] = () => openTab(id);
       });
       return handlers;
-    }, [setPaletteOpen, toggleSidebar, paletteOpen, activeTab, visited, openTab, closeTab]),
+    }, [setPaletteOpen, toggleSidebar, toggleZen, paletteOpen, activeTab, visited, openTab, closeTab]),
   );
 
   const activeScopes: ShortcutScope[] =
@@ -53,12 +55,28 @@ function Shortcuts() {
 }
 
 function Workspace() {
-  const { visited, activeTab, sidebarCollapsed } = useWorkspace();
+  const { visited, activeTab, sidebarCollapsed, zen, setZen, paletteOpen } = useWorkspace();
+
+  // Escape exits zen — but only when nothing else is claiming Escape. An open
+  // dialog/palette (Radix `role="dialog"` with `data-state="open"`, plus the
+  // paletteOpen flag) handles its own Escape to close first; we don't steal it.
+  useEffect(() => {
+    if (!zen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (paletteOpen) return;
+      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      e.preventDefault();
+      setZen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [zen, paletteOpen, setZen]);
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      <AppHeader />
-      <DayBar />
+      {!zen && <AppHeader />}
+      {!zen && <DayBar />}
       <DmBanner />
 
       <div className="flex min-h-0 flex-1">
@@ -66,13 +84,13 @@ function Workspace() {
             a ResizablePanel — its width is locked, so react-resizable-panels'
             drag machinery would be pure dead weight (mirrors the Agentboard
             rail's RailIconStrip). */}
-        {sidebarCollapsed && (
+        {!zen && sidebarCollapsed && (
           <div className="w-12 shrink-0 border-r bg-background">
             <AppSidebarIcons />
           </div>
         )}
         <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
-          {!sidebarCollapsed && (
+          {!zen && !sidebarCollapsed && (
             <>
               <ResizablePanel defaultSize="190px" minSize="160px" maxSize="240px">
                 <AppSidebar />
@@ -82,7 +100,7 @@ function Workspace() {
           )}
           <ResizablePanel key="main">
             <div className="flex h-full flex-col">
-              <TabBar />
+              {!zen && <TabBar />}
               <div className="min-h-0 flex-1">
                 {visited.map((id) => {
                   const Screen = SCREEN_COMPONENTS[id];
@@ -112,8 +130,9 @@ function Workspace() {
         </ResizablePanelGroup>
       </div>
 
-      <StatusBar />
+      {!zen && <StatusBar />}
 
+      {zen && <ZenIndicator onExit={() => setZen(false)} />}
       <Shortcuts />
       <CommandPalette />
       <QuickLog />
