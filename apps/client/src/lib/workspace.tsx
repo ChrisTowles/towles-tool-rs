@@ -1,5 +1,10 @@
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ScreenId } from "@/lib/screens";
+import {
+  ACTIVE_TAB_KEY,
+  loadWorkspaceTabs,
+  VISITED_TABS_KEY,
+} from "@/lib/workspace-persistence";
 
 type WorkspaceState = {
   visited: ScreenId[];
@@ -26,17 +31,36 @@ const WorkspaceContext = createContext<WorkspaceState | null>(null);
 
 const SIDEBAR_COLLAPSED_KEY = "tt-sidebar-collapsed";
 
+// Read once at module load: the tab the app was left on last relaunch, with
+// cockpit as the cold-start fallback (see loadWorkspaceTabs).
+const restored = loadWorkspaceTabs(
+  localStorage.getItem(ACTIVE_TAB_KEY),
+  localStorage.getItem(VISITED_TABS_KEY),
+);
+
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   // Screens are mounted once on first visit and kept mounted (hidden via CSS)
   // so their local state — e.g. Agentboard's terminals — survives switching.
-  const [visited, setVisited] = useState<ScreenId[]>(["cockpit"]);
-  const [recent, setRecent] = useState<ScreenId[]>(["cockpit"]);
-  const [activeTab, setActiveTab] = useState<ScreenId>("cockpit");
+  const [visited, setVisited] = useState<ScreenId[]>(restored.visited);
+  // Seed "recent" from the restored tabs, freshest (the active tab) first.
+  const [recent, setRecent] = useState<ScreenId[]>(() => [
+    restored.activeTab,
+    ...restored.visited.filter((id) => id !== restored.activeTab),
+  ]);
+  const [activeTab, setActiveTab] = useState<ScreenId>(restored.activeTab);
   // Icon-only is the default; expanding is the remembered opt-in.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== "false",
   );
   const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // Persist the active tab and the visited (mounted) set so relaunch restores
+  // where you were. Persisting `visited` too keeps a closed tab from
+  // resurrecting: closeTab drops it here, so it isn't rebuilt on reload.
+  useEffect(() => {
+    localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
+    localStorage.setItem(VISITED_TABS_KEY, JSON.stringify(visited));
+  }, [activeTab, visited]);
 
   const openTab = useCallback((id: ScreenId) => {
     setVisited((prev) => (prev.includes(id) ? prev : [...prev, id]));
