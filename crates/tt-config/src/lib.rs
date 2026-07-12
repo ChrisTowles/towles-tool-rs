@@ -206,11 +206,52 @@ pub struct CalendarCollector {
     /// `"google"` (home) or `"outlook"` (work). Unknown values fall back to Google.
     pub provider: String,
     pub refresh_minutes: u64,
+    /// Working-hours window that further gates *when* the (already token-costing)
+    /// calendar collector may run. Skips nights and weekends when there's no
+    /// meeting to count down to. Only narrows an already-`enabled` collector;
+    /// disable it (`enabled = false`) to restore 24/7 running.
+    pub quiet_hours: CalendarQuietHours,
 }
 
 impl Default for CalendarCollector {
     fn default() -> Self {
-        Self { enabled: false, provider: "google".to_string(), refresh_minutes: 15 }
+        Self {
+            enabled: false,
+            provider: "google".to_string(),
+            refresh_minutes: 15,
+            quiet_hours: CalendarQuietHours::default(),
+        }
+    }
+}
+
+/// Working-hours gate for the calendar collector: a daily time window plus a
+/// weekday mask, evaluated in local time. When `enabled`, the collector runs
+/// only inside `[startHour:00, endHour:00)` on a listed weekday; outside it
+/// (nights, weekends) the token-costing `claude -p` run is skipped. Set
+/// `enabled = false` to run on the plain refresh cadence around the clock.
+///
+/// `weekdays` are day-of-week numbers with **0 = Monday … 6 = Sunday** (matching
+/// chrono's `num_days_from_monday`); the default is Mon–Fri.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CalendarQuietHours {
+    /// When false the gate is off entirely and the collector runs 24/7 on its
+    /// refresh cadence (the historic behaviour).
+    pub enabled: bool,
+    /// First local hour (0–23) the collector may run, inclusive of `:00`.
+    pub start_hour: u8,
+    /// Local hour (0–23) at which the window closes, exclusive — a run at
+    /// exactly `endHour:00` is skipped. With the default `18` the last runnable
+    /// minute is `17:59`.
+    pub end_hour: u8,
+    /// Weekdays the collector may run, as `0 = Monday … 6 = Sunday`. Default Mon–Fri.
+    pub weekdays: Vec<u8>,
+}
+
+impl Default for CalendarQuietHours {
+    fn default() -> Self {
+        // 8:00–18:00 local, Monday–Friday.
+        Self { enabled: true, start_hour: 8, end_hour: 18, weekdays: vec![0, 1, 2, 3, 4] }
     }
 }
 
@@ -591,6 +632,11 @@ mod tests {
         assert!(!c.calendar.enabled);
         assert_eq!(c.calendar.provider, "google");
         assert_eq!(c.calendar.refresh_minutes, 15);
+        // Quiet hours default to 8:00–18:00 local, Mon–Fri, and are on.
+        assert!(c.calendar.quiet_hours.enabled);
+        assert_eq!(c.calendar.quiet_hours.start_hour, 8);
+        assert_eq!(c.calendar.quiet_hours.end_hour, 18);
+        assert_eq!(c.calendar.quiet_hours.weekdays, vec![0, 1, 2, 3, 4]);
         assert!(c.prs.enabled);
         assert_eq!(c.prs.refresh_seconds, 120);
         assert!(c.issues.enabled);

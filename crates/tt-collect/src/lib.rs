@@ -21,8 +21,10 @@ mod gh;
 mod issues;
 mod prompts;
 mod prs;
+mod quiet_hours;
 mod slack;
 
+pub use quiet_hours::{should_run_at, should_run_calendar};
 pub use slack::SlackDmConfig;
 
 use std::path::PathBuf;

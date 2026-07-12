@@ -5161,6 +5161,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tt-agentboard",
+ "tt-config",
  "tt-exec",
  "tt-store",
  "ureq",

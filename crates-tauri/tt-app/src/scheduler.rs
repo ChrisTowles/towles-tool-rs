@@ -171,13 +171,22 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                         spawn_batch(&app, Batch::Issues, provider, calendar_period_ms, &guards.issues);
                     }
                     _ = calendar_tick.tick(), if collectors.calendar.enabled => {
-                        spawn_batch(
-                            &app,
-                            Batch::Calendar,
-                            provider,
-                            calendar_period_ms,
-                            &guards.calendar,
-                        );
+                        // Quiet-hours gate: outside the configured working-hours
+                        // window (nights/weekends) skip the token-costing
+                        // `claude -p` run entirely. Evaluated per tick against the
+                        // local wall clock; disabling quiet hours restores 24/7.
+                        if tt_collect::should_run_calendar(
+                            now_ms(),
+                            &collectors.calendar.quiet_hours,
+                        ) {
+                            spawn_batch(
+                                &app,
+                                Batch::Calendar,
+                                provider,
+                                calendar_period_ms,
+                                &guards.calendar,
+                            );
+                        }
                     }
                     _ = slack_tick.tick(), if slack_on => {
                         spawn_batch(
