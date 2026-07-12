@@ -194,6 +194,7 @@ fn build_folder(
     FolderData {
         name: entry.name.clone(),
         dir: entry.dir.clone(),
+        dir_missing: git.dir_missing,
         branch: git.branch.clone(),
         is_worktree: git.is_worktree,
         files_changed: git.files_changed,
@@ -354,6 +355,37 @@ mod tests {
         // beta has no git info → standalone path-keyed repo, name = folder basename.
         assert!(payload.repos[1].key.starts_with("path:"));
         assert_eq!(payload.repos[1].name, "beta");
+    }
+
+    #[test]
+    fn missing_dir_flag_propagates_from_git_info_to_folder() {
+        let tracker = AgentTracker::new();
+        let metadata = SessionMetadataStore::new();
+        let mut store = SessionStore::new(None);
+        store.ensure_default("/r/alpha", 1);
+        store.ensure_default("/r/beta", 1);
+        // alpha's checkout is gone; beta's is present.
+        let mut git = HashMap::new();
+        git.insert("/r/alpha".to_string(), GitInfo { dir_missing: true, ..Default::default() });
+        git.insert("/r/beta".to_string(), GitInfo { branch: "main".into(), ..Default::default() });
+        let payload = assemble_state(
+            &entries(),
+            &git,
+            &tracker,
+            &metadata,
+            &store,
+            &FolderMetaStore::default(),
+            &no_attr,
+            &HashMap::new(),
+            None,
+            "code",
+            30,
+            0,
+        );
+        let alpha = payload.repos.iter().flat_map(|r| &r.folders).find(|f| f.dir == "/r/alpha");
+        let beta = payload.repos.iter().flat_map(|r| &r.folders).find(|f| f.dir == "/r/beta");
+        assert!(alpha.unwrap().dir_missing);
+        assert!(!beta.unwrap().dir_missing);
     }
 
     #[test]

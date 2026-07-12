@@ -402,6 +402,7 @@ function folder(overrides: Partial<FolderData>): FolderData {
   return {
     name: "proj",
     dir: "/home/me/code/p/proj",
+    dirMissing: false,
     branch: "main",
     isWorktree: false,
     filesChanged: 0,

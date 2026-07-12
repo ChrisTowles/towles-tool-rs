@@ -4,6 +4,7 @@ import {
   Eye,
   EyeOff,
   FolderGit2,
+  FolderInput,
   FolderPlus,
   GitPullRequest,
   PanelLeftClose,
@@ -37,7 +38,13 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -157,6 +164,11 @@ export function AgentboardScreen() {
   const [addRepoOpen, setAddRepoOpen] = useState(false);
   const [repoQuery, setRepoQuery] = useState("");
   const [candidates, setCandidates] = useState<RepoCandidate[]>([]);
+  // Track-repo dialog: strictly-manual path entry (no discovery, no scanning —
+  // a standing product rule). Just an absolute path typed in, added via the
+  // same `ab_add_repo` command every other add path uses.
+  const [trackRepoOpen, setTrackRepoOpen] = useState(false);
+  const [trackRepoPath, setTrackRepoPath] = useState("");
   // ab-split-session picker: only shown when the active folder has more than
   // one session not already in the active window (a single candidate is
   // added directly — see `splitIntoWindow`).
@@ -538,6 +550,22 @@ export function AgentboardScreen() {
     await refreshCandidates();
   }
 
+  // Commit the manual Track-repo dialog: an absolute path only (no discovery).
+  // Reuses `addRepoPath` (→ `ab_add_repo`); a relative/blank entry is rejected
+  // with a nudge rather than silently added as a bogus dir.
+  async function commitTrackRepo() {
+    const path = trackRepoPath.trim();
+    if (!path) return;
+    if (!path.startsWith("/")) {
+      toast("Enter an absolute path (starting with /).");
+      return;
+    }
+    setTrackRepoOpen(false);
+    setTrackRepoPath("");
+    await addRepoPath(path);
+    toast(`Tracking ${path}`);
+  }
+
   // Actually remove: kill any live sessions first (killing a PTY is
   // client-mediated — see `closeSession`/`TerminalView`'s unmount effect),
   // then drop the checkout(s) from the watched list. Removes by `dir`, never
@@ -759,6 +787,15 @@ export function AgentboardScreen() {
                       </button>
                       <button
                         type="button"
+                        onClick={() => setTrackRepoOpen(true)}
+                        aria-label="Track a repo by path"
+                        className="rounded-md p-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                        title="Track a repo by typing its absolute path"
+                      >
+                        <FolderInput className="size-3.5" />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setHideInactive((v) => !v)}
                         aria-label={hideInactive ? "Show all repos" : "Hide inactive repos"}
                         aria-pressed={hideInactive}
@@ -832,13 +869,22 @@ export function AgentboardScreen() {
                           <p className="text-sm text-muted-foreground">
                             No repos on the rail yet.
                           </p>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setAddRepoOpen(true)}
-                          >
-                            <FolderPlus className="size-3.5" /> Manage repos
-                          </Button>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setAddRepoOpen(true)}
+                            >
+                              <FolderPlus className="size-3.5" /> Manage repos
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setTrackRepoOpen(true)}
+                            >
+                              <FolderInput className="size-3.5" /> Track by path…
+                            </Button>
+                          </div>
                         </div>
                       )}
                       {repos.map((repo) => (
@@ -1297,6 +1343,38 @@ export function AgentboardScreen() {
               }
             }}
             placeholder="what are you working toward? (optional)"
+          />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={trackRepoOpen}
+        onOpenChange={(open) => {
+          setTrackRepoOpen(open);
+          if (!open) setTrackRepoPath("");
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Track a repo</DialogTitle>
+            <DialogDescription>
+              Type the absolute path to a git checkout to add it to the rail. Manual
+              entry only — nothing is scanned or suggested.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={trackRepoPath}
+            onChange={(e) => setTrackRepoPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void commitTrackRepo();
+              }
+              if (e.key === "Escape") setTrackRepoOpen(false);
+            }}
+            placeholder="/home/you/code/some-repo"
+            className="font-mono"
           />
         </DialogContent>
       </Dialog>

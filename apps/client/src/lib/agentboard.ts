@@ -84,6 +84,9 @@ export type FolderMetadata = {
 export type FolderData = {
   name: string;
   dir: string;
+  /** True when `dir` no longer exists on disk — a tracked repo whose checkout
+   * was moved or deleted. Rendered as a dimmed "ghost" with an Untrack action. */
+  dirMissing: boolean;
   branch: string;
   isWorktree: boolean;
   filesChanged: number;

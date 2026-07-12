@@ -113,6 +113,7 @@ mod tests {
                 folders: vec![FolderData {
                     name: format!("{repo}-slot-0"),
                     dir: format!("/{repo}"),
+                    dir_missing: false,
                     branch: "main".into(),
                     is_worktree: false,
                     files_changed: 0,

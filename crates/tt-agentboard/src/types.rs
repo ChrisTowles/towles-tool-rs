@@ -180,6 +180,11 @@ pub struct FolderData {
     pub name: String,
     /// Absolute path to the checkout.
     pub dir: String,
+    /// True when `dir` no longer exists on disk — a tracked repo whose checkout
+    /// was moved or deleted. Such folders are "ghosts": they still carry stale
+    /// session records but can't be worked in until re-tracked or untracked.
+    /// Filesystem-derived (carried in on [`crate::git_info::GitInfo`]).
+    pub dir_missing: bool,
     pub branch: String,
     pub is_worktree: bool,
     pub files_changed: i64,
