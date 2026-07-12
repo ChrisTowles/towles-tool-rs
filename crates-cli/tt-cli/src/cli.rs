@@ -443,6 +443,10 @@ pub enum JournalCommands {
         #[arg(long)]
         last: bool,
 
+        /// Fuzzy-pick a recent entry from an interactive list (requires a TTY)
+        #[arg(long)]
+        pick: bool,
+
         /// Filter by entry type: daily-notes, meeting, note
         #[arg(long, short = 't')]
         r#type: Option<String>,

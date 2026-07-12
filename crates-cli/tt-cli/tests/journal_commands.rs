@@ -311,6 +311,20 @@ fn open_last_no_open_prints_newest_absolute_path() {
 }
 
 #[test]
+fn open_pick_off_tty_errors() {
+    let sb = sandbox();
+    // Create an entry so the failure is the TTY guard, not an empty journal.
+    cmd(&sb).args(["journal", "note", "Pickable Note", "--no-open"]).assert().success();
+
+    // stdin is not a TTY under assert_cmd, so `--pick` must fail cleanly rather than hang.
+    cmd(&sb)
+        .args(["journal", "open", "--pick", "--no-open"])
+        .assert()
+        .failure()
+        .stderr(contains("Not a TTY").and(contains("interactive terminal")));
+}
+
+#[test]
 fn open_empty_journal_errors() {
     let sb = sandbox();
     cmd(&sb)
