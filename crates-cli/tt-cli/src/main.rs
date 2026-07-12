@@ -25,6 +25,7 @@ fn main() {
         Commands::Agentboard(args) => commands::agentboard::run(args.command),
         Commands::Collect(args) => commands::collect::run(args.command, config_dir.as_deref()),
         Commands::Mcp(args) => commands::mcp::run(args.command),
+        Commands::Slot(args) => commands::slot::run(args.command),
     };
 
     if exit_code != 0 {

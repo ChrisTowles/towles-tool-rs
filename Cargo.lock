@@ -5352,6 +5352,7 @@ dependencies = [
  "tt-graph",
  "tt-journal",
  "tt-mcp",
+ "tt-slots",
  "tt-store",
 ]
 
@@ -5454,6 +5455,13 @@ dependencies = [
  "tt-config",
  "tt-journal",
  "tt-store",
+]
+
+[[package]]
+name = "tt-slots"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
 ]
 
 [[package]]
