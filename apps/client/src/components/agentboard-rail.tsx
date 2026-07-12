@@ -3,6 +3,7 @@ import {
   CircleDot,
   Folder,
   FolderGit2,
+  FolderPlus,
   FolderX,
   MoreVertical,
   PanelLeftOpen,
@@ -467,6 +468,11 @@ export function RepoGroup({
             onSelectFolder(folder.dir);
           }}
           onNewSession={() => onNewSession(folder.dir)}
+          onNewSlot={
+            isSlotRepo(repo)
+              ? () => onNewSlot({ name: repo.name, dir: folder.dir })
+              : undefined
+          }
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
           onOpenDiff={() => onOpenDiff(folder.dir)}
         />
@@ -513,7 +519,7 @@ export function RepoGroup({
             onClick={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir })}
             className="hover:text-violet-500"
           >
-            <Plus className="size-3.5" />
+            <FolderPlus className="size-3.5" />
           </IconBtn>
         )}
         <RepoMenu
@@ -626,6 +632,7 @@ function FolderHeader({
   now,
   onToggle,
   onNewSession,
+  onNewSlot,
   onRemoveRepo,
   onOpenDiff,
 }: {
@@ -643,6 +650,10 @@ function FolderHeader({
   now: number;
   onToggle: () => void;
   onNewSession: () => void;
+  /** Opens the new-slot modal — set only on a solo slot-convention repo's
+   * collapsed repo+folder header (the multi-checkout repo tier renders its
+   * own button). */
+  onNewSlot?: () => void;
   onRemoveRepo?: () => void;
   /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: () => void;
@@ -704,10 +715,19 @@ function FolderHeader({
         </button>
         {collapsed && !missing && <CollapsedLive sessions={folder.sessions} />}
         {needs > 0 && <NeedsBadge n={needs} />}
-        {/* No "New session" on a ghost — there's no directory to spawn a shell in. */}
+        {/* No "New session"/"New slot" on a ghost — the directory is gone. */}
         {!missing && (
           <IconBtn title="New session (⌘D)" onClick={onNewSession} className="hover:text-violet-500">
             <Plus className="size-3.5" />
+          </IconBtn>
+        )}
+        {!missing && onNewSlot && (
+          <IconBtn
+            title="New slot — goal, branch, base"
+            onClick={onNewSlot}
+            className="hover:text-violet-500"
+          >
+            <FolderPlus className="size-3.5" />
           </IconBtn>
         )}
         {onRemoveRepo && (
