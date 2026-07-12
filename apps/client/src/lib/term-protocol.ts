@@ -81,6 +81,30 @@ export function exitIsCrash(code: number, signal?: string | null): boolean {
   return code !== 0 || signal != null;
 }
 
+/** The primary action a dead terminal pane offers. A pane whose shell exited
+ * restarts it in place — same term id + cwd, Rust's `term_start` kills and
+ * replaces the id — while a pane restored from disk that never ran this session
+ * starts one for the first time. Both need the session record and its folder
+ * dir to spawn a PTY, so `canRestart` gates the Enter/click affordance. */
+export interface DeadPaneAction {
+  /** Whether Enter / the primary button can (re)start a shell here. */
+  canRestart: boolean;
+  /** Primary-action label: "Restart shell" once a shell has exited in this
+   * pane, "Start shell" for one never started this run. */
+  label: string;
+}
+
+export function deadPaneAction(opts: {
+  hasSession: boolean;
+  hasDir: boolean;
+  exited: boolean;
+}): DeadPaneAction {
+  return {
+    canRestart: opts.hasSession && opts.hasDir,
+    label: opts.exited ? "Restart shell" : "Start shell",
+  };
+}
+
 /** Tauri IPC command that drops a terminal's scrollback while leaving the
  * visible screen intact (right-click "Clear scrollback"). Handled by
  * `term_clear` in crates-tauri/tt-app/src/terminal.rs, which forces a full

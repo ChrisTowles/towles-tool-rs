@@ -95,7 +95,7 @@ import {
   type WindowsPayload,
   windowColor,
 } from "@/lib/agentboard";
-import { exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
+import { deadPaneAction, exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
@@ -1188,9 +1188,30 @@ export function AgentboardScreen() {
                           const s = sessionById.get(id);
                           const dir = folderOf.get(id)?.dir;
                           const exit = exitInfo[id];
+                          const action = deadPaneAction({
+                            hasSession: !!s,
+                            hasDir: !!dir,
+                            exited: !!exit,
+                          });
+                          // Restart the shell in place: same term id + cwd. `start`
+                          // remounts the TerminalView, whose effect re-invokes
+                          // `term_start`; Rust kills and replaces the old id. When
+                          // the pane is focused, Enter is the keyboard path to it.
+                          const restart = () => {
+                            if (s && dir) actions.start(dir, s);
+                          };
                           return (
                             <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
-                              <div className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground">
+                              <div
+                                tabIndex={action.canRestart ? 0 : undefined}
+                                onKeyDown={(e) => {
+                                  if (action.canRestart && e.key === "Enter") {
+                                    e.preventDefault();
+                                    restart();
+                                  }
+                                }}
+                                className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground outline-none focus-visible:border-violet-500/60 focus-visible:ring-1 focus-visible:ring-violet-500/60"
+                              >
                                 <span className="text-sm">{s ? labelFor(s) : "session"}</span>
                                 {exit && (
                                   <span
@@ -1205,13 +1226,16 @@ export function AgentboardScreen() {
                                   </span>
                                 )}
                                 {s && dir ? (
-                                  <div className="flex gap-3 font-mono text-xs">
+                                  <div className="flex items-center gap-3 font-mono text-xs">
                                     <button
                                       type="button"
-                                      onClick={() => actions.start(dir, s)}
-                                      className="hover:text-green-500"
+                                      onClick={restart}
+                                      className="flex items-center gap-1 hover:text-green-500"
                                     >
-                                      ▶ shell
+                                      ▶ {action.label}
+                                      <kbd className="rounded border border-muted-foreground/30 px-1 text-[10px] leading-tight text-muted-foreground/70">
+                                        Enter
+                                      </kbd>
                                     </button>
                                     <button
                                       type="button"
