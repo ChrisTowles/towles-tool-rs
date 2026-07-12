@@ -77,8 +77,8 @@ pub use sessions::{SessionRecord, SessionStore, default_sessions_path};
 pub use tracker::{AgentTracker, instance_key};
 pub use types::{
     AgentEvent, AgentEventDetails, AgentStatus, ClientCommand, FolderData, LoopInfo,
-    MetadataLogEntry, MetadataProgress, MetadataStatus, MetadataTone, RepoData, ServerMessage,
-    SessionData, SessionMetadata, SubagentInfo, TmuxSessionData,
+    MetadataLogEntry, MetadataProgress, MetadataStatus, MetadataTone, NeedsYouReason, RepoData,
+    ServerMessage, SessionData, SessionMetadata, SubagentInfo, TmuxSessionData,
 };
 pub use watcher::{AgentWatcher, WatcherContext};
 pub use watchers::amp::AmpAgentWatcher;

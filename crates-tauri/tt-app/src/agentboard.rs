@@ -95,9 +95,21 @@ pub fn notify_needs_you(app: &AppHandle, edges: &[tt_agentboard::NeedsYouEdge]) 
             .notification()
             .builder()
             .title(format!("{} — {}", edge.repo, edge.session))
-            .body("Agent session needs you")
+            .body(needs_you_body(edge))
             .show();
     }
+}
+
+/// The notification body wording for a needs-you edge, keyed off *why* the
+/// session needs you. Text label only — no interaction happens here.
+fn needs_you_body(edge: &tt_agentboard::NeedsYouEdge) -> String {
+    use tt_agentboard::NeedsYouReason::*;
+    let what = match edge.reason {
+        WaitingForInput => "is waiting for input",
+        Errored => "errored",
+        Finished => "finished",
+    };
+    format!("{} {}", edge.session, what)
 }
 
 // --- Tauri commands ---

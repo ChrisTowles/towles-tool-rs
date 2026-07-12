@@ -14,11 +14,12 @@
 use std::collections::HashMap;
 
 use crate::StatePayload;
-use crate::bridge::session_needs;
+use crate::bridge::needs_reason;
+use crate::types::NeedsYouReason;
 
 /// One session that just flipped into needing you, with the display names the
-/// notification shows. Status-report only — acting on it happens in the real
-/// PTY, so no action metadata is carried.
+/// notification shows and *why* it needs you. Status-report only — acting on it
+/// happens in the real PTY, so no action metadata is carried.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeedsYouEdge {
     /// Stable session id (the PTY `term_id`).
@@ -27,6 +28,8 @@ pub struct NeedsYouEdge {
     pub repo: String,
     /// Session display name (e.g. `shell 1`).
     pub session: String,
+    /// Why the session needs you, for the notification body wording.
+    pub reason: NeedsYouReason,
 }
 
 /// Tracks each session's previous needs-you state across snapshots and yields
@@ -55,13 +58,18 @@ impl NeedsYouWatch {
         for repo in &payload.repos {
             for folder in &repo.folders {
                 for s in &folder.sessions {
-                    let needs = session_needs(s);
+                    let reason = needs_reason(s);
+                    let needs = reason.is_some();
                     let was = self.prev.get(&s.id).copied().unwrap_or(false);
-                    if self.primed && needs && !was {
+                    if self.primed
+                        && !was
+                        && let Some(reason) = reason
+                    {
                         edges.push(NeedsYouEdge {
                             session_id: s.id.clone(),
                             repo: repo.name.clone(),
                             session: s.name.clone(),
+                            reason,
                         });
                     }
                     current.insert(s.id.clone(), needs);
@@ -161,10 +169,49 @@ mod tests {
                 session_id: "s1".into(),
                 repo: "repo".into(),
                 session: "shell 1".into(),
+                reason: NeedsYouReason::WaitingForInput,
             }]
         );
         // Still blocked next snapshot: no repeat.
         assert!(w.observe(&blocked).is_empty());
+    }
+
+    /// The edge's reason mirrors the status that tripped `session_needs`.
+    #[test]
+    fn reason_matches_triggering_status() {
+        // Waiting → waiting for input.
+        let mut w = NeedsYouWatch::new();
+        w.observe(&payload("repo", vec![session("s1", "shell 1", true, Some(AgentStatus::Busy))]));
+        let edges = w.observe(&payload(
+            "repo",
+            vec![session("s1", "shell 1", true, Some(AgentStatus::Waiting))],
+        ));
+        assert_eq!(edges[0].reason, NeedsYouReason::WaitingForInput);
+
+        // Error → errored.
+        let mut w = NeedsYouWatch::new();
+        w.observe(&payload("repo", vec![session("s1", "shell 1", true, Some(AgentStatus::Busy))]));
+        let edges = w.observe(&payload(
+            "repo",
+            vec![session("s1", "shell 1", true, Some(AgentStatus::Error))],
+        ));
+        assert_eq!(edges[0].reason, NeedsYouReason::Errored);
+
+        // Complete + unseen → finished.
+        let mut w = NeedsYouWatch::new();
+        w.observe(&payload("repo", vec![session("s1", "shell 1", true, Some(AgentStatus::Busy))]));
+        let mut done = session("s1", "shell 1", true, Some(AgentStatus::Complete));
+        done.unseen = true;
+        let edges = w.observe(&payload("repo", vec![done]));
+        assert_eq!(edges[0].reason, NeedsYouReason::Finished);
+
+        // Interrupted + unseen → finished.
+        let mut w = NeedsYouWatch::new();
+        w.observe(&payload("repo", vec![session("s1", "shell 1", true, Some(AgentStatus::Busy))]));
+        let mut interrupted = session("s1", "shell 1", true, Some(AgentStatus::Interrupted));
+        interrupted.unseen = true;
+        let edges = w.observe(&payload("repo", vec![interrupted]));
+        assert_eq!(edges[0].reason, NeedsYouReason::Finished);
     }
 
     #[test]
@@ -189,6 +236,7 @@ mod tests {
         ));
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].session, "shell 2");
+        assert_eq!(edges[0].reason, NeedsYouReason::Errored);
     }
 
     #[test]
