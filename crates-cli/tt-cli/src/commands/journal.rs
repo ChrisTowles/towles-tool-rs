@@ -43,7 +43,9 @@ pub fn run(command: JournalCommands, config_dir: Option<&Path>) -> i32 {
             note_like(config_dir, JournalType::Meeting, title, no_open)
         }
         JournalCommands::Jot { text } => jot(config_dir, text),
-        JournalCommands::Open { last: _, r#type, no_open } => open(config_dir, r#type, no_open),
+        JournalCommands::Open { last: _, pick, r#type, no_open } => {
+            open(config_dir, pick, r#type, no_open)
+        }
         JournalCommands::List { r#type, limit, sort, json } => {
             list(config_dir, r#type, limit, sort, json)
         }
@@ -220,13 +222,15 @@ fn resolve_title(title: Option<String>, label: &str) -> Result<String, String> {
         .map_err(|e| format!("Could not read {label} title: {e}"))
 }
 
-/// `ttr journal open [--last] [--type <t>] [--no-open]` — reopen the most recent entry.
+/// `ttr journal open [--last] [--pick] [--type <t>] [--no-open]` — reopen a journal entry.
 ///
 /// Uses the same collection/sorting helpers as `list` (newest-first by date, optional
-/// type filter) and the same editor path as `note`. With `--no-open` — or whenever stdout
-/// is not a TTY — the absolute path is printed instead of launching an editor. An empty
-/// (or fully-filtered-out) journal is a clear error with exit code 1.
-fn open(config_dir: Option<&Path>, ty: Option<String>, no_open: bool) -> i32 {
+/// type filter) and the same editor path as `note`. Without `--pick`, targets the single
+/// most-recent entry. With `--pick`, feeds the top ~50 entries into an interactive fuzzy
+/// picker (like `ttr gh branch`) and opens the selection. With `--no-open` — or whenever
+/// stdout is not a TTY — the absolute path is printed instead of launching an editor. An
+/// empty (or fully-filtered-out) journal is a clear error with exit code 1.
+fn open(config_dir: Option<&Path>, pick: bool, ty: Option<String>, no_open: bool) -> i32 {
     let settings = match load_settings(config_dir) {
         Ok(s) => s,
         Err(e) => {
@@ -245,28 +249,81 @@ fn open(config_dir: Option<&Path>, ty: Option<String>, no_open: bool) -> i32 {
         }
     };
 
+    // `--pick` fuzzy-picks from a recent window; the default targets only the newest.
+    let limit = if pick { 50 } else { 1 };
     let files = entries::collect_markdown_files(&journal_dir);
     let all = entries::collect_journal_entries(&files, &base_folder);
-    let mut result = entries::filter_and_sort_entries(all, type_filter, 1, SortBy::Date);
-    let entry = match result.first_mut() {
-        Some(e) => e,
-        None => {
-            ui::error("No journal entries found to open.");
-            return 1;
+    let result = entries::filter_and_sort_entries(all, type_filter, limit, SortBy::Date);
+    if result.is_empty() {
+        ui::error("No journal entries found to open.");
+        return 1;
+    }
+
+    let file_path = if pick {
+        match pick_entry(&result) {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                ui::info("Canceled");
+                return 0;
+            }
+            Err(e) => {
+                ui::error(&e);
+                return 1;
+            }
         }
+    } else {
+        result[0].file_path.clone()
     };
 
     if no_open || !std::io::stdout().is_terminal() {
-        println!("{}", entry.file_path.display());
+        println!("{}", file_path.display());
     } else {
         open_in_editor(
             &settings.preferred_editor,
             &settings.journal_settings.base_folder,
-            &entry.file_path,
+            &file_path,
             false,
         );
     }
     0
+}
+
+/// A row shown in the interactive `--pick` picker: `relative_path · type · date`.
+struct PickItem {
+    label: String,
+    path: PathBuf,
+}
+
+impl std::fmt::Display for PickItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// Show the fuzzy picker over `entries` and return the chosen file path. Returns `Ok(None)`
+/// when the user cancels the prompt. Hard-errors off a TTY, exactly like the `gh` issue
+/// picker, so tests and CI never hang waiting on interactive input.
+fn pick_entry(entries: &[entries::JournalEntry]) -> Result<Option<PathBuf>, String> {
+    if !std::io::stdin().is_terminal() {
+        return Err("Not a TTY; the journal picker requires an interactive terminal.".to_string());
+    }
+
+    let items: Vec<PickItem> = entries
+        .iter()
+        .map(|e| {
+            let ty = e.ty.map(|t| t.as_str().to_string()).unwrap_or_else(|| "unknown".to_string());
+            let date = e.date.map(entries::format_date).unwrap_or_else(|| "-".to_string());
+            PickItem {
+                label: format!("{}  ·  {ty}  ·  {date}", e.relative_path),
+                path: e.file_path.clone(),
+            }
+        })
+        .collect();
+
+    match inquire::Select::new("Journal entry to open:", items).prompt() {
+        Ok(item) => Ok(Some(item.path)),
+        Err(_) => Ok(None),
+    }
 }
 
 fn list(
