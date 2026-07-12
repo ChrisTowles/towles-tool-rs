@@ -209,6 +209,8 @@ pub fn run() {
             // Emit the initial store snapshot for the dashboard's first mount.
             store::emit_snapshot(&app.handle().clone(), &store_state);
             app.manage(store_state);
+            // Overlap guard for the manual "refresh now" command.
+            app.manage(store::CollectNowState::default());
 
             // Collector scheduler: fills tt.db (PRs + issues via gh, calendar via
             // claude -p per settings.collectors) and re-emits the snapshot. The
@@ -265,6 +267,7 @@ pub fn run() {
             store::store_delete_task,
             store::store_promote_task_to_issue,
             store::store_create_issue,
+            store::store_collect_now,
             gh_actions::cockpit_assign_issue,
             gh_actions::cockpit_create_issue_branch,
             store::store_dm_dismiss,

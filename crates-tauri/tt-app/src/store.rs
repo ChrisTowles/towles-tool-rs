@@ -8,6 +8,7 @@
 //! commands return `Err("store unavailable: …")` rather than panicking when it is
 //! absent. Every successful write recomputes and re-emits the snapshot.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, State};
@@ -39,6 +40,24 @@ impl StoreState {
     #[cfg(test)]
     fn from_option(store: Option<Store>) -> StoreState {
         StoreState { store: Arc::new(Mutex::new(store)) }
+    }
+}
+
+/// Managed flag guarding against overlapping manual "refresh now" runs. A
+/// manual refresh shells `gh`/Slack, which can take seconds; without this a
+/// jittery double-click (or a second window) could stack redundant sweeps.
+#[derive(Default)]
+pub struct CollectNowState {
+    running: Arc<AtomicBool>,
+}
+
+/// Sets the running flag back to `false` when dropped, so the guard releases on
+/// every exit path of the blocking worker — including a panic.
+struct ReleaseOnDrop(Arc<AtomicBool>);
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -291,9 +310,108 @@ pub fn journal_log(app: AppHandle, state: State<StoreState>, text: String) -> Re
     Ok(())
 }
 
+/// What a `store_collect_now` call did: `started` is `false` when a manual
+/// refresh was already in flight and this call was a no-op (the frontend keeps
+/// its spinner off in that case), `true` when this call ran the sweep.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectNowResult {
+    pub started: bool,
+}
+
+/// Manually run the issues, PRs, and (when configured) Slack collectors right
+/// now, then re-emit the snapshot — the "Refresh now" affordance in Config.
+/// Calendar is intentionally left out (it spends `claude` tokens), matching
+/// [`tt_collect::collect_manual`]. Overlap-guarded: if a manual refresh is
+/// already running this returns `started: false` without starting another.
+///
+/// Runs on a blocking worker with its own store connection (mirroring the
+/// scheduler) so the `gh`/Slack round-trips never hold the UI's store mutex.
+#[tauri::command]
+pub async fn store_collect_now(
+    app: AppHandle,
+    collect: State<'_, CollectNowState>,
+) -> Result<CollectNowResult, String> {
+    let running = collect.running.clone();
+    // Acquire the guard: swap in `true`; if it was already `true`, bail.
+    if running.swap(true, Ordering::SeqCst) {
+        return Ok(CollectNowResult { started: false });
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _release = ReleaseOnDrop(running);
+        run_collect_now_blocking(&app);
+    })
+    .await
+    .map_err(|e| format!("collect-now worker failed: {e}"))?;
+    Ok(CollectNowResult { started: true })
+}
+
+/// Open a fresh store, run the manual collector batch, and emit the resulting
+/// snapshot. Failures per collector are logged (never surfaced as a command
+/// error) so one dead collector doesn't sink the whole refresh.
+fn run_collect_now_blocking(app: &AppHandle) {
+    let store = match Store::open_default() {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("collect-now: store unavailable ({e}); skipping manual refresh");
+            return;
+        }
+    };
+    let collectors = tt_config::load().map(|s| s.collectors).unwrap_or_default();
+    let repos = tt_collect::tracked_repo_dirs();
+    let slack = manual_slack_config(&collectors);
+    for summary in tt_collect::collect_manual(&store, &repos, slack.as_ref(), now_ms()) {
+        if !summary.ok {
+            eprintln!(
+                "collect-now: {} failed: {}",
+                summary.collector,
+                summary.message.as_deref().unwrap_or("unknown")
+            );
+        }
+    }
+    if let Ok(snapshot) = store.snapshot() {
+        let _ = app.emit(SNAPSHOT_EVENT, snapshot);
+    }
+}
+
+/// The Slack config to feed a manual refresh, or `None` when the collector is
+/// disabled or has no token — the same gate the scheduler applies, so a manual
+/// refresh never records a Slack failure the scheduled cadence would skip.
+fn manual_slack_config(
+    collectors: &tt_config::CollectorsSettings,
+) -> Option<tt_collect::SlackDmConfig> {
+    let slack = &collectors.slack;
+    if !slack.enabled || slack.token.trim().is_empty() {
+        return None;
+    }
+    Some(tt_collect::SlackDmConfig {
+        token: slack.token.clone(),
+        watch_user_id: slack.watch_user_id.clone(),
+        watch_name: slack.watch_name.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_slack_config_off_when_disabled_or_tokenless() {
+        let mut collectors = tt_config::CollectorsSettings::default();
+        assert!(manual_slack_config(&collectors).is_none(), "disabled by default");
+
+        collectors.slack.enabled = true;
+        assert!(manual_slack_config(&collectors).is_none(), "enabled but no token stays off");
+
+        collectors.slack.token = "  ".to_string();
+        assert!(manual_slack_config(&collectors).is_none(), "whitespace token stays off");
+
+        collectors.slack.token = "xoxp-real".to_string();
+        collectors.slack.watch_user_id = "U1".to_string();
+        let config = manual_slack_config(&collectors).expect("enabled + token → configured");
+        assert_eq!(config.token, "xoxp-real");
+        assert_eq!(config.watch_user_id, "U1");
+    }
 
     #[test]
     fn snapshot_of_empty_store_is_empty() {

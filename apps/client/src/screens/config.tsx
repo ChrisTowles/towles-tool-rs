@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   CalendarClock,
   CircleAlert,
@@ -5,6 +6,7 @@ import {
   Coins,
   ExternalLink,
   GitPullRequest,
+  RefreshCw,
   Settings2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,7 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useStoreSnapshot } from "@/lib/data";
+import { storeCollectNow, useStoreSnapshot } from "@/lib/data";
 import { useNow } from "@/lib/now";
 import { openSettings } from "@/lib/open-settings";
 import { useUserSettings, type UserSettings } from "@/lib/settings";
@@ -74,11 +76,14 @@ export function ConfigScreen() {
       </div>
 
       <section className="flex flex-col overflow-hidden rounded-lg border">
-        <div className="flex items-center justify-between border-b bg-muted/40 px-3 py-2">
+        <div className="flex items-center justify-between gap-2 border-b bg-muted/40 px-3 py-2">
           <span className="text-sm font-medium">Connectors</span>
-          <span className="text-xs text-muted-foreground">
-            saves apply live — the scheduler reloads its cadence
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="hidden text-xs text-muted-foreground sm:inline">
+              saves apply live — the scheduler reloads its cadence
+            </span>
+            <RefreshNowButton />
+          </div>
         </div>
 
         <CollectorCard
@@ -189,6 +194,31 @@ export function ConfigScreen() {
         </Button>
       </section>
     </div>
+  );
+}
+
+/**
+ * Force the issues/PRs/Slack collectors to run now instead of waiting for the
+ * next scheduled tick (calendar stays on its cadence — it costs tokens). The
+ * button disables and its icon spins while the run is in flight; the store
+ * snapshot re-emits from Rust when it finishes, refreshing the freshness lines.
+ */
+function RefreshNowButton() {
+  const [running, setRunning] = useState(false);
+  const refresh = async () => {
+    if (running) return;
+    setRunning(true);
+    try {
+      await storeCollectNow();
+    } finally {
+      setRunning(false);
+    }
+  };
+  return (
+    <Button variant="outline" size="sm" disabled={running} onClick={() => void refresh()}>
+      <RefreshCw className={running ? "size-3.5 animate-spin" : "size-3.5"} />
+      {running ? "Refreshing…" : "Refresh now"}
+    </Button>
   );
 }
 
