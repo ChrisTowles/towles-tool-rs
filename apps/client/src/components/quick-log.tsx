@@ -8,6 +8,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { journalLog } from "@/lib/data";
+import { formatLogLine } from "@/lib/quick-log-format";
+import { useWorkspace } from "@/lib/workspace";
 
 /**
  * ⌘J quick log: one line straight into today's journal note. Opens on the
@@ -17,6 +19,7 @@ import { journalLog } from "@/lib/data";
 export function QuickLog() {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
+  const { activeTab } = useWorkspace();
 
   useEffect(() => {
     const onOpen = () => setOpen(true);
@@ -25,8 +28,11 @@ export function QuickLog() {
   }, []);
 
   function submit() {
-    const line = text.trim();
-    if (!line) return;
+    if (!text.trim()) return;
+    // Reconstruct a timeline bullet — `- HH:MM [context] text` — stamped with the current
+    // screen so scattered captures read back as a log. Matches `ttr journal jot`'s format
+    // so app and CLI entries interleave in the same daily note.
+    const line = formatLogLine(text, { now: new Date(), context: activeTab });
     void journalLog(line).then((ok) => {
       if (ok) toast.success("Logged");
     });
