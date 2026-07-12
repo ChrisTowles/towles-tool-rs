@@ -29,7 +29,12 @@ import {
   selectionKindForDetail,
   shouldCopyOnSelect,
 } from "@/lib/terminal-selection";
-import { useCopyOnSelect } from "@/lib/terminal-prefs";
+import {
+  DEFAULT_TERMINAL_FONT_SIZE,
+  clampTerminalFontSize,
+  useCopyOnSelect,
+  useTerminalFontSize,
+} from "@/lib/terminal-prefs";
 import { IS_MAC, matchesShortcut } from "@/lib/shortcuts";
 import { openExternalUrl } from "@/lib/open-url";
 import { Input } from "@/components/ui/input";
@@ -50,7 +55,6 @@ const MATCH_FILL = "rgba(250, 204, 21, 0.3)";
 const CURRENT_MATCH_FILL = "rgba(249, 115, 22, 0.5)";
 const CURRENT_MATCH_STROKE = "rgba(249, 115, 22, 0.9)";
 
-const FONT_SIZE = 13;
 const FONT_FAMILY = "ui-monospace, 'JetBrains Mono', 'Fira Code', monospace";
 const LINE_HEIGHT = 1.25;
 
@@ -110,6 +114,8 @@ export function TerminalView({
     openPath: (link: Extract<TermLink, { kind: "path" }>) => void;
     /** The link under a canvas pixel (right-click point), or null. */
     linkAtPoint: (offsetX: number, offsetY: number) => TermLink | null;
+    /** Re-measure the cell grid at a new terminal font size (px), in place. */
+    setFontSize: (px: number) => void;
   } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -123,6 +129,15 @@ export function TerminalView({
   const [menuLink, setMenuLink] = useState<TermLink | null>(null);
   // Copy-on-select preference, read live by the render effect's mouse handlers.
   const copyOnSelectRef = useCopyOnSelect();
+  // Terminal font size (px) + a persisting setter. The render effect measures
+  // the cell grid from this; Ctrl/⌘ +/- (and 0 to reset) zoom it. Kept in refs
+  // so the effect's long-lived key handler reads the live value and setter
+  // without re-subscribing (re-running the effect would restart the shell).
+  const [fontSize, setTerminalFontSize] = useTerminalFontSize();
+  const fontSizeRef = useRef(fontSize);
+  fontSizeRef.current = fontSize;
+  const setTerminalFontSizeRef = useRef(setTerminalFontSize);
+  setTerminalFontSizeRef.current = setTerminalFontSize;
 
   const runSearch = useCallback(async (q: string) => {
     const bridge = bridgeRef.current;
@@ -167,6 +182,13 @@ export function TerminalView({
     return () => clearTimeout(t);
   }, [searchOpen, query, runSearch]);
 
+  // Apply font-size changes to the live grid without re-running (and thus
+  // restarting) the shell-owning render effect. No-op until the bridge is up
+  // (the render effect measures its initial size directly).
+  useEffect(() => {
+    bridgeRef.current?.setFontSize(fontSize);
+  }, [fontSize]);
+
   useEffect(() => {
     const host = hostRef.current;
     const canvas = canvasRef.current;
@@ -180,11 +202,20 @@ export function TerminalView({
     const cs = getComputedStyle(host);
     const theme = { bg: cs.backgroundColor || "#1e1e2e", fg: cs.color || "#cdd6f4" };
 
-    // Cell metrics from the actual font.
-    ctx.font = `${FONT_SIZE}px ${FONT_FAMILY}`;
-    const cellW = ctx.measureText("M").width;
-    const cellH = Math.ceil(FONT_SIZE * LINE_HEIGHT);
-    const baseline = Math.round((cellH - FONT_SIZE) / 2 + FONT_SIZE * 0.8);
+    // Cell metrics from the actual font. `fontPx` and the derived cell size are
+    // mutable so a zoom (Ctrl/⌘ +/-) can re-measure in place without tearing
+    // down the shell; `measure()` recomputes them from the current `fontPx`.
+    let fontPx = fontSizeRef.current;
+    let cellW = 0;
+    let cellH = 0;
+    let baseline = 0;
+    const measure = () => {
+      ctx.font = `${fontPx}px ${FONT_FAMILY}`;
+      cellW = ctx.measureText("M").width;
+      cellH = Math.ceil(fontPx * LINE_HEIGHT);
+      baseline = Math.round((cellH - fontPx) / 2 + fontPx * 0.8);
+    };
+    measure();
 
     // Client-side grid mirror: rows of style runs (+ selection range), updated
     // per frame, so any row (cursor moves, resize repaints) can be repainted
@@ -206,7 +237,7 @@ export function TerminalView({
     const setFont = (flags: number) => {
       const bold = flags & BOLD ? "bold " : "";
       const italic = flags & ITALIC ? "italic " : "";
-      ctx.font = `${italic}${bold}${FONT_SIZE}px ${FONT_FAMILY}`;
+      ctx.font = `${italic}${bold}${fontPx}px ${FONT_FAMILY}`;
     };
 
     const paintRow = (y: number) => {
@@ -485,6 +516,27 @@ export function TerminalView({
           copySelection();
           return;
         }
+        // Font zoom (Ctrl/⌘ +/-, Ctrl/⌘ 0 to reset) — ours, not the shell's.
+        // Intercepted before encodeKey turns the combo into a control byte.
+        // `=`/`+` zoom in, `-`/`_` out (numpad emits `+`/`-`); persist through
+        // the ref so the effect's live setter survives re-measures.
+        if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+          if (e.key === "=" || e.key === "+") {
+            e.preventDefault();
+            setTerminalFontSizeRef.current(clampTerminalFontSize(fontSizeRef.current + 1));
+            return;
+          }
+          if (e.key === "-" || e.key === "_") {
+            e.preventDefault();
+            setTerminalFontSizeRef.current(clampTerminalFontSize(fontSizeRef.current - 1));
+            return;
+          }
+          if (e.key === "0") {
+            e.preventDefault();
+            setTerminalFontSizeRef.current(DEFAULT_TERMINAL_FONT_SIZE);
+            return;
+          }
+        }
         // Scrollback navigation: Shift+PageUp/PageDown scroll one page,
         // Shift+Home/End jump to the top / live bottom — driven through the
         // same `term_scroll` path as the wheel. On the alternate screen a
@@ -582,7 +634,33 @@ export function TerminalView({
           const y = Math.max(0, Math.min(grid.rows - 1, Math.floor(offsetY / cellH)));
           return linkAt(grid.lines, grid.cols, x, y);
         },
+        // Re-measure the cell grid at a new font size in place — no shell
+        // restart. Recompute cols/rows for the same pixel box and resize the
+        // PTY if they changed (a bigger font fits fewer cells).
+        setFontSize: (px) => {
+          if (px === fontPx) return;
+          fontPx = px;
+          measure();
+          fitCanvas();
+          const cols = Math.max(2, Math.floor(host.clientWidth / cellW));
+          const rows = Math.max(1, Math.floor(host.clientHeight / cellH));
+          paintAll();
+          if (cols !== grid.cols || rows !== grid.rows) {
+            grid.cols = cols;
+            grid.rows = rows;
+          }
+          void invoke("term_resize", {
+            termId,
+            cols,
+            rows,
+            cellWidth: Math.round(cellW),
+            cellHeight: cellH,
+          }).catch(() => {});
+        },
       };
+      // If the persisted size loaded after this effect measured with the
+      // default, reconcile now that the bridge exists.
+      if (fontPx !== fontSizeRef.current) bridgeRef.current.setFontSize(fontSizeRef.current);
 
       // Mouse selection: drag = range, double-click = word, triple = line,
       // plain click = clear. Coordinates are viewport cells; the engine owns

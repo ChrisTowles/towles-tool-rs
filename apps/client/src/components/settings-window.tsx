@@ -27,6 +27,7 @@ import { abInvoke } from "@/lib/agentboard";
 import { closeCurrentWindow } from "@/lib/open-settings";
 import { isEmptyQuery, matchesFilter } from "@/lib/settings-filter";
 import { useUserSettings, type UserSettings } from "@/lib/settings";
+import { DEFAULT_TERMINAL_FONT_SIZE, clampTerminalFontSize } from "@/lib/terminal-prefs";
 import { SHORTCUTS, shortcutKeys, type ShortcutScope } from "@/lib/shortcuts";
 import { useAppVersion } from "@/lib/version";
 
@@ -687,6 +688,24 @@ function agentboardSections(
               update((s) => ({
                 ...s,
                 agentboard: { ...s.agentboard, copyOnSelect: v },
+              }))
+            }
+          />
+        ),
+      },
+      {
+        label: "Terminal font size",
+        keywords: ["terminal", "font", "size", "zoom", "text"],
+        node: (
+          <CadenceRow
+            label="Terminal font size"
+            description="Font size (px) for the app's terminals. Zoom in/out live with Ctrl/⌘ +/- (Ctrl/⌘ 0 resets)."
+            unit="px"
+            value={settings.agentboard?.terminalFontSize ?? DEFAULT_TERMINAL_FONT_SIZE}
+            onValue={(n) =>
+              update((s) => ({
+                ...s,
+                agentboard: { ...s.agentboard, terminalFontSize: clampTerminalFontSize(n) },
               }))
             }
           />

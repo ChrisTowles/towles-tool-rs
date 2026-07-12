@@ -156,6 +156,13 @@ pub struct AgentboardSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copy_on_select: Option<bool>,
 
+    /// Font size (px) for the app's canvas terminals. `None` = the built-in
+    /// default (13). Written when the user zooms with Ctrl/⌘ +/- or edits the
+    /// setting, so the shared settings file stays clean for the TS CLI until
+    /// then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_font_size: Option<u8>,
+
     /// Fire a desktop notification when a collector silently stops succeeding
     /// (its last healthy run ages out, or it fails repeatedly — expired `gh`
     /// auth, a revoked Slack token). `None` = the built-in default (on). Only
@@ -185,6 +192,9 @@ pub const DEFAULT_NOTIFY_REVIEW_REQUESTED: bool = true;
 
 /// Built-in default for [`AgentboardSettings::copy_on_select`]: on.
 pub const DEFAULT_COPY_ON_SELECT: bool = true;
+
+/// Built-in default for [`AgentboardSettings::terminal_font_size`]: 13px.
+pub const DEFAULT_TERMINAL_FONT_SIZE: u8 = 13;
 
 /// Built-in default for [`AgentboardSettings::notify_stale_collector`]: on.
 pub const DEFAULT_NOTIFY_STALE_COLLECTOR: bool = true;
@@ -676,6 +686,28 @@ mod tests {
         assert!(!json.contains("copyOnSelect"));
         // …and unset means ON.
         assert!(s.agentboard.copy_on_select.unwrap_or(DEFAULT_COPY_ON_SELECT));
+    }
+
+    #[test]
+    fn terminal_font_size_defaults_unset_and_thirteen() {
+        let s = UserSettings::default();
+        // Unset until the user changes it, so the shared file stays clean…
+        assert!(s.agentboard.terminal_font_size.is_none());
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("terminalFontSize"));
+        // …and unset means the 13px default.
+        assert_eq!(s.agentboard.terminal_font_size.unwrap_or(DEFAULT_TERMINAL_FONT_SIZE), 13);
+    }
+
+    #[test]
+    fn terminal_font_size_tolerates_unknown_and_roundtrips() {
+        // An unknown sibling key (written by the TS CLI or a newer app) must
+        // not break deserialization, and a set value round-trips as camelCase.
+        let json = r#"{"agentboard":{"terminalFontSize":17,"someFutureKey":true}}"#;
+        let s: UserSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.agentboard.terminal_font_size, Some(17));
+        let out = serde_json::to_string(&s).unwrap();
+        assert!(out.contains("\"terminalFontSize\":17"));
     }
 
     #[test]

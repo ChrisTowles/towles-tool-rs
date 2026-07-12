@@ -58,8 +58,9 @@ export type UserSettings = {
    * the next meeting's countdown reaches zero; unset = on),
    * `notifyReviewRequested` (fired when a PR newly needs your review; unset =
    * on), `notifyChecksFailed` (fired when one of your PRs' CI flips to failing;
-   * unset = on), and `copyOnSelect` (terminal
-   * copies the selection to the clipboard on selection end; unset = off).
+   * unset = on), `copyOnSelect` (terminal
+   * copies the selection to the clipboard on selection end; unset = off), and
+   * `terminalFontSize` (canvas terminal font px; unset = 13).
    */
   agentboard?: {
     notifyNeedsYou?: boolean;
@@ -67,6 +68,7 @@ export type UserSettings = {
     notifyReviewRequested?: boolean;
     notifyChecksFailed?: boolean;
     copyOnSelect?: boolean;
+    terminalFontSize?: number;
   } & Record<string, unknown>;
 };
 
