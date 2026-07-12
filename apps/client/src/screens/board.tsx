@@ -6,11 +6,13 @@ import {
   MoreHorizontal,
   Plus,
   Search,
+  StickyNote,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Textarea } from "@/components/ui/textarea";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -61,8 +63,9 @@ import { useFocusTarget } from "@/lib/focus-target";
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
 
-/** Optimistic edits (text/due) applied over a snapshot todo until it re-arrives. */
-type TaskEdit = { text?: string; dueTs?: number | undefined };
+/** Optimistic edits (text/notes/due) applied over a snapshot todo until it
+ * re-arrives. */
+type TaskEdit = { text?: string; notes?: string | undefined; dueTs?: number | undefined };
 
 /** Optimistic status + fractional position from a drag-reorder, until re-arrival. */
 type PosOverride = { status: TaskStatus; position: number };
@@ -224,6 +227,15 @@ export function BoardScreen() {
     void storeUpdateTask(id, current.text, current.notes, dueTs);
   }
 
+  function setNotes(id: number, notes: string) {
+    const current = merged.find((t) => t.id === id);
+    if (!current) return;
+    // Empty/whitespace-only notes clear the field back to unset.
+    const value = notes.trim() === "" ? undefined : notes;
+    setEditOverrides((prev) => ({ ...prev, [id]: { ...prev[id], notes: value } }));
+    void storeUpdateTask(id, current.text, value, current.dueTs);
+  }
+
   function remove(id: number) {
     setDeletedIds((prev) => new Set(prev).add(id));
     void storeDeleteTask(id);
@@ -360,6 +372,7 @@ export function BoardScreen() {
                       onPromote={promote}
                       onRename={rename}
                       onSetDue={setDue}
+                      onSetNotes={setNotes}
                       onDelete={remove}
                       onDragEnd={() => setDropSlot(null)}
                     />
@@ -372,6 +385,34 @@ export function BoardScreen() {
         </div>
       </ScrollArea>
     </div>
+  );
+}
+
+/**
+ * The notes editor inside a card's dropdown. Seeded from the todo's current
+ * notes each time the menu opens (Radix unmounts the content on close), edited
+ * locally, and committed on blur so we don't write to the store per keystroke.
+ */
+function NotesField({
+  task,
+  onSetNotes,
+}: {
+  task: TaskItem;
+  onSetNotes: (id: number, notes: string) => void;
+}) {
+  const [draft, setDraft] = useState(task.notes ?? "");
+  return (
+    <Textarea
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        if (draft.trim() !== (task.notes ?? "").trim()) onSetNotes(task.id, draft);
+      }}
+      placeholder="Add notes…"
+      rows={3}
+      className="min-h-16 resize-none text-xs"
+      aria-label="Todo notes"
+    />
   );
 }
 
@@ -392,6 +433,7 @@ function Card({
   onPromote,
   onRename,
   onSetDue,
+  onSetNotes,
   onDelete,
   onDragEnd,
 }: {
@@ -406,6 +448,7 @@ function Card({
   onPromote: (id: number, repo: string) => void;
   onRename: (id: number, text: string) => void;
   onSetDue: (id: number, dueTs: number | undefined) => void;
+  onSetNotes: (id: number, notes: string) => void;
   onDelete: (id: number) => void;
   onDragEnd: () => void;
 }) {
@@ -416,6 +459,7 @@ function Card({
   const inputRef = useRef<HTMLInputElement>(null);
   // A shipped card is never "late", so done cards carry no due accent.
   const due = task.status === "done" ? "none" : dueState(task.dueTs, now);
+  const hasNotes = (task.notes ?? "").trim() !== "";
 
   function startRename() {
     setEditValue(task.text);
@@ -547,6 +591,16 @@ function Card({
                 </Button>
               )}
             </div>
+            <DropdownMenuLabel className="pb-0.5 pt-1 text-muted-foreground">
+              Notes
+            </DropdownMenuLabel>
+            <div
+              className="px-2 py-1"
+              // Keep the menu open and stop its typeahead from eating keystrokes.
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              <NotesField task={task} onSetNotes={onSetNotes} />
+            </div>
             <DropdownMenuSeparator />
             <DropdownMenuLabel>Move to</DropdownMenuLabel>
             {TASK_STATUSES.filter((s) => s !== task.status).map((s) => (
@@ -586,7 +640,7 @@ function Card({
         </DropdownMenu>
       </div>
 
-      {(task.repo || task.dueTs !== undefined) && (
+      {(task.repo || task.dueTs !== undefined || hasNotes) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           {task.repo && task.issueNumber !== undefined && (
             <a
@@ -615,6 +669,16 @@ function Card({
             >
               <CalendarPlus aria-hidden className="size-3" />
               {fmtDay(task.dueTs)}
+            </Badge>
+          )}
+          {hasNotes && (
+            <Badge
+              variant="outline"
+              className="gap-1 text-[10px] text-muted-foreground"
+              title={task.notes}
+            >
+              <StickyNote aria-hidden className="size-3" />
+              Notes
             </Badge>
           )}
         </div>
