@@ -520,17 +520,30 @@ export function SettingsWindow() {
             />
             <AgentboardSettings />
             {settings ? (
-              <ToggleRow
-                label="Needs-you notifications"
-                description="Desktop notification when an agent session flips to needs-you while the app is unfocused. Status only — act in the session's terminal."
-                checked={settings.agentboard?.notifyNeedsYou ?? true}
-                onCheckedChange={(v) =>
-                  update((s) => ({
-                    ...s,
-                    agentboard: { ...s.agentboard, notifyNeedsYou: v },
-                  }))
-                }
-              />
+              <>
+                <ToggleRow
+                  label="Needs-you notifications"
+                  description="Desktop notification when an agent session flips to needs-you while the app is unfocused. Status only — act in the session's terminal."
+                  checked={settings.agentboard?.notifyNeedsYou ?? true}
+                  onCheckedChange={(v) =>
+                    update((s) => ({
+                      ...s,
+                      agentboard: { ...s.agentboard, notifyNeedsYou: v },
+                    }))
+                  }
+                />
+                <ToggleRow
+                  label="Copy on select"
+                  description="Copy the terminal selection to the clipboard as soon as you finish selecting, without Ctrl/⌘+Shift+C."
+                  checked={settings.agentboard?.copyOnSelect ?? false}
+                  onCheckedChange={(v) =>
+                    update((s) => ({
+                      ...s,
+                      agentboard: { ...s.agentboard, copyOnSelect: v },
+                    }))
+                  }
+                />
+              </>
             ) : (
               <SettingsLoading />
             )}

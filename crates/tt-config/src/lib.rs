@@ -112,6 +112,13 @@ pub struct AgentboardSettings {
     /// settings file stays clean for the TS CLI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notify_needs_you: Option<bool>,
+
+    /// Copy the terminal's active selection to the clipboard as soon as a
+    /// selection gesture ends (copy-on-select). `None` = the built-in default
+    /// (off). Only written once the user changes it, so the shared settings
+    /// file stays clean for the TS CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copy_on_select: Option<bool>,
 }
 
 /// Built-in default for [`AgentboardSettings::compact_recommend_percent`].
@@ -119,6 +126,9 @@ pub const DEFAULT_COMPACT_RECOMMEND_PERCENT: u8 = 30;
 
 /// Built-in default for [`AgentboardSettings::notify_needs_you`]: notifications on.
 pub const DEFAULT_NOTIFY_NEEDS_YOU: bool = true;
+
+/// Built-in default for [`AgentboardSettings::copy_on_select`]: off.
+pub const DEFAULT_COPY_ON_SELECT: bool = false;
 
 /// Data-hub collector settings (the Rust CLI/app's tt.db collectors; the TS CLI
 /// ignores this block). Each collector is configured independently — enable
@@ -456,6 +466,17 @@ mod tests {
         assert!(!json.contains("notifyNeedsYou"));
         // …and unset means ON.
         assert!(s.agentboard.notify_needs_you.unwrap_or(DEFAULT_NOTIFY_NEEDS_YOU));
+    }
+
+    #[test]
+    fn copy_on_select_defaults_unset_and_off() {
+        let s = UserSettings::default();
+        // Unset until the user changes it, so the shared file stays clean…
+        assert!(s.agentboard.copy_on_select.is_none());
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("copyOnSelect"));
+        // …and unset means OFF.
+        assert!(!s.agentboard.copy_on_select.unwrap_or(DEFAULT_COPY_ON_SELECT));
     }
 
     #[test]

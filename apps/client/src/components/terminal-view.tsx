@@ -21,9 +21,22 @@ import {
   type SearchMatch,
 } from "@/lib/term-protocol";
 import { linkAt, type TermLink } from "@/lib/term-links";
-import { matchesShortcut } from "@/lib/shortcuts";
+import {
+  rowsHaveSelection,
+  selectionKindForDetail,
+  shouldCopyOnSelect,
+} from "@/lib/terminal-selection";
+import { useCopyOnSelect } from "@/lib/terminal-prefs";
+import { IS_MAC, matchesShortcut } from "@/lib/shortcuts";
 import { openExternalUrl } from "@/lib/open-url";
 import { Input } from "@/components/ui/input";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { IconBtn } from "@/components/agentboard-bits";
 
 /** Scrollback-search highlight fills — alpha washes over the cell backgrounds
@@ -83,12 +96,21 @@ export function TerminalView({
     scrollTo: (row: number) => void;
     repaint: () => void;
     focusTerm: () => void;
+    copy: () => void;
+    paste: () => void;
+    selectAll: () => void;
+    hasSelection: () => boolean;
   } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [matchCount, setMatchCount] = useState(0);
   const [currentMatch, setCurrentMatch] = useState(-1);
+  // Right-click menu: `copyEnabled` is sampled from the live selection when the
+  // menu opens (Copy is dead when there's nothing selected).
+  const [copyEnabled, setCopyEnabled] = useState(false);
+  // Copy-on-select preference, read live by the render effect's mouse handlers.
+  const copyOnSelectRef = useCopyOnSelect();
 
   const runSearch = useCallback(async (q: string) => {
     const bridge = bridgeRef.current;
@@ -395,6 +417,12 @@ export function TerminalView({
       const write = (data: string) => void invoke("term_write", { termId, data }).catch(() => {});
       const scroll = (delta: number | null) =>
         void invoke("term_scroll", { termId, delta }).catch(() => {});
+      // Copy the engine's active selection to the system clipboard. Shared by
+      // the Ctrl/⌘+Shift+C chord, the context menu, and copy-on-select.
+      const copySelection = () =>
+        void invoke<string>("term_copy", { termId })
+          .then((text) => (text ? navigator.clipboard.writeText(text) : undefined))
+          .catch(() => {});
 
       const onFrame = await listen<{ termId: string; frame: Frame }>("terminal://frame", (e) => {
         if (e.payload.termId === termId) applyFrame(e.payload.frame);
@@ -418,6 +446,17 @@ export function TerminalView({
           scroll(null);
         }
       };
+      // Paste from the system clipboard through the same bracketed-paste path
+      // as a real paste event. Used by the context menu's Paste item.
+      const pasteClipboard = () =>
+        void navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (!text) return;
+            backToLive();
+            write(encodePaste(text, grid.modes.bracketedPaste));
+          })
+          .catch(() => {});
 
       const onKeyDown = (e: KeyboardEvent) => {
         if (e.isComposing) return;
@@ -430,9 +469,7 @@ export function TerminalView({
         }
         if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "c")) {
           e.preventDefault();
-          void invoke<string>("term_copy", { termId })
-            .then((text) => (text ? navigator.clipboard.writeText(text) : undefined))
-            .catch(() => {});
+          copySelection();
           return;
         }
         const seq = encodeKey(e, grid.modes);
@@ -479,17 +516,25 @@ export function TerminalView({
         scrollTo: (row) => void invoke("term_scroll_to", { termId, row }).catch(() => {}),
         repaint: paintAll,
         focusTerm: focusInput,
+        copy: copySelection,
+        paste: pasteClipboard,
+        selectAll: () => void select("all"),
+        hasSelection: () => rowsHaveSelection(grid.lines),
       };
 
       // Mouse selection: drag = range, double-click = word, triple = line,
       // plain click = clear. Coordinates are viewport cells; the engine owns
       // the selection and reports highlight ranges back in frames.
+      // The last selection IPC, so copy-on-select can wait for the engine to
+      // apply the selection before `term_copy` reads it (both go over the same
+      // engine channel, but the IPC calls are otherwise unordered).
+      let lastSelect: Promise<unknown> = Promise.resolve();
       const select = (
         kind: "drag" | "word" | "line" | "all" | "clear",
         a?: { x: number; y: number },
         b?: { x: number; y: number },
-      ) =>
-        void invoke("term_select", {
+      ) => {
+        lastSelect = invoke("term_select", {
           termId,
           kind,
           ax: a?.x,
@@ -497,6 +542,14 @@ export function TerminalView({
           bx: b?.x,
           by: b?.y,
         }).catch(() => {});
+        return lastSelect;
+      };
+      // Copy a just-made selection to the clipboard when copy-on-select is on.
+      const maybeCopyOnSelect = (kind: "drag" | "word" | "line") => {
+        if (shouldCopyOnSelect(copyOnSelectRef.current, kind)) {
+          void lastSelect.then(copySelection);
+        }
+      };
       const cellOf = (e: MouseEvent) => ({
         x: Math.max(0, Math.min(grid.cols - 1, Math.floor(e.offsetX / cellW))),
         y: Math.max(0, Math.min(grid.rows - 1, Math.floor(e.offsetY / cellH))),
@@ -517,9 +570,11 @@ export function TerminalView({
             return;
           }
         }
-        if (e.detail === 2) select("word", cell);
-        else if (e.detail >= 3) select("line", cell);
-        else {
+        const kind = selectionKindForDetail(e.detail);
+        if (kind === "word" || kind === "line") {
+          void select(kind, cell);
+          maybeCopyOnSelect(kind);
+        } else {
           anchor = cell;
           dragged = false;
         }
@@ -533,10 +588,11 @@ export function TerminalView({
         if (!dragged && cell.x === anchor.x && cell.y === anchor.y) return;
         dragged = true;
         setHoveredLink(null);
-        select("drag", anchor, cell);
+        void select("drag", anchor, cell);
       };
       const onMouseUp = () => {
-        if (anchor && !dragged) select("clear");
+        if (anchor && !dragged) void select("clear");
+        else if (dragged) maybeCopyOnSelect("drag");
         anchor = null;
       };
       const onMouseLeave = () => setHoveredLink(null);
@@ -620,7 +676,39 @@ export function TerminalView({
 
   return (
     <div ref={hostRef} className="relative size-full overflow-hidden bg-background p-1">
-      <canvas ref={canvasRef} className="block" />
+      {/* Right-click menu over the canvas. Copy is sampled live on open (dead
+          when nothing is selected); items route through the render effect's
+          IPC helpers via `bridgeRef`. `onCloseAutoFocus` returns focus to the
+          hidden input so typing/IME keep working after the menu closes. */}
+      <ContextMenu
+        onOpenChange={(open) => {
+          if (open) setCopyEnabled(bridgeRef.current?.hasSelection() ?? false);
+        }}
+      >
+        <ContextMenuTrigger asChild>
+          <canvas ref={canvasRef} className="block" />
+        </ContextMenuTrigger>
+        <ContextMenuContent
+          onCloseAutoFocus={(e) => {
+            e.preventDefault();
+            bridgeRef.current?.focusTerm();
+          }}
+        >
+          <ContextMenuItem
+            disabled={!copyEnabled}
+            onSelect={() => bridgeRef.current?.copy()}
+          >
+            Copy
+            <ContextMenuShortcut>{IS_MAC ? "⇧⌘C" : "Ctrl+Shift+C"}</ContextMenuShortcut>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => bridgeRef.current?.paste()}>
+            Paste
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => bridgeRef.current?.selectAll()}>
+            Select all
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
       {/* Scrollback search overlay (Ctrl/⌘+Shift+F). Enter/Shift+Enter step
           through matches; Escape returns focus to the terminal. */}
       {searchOpen && (

@@ -139,7 +139,8 @@ export const SHORTCUTS = defineShortcuts([
   },
 ]);
 
-const IS_MAC =
+/** True on macOS — chooses ⌘ vs Ctrl for the modifier key across the app. */
+export const IS_MAC =
   typeof navigator !== "undefined" && /mac/i.test(navigator.platform ?? "");
 
 /** Per-platform keycap tokens for a shortcut id: ["⌘","⇧","W"] on mac,
