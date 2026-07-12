@@ -1,4 +1,4 @@
-import { invokeToast } from "@/lib/tauri";
+import { invokeOrThrow, invokeToast } from "@/lib/tauri";
 
 /**
  * Client-side bridge to the journal screens (the Rust `tt-journal` crate, surfaced
@@ -37,3 +37,15 @@ export const journalSearch = (opts: { query: string; ty?: string }) =>
 
 export const journalOpen = (relativePath: string) =>
   invokeToast<null>("journal_open", { relativePath });
+
+/** The marker string a `journal_save` uses to detect an out-of-band change on disk. */
+export const JOURNAL_STALE_ERROR = "file changed on disk since it was loaded";
+
+/**
+ * Overwrite a journal entry's full content. `expectedOriginal` is the content last
+ * loaded; the command rejects (with {@link JOURNAL_STALE_ERROR}) if the file changed on
+ * disk since then, so callers can show a distinct "reload" state instead of clobbering.
+ * Errors propagate (via {@link invokeOrThrow}) so callers can tell stale from success.
+ */
+export const journalSave = (relativePath: string, expectedOriginal: string, content: string) =>
+  invokeOrThrow<null>("journal_save", { relativePath, expectedOriginal, content });

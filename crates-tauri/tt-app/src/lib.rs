@@ -264,6 +264,7 @@ pub fn run() {
             store::store_dm_dismiss,
             store::journal_log,
             journal::journal_get_today,
+            journal::journal_save,
             journal::journal_list,
             journal::journal_search,
             journal::journal_create,

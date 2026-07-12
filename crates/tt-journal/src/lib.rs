@@ -14,6 +14,7 @@
 use thiserror::Error;
 
 pub mod entries;
+pub mod save;
 pub mod tokens;
 
 #[derive(Debug, Error)]
@@ -26,6 +27,9 @@ pub enum Error {
 
     #[error("Invalid date range format: \"{0}\". Expected: YYYY-MM-DD..YYYY-MM-DD")]
     InvalidDateRange(String),
+
+    #[error("file changed on disk since it was loaded")]
+    FileChangedOnDisk,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
