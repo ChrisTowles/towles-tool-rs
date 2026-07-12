@@ -327,7 +327,8 @@ pub struct CreateOpts {
     pub branch: Option<String>,
     /// Base ref for the new branch / detached checkout; `None` = hub HEAD.
     pub base: Option<String>,
-    /// Run the root's `slot-setup.sh` hook in the new slot (npm install etc.).
+    /// Run the repo's committed `slot-setup.sh` in the new slot (deps install
+    /// etc.) — the hook is versioned with the repo, not a hub-root sidecar.
     pub run_setup_hook: bool,
 }
 
@@ -390,7 +391,9 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     }
 
     if opts.run_setup_hook {
-        let hook = sr.root.join(SETUP_HOOK);
+        // The hook is committed in the repo (so it's versioned and travels to
+        // teammates), checked out into the slot itself — not a hub-root file.
+        let hook = dir.join(SETUP_HOOK);
         if is_executable(&hook) {
             let hook_s = hook.to_string_lossy().to_string();
             match tt_exec::run_in_dir_with_timeout(&hook_s, &[], &dir, SETUP_TIMEOUT) {
