@@ -16,6 +16,13 @@ describe("matchesTaskFilter", () => {
     expect(matchesTaskFilter({ text: "Ship the board" }, "slack")).toBe(false);
   });
 
+  it("matches against the notes, not just the text", () => {
+    expect(
+      matchesTaskFilter({ text: "Fix the flaky test", notes: "start with doctor" }, "doctor"),
+    ).toBe(true);
+    expect(matchesTaskFilter({ text: "Fix the flaky test" }, "doctor")).toBe(false);
+  });
+
   it("matches against the repo tag, not just the text", () => {
     expect(
       matchesTaskFilter({ text: "Fix the bug", repo: "towles-tool-rs" }, "tool-rs"),
