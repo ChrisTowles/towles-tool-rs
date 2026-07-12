@@ -110,8 +110,15 @@ export function isWideRun(run: Run): boolean {
   return run.width > [...run.text].length;
 }
 
+/** The subset of `KeyboardEvent` the key encoders read — lets callers pass a
+ * synthetic event (e.g. the alt-screen path forwarding an unshifted key). */
+type KeyEventLike = Pick<
+  KeyboardEvent,
+  "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey"
+>;
+
 /** xterm-style modifier parameter: 1 + shift(1) + alt(2) + ctrl(4) + meta(8). */
-function modParam(e: KeyboardEvent): number {
+function modParam(e: KeyEventLike): number {
   return (
     1 +
     (e.shiftKey ? 1 : 0) +
@@ -149,16 +156,44 @@ const FN_TILDE: Record<string, number> = {
   F12: 24,
 };
 
+export type ScrollbackAction = "page-up" | "page-down" | "top" | "bottom";
+
+/**
+ * The terminal-emulator scrollback chords — Shift+PageUp/PageDown scroll a
+ * page, Shift+Home/End jump to the top / live bottom. The canvas view drives
+ * its own scrollback for these (see terminal-view.tsx), so `encodeKey` returns
+ * null for them rather than sending them to the shell. Returns the action, or
+ * null when the event isn't a bare-shift scrollback chord.
+ */
+export function scrollbackKey(e: KeyEventLike): ScrollbackAction | null {
+  if (!e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return null;
+  switch (e.key) {
+    case "PageUp":
+      return "page-up";
+    case "PageDown":
+      return "page-down";
+    case "Home":
+      return "top";
+    case "End":
+      return "bottom";
+    default:
+      return null;
+  }
+}
+
 /**
  * Encode a keydown into the bytes a terminal expects, or `null` when the
  * event is not ours to handle (browser shortcut, plain char during IME
- * composition, copy/paste chords).
+ * composition, copy/paste chords, scrollback-navigation chords).
  */
-export function encodeKey(e: KeyboardEvent, modes: Pick<Modes, "appCursorKeys">): string | null {
+export function encodeKey(e: KeyEventLike, modes: Pick<Modes, "appCursorKeys">): string | null {
   // Leave clipboard chords to the paste/copy handlers.
   if (e.ctrlKey && e.shiftKey && (e.key === "V" || e.key === "C" || e.key === "v" || e.key === "c")) {
     return null;
   }
+  // Scrollback-navigation chords belong to the view (it scrolls its own
+  // buffer), not the shell.
+  if (scrollbackKey(e)) return null;
 
   const mods = modParam(e);
 
