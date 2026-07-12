@@ -229,17 +229,17 @@ pub async fn store_promote_task_to_issue(
     id: i64,
     repo: String,
 ) -> Result<(), String> {
-    let title = with_store(&state, |store| {
-        Ok(store
+    let (title, body) = with_store(&state, |store| {
+        let task = store
             .get_task(id)
             .map_err(|e| format!("get_task failed: {e}"))?
-            .ok_or_else(|| format!("no todo with id {id}"))?
-            .text)
+            .ok_or_else(|| format!("no todo with id {id}"))?;
+        Ok((task.text, render_promoted_issue_body(task.notes.as_deref(), task.due_ts)))
     })?;
 
     let gh_repo = repo.clone();
     let (number, url) =
-        tauri::async_runtime::spawn_blocking(move || create_gh_issue(&gh_repo, &title))
+        tauri::async_runtime::spawn_blocking(move || create_gh_issue(&gh_repo, &title, &body))
             .await
             .map_err(|e| format!("gh issue create task failed: {e}"))??;
 
@@ -279,14 +279,32 @@ pub async fn store_create_issue(dir: String, title: String) -> Result<String, St
 }
 
 /// Run `gh issue create` and return the new issue's `(number, url)`.
-fn create_gh_issue(repo: &str, title: &str) -> Result<(i64, String), String> {
+fn create_gh_issue(repo: &str, title: &str, body: &str) -> Result<(i64, String), String> {
     let output = std::process::Command::new("gh")
         .args([
-            "issue", "create", "--repo", repo, "--title", title, "--body", "",
+            "issue", "create", "--repo", repo, "--title", title, "--body", body,
         ])
         .output()
         .map_err(|e| format!("failed to spawn gh: {e}"))?;
     parse_gh_issue_create_output(&output)
+}
+
+/// Render the GitHub issue body for a todo promoted from the tt board: the
+/// todo's `notes` verbatim (dropped when blank), a footer marking the origin,
+/// and — when the todo has one — its due date. `due_ts` is epoch milliseconds
+/// passed in by the caller; the clock is never read here, so this stays pure
+/// and unit-testable.
+fn render_promoted_issue_body(notes: Option<&str>, due_ts: Option<i64>) -> String {
+    let mut body = String::new();
+    if let Some(notes) = notes.map(str::trim).filter(|n| !n.is_empty()) {
+        body.push_str(notes);
+        body.push_str("\n\n");
+    }
+    body.push_str("Promoted from tt board");
+    if let Some(due) = due_ts.and_then(chrono::DateTime::from_timestamp_millis) {
+        body.push_str(&format!("\nDue: {}", due.format("%Y-%m-%d")));
+    }
+    body
 }
 
 /// Parse a `gh issue create` invocation's output into `(number, url)`. `gh`
@@ -429,6 +447,29 @@ mod tests {
         let config = manual_slack_config(&collectors).expect("enabled + token → configured");
         assert_eq!(config.token, "xoxp-real");
         assert_eq!(config.watch_user_id, "U1");
+    }
+
+    #[test]
+    fn promoted_body_carries_notes_verbatim() {
+        let body = render_promoted_issue_body(Some("line one\nline two"), None);
+        assert_eq!(body, "line one\nline two\n\nPromoted from tt board");
+    }
+
+    #[test]
+    fn promoted_body_footer_only_when_notes_blank() {
+        assert_eq!(render_promoted_issue_body(None, None), "Promoted from tt board");
+        assert_eq!(render_promoted_issue_body(Some("   \n  "), None), "Promoted from tt board");
+    }
+
+    #[test]
+    fn promoted_body_appends_due_date_when_set() {
+        // 2026-07-15T00:00:00Z in epoch ms.
+        let due_ts = 1_784_073_600_000;
+        let body = render_promoted_issue_body(Some("ship it"), Some(due_ts));
+        assert_eq!(body, "ship it\n\nPromoted from tt board\nDue: 2026-07-15");
+
+        let body_no_notes = render_promoted_issue_body(None, Some(due_ts));
+        assert_eq!(body_no_notes, "Promoted from tt board\nDue: 2026-07-15");
     }
 
     #[test]
