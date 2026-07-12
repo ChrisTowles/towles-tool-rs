@@ -12,6 +12,7 @@ members = [
   "crates/tt-graph",
   "crates/tt-journal",
   "crates/tt-mcp",
+  "crates/tt-slots",
   "crates/tt-store",
   "crates/tt-vt",
   # CLI crates
@@ -63,6 +64,7 @@ tt-git = { path = "crates/tt-git" }
 tt-graph = { path = "crates/tt-graph" }
 tt-journal = { path = "crates/tt-journal" }
 tt-mcp = { path = "crates/tt-mcp" }
+tt-slots = { path = "crates/tt-slots" }
 tt-store = { path = "crates/tt-store" }
 tt-vt = { path = "crates/tt-vt" }
 

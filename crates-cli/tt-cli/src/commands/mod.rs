@@ -8,3 +8,4 @@ pub mod gh;
 pub mod install;
 pub mod journal;
 pub mod mcp;
+pub mod slot;

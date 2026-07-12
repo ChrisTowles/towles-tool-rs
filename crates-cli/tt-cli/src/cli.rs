@@ -79,6 +79,75 @@ pub enum Commands {
 
     /// MCP server exposing the local store and agent sessions to claude
     Mcp(McpArgs),
+
+    /// Worktree slots: parallel checkouts of one repo from a bare hub
+    /// (<root>/<repo>.git + <root>/<repo>-slot-N), each with rendered per-slot
+    /// ports/env so concurrent slots never collide
+    Slot(SlotArgs),
+}
+
+#[derive(Args)]
+#[command(disable_help_subcommand = true)]
+pub struct SlotArgs {
+    #[command(subcommand)]
+    pub command: SlotCommands,
+}
+
+#[derive(Subcommand)]
+pub enum SlotCommands {
+    /// Create the next free slot: worktree + rendered .env (port claims,
+    /// inherited sibling secrets) + slot-setup.sh hook
+    New {
+        /// Create and check out this branch (default: detached at the base branch)
+        #[arg(long, short = 'b')]
+        branch: Option<String>,
+
+        /// Emit the created slot as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Slot root directory (default: walk up from cwd to a dir holding <repo>.git)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
+
+    /// List slots with branch, dirty count, and claimed ports
+    Ls {
+        /// Emit slots as a JSON array
+        #[arg(long)]
+        json: bool,
+
+        /// Slot root directory (default: walk up from cwd to a dir holding <repo>.git)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
+
+    /// Remove a slot: guarded (clean tree, no commits unreachable from a
+    /// remote, nothing foreign on its ports), then docker compose down -v,
+    /// anchored container/volume sweep, worktree remove
+    Rm {
+        /// Slot directory name, e.g. blog-slot-3
+        name: String,
+
+        /// Skip guards (each skip is printed) and force worktree removal
+        #[arg(long)]
+        force: bool,
+
+        /// Slot root directory (default: walk up from cwd to a dir holding <repo>.git)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
+
+    /// (Re)render a slot's .env from the template — idempotent: existing port
+    /// claims and keys the template doesn't know are preserved
+    Env {
+        /// Slot directory name, e.g. blog-slot-3
+        name: String,
+
+        /// Slot root directory (default: walk up from cwd to a dir holding <repo>.git)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
 }
 
 #[derive(Args)]
