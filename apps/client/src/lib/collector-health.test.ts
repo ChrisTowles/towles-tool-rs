@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyRun,
   collectorHealth,
+  dataRefreshedAt,
   DEFAULT_STALE_MS,
   KNOWN_COLLECTORS,
   type CollectorState,
@@ -92,5 +93,44 @@ describe("collectorHealth", () => {
     const issues = collectorHealth(runs, NOW).find((h) => h.key === "issues");
     expect(issues?.run?.message).toBe("gh auth expired");
     expect(DEFAULT_STALE_MS.issues).toBeGreaterThan(0);
+  });
+});
+
+describe("dataRefreshedAt", () => {
+  it("is undefined when no refresh collector has run", () => {
+    expect(dataRefreshedAt([], NOW)).toBeUndefined();
+  });
+
+  it("takes the newest successful run across prs and issues", () => {
+    const runs: CollectRun[] = [
+      run({ collector: "prs", ranAt: NOW - 10 * 60_000 }),
+      run({ collector: "issues", ranAt: NOW - 3 * 60_000 }),
+    ];
+    expect(dataRefreshedAt(runs, NOW)).toBe(NOW - 3 * 60_000);
+  });
+
+  it("ignores calendar and slack collectors", () => {
+    const runs: CollectRun[] = [
+      run({ collector: "claude:calendar", ranAt: NOW - 1000 }),
+      run({ collector: "slack:dm", ranAt: NOW - 1000 }),
+      run({ collector: "prs", ranAt: NOW - 4 * 60_000 }),
+    ];
+    expect(dataRefreshedAt(runs, NOW)).toBe(NOW - 4 * 60_000);
+  });
+
+  it("skips a collector whose latest run errored, falling back to the other", () => {
+    const runs: CollectRun[] = [
+      run({ collector: "prs", ranAt: NOW - 1000, ok: false }),
+      run({ collector: "issues", ranAt: NOW - 5 * 60_000 }),
+    ];
+    expect(dataRefreshedAt(runs, NOW)).toBe(NOW - 5 * 60_000);
+  });
+
+  it("is undefined when every latest run errored", () => {
+    const runs: CollectRun[] = [
+      run({ collector: "prs", ranAt: NOW - 1000, ok: false }),
+      run({ collector: "issues", ranAt: NOW - 2000, ok: false }),
+    ];
+    expect(dataRefreshedAt(runs, NOW)).toBeUndefined();
   });
 });

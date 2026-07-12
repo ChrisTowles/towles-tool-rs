@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import {
   CalendarClock,
   CircleAlert,
@@ -9,11 +10,13 @@ import {
   Link as LinkIcon,
   ListChecks,
   MoreHorizontal,
+  RefreshCw,
   Send,
   Video,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,12 +33,15 @@ import {
   COUNTDOWN_SECONDS_THRESHOLD,
   currentOrNextEvent,
   eventIsLive,
+  fmtAge,
   fmtClock,
   fmtCountdown,
   type IssueItem,
   type PrItem,
+  storeCollectNow,
   useStoreSnapshot,
 } from "@/lib/data";
+import { dataRefreshedAt } from "@/lib/collector-health";
 import { useAgentboardState } from "@/lib/agentboard";
 import { useNow, useNowInterval } from "@/lib/now";
 import { invokeOrThrow } from "@/lib/tauri";
@@ -67,6 +73,34 @@ export function CockpitScreen() {
   const { snapshot, live } = useStoreSnapshot();
   const agentState = useAgentboardState();
   const now = useNow();
+
+  // How stale the PR/issue panels are, and a way to force a refresh. The button
+  // disables while a run is in flight; it clears once a newer refresh-collector
+  // run lands (the store re-emits its snapshot) or after a safety timeout, so it
+  // never sticks disabled.
+  const refreshedAt = dataRefreshedAt(snapshot.runs, now);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshBaseline = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!refreshing) return;
+    const landed =
+      refreshedAt !== undefined &&
+      (refreshBaseline.current === undefined || refreshedAt > refreshBaseline.current);
+    if (landed) {
+      setRefreshing(false);
+      return;
+    }
+    const t = setTimeout(() => setRefreshing(false), 30_000);
+    return () => clearTimeout(t);
+  }, [refreshing, refreshedAt]);
+
+  async function refresh() {
+    refreshBaseline.current = refreshedAt;
+    setRefreshing(true);
+    // `false` = overlap (a run was already in flight) or browser dev — nothing
+    // new to wait on, so drop straight back to idle.
+    if (!(await storeCollectNow())) setRefreshing(false);
+  }
 
   // Candidate slot checkouts for an issue: the folders of every tracked repo
   // whose origin matches the issue's repo. Empty when none are tracked, which
@@ -157,6 +191,27 @@ export function CockpitScreen() {
         )}
 
         <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                disabled={refreshing}
+                className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-muted-foreground hover:bg-accent/50 disabled:pointer-events-none disabled:opacity-60"
+                aria-label="Refresh PRs and issues"
+              >
+                <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
+                <span className="tabular-nums">
+                  {refreshing
+                    ? "Refreshing…"
+                    : refreshedAt !== undefined
+                      ? `Refreshed ${fmtAge(refreshedAt, now)}`
+                      : "Refresh"}
+                </span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Refresh pull requests and issues now</TooltipContent>
+          </Tooltip>
           <Gauge n={needsYouPrs.length} label="PRs need you" tone={needsYouPrs.length ? "warn" : "muted"} />
           <Gauge n={snapshot.issues.length} label="Issues" tone="muted" />
           <Gauge n={repos.size} label="Repos" tone="muted" />
