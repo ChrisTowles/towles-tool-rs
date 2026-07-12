@@ -17,6 +17,13 @@
 //!   set (`review_state == "review_requested"`). Edge-triggered, so a PR that
 //!   stays in the set never repeats; the first observation only primes the
 //!   baseline so PRs already awaiting your review at launch don't spam.
+//! - [`ChecksFailedWatch`] fires when one of *your* authored PRs has its CI flip
+//!   into the failing state (`checks == "failing"`). Edge-triggered per
+//!   `repo#number`, so a PR that stays red never repeats; recovery clears the
+//!   state so a later fix→break re-fires. The first observation primes the
+//!   baseline, so a PR already red at launch doesn't spam. Review-requested PRs
+//!   (someone else's, awaiting your review) are excluded — this is the
+//!   get-back-in-the-loop signal for work you own.
 //! - [`StaleCollectorWatch`] fires when a collector silently stops succeeding —
 //!   its last healthy run ages past a per-collector threshold, or it fails for
 //!   [`FAIL_STREAK`] consecutive runs (expired `gh` auth, a revoked Slack
@@ -34,6 +41,10 @@ use crate::{CalEvent, CollectRun, PrItem};
 /// The `review_state` value the PRs collector writes when your review has been
 /// requested (see `tt_collect::prs`).
 const REVIEW_REQUESTED: &str = "review_requested";
+
+/// The `checks` value the PRs collector writes when at least one CI check has a
+/// failing conclusion (see `tt_collect::prs::checks_status`).
+const CHECKS_FAILING: &str = "failing";
 
 /// The next meeting just started — its countdown reached zero.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +146,65 @@ impl ReviewRequestedWatch {
             current.insert(key);
             if self.primed && is_new {
                 edges.push(ReviewRequestedEdge {
+                    repo: pr.repo.clone(),
+                    number: pr.number,
+                    title: pr.title.clone(),
+                    url: pr.url.clone(),
+                });
+            }
+        }
+
+        self.prev = current;
+        self.primed = true;
+        edges
+    }
+}
+
+/// One of your PRs whose CI just flipped into failing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChecksFailedEdge {
+    pub repo: String,
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+}
+
+/// Tracks which of *your* authored PRs are in the failing-checks state across
+/// snapshots and yields the ones that just flipped into it. A PR that stays red
+/// never repeats; one that recovers (checks leave failing) and breaks again
+/// fires a second time. The first observation only primes the baseline, so a PR
+/// already red at launch doesn't spam. Review-requested PRs are excluded: those
+/// are someone else's work you're reviewing, covered by [`ReviewRequestedWatch`].
+#[derive(Debug, Default)]
+pub struct ChecksFailedWatch {
+    /// `repo#number` keys that had failing checks in the previous snapshot.
+    prev: HashSet<String>,
+    /// False until the first observation has primed the baseline.
+    primed: bool,
+}
+
+impl ChecksFailedWatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Diff `prs` against the previous snapshot and return your PRs whose checks
+    /// newly went failing. Updates the baseline as a side effect.
+    pub fn observe(&mut self, prs: &[PrItem]) -> Vec<ChecksFailedEdge> {
+        let mut edges = Vec::new();
+        let mut current = HashSet::with_capacity(self.prev.len());
+
+        for pr in prs {
+            // Only your authored PRs: a review-requested row is someone else's
+            // PR awaiting your review, not CI you're responsible for.
+            if pr.review_state == REVIEW_REQUESTED || pr.checks != CHECKS_FAILING {
+                continue;
+            }
+            let key = format!("{}#{}", pr.repo, pr.number);
+            let is_new = !self.prev.contains(&key);
+            current.insert(key);
+            if self.primed && is_new {
+                edges.push(ChecksFailedEdge {
                     repo: pr.repo.clone(),
                     number: pr.number,
                     title: pr.title.clone(),
@@ -429,6 +499,89 @@ mod tests {
         assert_eq!(w.observe(&[pr("me/repo", 7, REVIEW_REQUESTED)]).len(), 1);
 
         let mut refreshed = pr("me/repo", 7, REVIEW_REQUESTED);
+        refreshed.title = "PR 7 (updated)".to_string();
+        refreshed.updated_ts = 5000;
+        assert!(w.observe(&[refreshed]).is_empty());
+    }
+
+    // --- ChecksFailedWatch -----------------------------------------------
+
+    /// An authored PR (empty `review_state`) with the given checks state.
+    fn pr_checks(repo: &str, number: i64, checks: &str) -> PrItem {
+        let mut p = pr(repo, number, "");
+        p.checks = checks.to_string();
+        p
+    }
+
+    #[test]
+    fn checks_first_observation_primes_without_firing() {
+        let mut w = ChecksFailedWatch::new();
+        let prs = vec![pr_checks("me/repo", 1, CHECKS_FAILING)];
+        // Already red at launch: a level, not a flip.
+        assert!(w.observe(&prs).is_empty());
+        // Stays quiet while it holds.
+        assert!(w.observe(&prs).is_empty());
+    }
+
+    #[test]
+    fn checks_flip_into_failing_fires_once() {
+        let mut w = ChecksFailedWatch::new();
+        w.observe(&[pr_checks("me/repo", 1, "passing")]);
+
+        let edges = w.observe(&[pr_checks("me/repo", 1, CHECKS_FAILING)]);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].repo, "me/repo");
+        assert_eq!(edges[0].number, 1);
+
+        // Still failing next snapshot: no repeat.
+        assert!(w.observe(&[pr_checks("me/repo", 1, CHECKS_FAILING)]).is_empty());
+    }
+
+    #[test]
+    fn checks_refires_after_recover_then_fail_again() {
+        let mut w = ChecksFailedWatch::new();
+        w.observe(&[pr_checks("me/repo", 1, "passing")]);
+        assert_eq!(w.observe(&[pr_checks("me/repo", 1, CHECKS_FAILING)]).len(), 1);
+        // Fix pushed → checks pass again, leaves the failing set.
+        assert!(w.observe(&[pr_checks("me/repo", 1, "passing")]).is_empty());
+        // Breaks again → new edge.
+        assert_eq!(w.observe(&[pr_checks("me/repo", 1, CHECKS_FAILING)]).len(), 1);
+    }
+
+    #[test]
+    fn checks_only_fires_for_the_failing_state() {
+        let mut w = ChecksFailedWatch::new();
+        w.observe(&[]); // prime empty
+        let edges = w.observe(&[
+            pr_checks("me/repo", 1, "passing"),
+            pr_checks("me/repo", 2, "pending"),
+            pr_checks("me/repo", 3, "none"),
+            pr_checks("me/repo", 4, CHECKS_FAILING),
+        ]);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].number, 4);
+    }
+
+    #[test]
+    fn checks_ignores_review_requested_prs() {
+        // A failing PR that is *someone else's* (awaiting your review) is not your
+        // CI to fix — ReviewRequestedWatch owns that surface.
+        let mut w = ChecksFailedWatch::new();
+        w.observe(&[]); // prime empty
+        let mut others = pr("me/repo", 9, REVIEW_REQUESTED);
+        others.checks = CHECKS_FAILING.to_string();
+        assert!(w.observe(&[others]).is_empty());
+    }
+
+    #[test]
+    fn checks_edge_survives_collector_refresh_without_refiring() {
+        // The PRs collector replaces every row each tick; a still-failing PR with
+        // an updated title must not re-fire.
+        let mut w = ChecksFailedWatch::new();
+        w.observe(&[]);
+        assert_eq!(w.observe(&[pr_checks("me/repo", 7, CHECKS_FAILING)]).len(), 1);
+
+        let mut refreshed = pr_checks("me/repo", 7, CHECKS_FAILING);
         refreshed.title = "PR 7 (updated)".to_string();
         refreshed.updated_ts = 5000;
         assert!(w.observe(&[refreshed]).is_empty());

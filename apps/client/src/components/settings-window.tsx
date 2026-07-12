@@ -659,6 +659,23 @@ function agentboardSections(
         ),
       },
       {
+        label: "CI-failing notifications",
+        keywords: ["notification", "desktop", "pr", "ci", "checks", "failing", "alert"],
+        node: (
+          <ToggleRow
+            label="CI-failing notifications"
+            description="Desktop notification when one of your PRs' checks flip to failing, while the app is unfocused."
+            checked={settings.agentboard?.notifyChecksFailed ?? true}
+            onCheckedChange={(v) =>
+              update((s) => ({
+                ...s,
+                agentboard: { ...s.agentboard, notifyChecksFailed: v },
+              }))
+            }
+          />
+        ),
+      },
+      {
         label: "Copy on select",
         keywords: ["terminal", "clipboard", "selection", "copy"],
         node: (
