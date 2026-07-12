@@ -248,6 +248,109 @@ fn search_finds_content() {
 }
 
 #[test]
+fn list_json_emits_array_newest_first_with_type_filter() {
+    let sb = sandbox();
+    cmd(&sb).args(["journal", "note", "Alpha Note", "--no-open"]).assert().success();
+    cmd(&sb).args(["journal", "meeting", "Beta Meeting", "--no-open"]).assert().success();
+
+    let output = cmd(&sb).args(["journal", "list", "--json"]).output().unwrap();
+    assert!(output.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let arr = parsed.as_array().expect("top-level JSON array");
+    assert_eq!(arr.len(), 2);
+
+    // Note and meeting are created today, so ordering is stable by name tiebreak within
+    // the same date; assert both are present with absolute paths and their wire types.
+    let types: Vec<&str> = arr.iter().map(|e| e["type"].as_str().unwrap()).collect();
+    assert!(types.contains(&"note"));
+    assert!(types.contains(&"meeting"));
+    for e in arr {
+        let path = e["path"].as_str().unwrap();
+        assert!(Path::new(path).is_absolute(), "path should be absolute: {path}");
+        assert!(e["date"].is_string());
+        assert!(e["size"].is_u64());
+    }
+
+    // Type filter narrows the array to a single kind.
+    let filtered = cmd(&sb).args(["journal", "list", "--type", "note", "--json"]).output().unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&filtered.stdout).unwrap();
+    let arr = parsed.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["type"].as_str().unwrap(), "note");
+}
+
+#[test]
+fn list_json_empty_journal_is_empty_array() {
+    let sb = sandbox();
+    let output = cmd(&sb).args(["journal", "list", "--json"]).output().unwrap();
+    assert!(output.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(parsed.as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn open_last_no_open_prints_newest_absolute_path() {
+    let sb = sandbox();
+    cmd(&sb).args(["journal", "note", "Older Note", "--no-open"]).assert().success();
+    cmd(&sb).args(["journal", "meeting", "Newer Meeting", "--no-open"]).assert().success();
+
+    let output = cmd(&sb).args(["journal", "open", "--last", "--no-open"]).output().unwrap();
+    assert!(output.status.success());
+    let printed = String::from_utf8(output.stdout).unwrap();
+    let line = printed.lines().next_back().unwrap().trim();
+    assert!(Path::new(line).is_absolute(), "expected an absolute path, got: {line}");
+    assert!(Path::new(line).exists(), "printed path should exist: {line}");
+
+    // With a type filter, `open` targets the newest of that type only.
+    let output =
+        cmd(&sb).args(["journal", "open", "--type", "note", "--no-open"]).output().unwrap();
+    assert!(output.status.success());
+    let printed = String::from_utf8(output.stdout).unwrap();
+    let line = printed.lines().next_back().unwrap().trim();
+    assert!(line.contains("older-note"), "type filter should pick the note, got: {line}");
+}
+
+#[test]
+fn open_empty_journal_errors() {
+    let sb = sandbox();
+    cmd(&sb)
+        .args(["journal", "open", "--no-open"])
+        .assert()
+        .failure()
+        .stderr(contains("No journal entries found"));
+}
+
+#[test]
+fn search_json_returns_matches_with_path_and_line() {
+    let sb = sandbox();
+    cmd(&sb).args(["journal", "note", "Searchable", "--no-open"]).assert().success();
+
+    // The note template contains the word "Summary".
+    let output = cmd(&sb).args(["journal", "search", "summary", "--json"]).output().unwrap();
+    assert!(output.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let arr = parsed.as_array().expect("JSON array");
+    assert!(!arr.is_empty());
+    let hit = &arr[0];
+    assert!(Path::new(hit["path"].as_str().unwrap()).is_absolute());
+    assert!(hit["line_number"].as_u64().unwrap() >= 1);
+    assert!(hit["line"].as_str().unwrap().to_lowercase().contains("summary"));
+    assert_eq!(hit["type"].as_str().unwrap(), "note");
+}
+
+#[test]
+fn search_json_no_match_is_empty_array() {
+    let sb = sandbox();
+    cmd(&sb).args(["journal", "note", "Searchable", "--no-open"]).assert().success();
+
+    let output =
+        cmd(&sb).args(["journal", "search", "zzz-nonexistent-zzz", "--json"]).output().unwrap();
+    assert!(output.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(parsed.as_array().unwrap().len(), 0);
+}
+
+#[test]
 fn note_without_title_in_non_tty_errors() {
     let sb = sandbox();
     // stdin is not a TTY under assert_cmd, so an omitted title must fail cleanly

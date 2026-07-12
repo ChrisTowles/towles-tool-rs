@@ -43,9 +43,12 @@ pub fn run(command: JournalCommands, config_dir: Option<&Path>) -> i32 {
             note_like(config_dir, JournalType::Meeting, title, no_open)
         }
         JournalCommands::Jot { text } => jot(config_dir, text),
-        JournalCommands::List { r#type, limit, sort } => list(config_dir, r#type, limit, sort),
-        JournalCommands::Search { query, r#type, range } => {
-            search(config_dir, query, r#type, range)
+        JournalCommands::Open { last: _, r#type, no_open } => open(config_dir, r#type, no_open),
+        JournalCommands::List { r#type, limit, sort, json } => {
+            list(config_dir, r#type, limit, sort, json)
+        }
+        JournalCommands::Search { query, r#type, range, json } => {
+            search(config_dir, query, r#type, range, json)
         }
     }
 }
@@ -217,11 +220,61 @@ fn resolve_title(title: Option<String>, label: &str) -> Result<String, String> {
         .map_err(|e| format!("Could not read {label} title: {e}"))
 }
 
+/// `ttr journal open [--last] [--type <t>] [--no-open]` — reopen the most recent entry.
+///
+/// Uses the same collection/sorting helpers as `list` (newest-first by date, optional
+/// type filter) and the same editor path as `note`. With `--no-open` — or whenever stdout
+/// is not a TTY — the absolute path is printed instead of launching an editor. An empty
+/// (or fully-filtered-out) journal is a clear error with exit code 1.
+fn open(config_dir: Option<&Path>, ty: Option<String>, no_open: bool) -> i32 {
+    let settings = match load_settings(config_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            ui::error(&e);
+            return 1;
+        }
+    };
+    let base_folder = PathBuf::from(&settings.journal_settings.base_folder);
+    let journal_dir = base_folder.join("journal");
+
+    let type_filter = match parse_type(ty.as_deref()) {
+        Ok(t) => t,
+        Err(e) => {
+            ui::error(&e);
+            return 1;
+        }
+    };
+
+    let files = entries::collect_markdown_files(&journal_dir);
+    let all = entries::collect_journal_entries(&files, &base_folder);
+    let mut result = entries::filter_and_sort_entries(all, type_filter, 1, SortBy::Date);
+    let entry = match result.first_mut() {
+        Some(e) => e,
+        None => {
+            ui::error("No journal entries found to open.");
+            return 1;
+        }
+    };
+
+    if no_open || !std::io::stdout().is_terminal() {
+        println!("{}", entry.file_path.display());
+    } else {
+        open_in_editor(
+            &settings.preferred_editor,
+            &settings.journal_settings.base_folder,
+            &entry.file_path,
+            false,
+        );
+    }
+    0
+}
+
 fn list(
     config_dir: Option<&Path>,
     ty: Option<String>,
     limit: Option<String>,
     sort: Option<String>,
+    json: bool,
 ) -> i32 {
     let settings = match load_settings(config_dir) {
         Ok(s) => s,
@@ -262,13 +315,28 @@ fn list(
     };
 
     let files = entries::collect_markdown_files(&journal_dir);
+    let all = entries::collect_journal_entries(&files, &base_folder);
+    let result = entries::filter_and_sort_entries(all, type_filter, limit, sort);
+
+    if json {
+        // Same ordering as the table; an empty journal serializes to `[]` (exit 0).
+        let rows: Vec<_> = result.iter().map(|e| e.to_json()).collect();
+        return match serde_json::to_string_pretty(&rows) {
+            Ok(out) => {
+                println!("{out}");
+                0
+            }
+            Err(e) => {
+                ui::error(&format!("Failed to serialize entries: {e}"));
+                1
+            }
+        };
+    }
+
     if files.is_empty() {
         ui::info(&format!("No journal files found in {}", journal_dir.display()));
         return 0;
     }
-
-    let all = entries::collect_journal_entries(&files, &base_folder);
-    let result = entries::filter_and_sort_entries(all, type_filter, limit, sort);
     if result.is_empty() {
         ui::info("No matching journal entries found.");
         return 0;
@@ -285,6 +353,7 @@ fn search(
     query: String,
     ty: Option<String>,
     range: Option<String>,
+    json: bool,
 ) -> i32 {
     let settings = match load_settings(config_dir) {
         Ok(s) => s,
@@ -316,15 +385,30 @@ fn search(
     };
 
     let files = entries::collect_markdown_files(&journal_dir);
-    if files.is_empty() {
-        ui::info(&format!("No journal files found in {}", journal_dir.display()));
-        return 0;
-    }
-
     let matches = entries::search_journal_files(
         &files,
         &SearchOptions { query: &query, ty: type_filter, start_date, end_date, context_lines: 2 },
     );
+
+    if json {
+        // Zero matches serialize to `[]` (exit 0); no grouping/context in JSON.
+        let rows: Vec<_> = matches.iter().map(|m| m.to_json()).collect();
+        return match serde_json::to_string_pretty(&rows) {
+            Ok(out) => {
+                println!("{out}");
+                0
+            }
+            Err(e) => {
+                ui::error(&format!("Failed to serialize matches: {e}"));
+                1
+            }
+        };
+    }
+
+    if files.is_empty() {
+        ui::info(&format!("No journal files found in {}", journal_dir.display()));
+        return 0;
+    }
 
     if matches.is_empty() {
         ui::info(&format!("No matches found for \"{query}\""));
