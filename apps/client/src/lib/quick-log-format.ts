@@ -33,3 +33,40 @@ export function formatLogLine(text: string, opts: FormatLogOpts): string {
   const prefix = context ? `[${context}] ` : "";
   return `- ${hh}:${mm} ${prefix}${body}`;
 }
+
+/** Where a quick-log line is routed: the daily journal note or the Board's todo store. */
+export type QuickLogKind = "journal" | "todo";
+
+export type ParsedQuickLog = {
+  kind: QuickLogKind;
+  /** The remaining text after stripping a routing prefix, trimmed. */
+  body: string;
+};
+
+/** Leading tokens that route a quick-log line to the Board instead of the journal. */
+const TODO_PREFIXES = ["/todo", "/t"];
+
+/**
+ * Classify a ⌘J quick-log line by its leading prefix.
+ *
+ * A leading `/todo ` or `/t ` (case-insensitive, requiring at least one space after the
+ * token) routes the remainder to the todo store; anything else stays a journal entry. The
+ * returned `body` is trimmed and has the routing prefix removed. A prefix with no body
+ * after it (e.g. `/todo` or `/t   `) yields an empty `todo` body — the caller decides
+ * whether to submit. This is pure so the routing rule can be unit-tested directly.
+ */
+export function parseQuickLog(text: string): ParsedQuickLog {
+  const trimmed = text.trim();
+  for (const prefix of TODO_PREFIXES) {
+    if (trimmed.toLowerCase() === prefix) {
+      return { kind: "todo", body: "" };
+    }
+    if (trimmed.slice(0, prefix.length).toLowerCase() === prefix) {
+      const rest = trimmed.slice(prefix.length);
+      if (/^\s/.test(rest)) {
+        return { kind: "todo", body: rest.trim() };
+      }
+    }
+  }
+  return { kind: "journal", body: trimmed };
+}
