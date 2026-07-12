@@ -81,17 +81,25 @@ Cargo workspace + npm workspace (`apps/client` only):
   - `tt-collect` — collectors that fill tt.db: calendar via `claude -p`
     (strict-JSON prompt + lenient extraction; `CalendarProvider` picks the
     Google/Outlook prompt+MCP) — **off by default** since it burns tokens
-    per tick; issues + PRs via `gh`. Collector keys are `claude:calendar`,
-    `issues`, `prs` — the frontend matches on them. Email was removed in the
-    day-screens pivot.
+    per tick; issues + PRs via `gh`; a watched Slack DM via the Slack Web API
+    (escalating banner in the app). Collector keys are `claude:calendar`,
+    `issues`, `prs`, `slack:dm` — the frontend matches on them. Email was
+    removed in the day-screens pivot.
   - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`ttr mcp serve`) exposing
     the store + live agent sessions + `journal_append` to claude sessions.
+  - `tt-vt` — libghostty-vt terminal-state engine used by the app's canvas
+    terminals (needs zig 0.15.x; see the frontend section).
+  - `tt-agentboard` — agentboard watchers/engine: repo list, session tracking,
+    needs-you synthesis (consumed by the app shell).
+  - `tt-claude-code` — Claude Code transcript/session parsing models.
+  - `tt-doctor` — doctor checks logic (CLI + app screen both consume it).
 - `crates-cli/tt-cli` — `clap` 4 CLI, binary `ttr`. Commands:
   `config show|validate|schema|reset`, `doctor [--json --track --diff]`,
   `journal daily-notes|note|meeting|list|search` (+ `today` alias),
-  `gh pr|branch|branch-clean` (+ `pr` alias), `install [-o]`,
+  `gh pr|branch|branch-clean|assign` (+ `pr` alias), `install [-o]`,
   `claude-sessions [-s --days -f html|json|csv --open/--no-open]`,
-  `collect calendar|issues|prs|all`, `mcp serve`.
+  `agentboard repos|sessions` (+ `ag` alias),
+  `collect calendar|issues|prs|slack|all`, `mcp serve`.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
   `npm run dev` (root) picks a free dev-server port automatically
   (`scripts/dev-port.mjs`), scanning up from a per-slot base port derived from
