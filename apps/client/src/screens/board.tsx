@@ -3,6 +3,7 @@ import {
   CalendarPlus,
   ExternalLink,
   GripVertical,
+  ListTodo,
   MoreHorizontal,
   Plus,
   Search,
@@ -166,6 +167,9 @@ export function BoardScreen() {
     [merged, filter],
   );
   const hiddenCount = merged.length - visible.length;
+  // Truly empty: no todos in any column (a filter hiding all is a different
+  // state — the header still shows the count and the filter box).
+  const isEmpty = merged.length === 0;
 
   const columns = useMemo(() => {
     const byStatus: Record<TaskStatus, TaskItem[]> = {
@@ -340,8 +344,21 @@ export function BoardScreen() {
         </div>
       </div>
 
-      <ScrollArea className="min-h-0 flex-1">
-        <div ref={focusRef} className="grid min-w-[900px] grid-cols-5 gap-3 p-3">
+      {isEmpty ? (
+        <div ref={focusRef} className="flex min-h-0 flex-1 items-center justify-center p-6">
+          <div className="flex max-w-sm flex-col items-center gap-2 text-center">
+            <ListTodo aria-hidden className="size-8 text-muted-foreground/50" />
+            <p className="text-sm font-medium">No tasks yet</p>
+            <p className="text-xs text-muted-foreground">
+              Add one with the <span className="font-medium text-foreground">New todo…</span> box up
+              top — tag a due date with <span className="font-mono">@tomorrow</span> and a repo with{" "}
+              <span className="font-mono">#owner/repo</span>.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <ScrollArea className="min-h-0 flex-1">
+          <div ref={focusRef} className="grid min-w-[900px] grid-cols-5 gap-3 p-3">
           {TASK_STATUSES.map((status) => (
             <div
               key={status}
@@ -426,8 +443,9 @@ export function BoardScreen() {
               </div>
             </div>
           ))}
-        </div>
-      </ScrollArea>
+          </div>
+        </ScrollArea>
+      )}
     </div>
   );
 }
