@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarPlus,
   ExternalLink,
@@ -125,6 +125,21 @@ export function BoardScreen() {
     for (const t of snapshot.tasks) if (t.repo) set.add(t.repo);
     return [...set].sort();
   }, [snapshot.prs, snapshot.issues, snapshot.tasks]);
+
+  // Drop an optimistic quick-add copy once the store snapshot delivers the real
+  // row — matched on the content the add sent, since the store assigns the id.
+  useEffect(() => {
+    setAddedTasks((prev) => {
+      if (prev.length === 0) return prev;
+      const next = prev.filter(
+        (a) =>
+          !snapshot.tasks.some(
+            (t) => t.text === a.text && t.repo === a.repo && t.dueTs === a.dueTs,
+          ),
+      );
+      return next.length === prev.length ? prev : next;
+    });
+  }, [snapshot.tasks]);
 
   const merged = useMemo(
     () =>
