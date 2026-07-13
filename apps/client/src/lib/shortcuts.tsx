@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import { invokeCmd } from "./tauri";
+import type { UserSettings } from "./settings";
 
 /**
  * Data-driven keyboard shortcuts (modeled on plannotator's validated registry,
@@ -13,7 +15,14 @@ import { Kbd, KbdGroup } from "@/components/ui/kbd";
  * Guards: shortcuts never fire from editable targets — inputs, textareas,
  * contenteditable, or anything inside a `[data-term-host]` terminal (Ctrl+D at
  * a shell prompt is EOF, not "new session"). A binding opts out of the guard
- * with `allowInEditable` (none do today).
+ * with `allowInEditable` — used for agentboard actions that operate on board
+ * state rather than the focused element (e.g. "jump to next session needing
+ * you"), so they work even while a terminal has focus. `matchesEditableOverride`
+ * lets the terminal itself recognize these and yield the keystroke instead of
+ * sending it to the shell. The whole opt-out is gated behind the
+ * `agentboard.shortcutsWorkInTerminal` setting (default on; see
+ * `useShortcutsWorkInTerminal`) so a user can restore the old
+ * terminal-owns-everything behavior.
  */
 
 export type ShortcutScope = "global" | "agentboard";
@@ -120,6 +129,7 @@ export const SHORTCUTS = defineShortcuts([
     keys: "mod+shift+w",
     description: "Close the selected session (kills its shell)",
     when: "a session is selected",
+    allowInEditable: true,
   },
   {
     id: "ab-toggle-diff",
@@ -127,24 +137,28 @@ export const SHORTCUTS = defineShortcuts([
     keys: "mod+shift+g",
     description: "Open the focused folder's diff pane",
     when: "a folder is focused",
+    allowInEditable: true,
   },
   {
     id: "ab-toggle-rail",
     scope: "agentboard",
     keys: "mod+shift+b",
     description: "Collapse the folder rail to icons (and back)",
+    allowInEditable: true,
   },
   {
     id: "ab-jump-next",
     scope: "agentboard",
     keys: "mod+shift+n",
     description: "Jump to next session needing you",
+    allowInEditable: true,
   },
   {
     id: "ab-jump-prev",
     scope: "agentboard",
     keys: "mod+shift+p",
     description: "Jump to previous session needing you",
+    allowInEditable: true,
   },
   {
     id: "ab-split-session",
@@ -152,6 +166,7 @@ export const SHORTCUTS = defineShortcuts([
     keys: "mod+shift+s",
     description: "Add another session as a pane in this window",
     when: "a folder is focused",
+    allowInEditable: true,
   },
   {
     // Handled by the focused TerminalView itself (via `matchesShortcut`), not
@@ -196,6 +211,48 @@ export function matchesShortcut(id: string, e: KeyboardEvent): boolean {
   return matches(s.spec, e);
 }
 
+/** True when a keydown matches a shortcut that opts out of the editable-target
+ * guard (`allowInEditable`) — lets a component that owns its own keydown
+ * handling (the terminal) recognize a board-wide action and yield the
+ * keystroke to the window-level listener instead of consuming it (e.g.
+ * sending it to the shell as a control byte). */
+export function matchesEditableOverride(e: KeyboardEvent): boolean {
+  for (const s of Object.values(SHORTCUTS)) {
+    if (s.allowInEditable && matches(s.spec, e)) return true;
+  }
+  return false;
+}
+
+/** Built-in default for `agentboard.shortcutsWorkInTerminal` — on, matching
+ * tt-config. */
+export const DEFAULT_SHORTCUTS_WORK_IN_TERMINAL = true;
+
+/**
+ * Track the `agentboard.shortcutsWorkInTerminal` preference in a ref so the
+ * terminal's keydown handler and the window-level shortcut listener can read
+ * it live without re-subscribing. Settings live in a separate OS window, so a
+ * save there won't push into this window; instead we re-read on window focus,
+ * matching {@link useCopyOnSelect} in `terminal-prefs.ts`.
+ */
+export function useShortcutsWorkInTerminal(): RefObject<boolean> {
+  const ref = useRef(DEFAULT_SHORTCUTS_WORK_IN_TERMINAL);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      void invokeCmd<UserSettings>("settings_get").then((s) => {
+        if (alive && s)
+          ref.current = s.agentboard?.shortcutsWorkInTerminal ?? DEFAULT_SHORTCUTS_WORK_IN_TERMINAL;
+      });
+    load();
+    window.addEventListener("focus", load);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", load);
+    };
+  }, []);
+  return ref;
+}
+
 function matches(spec: KeySpec, e: KeyboardEvent): boolean {
   const mod = IS_MAC ? e.metaKey : e.ctrlKey;
   // `?` arrives as key "?" with shiftKey set — compare shift only for
@@ -231,6 +288,7 @@ export function useShortcuts(
   handlers: Partial<Record<string, () => void>>,
   enabled = true,
 ): void {
+  const workInTerminalRef = useShortcutsWorkInTerminal();
   useEffect(() => {
     if (!enabled) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -239,7 +297,8 @@ export function useShortcuts(
         const s = SHORTCUTS[id];
         if (!s) throw new Error(`Unknown shortcut id "${id}"`);
         if (!matches(s.spec, e)) continue;
-        if (isEditableTarget(e) && !s.allowInEditable) return;
+        const allowed = s.allowInEditable && workInTerminalRef.current;
+        if (isEditableTarget(e) && !allowed) return;
         e.preventDefault();
         handler();
         return;

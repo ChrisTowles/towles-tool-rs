@@ -72,8 +72,11 @@ export type UserSettings = {
    * unset = on), `notifyStaleCollector` (fired when a collector stops
    * refreshing; unset = on), `compactRecommendPercent` (context-usage % at which
    * a session is flagged for compaction; unset = 30), `copyOnSelect` (terminal
-   * copies the selection to the clipboard on selection end; unset = off), and
-   * `terminalFontSize` (canvas terminal font px; unset = 13).
+   * copies the selection to the clipboard on selection end; unset = off),
+   * `terminalFontSize` (canvas terminal font px; unset = 13), and
+   * `shortcutsWorkInTerminal` (board-wide action shortcuts, e.g. jump to
+   * next/prev session needing you, fire even while a terminal has focus;
+   * unset = on).
    */
   agentboard?: {
     notifyNeedsYou?: boolean;
@@ -84,6 +87,7 @@ export type UserSettings = {
     compactRecommendPercent?: number;
     copyOnSelect?: boolean;
     terminalFontSize?: number;
+    shortcutsWorkInTerminal?: boolean;
   } & Record<string, unknown>;
 };
 

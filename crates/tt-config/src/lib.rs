@@ -176,6 +176,14 @@ pub struct AgentboardSettings {
     /// user changes it, so the shared settings file stays clean for the TS CLI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notify_checks_failed: Option<bool>,
+
+    /// Let board-wide action shortcuts (jump to next/prev session needing you,
+    /// close/split session, toggle diff/rail) fire even while a terminal has
+    /// focus, instead of being swallowed as shell input. `None` = the built-in
+    /// default (on). Only written once the user changes it, so the shared
+    /// settings file stays clean for the TS CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortcuts_work_in_terminal: Option<bool>,
 }
 
 /// Built-in default for [`AgentboardSettings::compact_recommend_percent`].
@@ -201,6 +209,9 @@ pub const DEFAULT_NOTIFY_STALE_COLLECTOR: bool = true;
 
 /// Built-in default for [`AgentboardSettings::notify_checks_failed`]: on.
 pub const DEFAULT_NOTIFY_CHECKS_FAILED: bool = true;
+
+/// Built-in default for [`AgentboardSettings::shortcuts_work_in_terminal`]: on.
+pub const DEFAULT_SHORTCUTS_WORK_IN_TERMINAL: bool = true;
 
 /// Data-hub collector settings (the Rust CLI/app's tt.db collectors; the TS CLI
 /// ignores this block). Each collector is configured independently — enable
@@ -858,6 +869,19 @@ mod tests {
         assert!(!json.contains("copyOnSelect"));
         // …and unset means ON.
         assert!(s.agentboard.copy_on_select.unwrap_or(DEFAULT_COPY_ON_SELECT));
+    }
+
+    #[test]
+    fn shortcuts_work_in_terminal_defaults_unset_and_on() {
+        let s = UserSettings::default();
+        // Unset until the user changes it, so the shared file stays clean…
+        assert!(s.agentboard.shortcuts_work_in_terminal.is_none());
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("shortcutsWorkInTerminal"));
+        // …and unset means ON.
+        assert!(
+            s.agentboard.shortcuts_work_in_terminal.unwrap_or(DEFAULT_SHORTCUTS_WORK_IN_TERMINAL)
+        );
     }
 
     #[test]
