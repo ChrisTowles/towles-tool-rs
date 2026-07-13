@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDiff } from "./diff";
+import { buildDiffTree, parseDiff, type DiffFile } from "./diff";
 
 const SAMPLE = `diff --git a/src/a.ts b/src/a.ts
 index 111..222 100644
@@ -75,5 +75,47 @@ describe("parseDiff", () => {
 
   it("returns an empty list for an empty diff", () => {
     expect(parseDiff("")).toEqual([]);
+  });
+});
+
+function fakeFile(path: string): DiffFile {
+  return { path, status: "modified", additions: 1, deletions: 1, lines: [] };
+}
+
+describe("buildDiffTree", () => {
+  it("groups files under their shared directories", () => {
+    const files = [fakeFile("src/a.ts"), fakeFile("src/b.ts"), fakeFile("README.md")];
+    const tree = buildDiffTree(files);
+    expect(tree.map((n) => n.name)).toEqual(["src", "README.md"]);
+    const src = tree[0];
+    if (src.kind !== "folder") throw new Error("expected folder");
+    expect(src.children.map((n) => n.name)).toEqual(["a.ts", "b.ts"]);
+  });
+
+  it("collapses single-child directory chains into one row", () => {
+    const files = [fakeFile("apps/client/src/lib/diff.ts")];
+    const tree = buildDiffTree(files);
+    expect(tree).toHaveLength(1);
+    expect(tree[0]).toMatchObject({ kind: "folder", name: "apps/client/src/lib" });
+  });
+
+  it("does not collapse a directory that holds a file alongside a subfolder", () => {
+    const files = [fakeFile("src/index.ts"), fakeFile("src/lib/diff.ts")];
+    const tree = buildDiffTree(files);
+    expect(tree).toHaveLength(1);
+    const src = tree[0];
+    if (src.kind !== "folder") throw new Error("expected folder");
+    expect(src.name).toBe("src");
+    expect(src.children.map((n) => n.name)).toEqual(["lib", "index.ts"]);
+  });
+
+  it("keeps each file's index into the original flat array", () => {
+    const files = [fakeFile("src/a.ts"), fakeFile("src/b.ts")];
+    const tree = buildDiffTree(files);
+    const src = tree[0];
+    if (src.kind !== "folder") throw new Error("expected folder");
+    const [a, b] = src.children;
+    if (a.kind !== "file" || b.kind !== "file") throw new Error("expected files");
+    expect([a.index, b.index]).toEqual([0, 1]);
   });
 });
