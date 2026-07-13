@@ -610,6 +610,19 @@ export function TerminalView({
       };
       const onPaste = (e: ClipboardEvent) => {
         e.preventDefault();
+        // An image on the clipboard has no text representation, so
+        // getData("text") below would come back empty and silently drop the
+        // paste. Linux's Ctrl+V never reaches here — encodeKey turns it into
+        // the same \x16 (SYN) byte a Linux terminal sends, which is how TUIs
+        // like Claude Code know to read the image from the system clipboard
+        // themselves. macOS's Cmd+V is a metaKey combo that encodeKey leaves
+        // to this native paste event, so it needs the same signal here.
+        const items = e.clipboardData ? Array.from(e.clipboardData.items) : [];
+        if (items.some((it) => it.type.startsWith("image/"))) {
+          backToLive();
+          write("\x16");
+          return;
+        }
         const text = e.clipboardData?.getData("text");
         if (text) {
           backToLive();
