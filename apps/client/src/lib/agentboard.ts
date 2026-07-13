@@ -106,6 +106,9 @@ export type FolderData = {
   needs: number;
   /** User-authored "what am I working toward here" (persisted per folder). */
   purpose?: string | null;
+  /** Branch the diff pane's "vs main" mode compares against, overriding the
+   * origin/main-or-master auto-detect (persisted per folder). */
+  baseBranch?: string | null;
   metadata?: FolderMetadata | null;
 };
 

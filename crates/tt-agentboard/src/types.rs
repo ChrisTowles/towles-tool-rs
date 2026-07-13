@@ -224,6 +224,10 @@ pub struct FolderData {
     /// User-authored "what am I working toward here" (folder_meta.json).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
+    /// Branch this folder's diff pane compares against (`DiffMode::Main`),
+    /// overriding the origin/main-or-master auto-detect (folder_meta.json).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<SessionMetadata>,
 }

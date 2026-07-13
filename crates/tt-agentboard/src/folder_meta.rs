@@ -16,6 +16,11 @@ use serde::{Deserialize, Serialize};
 pub struct FolderMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
+    /// Branch this folder's diff/ahead-behind stats compare against, overriding
+    /// the origin/main-or-master auto-detect — for a long-running branch that
+    /// didn't fork from main (e.g. a release line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
 }
 
 /// On-disk shape: `{ "folders": { "<folderDir>": { "purpose": "..." } } }`.
@@ -71,6 +76,34 @@ impl FolderMetaStore {
             None => {
                 if let Some(meta) = self.folders.get_mut(dir) {
                     meta.purpose = None;
+                    if *meta == FolderMeta::default() {
+                        self.folders.remove(dir);
+                    }
+                }
+            }
+        }
+        self.dirty.insert(dir.to_string());
+        true
+    }
+
+    /// The base-branch override for a folder, if one is set (empty counts as unset).
+    pub fn base_branch_for(&self, dir: &str) -> Option<&str> {
+        self.folders.get(dir).and_then(|m| m.base_branch.as_deref()).filter(|b| !b.is_empty())
+    }
+
+    /// Set (or clear with `None`/blank) a folder's base-branch override.
+    /// Returns whether it changed. Caller persists on `true`.
+    pub fn set_base_branch(&mut self, dir: &str, base_branch: Option<&str>) -> bool {
+        let normalized = base_branch.map(str::trim).filter(|b| !b.is_empty()).map(str::to_string);
+        let current = self.folders.get(dir).and_then(|m| m.base_branch.clone());
+        if current == normalized {
+            return false;
+        }
+        match normalized {
+            Some(b) => self.folders.entry(dir.to_string()).or_default().base_branch = Some(b),
+            None => {
+                if let Some(meta) = self.folders.get_mut(dir) {
+                    meta.base_branch = None;
                     if *meta == FolderMeta::default() {
                         self.folders.remove(dir);
                     }
@@ -183,6 +216,30 @@ mod tests {
         let reloaded = FolderMetaStore::new(Some(path));
         assert_eq!(reloaded.purpose_for("/r/a"), Some("ship it"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn set_and_read_base_branch() {
+        let mut store = FolderMetaStore::new(None);
+        assert_eq!(store.base_branch_for("/r/a"), None);
+        assert!(store.set_base_branch("/r/a", Some("release/2.0")));
+        assert_eq!(store.base_branch_for("/r/a"), Some("release/2.0"));
+        assert!(!store.set_base_branch("/r/a", Some("release/2.0")));
+        assert!(store.set_base_branch("/r/a", None));
+        assert_eq!(store.base_branch_for("/r/a"), None);
+    }
+
+    #[test]
+    fn purpose_and_base_branch_are_independent() {
+        let mut store = FolderMetaStore::new(None);
+        store.set_purpose("/r/a", Some("ship it"));
+        store.set_base_branch("/r/a", Some("develop"));
+        assert_eq!(store.purpose_for("/r/a"), Some("ship it"));
+        assert_eq!(store.base_branch_for("/r/a"), Some("develop"));
+        // Clearing one leaves the other intact.
+        store.set_purpose("/r/a", None);
+        assert_eq!(store.purpose_for("/r/a"), None);
+        assert_eq!(store.base_branch_for("/r/a"), Some("develop"));
     }
 
     #[test]
