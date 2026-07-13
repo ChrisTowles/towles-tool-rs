@@ -56,6 +56,17 @@ Notes:
   string. (For a non-clickable element you still need the tag-then-select trick:
   `drive.mjs eval "document.querySelectorAll('div')[i].setAttribute('data-drive','x')"`
   then `drive.mjs click "[data-drive=x]"`.)
+- **`click` on a Radix `DropdownMenu`/`Popover` trigger** dispatches a full
+  pointerdown/mousedown/focus/pointerup/mouseup/click sequence rather than the
+  native W3C click, confirmed against a real repo-actions kebab menu: the
+  native click endpoint didn't reliably flip the trigger's `data-state` to
+  `open`, but the full event sequence does — same one-shot session either
+  time, so it isn't about session lifecycle. If a click still doesn't seem to
+  register on some other layered/portal component, hold a session across a
+  few calls with `session-open` / `--session <id>` / `session-close` and
+  re-check state via `eval` between each — that isolates whether the specific
+  case really is session-lifecycle-sensitive before assuming it's the same
+  root cause as #35.
 - `dev:drive` and `npm run e2e` **share a slot's ports**, so don't run both in the
   same slot at once.
 - Automation mode: launched with `TAURI_WEBVIEW_AUTOMATION=true`, WebKitGTK may
