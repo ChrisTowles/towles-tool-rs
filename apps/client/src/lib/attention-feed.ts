@@ -54,7 +54,9 @@ export function buildAttentionFeed(
     });
   }
 
-  for (const pr of snapshot.prs) {
+  // Merged PRs live in the snapshot too (briefly, so a folder's rail chip can
+  // turn purple), but a merged PR never needs attention.
+  for (const pr of snapshot.prs.filter((p) => p.state === "open")) {
     const prId = `${pr.repo}#${pr.number}`;
     const target: FocusTarget = { screen: "gh-prs", kind: "pr", id: prId };
     // Failing CI outranks review-requested; a PR that is both surfaces once, in

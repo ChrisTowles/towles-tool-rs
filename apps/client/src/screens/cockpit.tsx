@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarClock,
   CircleAlert,
@@ -163,13 +163,16 @@ export function CockpitScreen() {
   // note counts move together. A selection that no longer exists (its repo got
   // collected away) falls back to "all" without a stale-state effect.
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
-  const repoList = cockpitRepos(snapshot.prs, snapshot.issues);
+  // Merged PRs live in the snapshot too (briefly, so a folder's rail chip can
+  // turn purple), but Cockpit's PR queue is open work — exclude them.
+  const openPrs = useMemo(() => snapshot.prs.filter((p) => p.state === "open"), [snapshot.prs]);
+  const repoList = cockpitRepos(openPrs, snapshot.issues);
   const activeRepo =
     repoFilter !== null && repoList.includes(repoFilter) ? repoFilter : null;
-  const visiblePrs = filterByRepo(snapshot.prs, activeRepo);
+  const visiblePrs = filterByRepo(openPrs, activeRepo);
   const visibleIssues = filterByRepo(snapshot.issues, activeRepo);
 
-  const needsYouPrs = snapshot.prs.filter(prNeedsYou);
+  const needsYouPrs = openPrs.filter(prNeedsYou);
   const visibleNeedsYou = visiblePrs.filter(prNeedsYou);
 
   return (
