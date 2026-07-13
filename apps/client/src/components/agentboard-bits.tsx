@@ -171,24 +171,25 @@ export function WorktreeBadge() {
 }
 
 /** Commits ahead/behind origin/main, next to the branch name — `↑3 ↓2`.
- * Quiet mono (git data, not an attention signal): ahead means unmerged local
- * commits, behind is just staleness. Renders nothing when even with main. */
+ * Ahead (unmerged local commits) reads emerald like a diff `+`; behind (just
+ * staleness, not an attention signal) stays a muted amber. Renders nothing
+ * when even with main. */
 export function AheadBehind({
   stats: { commitsAhead, commitsBehind },
 }: {
   stats: Pick<FolderData, "commitsAhead" | "commitsBehind">;
 }) {
   if (commitsAhead === 0 && commitsBehind === 0) return null;
-  const parts = [
-    commitsAhead > 0 && `↑${commitsAhead}`,
-    commitsBehind > 0 && `↓${commitsBehind}`,
-  ].filter(Boolean);
   return (
     <span
-      className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70"
+      className="shrink-0 font-mono text-[10.5px]"
       title={`${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} ahead of origin/main, ${commitsBehind} behind`}
     >
-      {parts.join(" ")}
+      {commitsAhead > 0 && (
+        <span className="text-emerald-600 dark:text-emerald-400">↑{commitsAhead}</span>
+      )}
+      {commitsAhead > 0 && commitsBehind > 0 && " "}
+      {commitsBehind > 0 && <span className="text-amber-600 dark:text-amber-400">↓{commitsBehind}</span>}
     </span>
   );
 }
