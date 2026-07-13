@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::Path;
 
-use tt_slots::ops::{self, CreateOpts, RemoveOpts, SlotRoot};
+use tt_slots::ops::{self, CleanOpts, CreateOpts, RemoveOpts, SlotRoot};
 use tt_slots::{envfile, guards};
 
 use crate::cli::SlotCommands;
@@ -22,6 +22,7 @@ pub fn run(command: SlotCommands) -> i32 {
         SlotCommands::Ls { json, root } => cmd_ls(json, root.as_deref()),
         SlotCommands::Rm { name, force, root } => cmd_rm(&name, force, root.as_deref()),
         SlotCommands::Env { name, root } => cmd_env(&name, root.as_deref()),
+        SlotCommands::Clean { dry_run, json, root } => cmd_clean(dry_run, json, root.as_deref()),
     };
     match result {
         Ok(()) => 0,
@@ -176,5 +177,95 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
         ui::warning(message);
     }
     ui::success(&format!("removed {} (ports released with its .env)", removed.name));
+    Ok(())
+}
+
+fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), String> {
+    let bases = tt_config::instance_state_bases().map_err(|e| e.to_string())?;
+    let opts = CleanOpts {
+        root: root.map(Path::to_path_buf),
+        dry_run,
+        scope_parents: bases.scope_parents().to_vec(),
+    };
+    let report =
+        ops::clean_slots(&opts, tt_config::slot_scope_from_dir).map_err(|e| e.to_string())?;
+
+    // Agentboard stores that survive the sweep: the unscoped daily driver's
+    // plus every remaining checkout's scope. Removed scopes' stores just got
+    // deleted wholesale with their state dir.
+    let mut store_dirs = vec![bases.agentboard_dir(None)];
+    store_dirs.extend(report.live_scopes.iter().map(|s| bases.agentboard_dir(Some(s))));
+    let mut prunes = Vec::new();
+    for dir in store_dirs {
+        match tt_agentboard::cleanup::prune_store(&dir, dry_run) {
+            Ok(Some(prune)) => prunes.push(prune),
+            Ok(None) => {}
+            Err(e) => {
+                ui::warning(&format!("agentboard prune failed for {}: {e}", dir.display()));
+            }
+        }
+    }
+
+    if json {
+        let value = serde_json::json!({
+            "dryRun": report.dry_run,
+            "removed": report.removed.iter().map(|s| serde_json::json!({
+                "name": s.name,
+                "branch": s.branch,
+                "reason": s.reason,
+                "messages": s.messages,
+            })).collect::<Vec<_>>(),
+            "kept": report.kept.iter().map(|s| serde_json::json!({
+                "name": s.name,
+                "branch": s.branch,
+                "why": s.why,
+            })).collect::<Vec<_>>(),
+            "sweptStateDirs": report.swept_state_dirs.iter()
+                .map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "agentboard": prunes.iter().map(|p| serde_json::json!({
+                "dir": p.dir.display().to_string(),
+                "sessionFoldersDropped": p.session_folders_dropped,
+                "windowsDropped": p.windows_dropped,
+                "panesDropped": p.panes_dropped,
+            })).collect::<Vec<_>>(),
+            "warnings": report.warnings,
+        });
+        println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
+        return Ok(());
+    }
+
+    for warning in &report.warnings {
+        ui::warning(warning);
+    }
+    let verb = if dry_run { "would remove" } else { "removed" };
+    for slot in &report.removed {
+        ui::success(&format!("{verb} {} ({} — {})", slot.name, slot.branch, slot.reason));
+        for message in &slot.messages {
+            println!("  {message}");
+        }
+    }
+    for slot in &report.kept {
+        println!("kept {} ({}): {}", slot.name, slot.branch, slot.why.join("; "));
+    }
+    if !report.swept_state_dirs.is_empty() {
+        let verb = if dry_run { "would sweep" } else { "swept" };
+        println!("{verb} stale instance state:");
+        for dir in &report.swept_state_dirs {
+            println!("  {}", dir.display());
+        }
+    }
+    for prune in &prunes {
+        let verb = if dry_run { "would prune" } else { "pruned" };
+        println!(
+            "{verb} agentboard store {}: {} window(s), {} pane(s), {} session folder(s)",
+            prune.dir.display(),
+            prune.windows_dropped,
+            prune.panes_dropped,
+            prune.session_folders_dropped.len()
+        );
+    }
+    if report.removed.is_empty() && report.swept_state_dirs.is_empty() && prunes.is_empty() {
+        println!("nothing to clean");
+    }
     Ok(())
 }

@@ -153,6 +153,25 @@ pub enum SlotCommands {
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
+
+    /// Remove every slot whose branch's work has landed (merged into the
+    /// primary's branch, or upstream deleted after a squash/rebase merge) —
+    /// same guards as rm, never forced — then sweep the per-checkout state
+    /// dirs and agentboard windows/sessions left behind by checkouts that no
+    /// longer exist
+    Clean {
+        /// Report what would be removed/swept without touching anything
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Emit the report as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Slot root directory (default: walk up from cwd to a dir holding <repo>-primary)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
 }
 
 #[derive(Args)]

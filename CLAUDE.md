@@ -69,6 +69,7 @@ ttr slot ls [--json]                       # fleet: primary + slots, branch, dir
 ttr slot env <name>                        # (re)render .env — idempotent, keeps claims
 ttr slot env primary                       # same, for the primary checkout
 ttr slot rm <name> [--force]               # guarded removal + docker cleanup
+ttr slot clean [--dry-run]                 # rm every merged/gone slot + sweep stale state
 ```
 
 The Agentboard rail shows the whole fleet automatically (worktrees of any
@@ -84,8 +85,9 @@ Rules when working in a slot:
   slots never work on `main` directly.
 - **One branch per slot, named after it.** `ttr slot new -b feat/thing`
   creates `slots/thing` (`--base` when not branching off the default). A slot
-  whose PR merged is done — `ttr slot rm` it; commits reachable from no
-  branch or remote block removal by design.
+  whose PR merged is done — `ttr slot rm` it (or `ttr slot clean`, which finds
+  every merged/gone slot); commits reachable from no branch or remote block
+  removal by design.
 - **Ports come from the rendered `.env`** — `.env.example` is the template
   (`${tt:port A-B}` pool claims, `${tt:slot-name}`, `${tt:var NAME}`), and a
   manual `.env.local` pin overrides it; shell env overrides both. Never
@@ -166,7 +168,7 @@ Cargo workspace + npm workspace (`apps/client` only):
   `claude-sessions [-s --days -f html|json|csv --open/--no-open]`,
   `agentboard repos|sessions` (+ `ag` alias),
   `collect calendar|issues|prs|slack|all`, `mcp serve`,
-  `slot new|ls|rm|env` (worktree slots — see the Worktree slots section).
+  `slot new|ls|rm|env|clean` (worktree slots — see the Worktree slots section).
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
   `npm run dev` (root) picks a free dev-server port automatically
   (`scripts/dev-port.mjs`), scanning up from a per-slot base port derived from

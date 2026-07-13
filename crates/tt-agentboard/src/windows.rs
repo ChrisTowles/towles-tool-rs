@@ -6,7 +6,7 @@
 //! Stored at `~/.config/towles-tool/agentboard/windows.json` (same per-file
 //! pattern as [`crate::sessions`]). Path-parameterized so tests use a tempdir.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -110,6 +110,120 @@ impl WindowsStore {
         self.payload = on_disk;
         Ok(())
     }
+}
+
+/// Pane-id prefix marking a *diff* pane, which encodes a folder dir instead
+/// of a session id. Must match `DIFF_PANE_PREFIX` in
+/// `apps/client/src/lib/agentboard.ts`.
+pub const DIFF_PANE_PREFIX: &str = "~diff:";
+
+/// The folder dir a diff pane id points at (`None` for session panes).
+fn diff_pane_dir(pane_id: &str) -> Option<&str> {
+    pane_id.strip_prefix(DIFF_PANE_PREFIX)
+}
+
+/// Headless port of the client's `pruneWins` + active-window normalization
+/// (`apps/client/src/lib/agentboard.ts` — keep the two in lockstep): reconcile
+/// a persisted layout against what still exists. The blob on disk outlives its
+/// referents — a slot removed while no app was running leaves windows whose
+/// `folderDir` is gone and panes whose session records vanished with it.
+///
+/// Drops windows whose folder fails `folder_valid`, then panes that are
+/// neither a known session id nor a valid folder's diff pane. Windows
+/// *emptied by this prune* vanish, keeping the active one per folder when the
+/// prune emptied them all; a window that was already empty going in is
+/// deliberate (freshly created, unfilled) and is never touched. Returns the
+/// pruned payload plus the folder dirs whose slice changed (the `touched`
+/// list [`WindowsStore::save`] needs), or `None` when nothing changed.
+pub fn prune_dead(
+    payload: &WindowsPayload,
+    valid_sessions: &BTreeSet<String>,
+    mut folder_valid: impl FnMut(&str) -> bool,
+) -> Option<(WindowsPayload, Vec<String>)> {
+    let mut pruned: Vec<AgWindow> = Vec::new();
+    let mut emptied: BTreeSet<String> = BTreeSet::new();
+    for win in &payload.windows {
+        if !folder_valid(&win.folder_dir) {
+            continue;
+        }
+        let panes: Vec<String> = win
+            .panes
+            .iter()
+            .filter(|p| match diff_pane_dir(p) {
+                Some(dir) => folder_valid(dir),
+                None => valid_sessions.contains(*p),
+            })
+            .cloned()
+            .collect();
+        if panes.is_empty() && !win.panes.is_empty() {
+            emptied.insert(win.id.clone());
+        }
+        pruned.push(AgWindow { panes, ..win.clone() });
+    }
+
+    let kept: Vec<AgWindow> = pruned
+        .iter()
+        .filter(|win| {
+            if !emptied.contains(&win.id) {
+                return true;
+            }
+            let folder_wins: Vec<&AgWindow> =
+                pruned.iter().filter(|x| x.folder_dir == win.folder_dir).collect();
+            if folder_wins.iter().any(|x| !emptied.contains(&x.id)) {
+                return false;
+            }
+            // The prune emptied every window of this folder — keep the active one.
+            let active = payload.active_windows.get(&win.folder_dir);
+            let keeper = folder_wins
+                .iter()
+                .find(|x| Some(&x.id) == active)
+                .or(folder_wins.first())
+                .map(|x| x.id.clone());
+            Some(&win.id) == keeper.as_ref()
+        })
+        .cloned()
+        .collect();
+
+    let mut active_windows: BTreeMap<String, String> = BTreeMap::new();
+    for win in &kept {
+        if active_windows.contains_key(&win.folder_dir) {
+            continue;
+        }
+        let cur = payload.active_windows.get(&win.folder_dir);
+        let id = match cur {
+            Some(cur) if kept.iter().any(|x| x.folder_dir == win.folder_dir && x.id == *cur) => {
+                cur.clone()
+            }
+            _ => win.id.clone(),
+        };
+        active_windows.insert(win.folder_dir.clone(), id);
+    }
+
+    let next = WindowsPayload { windows: kept, active_windows };
+    let touched = changed_folder_dirs(payload, &next);
+    if touched.is_empty() { None } else { Some((next, touched)) }
+}
+
+/// The folder dirs whose slice of the layout (their windows, in order, or
+/// their active-window entry) differs between two payloads — the `touched`
+/// list [`WindowsStore::save`]'s merge-by-folder needs. Mirrors the client's
+/// `changedFolderDirs`.
+fn changed_folder_dirs(a: &WindowsPayload, b: &WindowsPayload) -> Vec<String> {
+    let dirs: BTreeSet<&String> = a
+        .windows
+        .iter()
+        .chain(&b.windows)
+        .map(|w| &w.folder_dir)
+        .chain(a.active_windows.keys())
+        .chain(b.active_windows.keys())
+        .collect();
+    let sig = |p: &'_ WindowsPayload, dir: &String| -> (Vec<AgWindow>, Option<String>) {
+        (
+            p.windows.iter().filter(|w| &w.folder_dir == dir).cloned().collect(),
+            p.active_windows.get(dir).cloned(),
+        )
+    };
+    dirs.into_iter().filter(|d| sig(a, d) != sig(b, d)).cloned().collect()
 }
 
 /// Load the layout from `path` (default-empty on missing/corrupt).
@@ -219,6 +333,95 @@ mod tests {
         let reloaded = WindowsStore::new(Some(path));
         assert_eq!(reloaded.payload(), &layout());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn win(id: &str, folder: &str, panes: &[&str]) -> AgWindow {
+        AgWindow {
+            id: id.into(),
+            name: id.into(),
+            folder_dir: folder.into(),
+            panes: panes.iter().map(|p| p.to_string()).collect(),
+        }
+    }
+
+    fn ids(sessions: &[&str]) -> BTreeSet<String> {
+        sessions.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn prune_drops_dead_folders_and_their_active_entries() {
+        let payload = WindowsPayload {
+            windows: vec![win("w1", "/live", &["s1"]), win("w2", "/dead", &["s2"])],
+            active_windows: BTreeMap::from([
+                ("/live".into(), "w1".into()),
+                ("/dead".into(), "w2".into()),
+            ]),
+        };
+        let (next, touched) = prune_dead(&payload, &ids(&["s1", "s2"]), |d| d == "/live").unwrap();
+        assert_eq!(next.windows, vec![win("w1", "/live", &["s1"])]);
+        assert_eq!(next.active_windows, BTreeMap::from([("/live".into(), "w1".into())]));
+        assert_eq!(touched, vec!["/dead".to_string()]);
+    }
+
+    #[test]
+    fn prune_drops_ghost_panes_but_keeps_valid_diff_panes() {
+        let payload = WindowsPayload {
+            windows: vec![win(
+                "w1",
+                "/live",
+                &["s1", "s-gone", "~diff:/live", "~diff:/dead"],
+            )],
+            active_windows: BTreeMap::from([("/live".into(), "w1".into())]),
+        };
+        let (next, touched) = prune_dead(&payload, &ids(&["s1"]), |d| d == "/live").unwrap();
+        assert_eq!(next.windows, vec![win("w1", "/live", &["s1", "~diff:/live"])]);
+        assert_eq!(touched, vec!["/live".to_string()]);
+    }
+
+    #[test]
+    fn prune_emptied_window_vanishes_when_a_sibling_survives() {
+        let payload = WindowsPayload {
+            windows: vec![win("w1", "/live", &["s-gone"]), win("w2", "/live", &["s1"])],
+            active_windows: BTreeMap::from([("/live".into(), "w1".into())]),
+        };
+        let (next, _) = prune_dead(&payload, &ids(&["s1"]), |_| true).unwrap();
+        assert_eq!(next.windows, vec![win("w2", "/live", &["s1"])]);
+        // The active pointer moves to the surviving window.
+        assert_eq!(next.active_windows.get("/live"), Some(&"w2".to_string()));
+    }
+
+    #[test]
+    fn prune_keeps_the_active_window_when_all_were_emptied() {
+        let payload = WindowsPayload {
+            windows: vec![
+                win("w1", "/live", &["s-gone"]),
+                win("w2", "/live", &["s-gone2"]),
+            ],
+            active_windows: BTreeMap::from([("/live".into(), "w2".into())]),
+        };
+        let (next, _) = prune_dead(&payload, &ids(&[]), |_| true).unwrap();
+        assert_eq!(next.windows, vec![win("w2", "/live", &[])]);
+        assert_eq!(next.active_windows.get("/live"), Some(&"w2".to_string()));
+    }
+
+    #[test]
+    fn prune_never_touches_a_deliberately_empty_window() {
+        // Already empty going in (freshly created via "+ window"): kept as-is.
+        let payload = WindowsPayload {
+            windows: vec![win("w1", "/live", &[])],
+            active_windows: BTreeMap::from([("/live".into(), "w1".into())]),
+        };
+        assert!(prune_dead(&payload, &ids(&[]), |_| true).is_none());
+    }
+
+    #[test]
+    fn prune_returns_none_when_nothing_changed() {
+        let payload = WindowsPayload {
+            windows: vec![win("w1", "/live", &["s1"])],
+            active_windows: BTreeMap::from([("/live".into(), "w1".into())]),
+        };
+        assert!(prune_dead(&payload, &ids(&["s1"]), |_| true).is_none());
+        assert!(prune_dead(&WindowsPayload::default(), &ids(&[]), |_| false).is_none());
     }
 
     #[test]

@@ -552,6 +552,53 @@ pub fn agentboard_shared_dir() -> Result<PathBuf> {
     Ok(config_dir()?.join("agentboard"))
 }
 
+/// The base directories under which per-checkout *instance* state nests as
+/// `slots/<scope>/…` (see [`state_scope`]): the data base (tt.db) and the
+/// instance-config base (agentboard sessions/windows/collapse). Cleanup tools
+/// use this to reach state belonging to scopes *other than* the running
+/// process's — [`data_dir`]/[`agentboard_dir`] only ever resolve the current
+/// scope. Deliberately ignores an auto-detected scope (the machine's state is
+/// the target even when cleanup runs from a slot checkout), but a *forced*
+/// [`STATE_SCOPE_ENV`] nests both bases like every other path, so tests and
+/// quarantined slots never see or touch the real state tree.
+pub struct InstanceStateBases {
+    /// e.g. `~/.local/share/towles-tool` — holds `tt.db` and `slots/<scope>/tt.db`.
+    pub data: PathBuf,
+    /// e.g. `~/.config/towles-tool` — holds `agentboard/` and
+    /// `slots/<scope>/agentboard/`.
+    pub config: PathBuf,
+}
+
+impl InstanceStateBases {
+    /// The `slots/` directories whose children are per-scope state dirs.
+    pub fn scope_parents(&self) -> [PathBuf; 2] {
+        [self.data.join("slots"), self.config.join("slots")]
+    }
+
+    /// The agentboard instance dir for `scope` (`None` = the unscoped store
+    /// the installed daily driver writes).
+    pub fn agentboard_dir(&self, scope: Option<&str>) -> PathBuf {
+        match scope {
+            None => self.config.join("agentboard"),
+            Some(s) => self.config.join("slots").join(s).join("agentboard"),
+        }
+    }
+}
+
+/// Resolve [`InstanceStateBases`] for this machine (or, under a forced
+/// [`STATE_SCOPE_ENV`], for that sandboxed scope).
+pub fn instance_state_bases() -> Result<InstanceStateBases> {
+    let data = dirs::data_dir().ok_or(Error::NoDataDir)?.join(TOOL_NAME);
+    let config = home_dir()?.join(".config").join(TOOL_NAME);
+    match detect_scope() {
+        Scope::Forced(s) => Ok(InstanceStateBases {
+            data: data.join("slots").join(&s),
+            config: config.join("slots").join(&s),
+        }),
+        Scope::None | Scope::Auto(_) => Ok(InstanceStateBases { data, config }),
+    }
+}
+
 /// Infallible [`agentboard_dir`], falling back to `./agentboard` when the home
 /// directory can't be resolved. For callers that build default paths without a
 /// `Result` (they historically fell back to `.`).
@@ -1017,6 +1064,37 @@ mod tests {
         assert!(config_path().unwrap().ends_with("slot-9/towles-tool.settings.json"));
         assert!(store_db_path().unwrap().ends_with("towles-tool/slots/slot-9/tt.db"));
         assert!(agentboard_dir().unwrap().ends_with("slots/slot-9/agentboard"));
+        unsafe { std::env::remove_var(STATE_SCOPE_ENV) };
+    }
+
+    /// The cleanup bases point at the machine-wide state tree even when the
+    /// process itself runs auto-scoped from a slot checkout — that tree is
+    /// what cleanup sweeps — but a forced scope sandboxes them entirely.
+    #[test]
+    fn instance_state_bases_ignore_auto_but_honor_forced_scope() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // SAFETY: guarded by ENV_LOCK.
+        unsafe { std::env::set_var(STATE_SCOPE_ENV, "") };
+        let bases = instance_state_bases().unwrap();
+        assert!(bases.data.ends_with("towles-tool"), "got {}", bases.data.display());
+        assert!(bases.config.ends_with(".config/towles-tool"), "got {}", bases.config.display());
+        let [data_slots, config_slots] = bases.scope_parents();
+        assert!(data_slots.ends_with("towles-tool/slots"));
+        assert!(config_slots.ends_with(".config/towles-tool/slots"));
+        assert!(bases.agentboard_dir(None).ends_with("towles-tool/agentboard"));
+        assert!(
+            bases
+                .agentboard_dir(Some("repo-thing"))
+                .ends_with("towles-tool/slots/repo-thing/agentboard")
+        );
+
+        // SAFETY: guarded by ENV_LOCK.
+        unsafe { std::env::set_var(STATE_SCOPE_ENV, "sandbox") };
+        let bases = instance_state_bases().unwrap();
+        assert!(bases.data.ends_with("towles-tool/slots/sandbox"));
+        assert!(bases.config.ends_with(".config/towles-tool/slots/sandbox"));
+
         unsafe { std::env::remove_var(STATE_SCOPE_ENV) };
     }
 
