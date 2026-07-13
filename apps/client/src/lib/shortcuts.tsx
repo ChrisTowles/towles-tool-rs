@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import { UserSettingsSchema } from "./schemas/settings";
 import { invokeCmd } from "./tauri";
 import type { UserSettings } from "./settings";
 
@@ -239,7 +240,7 @@ export function useShortcutsWorkInTerminal(): RefObject<boolean> {
   useEffect(() => {
     let alive = true;
     const load = () =>
-      void invokeCmd<UserSettings>("settings_get").then((s) => {
+      void invokeCmd<UserSettings>("settings_get", {}, UserSettingsSchema).then((s) => {
         if (alive && s)
           ref.current = s.agentboard?.shortcutsWorkInTerminal ?? DEFAULT_SHORTCUTS_WORK_IN_TERMINAL;
       });

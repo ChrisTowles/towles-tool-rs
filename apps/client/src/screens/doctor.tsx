@@ -11,6 +11,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DoctorReportSchema } from "@/lib/schemas/doctor";
 import { invokeCmd } from "@/lib/tauri";
 import { Empty, Panel } from "@/components/store-bits";
 
@@ -49,7 +50,7 @@ export function DoctorScreen() {
 
   const refresh = useCallback(async () => {
     setRunning(true);
-    setReport(await invokeCmd<DoctorReport>("doctor_run"));
+    setReport(await invokeCmd<DoctorReport>("doctor_run", {}, DoctorReportSchema));
     setRunning(false);
   }, []);
 

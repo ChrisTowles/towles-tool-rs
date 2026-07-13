@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { SlackDmViewSchema, SlackFileDataSchema } from "./schemas/slack";
 import { invokeOrThrow, isTauri } from "./tauri";
 
 /**
@@ -145,7 +146,7 @@ export function useSlackDm(): {
       return;
     }
     try {
-      const next = await invokeOrThrow<SlackDmView>("slack_dm_history");
+      const next = await invokeOrThrow<SlackDmView>("slack_dm_history", {}, SlackDmViewSchema);
       setView(next);
       setError(null);
     } catch (e) {
@@ -201,7 +202,7 @@ export async function slackDmSend(text: string): Promise<void> {
  * {@link isFileScopeError}) when the token lacks `files:read`.
  */
 export async function slackDmFile(url: string): Promise<SlackFileData> {
-  return invokeOrThrow<SlackFileData>("slack_dm_file", { url });
+  return invokeOrThrow<SlackFileData>("slack_dm_file", { url }, SlackFileDataSchema);
 }
 
 /** A workspace member for the Settings watch-user picker (mirrors `SlackUser`). */
