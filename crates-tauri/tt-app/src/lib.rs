@@ -8,6 +8,7 @@ mod agentboard;
 mod claude_sessions;
 mod doctor;
 mod gh_actions;
+mod instance_lock;
 mod journal;
 mod resources;
 mod scheduler;
