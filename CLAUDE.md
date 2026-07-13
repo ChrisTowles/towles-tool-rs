@@ -221,24 +221,6 @@ or CLI command — see the no-CLI-parity convention below). When deriving code,
 the commit message should cite the upstream source path (yaak `path/to/file`
 or slot-1 `src/commands/...`).
 
-## Git Identity
-
-This repo uses a **personal** GitHub identity (local git config, set on the
-primary checkout so every worktree slot inherits it):
-
-- `user.name` = `Chris Towles`
-- `user.email` = `Chris.Towles@gmail.com`
-- `credential.helper` = `!gh auth git-credential` (uses the active `gh`
-  account, which should be `ChrisTowles`)
-
-The work profile (`212787373_aero`) is the global default — this repo
-overrides it locally, same pattern as `~/code/p/dotfiles`.
-
-**Pushing to this repo** — use `./scripts/git-push.sh` instead of `git push`.
-On macOS it switches to the `ChrisTowles` gh account, pushes, and switches
-back. On Linux it's a passthrough. The same account switch is needed around
-`gh pr create` / `gh pr merge` for this repo.
-
 ## Conventions
 
 See [docs/CODING-STANDARDS.md](docs/CODING-STANDARDS.md) for the full
