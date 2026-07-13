@@ -268,14 +268,21 @@ export function TerminalView({
         ctx.fillStyle = fg;
         ctx.globalAlpha = flags & FAINT ? 0.6 : 1;
         setFont(flags);
-        // Draw one grapheme cluster per cell so combining marks / emoji
-        // selectors compose onto the base glyph instead of shifting the grid.
-        // Wide clusters advance 2 columns; per-cell placement keeps the grid
-        // aligned regardless of what the canvas font measures.
-        let cx = px;
-        for (const cluster of graphemeClusters(run.text)) {
-          ctx.fillText(cluster, cx, y * cellH + baseline);
-          cx += (isWideRun(run) && (cluster.codePointAt(0) ?? 0) > 0xff ? 2 : 1) * cellW;
+        if (isWideRun(run)) {
+          // Draw one grapheme cluster per cell so combining marks / emoji
+          // selectors compose onto the base glyph instead of shifting the
+          // grid. Wide clusters advance 2 columns; per-cluster placement
+          // keeps the grid aligned regardless of what the canvas font
+          // measures. Narrow runs skip this (one fillText call instead of
+          // one per cluster) since a monospace font already advances the
+          // whole string by exactly cellW per cluster.
+          let cx = px;
+          for (const cluster of graphemeClusters(run.text)) {
+            ctx.fillText(cluster, cx, y * cellH + baseline);
+            cx += (cluster.codePointAt(0) ?? 0) > 0xff ? 2 * cellW : cellW;
+          }
+        } else {
+          ctx.fillText(run.text, px, y * cellH + baseline);
         }
         ctx.globalAlpha = 1;
         if (flags & (UNDERLINE | STRIKETHROUGH | OVERLINE)) {
