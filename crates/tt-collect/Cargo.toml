@@ -11,6 +11,7 @@ tt-exec = { workspace = true }
 tt-store = { workspace = true }
 chrono = { workspace = true }
 log = { workspace = true }
+native-tls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ureq = { workspace = true }

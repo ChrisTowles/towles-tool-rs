@@ -164,7 +164,8 @@ pub fn parse_connection_url(body: &serde_json::Value) -> Result<String, String> 
 /// Open a Socket Mode connection with the app-level token and return the
 /// `wss://` URL to connect. Live HTTP (the URL parsing is the tested seam).
 pub fn open_socket_connection(app_token: &str) -> Result<String, String> {
-    let response = ureq::post("https://slack.com/api/apps.connections.open")
+    let response = crate::slack::agent()?
+        .post("https://slack.com/api/apps.connections.open")
         .set("Authorization", &format!("Bearer {app_token}"))
         .timeout(HTTP_TIMEOUT)
         .send_form(&[])

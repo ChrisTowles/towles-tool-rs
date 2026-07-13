@@ -17,6 +17,7 @@
 //! pure functions over `serde_json::Value` so it unit-tests with inline
 //! fixtures (same pattern as the `gh` collectors).
 
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tt_store::DmInput;
@@ -24,6 +25,24 @@ use tt_store::DmInput;
 /// Per-call HTTP cap. Slack answers these in well under a second; without a
 /// cap a dead network wedges the scheduler's blocking worker.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The shared HTTP agent for every Slack Web API / file call, built once on
+/// first use with native-tls rather than ureq's default rustls+webpki-roots
+/// stack. Corporate TLS-inspecting proxies (Zscaler and similar) inject their
+/// own root CA into the OS trust store, not into rustls's bundled Mozilla
+/// roots — native-tls verifies against the OS store, so intercepted networks
+/// still work.
+pub(crate) fn agent() -> Result<&'static ureq::Agent, String> {
+    static AGENT: OnceLock<Result<ureq::Agent, String>> = OnceLock::new();
+    AGENT
+        .get_or_init(|| {
+            let connector = native_tls::TlsConnector::new()
+                .map_err(|e| format!("failed to initialize native TLS: {e}"))?;
+            Ok(ureq::AgentBuilder::new().tls_connector(Arc::new(connector)).build())
+        })
+        .as_ref()
+        .map_err(String::clone)
+}
 
 /// Slack settings the collector needs, decoupled from `tt-config` (callers map
 /// their settings into this, mirroring how `CalendarProvider` is passed in).
@@ -44,7 +63,8 @@ struct SlackHttp<'a> {
 
 impl SlackHttp<'_> {
     fn call(&self, method: &str, params: &[(&str, &str)]) -> Result<serde_json::Value, String> {
-        let mut request = ureq::post(&format!("https://slack.com/api/{method}"))
+        let mut request = agent()?
+            .post(&format!("https://slack.com/api/{method}"))
             .set("Authorization", &format!("Bearer {}", self.token))
             .timeout(HTTP_TIMEOUT);
         for (k, v) in params {
@@ -58,7 +78,8 @@ impl SlackHttp<'_> {
     /// (`chat.postMessage`), where a query string would cap length and mangle
     /// newlines.
     fn call_form(&self, method: &str, form: &[(&str, &str)]) -> Result<serde_json::Value, String> {
-        let response = ureq::post(&format!("https://slack.com/api/{method}"))
+        let response = agent()?
+            .post(&format!("https://slack.com/api/{method}"))
             .set("Authorization", &format!("Bearer {}", self.token))
             .timeout(HTTP_TIMEOUT)
             .send_form(form)
@@ -239,7 +260,8 @@ pub fn fetch_file(token: &str, url: &str) -> Result<SlackFile, String> {
     if !is_slack_file_url(url) {
         return Err(format!("refusing to fetch non-Slack file URL: {url}"));
     }
-    let response = ureq::get(url)
+    let response = agent()?
+        .get(url)
         .set("Authorization", &format!("Bearer {token}"))
         .timeout(HTTP_TIMEOUT)
         .call()

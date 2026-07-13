@@ -120,13 +120,27 @@ async fn run_connection(
         }
     };
 
-    let mut ws = match tokio_tungstenite::connect_async(&url).await {
-        Ok((ws, _resp)) => ws,
+    // native-tls verifies against the OS trust store, matching the ureq client
+    // in tt-collect — required for networks that TLS-inspect with a corporate
+    // root CA (Zscaler and similar), which rustls's bundled webpki-roots (the
+    // `connect_async` default) doesn't trust.
+    let connector = match native_tls::TlsConnector::new() {
+        Ok(c) => tokio_tungstenite::Connector::NativeTls(c),
         Err(e) => {
-            eprintln!("slack socket: websocket connect failed: {e}");
+            eprintln!("slack socket: failed to initialize native TLS: {e}");
             return Outcome::Error;
         }
     };
+    let mut ws =
+        match tokio_tungstenite::connect_async_tls_with_config(&url, None, false, Some(connector))
+            .await
+        {
+            Ok((ws, _resp)) => ws,
+            Err(e) => {
+                eprintln!("slack socket: websocket connect failed: {e}");
+                return Outcome::Error;
+            }
+        };
 
     // Resolve the watched DM channel once so events match the exact conversation
     // (mine and theirs). If it fails we fall back to sender-matching inside

@@ -257,3 +257,13 @@ etc.). The points below are repo-specific specializations of that doc.
   the code and it's unclear which is authoritative. Git history retains any
   that were committed in the past; no need to preserve them elsewhere before
   removing.
+- **TLS clients must trust the machine's trust store, not a bundled root
+  list.** Chris develops behind a Zscaler-style TLS-inspecting proxy, which
+  installs its own root CA into the OS trust store; `rustls` + `webpki-roots`
+  (or any other bundled Mozilla root list) never sees that CA and fails to
+  connect. Any new outbound HTTP/WebSocket client (`ureq`, `reqwest`,
+  `tokio-tungstenite`, etc.) must be configured to verify against the OS store
+  — `native-tls` (used by the Slack integration: `crates/tt-collect/src/
+  slack.rs`'s `agent()`, `crates-tauri/tt-app/src/slack_socket.rs`) or an
+  OS-native-roots rustls variant (e.g. `rustls-native-certs` /
+  `rustls-tls-native-roots`) — never the crate's bundled-webpki-roots default.
