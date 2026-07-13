@@ -213,6 +213,7 @@ fn build_folder(
         sessions: session_data,
         needs,
         purpose: folder_meta.purpose_for(&entry.dir).map(str::to_string),
+        base_branch: folder_meta.base_branch_for(&entry.dir).map(str::to_string),
         metadata: metadata.get(&entry.name).cloned(),
     }
 }

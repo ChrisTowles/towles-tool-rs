@@ -370,6 +370,15 @@ impl Engine {
         changed
     }
 
+    /// Set (or clear) a folder's base-branch override. Persists on change.
+    pub fn set_folder_base_branch(&mut self, dir: &str, base_branch: Option<&str>) -> bool {
+        let changed = self.folder_meta.set_base_branch(dir, base_branch);
+        if changed {
+            let _ = self.folder_meta.save();
+        }
+        changed
+    }
+
     /// Replace the persisted window layout (frontend-owned blob). Persists on
     /// change; returns whether it changed.
     /// `touched` is the set of folder dirs whose windows/active-window the

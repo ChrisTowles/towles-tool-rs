@@ -403,6 +403,18 @@ pub fn ab_set_folder_purpose(state: State<Ab>, dir: String, text: Option<String>
     }
 }
 
+/// Set (or clear with `None`/blank) a folder's base-branch override — the
+/// parent branch its diff pane compares against instead of the
+/// origin/main-or-master auto-detect. For a long-running branch that didn't
+/// fork from main.
+#[tauri::command]
+pub fn ab_set_folder_base_branch(state: State<Ab>, dir: String, branch: Option<String>) {
+    let changed = state.engine.lock().unwrap().set_folder_base_branch(&dir, branch.as_deref());
+    if changed {
+        state.emit.notify_one();
+    }
+}
+
 /// Set (or clear with `None`/blank) a session's user-authored purpose —
 /// captured when starting Claude, so the rail can show why a session exists.
 #[tauri::command]
@@ -516,19 +528,22 @@ pub fn ab_clear_log(state: State<Ab>, session: String) -> Result<(), String> {
 
 /// Full unified diff for a folder, for the diff pane. `mode` picks the
 /// baseline: `"uncommitted"` diffs the working tree vs HEAD, anything else
-/// diffs vs the merge-base with origin/main. Empty string when there's
-/// nothing to show. Async: a large working-tree diff is a real subprocess
-/// wait that must not stall the main thread.
+/// diffs vs the merge-base with `base_branch` (the folder's base-branch
+/// override, from `FolderData.baseBranch`) or origin/main if unset. Empty
+/// string when there's nothing to show. Async: a large working-tree diff is a
+/// real subprocess wait that must not stall the main thread.
 #[tauri::command]
-pub async fn ab_get_diff(dir: String, mode: String) -> String {
+pub async fn ab_get_diff(dir: String, mode: String, base_branch: Option<String>) -> String {
     let mode = if mode == "uncommitted" {
         tt_agentboard::DiffMode::Uncommitted
     } else {
         tt_agentboard::DiffMode::Main
     };
-    tauri::async_runtime::spawn_blocking(move || tt_agentboard::diff_patch(&dir, mode))
-        .await
-        .unwrap_or_default()
+    tauri::async_runtime::spawn_blocking(move || {
+        tt_agentboard::diff_patch(&dir, mode, base_branch.as_deref())
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Open a session's repo directory in the preferred editor. Ports the TS

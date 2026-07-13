@@ -287,6 +287,7 @@ pub fn run() {
             agentboard::ab_close_session,
             agentboard::ab_refresh,
             agentboard::ab_set_folder_purpose,
+            agentboard::ab_set_folder_base_branch,
             agentboard::ab_set_session_purpose,
             agentboard::ab_set_compact_percent,
             agentboard::ab_save_windows,

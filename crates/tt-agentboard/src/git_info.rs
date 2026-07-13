@@ -232,6 +232,26 @@ fn resolve_origin_main(dir: &str) -> String {
     if verified.is_empty() { "origin/master".to_string() } else { "origin/main".to_string() }
 }
 
+/// The ref the diff pane's "vs main" mode compares against: `base_branch` (a
+/// per-folder override for a long-running branch that didn't fork from main,
+/// set via [`crate::folder_meta::FolderMetaStore::set_base_branch`]) if it
+/// resolves to a real ref, else the origin/main-or-master auto-detect.
+/// `origin/<name>` is preferred over a same-named local branch since the diff
+/// pane wants the pushed baseline, matching [`resolve_origin_main`].
+fn resolve_base_ref(dir: &str, base_branch: Option<&str>) -> String {
+    if let Some(name) = base_branch.map(str::trim).filter(|n| !n.is_empty()) {
+        let name = name.trim_start_matches("origin/");
+        let remote = format!("origin/{name}");
+        if !git_out(dir, &["rev-parse", "--verify", "--quiet", &remote]).is_empty() {
+            return remote;
+        }
+        if !git_out(dir, &["rev-parse", "--verify", "--quiet", name]).is_empty() {
+            return name.to_string();
+        }
+    }
+    resolve_origin_main(dir)
+}
+
 /// The commit HEAD diverged from: merge-base with upstream if set, else with
 /// origin/main, else HEAD. Ports `resolvePushedBase`.
 fn resolve_pushed_base(dir: &str, origin_main: &str) -> String {
@@ -292,18 +312,19 @@ pub enum DiffMode {
     Uncommitted,
 }
 
-/// Full unified diff for the diff pane, baseline picked by `mode`. Untracked
-/// files don't appear in `git diff`, so they're listed by name in a trailing
-/// block rather than silently dropped. Empty string when `dir` isn't a git
-/// repo or has no changes.
-pub fn diff_patch(dir: &str, mode: DiffMode) -> String {
+/// Full unified diff for the diff pane, baseline picked by `mode`. `base_branch`
+/// overrides `DiffMode::Main`'s comparison ref (see [`resolve_base_ref`]);
+/// ignored for `DiffMode::Uncommitted`. Untracked files don't appear in `git
+/// diff`, so they're listed by name in a trailing block rather than silently
+/// dropped. Empty string when `dir` isn't a git repo or has no changes.
+pub fn diff_patch(dir: &str, mode: DiffMode, base_branch: Option<&str>) -> String {
     if dir.is_empty() {
         return String::new();
     }
     let base = match mode {
         DiffMode::Main => {
-            let origin_main = resolve_origin_main(dir);
-            let merge_base = git_out(dir, &["merge-base", "HEAD", &origin_main]);
+            let base_ref = resolve_base_ref(dir, base_branch);
+            let merge_base = git_out(dir, &["merge-base", "HEAD", &base_ref]);
             if merge_base.is_empty() { "HEAD".to_string() } else { merge_base }
         }
         DiffMode::Uncommitted => "HEAD".to_string(),
@@ -502,6 +523,43 @@ mod tests {
         let linked_key = git_common_dir(linked.to_str().unwrap());
         assert!(!main_key.is_empty());
         assert_eq!(main_key, linked_key);
+    }
+
+    #[test]
+    fn resolve_base_ref_prefers_a_verified_override_over_the_main_default() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+        run(&["branch", "develop"]);
+
+        let dir = repo.to_str().unwrap();
+        // A local branch with no matching remote ref: the override resolves
+        // directly to the local branch name.
+        assert_eq!(resolve_base_ref(dir, Some("develop")), "develop");
+        // A leading "origin/" on the override is stripped before re-adding it,
+        // so passing either form of the same branch resolves identically.
+        assert_eq!(resolve_base_ref(dir, Some("origin/develop")), "develop");
+        // An override that resolves to nothing (no such branch, no remote)
+        // falls back to the origin/main-or-master auto-detect.
+        assert_eq!(resolve_base_ref(dir, Some("no-such-branch")), resolve_origin_main(dir));
+        // No override at all: same auto-detect.
+        assert_eq!(resolve_base_ref(dir, None), resolve_origin_main(dir));
     }
 
     #[test]
