@@ -1,4 +1,6 @@
-import { CircleAlert, Radio } from "lucide-react";
+import { CircleAlert, Copy, Plug, Radio } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Empty, Panel } from "@/components/store-bits";
 import { cn } from "@/lib/utils";
@@ -11,7 +13,8 @@ import { useNow } from "@/lib/now";
  * recorded into the store (method/tool, caller, duration, ok/error, age),
  * newest first. Read-only; the whole point is *seeing* who is calling the
  * server and how it answered. The dispatcher retains the newest few hundred
- * calls and the snapshot carries the newest 100.
+ * calls and the snapshot carries the newest 100. A setup panel carries the
+ * copyable registration commands; it leads while no client has ever called.
  */
 export function McpScreen() {
   const { snapshot, live } = useStoreSnapshot();
@@ -47,6 +50,7 @@ export function McpScreen() {
 
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-4 p-4">
+          {calls.length === 0 && <SetupPanel />}
           <Panel
             title="Incoming calls"
             note={`${calls.length}`}
@@ -55,15 +59,106 @@ export function McpScreen() {
             {calls.length === 0 ? (
               <Empty>
                 {live
-                  ? "No MCP calls yet. Point a client at `ttr mcp serve` and they'll show up here."
+                  ? "No MCP calls yet. Register a client above and they'll show up here."
                   : "Not connected yet."}
               </Empty>
             ) : (
               calls.map((call) => <CallRow key={call.id} call={call} now={now} />)
             )}
           </Panel>
+          {calls.length > 0 && <SetupPanel />}
         </div>
       </ScrollArea>
+    </div>
+  );
+}
+
+const CLAUDE_DESKTOP_JSON = `{
+  "mcpServers": {
+    "tt": { "command": "ttr", "args": ["mcp", "serve"] }
+  }
+}`;
+
+/**
+ * How to point a client at the server. Leads while the call log is empty
+ * (setup is the whole task then), drops below the log once traffic exists.
+ * Every command assumes `ttr` is on PATH; the server itself needs no port or
+ * daemon — clients spawn `ttr mcp serve` over stdio themselves.
+ */
+function SetupPanel() {
+  return (
+    <Panel title="Connect a client" icon={<Plug className="size-4 text-muted-foreground" />}>
+      <SetupStep
+        title="Claude Code (recommended)"
+        detail="Registers the `tt` server at user scope and checks the rest of the Claude Code setup."
+        command="ttr install"
+      />
+      <SetupStep
+        title="Claude Code, manual"
+        detail="Just the MCP registration — what `ttr install` runs for you."
+        command="claude mcp add --scope user tt -- ttr mcp serve"
+      />
+      <SetupStep
+        title="Claude Desktop / any MCP client"
+        detail="Stdio server config; for Claude Desktop merge it into claude_desktop_config.json."
+        command={CLAUDE_DESKTOP_JSON}
+        block
+      />
+      <p className="px-3 py-2 text-xs text-muted-foreground">
+        The server exposes the local store (todos, issues, PRs, day brief, needs-you), live agent
+        sessions, and <span className="font-mono">journal_append</span>. Verify with{" "}
+        <span className="font-mono">claude mcp list</span> — calls appear above as they arrive.
+      </p>
+    </Panel>
+  );
+}
+
+/** One setup option: name + one-line context, then the copyable command. */
+function SetupStep({
+  title,
+  detail,
+  command,
+  block = false,
+}: {
+  title: string;
+  detail: string;
+  command: string;
+  block?: boolean;
+}) {
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(command);
+      toast.success("Copied");
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5 px-3 py-2.5">
+      <div className="flex items-baseline gap-2">
+        <span className="text-sm text-foreground">{title}</span>
+        <span className="text-[11px] text-muted-foreground">{detail}</span>
+      </div>
+      <div className="flex items-start gap-1 rounded-md border bg-card px-3 py-1.5">
+        <pre
+          className={cn(
+            "min-w-0 flex-1 self-center overflow-x-auto font-mono text-xs text-foreground",
+            !block && "whitespace-nowrap",
+          )}
+        >
+          {command}
+        </pre>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6 shrink-0 text-muted-foreground"
+          onClick={copy}
+          title="Copy"
+        >
+          <Copy className="size-3.5" />
+        </Button>
+      </div>
     </div>
   );
 }
