@@ -68,7 +68,7 @@ ttr slot new -b feat/thing [--base <ref>]  # creates slots/thing on that branch
 ttr slot ls [--json]                       # fleet: primary + slots, branch, dirty, ports
 ttr slot env <name>                        # (re)render .env — idempotent, keeps claims
 ttr slot env primary                       # same, for the primary checkout
-ttr slot rm <name> [--force]               # guarded removal + docker cleanup
+ttr slot rm <name> [--force]               # guarded removal + docker/agentboard/state cleanup
 ```
 
 The Agentboard rail shows the whole fleet automatically (worktrees of any

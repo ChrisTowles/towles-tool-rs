@@ -72,6 +72,31 @@ impl WindowsStore {
         true
     }
 
+    /// Drop windows (and active-window entries) for folders no longer in
+    /// `dirs` — e.g. a removed worktree slot's layout, which would otherwise
+    /// linger in windows.json forever. Returns the folder dirs that lost
+    /// state so the caller can persist them via [`Self::save`] (an empty
+    /// return means nothing changed).
+    pub fn prune(&mut self, dirs: &std::collections::HashSet<String>) -> Vec<String> {
+        let mut gone = std::collections::BTreeSet::new();
+        for window in &self.payload.windows {
+            if !dirs.contains(&window.folder_dir) {
+                gone.insert(window.folder_dir.clone());
+            }
+        }
+        for dir in self.payload.active_windows.keys() {
+            if !dirs.contains(dir) {
+                gone.insert(dir.clone());
+            }
+        }
+        if gone.is_empty() {
+            return Vec::new();
+        }
+        self.payload.windows.retain(|w| dirs.contains(&w.folder_dir));
+        self.payload.active_windows.retain(|dir, _| dirs.contains(dir));
+        gone.into_iter().collect()
+    }
+
     /// Persist `touched` folder dirs — the ones whose windows/active-window
     /// actually changed since the last save (the caller, `agentboard.tsx`'s
     /// `updateWins`, tracks this because a window's frontend blob doesn't
@@ -218,6 +243,35 @@ mod tests {
 
         let reloaded = WindowsStore::new(Some(path));
         assert_eq!(reloaded.payload(), &layout());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn prune_drops_gone_folders_and_persists_the_removal() {
+        let dir = std::env::temp_dir().join(format!("tt-windows-prune-{}", std::process::id()));
+        let path = dir.join("windows.json");
+        let mut store = WindowsStore::new(Some(path.clone()));
+        let mut payload = layout();
+        payload.windows.push(AgWindow {
+            id: "w2".into(),
+            name: "removed slot".into(),
+            folder_dir: "/repo/slots/gone".into(),
+            panes: vec!["s3".into()],
+        });
+        payload.active_windows.insert("/repo/slots/gone".into(), "w2".into());
+        store.set(payload);
+        store.save(&["/repo/checkout".to_string(), "/repo/slots/gone".to_string()]).unwrap();
+
+        let kept: std::collections::HashSet<String> = ["/repo/checkout".to_string()].into();
+        let gone = store.prune(&kept);
+        assert_eq!(gone, vec!["/repo/slots/gone".to_string()]);
+        store.save(&gone).unwrap();
+
+        let reloaded = WindowsStore::new(Some(path));
+        assert_eq!(reloaded.payload(), &layout());
+        // second prune is a no-op — nothing left to drop
+        let mut reloaded = reloaded;
+        assert!(reloaded.prune(&kept).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 

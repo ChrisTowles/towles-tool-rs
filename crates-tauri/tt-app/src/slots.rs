@@ -71,10 +71,14 @@ pub struct SlotRemoved {
 /// Remove the worktree slot at `dir`, guarded — a dirty tree, commits
 /// unreachable from any branch/remote, or a foreign listener on the slot's
 /// claimed ports block with an explanatory error (no force path in the app;
-/// use `ttr slot rm --force`). Cleans up docker resources and the worktree
-/// registration. Long-running → off the main thread.
+/// use `ttr slot rm --force`). Cleans up docker resources, the worktree
+/// registration, and the slot's agentboard tracking — the rail entry (and
+/// with it the pane/windows, via the engine's prune) goes away instead of
+/// lingering as a "missing" ghost. Long-running → off the main thread.
 #[tauri::command]
-pub async fn slot_remove(dir: String) -> Result<SlotRemoved, String> {
+pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemoved, String> {
+    use tauri::Manager;
+
     let removed = tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(&dir);
         let sr = ops::discover_root(Some(&path)).map_err(|e| e.to_string())?;
@@ -91,5 +95,18 @@ pub async fn slot_remove(dir: String) -> Result<SlotRemoved, String> {
     })
     .await
     .map_err(|e| format!("slot task failed: {e}"))??;
-    Ok(SlotRemoved { name: removed.name, messages: removed.messages })
+
+    let mut messages = removed.messages;
+    let ab = app.state::<crate::agentboard::Ab>();
+    let untracked = {
+        let mut engine = ab.engine.lock().unwrap();
+        engine.remove_repo(&removed.dir.to_string_lossy())
+    };
+    if untracked {
+        messages.push("untracked from the agentboard rail".to_string());
+    }
+    // Re-emit either way: a fleet-discovered (never-tracked) slot also drops
+    // off the rail on the next recompute, so don't make the user wait a poll.
+    ab.emit.notify_one();
+    Ok(SlotRemoved { name: removed.name, messages })
 }

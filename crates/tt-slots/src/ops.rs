@@ -519,6 +519,9 @@ pub struct RemoveOpts {
 
 pub struct RemovedSlot {
     pub name: String,
+    /// The removed checkout's directory (now gone from disk) — callers use it
+    /// to untrack the slot from stores keyed by dir (the agentboard rail).
+    pub dir: PathBuf,
     /// Progress notes for the user: docker resources removed, guards skipped
     /// under force, fallback paths taken. Callers surface these — nothing
     /// here prints.
@@ -541,6 +544,9 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
     }
     let dir_s = dir.to_string_lossy().to_string();
     let mut messages = Vec::new();
+    // The slot's state scope must be read while the checkout still exists —
+    // scope detection probes the directory (see `tt_config::slot_scope_from_dir`).
+    let state_scope = tt_config::slot_scope_from_dir(&dir);
 
     // broken worktree: git can't even report status
     if git_slot(&dir, &["status", "--porcelain"]).map(|o| !o.ok()).unwrap_or(true) {
@@ -555,7 +561,8 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
         fs::remove_dir_all(&dir)
             .map_err(|e| OpsError::Io(format!("cannot remove {dir_s}: {e}")))?;
         let _ = git_primary(&sr.primary, &["worktree", "prune"]);
-        return Ok(RemovedSlot { name, messages });
+        state_cleanup(state_scope.as_deref(), &mut messages);
+        return Ok(RemovedSlot { name, dir, messages });
     }
 
     let dirty = git_slot(&dir, &["status", "--porcelain"])
@@ -618,7 +625,27 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
         }
     }
     let _ = git_primary(&sr.primary, &["worktree", "prune"]);
-    Ok(RemovedSlot { name, messages })
+    state_cleanup(state_scope.as_deref(), &mut messages);
+    Ok(RemovedSlot { name, dir, messages })
+}
+
+/// Delete the removed slot's instance-state directories (agentboard
+/// sessions/windows, tt.db — see `tt_config::instance_state_dirs_for_scope`).
+/// Only checkouts of this repo have a scope; other repos' slots have no
+/// scoped state and skip cleanly.
+fn state_cleanup(scope: Option<&str>, messages: &mut Vec<String>) {
+    let Some(scope) = scope else {
+        return;
+    };
+    for dir in tt_config::instance_state_dirs_for_scope(scope) {
+        if !dir.is_dir() {
+            continue;
+        }
+        match fs::remove_dir_all(&dir) {
+            Ok(()) => messages.push(format!("removed slot state {}", dir.display())),
+            Err(e) => messages.push(format!("could not remove slot state {}: {e}", dir.display())),
+        }
+    }
 }
 
 /// Whether a docker container owned by this slot publishes `port`.

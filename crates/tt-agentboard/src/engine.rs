@@ -353,6 +353,10 @@ impl Engine {
             self.metadata.prune_sessions(&names);
             self.sessions.prune(&dirs);
             self.folder_meta.prune(&dirs);
+            let gone = self.windows.prune(&dirs);
+            if !gone.is_empty() {
+                let _ = self.windows.save(&gone);
+            }
         }
         payload
     }
