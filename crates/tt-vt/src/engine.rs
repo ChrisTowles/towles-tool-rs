@@ -8,6 +8,7 @@ use std::cell::{Cell as StdCell, RefCell};
 use std::rc::Rc;
 
 use libghostty_vt::fmt::{Formatter, FormatterOptions};
+use libghostty_vt::mouse;
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
 use libghostty_vt::screen::{CellWide, Screen};
 use libghostty_vt::selection::{FormatOptions, SelectLineOptions, SelectWordOptions, Selection};
@@ -55,6 +56,11 @@ pub struct EngineOptions {
     pub rows: u16,
     pub max_scrollback: usize,
 }
+
+/// Cap on mouse-wheel reports emitted for one wheel gesture. Bounds the
+/// bytes a single high-delta event (a wheel fling, a coalesced touchpad
+/// swipe) can inject into the application's input stream.
+const MAX_WHEEL_REPORTS: u32 = 5;
 
 pub struct Engine {
     term: Terminal<'static, 'static>,
@@ -149,6 +155,44 @@ impl Engine {
             Some(d) => ScrollViewport::Delta(d),
             None => ScrollViewport::Bottom,
         });
+    }
+
+    /// Report a mouse-wheel gesture at viewport cell (`x`, `y`) to the
+    /// application, encoded in whatever mouse protocol it negotiated (X10,
+    /// SGR, ...) — one report per line (`lines` rows, up is negative), capped
+    /// at [`MAX_WHEEL_REPORTS`]. When the application never enabled mouse
+    /// tracking this writes nothing, so a stale mode hint on the caller's
+    /// side can't inject bytes — and a wheel is never translated into arrow
+    /// keys. Reports ride the same pty-out path as query replies; the caller
+    /// drains them via [`Engine::take_pty_output`].
+    pub fn wheel(&mut self, x: u16, y: u16, lines: i32) -> Result<()> {
+        if lines == 0 {
+            return Ok(());
+        }
+        let mut encoder = mouse::Encoder::new()?;
+        encoder.set_options_from_terminal(&self.term).set_size(mouse::EncoderSize {
+            // 1px cells make surface-space positions equal cell coordinates.
+            screen_width: u32::from(self.term.cols()?),
+            screen_height: u32::from(self.term.rows()?),
+            cell_width: 1,
+            cell_height: 1,
+            padding_top: 0,
+            padding_bottom: 0,
+            padding_right: 0,
+            padding_left: 0,
+        });
+        let mut event = mouse::Event::new()?;
+        event
+            .set_action(mouse::Action::Press)
+            // xterm wheel buttons: 4 scrolls up, 5 scrolls down (press-only).
+            .set_button(Some(if lines < 0 { mouse::Button::Four } else { mouse::Button::Five }))
+            .set_position(mouse::Position { x: f32::from(x), y: f32::from(y) });
+        let mut buf = Vec::new();
+        for _ in 0..lines.unsigned_abs().min(MAX_WHEEL_REPORTS) {
+            encoder.encode_to_vec(&event, &mut buf)?;
+        }
+        self.pty_out.borrow_mut().extend_from_slice(&buf);
+        Ok(())
     }
 
     /// Apply a selection operation (viewport cell coordinates). Selection

@@ -541,8 +541,7 @@ export function TerminalView({
         // Shift+Home/End jump to the top / live bottom — driven through the
         // same `term_scroll` path as the wheel. On the alternate screen a
         // fullscreen TUI owns these keys, so we forward the unshifted key as
-        // ordinary input instead (mirroring the wheel handler's alt-scroll
-        // branch).
+        // ordinary input instead.
         const scrollback = scrollbackKey(e);
         if (scrollback) {
           e.preventDefault();
@@ -595,6 +594,12 @@ export function TerminalView({
         if (e.data) write(e.data);
         input.value = "";
       };
+      // The wheel never synthesizes key input (no xterm alt-scroll):
+      // scrolling over a fullscreen TUI must not type ↑/↓ into it — wheeling
+      // over an agent's session used to feed it stray arrow keys. Programs
+      // that asked for mouse tracking (vim, htop, ...) get real wheel events
+      // in their negotiated protocol; the primary screen scrolls our own
+      // scrollback; anything else swallows the gesture.
       const onWheel = (e: WheelEvent) => {
         e.preventDefault();
         const lines =
@@ -602,11 +607,12 @@ export function TerminalView({
             ? Math.round(e.deltaY)
             : Math.round(e.deltaY / cellH) || Math.sign(e.deltaY);
         if (lines === 0) return;
-        if (grid.modes.altScreen) {
-          // Fullscreen TUIs: wheel becomes arrow keys (xterm alt-scroll).
-          const key = lines < 0 ? (grid.modes.appCursorKeys ? "\x1bOA" : "\x1b[A") : grid.modes.appCursorKeys ? "\x1bOB" : "\x1b[B";
-          write(key.repeat(Math.min(5, Math.abs(lines))));
-        } else {
+        if (grid.modes.mouseTracking && !grid.scrolledBack) {
+          const rect = canvas.getBoundingClientRect();
+          const x = Math.max(0, Math.min(grid.cols - 1, Math.floor((e.clientX - rect.left) / cellW)));
+          const y = Math.max(0, Math.min(grid.rows - 1, Math.floor((e.clientY - rect.top) / cellH)));
+          void invoke("term_wheel", { termId, x, y, lines }).catch(() => {});
+        } else if (!grid.modes.altScreen) {
           grid.scrolledBack = true;
           scroll(lines);
         }

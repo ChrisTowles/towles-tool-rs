@@ -161,6 +161,45 @@ mod tests {
         assert!(frame.modes.app_cursor_keys);
         assert!(frame.modes.alt_screen);
         assert!(frame.modes.bracketed_paste);
+        assert!(!frame.modes.mouse_tracking);
+
+        // Mode flips alone don't dirty cells (no frame goes out until
+        // something paints), so ride along with a visible byte.
+        e.feed(b"\x1b[?1000hx");
+        let frame = e.render().expect("render").expect("frame");
+        assert!(frame.modes.mouse_tracking);
+    }
+
+    #[test]
+    fn wheel_reports_only_when_the_app_tracks_the_mouse() {
+        let mut e = engine(20, 4);
+        e.feed(b"hi");
+        assert!(e.take_pty_output().is_empty());
+
+        // No mouse tracking: a wheel gesture writes nothing to the PTY — in
+        // particular it is never translated into arrow keys.
+        e.wheel(3, 1, -2).expect("wheel");
+        assert!(e.take_pty_output().is_empty(), "untracked wheel must not reach the app");
+
+        // Normal tracking (1000) + SGR encoding (1006), vim/htop style:
+        // wheel up is a button-64 press at the 1-based cell position.
+        e.feed(b"\x1b[?1000h\x1b[?1006h");
+        e.wheel(3, 1, -1).expect("wheel");
+        assert_eq!(e.take_pty_output(), b"\x1b[<64;4;2M");
+
+        // Down is button 65; one report per line.
+        e.wheel(3, 1, 2).expect("wheel");
+        assert_eq!(e.take_pty_output(), b"\x1b[<65;4;2M\x1b[<65;4;2M");
+
+        // A fling's report count is capped.
+        e.wheel(0, 0, -100).expect("wheel");
+        assert_eq!(e.take_pty_output(), b"\x1b[<64;1;1M".repeat(5));
+
+        // Legacy tracking without SGR gets the negotiated X10 encoding
+        // (button and coords as offset bytes), not SGR.
+        e.feed(b"\x1b[?1006l");
+        e.wheel(3, 1, -1).expect("wheel");
+        assert_eq!(e.take_pty_output(), b"\x1b[M\x60\x24\x22");
     }
 
     #[test]
