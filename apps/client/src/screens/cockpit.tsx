@@ -149,8 +149,14 @@ export function CockpitScreen() {
   const highlight = meetingLive || soon;
   const later = snapshot.events
     .filter((e) => e.startTs > now && e.id !== nextEvent?.id)
-    .sort((a, b) => a.startTs - b.startTs)
-    .slice(0, 2);
+    .sort((a, b) => a.startTs - b.startTs);
+  // Show a few of the day's remaining meetings inline; the rest hide behind a
+  // "+N more" toggle so a busy day never floods the strip (still not a calendar
+  // — just the later-today list).
+  const [laterExpanded, setLaterExpanded] = useState(false);
+  const LATER_INLINE = 4;
+  const shownLater = laterExpanded ? later : later.slice(0, LATER_INLINE);
+  const hiddenLaterCount = later.length - shownLater.length;
 
   // Repo filter chips: narrow both panels to one repo when zoning in. The strip
   // gauges stay whole-snapshot totals (the overview); the chips + panels + their
@@ -222,13 +228,30 @@ export function CockpitScreen() {
         </div>
 
         {later.length > 0 && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span className="uppercase tracking-wide">Then</span>
-            {later.map((e) => (
+            {shownLater.map((e) => (
               <span key={e.id} className="rounded-md bg-muted px-2 py-0.5">
                 {e.title} · {fmtClock(e.startTs)}
               </span>
             ))}
+            {hiddenLaterCount > 0 ? (
+              <button
+                type="button"
+                onClick={() => setLaterExpanded(true)}
+                className="rounded-md px-2 py-0.5 font-medium text-foreground hover:bg-accent"
+              >
+                +{hiddenLaterCount} more
+              </button>
+            ) : laterExpanded && later.length > LATER_INLINE ? (
+              <button
+                type="button"
+                onClick={() => setLaterExpanded(false)}
+                className="rounded-md px-2 py-0.5 font-medium text-foreground hover:bg-accent"
+              >
+                Show less
+              </button>
+            ) : null}
           </div>
         )}
 
