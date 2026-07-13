@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { PrItem } from "./data";
+import { OpenedSessionSchema } from "./schemas/agentboard";
 import { invokeCmd, invokeOrThrow } from "./tauri";
 
 /**
@@ -779,7 +780,7 @@ export type OpenedSession = { folderDir: string; sessionId: string };
  * it to the rail first if it isn't already registered) and open a new
  * session there. Throws on failure so the caller can surface it. */
 export const abOpenSessionForCwd = (cwd: string) =>
-  invokeOrThrow<OpenedSession>("ab_open_session_for_cwd", { cwd });
+  invokeOrThrow<OpenedSession>("ab_open_session_for_cwd", { cwd }, OpenedSessionSchema);
 
 /** A cross-screen handoff: "select this folder/session in Agentboard, then
  * type a resume command into it." Agentboard may not be mounted yet when the

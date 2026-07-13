@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { UserSettingsSchema } from "./schemas/settings";
 import { invokeCmd, invokeOrThrow } from "./tauri";
 
 /**
@@ -106,7 +107,7 @@ export function useUserSettings() {
 
   useEffect(() => {
     let alive = true;
-    void invokeCmd<UserSettings>("settings_get").then((s) => {
+    void invokeCmd<UserSettings>("settings_get", {}, UserSettingsSchema).then((s) => {
       if (alive) {
         setSettings(s);
         setLoaded(true);

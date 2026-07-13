@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { UserSettingsSchema } from "./schemas/settings";
 import { invokeCmd, invokeOrThrow } from "./tauri";
 import type { UserSettings } from "./settings";
 
@@ -29,7 +30,7 @@ export function useCopyOnSelect(): RefObject<boolean> {
   useEffect(() => {
     let alive = true;
     const load = () =>
-      void invokeCmd<UserSettings>("settings_get").then((s) => {
+      void invokeCmd<UserSettings>("settings_get", {}, UserSettingsSchema).then((s) => {
         if (alive && s) ref.current = s.agentboard?.copyOnSelect ?? DEFAULT_COPY_ON_SELECT;
       });
     load();
@@ -54,7 +55,7 @@ export function useTerminalFontSize(): [number, (px: number) => void] {
   useEffect(() => {
     let alive = true;
     const load = () =>
-      void invokeCmd<UserSettings>("settings_get").then((s) => {
+      void invokeCmd<UserSettings>("settings_get", {}, UserSettingsSchema).then((s) => {
         if (alive && s)
           setFontSize(
             clampTerminalFontSize(s.agentboard?.terminalFontSize ?? DEFAULT_TERMINAL_FONT_SIZE),
@@ -73,7 +74,7 @@ export function useTerminalFontSize(): [number, (px: number) => void] {
   const persist = useCallback((px: number) => {
     const clamped = clampTerminalFontSize(px);
     setFontSize(clamped);
-    void invokeCmd<UserSettings>("settings_get").then((s) => {
+    void invokeCmd<UserSettings>("settings_get", {}, UserSettingsSchema).then((s) => {
       if (!s) return;
       void invokeOrThrow("settings_set", {
         settings: { ...s, agentboard: { ...s.agentboard, terminalFontSize: clamped } },

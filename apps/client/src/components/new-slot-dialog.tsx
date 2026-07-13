@@ -24,6 +24,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
+import { BaseBranchesSchema, SlotCreatedSchema } from "@/lib/schemas/slots";
 import { invokeOrThrow } from "@/lib/tauri";
 
 export type NewSlotRepo = { name: string; dir: string };
@@ -77,7 +78,7 @@ export function NewSlotDialog({
     setBranchEdit(null);
     setError(null);
     setBusy(false);
-    invokeOrThrow<string[]>("slot_base_branches", { root: repo.dir })
+    invokeOrThrow<string[]>("slot_base_branches", { root: repo.dir }, BaseBranchesSchema)
       .then((list) => {
         setBranches(list);
         setBase(list[0] ?? "main");
@@ -94,11 +95,11 @@ export function NewSlotDialog({
     setBusy(true);
     setError(null);
     try {
-      const created = await invokeOrThrow<SlotCreated>("slot_create", {
-        root: repo.dir,
-        branch,
-        base,
-      });
+      const created = await invokeOrThrow<SlotCreated>(
+        "slot_create",
+        { root: repo.dir, branch, base },
+        SlotCreatedSchema,
+      );
       for (const warning of created.warnings) toast(warning);
       onClose();
       await onCreated(created, goal.trim());
