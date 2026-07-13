@@ -85,6 +85,30 @@ pub struct DmMessage {
     pub ts: i64,
     /// `true` when the message was sent by me (anyone but the watched user).
     pub from_me: bool,
+    /// Files (images/attachments) shared on this message, if any. Empty for a
+    /// plain text message.
+    pub files: Vec<DmFile>,
+}
+
+/// One file attached to a DM message. The private URLs need the token's bearer
+/// header, so the webview can't load them directly — the app fetches the bytes
+/// through [`fetch_file`] (see the `slack_dm_file` command) and renders images
+/// as a `data:` URI. Serialized camelCase for the IPC boundary.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmFile {
+    pub id: String,
+    /// Display name (`name`, falling back to `title`).
+    pub name: String,
+    pub mimetype: String,
+    /// Full-size authenticated URL (`url_private`).
+    pub url_private: String,
+    /// A thumbnail URL when Slack provided one (images only), else empty.
+    pub thumb_url: String,
+    /// Human-facing web permalink, for "open in browser" on non-image chips.
+    pub permalink: String,
+    /// `true` when the mimetype is `image/*` — the panel renders these inline.
+    pub is_image: bool,
 }
 
 /// Fetch the newest `limit` messages of the watched DM, oldest first. Serves
@@ -100,6 +124,15 @@ pub fn fetch_dm_history(config: &SlackDmConfig, limit: u32) -> Result<Vec<DmMess
     Ok(parse_history(&history, config))
 }
 
+/// Resolve the watched user's DM channel id (`D…`) via `conversations.open`
+/// (idempotent — returns the existing channel). The socket loop uses it to match
+/// incoming `message.im` events to the watched conversation exactly.
+pub fn dm_channel_id(config: &SlackDmConfig) -> Result<String, String> {
+    let http = SlackHttp { token: &config.token };
+    let open = http.call("conversations.open", &[("users", config.watch_user_id.as_str())])?;
+    parse_open_channel(&open)
+}
+
 /// Send `text` to the watched DM as the token's user (`chat:write` scope).
 pub fn send_dm(config: &SlackDmConfig, text: &str) -> Result<(), String> {
     let http = SlackHttp { token: &config.token };
@@ -109,28 +142,164 @@ pub fn send_dm(config: &SlackDmConfig, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Hard cap on a fetched file (bytes). Thumbnails are tiny and full images a few
+/// MB; the cap keeps a surprise large upload from ballooning the base64 payload
+/// that crosses the IPC boundary.
+const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// A fetched Slack file: its declared content type and raw bytes.
+pub struct SlackFile {
+    pub mimetype: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Fetch a private Slack file's bytes with the user token's bearer header — the
+/// webview can't, since those URLs 302 to a sign-in page without it. Only
+/// `*.slack.com` URLs are honored (the token must never ride along to an
+/// arbitrary host). A missing `files:read` scope surfaces as a distinct
+/// unauthorized error the caller can render as a placeholder rather than a hard
+/// failure.
+pub fn fetch_file(token: &str, url: &str) -> Result<SlackFile, String> {
+    use std::io::Read;
+
+    if !is_slack_file_url(url) {
+        return Err(format!("refusing to fetch non-Slack file URL: {url}"));
+    }
+    let response = ureq::get(url)
+        .set("Authorization", &format!("Bearer {token}"))
+        .timeout(HTTP_TIMEOUT)
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(401 | 403, _) => file_unauthorized(),
+            other => format!("slack file request failed: {other}"),
+        })?;
+    let mimetype = response.content_type().to_string();
+    if mimetype.starts_with("text/html") {
+        // A token without `files:read` gets Slack's sign-in HTML at HTTP 200
+        // instead of the bytes; treat that as the scope error, not an image.
+        return Err(file_unauthorized());
+    }
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_FILE_BYTES)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("slack file read failed: {e}"))?;
+    Ok(SlackFile { mimetype, bytes })
+}
+
+/// The one unauthorized message, carrying the stable `files:read` marker the
+/// frontend matches to show its "re-auth for images" placeholder.
+fn file_unauthorized() -> String {
+    "slack file unauthorized (files:read scope missing)".to_string()
+}
+
+/// Whether `url` is an `https` URL on a `*.slack.com` host — the guard that
+/// keeps the bearer token from being attached to any other origin.
+pub(crate) fn is_slack_file_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // Strip any userinfo/port so only the hostname is matched.
+    let host = host.rsplit('@').next().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
+    host == "slack.com" || host.ends_with(".slack.com")
+}
+
 /// Map a `conversations.history` response to chronological (oldest-first)
-/// messages, skipping subtyped and senderless entries — the same filter
-/// [`latest_message`] applies.
+/// messages. Skips senderless entries and edit/delete tombstones, but *keeps*
+/// `file_share` messages (a photo or attachment with no or little text) so the
+/// chat panel can render them — unlike [`latest_message`], which only cares
+/// about the answered/unanswered edge.
 pub(crate) fn parse_history(history: &serde_json::Value, config: &SlackDmConfig) -> Vec<DmMessage> {
     let Some(messages) = history.get("messages").and_then(|v| v.as_array()) else {
         return Vec::new();
     };
     let mut out: Vec<DmMessage> = messages
         .iter()
-        .filter(|m| m.get("subtype").is_none())
+        .filter(|m| is_renderable(m))
         .filter_map(|m| {
             let sender = m.get("user").and_then(|v| v.as_str())?;
             Some(DmMessage {
                 text: str_at(m, "text"),
                 ts: slack_ts_ms(str_at(m, "ts").as_str()),
                 from_me: sender != config.watch_user_id,
+                files: parse_files(m),
             })
         })
         .collect();
     // Slack returns history newest-first; the chat view reads top-down in time.
     out.reverse();
     out
+}
+
+/// Whether a `conversations.history` entry is a real message the panel renders:
+/// it has a sender, and it is either a plain message (no subtype) or a
+/// `file_share` (a shared image/attachment). Edits, deletes, joins and other
+/// subtypes are noise.
+fn is_renderable(m: &serde_json::Value) -> bool {
+    if m.get("user").and_then(|v| v.as_str()).is_none() {
+        return false;
+    }
+    match m.get("subtype").and_then(|v| v.as_str()) {
+        None => true,
+        Some("file_share") => true,
+        Some(_) => false,
+    }
+}
+
+/// Parse a message's `files` array into [`DmFile`]s, skipping tombstoned
+/// (deleted) entries and any without an id.
+fn parse_files(m: &serde_json::Value) -> Vec<DmFile> {
+    let Some(files) = m.get("files").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    files.iter().filter_map(parse_file).collect()
+}
+
+/// Parse one Slack file object. Returns `None` for tombstones and entries
+/// missing an id.
+fn parse_file(f: &serde_json::Value) -> Option<DmFile> {
+    if f.get("mode").and_then(|v| v.as_str()) == Some("tombstone") {
+        return None;
+    }
+    let id = f.get("id").and_then(|v| v.as_str())?.to_string();
+    let name = f
+        .get("name")
+        .and_then(|v| v.as_str())
+        .or_else(|| f.get("title").and_then(|v| v.as_str()))
+        .unwrap_or("file")
+        .to_string();
+    let mimetype = str_at(f, "mimetype");
+    let is_image = mimetype.starts_with("image/");
+    Some(DmFile {
+        id,
+        name,
+        mimetype,
+        url_private: str_at(f, "url_private"),
+        thumb_url: pick_thumb(f),
+        permalink: str_at(f, "permalink"),
+        is_image,
+    })
+}
+
+/// Choose a reasonably-sized thumbnail URL from a Slack file object, preferring
+/// a mid-size render and falling back through what's available. Empty when the
+/// file has no thumbnails (non-image attachments).
+fn pick_thumb(f: &serde_json::Value) -> String {
+    for key in [
+        "thumb_360",
+        "thumb_480",
+        "thumb_720",
+        "thumb_160",
+        "thumb_80",
+    ] {
+        if let Some(url) = f.get(key).and_then(|v| v.as_str()) {
+            return url.to_string();
+        }
+    }
+    String::new()
 }
 
 /// Fetch the watched DM's latest state. Returns `Ok(None)` when the DM exists
@@ -317,6 +486,82 @@ mod tests {
     fn parse_history_of_empty_or_malformed_response_is_empty() {
         assert!(parse_history(&json!({"ok": true, "messages": []}), &config()).is_empty());
         assert!(parse_history(&json!({"ok": true}), &config()).is_empty());
+    }
+
+    #[test]
+    fn parse_history_reads_files_and_keeps_file_shares() {
+        let history = json!({"ok": true, "messages": [
+            {
+                "subtype": "file_share",
+                "user": "U_WIFE",
+                "text": "look at this",
+                "ts": "1720000300.0",
+                "files": [
+                    {
+                        "id": "F123",
+                        "name": "beach.jpg",
+                        "mimetype": "image/jpeg",
+                        "url_private": "https://files.slack.com/files-pri/T1-F123/beach.jpg",
+                        "thumb_360": "https://files.slack.com/files-tmb/T1-F123/beach_360.jpg",
+                        "permalink": "https://team.slack.com/files/U_WIFE/F123/beach.jpg"
+                    }
+                ]
+            },
+            {"user": "U_ME", "text": "nice", "ts": "1720000200.0"}
+        ]});
+        let msgs = parse_history(&history, &config());
+        assert_eq!(msgs.len(), 2, "the file_share message is kept, not filtered");
+        // Oldest-first: the plain reply (ts 200) precedes the newer share (ts 300).
+        assert!(msgs[0].files.is_empty(), "the plain text message carries no files");
+        let shared = &msgs[1];
+        assert_eq!(shared.text, "look at this");
+        assert_eq!(shared.files.len(), 1);
+        let file = &shared.files[0];
+        assert_eq!(file.id, "F123");
+        assert_eq!(file.name, "beach.jpg");
+        assert_eq!(file.mimetype, "image/jpeg");
+        assert!(file.is_image);
+        assert_eq!(file.url_private, "https://files.slack.com/files-pri/T1-F123/beach.jpg");
+        assert_eq!(file.thumb_url, "https://files.slack.com/files-tmb/T1-F123/beach_360.jpg");
+        assert_eq!(file.permalink, "https://team.slack.com/files/U_WIFE/F123/beach.jpg");
+    }
+
+    #[test]
+    fn parse_history_handles_non_image_files_and_tombstones() {
+        let history = json!({"ok": true, "messages": [
+            {
+                "subtype": "file_share",
+                "user": "U_WIFE",
+                "text": "",
+                "ts": "1720000300.0",
+                "files": [
+                    {"id": "F1", "title": "budget.pdf", "mimetype": "application/pdf",
+                     "url_private": "https://files.slack.com/files-pri/T1-F1/budget.pdf",
+                     "permalink": "https://team.slack.com/files/U_WIFE/F1/budget.pdf"},
+                    {"id": "F2", "mode": "tombstone"}
+                ]
+            }
+        ]});
+        let msgs = parse_history(&history, &config());
+        assert_eq!(msgs.len(), 1);
+        let files = &msgs[0].files;
+        assert_eq!(files.len(), 1, "the tombstoned file is dropped");
+        assert_eq!(files[0].name, "budget.pdf", "falls back to title when name is absent");
+        assert!(!files[0].is_image);
+        assert_eq!(files[0].thumb_url, "", "no thumbnail for a non-image");
+    }
+
+    #[test]
+    fn is_slack_file_url_only_accepts_slack_https_hosts() {
+        assert!(is_slack_file_url("https://files.slack.com/files-pri/T1-F1/x.png"));
+        assert!(is_slack_file_url("https://slack.com/api/files.info"));
+        assert!(is_slack_file_url("https://files-edge.slack.com/x"));
+        // Wrong scheme, wrong host, or a look-alike domain must be refused so
+        // the bearer token never leaks.
+        assert!(!is_slack_file_url("http://files.slack.com/x"));
+        assert!(!is_slack_file_url("https://evil.com/x"));
+        assert!(!is_slack_file_url("https://files.slack.com.evil.com/x"));
+        assert!(!is_slack_file_url("https://notslack.com/x"));
     }
 
     #[test]

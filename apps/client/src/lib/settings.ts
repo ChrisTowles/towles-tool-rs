@@ -35,6 +35,8 @@ export type IssueCollector = {
 export type SlackDmCollector = {
   enabled: boolean;
   token: string;
+  /** Optional app-level token (xapp-…) enabling Socket Mode real-time delivery. */
+  appToken: string;
   watchUserId: string;
   watchName: string;
   refreshSeconds: number;

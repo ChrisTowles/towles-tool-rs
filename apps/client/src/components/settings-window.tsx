@@ -543,6 +543,25 @@ function collectorsSections(
           ),
         },
         {
+          label: "App token (Socket Mode)",
+          keywords: ["socket", "realtime", "xapp", "app-level", "instant"],
+          node: (
+            <FieldRow
+              label="App token (Socket Mode)"
+              description="Optional app-level token (xapp-…) for real-time DM delivery via Socket Mode. Empty = poll only."
+            >
+              <Input
+                type="password"
+                value={c.slack.appToken}
+                onChange={(e) => setSlack({ appToken: e.target.value })}
+                className="font-mono text-xs"
+                placeholder="xapp-…"
+                spellCheck={false}
+              />
+            </FieldRow>
+          ),
+        },
+        {
           label: "Watch member ID",
           keywords: ["member", "user id"],
           node: (

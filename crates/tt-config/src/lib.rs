@@ -297,6 +297,11 @@ pub struct SlackDmCollector {
     pub enabled: bool,
     /// Slack user OAuth token (`xoxp-…`). Empty = collector stays off.
     pub token: String,
+    /// Slack app-level token (`xapp-…`) for Socket Mode real-time delivery.
+    /// Empty = no socket, poll-only. Distinct from `token`: this authorizes
+    /// `apps.connections.open`, not the Web API DM calls.
+    #[serde(default)]
+    pub app_token: String,
     /// Slack member ID of the person to watch (e.g. `U0123ABCD`).
     pub watch_user_id: String,
     /// Display name shown in the banner (avoids an extra `users.info` call).
@@ -309,6 +314,7 @@ impl Default for SlackDmCollector {
         Self {
             enabled: false,
             token: String::new(),
+            app_token: String::new(),
             watch_user_id: String::new(),
             watch_name: String::new(),
             refresh_seconds: 60,
@@ -758,6 +764,8 @@ mod tests {
         // Off by default: the Slack watcher needs a user token first.
         assert!(!c.slack.enabled);
         assert!(c.slack.token.is_empty());
+        // Socket Mode is opt-in on top of the poll; no app token by default.
+        assert!(c.slack.app_token.is_empty());
         assert_eq!(c.slack.refresh_seconds, 60);
     }
 

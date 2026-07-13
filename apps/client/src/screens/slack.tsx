@@ -1,12 +1,31 @@
 import { useEffect, useRef, useState } from "react";
-import { KeyRound, MessageCircle, RefreshCw, Send, TriangleAlert } from "lucide-react";
+import {
+  ImageOff,
+  KeyRound,
+  MessageCircle,
+  Paperclip,
+  RefreshCw,
+  Send,
+  TriangleAlert,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { fmtClock } from "@/lib/data";
-import { isScopeError, slackDmSend, useSlackDm, type DmMessage } from "@/lib/slack";
+import {
+  isFileScopeError,
+  isScopeError,
+  slackDmFile,
+  slackDmSend,
+  useSlackDm,
+  type DmFile,
+  type DmMessage,
+} from "@/lib/slack";
+import { MrkdwnText } from "@/components/mrkdwn-text";
+import { openExternalUrl } from "@/lib/open-url";
+import { isTauri } from "@/lib/tauri";
 import { openSettings } from "@/lib/open-settings";
 
 /**
@@ -100,7 +119,12 @@ export function SlackScreen() {
                 </p>
               )}
               {messages.map((m, i) => (
-                <Bubble key={`${m.ts}-${i}`} message={m} />
+                <Bubble
+                  key={`${m.ts}-${i}`}
+                  message={m}
+                  watchUserId={view?.watchUserId}
+                  watchName={view?.watchName}
+                />
               ))}
               <div ref={endRef} />
             </div>
@@ -133,9 +157,20 @@ export function SlackScreen() {
   );
 }
 
-/** One chat bubble: mine (violet, right) vs. theirs (card, left). */
-function Bubble({ message }: { message: DmMessage }) {
+/** One chat bubble: mine (violet, right) vs. theirs (card, left). Text is
+ * rendered from Slack mrkdwn (links, emphasis, mentions); attached files show
+ * as inline image thumbnails or named chips. */
+function Bubble({
+  message,
+  watchUserId,
+  watchName,
+}: {
+  message: DmMessage;
+  watchUserId?: string;
+  watchName?: string;
+}) {
   const mine = message.fromMe;
+  const hasText = message.text.trim().length > 0;
   return (
     <div className={cn("flex flex-col gap-0.5", mine ? "items-end" : "items-start")}>
       <div
@@ -146,12 +181,120 @@ function Bubble({ message }: { message: DmMessage }) {
             : "border-border bg-card text-foreground",
         )}
       >
-        {message.text}
+        {hasText && (
+          <MrkdwnText text={message.text} watchUserId={watchUserId} watchName={watchName} />
+        )}
+        {message.files.length > 0 && <Attachments files={message.files} hasText={hasText} />}
       </div>
       <span className="px-1 font-mono text-[10.5px] text-muted-foreground/60">
         {fmtClock(message.ts)}
       </span>
     </div>
+  );
+}
+
+/** A message's attached files: images inline, everything else as a named chip. */
+function Attachments({ files, hasText }: { files: DmFile[]; hasText: boolean }) {
+  return (
+    <div className={cn("flex flex-col gap-1.5", hasText && "mt-1.5")}>
+      {files.map((file) =>
+        file.isImage ? (
+          <ImageAttachment key={file.id} file={file} />
+        ) : (
+          <FileChip key={file.id} file={file} />
+        ),
+      )}
+    </div>
+  );
+}
+
+/** Resolve the best URL for a file's bytes: a thumbnail if Slack made one, else
+ * the full private URL. */
+function fileSrcUrl(file: DmFile): string {
+  return file.thumbUrl || file.urlPrivate;
+}
+
+/** Open a file in the OS browser (permalink signs the user in; falls back to
+ * the private URL). */
+function openFile(file: DmFile) {
+  void openExternalUrl(file.permalink || file.urlPrivate);
+}
+
+/**
+ * An inline image thumbnail. The private Slack URL can't be loaded straight
+ * into `<img>` (it needs the bearer token), so in the Tauri shell we fetch the
+ * bytes via `slack_dm_file` and render a `data:` URI; in browser dev the mock
+ * URL is used directly. A missing `files:read` scope degrades to a subtle
+ * placeholder rather than failing.
+ */
+function ImageAttachment({ file }: { file: DmFile }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setSrc(null);
+    setError(null);
+    void (async () => {
+      try {
+        const url = fileSrcUrl(file);
+        if (!isTauri()) {
+          if (alive) setSrc(url);
+          return;
+        }
+        const { mimetype, dataBase64 } = await slackDmFile(url);
+        if (alive) setSrc(`data:${mimetype};base64,${dataBase64}`);
+      } catch (e) {
+        if (alive) setError(String(e));
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [file]);
+
+  if (error !== null) {
+    const note = isFileScopeError(error)
+      ? "image unavailable until Slack re-auth (files:read)"
+      : "couldn't load image";
+    return (
+      <button
+        type="button"
+        onClick={() => openFile(file)}
+        className="flex items-center gap-2 rounded-md border border-dashed border-border bg-muted/40 px-3 py-2 text-left text-xs text-muted-foreground hover:bg-muted/60"
+      >
+        <ImageOff className="size-4 shrink-0" />
+        <span className="truncate">
+          {file.name} — {note}
+        </span>
+      </button>
+    );
+  }
+  if (!src) {
+    return <div className="h-40 w-56 max-w-full animate-pulse rounded-md bg-muted" />;
+  }
+  return (
+    <button type="button" onClick={() => openFile(file)} className="block">
+      <img
+        src={src}
+        alt={file.name}
+        className="max-h-64 max-w-full rounded-md border border-border object-contain"
+      />
+    </button>
+  );
+}
+
+/** A non-image attachment as a named chip that opens in the browser. */
+function FileChip({ file }: { file: DmFile }) {
+  return (
+    <button
+      type="button"
+      onClick={() => openFile(file)}
+      className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-left text-xs hover:bg-muted/50"
+    >
+      <Paperclip className="size-4 shrink-0 text-muted-foreground" />
+      <span className="truncate font-medium text-foreground">{file.name}</span>
+    </button>
   );
 }
 
