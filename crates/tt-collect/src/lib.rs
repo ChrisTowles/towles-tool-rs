@@ -25,7 +25,7 @@ mod quiet_hours;
 mod slack;
 
 pub use quiet_hours::{should_run_at, should_run_calendar};
-pub use slack::SlackDmConfig;
+pub use slack::{DmMessage, SlackDmConfig, fetch_dm_history, send_dm};
 
 use std::path::PathBuf;
 use std::time::Duration;
