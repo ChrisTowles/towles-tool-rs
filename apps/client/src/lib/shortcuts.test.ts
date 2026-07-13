@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchesShortcut, SHORTCUTS } from "./shortcuts";
+import { matchesEditableOverride, matchesShortcut, SHORTCUTS } from "./shortcuts";
 
 // `matches` only reads these fields, so a plain object stands in for a real
 // KeyboardEvent (the test environment is node, without the DOM).
@@ -50,5 +50,23 @@ describe("tab shortcuts", () => {
     expect(matchesShortcut("close-tab", key({ ctrlKey: true, shiftKey: true, key: "w" }))).toBe(
       false,
     );
+  });
+});
+
+describe("editable-target override", () => {
+  it("jump-next/prev opt out of the editable guard so they work with a terminal focused", () => {
+    expect(SHORTCUTS["ab-jump-next"].allowInEditable).toBe(true);
+    expect(SHORTCUTS["ab-jump-prev"].allowInEditable).toBe(true);
+    expect(matchesEditableOverride(key({ ctrlKey: true, shiftKey: true, key: "n" }))).toBe(true);
+    expect(matchesEditableOverride(key({ ctrlKey: true, shiftKey: true, key: "p" }))).toBe(true);
+  });
+
+  it("new-session (mod+d) stays gated — Ctrl+D is EOF at a shell prompt", () => {
+    expect(SHORTCUTS["ab-new-session"].allowInEditable).toBeFalsy();
+    expect(matchesEditableOverride(key({ ctrlKey: true, key: "d" }))).toBe(false);
+  });
+
+  it("a plain, unmatched key never triggers the override", () => {
+    expect(matchesEditableOverride(key({ key: "n" }))).toBe(false);
   });
 });

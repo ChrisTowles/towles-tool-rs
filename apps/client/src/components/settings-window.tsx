@@ -1016,6 +1016,23 @@ function agentboardSections(
           />
         ),
       },
+      {
+        label: "Shortcuts work in terminal",
+        keywords: ["shortcut", "keyboard", "terminal", "focus", "hotkey", "jump", "needs you"],
+        node: (
+          <ToggleRow
+            label="Shortcuts work in terminal"
+            description="Board-wide shortcuts (jump to next/prev session needing you, close/split session, toggle diff/rail) fire even while a terminal has focus, instead of being sent to the shell."
+            checked={settings.agentboard?.shortcutsWorkInTerminal ?? true}
+            onCheckedChange={(v) =>
+              update((s) => ({
+                ...s,
+                agentboard: { ...s.agentboard, shortcutsWorkInTerminal: v },
+              }))
+            }
+          />
+        ),
+      },
     );
   }
   return [{ rows }];

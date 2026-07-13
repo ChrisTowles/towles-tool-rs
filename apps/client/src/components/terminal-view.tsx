@@ -35,7 +35,12 @@ import {
   useCopyOnSelect,
   useTerminalFontSize,
 } from "@/lib/terminal-prefs";
-import { IS_MAC, matchesShortcut } from "@/lib/shortcuts";
+import {
+  IS_MAC,
+  matchesEditableOverride,
+  matchesShortcut,
+  useShortcutsWorkInTerminal,
+} from "@/lib/shortcuts";
 import { openExternalUrl } from "@/lib/open-url";
 import { Input } from "@/components/ui/input";
 import {
@@ -129,6 +134,10 @@ export function TerminalView({
   const [menuLink, setMenuLink] = useState<TermLink | null>(null);
   // Copy-on-select preference, read live by the render effect's mouse handlers.
   const copyOnSelectRef = useCopyOnSelect();
+  // Whether board-wide action shortcuts (jump next/prev, close/split session, …)
+  // should yield the keystroke instead of being sent to the shell, read live by
+  // the keydown handler below.
+  const shortcutsWorkInTerminalRef = useShortcutsWorkInTerminal();
   // Terminal font size (px) + a persisting setter. The render effect measures
   // the cell grid from this; Ctrl/⌘ +/- (and 0 to reset) zoom it. Kept in refs
   // so the effect's long-lived key handler reads the live value and setter
@@ -504,6 +513,14 @@ export function TerminalView({
 
       const onKeyDown = (e: KeyboardEvent) => {
         if (e.isComposing) return;
+        // Board-wide actions (close/split session, toggle diff/rail, jump to
+        // next/prev needing-you) aren't the shell's to consume even though
+        // the terminal owns the keystroke — yield so it bubbles to the
+        // window-level shortcut listener instead of becoming a control byte
+        // (Ctrl+Shift+N would otherwise be sent as Ctrl+N; encodeKey ignores
+        // shift on Ctrl combos). Gated by the `shortcutsWorkInTerminal`
+        // setting so a user who wants the old behavior back can turn it off.
+        if (shortcutsWorkInTerminalRef.current && matchesEditableOverride(e)) return;
         // The search chord is ours, not the shell's (Ctrl+F stays with the
         // shell) — checked before encodeKey turns it into a control byte.
         if (matchesShortcut("term-search", e)) {
