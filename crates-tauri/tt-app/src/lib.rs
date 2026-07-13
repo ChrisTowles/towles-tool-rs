@@ -13,6 +13,7 @@ mod resources;
 mod scheduler;
 mod settings;
 mod slack;
+mod slack_socket;
 mod slots;
 mod store;
 mod terminal;
@@ -219,9 +220,17 @@ pub fn run() {
             // Collector scheduler: fills tt.db (PRs + issues via gh, calendar via
             // claude -p per settings.collectors) and re-emits the snapshot. The
             // shared signal lets `settings_set` make cadence edits take effect live.
-            let settings_reload = Arc::new(Notify::new());
-            app.manage(settings::SettingsSignal(settings_reload.clone()));
-            scheduler::spawn(app.handle().clone(), settings_reload);
+            let scheduler_reload = Arc::new(Notify::new());
+            // Slack Socket Mode: real-time DM delivery when an app-level token is
+            // configured (no-op otherwise). Its own reload signal so a settings
+            // write reliably reaches it alongside the scheduler.
+            let slack_socket_reload = Arc::new(Notify::new());
+            app.manage(settings::SettingsSignal {
+                scheduler: scheduler_reload.clone(),
+                slack_socket: slack_socket_reload.clone(),
+            });
+            scheduler::spawn(app.handle().clone(), scheduler_reload);
+            slack_socket::spawn(app.handle().clone(), slack_socket_reload);
 
             // Kick an initial scan so the first snapshot has data.
             scan.notify_one();
@@ -282,6 +291,8 @@ pub fn run() {
             store::store_dm_dismiss,
             slack::slack_dm_history,
             slack::slack_dm_send,
+            slack::slack_dm_file,
+            slack::slack_list_users,
             store::journal_log,
             journal::journal_get_today,
             journal::journal_save,

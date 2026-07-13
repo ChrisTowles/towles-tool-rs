@@ -21,7 +21,19 @@ const HISTORY_LIMIT: u32 = 50;
 pub struct SlackDmView {
     pub configured: bool,
     pub watch_name: String,
+    /// The watched member id, so the panel can resolve `<@id>` mentions in
+    /// message text to the watched user's name.
+    pub watch_user_id: String,
     pub messages: Vec<tt_collect::DmMessage>,
+}
+
+/// A fetched Slack file, base64-encoded for the webview to render as a `data:`
+/// URI (the private URL can't be loaded directly — it needs the bearer token).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlackFileData {
+    pub mimetype: String,
+    pub data_base64: String,
 }
 
 /// The configured Slack DM settings, or `None` when token/member id are blank.
@@ -55,16 +67,50 @@ pub async fn slack_dm_history() -> Result<SlackDmView, String> {
         return Ok(SlackDmView {
             configured: false,
             watch_name: String::new(),
+            watch_user_id: String::new(),
             messages: Vec::new(),
         });
     };
     let watch_name = display_name(&config);
+    let watch_user_id = config.watch_user_id.clone();
     let messages = tauri::async_runtime::spawn_blocking(move || {
         tt_collect::fetch_dm_history(&config, HISTORY_LIMIT)
     })
     .await
     .map_err(|e| format!("slack history task failed: {e}"))??;
-    Ok(SlackDmView { configured: true, watch_name, messages })
+    Ok(SlackDmView { configured: true, watch_name, watch_user_id, messages })
+}
+
+/// Fetch a Slack file's bytes (base64) with the token's bearer header so the
+/// panel can render it as a `data:` URI. `url` must be a `url_private`/thumb URL
+/// from a [`tt_collect::DmFile`]; only `*.slack.com` URLs are honored. A missing
+/// `files:read` scope surfaces as an error string the frontend maps to a subtle
+/// placeholder rather than failing the whole panel.
+#[tauri::command]
+pub async fn slack_dm_file(url: String) -> Result<SlackFileData, String> {
+    use base64::Engine;
+
+    let config = dm_config().ok_or("Slack DM is not configured")?;
+    let file =
+        tauri::async_runtime::spawn_blocking(move || tt_collect::fetch_file(&config.token, &url))
+            .await
+            .map_err(|e| format!("slack file task failed: {e}"))??;
+    let data_base64 = base64::engine::general_purpose::STANDARD.encode(&file.bytes);
+    Ok(SlackFileData { mimetype: file.mimetype, data_base64 })
+}
+
+/// List the workspace's human members (`users.list`, `users:read`) for the
+/// Settings watch-user picker. Returns an empty list — not an error — when the
+/// token is blank, so the picker degrades to a plain text input.
+#[tauri::command]
+pub async fn slack_list_users() -> Result<Vec<tt_collect::SlackUser>, String> {
+    let token = tt_config::load().map_err(|e| e.to_string())?.collectors.slack.token;
+    if token.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    tauri::async_runtime::spawn_blocking(move || tt_collect::list_users(&token))
+        .await
+        .map_err(|e| format!("slack users task failed: {e}"))?
 }
 
 /// Send `text` to the watched DM as me, then refresh the stored DM state (the

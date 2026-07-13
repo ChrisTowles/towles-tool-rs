@@ -10,22 +10,50 @@ import { invokeOrThrow, isTauri } from "./tauri";
  * whenever the store re-emits (a background `slack:dm` tick landed a reply).
  */
 
+/** A file attached to a DM message (mirrors Rust `DmFile`). The private URLs
+ * need the token's bearer header, so images are fetched through
+ * {@link slackDmFile} rather than loaded straight into an `<img>`. */
+export type DmFile = {
+  id: string;
+  name: string;
+  mimetype: string;
+  urlPrivate: string;
+  thumbUrl: string;
+  permalink: string;
+  isImage: boolean;
+};
+
 /** One message of the conversation. `fromMe` is true for anything I sent. */
 export type DmMessage = {
   text: string;
   ts: number;
   fromMe: boolean;
+  files: DmFile[];
 };
 
 /**
  * The chat panel's view. `configured` is false when the slack collector has no
  * token/member id yet — the panel shows setup guidance instead of a thread.
+ * `watchUserId` lets the renderer resolve `<@id>` mentions to the watched name.
  */
 export type SlackDmView = {
   configured: boolean;
   watchName: string;
+  watchUserId: string;
   messages: DmMessage[];
 };
+
+/** Bytes of a Slack file, base64-encoded (mirrors Rust `SlackFileData`). */
+export type SlackFileData = {
+  mimetype: string;
+  dataBase64: string;
+};
+
+/** Error marker the backend uses when the token lacks `files:read`, so the
+ * panel can show a "re-auth for images" placeholder instead of a hard error. */
+export function isFileScopeError(message: string): boolean {
+  return message.includes("files:read");
+}
 
 /** Slack error codes that mean "your token can't post" — the send failed
  * because the OAuth token is missing the `chat:write` scope (the DM *watcher*
@@ -38,6 +66,24 @@ export function isScopeError(message: string): boolean {
   return SCOPE_ERROR_CODES.some((code) => message.includes(code));
 }
 
+/** Slack error codes that mean the token itself is bad — revoked, expired, or
+ * for a deactivated account — so the fix is to re-issue and paste a fresh one. */
+const AUTH_ERROR_CODES = ["invalid_auth", "token_revoked", "account_inactive", "not_authed"] as const;
+
+/** True when a fetch/send failure is a dead-token problem (as opposed to a
+ * missing scope), so the UI can prompt a re-auth walkthrough. */
+export function isAuthError(message: string): boolean {
+  return AUTH_ERROR_CODES.some((code) => message.includes(code));
+}
+
+/** A tiny inline image so the mock thread exercises the attachment layout in
+ * browser dev (a real thumb/url_private needs the Tauri file-fetch command). */
+const MOCK_IMAGE =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="150"><rect width="240" height="150" fill="#a78bfa"/><text x="120" y="80" font-family="sans-serif" font-size="18" fill="white" text-anchor="middle">photo</text></svg>`,
+  );
+
 /** A representative thread for plain-Vite browser dev (no Tauri host), so the
  * panel is visually workable without real Slack credentials. */
 function mockView(now: number = Date.now()): SlackDmView {
@@ -45,10 +91,31 @@ function mockView(now: number = Date.now()): SlackDmView {
   return {
     configured: true,
     watchName: "Danielle",
+    watchUserId: "U_DANIELLE",
     messages: [
-      { text: "hey, are you still on for dinner tonight?", ts: now - 42 * MIN, fromMe: false },
-      { text: "yes! leaving in about an hour", ts: now - 40 * MIN, fromMe: true },
-      { text: "perfect, i'll meet you there", ts: now - 38 * MIN, fromMe: false },
+      {
+        text: "hey, are you still on for *dinner* tonight? see <https://ex.com/menu|the menu>",
+        ts: now - 42 * MIN,
+        fromMe: false,
+        files: [],
+      },
+      { text: "yes! leaving in about an hour", ts: now - 40 * MIN, fromMe: true, files: [] },
+      {
+        text: "found this place",
+        ts: now - 38 * MIN,
+        fromMe: false,
+        files: [
+          {
+            id: "F_MOCK",
+            name: "storefront.png",
+            mimetype: "image/png",
+            urlPrivate: MOCK_IMAGE,
+            thumbUrl: MOCK_IMAGE,
+            permalink: "https://ex.com/photo",
+            isImage: true,
+          },
+        ],
+      },
     ],
   };
 }
@@ -125,4 +192,30 @@ export function useSlackDm(): {
  */
 export async function slackDmSend(text: string): Promise<void> {
   await invokeOrThrow<void>("slack_dm_send", { text });
+}
+
+/**
+ * Fetch a Slack file's bytes (base64) with the token's bearer header — the
+ * webview can't load `url_private` directly. Pass a {@link DmFile}'s `thumbUrl`
+ * (images) or `urlPrivate`. Rejects with a scope error (see
+ * {@link isFileScopeError}) when the token lacks `files:read`.
+ */
+export async function slackDmFile(url: string): Promise<SlackFileData> {
+  return invokeOrThrow<SlackFileData>("slack_dm_file", { url });
+}
+
+/** A workspace member for the Settings watch-user picker (mirrors `SlackUser`). */
+export type SlackUser = {
+  id: string;
+  name: string;
+};
+
+/**
+ * List human workspace members (`users.list`, `users:read` scope) for the
+ * watch-user picker. Returns [] when the token is blank so the picker can
+ * degrade to a plain text input. Only meaningful in the Tauri shell.
+ */
+export async function slackListUsers(): Promise<SlackUser[]> {
+  if (!isTauri()) return [];
+  return invokeOrThrow<SlackUser[]>("slack_list_users");
 }
