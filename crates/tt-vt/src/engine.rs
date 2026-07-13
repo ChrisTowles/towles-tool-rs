@@ -9,8 +9,10 @@ use std::rc::Rc;
 
 use libghostty_vt::fmt::{Formatter, FormatterOptions};
 use libghostty_vt::mouse;
-use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
-use libghostty_vt::screen::{CellWide, Screen};
+use libghostty_vt::render::{
+    CellIteration, CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator,
+};
+use libghostty_vt::screen::{CellContentTag, CellWide, Screen};
 use libghostty_vt::selection::{FormatOptions, SelectLineOptions, SelectWordOptions, Selection};
 use libghostty_vt::style::Underline;
 use libghostty_vt::terminal::{Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal};
@@ -410,21 +412,27 @@ impl Engine {
                     let fg = cell.fg_color()?.map(pack_rgb);
                     let bg = cell.bg_color()?.map(pack_rgb);
 
-                    // TODO(graphemes): CodepointGrapheme cells only carry the
-                    // primary codepoint here; combining marks / ZWJ emoji need
-                    // the grid-ref graphemes API.
-                    let cp = raw.codepoint()?;
-                    let ch = char::from_u32(cp).filter(|c| *c != '\0').unwrap_or(' ');
+                    // A cell tagged CodepointGrapheme carries a multi-codepoint
+                    // cluster (combining marks, ZWJ emoji); pull its full base +
+                    // trailing codepoints. Plain cells stay on the
+                    // single-codepoint fast path (no per-cell Vec alloc).
+                    let cell_text = match raw.content_tag()? {
+                        CellContentTag::CodepointGrapheme => grapheme_text(cell)?,
+                        _ => {
+                            let cp = raw.codepoint()?;
+                            char::from_u32(cp).filter(|c| *c != '\0').unwrap_or(' ').to_string()
+                        }
+                    };
 
                     match runs.last_mut() {
                         Some(run) if run.fg == fg && run.bg == bg && run.flags == f => {
-                            run.text.push(ch);
+                            run.text.push_str(&cell_text);
                             run.width += width;
                         }
                         _ => runs.push(crate::frame::Run {
                             x,
                             width,
-                            text: ch.to_string(),
+                            text: cell_text,
                             fg,
                             bg,
                             flags: f,
@@ -476,6 +484,91 @@ impl Engine {
     }
 }
 
+/// Collect a grapheme-cluster cell's full codepoint sequence — the base
+/// codepoint followed by any combining marks / ZWJ joiners — into a string.
+/// libghostty's buffer can hold NUL placeholders, which are skipped; a cluster
+/// that yields no printable codepoints falls back to a space so the column
+/// still advances.
+fn grapheme_text(cell: &CellIteration) -> Result<String> {
+    let mut text = String::new();
+    for c in cell.graphemes()? {
+        if c != '\0' {
+            text.push(c);
+        }
+    }
+    if text.is_empty() {
+        text.push(' ');
+    }
+    Ok(text)
+}
+
 fn pack_rgb(c: libghostty_vt::style::RgbColor) -> u32 {
     (u32::from(c.r) << 16) | (u32::from(c.g) << 8) | u32::from(c.b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn engine() -> Engine {
+        Engine::new(EngineOptions { cols: 20, rows: 4, max_scrollback: 10 }).expect("engine")
+    }
+
+    /// The runs on viewport row 0 of the next frame. Renders once — a second
+    /// render on an unchanged engine returns `None`, so callers read every
+    /// field they need from this single result.
+    fn row0_runs(engine: &mut Engine) -> Vec<crate::frame::Run> {
+        let frame = engine.render().expect("render").expect("a frame");
+        let row = frame.changed.iter().find(|r| r.y == 0).expect("row 0 present");
+        row.runs.clone()
+    }
+
+    fn row0_text(runs: &[crate::frame::Run]) -> String {
+        runs.iter().map(|r| r.text.as_str()).collect()
+    }
+
+    fn row0_width(runs: &[crate::frame::Run]) -> u16 {
+        runs.iter().map(|r| r.width).sum()
+    }
+
+    #[test]
+    fn plain_ascii_survives_the_fast_path() {
+        let mut e = engine();
+        e.feed(b"hi");
+        assert_eq!(row0_text(&row0_runs(&mut e)), "hi");
+    }
+
+    #[test]
+    fn combining_mark_keeps_full_cluster_in_one_cell() {
+        // "e" + U+0301 (combining acute) is one grapheme cell. The old code
+        // carried only the base 'e' and dropped the accent; the fix keeps both
+        // codepoints while the cell still occupies a single column.
+        let mut e = engine();
+        e.feed("e\u{301}".as_bytes());
+        let runs = row0_runs(&mut e);
+        assert_eq!(row0_text(&runs), "e\u{301}");
+        assert_eq!(row0_width(&runs), 1, "a combining cluster is one column wide");
+    }
+
+    #[test]
+    fn emoji_variation_selector_carries_every_codepoint() {
+        // Heart + U+FE0F (emoji variation selector) is one grapheme cell. The
+        // base codepoint alone renders as a monochrome dingbat; the fix keeps
+        // the selector so the renderer sees the emoji presentation request.
+        let mut e = engine();
+        e.feed("\u{2764}\u{FE0F}".as_bytes());
+        let runs = row0_runs(&mut e);
+        assert_eq!(row0_text(&runs), "\u{2764}\u{FE0F}");
+    }
+
+    #[test]
+    fn cluster_char_count_may_exceed_column_width() {
+        // The frontend relies on `width` (columns), not char count, for layout;
+        // a combining cluster deliberately has more chars than columns.
+        let mut e = engine();
+        e.feed("e\u{301}".as_bytes());
+        let runs = row0_runs(&mut e);
+        let run = runs.first().expect("a run on row 0");
+        assert!(run.text.chars().count() > run.width as usize);
+    }
 }
