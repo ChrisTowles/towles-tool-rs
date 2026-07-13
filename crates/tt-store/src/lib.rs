@@ -1909,4 +1909,187 @@ mod tests {
         assert!(json.contains("\"durationMs\""), "expected durationMs in {json}");
         assert!(!json.contains("mcp_calls"));
     }
+
+    #[test]
+    fn clear_done_tasks_never_sweeps_legacy_null_completed_at() {
+        // A `done` row whose `completed_at` is NULL (data from before the column
+        // was stamped) has no known completion time, so the sweep must skip it —
+        // even with a cutoff far in the future. There is no public API to make
+        // such a row, so insert it directly.
+        let s = Store::open_in_memory().unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO tasks (text, status, position, created_at, completed_at)
+                 VALUES ('legacy done', 'done', 0, 1, NULL)",
+                [],
+            )
+            .unwrap();
+        let normal = s.add_task("normal done", None, None, None, 2).unwrap();
+        s.set_task_status(normal.id, "done", 10).unwrap();
+
+        let deleted = s.clear_done_tasks(1_000_000).unwrap();
+        assert_eq!(deleted, 1, "only the stamped done row is swept");
+        let texts: Vec<String> = s.snapshot().unwrap().tasks.into_iter().map(|t| t.text).collect();
+        assert_eq!(texts, vec!["legacy done".to_string()]);
+    }
+
+    #[test]
+    fn events_between_is_start_inclusive_end_exclusive() {
+        let s = Store::open_in_memory().unwrap();
+        s.replace_events(
+            &[
+                event("at-start", 100),
+                event("mid", 150),
+                event("at-end", 200),
+            ],
+            1,
+        )
+        .unwrap();
+        // Window [100, 200): the event exactly at start is in, the one at end is out.
+        let ids: Vec<String> =
+            s.events_between(100, 200).unwrap().into_iter().map(|e| e.external_id).collect();
+        assert_eq!(ids, vec!["at-start".to_string(), "mid".to_string()]);
+    }
+
+    #[test]
+    fn current_or_next_event_on_empty_store_is_none() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(s.current_or_next_event(0).unwrap().is_none());
+    }
+
+    #[test]
+    fn replace_events_round_trips_attendees_json() {
+        let s = Store::open_in_memory().unwrap();
+        s.replace_events(
+            &[
+                EventInput {
+                    external_id: "many".to_string(),
+                    title: "Sync".to_string(),
+                    start_ts: 100,
+                    end_ts: Some(200),
+                    attendees: vec!["a@x.com".to_string(), "b@x.com".to_string()],
+                    location: Some("Room 1".to_string()),
+                    join_url: Some("https://meet/x".to_string()),
+                },
+                EventInput {
+                    external_id: "none".to_string(),
+                    title: "Solo".to_string(),
+                    start_ts: 300,
+                    end_ts: None,
+                    attendees: vec![],
+                    location: None,
+                    join_url: None,
+                },
+            ],
+            1,
+        )
+        .unwrap();
+        let events = s.snapshot().unwrap().events;
+        let many = events.iter().find(|e| e.external_id == "many").unwrap();
+        assert_eq!(many.attendees, vec!["a@x.com".to_string(), "b@x.com".to_string()]);
+        assert_eq!(many.location.as_deref(), Some("Room 1"));
+        let none = events.iter().find(|e| e.external_id == "none").unwrap();
+        assert!(none.attendees.is_empty());
+        assert_eq!(none.end_ts, None);
+    }
+
+    #[test]
+    fn open_tasks_orders_across_columns_by_board_order() {
+        let s = Store::open_in_memory().unwrap();
+        s.add_task("backlog item", None, None, None, 1).unwrap();
+        let review = s.add_task("review item", None, None, None, 2).unwrap();
+        let doing = s.add_task("doing item", None, None, None, 3).unwrap();
+        let next = s.add_task("next item", None, None, None, 4).unwrap();
+        let done = s.add_task("done item", None, None, None, 5).unwrap();
+        s.set_task_status(review.id, "review", 10).unwrap();
+        s.set_task_status(doing.id, "doing", 11).unwrap();
+        s.set_task_status(next.id, "next", 12).unwrap();
+        s.set_task_status(done.id, "done", 13).unwrap();
+
+        // open_tasks excludes done and returns backlog → next → doing → review.
+        let statuses: Vec<String> = s.open_tasks().unwrap().into_iter().map(|t| t.status).collect();
+        assert_eq!(
+            statuses,
+            vec![
+                "backlog".to_string(),
+                "next".to_string(),
+                "doing".to_string(),
+                "review".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn snapshot_tasks_place_done_column_last() {
+        let s = Store::open_in_memory().unwrap();
+        let d = s.add_task("finish", None, None, None, 1).unwrap();
+        s.add_task("start", None, None, None, 2).unwrap();
+        s.set_task_status(d.id, "done", 10).unwrap();
+        // Snapshot keeps done rows but orders them after open columns regardless
+        // of insertion/completion order.
+        let statuses: Vec<String> =
+            s.snapshot().unwrap().tasks.into_iter().map(|t| t.status).collect();
+        assert_eq!(statuses, vec!["backlog".to_string(), "done".to_string()]);
+    }
+
+    #[test]
+    fn snapshot_caps_mcp_calls_at_the_snapshot_limit() {
+        let s = Store::open_in_memory().unwrap();
+        // More rows than the snapshot carries, but within retention.
+        let total = MCP_CALL_SNAPSHOT_LIMIT + 20;
+        for i in 0..total {
+            s.record_mcp_call(&mcp_call("ping", None, true), i as i64).unwrap();
+        }
+        let snapshot = s.snapshot().unwrap();
+        assert_eq!(snapshot.mcp_calls.len(), MCP_CALL_SNAPSHOT_LIMIT);
+        // Newest first: the last recorded call heads the list.
+        assert_eq!(snapshot.mcp_calls[0].ts, (total - 1) as i64);
+    }
+
+    #[test]
+    fn replace_issues_and_prs_with_empty_clears_all_rows() {
+        let s = Store::open_in_memory().unwrap();
+        s.replace_issues(&[issue("o/r", 1, 100)]).unwrap();
+        s.replace_prs(&[PrInput {
+            repo: "o/r".to_string(),
+            number: 2,
+            title: "t".to_string(),
+            branch: "b".to_string(),
+            state: "open".to_string(),
+            checks: "passing".to_string(),
+            review_state: String::new(),
+            url: "https://x".to_string(),
+            updated_ts: 1,
+        }])
+        .unwrap();
+        assert_eq!(s.replace_issues(&[]).unwrap(), 0);
+        assert_eq!(s.replace_prs(&[]).unwrap(), 0);
+        assert!(s.issues().unwrap().is_empty());
+        assert!(s.prs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn update_task_leaves_issue_link_intact() {
+        let s = Store::open_in_memory().unwrap();
+        let t = s.add_task("wire board", None, None, None, 1).unwrap();
+        s.link_task_issue(t.id, "o/r", 7, "https://github.com/o/r/issues/7").unwrap();
+        let updated = s.update_task(t.id, "wire board v2", Some("note"), None).unwrap();
+        assert_eq!(updated.text, "wire board v2");
+        // Editing free-form fields must not disturb the issue link.
+        assert_eq!(updated.repo.as_deref(), Some("o/r"));
+        assert_eq!(updated.issue_number, Some(7));
+        assert_eq!(updated.issue_url.as_deref(), Some("https://github.com/o/r/issues/7"));
+    }
+
+    #[test]
+    fn link_task_issue_overwrites_a_previous_link() {
+        let s = Store::open_in_memory().unwrap();
+        let t = s.add_task("relink", None, None, None, 1).unwrap();
+        s.link_task_issue(t.id, "o/a", 1, "https://github.com/o/a/issues/1").unwrap();
+        s.link_task_issue(t.id, "o/b", 2, "https://github.com/o/b/issues/2").unwrap();
+        let got = s.get_task(t.id).unwrap().unwrap();
+        assert_eq!(got.repo.as_deref(), Some("o/b"));
+        assert_eq!(got.issue_number, Some(2));
+        assert_eq!(got.issue_url.as_deref(), Some("https://github.com/o/b/issues/2"));
+    }
 }
