@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { parseDiff, type DiffFile, type DiffLine } from "@/lib/diff";
+import { Columns2, Rows2 } from "lucide-react";
+import { pairDiffLines, parseDiff, type DiffFile, type DiffLine } from "@/lib/diff";
 import { cn } from "@/lib/utils";
 
 /**
@@ -75,9 +76,53 @@ function FilePatch({ file }: { file: DiffFile }) {
   );
 }
 
+/** Split-view cell: blank (no counterpart on this side) renders as an empty,
+ * unhighlighted gutter rather than matching the other side's color. Lines
+ * wrap (rather than the unified view's horizontal scroll) so overflow can't
+ * bleed past the 50% column into its sibling. */
+function SplitCell({ line }: { line: DiffLine | null }) {
+  return (
+    <div
+      className={cn(
+        "min-w-0 flex-1 px-2 break-all whitespace-pre-wrap",
+        line ? LINE_CLS[line.kind] : "",
+      )}
+    >
+      {line ? line.text || " " : " "}
+    </div>
+  );
+}
+
+function SplitFilePatch({ file }: { file: DiffFile }) {
+  const rows = useMemo(() => pairDiffLines(file.lines), [file]);
+  return (
+    <pre className="p-2 font-mono text-xs leading-relaxed">
+      {rows.map((row, i) =>
+        "full" in row ? (
+          <div
+            key={i}
+            className={cn("px-2 break-all whitespace-pre-wrap", LINE_CLS[row.full.kind])}
+          >
+            {row.full.text || " "}
+          </div>
+        ) : (
+          <div key={i} className="flex items-stretch">
+            <SplitCell line={row.left} />
+            <div className="w-px shrink-0 self-stretch bg-border/70" />
+            <SplitCell line={row.right} />
+          </div>
+        ),
+      )}
+    </pre>
+  );
+}
+
+type ViewMode = "unified" | "split";
+
 export function DiffViewer({ text }: { text: string }) {
   const files = useMemo(() => parseDiff(text), [text]);
   const [selected, setSelected] = useState(0);
+  const [viewMode, setViewMode] = useState<ViewMode>("unified");
   // A new diff (dialog re-opened for another folder) resets the selection.
   useEffect(() => setSelected(0), [text]);
   const file = files[Math.min(selected, files.length - 1)];
@@ -127,11 +172,40 @@ export function DiffViewer({ text }: { text: string }) {
               ← {file.oldPath}
             </span>
           )}
-          <span className="ml-auto" />
+          <span className="ml-auto flex shrink-0 items-center rounded-md border border-border/70 p-0.5">
+            <button
+              type="button"
+              title="Unified view"
+              aria-pressed={viewMode === "unified"}
+              onClick={() => setViewMode("unified")}
+              className={cn(
+                "rounded-[5px] p-1 transition-colors",
+                viewMode === "unified"
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <Rows2 className="size-3" />
+            </button>
+            <button
+              type="button"
+              title="Split view"
+              aria-pressed={viewMode === "split"}
+              onClick={() => setViewMode("split")}
+              className={cn(
+                "rounded-[5px] p-1 transition-colors",
+                viewMode === "split"
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <Columns2 className="size-3" />
+            </button>
+          </span>
           <DiffCounts additions={file.additions} deletions={file.deletions} />
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
-          <FilePatch file={file} />
+          {viewMode === "split" ? <SplitFilePatch file={file} /> : <FilePatch file={file} />}
         </div>
       </div>
     </div>

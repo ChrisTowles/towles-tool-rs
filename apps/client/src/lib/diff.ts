@@ -97,3 +97,46 @@ export function parseDiff(text: string): DiffFile[] {
 
   return files;
 }
+
+/** One row of a side-by-side rendering: either a left/right pair (a del and
+ * an add lined up together, blanks where one side has no counterpart) or a
+ * `full` line (hunk header, meta, or unchanged context) that spans both
+ * columns. */
+export type SplitDiffRow =
+  | { full: DiffLine }
+  | { left: DiffLine | null; right: DiffLine | null };
+
+/** Pair up a file's flat line list into split-view rows: consecutive `del`
+ * runs line up against the following `add` run positionally (GitHub's split
+ * diff behavior), padding the shorter side with blanks. Anything else (ctx,
+ * hunk, meta) flushes the pending pair and spans full width. */
+export function pairDiffLines(lines: DiffLine[]): SplitDiffRow[] {
+  const rows: SplitDiffRow[] = [];
+  let dels: DiffLine[] = [];
+  let adds: DiffLine[] = [];
+
+  const flush = () => {
+    const count = Math.max(dels.length, adds.length);
+    for (let i = 0; i < count; i++) {
+      rows.push({ left: dels[i] ?? null, right: adds[i] ?? null });
+    }
+    dels = [];
+    adds = [];
+  };
+
+  for (const line of lines) {
+    if (line.kind === "del") {
+      dels.push(line);
+      continue;
+    }
+    if (line.kind === "add") {
+      adds.push(line);
+      continue;
+    }
+    flush();
+    rows.push({ full: line });
+  }
+  flush();
+
+  return rows;
+}
