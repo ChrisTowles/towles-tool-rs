@@ -564,6 +564,28 @@ pub fn agentboard_shared_dir_lossy() -> PathBuf {
     agentboard_shared_dir().unwrap_or_else(|_| PathBuf::from(".").join("agentboard"))
 }
 
+/// The instance-state directories owned by `scope` — the config-side
+/// `…/towles-tool/slots/<scope>` (agentboard sessions/windows/collapse) and
+/// the data-side one (tt.db) — so `ttr slot rm` can delete a removed slot's
+/// leftover state. This targets *another* checkout's scope, so the ambient
+/// auto-detected scope is deliberately ignored (running the command from
+/// inside a slot must not nest the target under the runner's own scope);
+/// a forced [`STATE_SCOPE_ENV`] still nests, keeping tests fully isolated.
+pub fn instance_state_dirs_for_scope(scope: &str) -> Vec<PathBuf> {
+    let scope = sanitize_scope(scope);
+    if scope.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if let Ok(home) = home_dir() {
+        out.push(shared_under(home.join(".config").join(TOOL_NAME)).join("slots").join(&scope));
+    }
+    if let Some(data) = dirs::data_dir() {
+        out.push(shared_under(data.join(TOOL_NAME)).join("slots").join(&scope));
+    }
+    out
+}
+
 /// Load settings from the standard location, creating defaults if the file is missing.
 pub fn load() -> Result<UserSettings> {
     load_from(&config_path()?)
@@ -1017,6 +1039,35 @@ mod tests {
         assert!(config_path().unwrap().ends_with("slot-9/towles-tool.settings.json"));
         assert!(store_db_path().unwrap().ends_with("towles-tool/slots/slot-9/tt.db"));
         assert!(agentboard_dir().unwrap().ends_with("slots/slot-9/agentboard"));
+        unsafe { std::env::remove_var(STATE_SCOPE_ENV) };
+    }
+
+    #[test]
+    fn instance_state_dirs_target_the_named_scope_not_the_ambient_one() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: guarded by ENV_LOCK.
+        unsafe { std::env::set_var(STATE_SCOPE_ENV, "") };
+        let dirs = instance_state_dirs_for_scope("towles-tool-rs-thing");
+        assert!(!dirs.is_empty());
+        for dir in &dirs {
+            assert!(
+                dir.ends_with("towles-tool/slots/towles-tool-rs-thing"),
+                "got {}",
+                dir.display()
+            );
+        }
+        assert!(instance_state_dirs_for_scope("  ").is_empty());
+
+        // A FORCED scope nests the targets too — a test world's slot state
+        // lives under the forced nest, never at the real machine paths.
+        unsafe { std::env::set_var(STATE_SCOPE_ENV, "test-world") };
+        for dir in instance_state_dirs_for_scope("towles-tool-rs-thing") {
+            assert!(
+                dir.ends_with("slots/test-world/slots/towles-tool-rs-thing"),
+                "got {}",
+                dir.display()
+            );
+        }
         unsafe { std::env::remove_var(STATE_SCOPE_ENV) };
     }
 
