@@ -1,4 +1,4 @@
-//! `ttr doctor`: environment checks (tools, gh auth, Claude plugins, agentboard
+//! `tt doctor`: environment checks (tools, gh auth, Claude plugins, agentboard
 //! state) plus `--track`/`--diff` history. The checks themselves live in the
 //! shared `tt-doctor` crate so the app's Doctor screen runs the exact same
 //! probes; this module is the CLI presentation — printing, history, diffing.

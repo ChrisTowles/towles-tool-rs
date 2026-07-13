@@ -1,4 +1,4 @@
-//! `ttr slot` — worktree-slot lifecycle over a primary checkout.
+//! `tt slot` — worktree-slot lifecycle over a primary checkout.
 //!
 //! Thin CLI shell: creation/rendering/removal all live in `tt_slots::ops`
 //! (shared with the app's `slot_create`/`slot_remove` commands). See the

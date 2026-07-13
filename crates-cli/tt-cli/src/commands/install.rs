@@ -1,4 +1,4 @@
-//! `ttr install`: configure Claude Code settings and ensure required plugins.
+//! `tt install`: configure Claude Code settings and ensure required plugins.
 //!
 //! Ports `src/commands/install.ts`. The settings read/write is pure logic in
 //! [`crate::commands::claude_settings`]; this layer handles output styling, the
@@ -17,7 +17,7 @@ use console::style;
 use serde::Deserialize;
 use std::io::IsTerminal;
 
-/// A plugin `ttr install` ensures is present.
+/// A plugin `tt install` ensures is present.
 struct RequiredPlugin {
     /// Fully-qualified plugin id, e.g. `tt@towles-tool`.
     id: &'static str,
@@ -99,7 +99,7 @@ pub fn run(observability: bool) -> i32 {
     0
 }
 
-/// Ensure the `tt` MCP server (`ttr mcp serve`) is registered with Claude Code,
+/// Ensure the `tt` MCP server (`tt mcp serve`) is registered with Claude Code,
 /// so any Claude session can reach the store + live agent sessions. Follows the
 /// plugin-install pattern: registration mutates external state, so it's gated on
 /// an interactive TTY — a non-interactive run prints a dim skip note and changes
@@ -135,7 +135,7 @@ fn ensure_tt_mcp_server() {
     match tt_exec::run(
         "claude",
         &[
-            "mcp", "add", "--scope", "user", "tt", "--", "ttr", "mcp", "serve",
+            "mcp", "add", "--scope", "user", "tt", "--", "tt", "mcp", "serve",
         ],
     ) {
         Ok(out) if out.ok() => {

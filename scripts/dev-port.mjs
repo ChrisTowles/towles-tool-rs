@@ -64,7 +64,7 @@ if (override !== undefined && override !== "") {
   const base = slotBasePort(repoRoot);
   port = await findFreePort(base);
   console.log(
-    `[dev-port] using port ${port} (slot base ${base}; set ${PORT_ENV} in .env.local to pin one, or let ttr slot claim one in .env)`,
+    `[dev-port] using port ${port} (slot base ${base}; set ${PORT_ENV} in .env.local to pin one, or let tt slot claim one in .env)`,
   );
 }
 

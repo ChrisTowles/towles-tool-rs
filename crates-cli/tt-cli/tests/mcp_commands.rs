@@ -1,4 +1,4 @@
-//! Black-box tests for `ttr mcp serve`: a real stdio MCP handshake against the
+//! Black-box tests for `tt mcp serve`: a real stdio MCP handshake against the
 //! compiled binary, with the store pointed at a sandbox file.
 
 use assert_cmd::Command;
@@ -20,7 +20,7 @@ fn mcp_serve_handshake_and_tool_list() {
         "\n",
     );
 
-    Command::cargo_bin("ttr")
+    Command::cargo_bin("tt")
         .unwrap()
         .args(["mcp", "serve", "--store"])
         .arg(&db)
@@ -46,7 +46,7 @@ fn mcp_serve_tools_call_roundtrip() {
         "\n",
     );
 
-    Command::cargo_bin("ttr")
+    Command::cargo_bin("tt")
         .unwrap()
         .args(["mcp", "serve", "--store"])
         .arg(&db)

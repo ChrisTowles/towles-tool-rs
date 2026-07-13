@@ -9,7 +9,7 @@ import { isTauri } from "@/lib/tauri";
  */
 const DEV_VERSION = "0.1.0";
 
-/** The `ttr vX.Y.Z` label rendered in the status bar and the About tab. */
+/** The `tt vX.Y.Z` label rendered in the status bar and the About tab. */
 export function useAppVersion(): string {
   const [version, setVersion] = useState(DEV_VERSION);
   useEffect(() => {
@@ -23,5 +23,5 @@ export function useAppVersion(): string {
       cancelled = true;
     };
   }, []);
-  return `ttr v${version}`;
+  return `tt v${version}`;
 }

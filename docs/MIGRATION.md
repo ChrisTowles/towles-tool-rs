@@ -61,7 +61,7 @@ commands work, plus Chris's explicit go-ahead — not full parity.
       verified against the TS test suite and a live luxon/JS cross-check.
     - The per-command `--debug` flag is dropped in favor of the global `-v/--verbose`.
 
-- [x] **3 — Install + Claude settings; doctor history/diff.** `ttr install` plus
+- [x] **3 — Install + Claude settings; doctor history/diff.** `tt install` plus
   the `claude-settings` writer, and `doctor` extended with `--track`/`--diff` run
   history. The settings read/write is a pure `claude_settings` module (models
   Claude Code's real `~/.claude/settings.json` as an open `serde_json::Map` so
@@ -89,7 +89,7 @@ commands work, plus Chris's explicit go-ahead — not full parity.
       tmux ttyd otherwise match the TS names/patterns, with ttyd optional →
       `ok=true` + "optional, not installed" when missing). `diff` tolerates
       added/removed tools, so the extra check never breaks a comparison.
-    - `ttr install` skips the interactive plugin install when stdin is not a TTY,
+    - `tt install` skips the interactive plugin install when stdin is not a TTY,
       printing a dim "skipped (non-interactive)" note instead of prompting — so
       CI/tests never hang and never run a real `claude plugin install` (same
       TTY-guard pattern as the journal/gh commands). The `claude plugin
@@ -165,7 +165,7 @@ commands work, plus Chris's explicit go-ahead — not full parity.
   ports, all four watchers — claude-code/amp/codex/opencode, bridge assembly,
   repos config, metadata-HTTP validation), the `tt-app` bridge (engine + tokio
   scan/git tasks + `agentboard://state` event + `ab_*` commands + localhost
-  metadata ingest), the React UI, and the `ttr agentboard`/`ag` repos CLI. The
+  metadata ingest), the React UI, and the `tt agentboard`/`ag` repos CLI. The
   end-to-end demo verified live repos with git stats and a live Claude session
   updating in the Tauri window. Open questions / deferred: the pane-based
   "waiting" synthesis + prune pinning are driven by pid-liveness (only
@@ -177,13 +177,14 @@ commands work, plus Chris's explicit go-ahead — not full parity.
   Source: slot-1 `packages/agentboard/` (live entry `src/server/main.ts`) +
   `src/commands/agentboard.ts`.
 
-- [~] **8 — Distribution + rename.** Prepared 2026-07-02: distribution is
+- [x] **8 — Distribution + rename.** Prepared 2026-07-02: distribution is
   local-first (`cargo install --path crates-cli/tt-cli`; tauri bundle for the
   app; registries/updaters deferred until the tool has other users — own
-  infrastructure only, never yaak's). The `ttr` → `tt` flip is fully scripted
-  in [docs/CUTOVER.md](CUTOVER.md) with preconditions, steps, and rollback —
-  **the flip itself is gated on Chris's explicit go-ahead** (it swaps the
-  daily-driver binary). The tmux agentboard workflow it once retired is
+  infrastructure only, never yaak's). The `ttr` → `tt` flip was scripted
+  in [docs/CUTOVER.md](CUTOVER.md) and **executed 2026-07-13**: the binary,
+  every hint string, and the docs now say `tt` (hard cutover, no `ttr` alias);
+  the operator steps (unlink the TS `tt`, `cargo install`, archive the TS repo)
+  live in CUTOVER.md. The tmux agentboard workflow it once retired is
   **already removed** (2026-07-04, dogfooding the Tauri app full-time) — the
   `agentboard` command is now just the `repos` watch-list.
 
@@ -191,7 +192,7 @@ commands work, plus Chris's explicit go-ahead — not full parity.
   2026-07-04 from the product-direction session (Agentboard = attention inbox ×
   Daily Cockpit): `tt-store` (SQLite at `~/.local/share/towles-tool/tt.db`),
   `tt-collect` (calendar/email/tasks via `claude -p`, PRs via `gh`;
-  `ttr collect calendar|email|prs|all`), `tt-mcp` (`ttr mcp serve`, stdio
+  `tt collect calendar|email|prs|all`), `tt-mcp` (`tt mcp serve`, stdio
   JSON-RPC MCP server: calendar/tasks/email/prs/agent-sessions/journal_append/
   collect_status tools), tt-app store commands + `store://snapshot` event +
   collector scheduler, and the client's day bar, needs-you Agentboard rework
@@ -206,7 +207,7 @@ commands work, plus Chris's explicit go-ahead — not full parity.
   `email_needs_reply`, the Email + Calendar screen); **calendar reduced to the
   next-meeting countdown** (today only). New **`issues` collector**
   (`gh issue list --assignee @me`); collector keys are now `claude:calendar`,
-  `issues`, `prs`; CLI is `ttr collect calendar|issues|prs|all`. Collectors are
+  `issues`, `prs`; CLI is `tt collect calendar|issues|prs|all`. Collectors are
   now **config-driven** via `settings.collectors` (per-collector enable +
   cadence, replacing the `assistant` block), with a calendar `provider` field
   (`google`|`outlook`) selecting a built-in prompt+MCP for home/work. `tasks`

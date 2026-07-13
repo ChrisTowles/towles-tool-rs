@@ -1,4 +1,4 @@
-//! Pure decisions for `ttr slot clean` — which slots are *finished* (their
+//! Pure decisions for `tt slot clean` — which slots are *finished* (their
 //! branch's work has landed) and which per-checkout state directories are
 //! stale. The orchestration (git calls, removal, directory sweep) lives in
 //! [`crate::ops::clean_slots`]; this module only decides.

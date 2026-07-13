@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "ttr")]
+#[command(name = "tt")]
 #[command(about = "towles-tool (Rust) - developer utilities, config, and diagnostics")]
 #[command(version)]
 #[command(disable_help_subcommand = true)]
@@ -183,7 +183,7 @@ pub struct McpArgs {
 
 #[derive(Subcommand)]
 pub enum McpCommands {
-    /// Serve MCP over stdio (register with: `claude mcp add tt -- ttr mcp serve`)
+    /// Serve MCP over stdio (register with: `claude mcp add tt -- tt mcp serve`)
     Serve {
         /// Path to the store database (defaults to the standard tt.db location)
         #[arg(long, value_name = "FILE")]

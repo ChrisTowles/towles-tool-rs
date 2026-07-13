@@ -1,6 +1,6 @@
 // New-slot modal: give a goal, pick the base branch, and a branch-named
 // worktree slot is created under the repo root's slots/ dir (`slot_create` →
-// tt-slots ops, shared with `ttr slot new`). The goal slugs the branch name
+// tt-slots ops, shared with `tt slot new`). The goal slugs the branch name
 // (editable) and the caller launches Claude with it in the new slot's first
 // session.
 import { useEffect, useState } from "react";

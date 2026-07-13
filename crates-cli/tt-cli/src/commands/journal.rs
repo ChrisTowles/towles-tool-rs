@@ -1,4 +1,4 @@
-//! `ttr journal` subcommands: daily-notes, note, meeting, list, search.
+//! `tt journal` subcommands: daily-notes, note, meeting, list, search.
 //!
 //! Ports `src/commands/journal/*.ts`. Library logic lives in `tt-journal`; this module
 //! is the CLI boundary — it loads settings, resolves the current date, calls the library,
@@ -93,10 +93,10 @@ fn daily_notes(config_dir: Option<&Path>, no_open: bool) -> i32 {
     0
 }
 
-/// `ttr journal jot "<text>"` — append a timestamped bullet to today's daily note.
+/// `tt journal jot "<text>"` — append a timestamped bullet to today's daily note.
 ///
 /// Reads the bullet text from the argument, or from stdin when the argument is omitted
-/// or is `-` (so `echo ... | ttr journal jot` and `ttr journal jot -` both work). Never
+/// or is `-` (so `echo ... | tt journal jot` and `tt journal jot -` both work). Never
 /// spawns an editor. The clock is read here (the CLI boundary) and the resulting
 /// `HH:MM`/date is injected into the Tauri-free library fn.
 fn jot(config_dir: Option<&Path>, text: Option<String>) -> i32 {
@@ -222,12 +222,12 @@ fn resolve_title(title: Option<String>, label: &str) -> Result<String, String> {
         .map_err(|e| format!("Could not read {label} title: {e}"))
 }
 
-/// `ttr journal open [--last] [--pick] [--type <t>] [--no-open]` — reopen a journal entry.
+/// `tt journal open [--last] [--pick] [--type <t>] [--no-open]` — reopen a journal entry.
 ///
 /// Uses the same collection/sorting helpers as `list` (newest-first by date, optional
 /// type filter) and the same editor path as `note`. Without `--pick`, targets the single
 /// most-recent entry. With `--pick`, feeds the top ~50 entries into an interactive fuzzy
-/// picker (like `ttr gh branch`) and opens the selection. With `--no-open` — or whenever
+/// picker (like `tt gh branch`) and opens the selection. With `--no-open` — or whenever
 /// stdout is not a TTY — the absolute path is printed instead of launching an editor. An
 /// empty (or fully-filtered-out) journal is a clear error with exit code 1.
 fn open(config_dir: Option<&Path>, pick: bool, ty: Option<String>, no_open: bool) -> i32 {

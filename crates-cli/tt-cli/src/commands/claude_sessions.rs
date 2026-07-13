@@ -1,4 +1,4 @@
-//! `ttr claude-sessions`: Claude Code session summary across every repo, built
+//! `tt claude-sessions`: Claude Code session summary across every repo, built
 //! from token-accounting over session JSONL files.
 //!
 //! Ports `src/commands/graph/index.ts`. All pure logic (parsing, analysis,

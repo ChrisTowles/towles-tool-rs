@@ -19,7 +19,7 @@ export type FormatLogOpts = {
 /**
  * Build one journal timeline bullet: `- HH:MM [context] text`.
  *
- * Matches the `ttr journal jot` bullet format (`- HH:MM text`) exactly so app and CLI
+ * Matches the `tt journal jot` bullet format (`- HH:MM text`) exactly so app and CLI
  * captures interleave cleanly in the same daily note — the optional `[context]` prefix
  * just annotates the free-text body. The time is local (matching the daily-note
  * convention) and zero-padded to `HH:MM`. The bracket is dropped when `context` is empty.

@@ -643,7 +643,7 @@ export function AgentboardScreen() {
   }
 
   // Add a repo to the rail; backend re-emits state so it appears. Mirrors
-  // `ttr agentboard repos add <path>`.
+  // `tt agentboard repos add <path>`.
   async function addRepoPath(dir: string) {
     const path = dir.trim();
     if (!path) return;

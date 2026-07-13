@@ -368,7 +368,7 @@ pub struct JournalEntry {
     pub size: u64,
 }
 
-/// Serializable view of a [`JournalEntry`] for `ttr journal list --json`.
+/// Serializable view of a [`JournalEntry`] for `tt journal list --json`.
 ///
 /// A dedicated DTO (rather than deriving `Serialize` on `JournalEntry` directly) keeps
 /// the JSON shape stable and decoupled from internal fields: it emits the **absolute**
@@ -456,7 +456,7 @@ pub struct SearchMatch {
     pub context: Vec<String>,
 }
 
-/// Serializable view of a [`SearchMatch`] for `ttr journal search --json`.
+/// Serializable view of a [`SearchMatch`] for `tt journal search --json`.
 ///
 /// Emits the **absolute** path, the 1-based line number, the matched line, and the
 /// entry's inferred type/date (derived from the path, since a `SearchMatch` does not

@@ -3,7 +3,7 @@ mod common;
 use common::cli_cmd;
 use tempfile::TempDir;
 
-/// A `ttr` command with HOME and XDG_CONFIG_HOME redirected into the sandbox, so
+/// A `tt` command with HOME and XDG_CONFIG_HOME redirected into the sandbox, so
 /// doctor's history file and agentboard checks never touch the real home dir.
 fn doctor_cmd(temp: &std::path::Path) -> assert_cmd::Command {
     let mut cmd = cli_cmd(temp);
@@ -81,7 +81,7 @@ fn stub_claude(dir: &std::path::Path, mcp_list_output: &str) {
 fn doctor_reports_registered_mcp_server() {
     let temp_dir = TempDir::new().expect("temp dir");
     let bin = temp_dir.path().join("bin");
-    stub_claude(&bin, "tt: ttr mcp serve - Connected");
+    stub_claude(&bin, "tt: tt mcp serve - Connected");
 
     doctor_cmd(temp_dir.path())
         .env("PATH", &bin)

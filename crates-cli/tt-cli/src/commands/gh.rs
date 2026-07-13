@@ -1,4 +1,4 @@
-//! `ttr gh` subcommands: branch, branch-clean, pr (also reachable as `ttr pr`).
+//! `tt gh` subcommands: branch, branch-clean, pr (also reachable as `tt pr`).
 //!
 //! Ports `src/commands/gh/*.ts`. Pure logic (branch names, PR content, merged-branch
 //! filtering, issue parsing, picker layout) lives in `tt-git`; this module shells out via
@@ -169,7 +169,7 @@ fn pr(args: PrArgs) -> i32 {
 // gh pr-list
 // ---------------------------------------------------------------------------
 
-/// `ttr gh pr-list` (alias `ttr prs`): print my open PRs across every tracked
+/// `tt gh pr-list` (alias `tt prs`): print my open PRs across every tracked
 /// repo with their CI check rollup and a needs-you marker — the headless twin
 /// of the app's Cockpit "PRs need you" panel.
 ///
@@ -182,7 +182,7 @@ fn pr(args: PrArgs) -> i32 {
 fn pr_list() -> i32 {
     let repo_dirs = tt_collect::tracked_repo_dirs();
     if repo_dirs.is_empty() {
-        ui::warning("No repos configured. Add one with `ttr agentboard repos add <dir>`.");
+        ui::warning("No repos configured. Add one with `tt agentboard repos add <dir>`.");
         return 0;
     }
 
@@ -343,7 +343,7 @@ fn git_in(dir: &Path, args: &[&str]) -> Option<String> {
     }
 }
 
-/// `ttr gh assign <issue> --slot <dir>`: run `gh issue develop <issue>
+/// `tt gh assign <issue> --slot <dir>`: run `gh issue develop <issue>
 /// --checkout` inside the slot, but only after the guard — the slot must be a
 /// checkout of this same repo with a completely clean tree (no uncommitted or
 /// untracked changes, no stashes). The guard hard-fails with no `--force`
@@ -460,7 +460,7 @@ fn report_ahead_behind(label: &str, upstream: &str) {
     }
 }
 
-/// `ttr gh sync [--base main]`: fetch `origin/<base>` and rebase the current
+/// `tt gh sync [--base main]`: fetch `origin/<base>` and rebase the current
 /// branch onto it. Hard-fails before any fetch/rebase if the tree is dirty, and
 /// gives a distinct, actionable error when the rebase stops on a conflict.
 fn sync_cmd(args: SyncArgs) -> i32 {
@@ -517,7 +517,7 @@ fn sync_cmd(args: SyncArgs) -> i32 {
 // gh co (check out a PR's branch)
 // ---------------------------------------------------------------------------
 
-/// `ttr gh co <number>` (alias `pr-checkout`): resolve the PR's head branch via
+/// `tt gh co <number>` (alias `pr-checkout`): resolve the PR's head branch via
 /// `gh pr view`, run the same clean-tree guard, then check the branch out —
 /// fetching it from origin first if it isn't known locally.
 fn co(args: CoArgs) -> i32 {

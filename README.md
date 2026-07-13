@@ -1,18 +1,18 @@
 # Towles Tool (Rust)
 
 A Rust rewrite of [`towles-tool`](https://github.com/ChrisTowles/towles-tool):
-a [Tauri 2](https://v2.tauri.app/) desktop app paired with the `ttr` CLI. The repository
+a [Tauri 2](https://v2.tauri.app/) desktop app paired with the `tt` CLI. The repository
 is built from the [Yaak](https://github.com/mountain-loop/yaak) golden template —
 a Cargo workspace with Tauri-free shared crates, a `clap` CLI, and a React + Vite
 frontend. It also ships the `tt` Claude Code plugin (see below).
 
-During the migration the Rust binary is named **`ttr`**. Once the daily-driver
-commands are ported (full CLI parity is not a goal), it takes over the `tt`
-name in a hard cutover.
+The Rust binary is **`tt`** — the `ttr` → `tt` cutover from the TypeScript CLI
+happened 2026-07-13 (hard cutover, no `ttr` alias left behind; see
+[docs/CUTOVER.md](docs/CUTOVER.md)).
 
 > **Status:** in progress. The scaffold plus config, doctor, journal, GitHub
 > helpers, install, claude-sessions, the data-hub store/collectors, the MCP
-> server, worktree slots (`ttr slot`), and the Agentboard app screens (with
+> server, worktree slots (`tt slot`), and the Agentboard app screens (with
 > live in-app terminals) are ported. Features land one at a time — see
 > [docs/MIGRATION.md](docs/MIGRATION.md).
 
@@ -52,7 +52,7 @@ This repo is developed as **primary + slots**: a primary checkout that always
 has the default branch, plus branch-named worktrees under `slots/`, one per
 parallel line of work, each with its own rendered `.env` (port claims,
 inherited secrets) so concurrent slots never collide. Manage them with
-`ttr slot` (`new`, `ls`, `rm`, `env`) — never raw `git worktree`. The
+`tt slot` (`new`, `ls`, `rm`, `env`) — never raw `git worktree`. The
 Agentboard rail shows the whole fleet and can create a slot from its `+`
 button. Full convention and rules: [CLAUDE.md](CLAUDE.md).
 
@@ -78,7 +78,7 @@ Already installed? Pull the latest version with
 
 ## Commands
 
-The CLI binary is `ttr`. Run any command with `--help` for its flags.
+The CLI binary is `tt`. Run any command with `--help` for its flags.
 
 - `config show|validate|schema|reset` — inspect, validate, print the schema for, or reset settings.
 - `doctor [--json] [--track] [--diff]` — check dependencies/environment; optionally save a run and diff against the last.
@@ -88,7 +88,7 @@ The CLI binary is `ttr`. Run any command with `--help` for its flags.
 - `claude-sessions [-s/--session] [--days N] [-f html|json|csv] [--open/--no-open]` — Claude Code session summary across every repo; HTML treemap report to `~/.claude/reports`, or JSON/CSV to stdout.
 - `agentboard repos|sessions` — manage the watched-repo list and per-folder PTY sessions the app and collectors read (`ag` is an alias).
 - `collect calendar|issues|prs|slack|all|status` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`, and a watched Slack DM; `status` reports each collector's health.
-- `mcp serve` — stdio MCP server exposing the store, live agent sessions, and `journal_append` (register with `claude mcp add tt -- ttr mcp serve`).
+- `mcp serve` — stdio MCP server exposing the store, live agent sessions, and `journal_append` (register with `claude mcp add tt -- tt mcp serve`).
 - `slot new|ls|rm|env` — manage worktree slots (see [Worktree slots](#worktree-slots) above).
 
 ## Crates
@@ -101,14 +101,14 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-git` — git/GitHub helpers (branch names, PR content, issue parsing).
 - `crates/tt-graph` — session token accounting and treemap/JSON/CSV/HTML rendering.
 - `crates/tt-doctor` — dependency/environment checks (CLI `doctor` and the app screen both consume it).
-- `crates/tt-slots` — the worktree-slot convention: `${tt:...}` env-template renderer with port-pool claims, slot naming/layout, removal guards, and the shared `ops` orchestration behind `ttr slot` and the app.
+- `crates/tt-slots` — the worktree-slot convention: `${tt:...}` env-template renderer with port-pool claims, slot naming/layout, removal guards, and the shared `ops` orchestration behind `tt slot` and the app.
 - `crates/tt-claude-code` — shared Claude Code transcript parsing (session JSONL, titles, token usage, model table).
 - `crates/tt-store` — the data-hub SQLite store (events, kanban todos, issues, PR status, collector freshness).
 - `crates/tt-collect` — collectors that fill the store: calendar via `claude -p`, issues/PRs via `gh`, a watched Slack DM via the Slack Web API.
 - `crates/tt-agentboard` — watched-repo and agent-session tracking behind the Agentboard screen.
 - `crates/tt-vt` — libghostty-vt terminal-state engine driving the app's canvas terminals (needs zig 0.15.x).
 - `crates/tt-mcp` — stdio JSON-RPC MCP server over the store and live sessions.
-- `crates-cli/tt-cli` — the `clap` CLI (binary `ttr`).
+- `crates-cli/tt-cli` — the `clap` CLI (binary `tt`).
 - `crates-tauri/tt-app` — the Tauri 2 desktop shell; `apps/client` is its React + Vite frontend.
 
 ## More

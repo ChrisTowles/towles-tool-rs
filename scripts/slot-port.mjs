@@ -5,7 +5,7 @@
 // we derive a stable base port from the slot's repo-root directory name: each
 // slot prefers its own port and keeps it run-to-run, and `dev-port.mjs` scans
 // upward from there for a free one as a safety net. An explicit TT_DEV_PORT
-// (shell env, `.env.local` pin, or `.env` rendered by `ttr slot`) wins over this.
+// (shell env, `.env.local` pin, or `.env` rendered by `tt slot`) wins over this.
 import { basename, join } from "node:path";
 import { readFileSync } from "node:fs";
 
@@ -25,7 +25,7 @@ export function slotBasePort(repoRoot) {
  * Load `.env.local` then `.env` (at `repoRoot`) into `process.env` so per-slot
  * values like `TT_DEV_PORT` reach dev tooling without shell exports.
  * Precedence: real env vars > `.env.local` (manual pin) > `.env` (rendered by
- * `ttr slot new`/`env` with the slot's port claims) — standard dotenv
+ * `tt slot new`/`env` with the slot's port claims) — standard dotenv
  * layering, so a hand pin always beats the tool-rendered claim. Missing files
  * are a no-op.
  */

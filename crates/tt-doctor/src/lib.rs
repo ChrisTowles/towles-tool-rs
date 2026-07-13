@@ -1,7 +1,7 @@
 //! Environment checks for towles-tool ("doctor"): the developer tools the CLI
 //! and desktop app rely on, gh auth, required Claude plugins, and the
 //! agentboard/data-hub state. Tauri-free (the shared-crate rule) so both
-//! `ttr doctor` and the app's Doctor screen run the same checks.
+//! `tt doctor` and the app's Doctor screen run the same checks.
 //!
 //! Run records serialize to the TS `DoctorRunResult` shape (camelCase) so the
 //! `--track`/`--diff` history file stays interoperable with the TypeScript CLI.
@@ -156,7 +156,7 @@ pub fn extract_version(text: &str) -> Option<String> {
 /// The list is plain text, one server per line: `<name>: <command> - <status>`.
 /// We match the leading `<name>` field exactly against `tt` so a server whose
 /// command merely mentions `tt` (or a differently named server) doesn't count.
-/// Shared with `ttr install`, which registers the server, so both agree on
+/// Shared with `tt install`, which registers the server, so both agree on
 /// what "registered" means.
 pub fn tt_mcp_registered(list_output: &str) -> bool {
     list_output.lines().any(|line| line.split(':').next().map(str::trim) == Some("tt"))
@@ -295,7 +295,7 @@ pub fn check_settings_parse() -> AgentBoardCheck {
 }
 
 /// Whether the `tt` MCP server is registered with Claude Code (`claude mcp
-/// list`). Registered via `ttr install`; a missing registration is a warning
+/// list`). Registered via `tt install`; a missing registration is a warning
 /// with the fix, not a hard failure.
 pub fn check_tt_mcp_registered() -> AgentBoardCheck {
     let registered = match tt_exec::run("claude", &["mcp", "list"]) {
@@ -308,7 +308,7 @@ pub fn check_tt_mcp_registered() -> AgentBoardCheck {
         value: if registered { "registered" } else { "not registered" }.to_string(),
         ok: registered,
         warning: (!registered).then(|| "not registered with Claude Code".to_string()),
-        hint: (!registered).then(|| "Run: ttr install".to_string()),
+        hint: (!registered).then(|| "Run: tt install".to_string()),
     }
 }
 
@@ -382,7 +382,7 @@ mod tests {
     fn tt_mcp_registered_matches_the_name_field_only() {
         let listed = "\
 chrome-devtools: npx chrome-devtools-mcp@latest - ✔ Connected
-tt: ttr mcp serve - ✔ Connected
+tt: tt mcp serve - ✔ Connected
 ";
         assert!(tt_mcp_registered(listed));
     }
@@ -390,8 +390,8 @@ tt: ttr mcp serve - ✔ Connected
     #[test]
     fn tt_mcp_registered_is_false_when_absent_or_only_in_command() {
         assert!(!tt_mcp_registered("chrome-devtools: npx chrome-devtools-mcp - ✔ Connected"));
-        // A different server whose command merely mentions `ttr mcp` must not match.
-        assert!(!tt_mcp_registered("other: ttr mcp serve - ✔ Connected"));
+        // A different server whose command merely mentions `tt mcp` must not match.
+        assert!(!tt_mcp_registered("other: tt mcp serve - ✔ Connected"));
         assert!(!tt_mcp_registered(""));
     }
 }
