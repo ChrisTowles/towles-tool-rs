@@ -746,6 +746,18 @@ function FolderHeader({
             <FolderPlus className="size-3.5" />
           </IconBtn>
         )}
+        {/* One click, not two: worktree removal is common enough (every
+            merged slot) to earn a top-level button instead of living behind
+            the kebab — same guarded, confirmed slot_remove flow. */}
+        {!missing && onDeleteWorktree && (
+          <IconBtn
+            title="Delete worktree…"
+            onClick={onDeleteWorktree}
+            className="hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400"
+          >
+            <Trash2 className="size-3.5" />
+          </IconBtn>
+        )}
         {onRemoveRepo && (
           <RepoMenu
             path={folder.dir}
@@ -753,7 +765,6 @@ function FolderHeader({
             dir={folder.dir}
             folder={folder}
             isWorktree={folder.isWorktree}
-            onDeleteWorktree={onDeleteWorktree}
           />
         )}
       </div>
@@ -810,25 +821,24 @@ function FolderHeader({
 /** Kebab menu on a repo/folder header: shows the full folder path (when
  * given), "Set/Edit note…" (when a `folder` is given — the note that shows
  * under the folder in the rail), "Create issue…" (shells `gh issue create` in
- * `dir`), and "Remove from rail". */
+ * `dir`), and "Remove from rail". Worktree deletion lives in its own
+ * top-level button next to this menu, not here — see `FolderHeader`. */
 function RepoMenu({
   path,
   onRemove,
   dir,
   folder,
   isWorktree,
-  onDeleteWorktree,
 }: {
   path?: string;
   onRemove: () => void;
   dir: string;
   /** When set, the menu offers note editing for this checkout. */
   folder?: FolderData;
-  /** Worktree checkouts swap "Remove from rail" (meaningless — they are
-   * auto-discovered from the primary and would reappear next poll) for a
-   * guarded on-disk delete. */
+  /** Worktree checkouts have no "Remove from rail" — meaningless (they are
+   * auto-discovered from the primary and would reappear next poll); deletion
+   * is the top-level Delete-worktree button instead. */
   isWorktree?: boolean;
-  onDeleteWorktree?: () => void;
 }) {
   const [issueOpen, setIssueOpen] = useState(false);
   const [issueTitle, setIssueTitle] = useState("");
@@ -894,17 +904,7 @@ function RepoMenu({
           <DropdownMenuItem onSelect={() => setIssueOpen(true)} className="whitespace-nowrap">
             <CircleDot className="size-3.5" /> Create issue…
           </DropdownMenuItem>
-          {isWorktree ? (
-            onDeleteWorktree && (
-              <DropdownMenuItem
-                variant="destructive"
-                onSelect={onDeleteWorktree}
-                className="whitespace-nowrap"
-              >
-                <Trash2 className="size-3.5" /> Delete worktree…
-              </DropdownMenuItem>
-            )
-          ) : (
+          {!isWorktree && (
             <DropdownMenuItem
               variant="destructive"
               onSelect={onRemove}
