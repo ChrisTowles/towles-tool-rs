@@ -519,15 +519,6 @@ export function RepoGroup({
             {repo.needs > 0 && <NeedsBadge n={repo.needs} />}
           </span>
         </button>
-        {isSlotRepo(repo) && (
-          <IconBtn
-            title="New slot — goal, branch, base"
-            onClick={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir })}
-            className="hover:text-violet-500"
-          >
-            <FolderPlus className="size-3.5" />
-          </IconBtn>
-        )}
         <RepoMenu
           onRemove={() =>
             onRemoveRepo(
@@ -536,6 +527,11 @@ export function RepoGroup({
             )
           }
           dir={repo.folders[0].dir}
+          onNewSlot={
+            isSlotRepo(repo)
+              ? () => onNewSlot({ name: repo.name, dir: repo.folders[0].dir })
+              : undefined
+          }
         />
       </div>
       {!repoCollapsed &&
@@ -737,27 +733,6 @@ function FolderHeader({
             <Plus className="size-3.5" />
           </IconBtn>
         )}
-        {!missing && onNewSlot && (
-          <IconBtn
-            title="New slot — goal, branch, base"
-            onClick={onNewSlot}
-            className="hover:text-violet-500"
-          >
-            <FolderPlus className="size-3.5" />
-          </IconBtn>
-        )}
-        {/* One click, not two: worktree removal is common enough (every
-            merged slot) to earn a top-level button instead of living behind
-            the kebab — same guarded, confirmed slot_remove flow. */}
-        {!missing && onDeleteWorktree && (
-          <IconBtn
-            title="Delete worktree…"
-            onClick={onDeleteWorktree}
-            className="hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400"
-          >
-            <Trash2 className="size-3.5" />
-          </IconBtn>
-        )}
         {onRemoveRepo && (
           <RepoMenu
             path={folder.dir}
@@ -765,6 +740,8 @@ function FolderHeader({
             dir={folder.dir}
             folder={folder}
             isWorktree={folder.isWorktree}
+            onNewSlot={!missing ? onNewSlot : undefined}
+            onDeleteWorktree={!missing ? onDeleteWorktree : undefined}
           />
         )}
       </div>
@@ -818,17 +795,21 @@ function FolderHeader({
   );
 }
 
-/** Kebab menu on a repo/folder header: shows the full folder path (when
- * given), "Set/Edit note…" (when a `folder` is given — the note that shows
- * under the folder in the rail), "Create issue…" (shells `gh issue create` in
- * `dir`), and "Remove from rail". Worktree deletion lives in its own
- * top-level button next to this menu, not here — see `FolderHeader`. */
+/** "···" overflow menu on a repo/folder header — the one place every
+ * secondary action lives, so the row itself only ever shows "+ session" next
+ * to this trigger: full folder path (when given), "New slot…" (slot-convention
+ * repos), "Delete worktree…" (worktree checkouts, guarded `slot_remove`),
+ * "Set/Edit note…" (when a `folder` is given — the note shown under the
+ * folder in the rail), "Create issue…" (shells `gh issue create` in `dir`),
+ * and "Remove from rail". */
 function RepoMenu({
   path,
   onRemove,
   dir,
   folder,
   isWorktree,
+  onNewSlot,
+  onDeleteWorktree,
 }: {
   path?: string;
   onRemove: () => void;
@@ -837,8 +818,13 @@ function RepoMenu({
   folder?: FolderData;
   /** Worktree checkouts have no "Remove from rail" — meaningless (they are
    * auto-discovered from the primary and would reappear next poll); deletion
-   * is the top-level Delete-worktree button instead. */
+   * is the "Delete worktree…" item instead. */
   isWorktree?: boolean;
+  /** Opens the new-slot modal — set only on a slot-convention repo. */
+  onNewSlot?: () => void;
+  /** Deletes this worktree slot from disk (guarded, `slot_remove`) — set only
+   * on worktree checkouts. */
+  onDeleteWorktree?: () => void;
 }) {
   const [issueOpen, setIssueOpen] = useState(false);
   const [issueTitle, setIssueTitle] = useState("");
@@ -875,7 +861,7 @@ function RepoMenu({
           <Button
             variant="outline"
             size="icon-xs"
-            title="Repo actions"
+            title="More actions"
             className="text-muted-foreground"
           >
             <MoreVertical className="size-3.5" />
@@ -890,6 +876,21 @@ function RepoMenu({
               <DropdownMenuSeparator />
             </>
           )}
+          {onNewSlot && (
+            <DropdownMenuItem onSelect={onNewSlot} className="whitespace-nowrap">
+              <FolderPlus className="size-3.5" /> New slot…
+            </DropdownMenuItem>
+          )}
+          {onDeleteWorktree && (
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={onDeleteWorktree}
+              className="whitespace-nowrap"
+            >
+              <Trash2 className="size-3.5" /> Delete worktree…
+            </DropdownMenuItem>
+          )}
+          {(onNewSlot || onDeleteWorktree) && <DropdownMenuSeparator />}
           {folder && (
             <DropdownMenuItem
               onSelect={() => {
@@ -1138,12 +1139,11 @@ function SessionRow({
   );
 }
 
-/** Hover-reveal lifecycle controls for a session row. Which buttons show
- * depends on the session's state:
- *   not started → ▶ shell · ✦ Claude
- *   live shell  → ✦ Claude
- *   live agent  → ■ stop · ⤿ compact (at prompt) · ↻ restart
- * plus ✎ rename and ✕ close, always. */
+/** Hover-reveal lifecycle controls for a session row: ✕ close stays inline
+ * (the one action common to every row), everything else — which varies by
+ * state (not started → ▶ shell / ✦ Claude; live shell → ✦ Claude; live agent
+ * → ■ stop / ⤿ compact / ↻ restart; grouped → ⊟ ungroup; plus ✎ rename) —
+ * lives behind a "···" menu instead of crowding the row. */
 function RowControls({
   session,
   folderDir,
@@ -1159,34 +1159,93 @@ function RowControls({
   const st = session.agentState?.status;
   // `/compact` only lands when Claude is at its prompt, not mid-turn.
   const atPrompt = st === "waiting" || st === "idle" || st === "complete";
-  const btn = (
-    label: string,
-    title: string,
-    onClick: () => void,
-    className = "hover:text-foreground",
-  ) => (
-    <IconBtn title={title} onClick={onClick} className={className}>
-      {label}
-    </IconBtn>
-  );
+
+  const items: {
+    glyph: string;
+    label: string;
+    onSelect: () => void;
+    className?: string;
+  }[] = [];
+  if (!session.live) {
+    items.push({
+      glyph: "▶",
+      label: "Start shell",
+      onSelect: () => actions.start(folderDir, session),
+      className: "text-green-500",
+    });
+  }
+  if (!session.live || !agent) {
+    items.push({
+      glyph: "✦",
+      label: "Start Claude here",
+      onSelect: () => actions.startClaude(folderDir, session),
+      className: "text-violet-500",
+    });
+  }
+  if (session.live && agent) {
+    items.push({
+      glyph: "■",
+      label: "Stop Claude (shell survives)",
+      onSelect: () => actions.stopClaude(session),
+    });
+    if (atPrompt) {
+      items.push({
+        glyph: "⤿",
+        label: "Compact context (/compact)",
+        onSelect: () => actions.compactClaude(session),
+      });
+    }
+    items.push({
+      glyph: "↻",
+      label: "Start over — fresh Claude session",
+      onSelect: () => actions.restartClaude(folderDir, session),
+    });
+  }
+  if (grouped) {
+    items.push({
+      glyph: "⊟",
+      label: "Ungroup — remove pane from its window",
+      onSelect: () => actions.ungroup(session.id),
+    });
+  }
+  items.push({ glyph: "✎", label: "Rename", onSelect: () => actions.renameStart(session.id) });
 
   return (
     <>
-      {!session.live &&
-        btn("▶", "start shell", () => actions.start(folderDir, session), "hover:text-green-500")}
-      {(!session.live || !agent) &&
-        btn("✦", "start Claude here", () => actions.startClaude(folderDir, session), "text-violet-500 hover:text-violet-400")}
-      {session.live && agent && (
-        <>
-          {btn("■", "stop Claude (shell survives)", () => actions.stopClaude(session), "hover:text-red-500")}
-          {atPrompt && btn("⤿", "compact context (/compact)", () => actions.compactClaude(session), "hover:text-sky-500")}
-          {btn("↻", "start over — fresh Claude session", () => actions.restartClaude(folderDir, session), "hover:text-orange-500")}
-        </>
-      )}
-      {grouped &&
-        btn("⊟", "ungroup — remove pane from its window", () => actions.ungroup(session.id), "hover:text-sky-500")}
-      {btn("✎", "rename", () => actions.renameStart(session.id))}
-      {btn("✕", "close session", () => actions.close(session.id), "hover:text-red-500")}
+      <IconBtn
+        title="close session"
+        onClick={() => actions.close(session.id)}
+        className="hover:text-red-500"
+      >
+        ✕
+      </IconBtn>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="outline"
+            size="icon-xs"
+            title="More actions"
+            className="text-muted-foreground"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MoreVertical className="size-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-auto min-w-48">
+          {items.map((item) => (
+            <DropdownMenuItem
+              key={item.label}
+              onSelect={item.onSelect}
+              className="whitespace-nowrap"
+            >
+              <span className={cn("w-4 text-center font-mono text-xs", item.className)}>
+                {item.glyph}
+              </span>
+              {item.label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </>
   );
 }
