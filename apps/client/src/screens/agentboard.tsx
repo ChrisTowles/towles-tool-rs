@@ -253,9 +253,12 @@ export function AgentboardScreen() {
   const onTitle = (id: string, title: string) =>
     setTitles((m) => (m[id] === title ? m : { ...m, [id]: title }));
   // The label to lead a session row/tab with: the live Claude terminal title
-  // when present, else the backend-derived task/shell name.
+  // when the shell is actually running, else the backend-derived task/shell
+  // name. Gating on `s.live` keeps a stopped shell from showing the `✳ <goal>`
+  // title its dead PTY last emitted (the `titles` map is never cleared), which
+  // otherwise reads as a running Claude while the status says "not started".
   const labelFor = (s: SessionData) =>
-    claudeTitleName(titles[s.id]) ?? sessionLabel(s);
+    (s.live ? claudeTitleName(titles[s.id]) : null) ?? sessionLabel(s);
 
   const repos = state.repos;
 

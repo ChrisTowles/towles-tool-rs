@@ -1026,8 +1026,11 @@ function SessionRow({
   const needs = sessionCatchesEye(eff);
   const agent = isAgent(eff);
   const grouped = wins ? windowOf(wins.windows, session.id) : undefined;
-  // Prefer the live Claude terminal title (`✳ <title>`) when the PTY is open.
-  const label = claudeTitleName(title) ?? sessionLabel(eff);
+  // Prefer the live Claude terminal title (`✳ <title>`) only while the shell is
+  // actually running — a stopped PTY's last title lingers in the caller's
+  // `titles` map (never cleared) and would otherwise label a dead shell as a
+  // running Claude.
+  const label = (eff.live ? claudeTitleName(title) : null) ?? sessionLabel(eff);
   // Hover-reveal is driven by JS state, not CSS `:hover` — the Tauri webview's
   // WebKitGTK doesn't reliably update `:hover` on real pointer movement, so
   // `group-hover` utilities never fire even though `matchMedia('(hover:
