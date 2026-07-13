@@ -12,12 +12,13 @@
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use chrono::{Duration, Local, NaiveDate, TimeZone};
 use serde_json::{Value, json};
 use tt_collect::SlackDmConfig;
 use tt_config::JournalSettings;
-use tt_store::Store;
+use tt_store::{McpCallInput, Store};
 
 pub mod needs_you;
 
@@ -26,6 +27,10 @@ const DAY_BRIEF_TODO_LIMIT: usize = 5;
 
 /// Protocol version advertised when the client does not send one of its own.
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// Longest tool-args rendering kept in the call log; anything past this is
+/// truncated with an ellipsis so a huge payload can't bloat tt.db.
+const CALL_LOG_ARGS_MAX: usize = 400;
 
 /// The stateful core of the server: owns the [`Store`] and dispatches JSON-RPC
 /// requests to tool handlers. Kept free of stdio so it can be driven directly in
@@ -41,6 +46,9 @@ pub struct Dispatcher {
     /// sweep is a clean no-op that never shells out to `gh` or hits Slack; the
     /// stdio/CLI path leaves it `None` and resolves from the shared config.
     collect_config: Option<CollectConfig>,
+    /// `clientInfo` from the session's `initialize` (e.g. `claude-code 2.1`),
+    /// stamped onto call-log rows so the app's MCP screen can say who called.
+    client: Option<String>,
 }
 
 /// The runtime inputs `collect_refresh` feeds to [`tt_collect::collect_manual`]:
@@ -50,17 +58,49 @@ struct CollectConfig {
     slack: Option<SlackDmConfig>,
 }
 
+/// The result of dispatching one request: the response line to write back, plus
+/// the bits the call log needs — the tool name and compacted args (only set for
+/// `tools/call`) and an `error` message that is `Some` exactly when the call
+/// failed (a JSON-RPC error or an `isError` tool result).
+struct Outcome {
+    response: String,
+    tool: Option<String>,
+    args: Option<String>,
+    error: Option<String>,
+}
+
+impl Outcome {
+    fn ok(response: String) -> Outcome {
+        Outcome { response, tool: None, args: None, error: None }
+    }
+
+    fn err(response: String, error: String) -> Outcome {
+        Outcome { response, tool: None, args: None, error: Some(error) }
+    }
+
+    fn with_tool(mut self, tool: String, args: String) -> Outcome {
+        self.tool = Some(tool);
+        self.args = Some(args);
+        self
+    }
+}
+
 impl Dispatcher {
     /// Build a dispatcher over `store`; `journal_append` and `collect_refresh`
     /// resolve their config from the shared settings file on demand.
     pub fn new(store: Store) -> Dispatcher {
-        Dispatcher { store, journal_settings: None, collect_config: None }
+        Dispatcher { store, journal_settings: None, collect_config: None, client: None }
     }
 
     /// Build a dispatcher with fixed [`JournalSettings`] (test hook — keeps
     /// `journal_append` off the real `$HOME`).
     pub fn with_journal_settings(store: Store, journal_settings: JournalSettings) -> Dispatcher {
-        Dispatcher { store, journal_settings: Some(journal_settings), collect_config: None }
+        Dispatcher {
+            store,
+            journal_settings: Some(journal_settings),
+            collect_config: None,
+            client: None,
+        }
     }
 
     /// Build a dispatcher with fixed `collect_refresh` inputs (test hook — keeps
@@ -74,6 +114,7 @@ impl Dispatcher {
             store,
             journal_settings: None,
             collect_config: Some(CollectConfig { repo_dirs, slack }),
+            client: None,
         }
     }
 
@@ -108,27 +149,65 @@ impl Dispatcher {
             None => return Some(error_response(id, -32600, "Invalid Request")),
         };
 
-        Some(match method {
-            "initialize" => success_response(id, initialize_result(&value)),
-            "ping" => success_response(id, json!({})),
-            "tools/list" => success_response(id, json!({ "tools": tool_definitions() })),
+        // `initialize` carries the caller's identity; stamp it onto this and every
+        // later call from the session so the app's MCP screen can say who called.
+        if method == "initialize" {
+            self.client = client_label(&value);
+        }
+
+        // Time the handler and capture the outcome so it can be logged. Instant is
+        // a monotonic elapsed measurement at the transport boundary, not a
+        // timestamp — the row's `ts` still comes from the injected `now_ms`.
+        let started = Instant::now();
+        let outcome = match method {
+            "initialize" => Outcome::ok(success_response(id, initialize_result(&value))),
+            "ping" => Outcome::ok(success_response(id, json!({}))),
+            "tools/list" => {
+                Outcome::ok(success_response(id, json!({ "tools": tool_definitions() })))
+            }
             "tools/call" => self.tools_call(id, &value, now_ms),
-            _ => error_response(id, -32601, "Method not found"),
-        })
+            _ => Outcome::err(
+                error_response(id, -32601, "Method not found"),
+                "Method not found".to_string(),
+            ),
+        };
+
+        let call = McpCallInput {
+            method: method.to_string(),
+            tool: outcome.tool,
+            args: outcome.args,
+            ok: outcome.error.is_none(),
+            error: outcome.error,
+            duration_ms: Some(started.elapsed().as_millis() as i64),
+            client: self.client.clone(),
+        };
+        if let Err(error) = self.store.record_mcp_call(&call, now_ms) {
+            log::warn!("tt-mcp: failed to record call log: {error}");
+        }
+
+        Some(outcome.response)
     }
 
     /// Dispatch a `tools/call`: tool errors become an `isError` result (not a
-    /// JSON-RPC error), per the MCP contract.
-    fn tools_call(&mut self, id: Value, request: &Value, now_ms: i64) -> String {
+    /// JSON-RPC error), per the MCP contract. The returned [`Outcome`] also
+    /// carries the tool name and compacted args for the call log.
+    fn tools_call(&mut self, id: Value, request: &Value, now_ms: i64) -> Outcome {
         let params = request.get("params");
         let name = match params.and_then(|p| p.get("name")).and_then(Value::as_str) {
             Some(name) => name.to_string(),
-            None => return tool_error_response(id, "tools/call is missing the tool name"),
+            None => {
+                return Outcome::err(
+                    tool_error_response(id, "tools/call is missing the tool name"),
+                    "tools/call is missing the tool name".to_string(),
+                );
+            }
         };
         let args = params.and_then(|p| p.get("arguments")).cloned().unwrap_or_else(|| json!({}));
+        let logged_args = compact_args(&args);
         match self.call_tool(&name, &args, now_ms) {
-            Ok(value) => tool_result_response(id, &value),
-            Err(message) => tool_error_response(id, &message),
+            Ok(value) => Outcome::ok(tool_result_response(id, &value)).with_tool(name, logged_args),
+            Err(message) => Outcome::err(tool_error_response(id, &message), message)
+                .with_tool(name, logged_args),
         }
     }
 
@@ -626,6 +705,31 @@ fn initialize_result(request: &Value) -> Value {
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "towles-tool", "version": env!("CARGO_PKG_VERSION") },
     })
+}
+
+/// `name version` (or just `name`) from an `initialize` request's `clientInfo`,
+/// or `None` when the caller sent no usable identity. Stamped onto the call log
+/// so the app can show which client is driving the server.
+fn client_label(request: &Value) -> Option<String> {
+    let info = request.get("params")?.get("clientInfo")?;
+    let name = info.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty())?;
+    match info.get("version").and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()) {
+        Some(version) => Some(format!("{name} {version}")),
+        None => Some(name.to_string()),
+    }
+}
+
+/// A compact one-line rendering of a tool's arguments for the call log, capped at
+/// [`CALL_LOG_ARGS_MAX`] chars (truncated on a char boundary with an ellipsis) so
+/// a huge payload can't bloat tt.db.
+fn compact_args(args: &Value) -> String {
+    let rendered = args.to_string();
+    if rendered.chars().count() <= CALL_LOG_ARGS_MAX {
+        return rendered;
+    }
+    let mut truncated: String = rendered.chars().take(CALL_LOG_ARGS_MAX).collect();
+    truncated.push('…');
+    truncated
 }
 
 fn success_response(id: Value, result: Value) -> String {
@@ -1696,5 +1800,104 @@ mod tests {
         let mut dispatcher = dispatcher();
         let result = call_tool(&mut dispatcher, "agent_sessions", json!({}));
         assert!(result.get("sessions").is_some(), "expected a sessions field: {result}");
+    }
+
+    /// Drive a raw request line through the dispatcher, discarding its response.
+    fn drive(dispatcher: &mut Dispatcher, request: Value) {
+        dispatcher.handle_at(&request.to_string(), NOW);
+    }
+
+    #[test]
+    fn dispatch_records_initialize_client_and_tool_calls() {
+        let mut dispatcher = dispatcher();
+
+        // The session's initialize carries the caller identity for the log.
+        drive(
+            &mut dispatcher,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "clientInfo": { "name": "claude-code", "version": "2.1" } },
+            }),
+        );
+        // A successful tool call, then a failing one (unknown status).
+        drive(
+            &mut dispatcher,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": { "name": "todo_create", "arguments": { "title": "ship it" } },
+            }),
+        );
+        drive(
+            &mut dispatcher,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": { "name": "todo_set_status", "arguments": { "id": 9999, "status": "bad" } },
+            }),
+        );
+
+        let calls = dispatcher.store.mcp_calls(10).unwrap();
+        assert_eq!(calls.len(), 3, "one row per handled request: {calls:?}");
+
+        // Newest first: the failing set-status call.
+        assert_eq!(calls[0].method, "tools/call");
+        assert_eq!(calls[0].tool.as_deref(), Some("todo_set_status"));
+        assert!(!calls[0].ok);
+        assert!(calls[0].error.is_some(), "failed call records an error");
+        assert!(calls[0].duration_ms.is_some());
+        // The client identity from initialize rides along on every later row.
+        assert_eq!(calls[0].client.as_deref(), Some("claude-code 2.1"));
+
+        // The successful todo_create call, with its compacted args and ts.
+        assert_eq!(calls[1].tool.as_deref(), Some("todo_create"));
+        assert!(calls[1].ok);
+        assert_eq!(calls[1].error, None);
+        assert_eq!(calls[1].ts, NOW);
+        assert!(
+            calls[1].args.as_deref().is_some_and(|a| a.contains("ship it")),
+            "args should carry the payload: {:?}",
+            calls[1].args
+        );
+
+        // The initialize request itself: recorded, no tool, client stamped.
+        assert_eq!(calls[2].method, "initialize");
+        assert_eq!(calls[2].tool, None);
+        assert!(calls[2].ok);
+        assert_eq!(calls[2].client.as_deref(), Some("claude-code 2.1"));
+    }
+
+    #[test]
+    fn dispatch_records_unknown_method_as_error() {
+        let mut dispatcher = dispatcher();
+        drive(&mut dispatcher, json!({ "jsonrpc": "2.0", "id": 1, "method": "bogus/method" }));
+        let calls = dispatcher.store.mcp_calls(10).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "bogus/method");
+        assert!(!calls[0].ok);
+        assert_eq!(calls[0].error.as_deref(), Some("Method not found"));
+    }
+
+    #[test]
+    fn notifications_are_not_recorded() {
+        let mut dispatcher = dispatcher();
+        // A notification (no id) gets no response and no call-log row.
+        drive(&mut dispatcher, json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        assert!(dispatcher.store.mcp_calls(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn compact_args_truncates_on_char_boundary() {
+        let short = json!({ "title": "x" });
+        assert_eq!(compact_args(&short), r#"{"title":"x"}"#);
+
+        let big = json!({ "notes": "é".repeat(CALL_LOG_ARGS_MAX) });
+        let out = compact_args(&big);
+        assert!(out.ends_with('…'), "oversized args end with an ellipsis: {out}");
+        assert_eq!(out.chars().count(), CALL_LOG_ARGS_MAX + 1);
     }
 }

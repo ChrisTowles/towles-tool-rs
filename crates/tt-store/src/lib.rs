@@ -42,7 +42,13 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
+
+/// How many MCP call-log rows are retained; older rows are pruned on insert.
+const MCP_CALL_RETAIN: i64 = 500;
+
+/// How many MCP call-log rows ride along in a [`Snapshot`] (newest first).
+const MCP_CALL_SNAPSHOT_LIMIT: usize = 100;
 
 /// Kanban columns a todo can live in, in board order.
 pub const TASK_STATUSES: [&str; 5] = ["backlog", "next", "doing", "review", "done"];
@@ -117,6 +123,23 @@ CREATE TABLE IF NOT EXISTS dm_status (
 );
 ";
 
+/// v5: the MCP server's incoming-call log (one row per JSON-RPC request the
+/// `ttr mcp serve` dispatcher handled). `IF NOT EXISTS`, so `migrate` stays
+/// idempotent and pre-v5 dbs gain the table in place.
+const SCHEMA_MCP_CALLS_V5: &str = "\
+CREATE TABLE IF NOT EXISTS mcp_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    method TEXT NOT NULL,
+    tool TEXT,
+    args TEXT,
+    ok INTEGER NOT NULL,
+    error TEXT,
+    duration_ms INTEGER,
+    client TEXT
+);
+";
+
 // Column lists, kept in sync with the row-mapping closures below.
 const EVENT_COLS: &str = "id, external_id, title, start_ts, end_ts, attendees, location, join_url";
 const TASK_COLS: &str = "id, text, status, position, due_ts, repo, issue_number, issue_url, \
@@ -125,6 +148,7 @@ const ISSUE_COLS: &str = "repo, number, title, labels, state, url, updated_ts";
 const PR_COLS: &str = "repo, number, title, branch, state, checks, review_state, url, updated_ts";
 const RUN_COLS: &str = "collector, ran_at, ok, message";
 const DM_COLS: &str = "channel, from_name, text, ts, from_me, url, fetched_at, dismissed_ts";
+const MCP_CALL_COLS: &str = "id, ts, method, tool, args, ok, error, duration_ms, client";
 
 /// Kanban ordering used across queries: board column, then manual position, then age.
 const TASK_ORDER: &str = "\
@@ -231,6 +255,29 @@ pub struct DmItem {
     pub dismissed_ts: i64,
 }
 
+/// One handled MCP request: what came in (method, tool, compacted args), how it
+/// went (`ok`/`error`), how long the handler took, and which client sent it
+/// (from the session's `initialize`). Written by the `ttr mcp serve` dispatcher,
+/// read by the app's MCP screen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCall {
+    pub id: i64,
+    pub ts: i64,
+    pub method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+}
+
 /// Full-store snapshot for the dashboard UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -241,6 +288,8 @@ pub struct Snapshot {
     pub prs: Vec<PrItem>,
     pub runs: Vec<CollectRun>,
     pub dms: Vec<DmItem>,
+    #[serde(default)]
+    pub mcp_calls: Vec<McpCall>,
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +336,25 @@ pub struct DmInput {
     pub from_me: bool,
     #[serde(default)]
     pub url: Option<String>,
+}
+
+/// What the MCP dispatcher hands the store for one handled request. The row's
+/// `ts` comes from the dispatcher's injected `now_ms`, never a clock read here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCallInput {
+    pub method: String,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub args: Option<String>,
+    pub ok: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub client: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -350,6 +418,7 @@ impl Store {
         self.conn.execute_batch(SCHEMA_V1)?;
         self.migrate_tasks_v2()?;
         self.migrate_tasks_notes_v4()?;
+        self.conn.execute_batch(SCHEMA_MCP_CALLS_V5)?;
         self.conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -796,6 +865,39 @@ impl Store {
         Ok(())
     }
 
+    /// Append one handled MCP request to the call log, pruning rows beyond the
+    /// newest [`MCP_CALL_RETAIN`] so the log never grows unbounded.
+    pub fn record_mcp_call(&self, call: &McpCallInput, now_ms: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO mcp_calls (ts, method, tool, args, ok, error, duration_ms, client)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                now_ms,
+                call.method,
+                call.tool,
+                call.args,
+                call.ok,
+                call.error,
+                call.duration_ms,
+                call.client,
+            ],
+        )?;
+        self.conn.execute(
+            "DELETE FROM mcp_calls WHERE id NOT IN
+               (SELECT id FROM mcp_calls ORDER BY id DESC LIMIT ?1)",
+            params![MCP_CALL_RETAIN],
+        )?;
+        Ok(())
+    }
+
+    /// The newest `limit` MCP call-log rows, newest first.
+    pub fn mcp_calls(&self, limit: usize) -> Result<Vec<McpCall>> {
+        self.query_mcp_calls(
+            &format!("SELECT {MCP_CALL_COLS} FROM mcp_calls ORDER BY id DESC LIMIT ?1"),
+            [limit as i64],
+        )
+    }
+
     // --- Queries ----------------------------------------------------------
 
     /// Events starting within `[start_ms, end_ms)`, ordered by start time.
@@ -868,9 +970,9 @@ impl Store {
         self.query_dms(&format!("SELECT {DM_COLS} FROM dm_status ORDER BY ts DESC"), [])
     }
 
-    /// A single full snapshot of the store for the dashboard. The five reads
-    /// share one transaction so a concurrent writer (CLI collector, another
-    /// window) can't produce a torn cross-table view.
+    /// A single full snapshot of the store for the dashboard. The reads share
+    /// one transaction so a concurrent writer (CLI collector, another window)
+    /// can't produce a torn cross-table view.
     pub fn snapshot(&self) -> Result<Snapshot> {
         let tx = self.conn.unchecked_transaction()?;
         let events = self
@@ -880,8 +982,9 @@ impl Store {
         let prs = self.prs()?;
         let runs = self.runs()?;
         let dms = self.dms()?;
+        let mcp_calls = self.mcp_calls(MCP_CALL_SNAPSHOT_LIMIT)?;
         tx.commit()?;
-        Ok(Snapshot { events, tasks, issues, prs, runs, dms })
+        Ok(Snapshot { events, tasks, issues, prs, runs, dms, mcp_calls })
     }
 
     // --- Row-mapping helpers ---------------------------------------------
@@ -1011,6 +1114,24 @@ impl Store {
                 ran_at: r.get(1)?,
                 ok: r.get(2)?,
                 message: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn query_mcp_calls(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<McpCall>> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params, |r| {
+            Ok(McpCall {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                method: r.get(2)?,
+                tool: r.get(3)?,
+                args: r.get(4)?,
+                ok: r.get(5)?,
+                error: r.get(6)?,
+                duration_ms: r.get(7)?,
+                client: r.get(8)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1726,5 +1847,66 @@ mod tests {
         // snake_case must not leak through.
         assert!(!json.contains("start_ts"));
         assert!(!json.contains("review_state"));
+    }
+
+    fn mcp_call(method: &str, tool: Option<&str>, ok: bool) -> McpCallInput {
+        McpCallInput {
+            method: method.to_string(),
+            tool: tool.map(str::to_string),
+            args: tool.map(|_| "{\"title\":\"x\"}".to_string()),
+            ok,
+            error: (!ok).then(|| "boom".to_string()),
+            duration_ms: Some(3),
+            client: Some("claude-code 2.0".to_string()),
+        }
+    }
+
+    #[test]
+    fn record_mcp_call_reads_back_newest_first() {
+        let s = Store::open_in_memory().unwrap();
+        s.record_mcp_call(&mcp_call("tools/list", None, true), 10).unwrap();
+        s.record_mcp_call(&mcp_call("tools/call", Some("todo_create"), true), 20).unwrap();
+        s.record_mcp_call(&mcp_call("tools/call", Some("nope"), false), 30).unwrap();
+
+        let calls = s.mcp_calls(10).unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].ts, 30);
+        assert_eq!(calls[0].tool.as_deref(), Some("nope"));
+        assert!(!calls[0].ok);
+        assert_eq!(calls[0].error.as_deref(), Some("boom"));
+        assert_eq!(calls[2].method, "tools/list");
+        assert_eq!(calls[2].tool, None);
+        assert_eq!(calls[1].args.as_deref(), Some("{\"title\":\"x\"}"));
+        assert_eq!(calls[1].client.as_deref(), Some("claude-code 2.0"));
+
+        // The limit caps the read.
+        assert_eq!(s.mcp_calls(2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn record_mcp_call_prunes_beyond_retention() {
+        let s = Store::open_in_memory().unwrap();
+        for i in 0..(MCP_CALL_RETAIN + 25) {
+            s.record_mcp_call(&mcp_call("ping", None, true), i).unwrap();
+        }
+        let calls = s.mcp_calls(MCP_CALL_RETAIN as usize * 2).unwrap();
+        assert_eq!(calls.len(), MCP_CALL_RETAIN as usize);
+        // The survivors are the newest rows.
+        assert_eq!(calls[0].ts, MCP_CALL_RETAIN + 24);
+        assert_eq!(calls.last().unwrap().ts, 25);
+    }
+
+    #[test]
+    fn snapshot_carries_mcp_calls_camel_cased() {
+        let s = Store::open_in_memory().unwrap();
+        s.record_mcp_call(&mcp_call("tools/call", Some("day_brief"), true), 7).unwrap();
+        let snapshot = s.snapshot().unwrap();
+        assert_eq!(snapshot.mcp_calls.len(), 1);
+        assert_eq!(snapshot.mcp_calls[0].tool.as_deref(), Some("day_brief"));
+
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(json.contains("\"mcpCalls\""), "expected mcpCalls in {json}");
+        assert!(json.contains("\"durationMs\""), "expected durationMs in {json}");
+        assert!(!json.contains("mcp_calls"));
     }
 }
