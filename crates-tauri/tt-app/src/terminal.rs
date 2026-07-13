@@ -400,6 +400,27 @@ pub fn term_scroll(
     Ok(())
 }
 
+/// Report a mouse-wheel gesture at viewport cell (`x`, `y`) to the program
+/// running in the terminal (`lines` rows, up is negative). The engine encodes
+/// it in whatever mouse protocol the program negotiated and the bytes ride
+/// the reply path into the PTY; when the program never enabled mouse tracking
+/// nothing is written. The view only calls this when the frame's mode hints
+/// say the mouse is tracked, but the engine re-checks, so a stale hint can't
+/// inject input — and a wheel never turns into arrow keys.
+#[tauri::command]
+pub fn term_wheel(
+    state: State<TermState>,
+    term_id: String,
+    x: u16,
+    y: u16,
+    lines: i32,
+) -> Result<(), String> {
+    let guard = state.sessions.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::Wheel { x, y, lines });
+    Ok(())
+}
+
 /// Ask the engine to emit one full frame regardless of dirty state. The view
 /// calls this when a pane transitions from hidden (`display:none`) back to
 /// visible: dirty-only frames never resend rows the engine considers clean,

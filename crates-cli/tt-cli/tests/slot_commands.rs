@@ -212,6 +212,71 @@ fn rm_guards_dirty_and_orphan_commits() {
 }
 
 #[test]
+fn rm_untracks_the_slot_and_removes_its_instance_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = make_root(tmp.path());
+    let root_s = root.to_string_lossy().to_string();
+    // Sandbox every state path: fake HOME (tt-config resolves ~/.config and
+    // the data dir through it) plus a forced TT_STATE_SCOPE — a forced scope
+    // nests shared stores too, so nothing touches the real machine files.
+    let home = tmp.path().join("home");
+    let scope_env: Vec<(&str, String)> = vec![
+        ("HOME", home.to_string_lossy().to_string()),
+        ("XDG_DATA_HOME", home.join(".local").join("share").to_string_lossy().to_string()),
+        (tt_config::STATE_SCOPE_ENV, "rm-test".to_string()),
+    ];
+
+    ttr().args(["slot", "new", "-b", "feat/tracked", "--root", &root_s]).assert().success();
+    let slot = root.join("slots").join("tracked");
+
+    // Give the slot checkout this repo's scope marker (committed, so the tree
+    // stays clean for the removal guards): its state scope becomes
+    // `demo-tracked` (repo name from the sibling demo-primary + slot name).
+    std::fs::create_dir_all(slot.join("crates").join("tt-config")).unwrap();
+    std::fs::write(slot.join("crates").join("tt-config").join(".gitkeep"), "").unwrap();
+    git(&slot, &["add", "."]);
+    git(&slot, &["commit", "-m", "scope marker"]);
+
+    // The app tracks slots it creates: simulate that in the sandboxed
+    // repos.json, alongside a repo that must survive the removal.
+    let shared = home.join(".config").join("towles-tool").join("slots").join("rm-test");
+    let repos_json = shared.join("agentboard").join("repos.json");
+    std::fs::create_dir_all(repos_json.parent().unwrap()).unwrap();
+    let slot_s = slot.to_string_lossy().to_string();
+    std::fs::write(
+        &repos_json,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "repoPaths": [slot_s, "/kept/elsewhere"],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Leftover instance state the removed slot's app instance wrote.
+    let state_dir = shared.join("slots").join("demo-tracked");
+    std::fs::create_dir_all(state_dir.join("agentboard")).unwrap();
+    std::fs::write(state_dir.join("agentboard").join("sessions.json"), "{}\n").unwrap();
+
+    let mut cmd = ttr();
+    cmd.envs(scope_env.iter().map(|(k, v)| (*k, v.as_str())));
+    cmd.args(["slot", "rm", "tracked", "--root", &root_s])
+        .assert()
+        .success()
+        .stdout(contains("untracked from the agentboard rail"))
+        .stdout(contains("removed slot state"));
+
+    assert!(!slot.exists());
+    assert!(!state_dir.exists(), "the slot's orphaned instance state is swept");
+    let repos: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&repos_json).unwrap()).unwrap();
+    assert_eq!(
+        repos["repoPaths"],
+        serde_json::json!(["/kept/elsewhere"]),
+        "the removed slot is untracked; other repos survive"
+    );
+}
+
+#[test]
 fn lockfile_detection_installs_without_declared_setup() {
     // A repo with no TT_SLOT_SETUP but a package-lock.json: setup_command
     // picks `npm install`. Proving the pure decision is enough here — the

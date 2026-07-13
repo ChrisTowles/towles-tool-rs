@@ -176,6 +176,17 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
     for message in &removed.messages {
         ui::warning(message);
     }
+    // The slot may be tracked on the agentboard rail (the app tracks slots it
+    // creates); drop the now-dangling entry so the rail doesn't keep a
+    // "missing" ghost with its pane and windows.
+    let dir_s = removed.dir.to_string_lossy();
+    if let Ok((_, untracked)) = tt_agentboard::repos::remove_repo_persisted(
+        &tt_agentboard::repos::default_repos_path(),
+        &dir_s,
+    ) && untracked
+    {
+        println!("  untracked from the agentboard rail");
+    }
     ui::success(&format!("removed {} (ports released with its .env)", removed.name));
     Ok(())
 }

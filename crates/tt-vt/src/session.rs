@@ -66,6 +66,10 @@ pub enum Input {
     },
     /// Scroll the viewport by rows (up is negative); `None` jumps to bottom.
     Scroll(Option<isize>),
+    /// Report a mouse-wheel gesture at viewport cell (`x`, `y`) to the
+    /// application in its negotiated mouse protocol (`lines` rows, up is
+    /// negative). No-op unless the application enabled mouse tracking.
+    Wheel { x: u16, y: u16, lines: i32 },
     /// Apply a selection operation.
     Select(Select),
     /// Reply with the active selection's plain text on the provided channel.
@@ -194,6 +198,11 @@ impl Session {
                     let _ = engine.resize(cols, rows, cell_width_px, cell_height_px);
                 }
                 Input::Scroll(delta) => engine.scroll(delta),
+                // Encoding can only fail on allocation; the report is
+                // best-effort like any other input.
+                Input::Wheel { x, y, lines } => {
+                    let _ = engine.wheel(x, y, lines);
+                }
                 // Out-of-bounds coordinates (layout races) are ignored;
                 // the selection just doesn't change.
                 Input::Select(op) => {

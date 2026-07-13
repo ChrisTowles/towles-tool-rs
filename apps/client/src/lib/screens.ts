@@ -96,6 +96,7 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     title: "Claude Sessions",
     icon: ChartColumn,
     keywords: ["tokens", "usage", "sessions", "claude code", "history", "repos"],
+    fullBleed: true,
   },
   "gh-prs": {
     id: "gh-prs",
