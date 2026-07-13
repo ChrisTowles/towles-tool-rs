@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Columns2, Rows2 } from "lucide-react";
-import { pairDiffLines, parseDiff, type DiffFile, type DiffLine } from "@/lib/diff";
+import { ChevronDown, ChevronRight, Columns2, Folder, Rows2 } from "lucide-react";
+import {
+  buildDiffTree,
+  pairDiffLines,
+  parseDiff,
+  type DiffFile,
+  type DiffLine,
+  type DiffTreeNode,
+} from "@/lib/diff";
 import { cn } from "@/lib/utils";
 
 /**
@@ -43,16 +50,86 @@ function DiffCounts({ additions, deletions }: { additions: number; deletions: nu
   );
 }
 
-/** File path that keeps the filename visible: the directory part absorbs all
- * truncation, so a deep path still ends in its actual file name. */
-function TruncatedPath({ path }: { path: string }) {
-  const slash = path.lastIndexOf("/");
-  if (slash === -1) return <span className="truncate">{path}</span>;
+/** Per-level left inset for the file rail's tree rows; folders and their
+ * files share the same ladder so a folder's children visibly nest under it. */
+const TREE_INDENT_PX = 14;
+const TREE_BASE_PX = 8;
+
+function DiffTreeRows({
+  nodes,
+  depth,
+  files,
+  selected,
+  onSelect,
+  collapsed,
+  onToggleFolder,
+}: {
+  nodes: DiffTreeNode[];
+  depth: number;
+  files: DiffFile[];
+  selected: number;
+  onSelect: (index: number) => void;
+  collapsed: Set<string>;
+  onToggleFolder: (path: string) => void;
+}) {
   return (
-    <span className="flex min-w-0 items-center">
-      <span className="truncate text-muted-foreground">{path.slice(0, slash)}</span>
-      <span className="max-w-full shrink-0 truncate">{path.slice(slash)}</span>
-    </span>
+    <>
+      {nodes.map((node) => {
+        const paddingLeft = TREE_BASE_PX + depth * TREE_INDENT_PX;
+        if (node.kind === "folder") {
+          const isCollapsed = collapsed.has(node.path);
+          return (
+            <div key={node.path}>
+              <button
+                type="button"
+                onClick={() => onToggleFolder(node.path)}
+                style={{ paddingLeft }}
+                className="flex w-full items-center gap-1.5 py-1 pr-2 text-left text-[11px] font-medium text-muted-foreground hover:bg-accent/50"
+              >
+                {isCollapsed ? (
+                  <ChevronRight className="size-3 shrink-0 text-muted-foreground/70" />
+                ) : (
+                  <ChevronDown className="size-3 shrink-0 text-muted-foreground/70" />
+                )}
+                <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
+                <span className="truncate">{node.name}</span>
+              </button>
+              {!isCollapsed && (
+                <DiffTreeRows
+                  nodes={node.children}
+                  depth={depth + 1}
+                  files={files}
+                  selected={selected}
+                  onSelect={onSelect}
+                  collapsed={collapsed}
+                  onToggleFolder={onToggleFolder}
+                />
+              )}
+            </div>
+          );
+        }
+
+        const file = files[node.index];
+        return (
+          <button
+            key={node.path}
+            type="button"
+            onClick={() => onSelect(node.index)}
+            style={{ paddingLeft }}
+            className={cn(
+              "flex w-full items-center gap-2 border-l-2 border-transparent py-1.5 pr-2 text-left text-xs",
+              node.index === selected
+                ? "border-l-violet-500 bg-accent text-foreground"
+                : "text-muted-foreground hover:bg-accent/50",
+            )}
+          >
+            <ChangeTypeLetter file={file} />
+            <span className="min-w-0 flex-1 truncate">{node.name}</span>
+            <DiffCounts additions={file.additions} deletions={file.deletions} />
+          </button>
+        );
+      })}
+    </>
   );
 }
 
@@ -121,10 +198,22 @@ type ViewMode = "unified" | "split";
 
 export function DiffViewer({ text }: { text: string }) {
   const files = useMemo(() => parseDiff(text), [text]);
+  const tree = useMemo(() => buildDiffTree(files), [files]);
   const [selected, setSelected] = useState(0);
   const [viewMode, setViewMode] = useState<ViewMode>("unified");
-  // A new diff (dialog re-opened for another folder) resets the selection.
-  useEffect(() => setSelected(0), [text]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  // A new diff (dialog re-opened for another folder) resets selection + tree state.
+  useEffect(() => {
+    setSelected(0);
+    setCollapsed(new Set());
+  }, [text]);
+  const toggleFolder = (path: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
   const file = files[Math.min(selected, files.length - 1)];
 
   if (files.length === 0) {
@@ -143,25 +232,15 @@ export function DiffViewer({ text }: { text: string }) {
             deletions={files.reduce((s, f) => s + f.deletions, 0)}
           />
         </div>
-        {files.map((f, i) => (
-          <button
-            key={f.path}
-            type="button"
-            onClick={() => setSelected(i)}
-            className={cn(
-              "flex items-center gap-2 border-l-2 border-transparent px-2 py-1.5 text-left text-xs",
-              i === selected
-                ? "border-l-violet-500 bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent/50",
-            )}
-          >
-            <ChangeTypeLetter file={f} />
-            <span className="min-w-0 flex-1">
-              <TruncatedPath path={f.path} />
-            </span>
-            <DiffCounts additions={f.additions} deletions={f.deletions} />
-          </button>
-        ))}
+        <DiffTreeRows
+          nodes={tree}
+          depth={0}
+          files={files}
+          selected={selected}
+          onSelect={setSelected}
+          collapsed={collapsed}
+          onToggleFolder={toggleFolder}
+        />
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex shrink-0 items-center gap-2 border-b bg-card px-3 py-1.5">

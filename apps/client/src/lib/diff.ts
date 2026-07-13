@@ -140,3 +140,66 @@ export function pairDiffLines(lines: DiffLine[]): SplitDiffRow[] {
 
   return rows;
 }
+
+/** A row in the file rail's tree rendering: a directory (with its children)
+ * or a leaf file. `index` is the file's position in the flat `DiffFile[]`
+ * the tree was built from, so selection state stays keyed by that array. */
+export type DiffTreeNode =
+  | { kind: "folder"; name: string; path: string; children: DiffTreeNode[] }
+  | { kind: "file"; name: string; path: string; index: number };
+
+type BuildingFolder = {
+  name: string;
+  path: string;
+  folders: Map<string, BuildingFolder>;
+  files: DiffTreeNode[];
+};
+
+/** Directory chains with only one child directory and no files of their own
+ * collapse into a single row (`src/components` instead of `src` > `components`),
+ * matching VS Code / GitHub's "compact folders" tree rendering. */
+function collapseSingleChildChain(name: string, path: string, children: DiffTreeNode[]): DiffTreeNode {
+  let mergedName = name;
+  let mergedPath = path;
+  let mergedChildren = children;
+  while (mergedChildren.length === 1 && mergedChildren[0].kind === "folder") {
+    const only = mergedChildren[0];
+    mergedName = `${mergedName}/${only.name}`;
+    mergedPath = only.path;
+    mergedChildren = only.children;
+  }
+  return { kind: "folder", name: mergedName, path: mergedPath, children: mergedChildren };
+}
+
+/** Group a flat file list into a directory tree for the file rail: folders
+ * sort before files, both alphabetically within their level. */
+export function buildDiffTree(files: DiffFile[]): DiffTreeNode[] {
+  const root: BuildingFolder = { name: "", path: "", folders: new Map(), files: [] };
+
+  files.forEach((file, index) => {
+    const segments = file.path.split("/");
+    let node = root;
+    for (let i = 0; i < segments.length - 1; i++) {
+      const seg = segments[i];
+      const path = node.path ? `${node.path}/${seg}` : seg;
+      let child = node.folders.get(seg);
+      if (!child) {
+        child = { name: seg, path, folders: new Map(), files: [] };
+        node.folders.set(seg, child);
+      }
+      node = child;
+    }
+    const name = segments[segments.length - 1];
+    node.files.push({ kind: "file", name, path: file.path, index });
+  });
+
+  function finalize(node: BuildingFolder): DiffTreeNode[] {
+    const folderNodes = Array.from(node.folders.values())
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((f) => collapseSingleChildChain(f.name, f.path, finalize(f)));
+    const fileNodes = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
+    return [...folderNodes, ...fileNodes];
+  }
+
+  return finalize(root);
+}
