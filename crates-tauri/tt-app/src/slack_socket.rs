@@ -12,8 +12,17 @@
 //!
 //! Absence of an app token is a clean no-op: the task parks on the reload signal
 //! and costs nothing until Slack is (re)configured.
+//!
+//! Settings (and so the Slack token) are shared across every open worktree
+//! slot, so unconditionally spawning this loop makes each open slot's app
+//! process independently connect and poll on the same token — duplicate
+//! `wss://` connections and duplicate notifications for one Slack message
+//! (#227). The loop only proceeds past the [`instance_lock::InstanceLock`]
+//! gate in one process at a time; the rest park and retry periodically so a
+//! closed "primary" instance's slot is picked up without a relaunch.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tauri::{AppHandle, Emitter, Manager};
@@ -21,7 +30,11 @@ use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::Message;
 use tt_collect::{Backoff, Envelope, SlackDmConfig};
 
+use crate::instance_lock::InstanceLock;
 use crate::store::SNAPSHOT_EVENT;
+
+/// How often a non-primary instance rechecks whether the lock has freed up.
+const LOCK_RETRY: Duration = Duration::from_secs(30);
 
 /// The Slack config a socket connection needs: the user token (Web API DM
 /// calls + file fetch), the app token (`apps.connections.open`), and the watched
@@ -70,7 +83,23 @@ enum Outcome {
 pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
     tauri::async_runtime::spawn(async move {
         let mut backoff = Backoff::new();
+        let mut lock: Option<InstanceLock> = None;
         loop {
+            if lock.is_none() {
+                lock = InstanceLock::try_acquire("slack-socket");
+                if lock.is_none() {
+                    eprintln!(
+                        "slack socket: another instance already holds the singleton lock, \
+                         parking (retry in {}s)",
+                        LOCK_RETRY.as_secs()
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(LOCK_RETRY) => {}
+                        _ = reload.notified() => {}
+                    }
+                    continue;
+                }
+            }
             let Some(config) = read_config() else {
                 // Socket Mode off: park until settings change, then re-evaluate.
                 reload.notified().await;
