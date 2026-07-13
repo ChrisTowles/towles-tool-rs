@@ -86,6 +86,12 @@ pub fn scan_session_agents(scope: &InstanceScope) -> Vec<SessionAgentProc> {
         if comm.trim() != "claude" {
             continue;
         }
+        // The shared `claude daemon` also reports `comm == "claude"` and can
+        // inherit a PTY's TT_SESSION_ID when first spawned from an app shell;
+        // without this it would be surfaced as an agent occupying that session.
+        if is_claude_daemon(pid) {
+            continue;
+        }
         if let Some(sid) = session_id_in_scope(pid, scope) {
             out.push(SessionAgentProc { session_id: sid, pid, transcript: open_transcript(pid) });
         }
@@ -111,6 +117,21 @@ fn open_transcript(pid: i32) -> Option<PathBuf> {
             s.ends_with(".jsonl") && s.contains("/.claude/projects/") && !s.contains("/subagents/");
         ok.then_some(target)
     })
+}
+
+/// Whether `pid` is the shared `claude daemon` process rather than an
+/// interactive/background session. Reads `/proc/<pid>/cmdline`; the pure test
+/// lives on [`is_daemon_argv`].
+#[cfg(target_os = "linux")]
+fn is_claude_daemon(pid: i32) -> bool {
+    std::fs::read(format!("/proc/{pid}/cmdline")).map(|b| is_daemon_argv(&b)).unwrap_or(false)
+}
+
+/// Whether NUL-separated `argv` bytes describe `claude daemon …` (i.e. the
+/// first argument after the program is `daemon`).
+#[cfg(target_os = "linux")]
+fn is_daemon_argv(cmdline: &[u8]) -> bool {
+    cmdline.split(|&b| b == 0).nth(1) == Some(b"daemon".as_slice())
 }
 
 /// The `TT_SESSION_ID` of the PTY `pid` runs in, if that PTY was spawned by an
@@ -147,13 +168,25 @@ pub fn in_scope(_pid: i32, _scope: &InstanceScope) -> bool {
 
 /// The session id from environ bytes, if the stamped instance passes `scope`.
 /// Pure and unit-tested (the platform-specific part is only the file read).
+///
+/// Under [`InstanceScope::Instance`] a shell is ours unless it carries a
+/// *different* app's instance stamp. A **missing** stamp is admitted, not
+/// dropped: a concurrent app always stamps its own pid on its PTYs, so the only
+/// way to see a `TT_SESSION_ID` with no `TT_APP_INSTANCE` is a shell we spawned
+/// before instance-stamping existed (or one from a build that predates it).
+/// The old exact-match rule dropped those, so an app upgraded past the stamp
+/// showed no agent name/status on any pre-existing shell — the whole board went
+/// blank until every shell was respawned. Excluding only a present-and-foreign
+/// stamp keeps the shared-`sessions.json` collision guard (two live apps hosting
+/// the same session id) while staying tolerant of unstamped shells.
 fn scoped_session_id(bytes: &[u8], scope: &InstanceScope) -> Option<String> {
     let sid = read_var_from_environ(bytes, TT_SESSION_ENV).filter(|s| !s.is_empty())?;
     match scope {
         InstanceScope::Any => Some(sid),
-        InstanceScope::Instance(id) => (read_var_from_environ(bytes, TT_INSTANCE_ENV).as_deref()
-            == Some(id.as_str()))
-        .then_some(sid),
+        InstanceScope::Instance(id) => match read_var_from_environ(bytes, TT_INSTANCE_ENV) {
+            Some(stamp) if stamp != *id => None,
+            _ => Some(sid),
+        },
     }
 }
 
@@ -195,16 +228,31 @@ mod tests {
     }
 
     #[test]
-    fn instance_scope_requires_matching_stamp() {
+    fn instance_scope_excludes_only_a_foreign_stamp() {
         let environ = b"TT_SESSION_ID=s00abc\0TT_APP_INSTANCE=1234\0";
         let ours = InstanceScope::Instance("1234".into());
         let theirs = InstanceScope::Instance("5678".into());
+        // Matching stamp → ours; a *different* app's stamp → not ours (the
+        // shared-sessions.json collision the stamp guards against).
         assert_eq!(scoped_session_id(environ, &ours).as_deref(), Some("s00abc"));
         assert_eq!(scoped_session_id(environ, &theirs), None);
-        // No instance stamp at all → not ours, even with a session id. This is
-        // the shared-sessions.json collision the stamp exists to prevent.
+        // No stamp at all → still ours. A concurrent app always stamps its own
+        // pid, so an unstamped shell can only be one we spawned before instance
+        // stamping existed; dropping it (the old exact-match rule) blanked the
+        // agent on every pre-existing shell after an app upgrade.
         let unstamped = b"TT_SESSION_ID=s00abc\0";
-        assert_eq!(scoped_session_id(unstamped, &ours), None);
+        assert_eq!(scoped_session_id(unstamped, &ours).as_deref(), Some("s00abc"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn daemon_argv_detected_but_interactive_is_not() {
+        // `claude daemon run --origin transient` — argv[1] == "daemon".
+        assert!(is_daemon_argv(b"/home/u/.local/bin/claude\0daemon\0run\0--origin\0transient\0"));
+        // A plain interactive session — argv[1] is a flag, not "daemon".
+        assert!(!is_daemon_argv(b"claude\0--permission-mode\0auto\0--chrome\0"));
+        // Bare `claude` (no args) — nothing after the program.
+        assert!(!is_daemon_argv(b"claude\0"));
     }
 
     #[test]
