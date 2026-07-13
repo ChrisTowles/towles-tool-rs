@@ -636,6 +636,13 @@ export function rollupAlertColor(r: AgentRollup): string | null {
   return null;
 }
 
+/** Badge text color to pair with `rollupAlertColor`'s background — white
+ * reads fine on the red/blue/emerald fills, but on yellow-500 (busy) it's
+ * nearly illegible, so that one badge needs dark text instead. */
+export function rollupAlertTextColor(bg: string | null): string {
+  return bg === "bg-yellow-500" ? "text-yellow-950" : "text-white";
+}
+
 const EMPTY_WINDOWS: WindowsPayload = { windows: [], activeWindows: {} };
 
 const EMPTY: StatePayload = {

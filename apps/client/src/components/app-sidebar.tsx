@@ -2,7 +2,12 @@ import { DotCount } from "@/components/agentboard-bits";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { agentRollup, rollupAlertColor, useAgentboardState } from "@/lib/agentboard";
+import {
+  agentRollup,
+  rollupAlertColor,
+  rollupAlertTextColor,
+  useAgentboardState,
+} from "@/lib/agentboard";
 import { NAV_SECTIONS, SCREENS } from "@/lib/screens";
 import { useWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
@@ -98,8 +103,9 @@ export function AppSidebarIcons() {
                       {showBadge && (
                         <span
                           className={cn(
-                            "absolute -right-1 -bottom-1 min-w-4 rounded-full px-0.5 text-center font-mono text-[9px] leading-[14px] text-white",
+                            "absolute -right-1 -bottom-1 min-w-4 rounded-full px-0.5 text-center font-mono text-[9px] leading-[14px]",
                             badgeColor,
+                            rollupAlertTextColor(badgeColor),
                           )}
                         >
                           {rollup.total}
