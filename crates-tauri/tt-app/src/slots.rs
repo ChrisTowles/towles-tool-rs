@@ -71,13 +71,34 @@ pub struct SlotRemoved {
 /// Remove the worktree slot at `dir`, guarded — a dirty tree, commits
 /// unreachable from any branch/remote, or a foreign listener on the slot's
 /// claimed ports block with an explanatory error (no force path in the app;
-/// use `tt slot rm --force`). Cleans up docker resources, the worktree
-/// registration, and the slot's agentboard tracking — the rail entry (and
-/// with it the pane/windows, via the engine's prune) goes away instead of
-/// lingering as a "missing" ghost. Long-running → off the main thread.
+/// use `tt slot rm --force`). Before touching the worktree, closes out the
+/// folder's live rail state in order — kill its PTYs (SIGHUPing any Claude
+/// Code session running inside), drop its window/pane records — so removal
+/// never leaves a shell orphaned on a deleted cwd or a ghost pane/window
+/// lingering in the rail until the next poll notices the directory is gone.
+/// Then cleans up docker resources, the worktree registration, and the
+/// slot's agentboard tracking. Long-running → off the main thread.
 #[tauri::command]
 pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemoved, String> {
     use tauri::Manager;
+
+    let mut messages = Vec::new();
+    {
+        let ab = app.state::<crate::agentboard::Ab>();
+        let closed_ids = ab.engine.lock().unwrap().close_folder(&dir);
+        if !closed_ids.is_empty() {
+            let term_state = app.state::<crate::terminal::TermState>();
+            for id in &closed_ids {
+                term_state.kill(id);
+            }
+            messages.push(format!(
+                "closed {} session{} and their panes/windows",
+                closed_ids.len(),
+                if closed_ids.len() == 1 { "" } else { "s" }
+            ));
+        }
+        ab.emit.notify_one();
+    }
 
     let removed = tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(&dir);
@@ -96,7 +117,7 @@ pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemov
     .await
     .map_err(|e| format!("slot task failed: {e}"))??;
 
-    let mut messages = removed.messages;
+    messages.extend(removed.messages);
     let ab = app.state::<crate::agentboard::Ab>();
     let untracked = {
         let mut engine = ab.engine.lock().unwrap();

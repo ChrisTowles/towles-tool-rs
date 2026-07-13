@@ -97,6 +97,22 @@ impl WindowsStore {
         gone.into_iter().collect()
     }
 
+    /// Drop every window (and the active-window entry) for one folder right
+    /// now — used ahead of a slot removal, before the checkout disappears
+    /// from disk, so the layout doesn't wait for the next poll's
+    /// [`Self::prune`] to notice. Returns whether anything changed; caller
+    /// persists via [`Self::save`] with `dir` in `touched`.
+    pub fn remove_folder(&mut self, dir: &str) -> bool {
+        let had_windows = self.payload.windows.iter().any(|w| w.folder_dir == dir);
+        let had_active = self.payload.active_windows.contains_key(dir);
+        if !had_windows && !had_active {
+            return false;
+        }
+        self.payload.windows.retain(|w| w.folder_dir != dir);
+        self.payload.active_windows.remove(dir);
+        true
+    }
+
     /// Persist `touched` folder dirs — the ones whose windows/active-window
     /// actually changed since the last save (the caller, `agentboard.tsx`'s
     /// `updateWins`, tracks this because a window's frontend blob doesn't
@@ -476,6 +492,23 @@ mod tests {
         let mut reloaded = reloaded;
         assert!(reloaded.prune(&kept).is_empty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn remove_folder_drops_its_windows_and_active_entry_only() {
+        let mut store = WindowsStore::new(None);
+        let mut payload = layout();
+        payload.windows.push(win("w2", "/repo/other", &["s3"]));
+        payload.active_windows.insert("/repo/other".into(), "w2".into());
+        store.set(payload);
+
+        assert!(store.remove_folder("/repo/checkout"));
+        assert_eq!(store.payload().windows, vec![win("w2", "/repo/other", &["s3"])]);
+        assert!(!store.payload().active_windows.contains_key("/repo/checkout"));
+        assert_eq!(store.payload().active_windows.get("/repo/other"), Some(&"w2".to_string()));
+
+        // Nothing left for that folder — a second call is a no-op.
+        assert!(!store.remove_folder("/repo/checkout"));
     }
 
     #[test]
