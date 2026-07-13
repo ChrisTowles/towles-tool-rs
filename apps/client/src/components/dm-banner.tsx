@@ -6,6 +6,7 @@ import { dmsNeedingAttention, fmtAge, storeDmDismiss, useStoreSnapshot } from "@
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
 import { isTauri } from "@/lib/tauri";
+import { useWorkspace } from "@/lib/workspace";
 
 /** Unanswered this long → the banner turns amber-urgent. */
 const WARN_MS = 5 * 60_000;
@@ -22,6 +23,7 @@ const ALARM_MS = 10 * 60_000;
  */
 export function DmBanner() {
   const { snapshot } = useStoreSnapshot();
+  const { openTab } = useWorkspace();
   const now = useNow();
   // The message ts we already flashed the taskbar for — flash once per message.
   const flashedTs = useRef(0);
@@ -68,14 +70,22 @@ export function DmBanner() {
 
       <div className="flex-1" />
 
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-6 border-rose-500/40 px-2 text-xs text-rose-600 hover:text-rose-600 dark:text-rose-400 dark:hover:text-rose-400"
+        onClick={() => openTab("slack")}
+      >
+        Reply here
+      </Button>
       {dm.url && (
         <Button
-          variant="outline"
+          variant="ghost"
           size="sm"
-          className="h-6 border-rose-500/40 px-2 text-xs text-rose-600 hover:text-rose-600 dark:text-rose-400 dark:hover:text-rose-400"
+          className="h-6 px-2 text-xs text-muted-foreground"
           onClick={() => void openExternalUrl(dm.url!)}
         >
-          Reply in Slack
+          Open in Slack
         </Button>
       )}
       <Button

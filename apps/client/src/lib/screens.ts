@@ -5,6 +5,7 @@ import {
   Gauge,
   KanbanSquare,
   CalendarDays,
+  MessageCircle,
   Radio,
   Settings2,
   Stethoscope,
@@ -17,6 +18,7 @@ export type ScreenId =
   | "cockpit"
   | "board"
   | "agentboard"
+  | "slack"
   | "journal-today"
   | "journal-notes"
   | "journal-meetings"
@@ -56,6 +58,13 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     title: "Agentboard",
     icon: TerminalSquare,
     keywords: ["agents", "terminal", "sessions", "shell", "folder", "repos", "rail"],
+    fullBleed: true,
+  },
+  slack: {
+    id: "slack",
+    title: "Messages",
+    icon: MessageCircle,
+    keywords: ["slack", "dm", "chat", "message", "danielle", "wife"],
     fullBleed: true,
   },
   "journal-today": {
@@ -111,7 +120,7 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
 };
 
 export const NAV_SECTIONS: { label: string; screens: ScreenId[] }[] = [
-  { label: "Focus", screens: ["cockpit", "board", "agentboard"] },
+  { label: "Focus", screens: ["cockpit", "board", "agentboard", "slack"] },
   { label: "Journal", screens: ["journal-today", "journal-notes", "journal-meetings"] },
   { label: "Tools", screens: ["doctor", "claude-sessions", "gh-prs", "mcp"] },
   { label: "App", screens: ["config"] },

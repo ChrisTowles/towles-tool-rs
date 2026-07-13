@@ -1,12 +1,17 @@
-//! Slack DM watcher: polls one DM conversation via the Slack Web API.
+//! Slack DM watcher + chat bridge: one DM conversation via the Slack Web API.
 //!
-//! Three calls per tick with a user OAuth token (`xoxp-…`, scopes `im:history`
-//! and `im:read`): `auth.test` validates the token and yields the team id for
-//! the `slack://` deep link; `conversations.open` resolves the watched user's
-//! DM channel (idempotent, returns the existing channel); and
-//! `conversations.history` fetches the latest messages. The newest real
-//! message decides everything: if it was sent by the watched user the DM is
-//! *unanswered*; if it was sent by anyone else (i.e. me) it is answered.
+//! The *watcher* ([`fetch_dm`]) makes three calls per tick with a user OAuth
+//! token (`xoxp-…`, scopes `im:history` and `im:read`): `auth.test` validates
+//! the token and yields the team id for the `slack://` deep link;
+//! `conversations.open` resolves the watched user's DM channel (idempotent,
+//! returns the existing channel); and `conversations.history` fetches the
+//! latest messages. The newest real message decides everything: if it was sent
+//! by the watched user the DM is *unanswered*; if it was sent by anyone else
+//! (i.e. me) it is answered.
+//!
+//! The *chat bridge* serves the app's DM panel on demand: [`fetch_dm_history`]
+//! returns the conversation itself (oldest first), and [`send_dm`] posts a
+//! reply as the user via `chat.postMessage` (additional scope: `chat:write`).
 //!
 //! HTTP plumbing is isolated in [`SlackHttp`]; all response interpretation is
 //! pure functions over `serde_json::Value` so it unit-tests with inline
@@ -46,12 +51,86 @@ impl SlackHttp<'_> {
             request = request.query(k, v);
         }
         let response = request.call().map_err(|e| format!("slack {method} request failed: {e}"))?;
+        Self::parse_response(response, method)
+    }
+
+    /// POST with a form-encoded body — for calls carrying user-written text
+    /// (`chat.postMessage`), where a query string would cap length and mangle
+    /// newlines.
+    fn call_form(&self, method: &str, form: &[(&str, &str)]) -> Result<serde_json::Value, String> {
+        let response = ureq::post(&format!("https://slack.com/api/{method}"))
+            .set("Authorization", &format!("Bearer {}", self.token))
+            .timeout(HTTP_TIMEOUT)
+            .send_form(form)
+            .map_err(|e| format!("slack {method} request failed: {e}"))?;
+        Self::parse_response(response, method)
+    }
+
+    fn parse_response(response: ureq::Response, method: &str) -> Result<serde_json::Value, String> {
         let body: serde_json::Value = response
             .into_json()
             .map_err(|e| format!("slack {method} returned invalid JSON: {e}"))?;
         check_ok(&body, method)?;
         Ok(body)
     }
+}
+
+/// One message of the watched DM conversation, as the app's chat panel renders
+/// it. Serialized camelCase because it crosses the Tauri IPC boundary verbatim.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmMessage {
+    pub text: String,
+    /// Epoch ms.
+    pub ts: i64,
+    /// `true` when the message was sent by me (anyone but the watched user).
+    pub from_me: bool,
+}
+
+/// Fetch the newest `limit` messages of the watched DM, oldest first. Serves
+/// the app's chat panel on demand (no store involved).
+pub fn fetch_dm_history(config: &SlackDmConfig, limit: u32) -> Result<Vec<DmMessage>, String> {
+    let http = SlackHttp { token: &config.token };
+    let open = http.call("conversations.open", &[("users", config.watch_user_id.as_str())])?;
+    let channel = parse_open_channel(&open)?;
+    let history = http.call(
+        "conversations.history",
+        &[("channel", channel.as_str()), ("limit", &limit.to_string())],
+    )?;
+    Ok(parse_history(&history, config))
+}
+
+/// Send `text` to the watched DM as the token's user (`chat:write` scope).
+pub fn send_dm(config: &SlackDmConfig, text: &str) -> Result<(), String> {
+    let http = SlackHttp { token: &config.token };
+    let open = http.call("conversations.open", &[("users", config.watch_user_id.as_str())])?;
+    let channel = parse_open_channel(&open)?;
+    http.call_form("chat.postMessage", &[("channel", channel.as_str()), ("text", text)])?;
+    Ok(())
+}
+
+/// Map a `conversations.history` response to chronological (oldest-first)
+/// messages, skipping subtyped and senderless entries — the same filter
+/// [`latest_message`] applies.
+pub(crate) fn parse_history(history: &serde_json::Value, config: &SlackDmConfig) -> Vec<DmMessage> {
+    let Some(messages) = history.get("messages").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<DmMessage> = messages
+        .iter()
+        .filter(|m| m.get("subtype").is_none())
+        .filter_map(|m| {
+            let sender = m.get("user").and_then(|v| v.as_str())?;
+            Some(DmMessage {
+                text: str_at(m, "text"),
+                ts: slack_ts_ms(str_at(m, "ts").as_str()),
+                from_me: sender != config.watch_user_id,
+            })
+        })
+        .collect();
+    // Slack returns history newest-first; the chat view reads top-down in time.
+    out.reverse();
+    out
 }
 
 /// Fetch the watched DM's latest state. Returns `Ok(None)` when the DM exists
@@ -215,6 +294,29 @@ mod tests {
         ]});
         let dm = latest_message(&history, &config(), "D1", "").unwrap();
         assert_eq!(dm.url, None);
+    }
+
+    #[test]
+    fn parse_history_is_chronological_and_skips_noise() {
+        let history = json!({"ok": true, "messages": [
+            {"user": "U_WIFE", "text": "newest", "ts": "1720000300.0"},
+            {"subtype": "message_changed", "user": "U_WIFE", "text": "edited", "ts": "1720000250.0"},
+            {"text": "no sender", "ts": "1720000225.0"},
+            {"user": "U_ME", "text": "mine", "ts": "1720000200.0"},
+            {"user": "U_WIFE", "text": "oldest", "ts": "1720000100.0"}
+        ]});
+        let msgs = parse_history(&history, &config());
+        let texts: Vec<&str> = msgs.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["oldest", "mine", "newest"], "oldest first, noise dropped");
+        assert!(!msgs[0].from_me);
+        assert!(msgs[1].from_me);
+        assert_eq!(msgs[2].ts, 1720000300000);
+    }
+
+    #[test]
+    fn parse_history_of_empty_or_malformed_response_is_empty() {
+        assert!(parse_history(&json!({"ok": true, "messages": []}), &config()).is_empty());
+        assert!(parse_history(&json!({"ok": true}), &config()).is_empty());
     }
 
     #[test]

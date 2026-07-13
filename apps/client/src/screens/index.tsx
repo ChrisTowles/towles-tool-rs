@@ -11,11 +11,13 @@ import { JournalMeetingsScreen } from "@/screens/journal-meetings";
 import { JournalNotesScreen } from "@/screens/journal-notes";
 import { JournalTodayScreen } from "@/screens/journal-today";
 import { McpScreen } from "@/screens/mcp";
+import { SlackScreen } from "@/screens/slack";
 
 export const SCREEN_COMPONENTS: Record<ScreenId, ComponentType> = {
   cockpit: CockpitScreen,
   board: BoardScreen,
   agentboard: AgentboardScreen,
+  slack: SlackScreen,
   "journal-today": JournalTodayScreen,
   "journal-notes": JournalNotesScreen,
   "journal-meetings": JournalMeetingsScreen,

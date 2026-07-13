@@ -12,6 +12,7 @@ mod journal;
 mod resources;
 mod scheduler;
 mod settings;
+mod slack;
 mod slots;
 mod store;
 mod terminal;
@@ -279,6 +280,8 @@ pub fn run() {
             gh_actions::cockpit_assign_issue,
             gh_actions::cockpit_create_issue_branch,
             store::store_dm_dismiss,
+            slack::slack_dm_history,
+            slack::slack_dm_send,
             store::journal_log,
             journal::journal_get_today,
             journal::journal_save,
