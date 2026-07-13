@@ -1,4 +1,4 @@
-//! `ttr mcp` — Model Context Protocol server over stdio.
+//! `tt mcp` — Model Context Protocol server over stdio.
 //!
 //! Thin boundary over `tt_mcp::serve`: the library owns the JSON-RPC loop and
 //! tools; this just picks the store path and returns the exit code. Logging

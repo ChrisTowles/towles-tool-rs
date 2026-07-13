@@ -1,7 +1,7 @@
 //! The agentboard engine: tracker + metadata + session-order + git cache +
 //! watchers behind one struct, host-agnostic. Extracted from
 //! `crates-tauri/tt-app/src/agentboard.rs` (phase T3 of the agentboard port)
-//! so every host (the Tauri app, `ttr mcp serve`) shares it.
+//! so every host (the Tauri app, `tt mcp serve`) shares it.
 //!
 //! The engine is synchronous; hosts own scheduling (tokio tasks, debounces)
 //! and transport (Tauri events, MCP responses). Hosts guard it with a `Mutex`,
@@ -220,7 +220,7 @@ impl Engine {
         self.projects_dir.clone()
     }
 
-    /// Re-read `repos.json` so changes made by the `ttr agentboard` CLI (which
+    /// Re-read `repos.json` so changes made by the `tt agentboard` CLI (which
     /// writes the same file) are picked up without restarting the host. A
     /// torn/corrupt read (the file exists but won't parse — most likely racing
     /// another instance's write, #75) keeps the last known-good list rather

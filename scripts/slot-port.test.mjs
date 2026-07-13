@@ -184,7 +184,7 @@ test("resolveWebdriverPort: TT_E2E_WEBDRIVER_PORT overrides the offset", () => {
   });
 });
 
-// --- .env layering (rendered by `ttr slot`) ---
+// --- .env layering (rendered by `tt slot`) ---
 
 test("resolveDevPort: rendered .env pins the port when .env.local is absent", () => {
   withCleanEnv(["TT_DEV_PORT"], () => {

@@ -1,6 +1,6 @@
 //! `slot_*` commands: worktree-slot creation/removal from the app
 //! (Agentboard's new-slot modal and the rail's delete-worktree action). Thin
-//! over `tt_slots::ops`, which is shared with the `ttr slot` CLI — the app
+//! over `tt_slots::ops`, which is shared with the `tt slot` CLI — the app
 //! never reimplements slot logic.
 
 use serde::Serialize;
@@ -71,7 +71,7 @@ pub struct SlotRemoved {
 /// Remove the worktree slot at `dir`, guarded — a dirty tree, commits
 /// unreachable from any branch/remote, or a foreign listener on the slot's
 /// claimed ports block with an explanatory error (no force path in the app;
-/// use `ttr slot rm --force`). Cleans up docker resources, the worktree
+/// use `tt slot rm --force`). Cleans up docker resources, the worktree
 /// registration, and the slot's agentboard tracking — the rail entry (and
 /// with it the pane/windows, via the engine's prune) goes away instead of
 /// lingering as a "missing" ghost. Long-running → off the main thread.

@@ -1,4 +1,4 @@
-//! Pure decision/parse logic for `ttr gh sync` and `ttr gh co`.
+//! Pure decision/parse logic for `tt gh sync` and `tt gh co`.
 //!
 //! Both commands guard on a clean working tree, then shell out to `git`/`gh`.
 //! Per this crate's rule the decisions live here as pure functions so they can

@@ -1,4 +1,4 @@
-//! `ttr collect` subcommands: calendar, issues, prs, all.
+//! `tt collect` subcommands: calendar, issues, prs, all.
 //!
 //! Thin CLI boundary over the `tt-collect` crate: open the store, run the
 //! requested collector(s), print one line per [`CollectSummary`], and exit 0

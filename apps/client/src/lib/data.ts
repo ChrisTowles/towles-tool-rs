@@ -112,7 +112,7 @@ export function dmsNeedingAttention(snapshot: StoreSnapshot): DmItem[] {
 }
 
 /**
- * One handled request against the towles-tool MCP server (`ttr mcp serve`),
+ * One handled request against the towles-tool MCP server (`tt mcp serve`),
  * logged by the dispatcher. `method` is the JSON-RPC method (`initialize`,
  * `tools/call`, …); `tool` and `args` are set only for `tools/call` (args are a
  * compacted one-line rendering). `ok` is false for a JSON-RPC error or an

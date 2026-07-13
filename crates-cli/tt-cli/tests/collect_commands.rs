@@ -1,4 +1,4 @@
-//! Black-box tests for `ttr collect` (assert_cmd).
+//! Black-box tests for `tt collect` (assert_cmd).
 
 mod common;
 

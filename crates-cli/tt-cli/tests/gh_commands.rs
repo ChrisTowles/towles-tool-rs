@@ -73,8 +73,8 @@ fn repo_with_gone_branch() -> (TempDir, TempDir) {
     (dir, remote)
 }
 
-fn ttr(dir: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("ttr").expect("binary `ttr` should build");
+fn tt(dir: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("tt").expect("binary `tt` should build");
     cmd.current_dir(dir);
     cmd
 }
@@ -82,7 +82,7 @@ fn ttr(dir: &Path) -> Command {
 #[test]
 fn branch_clean_dry_run_lists_without_deleting() {
     let repo = repo_with_merged_branch();
-    ttr(repo.path())
+    tt(repo.path())
         .args(["gh", "branch-clean", "--dry-run"])
         .assert()
         .success()
@@ -101,7 +101,7 @@ fn branch_clean_dry_run_lists_without_deleting() {
 #[test]
 fn branch_clean_force_deletes_merged_branch() {
     let repo = repo_with_merged_branch();
-    ttr(repo.path())
+    tt(repo.path())
         .args(["gh", "branch-clean", "--force"])
         .assert()
         .success()
@@ -128,7 +128,7 @@ fn branch_clean_reports_nothing_to_clean() {
     git(p, &["commit", "-q", "-m", "init"]);
     git(p, &["branch", "-M", "main"]);
 
-    ttr(p)
+    tt(p)
         .args(["gh", "branch-clean"])
         .assert()
         .success()
@@ -156,7 +156,7 @@ const REMOTE: &str = "git@github.com:user/repo.git";
 fn assign_rejects_slot_that_is_not_a_git_checkout() {
     let current = repo_with_remote(REMOTE);
     let not_a_repo = TempDir::new().unwrap();
-    ttr(current.path())
+    tt(current.path())
         .args(["gh", "assign", "1", "--slot"])
         .arg(not_a_repo.path())
         .assert()
@@ -168,7 +168,7 @@ fn assign_rejects_slot_that_is_not_a_git_checkout() {
 fn assign_rejects_slot_with_mismatched_remote() {
     let current = repo_with_remote(REMOTE);
     let slot = repo_with_remote("git@github.com:someone-else/other.git");
-    ttr(current.path())
+    tt(current.path())
         .args(["gh", "assign", "1", "--slot"])
         .arg(slot.path())
         .assert()
@@ -183,7 +183,7 @@ fn assign_rejects_dirty_slot() {
     // an untracked file: the guard the feature exists for.
     let slot = repo_with_remote("https://github.com/user/repo");
     std::fs::write(slot.path().join("wip.txt"), "uncommitted").unwrap();
-    ttr(current.path())
+    tt(current.path())
         .args(["gh", "assign", "1", "--slot"])
         .arg(slot.path())
         .assert()
@@ -198,7 +198,7 @@ fn assign_rejects_slot_with_stash() {
     // Clean tree, but a stash entry — still blocked.
     std::fs::write(slot.path().join("README.md"), "changed").unwrap();
     git(slot.path(), &["stash", "push", "-q", "-m", "wip"]);
-    ttr(current.path())
+    tt(current.path())
         .args(["gh", "assign", "1", "--slot"])
         .arg(slot.path())
         .assert()
@@ -227,7 +227,7 @@ fn assign_runs_gh_develop_in_the_slot_when_clean() {
     let path = format!("{}:{}", bin.path().display(), std::env::var("PATH").unwrap());
 
     let slot_real = std::fs::canonicalize(slot.path()).unwrap();
-    ttr(current.path())
+    tt(current.path())
         .env("PATH", path)
         .args(["gh", "assign", "42", "--slot"])
         .arg(slot.path())
@@ -265,7 +265,7 @@ fn pr_list_with_no_repos_configured_is_a_clean_noop() {
     // Empty HOME → no agentboard repos.json → nothing to list, exit 0.
     let home = TempDir::new().unwrap();
     let cwd = TempDir::new().unwrap();
-    ttr(cwd.path())
+    tt(cwd.path())
         .env("HOME", home.path())
         .env("TT_STATE_SCOPE", "") // force unscoped config paths
         .args(["gh", "pr-list"])
@@ -290,7 +290,7 @@ fn pr_list_renders_prs_with_glyphs_and_needs_you() {
     let bin = TempDir::new().unwrap();
     let path = stub_gh_for_pr_list(&bin);
 
-    ttr(repo.path())
+    tt(repo.path())
         .env("HOME", home.path())
         .env("TT_STATE_SCOPE", "")
         .env("PATH", path)
@@ -307,10 +307,10 @@ fn pr_list_renders_prs_with_glyphs_and_needs_you() {
 
 #[test]
 fn prs_alias_reaches_pr_list() {
-    // The top-level `ttr prs` alias resolves to the same command.
+    // The top-level `tt prs` alias resolves to the same command.
     let home = TempDir::new().unwrap();
     let cwd = TempDir::new().unwrap();
-    ttr(cwd.path())
+    tt(cwd.path())
         .env("HOME", home.path())
         .env("TT_STATE_SCOPE", "")
         .args(["prs"])
@@ -362,7 +362,7 @@ fn repo_behind_remote() -> TempDir {
 #[test]
 fn sync_fast_forwards_a_clean_behind_branch() {
     let repo = repo_behind_remote();
-    ttr(repo.path())
+    tt(repo.path())
         .args(["gh", "sync"])
         .assert()
         .success()
@@ -379,7 +379,7 @@ fn sync_hard_fails_on_a_dirty_tree_before_rebasing() {
     let repo = repo_behind_remote();
     // Dirty the tree with an untracked file: the guard must trip first.
     std::fs::write(repo.path().join("wip.txt"), "uncommitted").unwrap();
-    ttr(repo.path())
+    tt(repo.path())
         .args(["gh", "sync"])
         .assert()
         .failure()
@@ -393,7 +393,7 @@ fn sync_hard_fails_on_a_dirty_tree_before_rebasing() {
 #[test]
 fn co_with_non_numeric_arg_is_a_clap_error() {
     let repo = repo_with_remote(REMOTE);
-    ttr(repo.path())
+    tt(repo.path())
         .args(["gh", "co", "not-a-number"])
         .assert()
         .failure()
@@ -404,7 +404,7 @@ fn co_with_non_numeric_arg_is_a_clap_error() {
 fn branch_clean_non_tty_without_force_does_not_delete() {
     let repo = repo_with_merged_branch();
     // No --force and not a TTY: should cancel as a no-op, leaving the branch intact.
-    ttr(repo.path())
+    tt(repo.path())
         .args(["gh", "branch-clean"])
         .assert()
         .success()
@@ -422,7 +422,7 @@ fn branch_clean_non_tty_without_force_does_not_delete() {
 #[test]
 fn branch_clean_gone_dry_run_lists_without_deleting() {
     let (repo, _remote) = repo_with_gone_branch();
-    ttr(repo.path())
+    tt(repo.path())
         .args(["gh", "branch-clean", "--gone", "--dry-run"])
         .assert()
         .success()
@@ -441,7 +441,7 @@ fn branch_clean_gone_dry_run_lists_without_deleting() {
 fn branch_clean_gone_non_tty_without_force_does_not_delete() {
     let (repo, _remote) = repo_with_gone_branch();
     // No --force and not a TTY: should cancel as a no-op, leaving the branch intact.
-    ttr(repo.path())
+    tt(repo.path())
         .args(["gh", "branch-clean", "--gone"])
         .assert()
         .success()
@@ -459,7 +459,7 @@ fn branch_clean_gone_non_tty_without_force_does_not_delete() {
 #[test]
 fn branch_clean_gone_force_deletes_gone_branch() {
     let (repo, _remote) = repo_with_gone_branch();
-    ttr(repo.path())
+    tt(repo.path())
         .args(["gh", "branch-clean", "--gone", "--force"])
         .assert()
         .success()
@@ -477,7 +477,7 @@ fn branch_clean_gone_force_deletes_gone_branch() {
 fn branch_clean_gone_ignores_merged_only_branch() {
     // A merged (but upstream-present) branch is not `gone`, so --gone leaves it.
     let repo = repo_with_merged_branch();
-    ttr(repo.path())
+    tt(repo.path())
         .args(["gh", "branch-clean", "--gone"])
         .assert()
         .success()

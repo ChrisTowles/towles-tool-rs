@@ -9,7 +9,7 @@ import { useNow } from "@/lib/now";
 
 /**
  * MCP server — the live incoming-call log for the towles-tool MCP server
- * (`ttr mcp serve`). Each row is one handled JSON-RPC request the dispatcher
+ * (`tt mcp serve`). Each row is one handled JSON-RPC request the dispatcher
  * recorded into the store (method/tool, caller, duration, ok/error, age),
  * newest first. Read-only; the whole point is *seeing* who is calling the
  * server and how it answered. The dispatcher retains the newest few hundred
@@ -75,15 +75,15 @@ export function McpScreen() {
 
 const CLAUDE_DESKTOP_JSON = `{
   "mcpServers": {
-    "tt": { "command": "ttr", "args": ["mcp", "serve"] }
+    "tt": { "command": "tt", "args": ["mcp", "serve"] }
   }
 }`;
 
 /**
  * How to point a client at the server. Leads while the call log is empty
  * (setup is the whole task then), drops below the log once traffic exists.
- * Every command assumes `ttr` is on PATH; the server itself needs no port or
- * daemon — clients spawn `ttr mcp serve` over stdio themselves.
+ * Every command assumes `tt` is on PATH; the server itself needs no port or
+ * daemon — clients spawn `tt mcp serve` over stdio themselves.
  */
 function SetupPanel() {
   return (
@@ -91,12 +91,12 @@ function SetupPanel() {
       <SetupStep
         title="Claude Code (recommended)"
         detail="Registers the `tt` server at user scope and checks the rest of the Claude Code setup."
-        command="ttr install"
+        command="tt install"
       />
       <SetupStep
         title="Claude Code, manual"
-        detail="Just the MCP registration — what `ttr install` runs for you."
-        command="claude mcp add --scope user tt -- ttr mcp serve"
+        detail="Just the MCP registration — what `tt install` runs for you."
+        command="claude mcp add --scope user tt -- tt mcp serve"
       />
       <SetupStep
         title="Claude Desktop / any MCP client"

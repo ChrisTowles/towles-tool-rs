@@ -1,4 +1,4 @@
-//! Worktree-slot convention logic (`ttr slot`).
+//! Worktree-slot convention logic (`tt slot`).
 //!
 //! The layout convention: a normal primary checkout `<root>/<repo>-primary/`
 //! that always holds the default branch (it is where the user runs the app),

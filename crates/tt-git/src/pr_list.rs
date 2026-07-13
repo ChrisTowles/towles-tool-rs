@@ -1,4 +1,4 @@
-//! Rendering for `ttr gh pr-list` — a terminal view of your open pull requests
+//! Rendering for `tt gh pr-list` — a terminal view of your open pull requests
 //! with their CI check status.
 //!
 //! The "needs you" semantics are the single Rust source of truth, mirroring the

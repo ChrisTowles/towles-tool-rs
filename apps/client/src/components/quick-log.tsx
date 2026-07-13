@@ -40,7 +40,7 @@ export function QuickLog() {
       });
     } else {
       // Reconstruct a timeline bullet — `- HH:MM [context] text` — stamped with the current
-      // screen so scattered captures read back as a log. Matches `ttr journal jot`'s format
+      // screen so scattered captures read back as a log. Matches `tt journal jot`'s format
       // so app and CLI entries interleave in the same daily note.
       const line = formatLogLine(parsed.body, { now: new Date(), context: activeTab });
       void journalLog(line).then((ok) => {

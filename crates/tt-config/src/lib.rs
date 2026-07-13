@@ -424,7 +424,7 @@ fn detect_scope() -> Scope {
 ///    qualified for `slots/<name>` checkouts (e.g. `towles-tool-rs-slot-migrate`).
 ///
 /// A checkout is recognised by a `crates/tt-config` directory at its root — a
-/// marker unique to this workspace — so an installed `ttr` run from an arbitrary
+/// marker unique to this workspace — so an installed `tt` run from an arbitrary
 /// project directory stays unscoped and keeps sharing the daily-driver config.
 /// The dir-name rule mirrors `scripts/slot-port.mjs` and the app's `slot_label`.
 pub fn state_scope() -> Option<String> {
@@ -619,7 +619,7 @@ pub fn agentboard_shared_dir_lossy() -> PathBuf {
 
 /// The instance-state directories owned by `scope` — the config-side
 /// `…/towles-tool/slots/<scope>` (agentboard sessions/windows/collapse) and
-/// the data-side one (tt.db) — so `ttr slot rm` can delete a removed slot's
+/// the data-side one (tt.db) — so `tt slot rm` can delete a removed slot's
 /// leftover state. This targets *another* checkout's scope, so the ambient
 /// auto-detected scope is deliberately ignored (running the command from
 /// inside a slot must not nest the target under the runner's own scope);

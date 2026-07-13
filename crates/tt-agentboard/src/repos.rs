@@ -109,7 +109,7 @@ pub fn add_repo_persisted(path: &Path, new_path: &str) -> std::io::Result<(Vec<S
 /// Remove `dir` straight against the on-disk file, same reread-then-write
 /// rationale as [`add_repo_persisted`]. Returns the merged repo list plus
 /// whether `dir` was actually present to remove; a no-op when it wasn't (the
-/// file is not rewritten — `ttr slot rm` calls this for never-tracked slots).
+/// file is not rewritten — `tt slot rm` calls this for never-tracked slots).
 pub fn remove_repo_persisted(path: &Path, dir: &str) -> std::io::Result<(Vec<String>, bool)> {
     let mut config = load_config(path);
     let removed = remove_repo_by_dir(&mut config.repo_paths, dir);

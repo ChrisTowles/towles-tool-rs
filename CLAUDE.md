@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Rust rewrite of `towles-tool`: a Tauri 2 desktop app plus the `ttr` CLI. Modeled on
+Rust rewrite of `towles-tool`: a Tauri 2 desktop app plus the `tt` CLI. Modeled on
 the [Yaak](https://github.com/mountain-loop/yaak) repo structure (see
 [ATTRIBUTION.md](ATTRIBUTION.md)).
 
@@ -9,7 +9,7 @@ the [Yaak](https://github.com/mountain-loop/yaak) repo structure (see
 Rust:
 
 ```sh
-cargo run -p tt-cli -- <args>       # run the CLI (binary is `ttr`, not `tt`)
+cargo run -p tt-cli -- <args>       # run the CLI (binary `tt`)
 cargo run -p tt-cli -- doctor       # e.g. doctor, config, journal, gh, install, claude-sessions
 cargo fmt --check                   # formatting (rustfmt, 100-col)
 cargo clippy --all -- -D warnings   # lint; warnings are errors
@@ -44,14 +44,13 @@ the mock dev server:
   the rebuild.
 
 Both are gated behind the `wdio` cargo feature + `VITE_WDIO` flag, so nothing
-ships in normal/release builds. Ports come from the env files (`TT_DEV_PORT` in `.env.local`, or `.env` rendered by `ttr slot`;
+ships in normal/release builds. Ports come from the env files (`TT_DEV_PORT` in `.env.local`, or `.env` rendered by `tt slot`;
 webdriver = `+3000`); `dev:drive` and `e2e` share a slot's ports, so don't run
 both at once in one slot. Full docs + Linux gotchas: [e2e/README.md](e2e/README.md).
 
-> The binary is **`ttr`** during migration. Do not rename it to `tt` — the
-> TypeScript CLI keeps `tt` until the daily-driver commands are ported (full
-> CLI parity is **not** a goal), then we hard-cut over (see
-> [docs/MIGRATION.md](docs/MIGRATION.md), item 8).
+> The binary is **`tt`**. The `ttr` → `tt` cutover from the TypeScript CLI
+> happened 2026-07-13 — hard cutover, no `ttr` alias left behind (see
+> [docs/CUTOVER.md](docs/CUTOVER.md)).
 
 ## Worktree slots — you are probably working in one
 
@@ -60,16 +59,16 @@ holds `towles-tool-rs-primary/` (a normal clone that always has `main` checked
 out — it is where Chris runs the app himself) plus branch-named worktrees under
 `slots/`, one per parallel line of work (a `.tt-slot` marker file sits at each
 slot's root). Slots are ephemeral: created from the primary for a branch,
-removed when the branch merges. Manage them with `ttr slot` — never raw
+removed when the branch merges. Manage them with `tt slot` — never raw
 `git worktree` or new clones:
 
 ```sh
-ttr slot new -b feat/thing [--base <ref>]  # creates slots/thing on that branch
-ttr slot ls [--json]                       # fleet: primary + slots, branch, dirty, ports
-ttr slot env <name>                        # (re)render .env — idempotent, keeps claims
-ttr slot env primary                       # same, for the primary checkout
-ttr slot rm <name> [--force]               # guarded removal + docker cleanup
-ttr slot clean [--dry-run]                 # rm every merged/gone slot + sweep stale state
+tt slot new -b feat/thing [--base <ref>]  # creates slots/thing on that branch
+tt slot ls [--json]                       # fleet: primary + slots, branch, dirty, ports
+tt slot env <name>                        # (re)render .env — idempotent, keeps claims
+tt slot env primary                       # same, for the primary checkout
+tt slot rm <name> [--force]               # guarded removal + docker cleanup
+tt slot clean [--dry-run]                 # rm every merged/gone slot + sweep stale state
 ```
 
 The Agentboard rail shows the whole fleet automatically (worktrees of any
@@ -83,16 +82,16 @@ Rules when working in a slot:
   `towles-tool-rs-primary/.git` — never delete, move, or re-clone the primary.
   `main` stays checked out there (git itself blocks a second checkout of it);
   slots never work on `main` directly.
-- **One branch per slot, named after it.** `ttr slot new -b feat/thing`
+- **One branch per slot, named after it.** `tt slot new -b feat/thing`
   creates `slots/thing` (`--base` when not branching off the default). A slot
-  whose PR merged is done — `ttr slot rm` it (or `ttr slot clean`, which finds
+  whose PR merged is done — `tt slot rm` it (or `tt slot clean`, which finds
   every merged/gone slot); commits reachable from no branch or remote block
   removal by design.
 - **Ports come from the rendered `.env`** — `.env.example` is the template
   (`${tt:port A-B}` pool claims, `${tt:slot-name}`, `${tt:var NAME}`), and a
   manual `.env.local` pin overrides it; shell env overrides both. Never
   hardcode a port anywhere. The primary claims its ports the same way.
-- **No setup scripts.** `ttr slot new` runs the `TT_SLOT_SETUP` command
+- **No setup scripts.** `tt slot new` runs the `TT_SLOT_SETUP` command
   declared in `.env.example` (spawned directly, no shell — `npm install`
   here), falling back to lockfile detection in repos that don't declare one.
 - **Never touch sibling slot directories** — other agents work there
@@ -138,7 +137,7 @@ Cargo workspace + npm workspace (`apps/client` only):
   - `tt-slots` — the worktree-slot convention (see the Worktree slots section):
     the `${tt:...}` env-template renderer with port-pool claims, dotenv-lite
     parse/merge, slot naming/layout, removal guards, and the shared
-    orchestration in `ops` that both `ttr slot` and the app's `slot_create`
+    orchestration in `ops` that both `tt slot` and the app's `slot_create`
     call.
   - `tt-store` — the data-hub SQLite store (`~/.local/share/towles-tool/tt.db`):
     events, kanban todos (local, optionally issue-linked), issues, PR status,
@@ -153,7 +152,7 @@ Cargo workspace + npm workspace (`apps/client` only):
     (escalating banner in the app). Collector keys are `claude:calendar`,
     `issues`, `prs`, `slack:dm` — the frontend matches on them. Email was
     removed in the day-screens pivot.
-  - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`ttr mcp serve`) exposing
+  - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`tt mcp serve`) exposing
     the store + live agent sessions + `journal_append` to claude sessions.
   - `tt-vt` — libghostty-vt terminal-state engine used by the app's canvas
     terminals (needs zig 0.15.x; see the frontend section).
@@ -161,7 +160,7 @@ Cargo workspace + npm workspace (`apps/client` only):
     needs-you synthesis (consumed by the app shell).
   - `tt-claude-code` — Claude Code transcript/session parsing models.
   - `tt-doctor` — doctor checks logic (CLI + app screen both consume it).
-- `crates-cli/tt-cli` — `clap` 4 CLI, binary `ttr`. Commands:
+- `crates-cli/tt-cli` — `clap` 4 CLI, binary `tt`. Commands:
   `config show|validate|schema|reset`, `doctor [--json --track --diff]`,
   `journal daily-notes|note|meeting|list|search` (+ `today` alias),
   `gh pr|branch|branch-clean|assign` (+ `pr` alias), `install [-o]`,
@@ -237,14 +236,14 @@ etc.). The points below are repo-specific specializations of that doc.
   hand-rolled stylesheets, no CSS-in-JS. Add components with
   `npx shadcn@latest add <name>`, don't hand-write Radix wrappers.
 - **No CLI-parity requirement.** The app is the primary product; each feature
-  picks its natural surface. App-only features don't need a `ttr` subcommand,
+  picks its natural surface. App-only features don't need a `tt` subcommand,
   and terminal-native tools (journal, gh, doctor) don't need app screens. The
   CLI remains the home for terminal workflows and headless entry points
   (`mcp serve`, `collect`, `install`). Either way, the logic lands in a
   Tauri-free `crates/` library with unit tests — the e2e harness is not the
   primary correctness seam.
 - **Hard cutover, no back-compat shims** — replace, don't wrap. (No compat
-  layers, no dual-name aliases beyond the deliberate `ttr`→`tt` rename.)
+  layers, no dual-name aliases — the `ttr`→`tt` rename left no `ttr` behind.)
 - **Dev tooling must not hardcode ports/paths.** Chris runs multiple worktree
   slots of this repo concurrently (see [ATTRIBUTION.md](ATTRIBUTION.md) /
   `tt:parallel-slots`), so a fixed port, lockfile path, or other singleton

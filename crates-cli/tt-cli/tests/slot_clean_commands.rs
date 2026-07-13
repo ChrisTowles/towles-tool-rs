@@ -1,9 +1,9 @@
-//! Black-box tests for `ttr slot clean` against a real primary checkout in a
+//! Black-box tests for `tt slot clean` against a real primary checkout in a
 //! tempdir. Every invocation fakes HOME/XDG_DATA_HOME: clean sweeps the
 //! machine's instance-state tree and prunes the real agentboard store, so an
 //! unfaked run would mutate the developer's actual state.
 
-use assert_cmd::Command as Ttr;
+use assert_cmd::Command as Tt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -29,9 +29,9 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
-/// A `ttr` command with the state tree sandboxed under `home`.
-fn ttr(home: &Path) -> Ttr {
-    let mut cmd = Ttr::cargo_bin("ttr").expect("binary `ttr` should build");
+/// A `tt` command with the state tree sandboxed under `home`.
+fn tt(home: &Path) -> Tt {
+    let mut cmd = Tt::cargo_bin("tt").expect("binary `tt` should build");
     cmd.env("HOME", home);
     cmd.env("XDG_DATA_HOME", home.join(".local").join("share"));
     cmd.env_remove("TT_STATE_SCOPE");
@@ -58,7 +58,7 @@ fn make_root(tmp: &Path) -> PathBuf {
 }
 
 fn new_slot(home: &Path, root: &str, branch: &str) {
-    ttr(home).args(["slot", "new", "-b", branch, "--root", root]).assert().success();
+    tt(home).args(["slot", "new", "-b", branch, "--root", root]).assert().success();
 }
 
 fn commit_file(slot: &Path, name: &str) {
@@ -78,7 +78,7 @@ fn branch_exists(primary: &Path, branch: &str) -> bool {
 fn clean_json(home: &Path, root: &str, extra: &[&str]) -> serde_json::Value {
     let mut args = vec!["slot", "clean", "--json", "--root", root];
     args.extend_from_slice(extra);
-    let out = ttr(home).args(&args).output().unwrap();
+    let out = tt(home).args(&args).output().unwrap();
     assert!(out.status.success(), "clean failed: {}", String::from_utf8_lossy(&out.stderr));
     serde_json::from_slice(&out.stdout).expect("clean --json emits JSON")
 }

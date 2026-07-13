@@ -5,7 +5,7 @@
 //! [`tt_store::Store`]. The calendar collector shells out to `claude -p` (via
 //! [`tt_exec`]); the issue and PR collectors shell out to `gh`.
 //!
-//! Tauri-free (the shared-crate rule): both the CLI (`ttr collect`) and the
+//! Tauri-free (the shared-crate rule): both the CLI (`tt collect`) and the
 //! desktop app's scheduler drive this crate against the same [`CollectSummary`]
 //! contract.
 //!

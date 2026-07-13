@@ -9,7 +9,7 @@ import type { TaskStatus } from "./data";
  */
 
 /** Custom `DataTransfer` type identifying a Board card drag. */
-export const TASK_DRAG_TYPE = "application/x-ttr-task";
+export const TASK_DRAG_TYPE = "application/x-tt-task";
 
 export type TaskDragPayload = {
   id: number;

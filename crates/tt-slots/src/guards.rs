@@ -1,4 +1,4 @@
-//! Removal guards for `ttr slot rm` — a slot must never take work with it.
+//! Removal guards for `tt slot rm` — a slot must never take work with it.
 //!
 //! Pure functions (this crate's rule): the CLI gathers git output, bind-test
 //! results, and docker listings in the slot's directory and hands the raw

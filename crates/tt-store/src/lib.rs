@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS dm_status (
 ";
 
 /// v5: the MCP server's incoming-call log (one row per JSON-RPC request the
-/// `ttr mcp serve` dispatcher handled). `IF NOT EXISTS`, so `migrate` stays
+/// `tt mcp serve` dispatcher handled). `IF NOT EXISTS`, so `migrate` stays
 /// idempotent and pre-v5 dbs gain the table in place.
 const SCHEMA_MCP_CALLS_V5: &str = "\
 CREATE TABLE IF NOT EXISTS mcp_calls (
@@ -257,7 +257,7 @@ pub struct DmItem {
 
 /// One handled MCP request: what came in (method, tool, compacted args), how it
 /// went (`ok`/`error`), how long the handler took, and which client sent it
-/// (from the session's `initialize`). Written by the `ttr mcp serve` dispatcher,
+/// (from the session's `initialize`). Written by the `tt mcp serve` dispatcher,
 /// read by the app's MCP screen.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

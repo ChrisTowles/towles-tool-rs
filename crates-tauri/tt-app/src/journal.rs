@@ -1,6 +1,6 @@
 //! Tauri bridge for the journal screens (`tt_journal`): today's daily note, listing
 //! and searching entries, creating notes/meetings, and opening any entry in the
-//! preferred editor. Mirrors the `ttr journal` CLI boundary in
+//! preferred editor. Mirrors the `tt journal` CLI boundary in
 //! `crates-cli/tt-cli/src/commands/journal.rs`, minus the editor-open-by-default and
 //! interactive-title-prompt behavior (the UI drives those explicitly).
 

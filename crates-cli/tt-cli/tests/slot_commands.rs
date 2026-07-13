@@ -1,7 +1,7 @@
-//! Black-box tests for `ttr slot` against a real primary checkout built in a
+//! Black-box tests for `tt slot` against a real primary checkout built in a
 //! tempdir (`<root>/demo-primary` + `<root>/slots/<name>` worktrees).
 
-use assert_cmd::Command as Ttr;
+use assert_cmd::Command as Tt;
 use predicates::str::contains;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,8 +28,8 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
-fn ttr() -> Ttr {
-    Ttr::cargo_bin("ttr").expect("binary `ttr` should build")
+fn tt() -> Tt {
+    Tt::cargo_bin("tt").expect("binary `tt` should build")
 }
 
 /// Build `<tmp>/demo-repos/demo-primary` (a normal clone on main) whose
@@ -61,7 +61,7 @@ fn lifecycle_new_env_ls_rm() {
     let root_s = root.to_string_lossy().to_string();
 
     // new -b feat/thing → slots/thing on that branch, rendered .env + marker
-    let out = ttr()
+    let out = tt()
         .args([
             "slot",
             "new",
@@ -105,32 +105,31 @@ fn lifecycle_new_env_ls_rm() {
     // secrets inheritance: fill this slot's SECRET, then create another
     let filled = env.replace("SECRET=", "SECRET=hunter2");
     std::fs::write(slot.join(".env"), filled).unwrap();
-    ttr().args(["slot", "new", "-b", "fix/other", "--root", &root_s]).assert().success();
+    tt().args(["slot", "new", "-b", "fix/other", "--root", &root_s]).assert().success();
     let env2 = std::fs::read_to_string(root.join("slots").join("other").join(".env")).unwrap();
     assert!(env2.contains("SECRET=hunter2"), "new slot inherits sibling secrets: {env2}");
     assert!(!env2.contains(&format!("UI_PORT={ui_port}")), "new slot claims a different port");
 
     // a second slot for the same branch name is refused
-    ttr()
-        .args(["slot", "new", "-b", "feat/thing", "--root", &root_s])
+    tt().args(["slot", "new", "-b", "feat/thing", "--root", &root_s])
         .assert()
         .failure()
         .stderr(contains("already exists"));
 
     // env re-render is idempotent: same port, secrets kept
-    ttr().args(["slot", "env", "thing", "--root", &root_s]).assert().success();
+    tt().args(["slot", "env", "thing", "--root", &root_s]).assert().success();
     let env_again = std::fs::read_to_string(slot.join(".env")).unwrap();
     assert!(env_again.contains(&format!("UI_PORT={ui_port}")), "re-render keeps the claim");
     assert!(env_again.contains("SECRET=hunter2"), "re-render keeps merged secrets");
 
     // the primary renders its own .env too (it is a checkout like any other)
-    ttr().args(["slot", "env", "primary", "--root", &root_s]).assert().success();
+    tt().args(["slot", "env", "primary", "--root", &root_s]).assert().success();
     let env_primary = std::fs::read_to_string(root.join("demo-primary").join(".env")).unwrap();
     assert!(env_primary.contains("NAME=demo-primary"), "env: {env_primary}");
     assert!(!root.join("demo-primary").join(".tt-slot").exists(), "primary gets no marker");
 
     // ls --json: primary first, then slots by name
-    let out = ttr().args(["slot", "ls", "--json", "--root", &root_s]).output().unwrap();
+    let out = tt().args(["slot", "ls", "--json", "--root", &root_s]).output().unwrap();
     let listed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let names: Vec<&str> =
         listed.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
@@ -139,7 +138,7 @@ fn lifecycle_new_env_ls_rm() {
     assert_eq!(listed[0]["branch"], "main");
 
     // rm a clean slot succeeds and releases the dir; the branch survives
-    ttr().args(["slot", "rm", "other", "--root", &root_s]).assert().success();
+    tt().args(["slot", "rm", "other", "--root", &root_s]).assert().success();
     assert!(!root.join("slots").join("other").exists());
     let branches = Command::new("git")
         .args([
@@ -157,8 +156,7 @@ fn lifecycle_new_env_ls_rm() {
     );
 
     // the primary itself is not removable
-    ttr()
-        .args(["slot", "rm", "primary", "--root", &root_s])
+    tt().args(["slot", "rm", "primary", "--root", &root_s])
         .assert()
         .failure()
         .stderr(contains("refusing to remove the primary"));
@@ -170,13 +168,12 @@ fn rm_guards_dirty_and_orphan_commits() {
     let root = make_root(tmp.path());
     let root_s = root.to_string_lossy().to_string();
 
-    ttr().args(["slot", "new", "-b", "feat/work", "--root", &root_s]).assert().success();
+    tt().args(["slot", "new", "-b", "feat/work", "--root", &root_s]).assert().success();
     let slot = root.join("slots").join("work");
 
     // dirty tree refuses
     std::fs::write(slot.join("junk.txt"), "wip").unwrap();
-    ttr()
-        .args(["slot", "rm", "work", "--root", &root_s])
+    tt().args(["slot", "rm", "work", "--root", &root_s])
         .assert()
         .failure()
         .stderr(contains("not clean"));
@@ -188,8 +185,7 @@ fn rm_guards_dirty_and_orphan_commits() {
     std::fs::write(slot.join("work.txt"), "real work").unwrap();
     git(&slot, &["add", "work.txt"]);
     git(&slot, &["commit", "-m", "detached work"]);
-    ttr()
-        .args(["slot", "rm", "work", "--root", &root_s])
+    tt().args(["slot", "rm", "work", "--root", &root_s])
         .assert()
         .failure()
         .stderr(contains("orphan"));
@@ -197,14 +193,13 @@ fn rm_guards_dirty_and_orphan_commits() {
     // parking the commit on a branch makes removal safe (branches live in the
     // primary's .git)
     git(&slot, &["branch", "parked/detached-work"]);
-    ttr().args(["slot", "rm", "work", "--root", &root_s]).assert().success();
+    tt().args(["slot", "rm", "work", "--root", &root_s]).assert().success();
     assert!(!slot.exists());
 
     // --force path: recreate, dirty it, force through
-    ttr().args(["slot", "new", "-b", "feat/redo", "--root", &root_s]).assert().success();
+    tt().args(["slot", "new", "-b", "feat/redo", "--root", &root_s]).assert().success();
     std::fs::write(root.join("slots").join("redo").join("junk.txt"), "wip").unwrap();
-    ttr()
-        .args(["slot", "rm", "redo", "--force", "--root", &root_s])
+    tt().args(["slot", "rm", "redo", "--force", "--root", &root_s])
         .assert()
         .success()
         .stdout(contains("skipping guard"));
@@ -226,7 +221,7 @@ fn rm_untracks_the_slot_and_removes_its_instance_state() {
         (tt_config::STATE_SCOPE_ENV, "rm-test".to_string()),
     ];
 
-    ttr().args(["slot", "new", "-b", "feat/tracked", "--root", &root_s]).assert().success();
+    tt().args(["slot", "new", "-b", "feat/tracked", "--root", &root_s]).assert().success();
     let slot = root.join("slots").join("tracked");
 
     // Give the slot checkout this repo's scope marker (committed, so the tree
@@ -257,7 +252,7 @@ fn rm_untracks_the_slot_and_removes_its_instance_state() {
     std::fs::create_dir_all(state_dir.join("agentboard")).unwrap();
     std::fs::write(state_dir.join("agentboard").join("sessions.json"), "{}\n").unwrap();
 
-    let mut cmd = ttr();
+    let mut cmd = tt();
     cmd.envs(scope_env.iter().map(|(k, v)| (*k, v.as_str())));
     cmd.args(["slot", "rm", "tracked", "--root", &root_s])
         .assert()
@@ -295,6 +290,6 @@ fn lockfile_detection_installs_without_declared_setup() {
     git(tmp.path(), &["clone", "seed", "demo-repos/demo-primary"]);
     let root_s = root.to_string_lossy().to_string();
 
-    ttr().args(["slot", "new", "-b", "feat/plain", "--root", &root_s]).assert().success();
+    tt().args(["slot", "new", "-b", "feat/plain", "--root", &root_s]).assert().success();
     assert!(root.join("slots").join("plain").join(".env").is_file());
 }

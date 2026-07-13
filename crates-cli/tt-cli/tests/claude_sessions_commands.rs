@@ -4,7 +4,7 @@ use common::cli_cmd;
 use std::path::Path;
 use tempfile::TempDir;
 
-/// A `ttr claude-sessions` command with HOME redirected into the sandbox, so it
+/// A `tt claude-sessions` command with HOME redirected into the sandbox, so it
 /// reads the fixture `~/.claude/projects` instead of the real one. stdout is not
 /// a TTY under assert_cmd, so auto-open is already suppressed.
 fn claude_sessions_cmd(temp: &Path) -> assert_cmd::Command {

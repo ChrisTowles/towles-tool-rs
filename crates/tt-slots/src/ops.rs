@@ -1,4 +1,4 @@
-//! Slot lifecycle operations shared by the CLI (`ttr slot`) and the app.
+//! Slot lifecycle operations shared by the CLI (`tt slot`) and the app.
 //!
 //! This module owns the IO and process execution (git via `tt-exec`, env-file
 //! writes, bind tests, the claim lock); every *decision* stays in the pure
@@ -531,7 +531,7 @@ pub struct RemovedSlot {
 /// Remove a slot: guarded (clean tree, no commits unreachable from a branch
 /// or remote, nothing foreign on its claimed ports), then docker compose
 /// down -v, anchored container/volume sweep, `git worktree remove`. Shared by
-/// `ttr slot rm` and the app's `slot_remove` command.
+/// `tt slot rm` and the app's `slot_remove` command.
 pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
     let sr = discover_root(opts.root.as_deref())?;
     let name = opts.name.clone();
@@ -752,7 +752,7 @@ pub fn clean_slots(
                 keep(
                     name,
                     "BROKEN".to_string(),
-                    vec!["worktree is broken — `ttr slot rm --force` to drop it".to_string()],
+                    vec!["worktree is broken — `tt slot rm --force` to drop it".to_string()],
                 );
                 continue;
             }
@@ -824,7 +824,7 @@ pub fn clean_slots(
     }
 
     // Sweep per-scope instance state whose checkout no longer exists — the
-    // dirs `ttr slot rm` never touches (see tt_config::state_scope). Only in
+    // dirs `tt slot rm` never touches (see tt_config::state_scope). Only in
     // repos that actually produce scopes: if the primary itself has none,
     // nothing under these parents can be ours.
     let mut swept_state_dirs = Vec::new();

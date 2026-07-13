@@ -15,7 +15,7 @@ import { invokeCmd } from "@/lib/tauri";
 import { Empty, Panel } from "@/components/store-bits";
 
 /**
- * Doctor — the same environment checks as `ttr doctor` (shared `tt-doctor`
+ * Doctor — the same environment checks as `tt doctor` (shared `tt-doctor`
  * crate): tool versions, gh auth, required Claude plugins, and the
  * agentboard/data-hub state. The probes spawn ~10 subprocesses, so runs are
  * on-demand (mount + Refresh), never on a timer.

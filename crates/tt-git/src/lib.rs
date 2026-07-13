@@ -12,7 +12,7 @@
 //! - [`issues`] — `gh issue list` arg building + JSON parsing (`gh-cli-wrapper.ts`).
 //! - [`picker`] — issue-picker column layout and rendering (`branch.ts`, `render.ts`).
 //! - [`slot_assign`] — clean-tree/remote guard for assigning an issue to a slot checkout.
-//! - [`pr_list`] — `ttr gh pr-list` rendering + the "needs you" PR semantics.
+//! - [`pr_list`] — `tt gh pr-list` rendering + the "needs you" PR semantics.
 //! - [`sync`] — clean-tree/ahead-behind/rebase decisions for `gh sync` + `gh co`.
 
 use serde::Deserialize;

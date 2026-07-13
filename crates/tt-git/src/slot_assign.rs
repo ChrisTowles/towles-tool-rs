@@ -1,4 +1,4 @@
-//! Guard logic for `ttr gh assign`: dispatching an open issue to a sibling
+//! Guard logic for `tt gh assign`: dispatching an open issue to a sibling
 //! slot checkout (`tt:parallel-slots`). The whole point of the feature is the
 //! guard — an issue must never land in a slot that is holding someone's
 //! in-progress work, so the checks hard-fail with no `--force` escape hatch.
@@ -93,7 +93,7 @@ fn check_clean(status_porcelain: &str, stash_list: &str) -> Result<(), SlotBlock
 /// The full assignment guard, in the order the failures should surface:
 /// wrong repo first (the assignment makes no sense at all), then in-progress
 /// work (uncommitted changes, then stashes). Matches two full remote URLs — the
-/// CLI's `ttr gh assign` compares the slot against the current checkout's
+/// CLI's `tt gh assign` compares the slot against the current checkout's
 /// `origin`.
 pub fn validate_slot(
     expected_remote: &str,

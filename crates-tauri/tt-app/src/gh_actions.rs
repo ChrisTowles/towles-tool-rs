@@ -3,7 +3,7 @@
 //! the Tauri-free guard + slugging in `tt_git::slot_assign` /
 //! `tt_git::branch_name`: this layer only gathers the target slot's git state
 //! (`remote`, `status`, `stash`) and shells out; every *decision* lives in the
-//! pure crate so it stays unit-tested. Mirrors the CLI's `ttr gh assign`
+//! pure crate so it stays unit-tested. Mirrors the CLI's `tt gh assign`
 //! (`crates-cli/tt-cli/src/commands/gh.rs`), but matches the slot against the
 //! issue's `owner/name` slug rather than a current-directory checkout — the app
 //! has no single cwd repo, the issue names its own.
