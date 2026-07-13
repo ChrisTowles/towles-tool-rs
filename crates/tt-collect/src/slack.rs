@@ -133,6 +133,80 @@ pub fn dm_channel_id(config: &SlackDmConfig) -> Result<String, String> {
     parse_open_channel(&open)
 }
 
+/// A workspace member, for the "pick the person to watch" dropdown in Settings.
+/// Serialized camelCase for the Tauri IPC boundary.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlackUser {
+    pub id: String,
+    /// Best display name: profile display name, then real name, then handle.
+    pub name: String,
+}
+
+/// Hard cap on `users.list` pages fetched — enough for a personal/family
+/// workspace many times over, without a runaway on a huge corporate one.
+const MAX_USER_PAGES: usize = 20;
+
+/// Fetch the workspace's human members (`users.list`, `users:read` scope), for
+/// the watch-user picker. Bots, deleted accounts and Slackbot are dropped;
+/// results are sorted by name. Paginates up to [`MAX_USER_PAGES`].
+pub fn list_users(token: &str) -> Result<Vec<SlackUser>, String> {
+    let http = SlackHttp { token };
+    let mut users: Vec<SlackUser> = Vec::new();
+    let mut cursor = String::new();
+    for _ in 0..MAX_USER_PAGES {
+        let mut params = vec![("limit", "200")];
+        if !cursor.is_empty() {
+            params.push(("cursor", cursor.as_str()));
+        }
+        let body = http.call("users.list", &params)?;
+        users.extend(parse_users(&body));
+        cursor = body
+            .pointer("/response_metadata/next_cursor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if cursor.is_empty() {
+            break;
+        }
+    }
+    users.sort_by_key(|u| u.name.to_lowercase());
+    Ok(users)
+}
+
+/// Parse a `users.list` page into human members, dropping bots, deleted
+/// accounts and Slackbot.
+pub(crate) fn parse_users(body: &serde_json::Value) -> Vec<SlackUser> {
+    let Some(members) = body.get("members").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    members
+        .iter()
+        .filter(|m| !m.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false))
+        .filter(|m| !m.get("is_bot").and_then(|v| v.as_bool()).unwrap_or(false))
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|v| v.as_str())?;
+            if id == "USLACKBOT" {
+                return None;
+            }
+            Some(SlackUser { id: id.to_string(), name: user_display_name(m, id) })
+        })
+        .collect()
+}
+
+/// The best name for a member: profile display name, then real name, then the
+/// `name` handle, then the id.
+fn user_display_name(member: &serde_json::Value, id: &str) -> String {
+    fn trimmed(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|s| !s.is_empty())
+    }
+    trimmed(member.pointer("/profile/display_name").and_then(|v| v.as_str()))
+        .or_else(|| trimmed(member.pointer("/profile/real_name").and_then(|v| v.as_str())))
+        .or_else(|| trimmed(member.get("name").and_then(|v| v.as_str())))
+        .unwrap_or(id)
+        .to_string()
+}
+
 /// Send `text` to the watched DM as the token's user (`chat:write` scope).
 pub fn send_dm(config: &SlackDmConfig, text: &str) -> Result<(), String> {
     let http = SlackHttp { token: &config.token };
@@ -549,6 +623,33 @@ mod tests {
         assert_eq!(files[0].name, "budget.pdf", "falls back to title when name is absent");
         assert!(!files[0].is_image);
         assert_eq!(files[0].thumb_url, "", "no thumbnail for a non-image");
+    }
+
+    #[test]
+    fn parse_users_drops_bots_deleted_and_slackbot_and_picks_best_name() {
+        let body = json!({"ok": true, "members": [
+            {"id": "U1", "name": "danielle", "profile": {"display_name": "Danielle", "real_name": "Danielle T"}},
+            {"id": "U2", "name": "bob", "profile": {"display_name": "", "real_name": "Bob Real"}},
+            {"id": "U3", "name": "carol", "profile": {}},
+            {"id": "UBOT", "name": "robo", "is_bot": true},
+            {"id": "UDEL", "name": "gone", "deleted": true},
+            {"id": "USLACKBOT", "name": "slackbot"}
+        ]});
+        let users = parse_users(&body);
+        assert_eq!(
+            users,
+            vec![
+                SlackUser { id: "U1".into(), name: "Danielle".into() },
+                SlackUser { id: "U2".into(), name: "Bob Real".into() }, // display empty → real name
+                SlackUser { id: "U3".into(), name: "carol".into() },    // no profile → handle
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_users_of_empty_or_malformed_is_empty() {
+        assert!(parse_users(&json!({"ok": true, "members": []})).is_empty());
+        assert!(parse_users(&json!({"ok": true})).is_empty());
     }
 
     #[test]

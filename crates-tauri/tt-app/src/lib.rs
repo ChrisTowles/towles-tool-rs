@@ -292,6 +292,7 @@ pub fn run() {
             slack::slack_dm_history,
             slack::slack_dm_send,
             slack::slack_dm_file,
+            slack::slack_list_users,
             store::journal_log,
             journal::journal_get_today,
             journal::journal_save,

@@ -1,5 +1,9 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import {
+  Check,
+  ChevronsUpDown,
+  Eye,
+  EyeOff,
   FolderGit2,
   Info,
   Keyboard,
@@ -16,6 +20,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
@@ -26,10 +39,12 @@ import { useTheme, type Theme } from "@/components/theme-provider";
 import { abInvoke } from "@/lib/agentboard";
 import { closeCurrentWindow } from "@/lib/open-settings";
 import { isEmptyQuery, matchesFilter } from "@/lib/settings-filter";
+import { slackListUsers, type SlackUser } from "@/lib/slack";
 import { useUserSettings, type UserSettings } from "@/lib/settings";
 import { DEFAULT_TERMINAL_FONT_SIZE, clampTerminalFontSize } from "@/lib/terminal-prefs";
 import { SHORTCUTS, shortcutKeys, type ShortcutScope } from "@/lib/shortcuts";
 import { useAppVersion } from "@/lib/version";
+import { cn } from "@/lib/utils";
 
 /** Real, known location of the settings file (shared with the TypeScript CLI). */
 const SETTINGS_PATH = "~/.config/towles-tool/towles-tool.settings.json";
@@ -149,6 +164,184 @@ function CadenceRow({
         <span className="text-sm text-muted-foreground">{unit}</span>
       </div>
     </SettingRow>
+  );
+}
+
+/** Default context-usage % at which a session is flagged for compaction
+ * (mirrors `tt_config::DEFAULT_COMPACT_RECOMMEND_PERCENT`). */
+const DEFAULT_COMPACT_RECOMMEND_PERCENT = 30;
+
+/** Parse a text hour into a 0–23 int (ignoring junk by clamping). */
+function clampHour(raw: string): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(23, Math.max(0, n));
+}
+
+/** Password-style input with a show/hide toggle, for secret tokens. */
+function RevealInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  const [shown, setShown] = useState(false);
+  return (
+    <div className="relative">
+      <Input
+        type={shown ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="pr-9 font-mono text-xs"
+        spellCheck={false}
+        autoComplete="off"
+      />
+      <button
+        type="button"
+        onClick={() => setShown((s) => !s)}
+        aria-label={shown ? "Hide token" : "Show token"}
+        className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+      >
+        {shown ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+      </button>
+    </div>
+  );
+}
+
+/** Weekday chips (0 = Monday … 6 = Sunday, matching the Rust quiet-hours mask). */
+const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function WeekdayChips({
+  value,
+  onChange,
+}: {
+  value: number[];
+  onChange: (days: number[]) => void;
+}) {
+  const toggle = (day: number) => {
+    const next = value.includes(day) ? value.filter((d) => d !== day) : [...value, day];
+    next.sort((a, b) => a - b);
+    onChange(next);
+  };
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {WEEKDAY_LABELS.map((label, day) => {
+        const on = value.includes(day);
+        return (
+          <button
+            key={day}
+            type="button"
+            onClick={() => toggle(day)}
+            aria-pressed={on}
+            className={cn(
+              "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+              on
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border bg-background text-muted-foreground hover:bg-muted",
+            )}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Pick the watched user from the workspace directory (users.list) so a name is
+ * chosen instead of pasting a member id. Loads members lazily; when the token is
+ * empty/invalid, the fetch fails, or outside the Tauri shell, it degrades to a
+ * plain member-id text input.
+ */
+function SlackUserPicker({
+  userId,
+  userName,
+  onPick,
+  onIdChange,
+}: {
+  userId: string;
+  userName: string;
+  onPick: (user: SlackUser) => void;
+  onIdChange: (id: string) => void;
+}) {
+  const [users, setUsers] = useState<SlackUser[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void slackListUsers()
+      .then((list) => alive && setUsers(list))
+      .catch(() => alive && setFailed(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // No usable directory (browser dev, empty/invalid token, load error, or an
+  // empty workspace): fall back to a plain member-id input.
+  if (failed || (users !== null && users.length === 0)) {
+    return (
+      <Input
+        value={userId}
+        onChange={(e) => onIdChange(e.target.value)}
+        className="font-mono text-xs"
+        placeholder="U0123ABCD"
+        spellCheck={false}
+      />
+    );
+  }
+  if (users === null) {
+    return <div className="text-xs text-muted-foreground">Loading members…</div>;
+  }
+
+  const selected = users.find((u) => u.id === userId);
+  const label = selected?.name || userName || userId || "Select a person…";
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between font-normal"
+        >
+          <span className="truncate">{label}</span>
+          <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search people…" />
+          <CommandList>
+            <CommandEmpty>No match.</CommandEmpty>
+            <CommandGroup>
+              {users.map((u) => (
+                <CommandItem
+                  key={u.id}
+                  value={`${u.name} ${u.id}`}
+                  onSelect={() => {
+                    onPick(u);
+                    setOpen(false);
+                  }}
+                >
+                  <Check
+                    className={cn("mr-2 size-4", u.id === userId ? "opacity-100" : "opacity-0")}
+                  />
+                  <span className="truncate">{u.name}</span>
+                  <span className="ml-2 font-mono text-[10px] text-muted-foreground">{u.id}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -388,6 +581,8 @@ function collectorsSections(
     }));
   const setCal = (patch: Partial<UserSettings["collectors"]["calendar"]>) =>
     setCollector("calendar", patch);
+  const setCalQuiet = (patch: Partial<UserSettings["collectors"]["calendar"]["quietHours"]>) =>
+    setCal({ quietHours: { ...c.calendar.quietHours, ...patch } });
   const setPrs = (patch: Partial<UserSettings["collectors"]["prs"]>) =>
     setCollector("prs", patch);
   const setIssues = (patch: Partial<UserSettings["collectors"]["issues"]>) =>
@@ -445,6 +640,65 @@ function collectorsSections(
               unit="min"
               onValue={(n) => setCal({ refreshMinutes: n })}
             />
+          ),
+        },
+        {
+          label: "Quiet hours",
+          keywords: ["working hours", "window", "nights", "weekends", "gate", "tokens"],
+          node: (
+            <ToggleRow
+              label="Quiet hours"
+              description="Only run the token-costing calendar collector inside a working-hours window (skips nights and weekends)."
+              checked={c.calendar.quietHours.enabled}
+              onCheckedChange={(v) => setCalQuiet({ enabled: v })}
+            />
+          ),
+        },
+        {
+          label: "Active window",
+          keywords: ["quiet hours", "start", "end", "hour", "working hours"],
+          node: (
+            <SettingRow
+              label="Active window"
+              description="Local hours the collector may run, start inclusive to end exclusive (0–23)."
+            >
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={c.calendar.quietHours.startHour}
+                  onChange={(e) => setCalQuiet({ startHour: clampHour(e.target.value) })}
+                  disabled={!c.calendar.quietHours.enabled}
+                  className="w-16"
+                />
+                <span className="text-sm text-muted-foreground">to</span>
+                <Input
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={c.calendar.quietHours.endHour}
+                  onChange={(e) => setCalQuiet({ endHour: clampHour(e.target.value) })}
+                  disabled={!c.calendar.quietHours.enabled}
+                  className="w-16"
+                />
+              </div>
+            </SettingRow>
+          ),
+        },
+        {
+          label: "Active days",
+          keywords: ["quiet hours", "weekdays", "days", "monday", "weekend"],
+          node: (
+            <FieldRow
+              label="Active days"
+              description="Weekdays the collector may run."
+            >
+              <WeekdayChips
+                value={c.calendar.quietHours.weekdays}
+                onChange={(days) => setCalQuiet({ weekdays: days })}
+              />
+            </FieldRow>
           ),
         },
       ],
@@ -530,51 +784,45 @@ function collectorsSections(
           node: (
             <FieldRow
               label="User token"
-              description="Slack user OAuth token (xoxp-…) with im:history + im:read scopes."
+              description="Slack user OAuth token (xoxp-…) with im:history + im:read scopes (chat:write to reply, files:read for images)."
             >
-              <Input
-                type="password"
+              <RevealInput
                 value={c.slack.token}
-                onChange={(e) => setSlack({ token: e.target.value })}
-                className="font-mono text-xs"
-                spellCheck={false}
+                onChange={(v) => setSlack({ token: v })}
+                placeholder="xoxp-…"
               />
             </FieldRow>
           ),
         },
         {
-          label: "App token (Socket Mode)",
-          keywords: ["socket", "realtime", "xapp", "app-level", "instant"],
+          label: "App-level token (Socket Mode)",
+          keywords: ["socket", "realtime", "xapp", "app-level", "instant", "live"],
           node: (
             <FieldRow
-              label="App token (Socket Mode)"
-              description="Optional app-level token (xapp-…) for real-time DM delivery via Socket Mode. Empty = poll only."
+              label="App-level token (Socket Mode)"
+              description="Optional app-level token (xapp-…) with connections:write for real-time DM delivery. Empty = poll only."
             >
-              <Input
-                type="password"
+              <RevealInput
                 value={c.slack.appToken}
-                onChange={(e) => setSlack({ appToken: e.target.value })}
-                className="font-mono text-xs"
+                onChange={(v) => setSlack({ appToken: v })}
                 placeholder="xapp-…"
-                spellCheck={false}
               />
             </FieldRow>
           ),
         },
         {
-          label: "Watch member ID",
-          keywords: ["member", "user id"],
+          label: "Watch user",
+          keywords: ["member", "user id", "person", "pick", "who"],
           node: (
             <FieldRow
-              label="Watch member ID"
-              description="Slack member ID to watch (profile → three dots → Copy member ID)."
+              label="Watch user"
+              description="The person to watch. Picked from your workspace when the token is set, otherwise paste their member ID."
             >
-              <Input
-                value={c.slack.watchUserId}
-                onChange={(e) => setSlack({ watchUserId: e.target.value })}
-                className="font-mono text-xs"
-                placeholder="U0123ABCD"
-                spellCheck={false}
+              <SlackUserPicker
+                userId={c.slack.watchUserId}
+                userName={c.slack.watchName}
+                onPick={(u) => setSlack({ watchUserId: u.id, watchName: u.name })}
+                onIdChange={(id) => setSlack({ watchUserId: id })}
               />
             </FieldRow>
           ),
@@ -585,7 +833,7 @@ function collectorsSections(
           node: (
             <FieldRow
               label="Display name"
-              description="Name shown in the banner."
+              description="Name shown in the banner (set automatically when you pick a user)."
             >
               <Input
                 value={c.slack.watchName}
@@ -690,6 +938,44 @@ function agentboardSections(
               update((s) => ({
                 ...s,
                 agentboard: { ...s.agentboard, notifyChecksFailed: v },
+              }))
+            }
+          />
+        ),
+      },
+      {
+        label: "Stale-collector notifications",
+        keywords: ["notification", "desktop", "collector", "stale", "health", "alert"],
+        node: (
+          <ToggleRow
+            label="Stale-collector notifications"
+            description="Desktop notification when a collector stops refreshing or keeps failing (expired gh auth, revoked Slack token)."
+            checked={settings.agentboard?.notifyStaleCollector ?? true}
+            onCheckedChange={(v) =>
+              update((s) => ({
+                ...s,
+                agentboard: { ...s.agentboard, notifyStaleCollector: v },
+              }))
+            }
+          />
+        ),
+      },
+      {
+        label: "Compaction recommendation",
+        keywords: ["context", "compact", "percent", "threshold", "session", "usage"],
+        node: (
+          <CadenceRow
+            label="Compaction recommendation"
+            description="Flag a session for compaction once its context usage exceeds this percentage."
+            unit="%"
+            value={settings.agentboard?.compactRecommendPercent ?? DEFAULT_COMPACT_RECOMMEND_PERCENT}
+            onValue={(n) =>
+              update((s) => ({
+                ...s,
+                agentboard: {
+                  ...s.agentboard,
+                  compactRecommendPercent: Math.min(100, Math.max(1, n)),
+                },
               }))
             }
           />
@@ -897,11 +1183,24 @@ function AboutInfo({ query, version }: { query: string; version: string }) {
   );
 }
 
+/** The tab + prefilled filter the window was deep-linked to (see `openSettings`),
+ * read once from the URL. An unknown tab falls back to General. */
+function initialTarget(): { tab: string; filter: string } {
+  const fallback = { tab: "general", filter: "" };
+  if (typeof window === "undefined") return fallback;
+  const params = new URLSearchParams(window.location.search);
+  const tab = params.get("tab") ?? "";
+  const known = TABS.some((t) => t.id === tab);
+  return { tab: known ? tab : "general", filter: params.get("filter") ?? "" };
+}
+
 export function SettingsWindow() {
   const { theme, setTheme } = useTheme();
   const { settings, saveState, update, save } = useUserSettings();
   const version = useAppVersion();
-  const [query, setQuery] = useState("");
+  const [target] = useState(initialTarget);
+  const [tab, setTab] = useState(target.tab);
+  const [query, setQuery] = useState(target.filter);
   const filterRef = useRef<HTMLInputElement>(null);
 
   // Escape clears the filter first; a second Escape (empty box) closes the window.
@@ -944,7 +1243,8 @@ export function SettingsWindow() {
 
       <Tabs
         orientation="vertical"
-        defaultValue="general"
+        value={tab}
+        onValueChange={setTab}
         className="min-h-0 flex-1 gap-0"
       >
         <TabsList

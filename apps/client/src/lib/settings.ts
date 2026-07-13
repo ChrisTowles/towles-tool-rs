@@ -16,10 +16,19 @@ export type JournalSettings = {
   templateDir: string;
 };
 
+/** Working-hours gate for the calendar collector (weekdays: 0 = Monday … 6 = Sunday). */
+export type CalendarQuietHours = {
+  enabled: boolean;
+  startHour: number;
+  endHour: number;
+  weekdays: number[];
+};
+
 export type CalendarCollector = {
   enabled: boolean;
   provider: string;
   refreshMinutes: number;
+  quietHours: CalendarQuietHours;
 };
 
 export type PrCollector = {
@@ -60,7 +69,9 @@ export type UserSettings = {
    * the next meeting's countdown reaches zero; unset = on),
    * `notifyReviewRequested` (fired when a PR newly needs your review; unset =
    * on), `notifyChecksFailed` (fired when one of your PRs' CI flips to failing;
-   * unset = on), `copyOnSelect` (terminal
+   * unset = on), `notifyStaleCollector` (fired when a collector stops
+   * refreshing; unset = on), `compactRecommendPercent` (context-usage % at which
+   * a session is flagged for compaction; unset = 30), `copyOnSelect` (terminal
    * copies the selection to the clipboard on selection end; unset = off), and
    * `terminalFontSize` (canvas terminal font px; unset = 13).
    */
@@ -69,6 +80,8 @@ export type UserSettings = {
     notifyMeetingStart?: boolean;
     notifyReviewRequested?: boolean;
     notifyChecksFailed?: boolean;
+    notifyStaleCollector?: boolean;
+    compactRecommendPercent?: number;
     copyOnSelect?: boolean;
     terminalFontSize?: number;
   } & Record<string, unknown>;

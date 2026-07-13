@@ -27,8 +27,8 @@ mod slack_socket;
 
 pub use quiet_hours::{should_run_at, should_run_calendar};
 pub use slack::{
-    DmFile, DmMessage, SlackDmConfig, SlackFile, dm_channel_id, fetch_dm_history, fetch_file,
-    send_dm,
+    DmFile, DmMessage, SlackDmConfig, SlackFile, SlackUser, dm_channel_id, fetch_dm_history,
+    fetch_file, list_users, send_dm,
 };
 pub use slack_socket::{
     Backoff, Envelope, MessageEvent, ack_json, is_watched_message, open_socket_connection,

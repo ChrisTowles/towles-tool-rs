@@ -99,6 +99,20 @@ pub async fn slack_dm_file(url: String) -> Result<SlackFileData, String> {
     Ok(SlackFileData { mimetype: file.mimetype, data_base64 })
 }
 
+/// List the workspace's human members (`users.list`, `users:read`) for the
+/// Settings watch-user picker. Returns an empty list — not an error — when the
+/// token is blank, so the picker degrades to a plain text input.
+#[tauri::command]
+pub async fn slack_list_users() -> Result<Vec<tt_collect::SlackUser>, String> {
+    let token = tt_config::load().map_err(|e| e.to_string())?.collectors.slack.token;
+    if token.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    tauri::async_runtime::spawn_blocking(move || tt_collect::list_users(&token))
+        .await
+        .map_err(|e| format!("slack users task failed: {e}"))?
+}
+
 /// Send `text` to the watched DM as me, then refresh the stored DM state (the
 /// newest message becomes mine, clearing the attention banner) and re-emit the
 /// snapshot.

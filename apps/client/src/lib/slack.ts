@@ -66,6 +66,16 @@ export function isScopeError(message: string): boolean {
   return SCOPE_ERROR_CODES.some((code) => message.includes(code));
 }
 
+/** Slack error codes that mean the token itself is bad — revoked, expired, or
+ * for a deactivated account — so the fix is to re-issue and paste a fresh one. */
+const AUTH_ERROR_CODES = ["invalid_auth", "token_revoked", "account_inactive", "not_authed"] as const;
+
+/** True when a fetch/send failure is a dead-token problem (as opposed to a
+ * missing scope), so the UI can prompt a re-auth walkthrough. */
+export function isAuthError(message: string): boolean {
+  return AUTH_ERROR_CODES.some((code) => message.includes(code));
+}
+
 /** A tiny inline image so the mock thread exercises the attachment layout in
  * browser dev (a real thumb/url_private needs the Tauri file-fetch command). */
 const MOCK_IMAGE =
@@ -192,4 +202,20 @@ export async function slackDmSend(text: string): Promise<void> {
  */
 export async function slackDmFile(url: string): Promise<SlackFileData> {
   return invokeOrThrow<SlackFileData>("slack_dm_file", { url });
+}
+
+/** A workspace member for the Settings watch-user picker (mirrors `SlackUser`). */
+export type SlackUser = {
+  id: string;
+  name: string;
+};
+
+/**
+ * List human workspace members (`users.list`, `users:read` scope) for the
+ * watch-user picker. Returns [] when the token is blank so the picker can
+ * degrade to a plain text input. Only meaningful in the Tauri shell.
+ */
+export async function slackListUsers(): Promise<SlackUser[]> {
+  if (!isTauri()) return [];
+  return invokeOrThrow<SlackUser[]>("slack_list_users");
 }
