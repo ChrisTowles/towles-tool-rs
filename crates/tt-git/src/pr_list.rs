@@ -19,6 +19,8 @@ pub struct PrRow {
     pub repo: String,
     pub number: i64,
     pub title: String,
+    /// `"open" | "merged" | ...` (see `tt_collect::prs`).
+    pub state: String,
     /// CI rollup: `"passing" | "failing" | "pending" | "none"`
     /// (see `tt_collect::prs::checks_status`).
     pub checks: String,
@@ -27,15 +29,17 @@ pub struct PrRow {
 }
 
 /// Whether a PR demands your attention: failing checks or a requested review.
-/// Mirrors the app's `prNeedsYou`.
+/// A merged PR's checks are ignored — GitHub's rollup for it can still read
+/// `"failing"` from check runs orphaned/cancelled by the merge. Mirrors the
+/// app's `prNeedsYou`.
 pub fn needs_you(pr: &PrRow) -> bool {
-    pr.checks == "failing" || pr.review_state == REVIEW_REQUESTED
+    (pr.state != "merged" && pr.checks == "failing") || pr.review_state == REVIEW_REQUESTED
 }
 
 /// Ordering weight — failing checks outrank review-requested outrank the rest.
 /// Mirrors the app's `prRank`.
 pub fn rank(pr: &PrRow) -> u8 {
-    if pr.checks == "failing" {
+    if pr.state != "merged" && pr.checks == "failing" {
         2
     } else if pr.review_state == REVIEW_REQUESTED {
         1
@@ -105,6 +109,7 @@ mod tests {
             repo: repo.to_string(),
             number,
             title: title.to_string(),
+            state: "open".to_string(),
             checks: checks.to_string(),
             review_state: review.to_string(),
         }
@@ -117,6 +122,14 @@ mod tests {
         assert!(!needs_you(&row("o/r", 1, "t", "passing", "")));
         assert!(!needs_you(&row("o/r", 1, "t", "pending", "")));
         assert!(!needs_you(&row("o/r", 1, "t", "none", "")));
+    }
+
+    #[test]
+    fn needs_you_ignores_failing_checks_on_merged_prs() {
+        let mut merged = row("o/r", 1, "t", "failing", "");
+        merged.state = "merged".to_string();
+        assert!(!needs_you(&merged));
+        assert_eq!(rank(&merged), 0);
     }
 
     #[test]

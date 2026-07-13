@@ -439,7 +439,8 @@ impl Dispatcher {
         let prs = self.store.prs().map_err(|e| e.to_string())?;
         let review_requested =
             prs.iter().filter(|pr| pr.review_state == "review_requested").count();
-        let failing_checks = prs.iter().filter(|pr| pr.checks == "failing").count();
+        let failing_checks =
+            prs.iter().filter(|pr| pr.state != "merged" && pr.checks == "failing").count();
 
         let open_issues = self
             .store

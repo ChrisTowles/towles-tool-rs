@@ -857,12 +857,13 @@ export function AgentboardScreen() {
       onClick: () => void;
     }[] = [];
     for (const p of snapshot.prs) {
-      if (p.checks === "failing" || p.reviewState === "review_requested") {
+      const checksFailing = p.state !== "merged" && p.checks === "failing";
+      if (checksFailing || p.reviewState === "review_requested") {
         items.push({
           key: `pr:${p.repo}#${p.number}`,
           kind: "pr",
           title: `${p.repo.split("/").pop()} #${p.number}`,
-          sub: p.checks === "failing" ? "Checks failing" : "Review requested",
+          sub: checksFailing ? "Checks failing" : "Review requested",
           onClick: () => void openExternalUrl(p.url),
         });
       }
