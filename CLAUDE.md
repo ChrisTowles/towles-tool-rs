@@ -20,7 +20,8 @@ Desktop app / frontend:
 
 ```sh
 npm install                         # installs apps/client (npm workspaces)
-npm run dev                         # tauri dev — app + Vite frontend
+npm run dev                         # tauri dev — app + Vite frontend (debug build; noticeably laggy)
+npm run run                         # release build (`tauri build --no-bundle`) + run the binary — for daily driving
 npm run dev:drive                   # like dev, but the window is automatable (live-drive)
 npm run drive -- <verb>             # drive the dev:drive window (status|invoke|shot|click|…)
 npm run e2e                         # regression suite vs the real shell (see below)
