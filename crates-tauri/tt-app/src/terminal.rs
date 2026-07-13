@@ -121,8 +121,10 @@ impl TermState {
     }
 
     /// Kill, reap, and drop the session with `term_id`, if any. The kill/wait
-    /// runs after the map lock is released.
-    fn kill(&self, term_id: &str) {
+    /// runs after the map lock is released. `pub(crate)` so slot removal
+    /// (`slots.rs`) can tear down a folder's live PTYs before its worktree is
+    /// deleted.
+    pub(crate) fn kill(&self, term_id: &str) {
         let session = self.sessions.lock().unwrap().remove(term_id);
         if let Some(mut session) = session {
             let _ = session.child.kill();

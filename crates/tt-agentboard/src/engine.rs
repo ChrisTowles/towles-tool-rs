@@ -626,6 +626,30 @@ impl Engine {
         removed
     }
 
+    /// Tear a folder's live rail state down immediately, ahead of its
+    /// checkout disappearing (a slot removal): drop every session record and
+    /// every window/pane scoped to it, persisting both right away instead of
+    /// waiting for the next poll's repo-keyed prune in
+    /// [`Self::compute_payload_with`]. Returns the removed session ids so the
+    /// caller can kill their live PTYs (a session id doubles as its `term_id`)
+    /// — killing them first is what actually ends any Claude Code process
+    /// running inside, since closing the PTY's controlling terminal signals
+    /// its foreground job.
+    pub fn close_folder(&mut self, dir: &str) -> Vec<String> {
+        let ids: Vec<String> =
+            self.sessions.sessions_for(dir).iter().map(|r| r.id.clone()).collect();
+        if !ids.is_empty() {
+            for id in &ids {
+                self.sessions.remove(id);
+            }
+            let _ = self.sessions.save();
+        }
+        if self.windows.remove_folder(dir) {
+            let _ = self.windows.save(&[dir.to_string()]);
+        }
+        ids
+    }
+
     pub fn set_status(&mut self, session: &str, input: Option<StatusInput>, now: i64) {
         self.metadata.set_status(session, input, now);
     }
