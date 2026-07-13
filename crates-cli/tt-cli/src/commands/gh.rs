@@ -214,6 +214,7 @@ fn pr_list() -> i32 {
             repo: p.repo.clone(),
             number: p.number,
             title: p.title.clone(),
+            state: p.state.clone(),
             checks: p.checks.clone(),
             review_state: p.review_state.clone(),
         })

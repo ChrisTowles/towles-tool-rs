@@ -71,14 +71,15 @@ export function ChecksBadge({ checks }: { checks: string }) {
 
 /** PR ordering weight: failing checks outrank review-requested outrank the rest. */
 export function prRank(pr: PrItem): number {
-  if (pr.checks === "failing") return 2;
+  if (pr.state !== "merged" && pr.checks === "failing") return 2;
   if (pr.reviewState === "review_requested") return 1;
   return 0;
 }
 
 /** Whether a PR demands the owner's attention (mirrors the day-bar math). */
 export function prNeedsYou(pr: PrItem): boolean {
-  return pr.checks === "failing" || pr.reviewState === "review_requested";
+  const checksFailing = pr.state !== "merged" && pr.checks === "failing";
+  return checksFailing || pr.reviewState === "review_requested";
 }
 
 /**
