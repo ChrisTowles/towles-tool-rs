@@ -111,6 +111,26 @@ export function dmsNeedingAttention(snapshot: StoreSnapshot): DmItem[] {
   return snapshot.dms.filter((d) => !d.fromMe && d.dismissedTs < d.ts);
 }
 
+/**
+ * One handled request against the towles-tool MCP server (`ttr mcp serve`),
+ * logged by the dispatcher. `method` is the JSON-RPC method (`initialize`,
+ * `tools/call`, …); `tool` and `args` are set only for `tools/call` (args are a
+ * compacted one-line rendering). `ok` is false for a JSON-RPC error or an
+ * `isError` tool result, with the message in `error`. `client` is the caller's
+ * `clientInfo` from the session's `initialize` (e.g. `claude-code 2.1`).
+ */
+export type McpCall = {
+  id: number;
+  ts: number;
+  method: string;
+  tool?: string;
+  args?: string;
+  ok: boolean;
+  error?: string;
+  durationMs?: number;
+  client?: string;
+};
+
 export type StoreSnapshot = {
   events: CalEvent[];
   tasks: TaskItem[];
@@ -118,6 +138,7 @@ export type StoreSnapshot = {
   prs: PrItem[];
   runs: CollectRun[];
   dms: DmItem[];
+  mcpCalls: McpCall[];
 };
 
 const MINUTE = 60_000;
@@ -130,6 +151,7 @@ export const EMPTY_SNAPSHOT: StoreSnapshot = {
   prs: [],
   runs: [],
   dms: [],
+  mcpCalls: [],
 };
 
 /**
@@ -213,6 +235,47 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
     ],
     runs: [],
     dms: [],
+    mcpCalls: [
+      {
+        id: 4,
+        ts: now - 12 * 1000,
+        method: "tools/call",
+        tool: "day_brief",
+        args: "{}",
+        ok: true,
+        durationMs: 6,
+        client: "claude-code 2.1",
+      },
+      {
+        id: 3,
+        ts: now - 40 * 1000,
+        method: "tools/call",
+        tool: "todo_create",
+        args: '{"title":"Wire the MCP screen"}',
+        ok: true,
+        durationMs: 3,
+        client: "claude-code 2.1",
+      },
+      {
+        id: 2,
+        ts: now - 55 * 1000,
+        method: "tools/call",
+        tool: "todo_set_status",
+        args: '{"id":9999,"status":"doing"}',
+        ok: false,
+        error: "no todo with id 9999",
+        durationMs: 1,
+        client: "claude-code 2.1",
+      },
+      {
+        id: 1,
+        ts: now - 2 * MINUTE,
+        method: "initialize",
+        ok: true,
+        durationMs: 0,
+        client: "claude-code 2.1",
+      },
+    ],
   };
 }
 

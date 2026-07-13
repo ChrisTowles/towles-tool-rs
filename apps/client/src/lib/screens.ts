@@ -5,6 +5,7 @@ import {
   Gauge,
   KanbanSquare,
   CalendarDays,
+  Radio,
   Settings2,
   Stethoscope,
   TerminalSquare,
@@ -22,6 +23,7 @@ export type ScreenId =
   | "doctor"
   | "claude-sessions"
   | "gh-prs"
+  | "mcp"
   | "config";
 
 export type ScreenMeta = {
@@ -93,6 +95,13 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     keywords: ["github", "gh", "branches", "review", "checks"],
     fullBleed: true,
   },
+  mcp: {
+    id: "mcp",
+    title: "MCP server",
+    icon: Radio,
+    keywords: ["mcp", "server", "calls", "tools", "json-rpc", "protocol", "incoming"],
+    fullBleed: true,
+  },
   config: {
     id: "config",
     title: "Config",
@@ -104,6 +113,6 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
 export const NAV_SECTIONS: { label: string; screens: ScreenId[] }[] = [
   { label: "Focus", screens: ["cockpit", "board", "agentboard"] },
   { label: "Journal", screens: ["journal-today", "journal-notes", "journal-meetings"] },
-  { label: "Tools", screens: ["doctor", "claude-sessions", "gh-prs"] },
+  { label: "Tools", screens: ["doctor", "claude-sessions", "gh-prs", "mcp"] },
   { label: "App", screens: ["config"] },
 ];

@@ -10,6 +10,7 @@ import { GhPrsScreen } from "@/screens/gh-prs";
 import { JournalMeetingsScreen } from "@/screens/journal-meetings";
 import { JournalNotesScreen } from "@/screens/journal-notes";
 import { JournalTodayScreen } from "@/screens/journal-today";
+import { McpScreen } from "@/screens/mcp";
 
 export const SCREEN_COMPONENTS: Record<ScreenId, ComponentType> = {
   cockpit: CockpitScreen,
@@ -21,5 +22,6 @@ export const SCREEN_COMPONENTS: Record<ScreenId, ComponentType> = {
   doctor: DoctorScreen,
   "claude-sessions": ClaudeSessionsScreen,
   "gh-prs": GhPrsScreen,
+  mcp: McpScreen,
   config: ConfigScreen,
 };
