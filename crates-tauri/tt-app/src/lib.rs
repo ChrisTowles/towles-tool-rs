@@ -208,6 +208,30 @@ pub fn run() {
                 });
             }
 
+            // Background fetch: `git fetch origin` every 3 minutes per tracked
+            // repo (deduped across worktrees/slots), outside the engine lock
+            // like the stat poll above. The 10s git-stat poll only reads
+            // already-cached remote-tracking refs, so without this,
+            // "commits behind main" never updates until the user happens to
+            // fetch some other way (opening a terminal, `tt slot create`,
+            // `tt gh` commands). No re-emit here — the next stat-poll tick
+            // picks up whatever the fetch changed.
+            {
+                let engine = engine.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(180));
+                    loop {
+                        interval.tick().await;
+                        let fetch_engine = engine.clone();
+                        let _ = tauri::async_runtime::spawn_blocking(move || {
+                            let targets = fetch_engine.lock().unwrap().git_targets();
+                            tt_agentboard::git_info::fetch_all(&targets);
+                        })
+                        .await;
+                    }
+                });
+            }
+
             // Personal-dashboard store + journal logging. Open the store once; if it
             // fails, the app still runs and store commands return an error.
             let store_state = store::StoreState::open();

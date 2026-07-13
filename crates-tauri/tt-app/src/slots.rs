@@ -5,8 +5,28 @@
 
 use serde::Serialize;
 use std::path::PathBuf;
+use tauri::Manager;
 
 use tt_slots::ops::{self, CreateOpts, RemoveOpts};
+
+/// Fire-and-forget `git fetch` across every tracked repo (deduped, see
+/// [`tt_agentboard::git_info::fetch_all`]), then nudge the rail to re-emit.
+/// Slot lifecycle events (create/remove) are a natural moment to check
+/// whether main has moved elsewhere in the fleet too — cheaper than waiting
+/// out the periodic poll in `lib.rs`, and kept off the command's own
+/// response path so a slow/offline fetch never delays create/remove.
+fn refresh_all_git_info_in_background(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let ab = app.state::<crate::agentboard::Ab>();
+        let targets = ab.engine.lock().unwrap().git_targets();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            tt_agentboard::git_info::fetch_all(&targets);
+        })
+        .await;
+        ab.emit.notify_one();
+    });
+}
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +51,7 @@ pub fn slot_base_branches(root: String) -> Result<Vec<String>, String> {
 /// it runs off the main thread.
 #[tauri::command]
 pub async fn slot_create(
+    app: tauri::AppHandle,
     root: String,
     branch: String,
     base: String,
@@ -52,6 +73,7 @@ pub async fn slot_create(
         .await
         .map_err(|e| format!("slot task failed: {e}"))?
         .map_err(|e| e.to_string())?;
+    refresh_all_git_info_in_background(&app);
     Ok(SlotCreated {
         name: created.name,
         dir: created.dir.to_string_lossy().to_string(),
@@ -80,8 +102,6 @@ pub struct SlotRemoved {
 /// slot's agentboard tracking. Long-running → off the main thread.
 #[tauri::command]
 pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemoved, String> {
-    use tauri::Manager;
-
     let mut messages = Vec::new();
     {
         let ab = app.state::<crate::agentboard::Ab>();
@@ -129,5 +149,6 @@ pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemov
     // Re-emit either way: a fleet-discovered (never-tracked) slot also drops
     // off the rail on the next recompute, so don't make the user wait a poll.
     ab.emit.notify_one();
+    refresh_all_git_info_in_background(&app);
     Ok(SlotRemoved { name: removed.name, messages })
 }
