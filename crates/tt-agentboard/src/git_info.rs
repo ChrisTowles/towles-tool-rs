@@ -172,6 +172,43 @@ pub fn compute_git_info(dir: &str) -> GitInfo {
     info
 }
 
+/// Fetch `origin` for each distinct repo among `dirs`, deduped by common git
+/// dir so N worktrees of the same repo (the common slot pattern) trigger one
+/// network call, not N. Network I/O, so a longer timeout than [`git_out`]'s
+/// 5s; failures (offline, no origin, auth prompt) are swallowed the same
+/// way — this only refreshes the `origin/main` ref that [`compute_git_info`]
+/// reads, it never surfaces errors to the user.
+pub fn fetch_all(dirs: &[String]) {
+    let mut seen = HashSet::new();
+    for dir in dirs {
+        let key = git_common_dir(dir);
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        fetch_origin(dir);
+    }
+}
+
+/// `git fetch --quiet origin`, ignoring the outcome — best-effort refresh of
+/// the local `origin/main` remote-tracking ref.
+fn fetch_origin(dir: &str) {
+    let full = ["-C", dir, "fetch", "--quiet", "origin"];
+    let _ = tt_exec::run_with_timeout("git", &full, std::time::Duration::from_secs(20));
+}
+
+/// Absolute path to the repo's shared `.git` dir (same for every worktree of
+/// one repo), used to dedup fetches. Empty for a non-repo dir.
+fn git_common_dir(dir: &str) -> String {
+    let raw = git_out(dir, &["rev-parse", "--git-common-dir"]);
+    if raw.is_empty() {
+        return String::new();
+    }
+    let path = std::path::Path::new(&raw);
+    let abs =
+        if path.is_absolute() { path.to_path_buf() } else { std::path::Path::new(dir).join(path) };
+    std::fs::canonicalize(&abs).unwrap_or(abs).to_string_lossy().into_owned()
+}
+
 /// This repo's OTHER `git worktree` checkouts (`dir` itself excluded). Empty
 /// for a plain clone (no linked worktrees) or a non-repo dir.
 fn list_other_worktrees(dir: &str) -> Vec<String> {
@@ -424,6 +461,53 @@ mod tests {
     #[test]
     fn worktree_list_empty_for_plain_clone_or_blank_output() {
         assert_eq!(parse_worktree_list(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn git_common_dir_matches_across_worktrees_of_one_repo() {
+        let root = tempfile::TempDir::new().unwrap();
+        let main = root.path().join("main");
+        std::fs::create_dir(&main).unwrap();
+        let run = |dir: &std::path::Path, args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&main, &["init", "--quiet", "-b", "main"]);
+        run(&main, &["config", "user.email", "test@example.com"]);
+        run(&main, &["config", "user.name", "Test"]);
+        std::fs::write(main.join("f.txt"), "1").unwrap();
+        run(&main, &["add", "f.txt"]);
+        run(&main, &["commit", "--quiet", "-m", "init"]);
+        let linked = root.path().join("linked");
+        run(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "feat",
+                linked.to_str().unwrap(),
+            ],
+        );
+
+        let main_key = git_common_dir(main.to_str().unwrap());
+        let linked_key = git_common_dir(linked.to_str().unwrap());
+        assert!(!main_key.is_empty());
+        assert_eq!(main_key, linked_key);
+    }
+
+    #[test]
+    fn git_common_dir_empty_for_non_repo() {
+        let root = tempfile::TempDir::new().unwrap();
+        assert_eq!(git_common_dir(root.path().to_str().unwrap()), "");
     }
 
     #[test]

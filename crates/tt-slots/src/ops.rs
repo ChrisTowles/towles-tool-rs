@@ -548,6 +548,19 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
     // scope detection probes the directory (see `tt_config::slot_scope_from_dir`).
     let state_scope = tt_config::slot_scope_from_dir(&dir);
 
+    // Refresh remote-tracking refs before the unreachable-commit guard below:
+    // without this, a branch merged and deleted upstream since the last
+    // fetch still looks "unreachable from any branch/remote" against a stale
+    // `origin/*`, which is the right call but for the wrong (stale) reason,
+    // and a branch merged just now can look falsely safe to remove before
+    // its remote ref disappears. `--prune` mirrors `clean_slots` so a
+    // deleted remote branch is reflected too.
+    match git_primary(&sr.primary, &["fetch", "--prune", "--quiet", "origin"]) {
+        Ok(out) if out.ok() => {}
+        _ => messages
+            .push("fetch --prune failed (offline?) — using local refs for guard checks".into()),
+    }
+
     // broken worktree: git can't even report status
     if git_slot(&dir, &["status", "--porcelain"]).map(|o| !o.ok()).unwrap_or(true) {
         if !opts.force {
