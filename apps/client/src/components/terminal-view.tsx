@@ -825,7 +825,13 @@ export function TerminalView({
         // Hidden pane: never resize the PTY to a degenerate 2×1 grid — that
         // reflows the shell while offscreen and desyncs the local mirror
         // from the engine's grid, which is how panes came back stale (#47).
+        // Also tell the engine so it stops rendering at the interactive
+        // frame cap for a canvas nothing is painting (a backgrounded pane
+        // streaming output would otherwise burn a full core).
         wasHidden = true;
+        void import("@tauri-apps/api/core").then(({ invoke }) =>
+          invoke("term_visibility", { termId, visible: false }).catch(() => {}),
+        );
         return;
       }
       const cols = Math.max(2, Math.floor(host.clientWidth / cellW));
@@ -846,13 +852,15 @@ export function TerminalView({
         );
       }
       if (wasHidden) {
-        // Re-shown: ask the engine for one full frame in case any dirty-only
-        // frame was missed while hidden — the engine never resends rows it
-        // considers clean, so a gap would otherwise persist until a scroll.
+        // Re-shown: resume the interactive frame rate and ask for one full
+        // frame in case any dirty-only frame was missed while hidden — the
+        // engine never resends rows it considers clean, so a gap would
+        // otherwise persist until a scroll.
         wasHidden = false;
-        void import("@tauri-apps/api/core").then(({ invoke }) =>
-          invoke("term_request_full", { termId }).catch(() => {}),
-        );
+        void import("@tauri-apps/api/core").then(({ invoke }) => {
+          void invoke("term_visibility", { termId, visible: true }).catch(() => {});
+          void invoke("term_request_full", { termId }).catch(() => {});
+        });
       }
     });
     observer.observe(host);

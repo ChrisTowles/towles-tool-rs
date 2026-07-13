@@ -435,6 +435,24 @@ pub fn term_request_full(state: State<TermState>, term_id: String) -> Result<(),
     Ok(())
 }
 
+/// Report whether the pane is on-screen. Frontend panes never unmount (a
+/// backgrounded tab sits behind another one at `display:none`), so without
+/// this a session streaming output keeps rendering at the interactive frame
+/// cap for a canvas nothing is painting. `term_request_full` — already
+/// called when a pane comes back — catches the canvas up in full once
+/// visible again.
+#[tauri::command]
+pub fn term_visibility(
+    state: State<TermState>,
+    term_id: String,
+    visible: bool,
+) -> Result<(), String> {
+    let guard = state.sessions.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::Visibility(visible));
+    Ok(())
+}
+
 /// Drop the terminal's scrollback history, keeping the visible screen
 /// (right-click "Clear scrollback"). The engine forces a full frame so the
 /// view learns the scrollback depth collapsed.

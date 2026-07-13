@@ -48,6 +48,15 @@ use crate::search::SearchMatch;
 /// produced so the UI side can never fall behind unboundedly.
 const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(1_000_000 / 90);
 
+/// Render interval while the pane is hidden (~2 fps). Frontend panes never
+/// unmount — a backgrounded tab sits behind another one at `display:none` —
+/// so without this a session streaming output (an active agent, a chatty
+/// build) keeps rendering at the interactive cap for a canvas nothing is
+/// painting. Still fast enough to keep title/cursor state fresh for the
+/// rail's live label; [`Input::RequestFull`] catches the canvas up in full
+/// once the pane is shown again.
+const HIDDEN_FRAME_INTERVAL: Duration = Duration::from_millis(500);
+
 /// Cap on unconsumed PTY byte chunks queued for the engine. At the PTY
 /// reader's 64 KiB read size this bounds the in-flight backlog to ~4 MB —
 /// far more than any interactive burst, so normal output never blocks, but a
@@ -89,6 +98,9 @@ pub enum Input {
     /// Drop scrollback history, keeping the visible screen (see
     /// [`Engine::clear_scrollback`]).
     ClearScrollback,
+    /// The pane was shown or hidden in the frontend — widens the render
+    /// interval to [`HIDDEN_FRAME_INTERVAL`] while hidden.
+    Visibility(bool),
 }
 
 #[derive(Debug)]
@@ -188,7 +200,10 @@ impl Session {
                 }
             };
 
-            let apply_control = |engine: &mut Engine, input: Input| match input {
+            // `hidden` is set by `Input::Visibility` and read outside the
+            // closure to pick the render interval, so it takes `&mut bool`
+            // instead of living inside `apply_control`'s captures.
+            let apply_control = |engine: &mut Engine, hidden: &mut bool, input: Input| match input {
                 // Bytes never route through the control channel (see
                 // `Sender::send`); feed defensively rather than panic.
                 Input::Bytes(b) => engine.feed(&b),
@@ -219,10 +234,12 @@ impl Session {
                 }
                 Input::RequestFull => engine.request_full(),
                 Input::ClearScrollback => engine.clear_scrollback(),
+                Input::Visibility(visible) => *hidden = !visible,
             };
 
             // Start in the past so the first input renders immediately.
             let mut last_render = Instant::now() - MIN_FRAME_INTERVAL;
+            let mut hidden = false;
             // Block for a wake, then drain and render. Buffered wakes are
             // delivered before disconnect, so a dropped session still drains
             // its queued input before the loop ends.
@@ -230,23 +247,25 @@ impl Session {
                 let mut applied = false;
                 // Absorb input until the frame interval since the last render
                 // has passed. An idle terminal renders its first input with no
-                // delay; a flood coalesces into ~90 fps frames. Control is
+                // delay; a flood coalesces into ~90 fps frames (or ~2 fps
+                // while hidden — see `HIDDEN_FRAME_INTERVAL`). Control is
                 // drained before bytes on every pass so UI ops never wait
                 // behind queued output.
                 loop {
                     while let Ok(input) = control_rx.try_recv() {
-                        apply_control(&mut engine, input);
+                        apply_control(&mut engine, &mut hidden, input);
                         applied = true;
                     }
                     while let Ok(bytes) = bytes_rx.try_recv() {
                         engine.feed(&bytes);
                         applied = true;
                     }
+                    let interval = if hidden { HIDDEN_FRAME_INTERVAL } else { MIN_FRAME_INTERVAL };
                     let elapsed = last_render.elapsed();
-                    if elapsed >= MIN_FRAME_INTERVAL {
+                    if elapsed >= interval {
                         break;
                     }
-                    match wake_rx.recv_timeout(MIN_FRAME_INTERVAL - elapsed) {
+                    match wake_rx.recv_timeout(interval - elapsed) {
                         Ok(()) => continue,
                         // Timeout: interval reached. Disconnected: render what
                         // we have; the outer recv ends the loop.

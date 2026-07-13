@@ -337,6 +337,7 @@ pub fn run() {
             terminal::term_scroll,
             terminal::term_wheel,
             terminal::term_request_full,
+            terminal::term_visibility,
             terminal::term_select,
             terminal::term_copy,
             terminal::term_search,
