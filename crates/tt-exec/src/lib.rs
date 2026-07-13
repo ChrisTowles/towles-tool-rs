@@ -22,10 +22,30 @@ use thiserror::Error;
 /// port and mis-attribute to the parent's session (issue #39).
 pub const APP_INSTANCE_ENV_PREFIXES: &[&str] = &["TT_", "TAURI_", "npm_"];
 
-/// Whether `key` names an app-instance env var a spawned process must not
-/// inherit — see [`APP_INSTANCE_ENV_PREFIXES`].
+/// Env vars that stamp a process as living *inside* a Claude Code session.
+/// When the app itself was launched from a Claude session (an agent running
+/// `npm run dev`), these leak into every terminal the app spawns, and any
+/// interactive `claude` started there inherits them. With
+/// `CLAUDE_CODE_CHILD_SESSION=1` present, Claude Code treats the session as a
+/// nested child and never writes its conversation transcript to
+/// `~/.claude/projects/` — the session is unrecoverable after the window dies
+/// (verified against Claude Code 2.1.207). The app's terminals host top-level
+/// user sessions, never children, so the whole identity set is dropped.
+pub const CLAUDE_SESSION_ENV_VARS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SSE_PORT",
+    "AI_AGENT",
+];
+
+/// Whether `key` names an env var a spawned process must not inherit: an
+/// app-instance var (see [`APP_INSTANCE_ENV_PREFIXES`]) or a Claude-session
+/// identity var (see [`CLAUDE_SESSION_ENV_VARS`]).
 pub fn is_app_instance_env(key: &str) -> bool {
     APP_INSTANCE_ENV_PREFIXES.iter().any(|prefix| key.starts_with(prefix))
+        || CLAUDE_SESSION_ENV_VARS.contains(&key)
 }
 
 /// Filter the app-instance env vars out of `env`, returning the pairs a nested
@@ -320,13 +340,22 @@ mod tests {
             "USER",
             "LANG",
             "PWD",
-            "MY_TT_VAR",  // prefix not at the start
-            "NOTAURI",    // prefix not at the start
-            "SNAP_npm_x", // prefix not at the start
-            "TTY",        // "TT" without the underscore
-            "TAURITE",    // "TAURI" without the underscore
+            "MY_TT_VAR",                    // prefix not at the start
+            "NOTAURI",                      // prefix not at the start
+            "SNAP_npm_x",                   // prefix not at the start
+            "TTY",                          // "TT" without the underscore
+            "TAURITE",                      // "TAURI" without the underscore
+            "CLAUDE_CODE_ENABLE_TELEMETRY", // user config, not session identity
+            "CLAUDE_EFFORT",                // user config, not session identity
         ] {
             assert!(!is_app_instance_env(key), "{key} should survive");
+        }
+    }
+
+    #[test]
+    fn claude_session_identity_vars_are_scrubbed() {
+        for key in CLAUDE_SESSION_ENV_VARS {
+            assert!(is_app_instance_env(key), "{key} should be scrubbed");
         }
     }
 
