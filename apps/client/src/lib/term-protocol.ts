@@ -156,10 +156,29 @@ export function rgb(packed: number): string {
   return `#${packed.toString(16).padStart(6, "0")}`;
 }
 
+const graphemeSegmenter =
+  typeof Intl !== "undefined" && "Segmenter" in Intl
+    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : null;
+
+/** Split a run's text into grapheme clusters — the unit that fills exactly one
+ * terminal cell. A cell may carry several codepoints (a base plus combining
+ * marks, or an emoji with a variation selector); those must render as one glyph
+ * and advance the grid by one cell, not one column per codepoint. Falls back to
+ * codepoint iteration only where `Intl.Segmenter` is unavailable. */
+export function graphemeClusters(text: string): string[] {
+  if (!graphemeSegmenter) return [...text];
+  const out: string[] = [];
+  for (const { segment } of graphemeSegmenter.segment(text)) out.push(segment);
+  return out;
+}
+
 /** Whether a run may contain wide (2-column) characters: its column width
- * exceeds its character count. */
+ * exceeds its grapheme-cluster count (one cluster = one cell). Counting
+ * clusters, not codepoints, keeps combining marks / emoji selectors from
+ * looking like extra cells. */
 export function isWideRun(run: Run): boolean {
-  return run.width > [...run.text].length;
+  return run.width > graphemeClusters(run.text).length;
 }
 
 /** The subset of `KeyboardEvent` the key encoders read — lets callers pass a

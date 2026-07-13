@@ -3,9 +3,12 @@ import {
   encodeKey,
   exitIsCrash,
   exitLabel,
+  graphemeClusters,
+  isWideRun,
   scrollbackKey,
   stepMatch,
   viewportMatches,
+  type Run,
 } from "./term-protocol";
 
 type KeyEventLike = Parameters<typeof scrollbackKey>[0];
@@ -110,5 +113,36 @@ describe("stepMatch", () => {
   it("returns -1 when there are no matches", () => {
     expect(stepMatch(0, 0, 1)).toBe(-1);
     expect(stepMatch(0, -1, -1)).toBe(-1);
+  });
+});
+
+describe("graphemeClusters", () => {
+  it("keeps a base codepoint and its combining mark as one cluster", () => {
+    // "e" + U+0301 (combining acute) is one cell, not two.
+    expect(graphemeClusters("e\u{301}llo")).toEqual(["e\u{301}", "l", "l", "o"]);
+  });
+
+  it("keeps an emoji and its variation selector as one cluster", () => {
+    expect(graphemeClusters("\u{2764}\u{FE0F}")).toEqual(["\u{2764}\u{FE0F}"]);
+  });
+
+  it("splits plain ASCII one cluster per character", () => {
+    expect(graphemeClusters("hi")).toEqual(["h", "i"]);
+  });
+});
+
+describe("isWideRun", () => {
+  const run = (text: string, width: number): Run => ({ x: 0, width, text });
+
+  it("counts grapheme clusters, not codepoints, against the column width", () => {
+    // A combining-mark cell has more codepoints than columns but is not wide.
+    expect(isWideRun(run("e\u{301}", 1))).toBe(false);
+    // An emoji-selector cluster in a single narrow column is likewise not wide.
+    expect(isWideRun(run("\u{2764}\u{FE0F}", 1))).toBe(false);
+  });
+
+  it("still flags a run whose column width exceeds its cluster count", () => {
+    // Two CJK glyphs occupy four columns: genuinely wide.
+    expect(isWideRun(run("\u{6F22}\u{5B57}", 4))).toBe(true);
   });
 });

@@ -11,6 +11,7 @@ import {
   UNDERLINE,
   encodeKey,
   encodePaste,
+  graphemeClusters,
   isWideRun,
   rgb,
   scrollbackKey,
@@ -267,12 +268,14 @@ export function TerminalView({
         ctx.fillStyle = fg;
         ctx.globalAlpha = flags & FAINT ? 0.6 : 1;
         setFont(flags);
-        // Wide chars advance 2 columns; per-char placement keeps the grid
+        // Draw one grapheme cluster per cell so combining marks / emoji
+        // selectors compose onto the base glyph instead of shifting the grid.
+        // Wide clusters advance 2 columns; per-cell placement keeps the grid
         // aligned regardless of what the canvas font measures.
         let cx = px;
-        for (const ch of run.text) {
-          ctx.fillText(ch, cx, y * cellH + baseline);
-          cx += (isWideRun(run) && ch.charCodeAt(0) > 0xff ? 2 : 1) * cellW;
+        for (const cluster of graphemeClusters(run.text)) {
+          ctx.fillText(cluster, cx, y * cellH + baseline);
+          cx += (isWideRun(run) && (cluster.codePointAt(0) ?? 0) > 0xff ? 2 : 1) * cellW;
         }
         ctx.globalAlpha = 1;
         if (flags & (UNDERLINE | STRIKETHROUGH | OVERLINE)) {
@@ -971,11 +974,12 @@ export function TerminalView({
 function charAt(runs: Run[], x: number): string | null {
   for (const run of runs) {
     if (x < run.x || x >= run.x + run.width) continue;
-    if (!isWideRun(run)) return [...run.text][x - run.x] ?? null;
+    const clusters = graphemeClusters(run.text);
+    if (!isWideRun(run)) return clusters[x - run.x] ?? null;
     let cx = run.x;
-    for (const ch of run.text) {
-      const w = ch.charCodeAt(0) > 0xff ? 2 : 1;
-      if (x >= cx && x < cx + w) return ch;
+    for (const cluster of clusters) {
+      const w = (cluster.codePointAt(0) ?? 0) > 0xff ? 2 : 1;
+      if (x >= cx && x < cx + w) return cluster;
       cx += w;
     }
   }
