@@ -71,6 +71,16 @@ describe("buildAttentionFeed", () => {
     expect(feed.map((i) => i.kind)).toEqual(["dm", "pr-ci", "pr-review", "agent"]);
   });
 
+  it("ignores a merged PR even with a stale failing/review-requested state", () => {
+    const feed = buildAttentionFeed(
+      snapshot({
+        prs: [pr({ number: 9, state: "merged", checks: "failing", reviewState: "review_requested" })],
+      }),
+      NO_AGENTS,
+    );
+    expect(feed).toEqual([]);
+  });
+
   it("surfaces a failing+review-requested PR once, in the urgent tier", () => {
     const feed = buildAttentionFeed(
       snapshot({ prs: [pr({ number: 7, checks: "failing", reviewState: "review_requested" })] }),

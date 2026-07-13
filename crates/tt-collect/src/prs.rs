@@ -16,19 +16,30 @@ use crate::gh;
 const PR_LIST_FIELDS: &str =
     "number,title,headRefName,state,statusCheckRollup,reviewDecision,url,updatedAt";
 
-/// Collect and dedup the authored + review-requested open PRs for one repo dir.
+/// Page cap for the recently-merged authored PRs fetch — just enough to catch
+/// a just-merged branch before its worktree slot is removed, without pulling a
+/// repo's whole merge history.
+const MERGED_LIST_LIMIT: &str = "20";
+
+/// Collect and dedup the authored + review-requested open PRs, plus a handful
+/// of recently-merged authored PRs, for one repo dir.
 ///
 /// Returns the repo's `owner/name` alongside its PRs so callers know which repo
 /// a (possibly empty) result belongs to. Returns an error string (never panics)
 /// if `gh` is missing, times out, exits non-zero, or emits unparseable JSON.
 /// Dedup is by PR number; a review-requested entry wins over an authored one
-/// for the same PR.
+/// for the same PR (a merged PR can't collide with either, since GitHub never
+/// reports the same number as both open and merged).
 pub(crate) fn collect_repo_prs(dir: &Path) -> Result<(String, Vec<PrInput>), String> {
     let repo = gh::repo_name_with_owner(dir)?;
-    let authored = gh_pr_list(dir, &["--author", "@me"])?;
-    let review = gh_pr_list(dir, &["--search", "review-requested:@me"])?;
+    let authored = gh_pr_list(dir, "open", gh::LIST_LIMIT, &["--author", "@me"])?;
+    let review = gh_pr_list(dir, "open", gh::LIST_LIMIT, &["--search", "review-requested:@me"])?;
+    let merged = gh_pr_list(dir, "merged", MERGED_LIST_LIMIT, &["--author", "@me"])?;
 
     let mut by_number: HashMap<i64, PrInput> = HashMap::new();
+    for pr in map_pr_list(&merged, &repo, false) {
+        by_number.insert(pr.number, pr);
+    }
     for pr in map_pr_list(&authored, &repo, false) {
         by_number.insert(pr.number, pr);
     }
@@ -39,15 +50,20 @@ pub(crate) fn collect_repo_prs(dir: &Path) -> Result<(String, Vec<PrInput>), Str
     Ok((repo, by_number.into_values().collect()))
 }
 
-/// Run `gh pr list` in `dir` with the shared field set plus `extra` filters.
-fn gh_pr_list(dir: &Path, extra: &[&str]) -> Result<serde_json::Value, String> {
+/// Run `gh pr list` in `dir` for the given `--state`/`--limit` plus `extra` filters.
+fn gh_pr_list(
+    dir: &Path,
+    state: &str,
+    limit: &str,
+    extra: &[&str],
+) -> Result<serde_json::Value, String> {
     let mut args = vec![
         "pr",
         "list",
         "--state",
-        "open",
+        state,
         "--limit",
-        gh::LIST_LIMIT,
+        limit,
         "--json",
         PR_LIST_FIELDS,
     ];
@@ -209,6 +225,21 @@ mod tests {
 
         let review = map_pr_list(&list, "o/r", true);
         assert_eq!(review[0].review_state, "review_requested");
+    }
+
+    #[test]
+    fn map_pr_list_lowercases_a_merged_state() {
+        let list = json!([{
+            "number": 6,
+            "title": "Merged thing",
+            "headRefName": "feat/thing",
+            "state": "MERGED",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "reviewDecision": "",
+            "url": "https://github.com/o/r/pull/6",
+            "updatedAt": "2024-01-02T03:04:05Z"
+        }]);
+        assert_eq!(map_pr_list(&list, "o/r", false)[0].state, "merged");
     }
 
     #[test]

@@ -24,10 +24,13 @@ export function GhPrsScreen() {
   // Deep-link focus: a "needs you" popover row scrolls its PR into view here.
   const focusRef = useFocusTarget<HTMLDivElement>("gh-prs");
 
-  const needsYou = snapshot.prs
+  // Merged PRs live in the snapshot too (briefly, so a folder's rail chip can
+  // turn purple), but this screen is the open work queue — exclude them.
+  const openPrs = snapshot.prs.filter((p) => p.state === "open");
+  const needsYou = openPrs
     .filter(prNeedsYou)
     .sort((a, b) => prRank(b) - prRank(a) || b.updatedTs - a.updatedTs);
-  const rest = snapshot.prs
+  const rest = openPrs
     .filter((p) => !prNeedsYou(p))
     .sort((a, b) => a.repo.localeCompare(b.repo) || b.updatedTs - a.updatedTs);
   const byRepo = groupByRepo(rest);
@@ -41,7 +44,7 @@ export function GhPrsScreen() {
           Pull requests
         </h2>
         <span className="font-mono text-xs text-muted-foreground">
-          {snapshot.prs.length} open · {needsYou.length} need you
+          {openPrs.length} open · {needsYou.length} need you
         </span>
         <div className="ml-auto">
           <CollectorFreshness run={prsRun} now={now} />

@@ -232,17 +232,21 @@ export function DiffButton({
   );
 }
 
-/** Clickable `#N` chip for the folder's open PR, tinted by its checks state
- * (red failing · green passing · yellow pending · gray none). Opens GitHub. */
+/** Clickable `#N` chip for the folder's PR, tinted by its checks state (red
+ * failing · green passing · yellow pending · gray none) once merged the chip
+ * turns purple regardless of checks — the slot is done, time to `tt slot rm`
+ * it. Opens GitHub. */
 export function PrChip({ pr }: { pr: PrItem }) {
   const tone =
-    pr.checks === "failing"
-      ? "border-red-500/50 bg-red-500/10 text-red-600 hover:bg-red-500/20 dark:text-red-400"
-      : pr.checks === "passing"
-        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
-        : pr.checks === "pending"
-          ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-600 hover:bg-yellow-500/20 dark:text-yellow-400"
-          : "border-border/70 text-muted-foreground hover:bg-accent hover:text-foreground";
+    pr.state === "merged"
+      ? "border-purple-500/50 bg-purple-500/10 text-purple-600 hover:bg-purple-500/20 dark:text-purple-400"
+      : pr.checks === "failing"
+        ? "border-red-500/50 bg-red-500/10 text-red-600 hover:bg-red-500/20 dark:text-red-400"
+        : pr.checks === "passing"
+          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
+          : pr.checks === "pending"
+            ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-600 hover:bg-yellow-500/20 dark:text-yellow-400"
+            : "border-border/70 text-muted-foreground hover:bg-accent hover:text-foreground";
   return (
     <button
       type="button"
@@ -254,7 +258,11 @@ export function PrChip({ pr }: { pr: PrItem }) {
         "flex h-5 shrink-0 items-center gap-1 rounded-md border px-1.5 font-mono text-[10.5px] transition-colors",
         tone,
       )}
-      title={`${pr.title} — checks ${pr.checks}${pr.reviewState === "review_requested" ? ", review requested" : ""}. Open on GitHub.`}
+      title={
+        pr.state === "merged"
+          ? `${pr.title} — merged. Open on GitHub.`
+          : `${pr.title} — checks ${pr.checks}${pr.reviewState === "review_requested" ? ", review requested" : ""}. Open on GitHub.`
+      }
     >
       <GitPullRequest className="size-3" />#{pr.number}
     </button>
