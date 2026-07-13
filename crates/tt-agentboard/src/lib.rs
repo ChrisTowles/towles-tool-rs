@@ -26,6 +26,7 @@ use thiserror::Error;
 
 pub mod bridge;
 pub mod claude_cli;
+pub mod cleanup;
 pub mod collapse;
 pub mod engine;
 pub mod folder_meta;

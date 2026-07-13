@@ -16,6 +16,7 @@
 //! (`tt-cli/src/commands/slot.rs`) gathers real-world state — git output,
 //! bind-tests, docker listings — and hands it here for decisions.
 
+pub mod clean;
 pub mod envfile;
 pub mod guards;
 pub mod layout;
@@ -25,7 +26,7 @@ pub mod template;
 pub use guards::{RmBlocked, check_removal, docker_resource_matches};
 pub use layout::{MARKER_FILE, PRIMARY_SUFFIX, SLOTS_DIR, marker_contents, slot_name_from_branch};
 pub use ops::{
-    CreateOpts, CreatedSlot, OpsError, RemoveOpts, RemovedSlot, SlotRoot, create_slot,
-    discover_root, remove_slot,
+    CleanOpts, CleanReport, CreateOpts, CreatedSlot, FinishedSlot, KeptSlot, OpsError, RemoveOpts,
+    RemovedSlot, SlotRoot, clean_slots, create_slot, discover_root, remove_slot,
 };
 pub use template::{RenderOutcome, SlotContext, TemplateError, render};

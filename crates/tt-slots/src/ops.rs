@@ -648,6 +648,216 @@ fn state_cleanup(scope: Option<&str>, messages: &mut Vec<String>) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// clean — remove every finished slot and the state removed checkouts left behind
+
+#[derive(Debug, Default)]
+pub struct CleanOpts {
+    /// Slot root; `None` walks up from the current working directory.
+    pub root: Option<PathBuf>,
+    /// Report what would happen without removing or sweeping anything.
+    pub dry_run: bool,
+    /// Parents of per-scope instance-state dirs to sweep (the
+    /// `…/towles-tool/slots/` dirs; the caller resolves them via
+    /// `tt_config::instance_state_bases`). Empty = skip the sweep.
+    pub scope_parents: Vec<PathBuf>,
+}
+
+/// A slot `clean` removed (or, on dry-run, would remove).
+pub struct FinishedSlot {
+    pub name: String,
+    pub branch: String,
+    /// Why it counted as finished ([`crate::clean::FinishedReason`], rendered).
+    pub reason: String,
+    /// Removal progress notes (docker resources, branch deletion). Empty on
+    /// dry-run.
+    pub messages: Vec<String>,
+}
+
+/// A slot `clean` left alone, and why.
+pub struct KeptSlot {
+    pub name: String,
+    pub branch: String,
+    pub why: Vec<String>,
+}
+
+pub struct CleanReport {
+    pub dry_run: bool,
+    /// Removed (dry-run: would-remove) slots.
+    pub removed: Vec<FinishedSlot>,
+    pub kept: Vec<KeptSlot>,
+    /// Orphaned per-scope state dirs swept (dry-run: would sweep).
+    pub swept_state_dirs: Vec<PathBuf>,
+    /// State scopes of the checkouts that remain (primary + kept slots) —
+    /// callers prune *these* agentboard stores plus the unscoped one.
+    pub live_scopes: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// Remove every *finished* slot — its branch is a strict ancestor of the
+/// primary's branch (classic merge) or its upstream is gone after
+/// `fetch --prune` (squash/rebase merge) — via the same guarded
+/// [`remove_slot`], never forced: a finished slot with uncommitted changes,
+/// orphanable commits, or a live dev server is reported and kept. A removed
+/// slot's branch is deleted from the hub (its work is reachable from the
+/// base/remote — that's what made it finished). Then sweep `scope_parents`
+/// for per-scope state dirs whose checkout no longer exists.
+///
+/// `scope_of` maps a checkout dir to its instance-state scope
+/// (`tt_config::slot_scope_from_dir`); it is injected so the scope rule has
+/// exactly one owner. When it can't scope the primary (a repo that never
+/// produces scoped state), the sweep is skipped entirely.
+pub fn clean_slots(
+    opts: &CleanOpts,
+    scope_of: impl Fn(&Path) -> Option<String>,
+) -> Result<CleanReport> {
+    let sr = discover_root(opts.root.as_deref())?;
+    let mut warnings = Vec::new();
+    let _ = git_primary(&sr.primary, &["worktree", "prune"]);
+    // --prune is what flips a merged-and-deleted remote branch to "gone".
+    match git_primary(&sr.primary, &["fetch", "--prune", "--quiet", "origin"]) {
+        Ok(out) if out.ok() => {}
+        _ => warnings.push(
+            "fetch --prune failed (offline?) — merges that deleted the remote branch may not \
+             be detected this run"
+                .to_string(),
+        ),
+    }
+
+    let base = base_branch(&sr.primary);
+    let rev_parse = |refname: &str| {
+        git_primary(&sr.primary, &["rev-parse", "--quiet", "--verify", refname])
+            .ok()
+            .filter(|o| o.ok())
+            .map(|o| o.stdout.trim().to_string())
+    };
+    let base_tip = rev_parse(&format!("refs/heads/{base}"));
+
+    let mut removed = Vec::new();
+    let mut kept = Vec::new();
+    let mut live_scopes: Vec<String> = scope_of(&sr.primary).into_iter().collect();
+    let primary_scoped = !live_scopes.is_empty();
+
+    for (name, dir) in sr.slots() {
+        // Computed before removal — a removed slot's dir is gone afterwards.
+        let scope = scope_of(&dir);
+        let mut keep = |name: String, branch: String, why: Vec<String>| {
+            kept.push(KeptSlot { name, branch, why });
+            live_scopes.extend(scope.clone());
+        };
+
+        let branch = match git_slot(&dir, &["branch", "--show-current"]) {
+            Ok(out) if out.ok() => out.stdout.trim().to_string(),
+            _ => {
+                keep(
+                    name,
+                    "BROKEN".to_string(),
+                    vec!["worktree is broken — `ttr slot rm --force` to drop it".to_string()],
+                );
+                continue;
+            }
+        };
+        if branch.is_empty() {
+            keep(
+                name,
+                "detached".to_string(),
+                vec!["detached HEAD — no branch to judge".to_string()],
+            );
+            continue;
+        }
+        if branch == base {
+            keep(name, branch, vec!["on the base branch".to_string()]);
+            continue;
+        }
+
+        let branch_ref = format!("refs/heads/{branch}");
+        let merged = git_primary(&sr.primary, &["merge-base", "--is-ancestor", &branch_ref, &base])
+            .map(|o| o.ok())
+            .unwrap_or(false);
+        let gone =
+            git_primary(&sr.primary, &["for-each-ref", &branch_ref, "--format=%(upstream:track)"])
+                .ok()
+                .filter(|o| o.ok())
+                .map(|o| crate::clean::upstream_gone(&o.stdout))
+                .unwrap_or(false);
+        let tip_equals_base = match (rev_parse(&branch_ref), &base_tip) {
+            (Some(tip), Some(base_tip)) => tip == *base_tip,
+            _ => false,
+        };
+
+        let Some(reason) = crate::clean::finished_reason(&base, merged, tip_equals_base, gone)
+        else {
+            keep(
+                name,
+                branch,
+                vec![format!(
+                    "active: not merged into {base} and upstream not gone"
+                )],
+            );
+            continue;
+        };
+
+        if opts.dry_run {
+            removed.push(FinishedSlot {
+                name,
+                branch,
+                reason: reason.to_string(),
+                messages: Vec::new(),
+            });
+            continue;
+        }
+        let rm = RemoveOpts { root: Some(sr.root.clone()), name: name.clone(), force: false };
+        match remove_slot(&rm) {
+            Ok(r) => {
+                let mut messages = r.messages;
+                match git_primary(&sr.primary, &["branch", "-D", &branch]) {
+                    Ok(out) if out.ok() => messages.push(format!("deleted branch {branch}")),
+                    _ => messages.push(format!(
+                        "could not delete branch {branch} — remove it with `git branch -D`"
+                    )),
+                }
+                removed.push(FinishedSlot { name, branch, reason: reason.to_string(), messages });
+            }
+            Err(OpsError::RemovalBlocked { reasons, .. }) => keep(name, branch, reasons),
+            Err(e) => keep(name, branch, vec![e.to_string()]),
+        }
+    }
+
+    // Sweep per-scope instance state whose checkout no longer exists — the
+    // dirs `ttr slot rm` never touches (see tt_config::state_scope). Only in
+    // repos that actually produce scopes: if the primary itself has none,
+    // nothing under these parents can be ours.
+    let mut swept_state_dirs = Vec::new();
+    if primary_scoped {
+        let live: BTreeSet<String> = live_scopes.iter().cloned().collect();
+        for parent in &opts.scope_parents {
+            let names = dir_names(parent);
+            for stale in crate::clean::stale_scope_dirs(&sr.repo, &live, &names) {
+                let dir = parent.join(&stale);
+                if opts.dry_run {
+                    swept_state_dirs.push(dir);
+                    continue;
+                }
+                match fs::remove_dir_all(&dir) {
+                    Ok(()) => swept_state_dirs.push(dir),
+                    Err(e) => {
+                        warnings.push(format!("could not remove {}: {e}", dir.display()));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(CleanReport {
+        dry_run: opts.dry_run,
+        removed,
+        kept,
+        swept_state_dirs,
+        live_scopes,
+        warnings,
+    })
+}
+
 /// Whether a docker container owned by this slot publishes `port`.
 fn docker_owns_port(slot_name: &str, port: u16) -> bool {
     let publish = format!("publish={port}");
