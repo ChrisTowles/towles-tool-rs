@@ -35,7 +35,7 @@ import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { useTheme, type Theme } from "@/components/theme-provider";
+import { COLOR_THEMES, useTheme, type ColorTheme, type Theme } from "@/components/theme-provider";
 import { abInvoke } from "@/lib/agentboard";
 import { closeCurrentWindow } from "@/lib/open-settings";
 import { isEmptyQuery, matchesFilter } from "@/lib/settings-filter";
@@ -466,6 +466,8 @@ function generalSections(
 function appearanceSections(
   theme: Theme,
   setTheme: (t: Theme) => void,
+  colorTheme: ColorTheme,
+  setColorTheme: (c: ColorTheme) => void,
 ): FilterSection[] {
   return [
     {
@@ -486,6 +488,45 @@ function appearanceSections(
                   <SelectItem value="light">Light</SelectItem>
                   <SelectItem value="dark">Dark</SelectItem>
                   <SelectItem value="system">System</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingRow>
+          ),
+        },
+        {
+          label: "Color theme",
+          keywords: [
+            "appearance",
+            "color",
+            "palette",
+            "dracula",
+            "nord",
+            "gruvbox",
+            "tokyo night",
+            "catppuccin",
+            "one dark",
+          ],
+          node: (
+            <SettingRow
+              label="Color theme"
+              description="Palette used in dark mode."
+            >
+              <Select value={colorTheme} onValueChange={(v) => setColorTheme(v as ColorTheme)}>
+                <SelectTrigger className="w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {COLOR_THEMES.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      <span className="flex items-center gap-2">
+                        <span
+                          className="size-2.5 rounded-full"
+                          style={{ backgroundColor: t.swatch }}
+                        />
+                        {t.label}
+                      </span>
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </SettingRow>
@@ -1212,7 +1253,7 @@ function initialTarget(): { tab: string; filter: string } {
 }
 
 export function SettingsWindow() {
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, colorTheme, setColorTheme } = useTheme();
   const { settings, saveState, update, save } = useUserSettings();
   const version = useAppVersion();
   const [target] = useState(initialTarget);
@@ -1300,7 +1341,7 @@ export function SettingsWindow() {
             />
             <FilteredContent
               query={query}
-              sections={appearanceSections(theme, setTheme)}
+              sections={appearanceSections(theme, setTheme, colorTheme, setColorTheme)}
             />
           </TabsContent>
 

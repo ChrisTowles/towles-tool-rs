@@ -117,6 +117,87 @@
     --sidebar-ring: oklch(0.556 0 0);
 }
 
+/* Dark-mode color themes, swapped in via the `data-color-theme` attribute the
+   ThemeProvider sets on <html>. Ported from vetted shadcn/ui community themes
+   (not hand-derived) — each only overrides the neutral shadcn tokens
+   (bg/fg/card/border/accent surfaces); semantic status hues (agent violet,
+   needs-you amber, status dots) are literal Tailwind classes elsewhere and
+   are never touched here.
+
+   Nord: ported from the "Polar Night" dark palette in statico/smui
+   (https://github.com/statico/smui), converted from its HSL source.
+
+   Catppuccin: ported verbatim (hex values unchanged) from the official
+   Catppuccin Mocha preset in tweakcn's theme registry
+   (https://github.com/jnsahaj/tweakcn, utils/theme-presets.ts). */
+.dark[data-color-theme="nord"] {
+    --background: #1a1e23;
+    --foreground: #d8e0e9;
+    --card: #21262e;
+    --card-foreground: #d8e0e9;
+    --popover: #21262e;
+    --popover-foreground: #d8e0e9;
+    --primary: #86c0d0;
+    --primary-foreground: #1a1e23;
+    --secondary: #292f38;
+    --secondary-foreground: #d8e0e9;
+    --muted: #292f38;
+    --muted-foreground: #99a5b2;
+    --accent: #252b2d;
+    --accent-foreground: #86c0d0;
+    --destructive: #d4777f;
+    --border: #3b4554;
+    --input: #3b4554;
+    --ring: #86c0d0;
+    --chart-1: #86c0d0;
+    --chart-2: #5d81ac;
+    --chart-3: #a4bf8d;
+    --chart-4: #ebca89;
+    --chart-5: #b78aaf;
+    --sidebar: #21262e;
+    --sidebar-foreground: #d8e0e9;
+    --sidebar-primary: #86c0d0;
+    --sidebar-primary-foreground: #1a1e23;
+    --sidebar-accent: #252b2d;
+    --sidebar-accent-foreground: #86c0d0;
+    --sidebar-border: #3b4554;
+    --sidebar-ring: #86c0d0;
+}
+
+.dark[data-color-theme="catppuccin"] {
+    --background: #181825;
+    --foreground: #cdd6f4;
+    --card: #1e1e2e;
+    --card-foreground: #cdd6f4;
+    --popover: #45475a;
+    --popover-foreground: #cdd6f4;
+    --primary: #cba6f7;
+    --primary-foreground: #1e1e2e;
+    --secondary: #585b70;
+    --secondary-foreground: #cdd6f4;
+    --muted: #292c3c;
+    --muted-foreground: #a6adc8;
+    --accent: #89dceb;
+    --accent-foreground: #1e1e2e;
+    --destructive: #f38ba8;
+    --border: #313244;
+    --input: #313244;
+    --ring: #cba6f7;
+    --chart-1: #cba6f7;
+    --chart-2: #89dceb;
+    --chart-3: #a6e3a1;
+    --chart-4: #fab387;
+    --chart-5: #f5e0dc;
+    --sidebar: #11111b;
+    --sidebar-foreground: #cdd6f4;
+    --sidebar-primary: #cba6f7;
+    --sidebar-primary-foreground: #1e1e2e;
+    --sidebar-accent: #89dceb;
+    --sidebar-accent-foreground: #1e1e2e;
+    --sidebar-border: #45475a;
+    --sidebar-ring: #cba6f7;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
