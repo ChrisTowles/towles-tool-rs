@@ -65,9 +65,9 @@ pub struct AgentBoardCheck {
 
 /// Tools to probe: (binary, version arg, optional).
 ///
-/// `zig` is optional: it's only needed to build the `tt-vt` terminal engine
-/// (zig 0.15.x), so a missing zig is a warning, not a failure. Its version verb
-/// is `zig version` (no `--`), unlike the rest.
+/// `zig` isn't in this list: it needs more than a presence probe (the `tt-vt`
+/// terminal engine requires a specific 0.15.x), so it has its own
+/// [`check_zig`], which is appended to the same `tools` row set.
 pub const TOOLS: &[(&str, &str, bool)] = &[
     ("git", "--version", false),
     ("gh", "--version", false),
@@ -75,8 +75,13 @@ pub const TOOLS: &[(&str, &str, bool)] = &[
     ("bun", "--version", false),
     ("claude", "--version", false),
     ("cargo", "--version", false),
-    ("zig", "version", true),
 ];
+
+/// The major.minor of zig required to build the `tt-vt` terminal engine.
+/// A machine on a different minor (0.14.x, 0.16.x) can't build it, so the check
+/// treats a mismatch as a hard failure, not just "zig missing".
+pub const ZIG_REQUIRED_MAJOR: u32 = 0;
+pub const ZIG_REQUIRED_MINOR: u32 = 15;
 
 /// Everything one doctor run produced: the interop-shaped [`DoctorRunResult`]
 /// (history/JSON) plus the rich plugin/agentboard rows display surfaces
@@ -102,8 +107,9 @@ impl DoctorReport {
 /// Run every check. Spawns a handful of `--version`/auth subprocesses, so run
 /// it off any latency-sensitive thread.
 pub fn run_report() -> DoctorReport {
-    let tools: Vec<CheckResult> =
+    let mut tools: Vec<CheckResult> =
         TOOLS.iter().map(|(name, arg, optional)| check_tool(name, arg, *optional)).collect();
+    tools.push(check_zig());
     let plugins = check_claude_plugins();
     let agentboard = check_agentboard();
 
@@ -149,6 +155,42 @@ pub fn extract_version(text: &str) -> Option<String> {
     let version: String =
         text[start..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
     if version.is_empty() { None } else { Some(version) }
+}
+
+/// Probe zig's presence *and* that its version is the required 0.15.x.
+///
+/// Reported as a normal tool row (so it shows in `tt doctor`, `--json`, and the
+/// app's Doctor screen), but with real version gating: unlike [`check_tool`], a
+/// wrong minor is a failure, not a pass. `zig version` prints just the version
+/// (e.g. `0.15.2`), no `--` and no `zig ` prefix, unlike the other tools.
+pub fn check_zig() -> CheckResult {
+    match tt_exec::run("zig", &["version"]) {
+        Ok(output) if output.ok() => {
+            let combined = format!("{}{}", output.stdout, output.stderr);
+            zig_result(extract_version(&combined))
+        }
+        _ => zig_result(None),
+    }
+}
+
+/// Build the zig row from an already-extracted version. A missing version or one
+/// off the required minor is a hard failure (`ok: false`, no warning) so it
+/// renders red in both the CLI and the app — a warning would show amber and, in
+/// the CLI, still count as passing.
+fn zig_result(version: Option<String>) -> CheckResult {
+    let ok = version.as_deref().map(zig_version_satisfies).unwrap_or(false);
+    CheckResult { name: "zig".to_string(), version, ok, warning: None }
+}
+
+/// Whether a dotted version string is on the required zig major.minor. Extra
+/// patch/pre-release components (`0.15.0-dev.123`, already trimmed by
+/// [`extract_version`] to `0.15.0`) don't matter — only major and minor gate.
+pub fn zig_version_satisfies(version: &str) -> bool {
+    let mut parts = version.split('.').map(|p| p.parse::<u32>().ok());
+    matches!(
+        (parts.next().flatten(), parts.next().flatten()),
+        (Some(ZIG_REQUIRED_MAJOR), Some(ZIG_REQUIRED_MINOR))
+    )
 }
 
 /// Whether `claude mcp list` output lists the `tt` stdio server.
@@ -372,10 +414,43 @@ mod tests {
     }
 
     #[test]
-    fn zig_is_an_optional_tool() {
-        let zig = TOOLS.iter().find(|(n, _, _)| *n == "zig").expect("zig is probed");
-        assert_eq!(zig.1, "version", "zig's version verb is `zig version`, not `--version`");
-        assert!(zig.2, "zig is optional: only needed to build tt-vt");
+    fn zig_has_its_own_versioned_check_not_a_tools_entry() {
+        // zig needs version gating, so it's not a plain presence probe in TOOLS.
+        let names: Vec<&str> = TOOLS.iter().map(|(n, _, _)| *n).collect();
+        assert!(!names.contains(&"zig"), "zig is checked by check_zig, not TOOLS");
+    }
+
+    #[test]
+    fn zig_version_satisfies_only_the_required_minor() {
+        assert!(zig_version_satisfies("0.15.0"));
+        assert!(zig_version_satisfies("0.15.2"));
+        assert!(zig_version_satisfies("0.15"));
+        // extract_version trims a dev suffix to the dotted head before we parse.
+        assert!(zig_version_satisfies(extract_version("0.15.0-dev.123+abc").as_deref().unwrap()));
+
+        assert!(!zig_version_satisfies("0.14.0"), "older minor can't build tt-vt");
+        assert!(!zig_version_satisfies("0.16.0"), "newer minor can't build tt-vt");
+        assert!(!zig_version_satisfies("1.15.0"), "wrong major");
+        assert!(!zig_version_satisfies("garbage"));
+        assert!(!zig_version_satisfies(""));
+    }
+
+    #[test]
+    fn zig_result_is_a_hard_failure_when_missing_or_wrong_version() {
+        // Missing binary → a clear failure (red), not a soft warning.
+        let missing = zig_result(None);
+        assert!(!missing.ok);
+        assert!(missing.warning.is_none(), "failure renders red, not amber");
+        assert!(missing.version.is_none());
+
+        let wrong = zig_result(Some("0.14.0".to_string()));
+        assert!(!wrong.ok);
+        assert!(wrong.warning.is_none());
+        assert_eq!(wrong.version.as_deref(), Some("0.14.0"), "keeps the found version");
+
+        let good = zig_result(Some("0.15.2".to_string()));
+        assert!(good.ok);
+        assert!(good.warning.is_none());
     }
 
     #[test]
