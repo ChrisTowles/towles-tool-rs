@@ -8,6 +8,13 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -15,13 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { invokeOrThrow } from "@/lib/tauri";
 
@@ -62,8 +63,11 @@ export function NewSlotDialog({
   const [branchEdit, setBranchEdit] = useState<string | null>(null);
   const [base, setBase] = useState("");
   const [branches, setBranches] = useState<string[]>([]);
+  const [baseOpen, setBaseOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const sortedBranches = [...branches].sort((a, b) => a.localeCompare(b));
 
   const branch = branchEdit ?? goalToBranch(goal);
 
@@ -138,18 +142,39 @@ export function NewSlotDialog({
         </div>
         <div className="flex items-center gap-2">
           <span className="w-14 shrink-0 text-[11px] text-muted-foreground">base</span>
-          <Select value={base} onValueChange={setBase}>
-            <SelectTrigger className="w-full font-mono text-xs">
-              <SelectValue placeholder="main" />
-            </SelectTrigger>
-            <SelectContent>
-              {branches.map((b) => (
-                <SelectItem key={b} value={b} className="font-mono text-xs">
-                  {b}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Popover open={baseOpen} onOpenChange={setBaseOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                role="combobox"
+                aria-expanded={baseOpen}
+                className="w-full justify-start font-mono text-xs font-normal"
+              >
+                {base || "main"}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-(--radix-popover-trigger-width) p-0">
+              <Command>
+                <CommandInput placeholder="Search branches…" />
+                <CommandList>
+                  <CommandEmpty>No branches found.</CommandEmpty>
+                  {sortedBranches.map((b) => (
+                    <CommandItem
+                      key={b}
+                      value={b}
+                      className="font-mono text-xs"
+                      onSelect={(value) => {
+                        setBase(value);
+                        setBaseOpen(false);
+                      }}
+                    >
+                      {b}
+                    </CommandItem>
+                  ))}
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
         </div>
         {error && <p className="text-xs text-red-500">{error}</p>}
         <div className="flex items-center justify-end gap-2">
