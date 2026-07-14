@@ -16,6 +16,7 @@
 
 use std::net::TcpListener as StdTcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::{SinkExt, StreamExt};
@@ -272,11 +273,18 @@ async fn serve_connection(app: &AppHandle, stream: tokio::net::TcpStream, shared
             incoming = source.next() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
-                        // Tools with app-side effects (openFile) are answered
-                        // here so the webview can act; everything else goes
-                        // through the pure dispatcher.
-                        let reply = intercept_app_tool(app, shared, text.as_str())
-                            .or_else(|| tt_ide::handle_message(text.as_str(), &shared.context()));
+                        // Tools with app-side effects (openFile, openDiff and
+                        // friends) are answered here so the webview can act;
+                        // everything else goes through the pure dispatcher.
+                        let reply = match intercept_app_tool(app, shared, &tx, text.as_str()) {
+                            Intercept::Reply(reply) => Some(reply),
+                            // Response rides the outbound channel once the
+                            // user accepts/rejects in the review UI.
+                            Intercept::Deferred => None,
+                            Intercept::NotOurs => {
+                                tt_ide::handle_message(text.as_str(), &shared.context())
+                            }
+                        };
                         if let Some(reply) = reply
                             && sink.send(Message::text(reply)).await.is_err()
                         {
@@ -312,36 +320,230 @@ async fn serve_connection(app: &AppHandle, stream: tokio::net::TcpStream, shared
 /// Emitted when a CLI calls `openFile`: the frontend focuses the folder's
 /// Files tab on that file (optionally selecting `startText`..`endText`).
 pub const OPEN_FILE_EVENT: &str = "ide://open-file";
+/// Emitted when a CLI calls `openDiff`: the frontend shows an accept/reject
+/// review (Monaco DiffEditor) and resolves it via `ide_diff_resolve`.
+pub const OPEN_DIFF_EVENT: &str = "ide://open-diff";
+/// Emitted when the CLI closes diff tabs (`close_tab`/`closeAllDiffTabs`) so
+/// the frontend can drop the matching review overlays.
+pub const CLOSE_DIFF_EVENT: &str = "ide://close-diff";
 
-/// Handle `tools/call`s that need the webview to act. Returns the response
-/// to send, or `None` when the message is not an app-side tool (the caller
-/// then runs the pure dispatcher).
-fn intercept_app_tool(app: &AppHandle, shared: &Arc<Shared>, message: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(message).ok()?;
+/// One blocking `openDiff` waiting for the user's accept/reject. The wire
+/// response is deferred: a task per request waits on `respond` and sends the
+/// tool result down the *requesting* connection when the user decides.
+struct PendingDiff {
+    request_id: u64,
+    dir: PathBuf,
+    tab_name: String,
+    new_file_path: PathBuf,
+    respond: tokio::sync::oneshot::Sender<serde_json::Value>,
+}
+
+/// App-wide registry of unresolved `openDiff` requests (managed state — the
+/// resolving Tauri command only knows the request id).
+#[derive(Default)]
+pub struct DiffRequests {
+    pending: Mutex<Vec<PendingDiff>>,
+    next_id: AtomicU64,
+}
+
+impl DiffRequests {
+    /// Resolve one request: on accept, write `final_contents` to the target
+    /// (the reviewer may have tweaked the proposed side). Returns the wire
+    /// result to send, or an error when the id is unknown/already resolved.
+    fn resolve(
+        &self,
+        request_id: u64,
+        accepted: bool,
+        final_contents: Option<String>,
+    ) -> Result<(), String> {
+        let entry = {
+            let mut pending = self.pending.lock().unwrap();
+            let index = pending
+                .iter()
+                .position(|p| p.request_id == request_id)
+                .ok_or("diff review already resolved")?;
+            pending.remove(index)
+        };
+        let result = if accepted {
+            let contents = final_contents.unwrap_or_default();
+            atomic_write(&entry.new_file_path, &contents)?;
+            serde_json::json!({ "content": [
+                { "type": "text", "text": "FILE_SAVED" },
+                { "type": "text", "text": contents },
+            ]})
+        } else {
+            rejected_result(&entry.tab_name)
+        };
+        let _ = entry.respond.send(result);
+        Ok(())
+    }
+
+    /// Reject every pending review matching `dir` (and `tab_name`, when
+    /// given). Returns how many were closed.
+    fn reject_matching(&self, dir: &Path, tab_name: Option<&str>) -> usize {
+        let drained: Vec<PendingDiff> = {
+            let mut pending = self.pending.lock().unwrap();
+            let (matching, rest): (Vec<_>, Vec<_>) = pending
+                .drain(..)
+                .partition(|p| p.dir == dir && tab_name.is_none_or(|t| t == p.tab_name));
+            *pending = rest;
+            matching
+        };
+        let count = drained.len();
+        for entry in drained {
+            let _ = entry.respond.send(rejected_result(&entry.tab_name));
+        }
+        count
+    }
+}
+
+fn rejected_result(tab_name: &str) -> serde_json::Value {
+    serde_json::json!({ "content": [
+        { "type": "text", "text": "DIFF_REJECTED" },
+        { "type": "text", "text": tab_name },
+    ]})
+}
+
+/// Atomic write (tmp + rename), shared by the save command and diff accept.
+fn atomic_write(abs: &Path, content: &str) -> Result<(), String> {
+    let parent = abs.parent().ok_or_else(|| format!("no parent dir for {}", abs.display()))?;
+    let tmp = parent.join(format!(
+        ".{}.tt-tmp",
+        abs.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    ));
+    std::fs::write(&tmp, content).map_err(|e| format!("cannot write {}: {e}", abs.display()))?;
+    std::fs::rename(&tmp, abs).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("cannot save {}: {e}", abs.display())
+    })
+}
+
+/// Outcome of the app-side tool interception.
+enum Intercept {
+    /// Not an app-side tool — run the pure dispatcher.
+    NotOurs,
+    /// Immediate response.
+    Reply(String),
+    /// Response deferred to the review UI (a task holds this connection's
+    /// outbound sender and answers on resolve).
+    Deferred,
+}
+
+/// A raw JSON-RPC result response (the payload is already the full MCP
+/// result, e.g. openDiff's two-block content).
+fn raw_result_response(id: &serde_json::Value, result: &serde_json::Value) -> String {
+    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
+}
+
+/// Handle `tools/call`s that need the webview to act: `openFile` (focus a
+/// file), `openDiff` (blocking accept/reject review), `close_tab` /
+/// `closeAllDiffTabs` (reject + dismiss reviews).
+fn intercept_app_tool(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    out: &UnboundedSender<Message>,
+    message: &str,
+) -> Intercept {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(message) else {
+        return Intercept::NotOurs;
+    };
     if value.get("method").and_then(serde_json::Value::as_str) != Some("tools/call") {
-        return None;
+        return Intercept::NotOurs;
     }
-    let name = value.pointer("/params/name").and_then(serde_json::Value::as_str)?;
-    if name != "openFile" {
-        return None;
-    }
+    let Some(name) = value.pointer("/params/name").and_then(serde_json::Value::as_str) else {
+        return Intercept::NotOurs;
+    };
     let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let args = value.pointer("/params/arguments").cloned().unwrap_or_else(|| serde_json::json!({}));
-    let file_path =
-        args.get("filePath").and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
-    let payload = serde_json::json!({
-        "dir": shared.cwd.to_string_lossy(),
-        "filePath": file_path,
-        "startText": args.get("startText"),
-        "endText": args.get("endText"),
-        "selectToEndOfLine": args.get("selectToEndOfLine"),
-    });
-    let _ = app.emit_to(MAIN_WINDOW_LABEL, OPEN_FILE_EVENT, payload);
-    let result = serde_json::json!({
-        "success": true,
-        "message": format!("Opening {file_path} in Towles Tool"),
-    });
-    Some(tt_ide::tool_result_response(id, &result))
+    let arg_str = |key: &str| args.get(key).and_then(serde_json::Value::as_str).unwrap_or_default();
+
+    match name {
+        "openFile" => {
+            let file_path = arg_str("filePath").to_string();
+            let payload = serde_json::json!({
+                "dir": shared.cwd.to_string_lossy(),
+                "filePath": file_path,
+                "startText": args.get("startText"),
+                "endText": args.get("endText"),
+                "selectToEndOfLine": args.get("selectToEndOfLine"),
+            });
+            let _ = app.emit_to(MAIN_WINDOW_LABEL, OPEN_FILE_EVENT, payload);
+            let result = serde_json::json!({
+                "success": true,
+                "message": format!("Opening {file_path} in Towles Tool"),
+            });
+            Intercept::Reply(tt_ide::tool_result_response(id, &result))
+        }
+        "openDiff" => {
+            let requests = app.state::<DiffRequests>();
+            let request_id = requests.next_id.fetch_add(1, Ordering::Relaxed);
+            let tab_name = arg_str("tab_name").to_string();
+            let new_file_path = PathBuf::from(arg_str("new_file_path"));
+            let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
+            requests.pending.lock().unwrap().push(PendingDiff {
+                request_id,
+                dir: shared.cwd.clone(),
+                tab_name: tab_name.clone(),
+                new_file_path,
+                respond: respond_tx,
+            });
+            let payload = serde_json::json!({
+                "requestId": request_id,
+                "dir": shared.cwd.to_string_lossy(),
+                "oldFilePath": arg_str("old_file_path"),
+                "newFilePath": arg_str("new_file_path"),
+                "newFileContents": arg_str("new_file_contents"),
+                "tabName": tab_name.clone(),
+            });
+            let _ = app.emit_to(MAIN_WINDOW_LABEL, OPEN_DIFF_EVENT, payload);
+            // Answer on this connection when the user decides; a dropped
+            // sender (teardown) degrades to a rejection so the CLI never
+            // hangs forever.
+            let out = out.clone();
+            tauri::async_runtime::spawn(async move {
+                let result = respond_rx.await.unwrap_or_else(|_| rejected_result(&tab_name));
+                let _ = out.send(Message::text(raw_result_response(&id, &result)));
+            });
+            Intercept::Deferred
+        }
+        "close_tab" => {
+            let tab_name = arg_str("tab_name").to_string();
+            app.state::<DiffRequests>().reject_matching(&shared.cwd, Some(&tab_name));
+            let _ = app.emit_to(
+                MAIN_WINDOW_LABEL,
+                CLOSE_DIFF_EVENT,
+                serde_json::json!({ "dir": shared.cwd.to_string_lossy(), "tabName": tab_name }),
+            );
+            let result =
+                serde_json::json!({ "content": [{ "type": "text", "text": "TAB_CLOSED" }] });
+            Intercept::Reply(raw_result_response(&id, &result))
+        }
+        "closeAllDiffTabs" => {
+            let closed = app.state::<DiffRequests>().reject_matching(&shared.cwd, None);
+            let _ = app.emit_to(
+                MAIN_WINDOW_LABEL,
+                CLOSE_DIFF_EVENT,
+                serde_json::json!({ "dir": shared.cwd.to_string_lossy(), "tabName": null }),
+            );
+            let result = serde_json::json!({ "content": [
+                { "type": "text", "text": format!("CLOSED_{closed}_DIFF_TABS") },
+            ]});
+            Intercept::Reply(raw_result_response(&id, &result))
+        }
+        _ => Intercept::NotOurs,
+    }
+}
+
+/// The review UI decided: accept (write `finalContents`, possibly tweaked in
+/// the editor) or reject. Errors when the request is unknown/already gone.
+#[tauri::command]
+pub fn ide_diff_resolve(
+    requests: State<DiffRequests>,
+    request_id: u64,
+    accepted: bool,
+    final_contents: Option<String>,
+) -> Result<(), String> {
+    requests.resolve(request_id, accepted, final_contents)
 }
 
 fn emit_status(app: &AppHandle, shared: &Arc<Shared>) {
@@ -576,16 +778,7 @@ pub async fn ide_write_file(
                 "{file_path} changed on disk since it was opened — reopen it to pick up the new contents"
             ));
         }
-        let parent = abs.parent().ok_or_else(|| format!("no parent dir for {file_path}"))?;
-        let tmp = parent.join(format!(
-            ".{}.tt-tmp",
-            abs.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-        ));
-        std::fs::write(&tmp, &content).map_err(|e| format!("cannot write {file_path}: {e}"))?;
-        std::fs::rename(&tmp, &abs).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            format!("cannot save {file_path}: {e}")
-        })?;
+        atomic_write(&abs, &content)?;
         let meta = std::fs::metadata(&abs).map_err(|e| format!("cannot stat {file_path}: {e}"))?;
         Ok(mtime_ms(&meta))
     })

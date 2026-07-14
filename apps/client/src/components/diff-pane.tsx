@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GitCompare, Pencil, RefreshCw } from "lucide-react";
+import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
 import { DiffViewer, type DiffIdeBridge } from "@/components/diff-view";
 import { FilesPane } from "@/components/files-pane";
 import { IconBtn } from "@/components/agentboard-bits";
@@ -7,6 +8,7 @@ import { abInvoke, type FolderData } from "@/lib/agentboard";
 import {
   ideAtMention,
   ideClearSelection,
+  ideReadFile,
   ideSetSelection,
   useIdeConnected,
   type OpenFileRequest,
@@ -59,6 +61,11 @@ export function DiffPane({
   const [text, setText] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [editingBase, setEditingBase] = useState(false);
+  // Claude's pending openDiff reviews for this folder (shown one at a time,
+  // oldest first). Each carries the on-disk "before" for the DiffEditor.
+  const [reviews, setReviews] = useState<Array<DiffReviewRequest & { originalContent: string }>>(
+    [],
+  );
 
   // Claude called openFile → focus the Files tab on that file. The event is
   // window-global; each pane keeps only requests for its own folder.
@@ -89,6 +96,48 @@ export function DiffPane({
     return () => {
       disposed = true;
       unlisten?.();
+    };
+  }, [dir]);
+
+  // Claude called openDiff → queue an accept/reject review; close_tab /
+  // closeAllDiffTabs dismiss (Rust already rejected the blocked calls).
+  useEffect(() => {
+    if (!dir || !isTauri()) return;
+    let disposed = false;
+    const unlistens: Array<() => void> = [];
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const opened = await listen<DiffReviewRequest>("ide://open-diff", (e) => {
+        if (e.payload.dir !== dir) return;
+        const raw = e.payload.oldFilePath;
+        const rel = raw.startsWith(`${dir}/`) ? raw.slice(dir.length + 1) : raw;
+        void ideReadFile(dir, rel)
+          .then((read) => {
+            setReviews((prev) => [...prev, { ...e.payload, originalContent: read?.content ?? "" }]);
+          })
+          .catch(() => {
+            // Unreadable old file (new file, binary) — review against empty.
+            setReviews((prev) => [...prev, { ...e.payload, originalContent: "" }]);
+          });
+      });
+      const closed = await listen<{ dir: string; tabName: string | null }>(
+        "ide://close-diff",
+        (e) => {
+          if (e.payload.dir !== dir) return;
+          const tab = e.payload.tabName;
+          setReviews((prev) => (tab == null ? [] : prev.filter((r) => r.tabName !== tab)));
+        },
+      );
+      if (disposed) {
+        opened();
+        closed();
+      } else {
+        unlistens.push(opened, closed);
+      }
+    })();
+    return () => {
+      disposed = true;
+      for (const un of unlistens) un();
     };
   }, [dir]);
 
@@ -253,13 +302,21 @@ export function DiffPane({
           </IconBtn>
         </span>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col p-2">
+      <div className="relative flex min-h-0 flex-1 flex-col p-2">
         {tab === "files" ? (
           <FilesPane dir={dir ?? ""} connected={ideConnected} openRequest={openRequest} />
         ) : text == null ? (
           <p className="p-2 text-sm text-muted-foreground">Loading…</p>
         ) : (
           <DiffViewer text={text} ide={ide} />
+        )}
+        {reviews[0] && (
+          <DiffReview
+            key={reviews[0].requestId}
+            review={reviews[0]}
+            originalContent={reviews[0].originalContent}
+            onDone={() => setReviews((prev) => prev.slice(1))}
+          />
         )}
       </div>
     </div>

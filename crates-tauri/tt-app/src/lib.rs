@@ -346,6 +346,7 @@ pub fn run() {
             Ok(())
         })
         .manage(terminal::TermState::default())
+        .manage(ide::DiffRequests::default())
         .manage(resources::ResourceState::default())
         .manage(claude_sessions::ClaudeSessionsCache::default())
         .manage(dictation::DictationState::default())
@@ -450,6 +451,7 @@ pub fn run() {
             ide::ide_set_open_file,
             ide::ide_read_file,
             ide::ide_write_file,
+            ide::ide_diff_resolve,
             diagnostics::ide_diagnostics_refresh,
             dictation::dictation_status,
             dictation::dictation_start,
