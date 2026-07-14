@@ -88,6 +88,19 @@ pub fn run() {
                 let _ = win.set_title(&format!("Towles Tool — {}", slot_label()));
             }
 
+            // A Debug-mode Zig parser saturates a core at ~130 KB/s of PTY
+            // output, so busy terminals peg engine threads and the app reads
+            // as laggy with no obvious cause. The Cargo.toml dev-profile
+            // override should make this unreachable; be loud if it regresses
+            // (the Doctor screen shows the same check).
+            if tt_vt::parser_optimize_mode() == "Debug" {
+                eprintln!(
+                    "warning: libghostty-vt compiled in Zig Debug mode (~1000x slower parsing; \
+                     busy terminals will peg a core) — restore the \
+                     [profile.dev.package.libghostty-vt-sys] override in Cargo.toml"
+                );
+            }
+
             // Scope to this app instance: sessions.json is shared across
             // instances, so another running app's PTY can carry the same
             // session id — its agents are that window's to report, not ours.
