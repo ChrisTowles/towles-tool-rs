@@ -30,7 +30,8 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(600);
 #[derive(Debug, Error)]
 pub enum OpsError {
     #[error(
-        "no slot root found walking up from {0} — a slot root holds exactly one <repo>-primary checkout"
+        "no slot root found walking up from {0} — expected either a <repo>-primary checkout \
+         or a plain git checkout that can use a sibling <repo>-slots directory"
     )]
     NoPrimary(String),
 
@@ -84,12 +85,16 @@ pub struct SlotRoot {
     pub root: PathBuf,
     pub primary: PathBuf,
     pub repo: String,
+    /// `true` for the flat fallback layout (`<parent>/<repo>-slots/<name>`,
+    /// see [`discover_flat_root`]) — slots live directly under `root` instead
+    /// of `root/slots`.
+    flat: bool,
 }
 
 impl SlotRoot {
     /// The directory holding the worktree slots (may not exist yet).
     pub fn slots_dir(&self) -> PathBuf {
-        self.root.join(layout::SLOTS_DIR)
+        if self.flat { self.root.clone() } else { self.root.join(layout::SLOTS_DIR) }
     }
 
     pub fn slot_dir(&self, name: &str) -> PathBuf {
@@ -138,7 +143,8 @@ fn is_primary(dir: &Path, name: &str) -> bool {
 
 /// Find the slot root: `explicit` if given, else walk up from the current
 /// working directory looking for a directory holding exactly one
-/// `<repo>-primary` checkout.
+/// `<repo>-primary` checkout. Falls back to the flat sibling-`<repo>-slots`
+/// layout (see [`discover_flat_root`]) when no nested convention is found.
 pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
     let start = match explicit {
         Some(dir) => dir.to_path_buf(),
@@ -155,6 +161,7 @@ pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
                 root: dir.to_path_buf(),
                 primary: dir.join(&primaries[0]),
                 repo,
+                flat: false,
             });
         }
         if primaries.len() > 1 {
@@ -164,7 +171,43 @@ pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
             });
         }
     }
+    if let Some(sr) = discover_flat_root(&start) {
+        return Ok(sr);
+    }
     Err(OpsError::NoPrimary(start.display().to_string()))
+}
+
+/// Fallback for repos not laid out under a dedicated `<root>/<repo>-primary`
+/// checkout: a plain `<parent>/<repo>/` clone gets its slots in a sibling
+/// `<parent>/<repo>-slots/<name>/` directory instead. Walks up from `start`
+/// looking either for the checkout itself (a `.git` dir that isn't itself a
+/// slot) or, if already inside a slot, the `<repo>-slots` ancestor and its
+/// sibling checkout.
+fn discover_flat_root(start: &Path) -> Option<SlotRoot> {
+    for dir in start.ancestors() {
+        let name = dir.file_name().and_then(|n| n.to_str())?;
+
+        if let Some(repo) = layout::repo_from_slots_dir(name) {
+            let primary = dir.parent()?.join(repo);
+            if primary.join(".git").exists() {
+                return Some(SlotRoot {
+                    root: dir.to_path_buf(),
+                    primary,
+                    repo: repo.to_string(),
+                    flat: true,
+                });
+            }
+        } else if dir.join(".git").exists() && !dir.join(layout::MARKER_FILE).exists() {
+            let root = dir.parent()?.join(format!("{name}{}", layout::SLOTS_SUFFIX));
+            return Some(SlotRoot {
+                root,
+                primary: dir.to_path_buf(),
+                repo: name.to_string(),
+                flat: true,
+            });
+        }
+    }
+    None
 }
 
 /// Bounded like [`git_slot`] — a stalled network op (stuck proxy/VPN, an SSH
@@ -546,53 +589,64 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
         )));
     }
 
-    let summary = render_slot_env(&sr, &dir, Some(&base))?;
-    warnings.extend(summary.warnings);
+    // From here on, any failure must remove the worktree just added above —
+    // otherwise (e.g. a missing env template) it leaves a half-set-up slot
+    // behind: a real worktree with no rendered `.env`, invisible as "failed"
+    // to `tt slot ls` and blocking a retry with `SlotExists`.
+    let created = (|| -> Result<CreatedSlot> {
+        let summary = render_slot_env(&sr, &dir, Some(&base))?;
+        warnings.extend(summary.warnings);
 
-    // Inherit secrets from the first sibling checkout that has a .env — the
-    // primary first (`sr.checkouts()` orders it that way; it's the
-    // longest-lived and least likely to carry stale branch-specific values),
-    // else the alphabetically-first slot. Surfaced in a warning when it
-    // wasn't the primary, since a slot's secrets can be branch-specific or
-    // stale in a way the primary's never are.
-    let mut inherited = 0;
-    for sib_dir in sr.checkouts() {
-        if sib_dir == dir {
-            continue;
-        }
-        if let Ok(sib_env) = fs::read_to_string(sib_dir.join(".env")) {
-            let env_path = dir.join(".env");
-            let current = fs::read_to_string(&env_path).unwrap_or_default();
-            let (merged, count) = envfile::merge_missing_keys(&current, &sib_env);
-            fs::write(&env_path, merged)
-                .map_err(|e| OpsError::Io(format!("cannot write .env: {e}")))?;
-            inherited = count;
-            if count > 0 && sib_dir != sr.primary {
-                let source =
-                    sib_dir.file_name().and_then(|n| n.to_str()).unwrap_or("a sibling slot");
-                warnings.push(format!(
-                    "inherited {count} .env key(s) from {source}, not the primary — \
-                     the primary has no .env yet, so these may be branch-specific or stale"
-                ));
+        // Inherit secrets from the first sibling checkout that has a .env —
+        // the primary first (`sr.checkouts()` orders it that way; it's the
+        // longest-lived and least likely to carry stale branch-specific
+        // values), else the alphabetically-first slot. Surfaced in a warning
+        // when it wasn't the primary, since a slot's secrets can be
+        // branch-specific or stale in a way the primary's never are.
+        let mut inherited = 0;
+        for sib_dir in sr.checkouts() {
+            if sib_dir == dir {
+                continue;
             }
-            break;
+            if let Ok(sib_env) = fs::read_to_string(sib_dir.join(".env")) {
+                let env_path = dir.join(".env");
+                let current = fs::read_to_string(&env_path).unwrap_or_default();
+                let (merged, count) = envfile::merge_missing_keys(&current, &sib_env);
+                fs::write(&env_path, merged)
+                    .map_err(|e| OpsError::Io(format!("cannot write .env: {e}")))?;
+                inherited = count;
+                if count > 0 && sib_dir != sr.primary {
+                    let source =
+                        sib_dir.file_name().and_then(|n| n.to_str()).unwrap_or("a sibling slot");
+                    warnings.push(format!(
+                        "inherited {count} .env key(s) from {source}, not the primary — \
+                         the primary has no .env yet, so these may be branch-specific or stale"
+                    ));
+                }
+                break;
+            }
         }
-    }
 
-    if opts.run_setup
-        && let Some(warning) = run_setup(&dir)?
-    {
-        warnings.push(warning);
-    }
+        if opts.run_setup
+            && let Some(warning) = run_setup(&dir)?
+        {
+            warnings.push(warning);
+        }
 
-    Ok(CreatedSlot {
-        name,
-        dir,
-        branch: opts.branch.clone(),
-        base,
-        ports: summary.ports,
-        inherited,
-        warnings,
+        Ok(CreatedSlot {
+            name,
+            dir,
+            branch: opts.branch.clone(),
+            base,
+            ports: summary.ports,
+            inherited,
+            warnings,
+        })
+    })();
+
+    created.inspect_err(|_| {
+        let _ = git_primary(&sr.primary, &["worktree", "remove", "--force", &dir_s]);
+        let _ = fs::remove_dir_all(Path::new(&dir_s));
     })
 }
 
@@ -1062,8 +1116,67 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let primary = tmp.path().join("repo-primary");
         fs::create_dir_all(primary.join(".git")).unwrap();
-        let sr = SlotRoot { root: tmp.path().to_path_buf(), primary, repo: "repo".to_string() };
+        let sr = SlotRoot {
+            root: tmp.path().to_path_buf(),
+            primary,
+            repo: "repo".to_string(),
+            flat: false,
+        };
         (tmp, sr)
+    }
+
+    #[test]
+    fn discover_root_nested_convention() {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = tmp.path().join("repo-primary");
+        fs::create_dir_all(primary.join(".git")).unwrap();
+        fs::create_dir_all(primary.join("src")).unwrap();
+
+        let sr = discover_root(Some(&primary.join("src"))).unwrap();
+        assert!(!sr.flat);
+        assert_eq!(sr.root, tmp.path());
+        assert_eq!(sr.primary, primary);
+        assert_eq!(sr.repo, "repo");
+        assert_eq!(sr.slots_dir(), tmp.path().join("slots"));
+    }
+
+    #[test]
+    fn discover_root_flat_fallback_from_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("scribed");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir_all(repo.join("src")).unwrap();
+
+        let sr = discover_root(Some(&repo.join("src"))).unwrap();
+        assert!(sr.flat);
+        assert_eq!(sr.primary, repo);
+        assert_eq!(sr.repo, "scribed");
+        assert_eq!(sr.root, tmp.path().join("scribed-slots"));
+        assert_eq!(sr.slots_dir(), tmp.path().join("scribed-slots"));
+    }
+
+    #[test]
+    fn discover_root_flat_fallback_from_inside_a_slot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("scribed");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        let slot = tmp.path().join("scribed-slots").join("feat-thing");
+        fs::create_dir_all(slot.join(".git")).unwrap();
+        fs::write(slot.join(layout::MARKER_FILE), "name=feat-thing\n").unwrap();
+
+        let sr = discover_root(Some(&slot)).unwrap();
+        assert!(sr.flat);
+        assert_eq!(sr.primary, repo);
+        assert_eq!(sr.repo, "scribed");
+        assert_eq!(sr.root, tmp.path().join("scribed-slots"));
+    }
+
+    #[test]
+    fn discover_root_errors_with_no_convention_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plain = tmp.path().join("just-a-dir");
+        fs::create_dir_all(&plain).unwrap();
+        assert!(matches!(discover_root(Some(&plain)), Err(OpsError::NoPrimary(_))));
     }
 
     #[test]
