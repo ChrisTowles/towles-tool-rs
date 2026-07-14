@@ -146,6 +146,7 @@ mod tests {
                     purpose: None,
                     base_branch: None,
                     slot_base_branch: None,
+                    compared_base: String::new(),
                     metadata: None,
                 }],
                 needs: 0,

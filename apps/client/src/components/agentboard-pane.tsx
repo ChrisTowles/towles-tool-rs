@@ -1,6 +1,7 @@
 import { FolderGit2 } from "lucide-react";
 import {
   AheadBehind,
+  ComparedBaseBadge,
   DiffButton,
   Dot,
   fmtMins,
@@ -56,6 +57,7 @@ export function WorkingContext({
           {scope && <span className="shrink-0 font-mono text-muted-foreground/60">{scope}</span>}
           {repoDistinct && <span className="shrink-0 font-medium">{repo.name}</span>}
           <span className="min-w-0 shrink truncate font-mono text-[11px]">⎇ {folder.branch}</span>
+          <ComparedBaseBadge folder={folder} />
           <AheadBehind stats={folder} />
           {folder.isWorktree && <WorktreeBadge />}
           <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir)} />
