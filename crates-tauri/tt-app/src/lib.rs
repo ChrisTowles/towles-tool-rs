@@ -6,6 +6,7 @@
 
 mod agentboard;
 mod claude_sessions;
+mod diagnostics;
 mod dictation;
 mod doctor;
 mod gh_actions;
@@ -135,6 +136,13 @@ pub fn run() {
                 needs_since: Mutex::new(tt_agentboard::bridge::NeedsSince::new()),
             });
 
+            // Compiler-diagnostics hub for the Claude Code IDE bridge: fed by
+            // CLI connects, working-tree changes (git-stat poll below), and
+            // the manual refresh command; consumed by the per-terminal IDE
+            // servers' getDiagnostics.
+            let diag_hub = diagnostics::DiagHub::spawn(app.handle().clone());
+            app.manage(diag_hub.clone());
+
             let handle = app.handle().clone();
 
             // Debounced emitter: coalesce a burst of triggers into one rebuild,
@@ -235,14 +243,15 @@ pub fn run() {
             {
                 let engine = engine.clone();
                 let emit = emit.clone();
+                let diag = diag_hub.clone();
                 tauri::async_runtime::spawn(async move {
                     let mut interval = tokio::time::interval(Duration::from_secs(10));
                     loop {
                         interval.tick().await;
                         let poll_engine = engine.clone();
-                        let changed = tauri::async_runtime::spawn_blocking(move || {
+                        let changed_dirs = tauri::async_runtime::spawn_blocking(move || {
                             let targets = poll_engine.lock().unwrap().git_targets();
-                            let mut changed = false;
+                            let mut changed_dirs = Vec::new();
                             for (dir, base_branch) in targets {
                                 let info = tt_agentboard::git_info::compute_git_info(
                                     &dir,
@@ -253,14 +262,22 @@ pub fn run() {
                                     info,
                                     now_ms(),
                                 );
-                                changed |= stored;
+                                if stored {
+                                    changed_dirs.push(dir);
+                                }
                             }
-                            changed
+                            changed_dirs
                         })
                         .await
-                        .unwrap_or(false);
-                        if changed {
+                        .unwrap_or_default();
+                        if !changed_dirs.is_empty() {
                             emit.notify_one();
+                            // A folder whose working tree moved has stale
+                            // diagnostics; the hub skips folders without a
+                            // connected Claude session.
+                            for dir in &changed_dirs {
+                                diag.request(std::path::Path::new(dir));
+                            }
                         }
                     }
                 });
@@ -430,6 +447,7 @@ pub fn run() {
             ide::ide_at_mention,
             ide::ide_status,
             ide::ide_list_files,
+            diagnostics::ide_diagnostics_refresh,
             dictation::dictation_status,
             dictation::dictation_start,
             dictation::dictation_stop,

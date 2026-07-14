@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub mod diagnostics;
 pub mod lockfile;
 
 pub use lockfile::Lockfile;
@@ -127,6 +128,10 @@ pub struct ServerContext {
     pub workspace_folder: PathBuf,
     /// The latest selection made in the app's diff pane, if any.
     pub selection: Option<Selection>,
+    /// Current compiler diagnostics for this folder, already in the
+    /// `getDiagnostics` wire shape (`[{uri, diagnostics: [...]}]`, see
+    /// [`diagnostics::to_wire`]). Empty array when no check has run.
+    pub diagnostics: Value,
 }
 
 /// Handle one incoming JSON-RPC message from the CLI. Returns the response to
@@ -184,7 +189,7 @@ fn tools_call(id: Value, request: &Value, ctx: &ServerContext) -> String {
         "getLatestSelection" => current_selection(ctx, "No selection available"),
         "getWorkspaceFolders" => workspace_folders(ctx),
         "getOpenEditors" => open_editors(ctx),
-        "getDiagnostics" => diagnostics(&args),
+        "getDiagnostics" => diagnostics_for(ctx, &args),
         _ => return tool_error_response(id, &format!("Unknown tool: {name}")),
     };
     tool_result_response(id, &result)
@@ -245,10 +250,18 @@ fn open_editors(ctx: &ServerContext) -> Value {
     json!({ "tabs": tabs })
 }
 
-/// No diagnostics source is wired up yet — answer the empty set (valid per the
-/// protocol; VS Code returns `[]` for a clean workspace too).
-fn diagnostics(_args: &Value) -> Value {
-    json!([])
+/// `getDiagnostics`: the folder's cached compiler diagnostics, optionally
+/// narrowed to one file when the CLI passes `uri`.
+fn diagnostics_for(ctx: &ServerContext, args: &Value) -> Value {
+    let all = ctx.diagnostics.as_array().cloned().unwrap_or_default();
+    match args.get("uri").and_then(Value::as_str) {
+        Some(uri) => Value::Array(
+            all.into_iter()
+                .filter(|entry| entry.get("uri").and_then(Value::as_str) == Some(uri))
+                .collect(),
+        ),
+        None => Value::Array(all),
+    }
 }
 
 /// Tool definitions advertised in `tools/list`. Only what the app actually
@@ -332,6 +345,7 @@ mod tests {
             ide_name: "Towles Tool".to_string(),
             workspace_folder: PathBuf::from("/repo/slot-a"),
             selection,
+            diagnostics: json!([]),
         }
     }
 
@@ -447,6 +461,31 @@ mod tests {
     fn diagnostics_answer_the_empty_set() {
         let diags = call(&ctx_with(None), "getDiagnostics");
         assert_eq!(diags, json!([]));
+    }
+
+    #[test]
+    fn diagnostics_filter_by_uri_when_requested() {
+        let mut ctx = ctx_with(None);
+        ctx.diagnostics = json!([
+            { "uri": "file:///repo/slot-a/src/a.rs", "diagnostics": [{ "message": "boom" }] },
+            { "uri": "file:///repo/slot-a/src/b.rs", "diagnostics": [] },
+        ]);
+
+        let all = call(&ctx, "getDiagnostics");
+        assert_eq!(all.as_array().unwrap().len(), 2);
+
+        let request = json!({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": { "name": "getDiagnostics",
+                        "arguments": { "uri": "file:///repo/slot-a/src/a.rs" } },
+        })
+        .to_string();
+        let response: Value =
+            serde_json::from_str(&handle_message(&request, &ctx).unwrap()).unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        let filtered: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(filtered.as_array().unwrap().len(), 1);
+        assert_eq!(filtered[0]["uri"], "file:///repo/slot-a/src/a.rs");
     }
 
     #[test]
