@@ -110,6 +110,10 @@ export type FolderData = {
   /** Branch the diff pane's "vs main" mode compares against, overriding the
    * origin/main-or-master auto-detect (persisted per folder). */
   baseBranch?: string | null;
+  /** For a worktree slot only: the ref it was actually created from (its
+   * `.tt-slot` marker). What the diff pane auto-compares against when
+   * `baseBranch` has no manual override — `null` for a non-slot checkout. */
+  slotBaseBranch?: string | null;
   metadata?: FolderMetadata | null;
 };
 

@@ -33,6 +33,11 @@ export function DiffPane({
 }) {
   const dir = folder?.dir;
   const baseBranch = folder?.baseBranch?.trim() || null;
+  // The worktree slot's own creation base (`.tt-slot`'s `base=`), when this
+  // folder is a slot and nothing overrides it — what the backend actually
+  // auto-compares against instead of always defaulting to main.
+  const slotBaseBranch = folder?.slotBaseBranch?.trim() || null;
+  const effectiveBase = baseBranch ?? slotBaseBranch;
   const [mode, setMode] = useState<DiffMode>("main");
   const [text, setText] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -40,10 +45,12 @@ export function DiffPane({
 
   const mainMode = {
     key: "main" as const,
-    label: baseBranch ? `vs ${baseBranch}` : "vs main",
+    label: effectiveBase ? `vs ${effectiveBase}` : "vs main",
     hint: baseBranch
       ? `Everything on this branch vs where it forked from "${baseBranch}" (your override) — committed and uncommitted work alike`
-      : "Everything on this branch vs where it forked from origin/main — committed and uncommitted work alike",
+      : slotBaseBranch
+        ? `Everything on this branch vs where it forked from "${slotBaseBranch}" (this slot's creation base) — committed and uncommitted work alike`
+        : "Everything on this branch vs where it forked from origin/main — committed and uncommitted work alike",
   };
   const modes = [mainMode, UNCOMMITTED_MODE];
 
@@ -91,7 +98,11 @@ export function DiffPane({
           <input
             autoFocus
             defaultValue={baseBranch ?? ""}
-            placeholder="branch to compare against (blank = auto-detect main)"
+            placeholder={
+              slotBaseBranch
+                ? `branch to compare against (blank = this slot's base, "${slotBaseBranch}")`
+                : "branch to compare against (blank = auto-detect main)"
+            }
             onBlur={(e) => void commitBaseBranch(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") void commitBaseBranch((e.target as HTMLInputElement).value);
@@ -122,7 +133,11 @@ export function DiffPane({
         )}
         {!editingBase && mode === "main" && (
           <IconBtn
-            title="set the parent branch this folder compares against (default: origin/main)"
+            title={
+              slotBaseBranch
+                ? `set the parent branch this folder compares against (default: this slot's base, "${slotBaseBranch}")`
+                : "set the parent branch this folder compares against (default: origin/main)"
+            }
             onClick={() => setEditingBase(true)}
             className="hover:text-sky-500"
           >

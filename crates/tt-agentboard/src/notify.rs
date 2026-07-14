@@ -145,6 +145,7 @@ mod tests {
                     needs: 0,
                     purpose: None,
                     base_branch: None,
+                    slot_base_branch: None,
                     metadata: None,
                 }],
                 needs: 0,
