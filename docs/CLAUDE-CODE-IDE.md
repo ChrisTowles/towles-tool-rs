@@ -150,18 +150,28 @@ crates/tt-ide                       Tauri-free protocol core: lockfile schema,
   selection per server (serving `getCurrentSelection`/`getLatestSelection`),
   and pushes `selection_changed` to every connected session rooted in that
   folder. "Send to Claude" fires `ide_at_mention` the same way.
-- **Advertised tools** (phase 1): `getCurrentSelection`, `getLatestSelection`,
-  `getWorkspaceFolders`, `getOpenEditors`, `getDiagnostics` (empty for now).
-  Deliberately *not* advertised yet: `openDiff` (needs an in-app accept/reject
-  flow), `openFile`, `executeCode`.
+- **Advertised tools**: `getCurrentSelection`, `getLatestSelection`,
+  `getWorkspaceFolders`, `getOpenEditors`, `getDiagnostics` (real cargo/tsc
+  results via the app's DiagHub — see `crates-tauri/tt-app/src/diagnostics.rs`),
+  `checkDocumentDirty`, `openFile`, `openDiff`, `close_tab`,
+  `closeAllDiffTabs`. Tools with app-side effects (`openFile`, `openDiff` and
+  the close pair) are intercepted in the app shell before the pure dispatcher:
+  `openFile` focuses the Files tab (with `startText`/`endText` anchor
+  selection in Monaco); `openDiff` blocks the CLI's tool call on an in-app
+  accept/reject review (Monaco DiffEditor; accept atomically writes the —
+  possibly user-tweaked — proposed contents and answers `FILE_SAVED` +
+  contents, reject answers `DIFF_REJECTED` + tab name). Not implemented:
+  `executeCode` (notebooks), `saveDocument` (the viewer autosurfaces dirty
+  state instead).
 - **Status surface.** Connect/disconnect emits `ide://status`
   (`{termId, connected}`); the diff pane shows a "Claude connected" badge so
   you know a highlight is actually going somewhere.
 
 ### Future work
 
-- `getDiagnostics` backed by `cargo check --message-format=json` / `tsc`, with
-  `diagnostics_changed` pushes.
-- `openDiff` as an in-app accept/reject pane (Claude's proposed edits reviewed
-  in the diff viewer instead of the terminal).
-- `openFile` focusing the diff pane on a file/range (reciprocal navigation).
+- Full LSP (rust-analyzer / typescript-language-server bridged to Monaco via
+  monaco-languageclient) — deliberately deferred: it costs real memory per
+  slot, and the cargo/tsc diagnostics above may already cover the need.
+  Revisit as a per-folder opt-in if they prove insufficient.
+- `saveDocument` (needs nothing new — the blocking-tool machinery from
+  `openDiff` can drive a save request into the viewer).

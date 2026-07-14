@@ -360,6 +360,38 @@ fn tool_definitions() -> Value {
                 "additionalProperties": false,
             },
         },
+        {
+            "name": "openDiff",
+            "description": "Open a diff view comparing a file with proposed new contents; blocks until the user accepts or rejects",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "old_file_path": { "type": "string", "description": "Path to the current file" },
+                    "new_file_path": { "type": "string", "description": "Path the new contents would be saved to" },
+                    "new_file_contents": { "type": "string", "description": "Proposed contents" },
+                    "tab_name": { "type": "string", "description": "Label for the diff tab" }
+                },
+                "required": ["old_file_path", "new_file_path", "new_file_contents", "tab_name"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "close_tab",
+            "description": "Close a diff tab by name (rejects a pending review)",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tab_name": { "type": "string" }
+                },
+                "required": ["tab_name"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "closeAllDiffTabs",
+            "description": "Close all open diff tabs (rejects pending reviews)",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+        },
     ])
 }
 
@@ -469,7 +501,10 @@ mod tests {
                 "getOpenEditors",
                 "getDiagnostics",
                 "checkDocumentDirty",
-                "openFile"
+                "openFile",
+                "openDiff",
+                "close_tab",
+                "closeAllDiffTabs"
             ]
         );
     }
