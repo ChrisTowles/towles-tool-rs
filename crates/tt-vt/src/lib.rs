@@ -450,4 +450,83 @@ mod tests {
         assert!(frames > 0, "the burst must produce at least one frame");
         assert!(frames < 20, "200 rapid chunks must coalesce into few frames, got {frames}");
     }
+
+    #[test]
+    fn engine_tracks_synchronized_output_mode() {
+        let mut e = engine(20, 4);
+        assert!(!e.sync_output(), "mode 2026 starts unset");
+        e.feed(b"\x1b[?2026h");
+        assert!(e.sync_output(), "BSU sets synchronized output");
+        e.feed(b"\x1b[?2026l");
+        assert!(!e.sync_output(), "ESU clears synchronized output");
+    }
+
+    #[test]
+    fn session_holds_frames_during_synchronized_output() {
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let session = Session::spawn(
+            EngineOptions { cols: 20, rows: 4, max_scrollback: 100 },
+            move |event| {
+                let _ = event_tx.send(event);
+            },
+        )
+        .expect("spawn session");
+
+        // An open batch must not ship a half-drawn frame: nothing renders
+        // while BSU is held (guard well under SYNC_OUTPUT_MAX_HOLD so a slow
+        // machine can't run the hold cap down before the recv starts).
+        assert!(session.send(Input::Bytes(b"\x1b[?2026hbatched".to_vec())));
+        match event_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Err(_) => {}
+            Ok(Event::Frame(_)) => panic!("frame shipped inside an open synchronized batch"),
+            Ok(_) => {}
+        }
+
+        // Closing the batch releases the frame with the batched content.
+        assert!(session.send(Input::Bytes(b"\x1b[?2026l".to_vec())));
+        let frame = loop {
+            match event_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("closing the batch must release a frame")
+            {
+                Event::Frame(f) => break f,
+                Event::PtyReply(_) | Event::Clipboard(_) => {}
+            }
+        };
+        assert_eq!(
+            frame.changed.iter().find(|r| r.y == 0).map(|r| r.runs[0].text.clone()),
+            Some("batched".into())
+        );
+        drop(session);
+    }
+
+    #[test]
+    fn synchronized_output_hold_is_bounded() {
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let session = Session::spawn(
+            EngineOptions { cols: 20, rows: 4, max_scrollback: 100 },
+            move |event| {
+                let _ = event_tx.send(event);
+            },
+        )
+        .expect("spawn session");
+
+        // A program that opens a batch and dies mid-update must not freeze
+        // the pane: the frame ships once SYNC_OUTPUT_MAX_HOLD expires.
+        assert!(session.send(Input::Bytes(b"\x1b[?2026hstuck".to_vec())));
+        let frame = loop {
+            match event_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the hold cap must force a frame out")
+            {
+                Event::Frame(f) => break f,
+                Event::PtyReply(_) | Event::Clipboard(_) => {}
+            }
+        };
+        assert_eq!(
+            frame.changed.iter().find(|r| r.y == 0).map(|r| r.runs[0].text.clone()),
+            Some("stuck".into())
+        );
+        drop(session);
+    }
 }

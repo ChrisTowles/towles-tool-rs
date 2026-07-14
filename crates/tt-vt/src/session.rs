@@ -57,6 +57,13 @@ const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(1_000_000 / 90);
 /// once the pane is shown again.
 const HIDDEN_FRAME_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Longest a synchronized-output batch (DEC mode 2026) may hold rendering.
+/// While an application keeps BSU open the loop defers frames so half-drawn
+/// updates never reach the canvas — but a program that crashes mid-batch
+/// must not freeze the pane, so after this long the frame ships anyway.
+/// 150 ms matches the hold cap other emulators use (kitty, contour).
+const SYNC_OUTPUT_MAX_HOLD: Duration = Duration::from_millis(150);
+
 /// Cap on unconsumed PTY byte chunks queued for the engine. At the PTY
 /// reader's 64 KiB read size this bounds the in-flight backlog to ~4 MB —
 /// far more than any interactive burst, so normal output never blocks, but a
@@ -240,6 +247,10 @@ impl Session {
             // Start in the past so the first input renders immediately.
             let mut last_render = Instant::now() - MIN_FRAME_INTERVAL;
             let mut hidden = false;
+            // When the application opened a synchronized-output batch
+            // (`Engine::sync_output`); bounds the render hold to
+            // [`SYNC_OUTPUT_MAX_HOLD`] from this instant.
+            let mut sync_since: Option<Instant> = None;
             // Block for a wake, then drain and render. Buffered wakes are
             // delivered before disconnect, so a dropped session still drains
             // its queued input before the loop ends.
@@ -259,6 +270,25 @@ impl Session {
                     while let Ok(bytes) = bytes_rx.try_recv() {
                         engine.feed(&bytes);
                         applied = true;
+                    }
+                    // A synchronized-output batch (DEC 2026) holds the frame
+                    // until the app closes it (ESU) or the hold cap expires —
+                    // we own both the emulator and the canvas, so honoring it
+                    // means half-drawn TUI updates never reach the screen.
+                    // Past the cap the batch renders anyway and this pass
+                    // falls through to the normal interval pacing below.
+                    if engine.sync_output() {
+                        let since = *sync_since.get_or_insert_with(Instant::now);
+                        if let Some(hold) = SYNC_OUTPUT_MAX_HOLD.checked_sub(since.elapsed()) {
+                            match wake_rx.recv_timeout(hold) {
+                                // More input — maybe the ESU. Re-drain.
+                                Ok(()) => continue,
+                                // Hold cap reached (or disconnected): render.
+                                Err(_) => break,
+                            }
+                        }
+                    } else {
+                        sync_since = None;
                     }
                     let interval = if hidden { HIDDEN_FRAME_INTERVAL } else { MIN_FRAME_INTERVAL };
                     let elapsed = last_render.elapsed();
