@@ -21,6 +21,7 @@ import {
   pruneWins,
   QUIET_GRACE_MS,
   sessionNeeds,
+  waitForFirstFrame,
   type AgentStatus,
   type FolderData,
   type RepoData,
@@ -28,6 +29,23 @@ import {
   type WindowsPayload,
 } from "./agentboard";
 import type { PrItem } from "./data";
+
+describe("waitForFirstFrame", () => {
+  it("resolves immediately outside the Tauri shell (browser dev mode)", async () => {
+    // vitest runs in a plain node environment (no `window` at all); stub one
+    // without "__TAURI_INTERNALS__" to match plain-browser dev mode, where
+    // this must hit the early-return fallback rather than waiting out the
+    // full timeout.
+    (globalThis as { window?: object }).window = {};
+    try {
+      const start = Date.now();
+      await waitForFirstFrame("term-1", 5000);
+      expect(Date.now() - start).toBeLessThan(100);
+    } finally {
+      delete (globalThis as { window?: object }).window;
+    }
+  });
+});
 
 function pr(overrides: Partial<PrItem>): PrItem {
   return {

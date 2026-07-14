@@ -40,6 +40,9 @@ pub enum OpsError {
     #[error("cannot derive a slot name from branch {0}")]
     BadBranchName(String),
 
+    #[error("'{branch}' is not a valid branch name: {detail}")]
+    InvalidBranchName { branch: String, detail: String },
+
     #[error("slot {name} already exists at {dir}")]
     SlotExists { name: String, dir: String },
 
@@ -164,11 +167,14 @@ pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
     Err(OpsError::NoPrimary(start.display().to_string()))
 }
 
+/// Bounded like [`git_slot`] — a stalled network op (stuck proxy/VPN, an SSH
+/// prompt with nothing to answer it) must fail after `GIT_TIMEOUT`, not hang
+/// the caller (`create_slot`/`remove_slot`/`clean_slots`) forever.
 pub fn git_primary(primary: &Path, args: &[&str]) -> Result<tt_exec::Output> {
     let primary_s = primary.to_string_lossy();
     let mut full: Vec<&str> = vec!["-C", primary_s.as_ref()];
     full.extend_from_slice(args);
-    tt_exec::run("git", &full).map_err(|e| OpsError::Git(e.to_string()))
+    tt_exec::run_with_timeout("git", &full, GIT_TIMEOUT).map_err(|e| OpsError::Git(e.to_string()))
 }
 
 pub fn git_slot(dir: &Path, args: &[&str]) -> Result<tt_exec::Output> {
@@ -204,6 +210,46 @@ pub fn primary_branches(primary: &Path) -> Result<Vec<String>> {
     let mut branches = vec![default];
     branches.extend(rest);
     Ok(branches)
+}
+
+/// Validate `branch` as a git ref via `git check-ref-format --branch` — git
+/// is the authority on legal ref names, so this shells out to it rather than
+/// reimplementing the rules. Stateless: `check-ref-format` needs no repo.
+pub fn validate_branch_name(branch: &str) -> Result<()> {
+    let out = tt_exec::run("git", &["check-ref-format", "--branch", branch])
+        .map_err(|e| OpsError::Git(e.to_string()))?;
+    if out.ok() {
+        return Ok(());
+    }
+    Err(OpsError::InvalidBranchName {
+        branch: branch.to_string(),
+        detail: out.stderr.trim().to_string(),
+    })
+}
+
+/// Preflight for the new-slot dialog: is `branch` a legal ref, and would its
+/// derived slot name collide with an existing slot? Read-only.
+pub struct BranchCheck {
+    pub name: Option<String>,
+    pub taken: bool,
+    pub error: Option<String>,
+}
+
+pub fn check_branch(sr: &SlotRoot, branch: &str) -> BranchCheck {
+    if let Err(e) = validate_branch_name(branch) {
+        return BranchCheck { name: None, taken: false, error: Some(e.to_string()) };
+    }
+    match layout::slot_name_from_branch(branch) {
+        Some(name) => {
+            let taken = sr.slot_dir(&name).exists();
+            BranchCheck { name: Some(name), taken, error: None }
+        }
+        None => BranchCheck {
+            name: None,
+            taken: false,
+            error: Some(OpsError::BadBranchName(branch.to_string()).to_string()),
+        },
+    }
 }
 
 pub fn port_occupied(port: u16) -> bool {
@@ -391,6 +437,35 @@ pub fn setup_command(
     None
 }
 
+/// Run `dir`'s setup step (declared `TT_SLOT_SETUP` from its rendered
+/// `.env`, else lockfile detection — see [`setup_command`]), reading the
+/// `.env` itself. `Ok(None)` means nothing to run or it succeeded; `Ok(Some)`
+/// carries a warning for a failure the caller should surface but not fail
+/// on (the slot/checkout is kept either way). Shared by `create_slot` and
+/// the app's setup-retry command, so a failed install always gets exactly
+/// one re-run path.
+pub fn run_setup(dir: &Path) -> Result<Option<String>> {
+    let env_map: BTreeMap<String, String> =
+        envfile::parse(&fs::read_to_string(dir.join(".env")).unwrap_or_default())
+            .into_iter()
+            .collect();
+    let Some(argv) = setup_command(&env_map, |f| dir.join(f).is_file()) else {
+        return Ok(None);
+    };
+    let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    let warning = match tt_exec::run_in_dir_with_timeout(&argv[0], &args, dir, SETUP_TIMEOUT) {
+        Ok(out) if out.ok() => None,
+        Ok(out) => Some(format!(
+            "setup `{}` failed (exit {}) — slot kept, fix and re-run it\n{}",
+            argv.join(" "),
+            out.exit_code,
+            out.stderr.trim()
+        )),
+        Err(e) => Some(format!("setup `{}` failed — slot kept: {e}", argv.join(" "))),
+    };
+    Ok(warning)
+}
+
 // ---------------------------------------------------------------------------
 // creation
 
@@ -422,6 +497,7 @@ pub struct CreatedSlot {
 /// with port claims, sibling-secrets inheritance, setup step.
 pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     let sr = discover_root(opts.root.as_deref())?;
+    validate_branch_name(&opts.branch)?;
     let mut warnings = Vec::new();
     let _ = git_primary(&sr.primary, &["worktree", "prune"]);
     if let Ok(out) = git_primary(&sr.primary, &["fetch", "--quiet", "origin"])
@@ -452,8 +528,12 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     let summary = render_slot_env(&sr, &dir)?;
     warnings.extend(summary.warnings);
 
-    // inherit secrets from the first sibling checkout that has a .env
-    // (the primary first — it is the longest-lived)
+    // Inherit secrets from the first sibling checkout that has a .env — the
+    // primary first (`sr.checkouts()` orders it that way; it's the
+    // longest-lived and least likely to carry stale branch-specific values),
+    // else the alphabetically-first slot. Surfaced in a warning when it
+    // wasn't the primary, since a slot's secrets can be branch-specific or
+    // stale in a way the primary's never are.
     let mut inherited = 0;
     for sib_dir in sr.checkouts() {
         if sib_dir == dir {
@@ -466,30 +546,22 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
             fs::write(&env_path, merged)
                 .map_err(|e| OpsError::Io(format!("cannot write .env: {e}")))?;
             inherited = count;
+            if count > 0 && sib_dir != sr.primary {
+                let source =
+                    sib_dir.file_name().and_then(|n| n.to_str()).unwrap_or("a sibling slot");
+                warnings.push(format!(
+                    "inherited {count} .env key(s) from {source}, not the primary — \
+                     the primary has no .env yet, so these may be branch-specific or stale"
+                ));
+            }
             break;
         }
     }
 
-    if opts.run_setup {
-        let env_map: BTreeMap<String, String> =
-            envfile::parse(&fs::read_to_string(dir.join(".env")).unwrap_or_default())
-                .into_iter()
-                .collect();
-        if let Some(argv) = setup_command(&env_map, |f| dir.join(f).is_file()) {
-            let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
-            match tt_exec::run_in_dir_with_timeout(&argv[0], &args, &dir, SETUP_TIMEOUT) {
-                Ok(out) if out.ok() => {}
-                Ok(out) => warnings.push(format!(
-                    "setup `{}` failed (exit {}) — slot kept, fix and re-run it\n{}",
-                    argv.join(" "),
-                    out.exit_code,
-                    out.stderr.trim()
-                )),
-                Err(e) => {
-                    warnings.push(format!("setup `{}` failed — slot kept: {e}", argv.join(" ")))
-                }
-            }
-        }
+    if opts.run_setup
+        && let Some(warning) = run_setup(&dir)?
+    {
+        warnings.push(warning);
     }
 
     Ok(CreatedSlot {
@@ -949,5 +1021,54 @@ mod tests {
         assert_eq!(setup_command(&env(&[]), |_| false), None);
         // declared-but-empty disables setup rather than running junk
         assert_eq!(setup_command(&env(&[(SETUP_ENV_KEY, "  ")]), |_| true), None);
+    }
+
+    #[test]
+    fn validate_branch_name_accepts_legal_refs() {
+        assert!(validate_branch_name("feat/hello-world").is_ok());
+        assert!(validate_branch_name("standalone").is_ok());
+    }
+
+    #[test]
+    fn validate_branch_name_rejects_illegal_refs() {
+        assert!(validate_branch_name("feat/hello world").is_err());
+        assert!(validate_branch_name("bad..name").is_err());
+        assert!(validate_branch_name("-leading-dash").is_err());
+    }
+
+    /// Minimal slot root under a tempdir: `<root>/repo-primary/.git`.
+    fn temp_slot_root() -> (tempfile::TempDir, SlotRoot) {
+        let tmp = tempfile::tempdir().unwrap();
+        let primary = tmp.path().join("repo-primary");
+        fs::create_dir_all(primary.join(".git")).unwrap();
+        let sr = SlotRoot { root: tmp.path().to_path_buf(), primary, repo: "repo".to_string() };
+        (tmp, sr)
+    }
+
+    #[test]
+    fn check_branch_reports_invalid_ref() {
+        let (_tmp, sr) = temp_slot_root();
+        let check = check_branch(&sr, "feat/bad name");
+        assert!(check.error.is_some());
+        assert!(!check.taken);
+    }
+
+    #[test]
+    fn check_branch_flags_an_existing_slot_name() {
+        let (_tmp, sr) = temp_slot_root();
+        fs::create_dir_all(sr.slot_dir("hello-world")).unwrap();
+        let check = check_branch(&sr, "feat/hello-world");
+        assert_eq!(check.name.as_deref(), Some("hello-world"));
+        assert!(check.taken);
+        assert!(check.error.is_none());
+    }
+
+    #[test]
+    fn check_branch_clears_a_free_name() {
+        let (_tmp, sr) = temp_slot_root();
+        let check = check_branch(&sr, "feat/brand-new");
+        assert_eq!(check.name.as_deref(), Some("brand-new"));
+        assert!(!check.taken);
+        assert!(check.error.is_none());
     }
 }

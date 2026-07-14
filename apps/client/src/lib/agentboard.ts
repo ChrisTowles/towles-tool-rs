@@ -752,6 +752,31 @@ export async function termWriteRetry(termId: string, data: string): Promise<bool
   return false;
 }
 
+/** Wait for `termId`'s first `terminal://frame` (the shell's first output —
+ * a real proxy for "the PTY is actually reading input", unlike a successful
+ * `term_write`, which only proves the Rust-side write conduit exists and can
+ * still race the shell sourcing its rc files and eating a queued command).
+ * Resolves early if the terminal never spawns (falls back to a flat wait). */
+export async function waitForFirstFrame(termId: string, timeoutMs = 5000): Promise<void> {
+  if (!("__TAURI_INTERNALS__" in window)) return;
+  const { listen } = await import("@tauri-apps/api/event");
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    let unlisten: (() => void) | undefined;
+    const timer = setTimeout(finish, timeoutMs);
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unlisten?.();
+      resolve();
+    }
+    listen<{ termId: string }>("terminal://frame", (e) => {
+      if (e.payload.termId === termId) finish();
+    }).then((u) => (settled ? u() : (unlisten = u)));
+  });
+}
+
 /** Single-quote a string for safe injection into a shell command line typed
  * into a PTY (POSIX `'...'` escaping — embedded `'` becomes `'\''`). */
 export function shellQuote(text: string): string {

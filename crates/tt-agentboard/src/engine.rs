@@ -235,7 +235,7 @@ impl Engine {
     /// (desktop mode).
     pub fn scan_once(&mut self, now: i64) {
         self.reload_repos();
-        let all_paths = self.expand_with_worktrees(now);
+        let all_paths = self.expand_with_worktrees();
         let entries = repo_entries(&all_paths);
         self.scan_once_with_resolvers(&|dir| resolve_session_name(dir, &entries), &|_| None, now);
     }
@@ -248,19 +248,52 @@ impl Engine {
     /// Distinct from the "multiple clones" pattern (separate `repoPaths`
     /// entries, unrelated repos to git): those are unaffected here.
     ///
-    /// Also warms the git-info cache for every newly-discovered dir:
-    /// `compute_payload_for_entries` reads `git_infos` cache-only (no refresh),
-    /// so a worktree that was never individually cached would show up with an
-    /// empty `GitInfo` — no `origin_url`, so it'd fail to group under its
-    /// parent repo and render as its own standalone entry instead.
-    fn expand_with_worktrees(&mut self, now: i64) -> Vec<String> {
+    /// Cache-only: never shells to git. `compute_payload_for_entries` also
+    /// reads `git_infos` cache-only, so a dir whose git info was never warmed
+    /// (a worktree freshly discovered this tick) shows up with an empty
+    /// `GitInfo` — no `origin_url`, so it renders as its own standalone entry
+    /// instead of grouping under its parent repo, until [`Self::stale_git_targets`]
+    /// and [`Self::warm_git_cache`] catch it up. That's a deliberate tradeoff:
+    /// this method runs under the engine lock (every `ab_*` command and the
+    /// watcher-scan loop share it), and every other command is dispatched
+    /// inline on the UI thread, so shelling out to git here (as this used to
+    /// do via `get_or_refresh`) could hold the lock through git's full
+    /// subprocess chain (`compute_git_info` is ~9 sequential spawns) and
+    /// freeze the whole app, not just the caller. The host warms the cache
+    /// out of band instead (see the watcher-scan block and `ab_add_repo` in
+    /// `crates-tauri/tt-app/src/lib.rs` / `agentboard.rs`).
+    fn expand_with_worktrees(&mut self) -> Vec<String> {
         let base = self.repo_paths.clone();
-        let cache = &mut self.git_cache;
-        let all = merge_worktree_dirs(&base, |dir| cache.get_or_refresh(dir, now).worktree_dirs);
-        for dir in &all {
-            self.git_cache.get_or_refresh(dir, now);
+        let cache = &self.git_cache;
+        merge_worktree_dirs(&base, |dir| cache.get(dir).worktree_dirs)
+    }
+
+    /// Dirs in the worktree-merged target set whose git-cache entry is
+    /// missing or older than the TTL as of `now` — for the host to compute
+    /// with [`crate::git_info::compute_git_info`] *outside* the engine lock,
+    /// then hand back via [`Self::warm_git_cache`]. Read-only; safe to call
+    /// under the lock since it never shells out.
+    pub fn stale_git_targets(&mut self, now: i64) -> Vec<String> {
+        self.reload_repos();
+        self.expand_with_worktrees()
+            .into_iter()
+            .filter(|d| !self.git_cache.is_fresh(d, now))
+            .collect()
+    }
+
+    /// Store freshly computed git info for dirs the host warmed outside the
+    /// lock (see [`Self::stale_git_targets`]). Returns whether any entry's
+    /// value actually changed, so the host can skip a no-op re-emit.
+    pub fn warm_git_cache(
+        &mut self,
+        results: Vec<(String, crate::git_info::GitInfo)>,
+        now: i64,
+    ) -> bool {
+        let mut changed = false;
+        for (dir, info) in results {
+            changed |= self.store_git_info(&dir, info, now);
         }
-        all
+        changed
     }
 
     /// One scan of every watcher: collect emits through the resolvers and feed
@@ -325,7 +358,7 @@ impl Engine {
     /// Full recompute from repos.json using a pre-collected agent snapshot.
     pub fn compute_payload_with(&mut self, snapshot: &AgentSnapshot, now: i64) -> StatePayload {
         self.reload_repos();
-        let all_paths = self.expand_with_worktrees(now);
+        let all_paths = self.expand_with_worktrees();
         let mut entries = repo_entries(&all_paths);
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         // New folders get a default `shell 1` seeded once; a folder whose

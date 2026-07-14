@@ -46,6 +46,46 @@ pub fn slot_base_branches(root: String) -> Result<Vec<String>, String> {
     ops::primary_branches(&sr.primary).map_err(|e| e.to_string())
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchCheck {
+    pub name: Option<String>,
+    pub taken: bool,
+    pub error: Option<String>,
+}
+
+/// Preflight the new-slot dialog's branch field: is it a legal git ref, and
+/// would its derived slot name collide with an existing one? Read-only —
+/// safe to call on every keystroke (debounced by the caller).
+#[tauri::command]
+pub fn slot_check_branch(root: String, branch: String) -> Result<BranchCheck, String> {
+    let sr = ops::discover_root(Some(&PathBuf::from(root))).map_err(|e| e.to_string())?;
+    let check = ops::check_branch(&sr, branch.trim());
+    Ok(BranchCheck { name: check.name, taken: check.taken, error: check.error })
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SlotSuggestion {
+    pub branch: String,
+    pub goal: String,
+}
+
+/// Manual "Suggest" button in the new-slot dialog: ask `claude -p` (cwd =
+/// `dir`, the repo checkout the dialog is open for, so it sees real repo
+/// context) to propose a better branch name and a cleaned-up goal for the
+/// text the user typed. The dialog fills its editable fields with the
+/// result — nothing here writes anything or is called automatically.
+/// Long-running (a cold `claude` CLI) → off the main thread.
+#[tauri::command]
+pub async fn slot_suggest(dir: String, goal: String) -> Result<SlotSuggestion, String> {
+    tauri::async_runtime::spawn_blocking(move || tt_slots::suggest(&PathBuf::from(dir), &goal))
+        .await
+        .map_err(|e| format!("slot task failed: {e}"))?
+        .map(|s| SlotSuggestion { branch: s.branch, goal: s.goal })
+        .map_err(|e| e.to_string())
+}
+
 /// Create the slot for `branch` off `base` (empty base = the primary's
 /// branch). Long-running — fetch, worktree add, the install setup step — so
 /// it runs off the main thread.
@@ -81,6 +121,19 @@ pub async fn slot_create(
         base: created.base,
         warnings: created.warnings,
     })
+}
+
+/// Re-run a checkout's setup step (declared `TT_SLOT_SETUP` or lockfile
+/// detection) — the retry affordance for a setup failure surfaced from
+/// `slot_create`. `Ok(None)` = nothing to run or it succeeded this time;
+/// `Ok(Some)` carries the same warning text `slot_create` would have shown.
+/// Long-running (an install can take a minute) → off the main thread.
+#[tauri::command]
+pub async fn slot_run_setup(dir: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || ops::run_setup(&PathBuf::from(dir)))
+        .await
+        .map_err(|e| format!("slot task failed: {e}"))?
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Clone)]
