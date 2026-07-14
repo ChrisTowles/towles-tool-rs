@@ -71,3 +71,19 @@ tt-vt = { path = "crates/tt-vt" }
 
 [profile.release]
 strip = false
+
+# Dev builds must not ship a Debug-mode Zig parser: libghostty-vt-sys reads
+# cargo's DEBUG env var to pick `zig build -Doptimize=...`, and Zig Debug
+# parses ~3 orders of magnitude slower (saturates a core at ~130 KB/s of PTY
+# output, which pegged hidden busy panes at 100% CPU despite render gating).
+# `debug = false` makes cargo set DEBUG=false for just this package, so its
+# build.rs falls through to ReleaseFast; the rest of the workspace stays debug.
+[profile.dev.package.libghostty-vt-sys]
+opt-level = 3
+debug = false
+
+# The Rust wrapper sits on the same hot path (per-chunk feed, cell/style
+# access); keep it optimized alongside the Zig core it wraps.
+[profile.dev.package.libghostty-vt]
+opt-level = 3
+debug = false
