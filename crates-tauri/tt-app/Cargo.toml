@@ -27,6 +27,7 @@ tt-graph = { workspace = true }
 tt-journal = { workspace = true }
 tt-slots = { workspace = true }
 tt-store = { workspace = true }
+tt-update = { workspace = true }
 tt-vt = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }

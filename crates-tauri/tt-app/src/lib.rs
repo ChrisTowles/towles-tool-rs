@@ -18,6 +18,7 @@ mod slack_socket;
 mod slots;
 mod store;
 mod terminal;
+mod update;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -87,6 +88,10 @@ pub fn run() {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.set_title(&format!("Towles Tool — {}", slot_label()));
             }
+
+            // Fire-and-forget: check GitHub for a newer release and, if one
+            // exists, push the update banner event + an OS notification.
+            update::check_on_startup(app.handle().clone());
 
             // A Debug-mode Zig parser saturates a core at ~130 KB/s of PTY
             // output, so busy terminals peg engine threads and the app reads
@@ -323,6 +328,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_slot,
+            update::check_for_update,
             resources::app_resource_usage,
             agentboard::ab_get_state,
             agentboard::ab_mark_seen,

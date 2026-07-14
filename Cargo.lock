@@ -5415,6 +5415,7 @@ dependencies = [
  "tt-journal",
  "tt-slots",
  "tt-store",
+ "tt-update",
  "tt-vt",
 ]
 
@@ -5580,6 +5581,17 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tt-config",
+]
+
+[[package]]
+name = "tt-update"
+version = "0.1.0"
+dependencies = [
+ "native-tls",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "ureq",
 ]
 
 [[package]]

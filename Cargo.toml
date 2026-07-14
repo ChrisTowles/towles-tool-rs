@@ -14,6 +14,7 @@ members = [
   "crates/tt-mcp",
   "crates/tt-slots",
   "crates/tt-store",
+  "crates/tt-update",
   "crates/tt-vt",
   # CLI crates
   "crates-cli/tt-cli",
@@ -67,6 +68,7 @@ tt-journal = { path = "crates/tt-journal" }
 tt-mcp = { path = "crates/tt-mcp" }
 tt-slots = { path = "crates/tt-slots" }
 tt-store = { path = "crates/tt-store" }
+tt-update = { path = "crates/tt-update" }
 tt-vt = { path = "crates/tt-vt" }
 
 [profile.release]
