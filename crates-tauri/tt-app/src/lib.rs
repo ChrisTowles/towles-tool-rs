@@ -52,6 +52,10 @@ fn app_slot() -> String {
 }
 
 pub fn run() {
+    // `log::*` calls (tt-dictate's engine thread especially) are dropped
+    // without a logger installed; errors always print, more with RUST_LOG.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
+
     // WebKitGTK's DMABUF renderer glitches on the NVIDIA proprietary driver:
     // small damage regions (e.g. a terminal cursor blink) flash as
     // window-sized artifacts (tauri-apps/tauri#9304). Opt out before any

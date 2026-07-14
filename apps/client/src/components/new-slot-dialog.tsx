@@ -335,6 +335,12 @@ export function NewSlotDialog({
           </Button>
         </div>
         {dictation.error && <p className="text-xs text-red-500">{dictation.error}</p>}
+        {dictation.silentCapture && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            Recording, but hearing nothing — if you&apos;re speaking, check the mic&apos;s input
+            volume and device (system default, or Settings → dictation).
+          </p>
+        )}
         <div className="flex items-center justify-end gap-2">
           {preSuggest && (
             <Button

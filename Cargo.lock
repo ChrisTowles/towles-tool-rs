@@ -5783,6 +5783,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dirs",
+ "env_logger",
  "futures-util",
  "native-tls",
  "portable-pty",

@@ -357,6 +357,12 @@ pub struct DictationSettings {
     pub input_device: String,
     /// Pre-recognizer noise gate, in dBFS. Chunks quieter than this are
     /// zero-filled before reaching the streaming recognizer.
+    ///
+    /// Real speech on a typical mic at moderate system input volume lands
+    /// around -30..-50 dBFS per 120ms chunk, so the gate must sit well below
+    /// that. scribed's -36 default silently erased entire utterances here
+    /// (verified: -45 dBFS speech → zero transcripts at -36, perfect at -60);
+    /// -60 still gates true silence (quiet-room floor ≈ -80s) fine.
     pub silence_threshold_dbfs: f32,
     /// Hard ceiling on a single recording session, in seconds.
     pub max_recording_seconds: u32,
@@ -376,7 +382,7 @@ impl Default for DictationSettings {
     fn default() -> Self {
         Self {
             input_device: String::new(),
-            silence_threshold_dbfs: -36.0,
+            silence_threshold_dbfs: -60.0,
             max_recording_seconds: 300,
             silence_auto_stop_seconds: 60,
             endpoint_rule1_silence_seconds: 2.4,
@@ -847,7 +853,7 @@ mod tests {
 
         let loaded = load_from(&path).unwrap();
         assert_eq!(loaded.dictation.input_device, "USB Mic");
-        assert_eq!(loaded.dictation.silence_threshold_dbfs, -36.0);
+        assert_eq!(loaded.dictation.silence_threshold_dbfs, -60.0);
         assert_eq!(loaded.dictation.max_recording_seconds, 300);
     }
 

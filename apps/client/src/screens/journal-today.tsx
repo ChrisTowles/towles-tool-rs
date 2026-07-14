@@ -200,6 +200,12 @@ export function JournalTodayScreen() {
         </div>
       ) : null}
       {editing && dictation.error && <p className="text-xs text-red-500">{dictation.error}</p>}
+      {editing && dictation.silentCapture && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Recording, but hearing nothing — if you&apos;re speaking, check the mic&apos;s input
+          volume and device (system default, or Settings → dictation).
+        </p>
+      )}
       {!editing && (
         <div className="rounded-lg border border-border bg-card p-3.5">
           {loading && !note ? (
