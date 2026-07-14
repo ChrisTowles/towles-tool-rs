@@ -3,8 +3,8 @@
 // tt-slots ops, shared with `tt slot new`). The goal slugs the branch name
 // (editable) and the caller launches Claude with it in the new slot's first
 // session.
-import { Sparkles, Undo2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Mic, Sparkles, Square, Undo2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -39,6 +39,7 @@ import {
   DEFAULT_CLAUDE_EFFORT,
   DEFAULT_CLAUDE_MODEL,
 } from "@/lib/agentboard";
+import { useDictationForElement } from "@/lib/dictation";
 import { BaseBranchesSchema, SlotCreatedSchema } from "@/lib/schemas/slots";
 import { invokeOrThrow } from "@/lib/tauri";
 
@@ -128,6 +129,8 @@ export function NewSlotDialog({
   const [branchCheck, setBranchCheck] = useState<BranchCheck | null>(null);
   const [suggesting, setSuggesting] = useState(false);
   const [creatingTemplate, setCreatingTemplate] = useState(false);
+  const goalRef = useRef<HTMLTextAreaElement>(null);
+  const dictation = useDictationForElement(goalRef);
   // What the goal/branch fields held right before the last accepted
   // suggestion overwrote them — lets "Undo" put them back exactly.
   const [preSuggest, setPreSuggest] = useState<{ goal: string; branchEdit: string | null } | null>(
@@ -140,6 +143,7 @@ export function NewSlotDialog({
 
   useEffect(() => {
     if (!repo) return;
+    dictation.stop();
     setGoal("");
     setBranchEdit(null);
     setModel(DEFAULT_CLAUDE_MODEL);
@@ -177,6 +181,14 @@ export function NewSlotDialog({
       clearTimeout(timer);
     };
   }, [repo, branch]);
+
+  // Dictation is scoped to this dialog's goal field — stop it whenever the
+  // dialog closes (cancel, escape, or after a successful create) so the mic
+  // doesn't keep running once there's no target to type into.
+  function close() {
+    dictation.stop();
+    onClose();
+  }
 
   const branchProblem =
     branchCheck?.error ?? (branchCheck?.taken ? `a slot named "${branchCheck.name}" already exists` : null);
@@ -259,6 +271,7 @@ export function NewSlotDialog({
       setError(branchProblem);
       return;
     }
+    dictation.stop();
     setBusy(true);
     setError(null);
     try {
@@ -270,7 +283,7 @@ export function NewSlotDialog({
       for (const warning of created.warnings) {
         toast(warning, warning.startsWith("setup `") ? { action: retryAction(created.dir) } : undefined);
       }
-      onClose();
+      close();
       await onCreated(created, goal.trim(), { model, effort });
     } catch (e) {
       setError(String(e));
@@ -279,7 +292,7 @@ export function NewSlotDialog({
   }
 
   return (
-    <Dialog open={repo != null} onOpenChange={(open) => !open && !busy && onClose()}>
+    <Dialog open={repo != null} onOpenChange={(open) => !open && !busy && close()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>⬢ New slot{repo ? ` — ${repo.name}` : ""}</DialogTitle>
@@ -288,22 +301,49 @@ export function NewSlotDialog({
             Claude on your goal.
           </DialogDescription>
         </DialogHeader>
-        <Textarea
-          autoFocus
-          value={goal}
-          onChange={(e) => setGoal(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              void create();
-            }
-          }}
-          placeholder="what should get built in this slot?"
-          rows={3}
-        />
+        <div className="relative">
+          <Textarea
+            ref={goalRef}
+            autoFocus
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                void create();
+              }
+            }}
+            placeholder="what should get built in this slot?"
+            rows={3}
+            disabled={busy}
+            className="pr-9"
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="absolute top-1 right-1 size-7"
+            disabled={busy || dictation.phase === "loadingModel" || dictation.phase === "stopping"}
+            title={dictation.recording ? "Stop dictation" : "Dictate into this field"}
+            onClick={() => (dictation.recording ? dictation.stop() : dictation.start())}
+          >
+            {dictation.recording ? (
+              <Square className="size-3.5 fill-current text-red-500" />
+            ) : (
+              <Mic className="size-3.5" />
+            )}
+          </Button>
+        </div>
+        {dictation.error && <p className="text-xs text-red-500">{dictation.error}</p>}
         <div className="flex items-center justify-end gap-2">
           {preSuggest && (
-            <Button variant="ghost" size="sm" className="gap-1 text-xs" onClick={undoSuggest}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1 text-xs"
+              disabled={busy}
+              onClick={undoSuggest}
+            >
               <Undo2 className="size-3" />
               Undo suggestion
             </Button>
@@ -312,7 +352,7 @@ export function NewSlotDialog({
             variant="outline"
             size="sm"
             className="gap-1 text-xs"
-            disabled={suggesting || !goal.trim()}
+            disabled={busy || suggesting || !goal.trim()}
             onClick={() => void suggest()}
           >
             <Sparkles className="size-3" />
@@ -327,6 +367,7 @@ export function NewSlotDialog({
               onChange={(e) => setBranchEdit(e.target.value)}
               placeholder={`leave blank to auto-generate from your goal (first ${BRANCH_SLUG_SOURCE_CHARS} chars, made branch-safe)`}
               className="min-w-0 flex-1 font-mono text-xs"
+              disabled={busy}
             />
           </div>
           {!branchEdit && (
@@ -338,12 +379,13 @@ export function NewSlotDialog({
         </div>
         <div className="flex min-w-0 items-center gap-2">
           <span className="w-14 shrink-0 text-[11px] text-muted-foreground">base</span>
-          <Popover open={baseOpen} onOpenChange={setBaseOpen}>
+          <Popover open={baseOpen} onOpenChange={(open) => !busy && setBaseOpen(open)}>
             <PopoverTrigger asChild>
               <Button
                 variant="outline"
                 role="combobox"
                 aria-expanded={baseOpen}
+                disabled={busy}
                 className="min-w-0 flex-1 shrink justify-start truncate font-mono text-xs font-normal"
               >
                 <span className="truncate">{base || "main"}</span>
@@ -417,7 +459,7 @@ export function NewSlotDialog({
           </div>
         )}
         <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" disabled={busy} onClick={onClose}>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={close}>
             Cancel
           </Button>
           <Button size="sm" disabled={busy || !branch} onClick={() => void create()}>

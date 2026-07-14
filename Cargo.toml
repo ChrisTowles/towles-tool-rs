@@ -6,6 +6,7 @@ members = [
   "crates/tt-claude-code",
   "crates/tt-collect",
   "crates/tt-config",
+  "crates/tt-dictate",
   "crates/tt-doctor",
   "crates/tt-exec",
   "crates/tt-git",
@@ -60,6 +61,7 @@ tt-agentboard = { path = "crates/tt-agentboard" }
 tt-claude-code = { path = "crates/tt-claude-code" }
 tt-collect = { path = "crates/tt-collect" }
 tt-config = { path = "crates/tt-config" }
+tt-dictate = { path = "crates/tt-dictate" }
 tt-doctor = { path = "crates/tt-doctor" }
 tt-exec = { path = "crates/tt-exec" }
 tt-git = { path = "crates/tt-git" }

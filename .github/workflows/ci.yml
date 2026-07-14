@@ -134,7 +134,8 @@ jobs:
             curl \
             wget \
             file \
-            libxdo-dev
+            libxdo-dev \
+            libasound2-dev
 
       # Same repo-root rust-toolchain.toml pin as the `rust` job.
       - name: Provision pinned Rust toolchain

@@ -6,6 +6,7 @@
 
 mod agentboard;
 mod claude_sessions;
+mod dictation;
 mod doctor;
 mod gh_actions;
 mod instance_lock;
@@ -321,9 +322,11 @@ pub fn run() {
         .manage(terminal::TermState::default())
         .manage(resources::ResourceState::default())
         .manage(claude_sessions::ClaudeSessionsCache::default())
+        .manage(dictation::DictationState::default())
         .on_window_event(|window, event| {
             if let WindowEvent::Destroyed = event {
                 terminal::on_window_destroyed(window.app_handle(), window.label());
+                dictation::on_window_destroyed(window.app_handle(), window.label());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -409,6 +412,13 @@ pub fn run() {
             terminal::term_focus,
             terminal::term_open_path,
             terminal::term_kill,
+            dictation::dictation_status,
+            dictation::dictation_start,
+            dictation::dictation_stop,
+            dictation::dictation_toggle,
+            dictation::dictation_model_status,
+            dictation::dictation_model_fetch,
+            dictation::dictation_devices,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Towles Tool application");
