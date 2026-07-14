@@ -75,16 +75,53 @@ export function ideSetSelection(
 }
 
 /** Tell the folder's sessions which file the code viewer has open
- * (null = closed) — surfaces in Claude's getOpenEditors. */
-export function ideSetOpenFile(dir: string, filePath: string | null) {
-  void invokeCmd("ide_set_open_file", { dir, filePath });
+ * (null = closed) and whether it has unsaved edits — surfaces in Claude's
+ * getOpenEditors / checkDocumentDirty. */
+export function ideSetOpenFile(dir: string, filePath: string | null, dirty = false) {
+  void invokeCmd("ide_set_open_file", { dir, filePath, dirty });
 }
+
+/** A viewer file read: content + the mtime token the save path checks. */
+export type FileRead = { content: string; mtimeMs: number };
 
 /** Read a repo file for the code viewer (size-capped, text-only). Returns
  * null in browser dev; throws with a readable message on binary/huge files. */
-export function ideReadFile(dir: string, filePath: string): Promise<string | null> {
-  return invokeCmd<string>("ide_read_file", { dir, filePath });
+export function ideReadFile(dir: string, filePath: string): Promise<FileRead | null> {
+  return invokeCmd<FileRead>("ide_read_file", { dir, filePath });
 }
+
+/** Save the viewer's buffer (atomic; refuses when the file changed on disk
+ * since `expectedMtimeMs`). Resolves the new mtime token, or null after an
+ * error toast. */
+export async function ideWriteFile(
+  dir: string,
+  filePath: string,
+  content: string,
+  expectedMtimeMs: number | null,
+): Promise<number | null> {
+  const { toast } = await import("sonner");
+  try {
+    const { invokeOrThrow } = await import("@/lib/tauri");
+    return await invokeOrThrow<number>("ide_write_file", {
+      dir,
+      filePath,
+      content,
+      expectedMtimeMs,
+    });
+  } catch (e) {
+    toast.error(String(e));
+    return null;
+  }
+}
+
+/** Payload of the `ide://open-file` event (Claude called the openFile tool). */
+export type OpenFileRequest = {
+  dir: string;
+  filePath: string;
+  startText?: string | null;
+  endText?: string | null;
+  selectToEndOfLine?: boolean | null;
+};
 
 /** The highlight was dismissed — clear the sessions' selection context. */
 export function ideClearSelection(dir: string, filePath: string) {

@@ -1,18 +1,50 @@
 import { useEffect, useRef, useState } from "react";
 import { loadMonaco, monacoTheme } from "@/lib/monaco";
-import { ideClearSelection, ideReadFile, ideSetOpenFile, ideSetSelection } from "@/lib/ide";
+import {
+  ideClearSelection,
+  ideReadFile,
+  ideSetOpenFile,
+  ideSetSelection,
+  ideWriteFile,
+} from "@/lib/ide";
 
 /**
- * Read-only Monaco viewer for one repo file (the Files tab's right pane).
- * The whole point is the selection bridge: any Monaco selection streams to
- * the folder's Claude session as character-precise selection_changed
- * (debounced 300ms, like VS Code); collapsing it clears the context.
- * Editing lands in a later phase — the buffer is read-only.
+ * Monaco editor for one repo file (the Files tab's right pane). Two bridges:
+ * selections stream to the folder's Claude session as character-precise
+ * selection_changed (debounced 300ms, like VS Code), and edits save with
+ * Cmd/Ctrl+S — atomically, refused if the file changed on disk since it was
+ * read (an agent may be editing the same tree). Dirty state rides to Claude
+ * via getOpenEditors / checkDocumentDirty.
  */
-export function CodeViewer({ dir, path }: { dir: string; path: string }) {
+
+/** Text anchors from Claude's openFile tool: select startText..endText. */
+export type ViewerAnchor = {
+  startText?: string | null;
+  endText?: string | null;
+  selectToEndOfLine?: boolean | null;
+};
+
+export function CodeViewer({
+  dir,
+  path,
+  anchor,
+  onDirtyChange,
+}: {
+  dir: string;
+  path: string;
+  /** Changes identity per openFile request so re-anchoring re-runs. */
+  anchor?: ViewerAnchor & { nonce?: number };
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const editorRef = useRef<import("monaco-editor").editor.IStandaloneCodeEditor | null>(null);
+  const savedVersionRef = useRef(0);
+  const mtimeRef = useRef<number | null>(null);
+  const dirtyRef = useRef(false);
+  const onDirtyRef = useRef(onDirtyChange);
+  onDirtyRef.current = onDirtyChange;
 
   useEffect(() => {
     let disposed = false;
@@ -22,11 +54,12 @@ export function CodeViewer({ dir, path }: { dir: string; path: string }) {
 
     setError(null);
     setLoading(true);
+    dirtyRef.current = false;
     void (async () => {
-      let content: string | null = null;
+      let read: Awaited<ReturnType<typeof ideReadFile>>;
       try {
-        const [, text] = await Promise.all([loadMonaco(), ideReadFile(dir, path)]);
-        content = text;
+        const [, r] = await Promise.all([loadMonaco(), ideReadFile(dir, path)]);
+        read = r;
       } catch (e) {
         if (!disposed) {
           setError(String(e));
@@ -35,7 +68,7 @@ export function CodeViewer({ dir, path }: { dir: string; path: string }) {
         return;
       }
       if (disposed || !containerRef.current) return;
-      if (content == null) {
+      if (read == null) {
         setError("not available in browser dev");
         setLoading(false);
         return;
@@ -43,22 +76,46 @@ export function CodeViewer({ dir, path }: { dir: string; path: string }) {
       const monaco = await loadMonaco();
       const uri = monaco.Uri.file(`${dir}/${path}`);
       monaco.editor.getModel(uri)?.dispose();
-      model = monaco.editor.createModel(content, undefined, uri);
+      model = monaco.editor.createModel(read.content, undefined, uri);
+      mtimeRef.current = read.mtimeMs;
       editor = monaco.editor.create(containerRef.current, {
         model,
-        readOnly: true,
         automaticLayout: true,
         theme: monacoTheme(),
         minimap: { enabled: false },
         fontSize: 12,
         lineNumbersMinChars: 4,
         scrollBeyondLastLine: false,
-        renderLineHighlight: "none",
+        renderLineHighlight: "line",
         occurrencesHighlight: "off",
         contextmenu: false,
       });
+      editorRef.current = editor;
+      savedVersionRef.current = model.getAlternativeVersionId();
       setLoading(false);
-      ideSetOpenFile(dir, path);
+      ideSetOpenFile(dir, path, false);
+
+      const setDirty = (dirty: boolean) => {
+        if (dirtyRef.current === dirty) return;
+        dirtyRef.current = dirty;
+        ideSetOpenFile(dir, path, dirty);
+        onDirtyRef.current?.(dirty);
+      };
+
+      model.onDidChangeContent(() => {
+        setDirty(model!.getAlternativeVersionId() !== savedVersionRef.current);
+      });
+
+      const save = async () => {
+        if (!model) return;
+        const versionAtSave = model.getAlternativeVersionId();
+        const newMtime = await ideWriteFile(dir, path, model.getValue(), mtimeRef.current);
+        if (newMtime == null || !model || model.isDisposed()) return;
+        mtimeRef.current = newMtime;
+        savedVersionRef.current = versionAtSave;
+        setDirty(model.getAlternativeVersionId() !== versionAtSave);
+      };
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => void save());
 
       editor.onDidChangeCursorSelection((e) => {
         clearTimeout(debounce);
@@ -85,11 +142,55 @@ export function CodeViewer({ dir, path }: { dir: string; path: string }) {
     return () => {
       disposed = true;
       clearTimeout(debounce);
+      editorRef.current = null;
       editor?.dispose();
       model?.dispose();
       ideSetOpenFile(dir, null);
     };
   }, [dir, path]);
+
+  // Claude's openFile can ask for a startText..endText selection — find the
+  // anchors in the buffer, select, and scroll them into view.
+  useEffect(() => {
+    if (!anchor?.startText) return;
+    void (async () => {
+      const monaco = await loadMonaco();
+      const editor = editorRef.current;
+      const model = editor?.getModel();
+      if (!editor || !model) return;
+      const start = model.findMatches(anchor.startText!, false, false, false, null, false, 1)[0];
+      if (!start) return;
+      let range = start.range;
+      if (anchor.endText) {
+        const after = model.findMatches(anchor.endText, false, false, false, null, false, 50);
+        const end = after.find(
+          (m) =>
+            m.range.startLineNumber > range.startLineNumber ||
+            (m.range.startLineNumber === range.startLineNumber &&
+              m.range.startColumn >= range.endColumn),
+        );
+        if (end) {
+          range = new monaco.Range(
+            range.startLineNumber,
+            range.startColumn,
+            end.range.endLineNumber,
+            end.range.endColumn,
+          );
+        }
+      }
+      if (anchor.selectToEndOfLine) {
+        range = new monaco.Range(
+          range.startLineNumber,
+          range.startColumn,
+          range.endLineNumber,
+          model.getLineMaxColumn(range.endLineNumber),
+        );
+      }
+      editor.setSelection(range);
+      editor.revealRangeInCenter(range);
+      editor.focus();
+    })();
+  }, [anchor?.nonce, anchor?.startText, anchor?.endText, anchor?.selectToEndOfLine]);
 
   if (error) {
     return <p className="p-3 text-sm text-muted-foreground">{error}</p>;

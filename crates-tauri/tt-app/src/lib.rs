@@ -449,6 +449,7 @@ pub fn run() {
             ide::ide_list_files,
             ide::ide_set_open_file,
             ide::ide_read_file,
+            ide::ide_write_file,
             diagnostics::ide_diagnostics_refresh,
             dictation::dictation_status,
             dictation::dictation_start,
