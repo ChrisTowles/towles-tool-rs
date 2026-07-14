@@ -128,6 +128,9 @@ pub struct ServerContext {
     pub workspace_folder: PathBuf,
     /// The latest selection made in the app's diff pane, if any.
     pub selection: Option<Selection>,
+    /// Absolute path of the file open in the app's code viewer, if any —
+    /// preferred by `getOpenEditors` over the selection's file.
+    pub open_file: Option<String>,
     /// Current compiler diagnostics for this folder, already in the
     /// `getDiagnostics` wire shape (`[{uri, diagnostics: [...]}]`, see
     /// [`diagnostics::to_wire`]). Empty array when no check has run.
@@ -222,19 +225,21 @@ fn workspace_folders(ctx: &ServerContext) -> Value {
     })
 }
 
-/// The diff pane shows one file at a time; report the selected file as the
-/// single active "tab" so `@`-mention file pickers have something to anchor on.
+/// The app shows one file at a time (code viewer, else the diff pane's
+/// selected file); report it as the single active "tab" so `@`-mention file
+/// pickers have something to anchor on.
 fn open_editors(ctx: &ServerContext) -> Value {
-    let tabs: Vec<Value> = ctx
-        .selection
+    let path =
+        ctx.open_file.clone().or_else(|| ctx.selection.as_ref().map(|sel| sel.file_path.clone()));
+    let tabs: Vec<Value> = path
         .iter()
-        .map(|sel| {
-            let name = Path::new(&sel.file_path)
+        .map(|file_path| {
+            let name = Path::new(file_path)
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| sel.file_path.clone());
+                .unwrap_or_else(|| file_path.clone());
             json!({
-                "uri": sel.file_url,
+                "uri": format!("file://{file_path}"),
                 "isActive": true,
                 "isPinned": false,
                 "isPreview": false,
@@ -243,7 +248,7 @@ fn open_editors(ctx: &ServerContext) -> Value {
                 "groupIndex": 0,
                 "viewColumn": 1,
                 "isGroupActive": true,
-                "fileName": sel.file_path,
+                "fileName": file_path,
             })
         })
         .collect();
@@ -345,6 +350,7 @@ mod tests {
             ide_name: "Towles Tool".to_string(),
             workspace_folder: PathBuf::from("/repo/slot-a"),
             selection,
+            open_file: None,
             diagnostics: json!([]),
         }
     }
@@ -461,6 +467,18 @@ mod tests {
     fn diagnostics_answer_the_empty_set() {
         let diags = call(&ctx_with(None), "getDiagnostics");
         assert_eq!(diags, json!([]));
+    }
+
+    #[test]
+    fn open_editors_prefers_the_viewer_file_over_the_selection() {
+        let selection =
+            Selection::range(Path::new("/repo/slot-a/src/sel.rs"), 0, 0, 1, "x".to_string());
+        let mut ctx = ctx_with(Some(selection));
+        ctx.open_file = Some("/repo/slot-a/src/open.rs".to_string());
+        let editors = call(&ctx, "getOpenEditors");
+        assert_eq!(editors["tabs"][0]["fileName"], "/repo/slot-a/src/open.rs");
+        assert_eq!(editors["tabs"][0]["label"], "open.rs");
+        assert_eq!(editors["tabs"][0]["uri"], "file:///repo/slot-a/src/open.rs");
     }
 
     #[test]

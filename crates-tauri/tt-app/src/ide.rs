@@ -55,6 +55,9 @@ struct Shared {
     auth_token: String,
     /// Latest diff-pane selection; serves `getCurrentSelection`/`getLatestSelection`.
     selection: Mutex<Option<tt_ide::Selection>>,
+    /// Absolute path of the file open in the app's code viewer, if any —
+    /// what `getOpenEditors` reports as the active tab.
+    open_file: Mutex<Option<String>>,
     /// Compiler-diagnostics hub, queried per message for this folder's
     /// current `getDiagnostics` payload.
     diagnostics: Arc<crate::diagnostics::DiagHub>,
@@ -69,6 +72,7 @@ impl Shared {
             ide_name: IDE_NAME.to_string(),
             workspace_folder: self.cwd.clone(),
             selection: self.selection.lock().unwrap().clone(),
+            open_file: self.open_file.lock().unwrap().clone(),
             diagnostics: self.diagnostics.wire_for(&self.cwd),
         }
     }
@@ -129,6 +133,7 @@ impl IdeServer {
             port,
             auth_token,
             selection: Mutex::new(None),
+            open_file: Mutex::new(None),
             diagnostics,
             out: Mutex::new(Vec::new()),
         });
@@ -175,6 +180,11 @@ impl IdeServer {
     /// via `getDiagnostics`).
     pub fn notify_diagnostics(&self, uris: &[String]) {
         self.shared.push(tt_ide::diagnostics::diagnostics_changed_frame(uris));
+    }
+
+    /// Record which file the app's code viewer has open (None = closed).
+    pub fn set_open_file(&self, path: Option<String>) {
+        *self.shared.open_file.lock().unwrap() = path;
     }
 }
 
@@ -320,14 +330,19 @@ pub fn sweep_stale_lockfiles() {
 // ---------------------------------------------------------------------------
 // Commands (invoked from the diff pane)
 
-/// Resolve `file_path` (repo-relative) against `dir`, read the selected lines
-/// from disk (1-based inclusive), and build the wire selection (0-based). The
-/// text comes from the real file — the diff pane may only show hunk excerpts.
+/// Resolve `file_path` (repo-relative) against `dir`, read the selected span
+/// from disk, and build the wire selection (0-based). Lines are 1-based
+/// inclusive; `start_char`/`end_char` are optional 0-based character columns
+/// (the Monaco viewer sends them; the diff pane's gutter selects whole
+/// lines). The text comes from the real file — the diff pane may only show
+/// hunk excerpts.
 fn build_selection(
     dir: &Path,
     file_path: &str,
     start_line: u32,
     end_line: u32,
+    start_char: Option<u32>,
+    end_char: Option<u32>,
 ) -> tt_ide::Selection {
     let abs = dir.join(file_path);
     let (start, end) = (start_line.min(end_line).max(1), start_line.max(end_line));
@@ -335,10 +350,27 @@ fn build_selection(
     let lines: Vec<&str> = content.lines().collect();
     let from = (start as usize - 1).min(lines.len());
     let to = (end as usize).min(lines.len());
-    let text = lines[from..to].join("\n");
-    let end_character =
-        lines.get(to.saturating_sub(1)).map(|l| l.chars().count() as u32).unwrap_or(0);
-    tt_ide::Selection::range(&abs, start - 1, end - 1, end_character, text)
+
+    let clip = |line: Option<&&str>, character: u32| -> usize {
+        line.map(|l| (character as usize).min(l.chars().count())).unwrap_or(0)
+    };
+    let first_char = start_char.map(|c| clip(lines.get(from), c)).unwrap_or(0);
+    let last_line_len = lines.get(to.saturating_sub(1)).map(|l| l.chars().count()).unwrap_or(0);
+    let last_char =
+        end_char.map(|c| clip(lines.get(to.saturating_sub(1)), c)).unwrap_or(last_line_len);
+
+    let mut selected: Vec<String> = lines[from..to].iter().map(|l| l.to_string()).collect();
+    if let Some(last) = selected.last_mut() {
+        *last = last.chars().take(last_char).collect();
+    }
+    if let Some(first) = selected.first_mut() {
+        *first = first.chars().skip(first_char).collect();
+    }
+    let text = selected.join("\n");
+
+    let mut selection = tt_ide::Selection::range(&abs, start - 1, end - 1, last_char as u32, text);
+    selection.selection.start.character = first_char as u32;
+    selection
 }
 
 /// A highlight was made in the diff pane for `dir`: cache + push it to every
@@ -351,9 +383,11 @@ pub fn ide_set_selection(
     file_path: String,
     start_line: u32,
     end_line: u32,
+    start_char: Option<u32>,
+    end_char: Option<u32>,
 ) -> Result<bool, String> {
     let dir = PathBuf::from(dir);
-    let selection = build_selection(&dir, &file_path, start_line, end_line);
+    let selection = build_selection(&dir, &file_path, start_line, end_line, start_char, end_char);
     let mut delivered = false;
     state.for_ide_servers(&dir, |server| {
         let frame_selection = selection.clone();
@@ -413,6 +447,36 @@ pub fn ide_at_mention(
 #[tauri::command]
 pub fn ide_status(app: AppHandle) -> Vec<IdeStatus> {
     app.state::<TermState>().ide_statuses()
+}
+
+/// The code viewer opened (Some) or closed (None) a file in `dir` — reflected
+/// to CLIs via `getOpenEditors`.
+#[tauri::command]
+pub fn ide_set_open_file(state: State<TermState>, dir: String, file_path: Option<String>) {
+    let dir = PathBuf::from(dir);
+    let abs = file_path.map(|f| dir.join(f).to_string_lossy().into_owned());
+    state.for_ide_servers(&dir, |server| server.set_open_file(abs.clone()));
+}
+
+/// Read a repo file for the code viewer. Size-capped and text-only — the
+/// viewer is for code, not assets.
+#[tauri::command]
+pub async fn ide_read_file(dir: String, file_path: String) -> Result<String, String> {
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+    tauri::async_runtime::spawn_blocking(move || {
+        let abs = Path::new(&dir).join(&file_path);
+        let meta = std::fs::metadata(&abs).map_err(|e| format!("cannot open {file_path}: {e}"))?;
+        if meta.len() > MAX_BYTES {
+            return Err(format!("{file_path} is too large to preview ({} KB)", meta.len() / 1024));
+        }
+        let bytes = std::fs::read(&abs).map_err(|e| format!("cannot read {file_path}: {e}"))?;
+        if bytes.contains(&0) {
+            return Err(format!("{file_path} looks like a binary file"));
+        }
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    })
+    .await
+    .map_err(|e| format!("read task failed: {e}"))?
 }
 
 /// Every file in the folder's checkout (tracked + untracked-but-not-ignored),
