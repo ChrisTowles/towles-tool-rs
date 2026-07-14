@@ -48,6 +48,11 @@ pub struct GitInfo {
     /// present-but-non-git one — both otherwise yield an empty [`GitInfo`].
     /// [`crate::bridge::build_folder`] copies this onto the wire `FolderData`.
     pub dir_missing: bool,
+    /// For a worktree slot only: the ref it was actually created from, read
+    /// from its `.tt-slot` marker (see [`tt_slots::read_slot_base`]). `None`
+    /// for a non-slot checkout. Lets the diff pane (and [`resolve_base_ref`])
+    /// know what to auto-compare against without the user typing an override.
+    pub slot_base_branch: Option<String>,
 }
 
 /// Must stay above the git poll interval so the poll keeps entries warm.
@@ -169,6 +174,7 @@ pub fn compute_git_info(dir: &str) -> GitInfo {
     let origin_url = git_out(dir, &["remote", "get-url", "origin"]);
     info.origin_url = (!origin_url.is_empty()).then_some(origin_url);
     info.worktree_dirs = list_other_worktrees(dir);
+    info.slot_base_branch = tt_slots::read_slot_base(std::path::Path::new(dir));
     info
 }
 
@@ -307,12 +313,13 @@ pub fn compute_git_info_from_outputs(
         lines_removed,
         commits_ahead,
         commits_behind,
-        // The pure parser has no origin/worktree-list knowledge; `compute_git_info`
-        // fills both in. Existence is decided before shelling out, so a parsed
-        // result is never "missing".
+        // The pure parser has no origin/worktree-list/slot-marker knowledge;
+        // `compute_git_info` fills all three in. Existence is decided before
+        // shelling out, so a parsed result is never "missing".
         origin_url: None,
         worktree_dirs: Vec::new(),
         dir_missing: false,
+        slot_base_branch: None,
     }
 }
 
@@ -641,6 +648,43 @@ mod tests {
         // Present but not a git repo: still not "missing".
         let info = compute_git_info(root.path().to_str().unwrap());
         assert!(!info.dir_missing);
+    }
+
+    #[test]
+    fn compute_reads_slot_base_branch_from_marker() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+
+        // A non-slot checkout has no marker: no slot base surfaced.
+        let info = compute_git_info(repo.to_str().unwrap());
+        assert_eq!(info.slot_base_branch, None);
+
+        // Writing the `.tt-slot` marker surfaces its `base=` field, so the
+        // diff pane can show what a slot auto-compares against.
+        std::fs::write(
+            repo.join(tt_slots::MARKER_FILE),
+            tt_slots::marker_contents("s", "develop", "main"),
+        )
+        .unwrap();
+        let info = compute_git_info(repo.to_str().unwrap());
+        assert_eq!(info.slot_base_branch, Some("develop".to_string()));
     }
 
     #[test]

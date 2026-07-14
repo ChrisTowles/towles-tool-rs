@@ -228,6 +228,12 @@ pub struct FolderData {
     /// overriding the origin/main-or-master auto-detect (folder_meta.json).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
+    /// For a worktree slot only: the ref it was actually created from, read
+    /// from its `.tt-slot` marker (`base=`). Lets the diff pane show what it
+    /// auto-compares against when `base_branch` has no manual override,
+    /// instead of always claiming "vs main". `None` for a non-slot checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_base_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<SessionMetadata>,
 }
