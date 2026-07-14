@@ -341,6 +341,29 @@ impl Drop for ClaimLock {
 // ---------------------------------------------------------------------------
 // rendering
 
+/// Create the root-side [`TEMPLATE_SIDECAR`] for repos that don't commit a
+/// tokenized `.env.example` — the fix for [`OpsError::NoTemplate`]. A repo
+/// with nothing to template (no ports, no per-slot config) gets an empty
+/// sidecar with just an explanatory comment; slots still render (an empty
+/// `.env`). Idempotent: an existing sidecar is left untouched.
+pub fn init_template_sidecar(sr: &SlotRoot) -> Result<PathBuf> {
+    let sidecar = sr.root.join(TEMPLATE_SIDECAR);
+    if sidecar.is_file() {
+        return Ok(sidecar);
+    }
+    fs::create_dir_all(&sr.root)
+        .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", sr.root.display())))?;
+    fs::write(
+        &sidecar,
+        "# tt slot env template — this repo declares no ports/env vars for slots.\n\
+         # Add ${tt:port A-B} / ${tt:var NAME} / ${tt:slot-name} / ${tt:base} tokens\n\
+         # here (or commit a tokenized .env.example in the repo instead) if a slot\n\
+         # ever needs one.\n",
+    )
+    .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", sidecar.display())))?;
+    Ok(sidecar)
+}
+
 pub struct RenderSummary {
     pub ports: Vec<(String, u16)>,
     pub reused: usize,
@@ -1177,6 +1200,29 @@ mod tests {
         let plain = tmp.path().join("just-a-dir");
         fs::create_dir_all(&plain).unwrap();
         assert!(matches!(discover_root(Some(&plain)), Err(OpsError::NoPrimary(_))));
+    }
+
+    #[test]
+    fn init_template_sidecar_creates_a_usable_empty_template() {
+        let (_tmp, sr) = temp_slot_root();
+        let path = init_template_sidecar(&sr).unwrap();
+        assert_eq!(path, sr.root.join(TEMPLATE_SIDECAR));
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.lines().all(|l| l.trim().is_empty() || l.trim_start().starts_with('#')),
+            "an empty sidecar must be comment-only (no ${{tt:...}} tokens to render): {contents}"
+        );
+    }
+
+    #[test]
+    fn init_template_sidecar_is_idempotent() {
+        let (_tmp, sr) = temp_slot_root();
+        init_template_sidecar(&sr).unwrap();
+        fs::write(sr.root.join(TEMPLATE_SIDECAR), "NAME=${tt:slot-name}\n").unwrap();
+        // a second call must not clobber a sidecar the user has since edited
+        init_template_sidecar(&sr).unwrap();
+        let contents = fs::read_to_string(sr.root.join(TEMPLATE_SIDECAR)).unwrap();
+        assert!(contents.contains("${tt:slot-name}"));
     }
 
     #[test]

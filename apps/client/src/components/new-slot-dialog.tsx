@@ -93,6 +93,7 @@ export function NewSlotDialog({
   const [error, setError] = useState<string | null>(null);
   const [branchCheck, setBranchCheck] = useState<BranchCheck | null>(null);
   const [suggesting, setSuggesting] = useState(false);
+  const [creatingTemplate, setCreatingTemplate] = useState(false);
   // What the goal/branch fields held right before the last accepted
   // suggestion overwrote them — lets "Undo" put them back exactly.
   const [preSuggest, setPreSuggest] = useState<{ goal: string; branchEdit: string | null } | null>(
@@ -112,6 +113,7 @@ export function NewSlotDialog({
     setBusy(false);
     setSuggesting(false);
     setPreSuggest(null);
+    setCreatingTemplate(false);
     invokeOrThrow<string[]>("slot_base_branches", { root: repo.dir }, BaseBranchesSchema)
       .then((list) => {
         setBranches(list);
@@ -189,6 +191,26 @@ export function NewSlotDialog({
     setGoal(preSuggest.goal);
     setBranchEdit(preSuggest.branchEdit);
     setPreSuggest(null);
+  }
+
+  // `slot_create`'s "no template" error means this repo has neither a
+  // tokenized .env.example nor the root-side sidecar — offer to create an
+  // empty sidecar (comment-only, no ${tt:...} tokens) right from the dialog
+  // instead of sending the user to a terminal, then retry immediately.
+  const noTemplate = error?.startsWith("no template:") ?? false;
+
+  async function createTemplateAndRetry() {
+    if (!repo || creatingTemplate) return;
+    setCreatingTemplate(true);
+    try {
+      await invokeOrThrow("slot_init_template", { root: repo.dir });
+      setError(null);
+      await create();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCreatingTemplate(false);
+    }
   }
 
   async function create() {
@@ -314,7 +336,22 @@ export function NewSlotDialog({
             </PopoverContent>
           </Popover>
         </div>
-        {error && <p className="text-xs text-red-500">{error}</p>}
+        {error && (
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs text-red-500">{error}</p>
+            {noTemplate && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 gap-1 px-2 text-[11px]"
+                disabled={creatingTemplate}
+                onClick={() => void createTemplateAndRetry()}
+              >
+                {creatingTemplate ? "Creating template…" : "Create empty slot-env.template"}
+              </Button>
+            )}
+          </div>
+        )}
         <div className="flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" disabled={busy} onClick={onClose}>
             Cancel

@@ -47,6 +47,18 @@ pub fn slot_base_branches(root: String) -> Result<Vec<String>, String> {
     ops::primary_branches(&sr.primary).map_err(|e| e.to_string())
 }
 
+/// Create the root-side sidecar template (`slot-env.template`) for a repo
+/// that has neither it nor a tokenized `.env.example` — the New Slot
+/// dialog's one-click fix for `slot_create`'s "no template" error. Returns
+/// the created (or already-existing) sidecar path.
+#[tauri::command]
+pub fn slot_init_template(root: String) -> Result<String, String> {
+    let sr = ops::discover_root(Some(&PathBuf::from(root))).map_err(|e| e.to_string())?;
+    ops::init_template_sidecar(&sr)
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct BranchCheck {
