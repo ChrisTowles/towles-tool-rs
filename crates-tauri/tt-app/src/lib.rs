@@ -339,6 +339,7 @@ pub fn run() {
             agentboard::ab_open_in_editor,
             agentboard::ab_get_diff,
             slots::slot_base_branches,
+            slots::slot_init_template,
             slots::slot_check_branch,
             slots::slot_create,
             slots::slot_remove,
