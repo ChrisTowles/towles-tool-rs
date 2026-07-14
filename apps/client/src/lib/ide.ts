@@ -53,10 +53,37 @@ export function useIdeConnected(dir: string | undefined): boolean {
   );
 }
 
-/** Push a highlight (1-based inclusive new-file lines) as the ambient
- * selection of every Claude session rooted at `dir`. Fire-and-forget. */
-export function ideSetSelection(dir: string, filePath: string, startLine: number, endLine: number) {
-  void invokeCmd("ide_set_selection", { dir, filePath, startLine, endLine });
+/** Push a highlight (1-based inclusive lines; optional 0-based character
+ * columns from the code viewer) as the ambient selection of every Claude
+ * session rooted at `dir`. Fire-and-forget. */
+export function ideSetSelection(
+  dir: string,
+  filePath: string,
+  startLine: number,
+  endLine: number,
+  startChar?: number,
+  endChar?: number,
+) {
+  void invokeCmd("ide_set_selection", {
+    dir,
+    filePath,
+    startLine,
+    endLine,
+    startChar: startChar ?? null,
+    endChar: endChar ?? null,
+  });
+}
+
+/** Tell the folder's sessions which file the code viewer has open
+ * (null = closed) — surfaces in Claude's getOpenEditors. */
+export function ideSetOpenFile(dir: string, filePath: string | null) {
+  void invokeCmd("ide_set_open_file", { dir, filePath });
+}
+
+/** Read a repo file for the code viewer (size-capped, text-only). Returns
+ * null in browser dev; throws with a readable message on binary/huge files. */
+export function ideReadFile(dir: string, filePath: string): Promise<string | null> {
+  return invokeCmd<string>("ide_read_file", { dir, filePath });
 }
 
 /** The highlight was dismissed — clear the sessions' selection context. */
