@@ -24,9 +24,37 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  ClaudeEffort,
+  ClaudeLaunchOptions,
+  ClaudeModel,
+  DEFAULT_CLAUDE_EFFORT,
+  DEFAULT_CLAUDE_MODEL,
+} from "@/lib/agentboard";
 import { BaseBranchesSchema, SlotCreatedSchema } from "@/lib/schemas/slots";
 import { invokeOrThrow } from "@/lib/tauri";
+
+const MODEL_OPTIONS: { value: ClaudeModel; label: string }[] = [
+  { value: "sonnet", label: "Sonnet" },
+  { value: "opus", label: "Opus" },
+  { value: "fable", label: "Fable" },
+];
+
+const EFFORT_OPTIONS: { value: ClaudeEffort; label: string }[] = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "XHigh" },
+  { value: "max", label: "Max" },
+];
 
 export type NewSlotRepo = { name: string; dir: string };
 
@@ -82,11 +110,17 @@ export function NewSlotDialog({
   repo: NewSlotRepo | null;
   onClose: () => void;
   /** Called after the slot exists; the caller opens a session + launches Claude. */
-  onCreated: (created: SlotCreated, goal: string) => void | Promise<void>;
+  onCreated: (
+    created: SlotCreated,
+    goal: string,
+    options: ClaudeLaunchOptions,
+  ) => void | Promise<void>;
 }) {
   const [goal, setGoal] = useState("");
   const [branchEdit, setBranchEdit] = useState<string | null>(null);
   const [base, setBase] = useState("");
+  const [model, setModel] = useState<ClaudeModel>(DEFAULT_CLAUDE_MODEL);
+  const [effort, setEffort] = useState<ClaudeEffort>(DEFAULT_CLAUDE_EFFORT);
   const [branches, setBranches] = useState<string[]>([]);
   const [baseOpen, setBaseOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -108,6 +142,8 @@ export function NewSlotDialog({
     if (!repo) return;
     setGoal("");
     setBranchEdit(null);
+    setModel(DEFAULT_CLAUDE_MODEL);
+    setEffort(DEFAULT_CLAUDE_EFFORT);
     setError(null);
     setBranchCheck(null);
     setBusy(false);
@@ -235,7 +271,7 @@ export function NewSlotDialog({
         toast(warning, warning.startsWith("setup `") ? { action: retryAction(created.dir) } : undefined);
       }
       onClose();
-      await onCreated(created, goal.trim());
+      await onCreated(created, goal.trim(), { model, effort });
     } catch (e) {
       setError(String(e));
       setBusy(false);
@@ -335,6 +371,34 @@ export function NewSlotDialog({
               </Command>
             </PopoverContent>
           </Popover>
+        </div>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="w-14 shrink-0 text-[11px] text-muted-foreground">model</span>
+          <Select value={model} onValueChange={(v) => setModel(v as ClaudeModel)}>
+            <SelectTrigger className="min-w-0 flex-1 font-mono text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MODEL_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="w-12 shrink-0 text-[11px] text-muted-foreground">effort</span>
+          <Select value={effort} onValueChange={(v) => setEffort(v as ClaudeEffort)}>
+            <SelectTrigger className="min-w-0 flex-1 font-mono text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {EFFORT_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         {error && (
           <div className="flex flex-wrap items-center gap-2">
