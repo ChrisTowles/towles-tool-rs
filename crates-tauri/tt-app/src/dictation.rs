@@ -278,6 +278,11 @@ fn dictation_start_blocking(app: AppHandle) -> Result<(), String> {
                 let _ = sink_app.emit_to(MAIN_WINDOW_LABEL, LEVEL_EVENT, LevelPayload { dbfs });
             }
             DictationEvent::Stopped { reason, .. } => {
+                // Engine-initiated stops (auto-stop, capture error) bypass
+                // `dictation_stop`, so clear the session id here too or
+                // `dictation_status` keeps reporting the dead session.
+                let state = sink_app.state::<DictationState>();
+                *state.current_session_id.lock().unwrap() = None;
                 let error = matches!(reason, StopReason::CaptureError | StopReason::IngestErrors)
                     .then(|| format!("{reason:?}"));
                 emit_state(&sink_app, Phase::Idle, None, error);

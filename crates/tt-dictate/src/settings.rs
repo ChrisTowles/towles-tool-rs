@@ -86,7 +86,7 @@ mod tests {
         let cfg = EngineConfig::from_settings(&settings);
         assert_eq!(cfg.max_recording_seconds, 300);
         assert_eq!(cfg.silence_auto_stop_seconds, 60);
-        assert_eq!(cfg.silence_threshold_dbfs, -36.0);
+        assert_eq!(cfg.silence_threshold_dbfs, -60.0);
         assert_eq!(cfg.endpoint_rule1_silence_seconds, 2.4);
         assert_eq!(cfg.endpoint_rule2_silence_seconds, 1.0);
         assert_eq!(cfg.endpoint_rule3_max_utterance_seconds, 20.0);
