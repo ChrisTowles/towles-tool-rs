@@ -72,6 +72,11 @@ struct Session {
     /// "bash". Best-effort: a user running a different shell inside this one
     /// (e.g. `bash` inside `zsh`) won't change it.
     shell_kind: String,
+    /// This terminal's Claude Code IDE server (see `ide.rs`): dropping the
+    /// session (kill/replace/teardown) shuts it down and removes its lockfile.
+    /// `None` when the server failed to start — the shell still works, it just
+    /// gets no IDE pairing.
+    ide: Option<crate::ide::IdeServer>,
 }
 
 /// All live terminals, keyed by the frontend's `term_id`, plus which one
@@ -142,6 +147,28 @@ impl TermState {
         }
     }
 
+    /// Run `f` over every live session's IDE server rooted at `dir` (the
+    /// diff pane routes highlights by folder). The callback only does cheap
+    /// in-memory work (cache write + channel send), so holding the map lock
+    /// across it stays within the lock contract above.
+    pub(crate) fn for_ide_servers(&self, dir: &Path, mut f: impl FnMut(&crate::ide::IdeServer)) {
+        let guard = self.sessions.lock().unwrap();
+        for session in guard.values() {
+            if let Some(ide) = &session.ide
+                && same_dir(ide.cwd(), dir)
+            {
+                f(ide);
+            }
+        }
+    }
+
+    /// Every live session's IDE pairing state, for the frontend's initial
+    /// snapshot (`ide_status` command).
+    pub(crate) fn ide_statuses(&self) -> Vec<crate::ide::IdeStatus> {
+        let guard = self.sessions.lock().unwrap();
+        guard.values().filter_map(|s| s.ide.as_ref().map(|ide| ide.status())).collect()
+    }
+
     /// Remove `term_id` only if it still holds `generation`, returning the
     /// session for reaping. A newer generation means this id was replaced —
     /// leave the replacement alone.
@@ -210,6 +237,20 @@ fn term_start_blocking(
     let shell = default_shell(std::env::var(SHELL_ENV_VAR).ok());
     let shell_kind = shell_kind_from_path(&shell);
     let dir = start_dir(cwd);
+
+    // Claude Code IDE pairing: a per-terminal WebSocket MCP server + lockfile
+    // (see ide.rs / docs/CLAUDE-CODE-IDE.md). Best-effort — a bind failure
+    // costs the pairing, never the shell.
+    let ide = dir.as_ref().and_then(|d| {
+        match crate::ide::IdeServer::start(app.clone(), term_id.clone(), d.clone()) {
+            Ok(server) => Some(server),
+            Err(error) => {
+                eprintln!("warning: IDE server for terminal {term_id} unavailable: {error}");
+                None
+            }
+        }
+    });
+
     let mut cmd = CommandBuilder::new(shell);
     // Scrub the app instance's own env out of the shell's inherited environment
     // (dev-server port + session/instance stamps, Tauri build config, the npm
@@ -233,6 +274,14 @@ fn term_start_blocking(
     // only reports agents whose stamp matches its own.
     cmd.env(tt_agentboard::procenv::TT_SESSION_ENV, &term_id);
     cmd.env(tt_agentboard::procenv::TT_INSTANCE_ENV, tt_agentboard::procenv::instance_id());
+    // Pair a `claude` started in this pane with this pane's IDE server. The
+    // scrub above already dropped any *inherited* CLAUDE_CODE_SSE_PORT (that
+    // one stamps nested-session identity, issue #39); this is our own. An env
+    // port match short-circuits Claude Code's lockfile pid/cwd checks, so the
+    // pairing is deterministic even with several slots' panes open at once.
+    if let Some(ide) = &ide {
+        cmd.env("CLAUDE_CODE_SSE_PORT", ide.port().to_string());
+    }
     if let Some(dir) = &dir {
         cmd.cwd(dir);
     }
@@ -283,7 +332,15 @@ fn term_start_blocking(
 
     state.sessions.lock().unwrap().insert(
         term_id.clone(),
-        Session { master: pty.master, input: input_tx, vt: vt_tx, child, generation, shell_kind },
+        Session {
+            master: pty.master,
+            input: input_tx,
+            vt: vt_tx,
+            child,
+            generation,
+            shell_kind,
+            ide,
+        },
     );
 
     // Liveness changed (a PTY appeared) — refresh the agentboard snapshot.
@@ -627,6 +684,16 @@ fn resolve_clicked_path(path: &str, cwd: Option<&str>) -> std::path::PathBuf {
     match cwd.filter(|c| !c.trim().is_empty()) {
         Some(dir) => Path::new(dir).join(p),
         None => p.to_path_buf(),
+    }
+}
+
+/// Whether two folder paths name the same directory. Canonicalizes both when
+/// possible so symlinked checkouts and trailing-slash variants still match the
+/// diff pane's routing key.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
     }
 }
 

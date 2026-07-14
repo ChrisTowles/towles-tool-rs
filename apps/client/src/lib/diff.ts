@@ -6,7 +6,16 @@
 
 export type DiffLineKind = "add" | "del" | "hunk" | "meta" | "ctx";
 
-export type DiffLine = { kind: DiffLineKind; text: string };
+export type DiffLine = {
+  kind: DiffLineKind;
+  text: string;
+  /** 1-based line number in the pre-change file (del + ctx lines). */
+  oldLine?: number;
+  /** 1-based line number in the post-change file (add + ctx lines). The IDE
+   * selection bridge keys highlights on this — it's the line Claude Code can
+   * find in the working tree. */
+  newLine?: number;
+};
 
 export type DiffFileStatus = "modified" | "added" | "deleted" | "renamed";
 
@@ -41,10 +50,16 @@ function headerPaths(line: string): { oldPath: string; newPath: string } {
 
 /** Parse a full unified diff into per-file sections. Tolerant of anything it
  * doesn't recognize (unrecognized preamble lines become `meta`). */
+/** `@@ -a[,b] +c[,d] @@` → the two range starts. */
+const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+
 export function parseDiff(text: string): DiffFile[] {
   const files: DiffFile[] = [];
   let cur: DiffFile | null = null;
   let inBody = false;
+  // Running 1-based line counters within the current hunk.
+  let oldNo = 0;
+  let newNo = 0;
 
   for (const line of text.split("\n")) {
     if (line.startsWith("diff --git ")) {
@@ -75,6 +90,9 @@ export function parseDiff(text: string): DiffFile[] {
       }
       if (line.startsWith("@@")) {
         inBody = true;
+        const starts = HUNK_HEADER.exec(line);
+        oldNo = starts ? Number(starts[1]) : 0;
+        newNo = starts ? Number(starts[2]) : 0;
         cur.lines.push({ kind: "hunk", text: line });
       } else {
         cur.lines.push({ kind: "meta", text: line });
@@ -83,15 +101,22 @@ export function parseDiff(text: string): DiffFile[] {
     }
 
     if (line.startsWith("@@")) {
+      const starts = HUNK_HEADER.exec(line);
+      oldNo = starts ? Number(starts[1]) : 0;
+      newNo = starts ? Number(starts[2]) : 0;
       cur.lines.push({ kind: "hunk", text: line });
     } else if (line.startsWith("+")) {
       cur.additions += 1;
-      cur.lines.push({ kind: "add", text: line });
+      cur.lines.push({ kind: "add", text: line, newLine: newNo++ });
     } else if (line.startsWith("-")) {
       cur.deletions += 1;
-      cur.lines.push({ kind: "del", text: line });
-    } else {
+      cur.lines.push({ kind: "del", text: line, oldLine: oldNo++ });
+    } else if (line.startsWith("\\")) {
+      // "\ No newline at end of file" — annotates the previous line, counts
+      // toward neither side.
       cur.lines.push({ kind: "ctx", text: line });
+    } else {
+      cur.lines.push({ kind: "ctx", text: line, oldLine: oldNo++, newLine: newNo++ });
     }
   }
 

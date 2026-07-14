@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Columns2, Folder, Rows2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, Columns2, Folder, Rows2, X } from "lucide-react";
 import {
   buildDiffTree,
   pairDiffLines,
@@ -15,7 +15,30 @@ import { cn } from "@/lib/utils";
  * right-anchored ± counts) next to the selected file's patch. Colors are
  * fixed for light + dark via explicit dark: variants — never raw green/red
  * text on its own tinted background, which went unreadable in light mode.
+ *
+ * When an [`DiffIdeBridge`] is provided (the Agentboard diff pane), the
+ * unified view grows a clickable line-number gutter: click / shift-click /
+ * drag selects a new-file line range, which rides to the folder's Claude Code
+ * session as its selection context (see docs/CLAUDE-CODE-IDE.md). Violet is
+ * the app's agent/active accent — the highlight is a claim that an agent is
+ * looking at these lines.
  */
+
+/** How the viewer talks to the per-folder IDE servers. Lines are 1-based
+ * inclusive positions in the post-change file. */
+export type DiffIdeBridge = {
+  /** A Claude Code CLI is connected in this folder right now. */
+  connected: boolean;
+  /** Debounced ambient highlight (mirrors VS Code's selection_changed). */
+  select: (filePath: string, startLine: number, endLine: number) => void;
+  /** The highlight was dismissed. */
+  clear: (filePath: string) => void;
+  /** Explicit @-mention ("send to Claude"). */
+  send: (filePath: string, startLine: number, endLine: number) => void;
+};
+
+/** A selected new-file line range, 1-based inclusive, start <= end. */
+type LineSel = { start: number; end: number };
 
 /** Leading change-type letter, fixed slot so paths align (plannotator's
  * FileRowBits language: A/D/R carry weight + color, M stays whisper-quiet). */
@@ -141,14 +164,87 @@ const LINE_CLS: Record<DiffLine["kind"], string> = {
   ctx: "text-foreground/80",
 };
 
-function FilePatch({ file }: { file: DiffFile }) {
+/** Whether this line exists in the post-change file (what a highlight can
+ * anchor to — Claude reads the working tree, where deleted lines are gone). */
+function selectable(line: DiffLine): boolean {
+  return line.newLine != null;
+}
+
+function inSel(line: DiffLine, sel: LineSel | null): boolean {
+  return sel != null && line.newLine != null && line.newLine >= sel.start && line.newLine <= sel.end;
+}
+
+/** One gutter cell. Interactive (pointer + hover) only when the row is
+ * selectable and the viewer has an IDE bridge to feed. */
+function GutterNo({
+  n,
+  interactive,
+  onMouseDown,
+}: {
+  n: number | undefined;
+  interactive: boolean;
+  onMouseDown?: (e: React.MouseEvent) => void;
+}) {
+  return (
+    <span
+      onMouseDown={onMouseDown}
+      title={
+        interactive
+          ? "Click to select this line for Claude · shift-click or drag to extend"
+          : undefined
+      }
+      className={cn(
+        "w-9 shrink-0 pr-1.5 text-right tabular-nums select-none",
+        "text-muted-foreground/40",
+        interactive && "cursor-pointer hover:text-foreground",
+      )}
+    >
+      {n ?? " "}
+    </span>
+  );
+}
+
+function FilePatch({
+  file,
+  sel,
+  onBegin,
+  onDrag,
+}: {
+  file: DiffFile;
+  sel: LineSel | null;
+  /** Gutter mousedown on a selectable row (shift extends from the anchor). */
+  onBegin?: (line: number, extend: boolean) => void;
+  /** Mouse entered a selectable row while dragging. */
+  onDrag?: (line: number) => void;
+}) {
   return (
     <pre className="min-w-max p-2 font-mono text-xs leading-relaxed whitespace-pre">
-      {file.lines.map((line, i) => (
-        <div key={i} className={cn("px-2", LINE_CLS[line.kind])}>
-          {line.text || " "}
-        </div>
-      ))}
+      {file.lines.map((line, i) => {
+        const canSelect = onBegin != null && selectable(line);
+        const begin = canSelect
+          ? (e: React.MouseEvent) => {
+              e.preventDefault(); // no text-selection fight while dragging
+              onBegin(line.newLine!, e.shiftKey);
+            }
+          : undefined;
+        return (
+          <div
+            key={i}
+            onMouseEnter={
+              onDrag != null && selectable(line) ? () => onDrag(line.newLine!) : undefined
+            }
+            className={cn(
+              "flex",
+              LINE_CLS[line.kind],
+              inSel(line, sel) && "bg-violet-500/20",
+            )}
+          >
+            <GutterNo n={line.oldLine} interactive={canSelect} onMouseDown={begin} />
+            <GutterNo n={line.newLine} interactive={canSelect} onMouseDown={begin} />
+            <span className="px-2">{line.text || " "}</span>
+          </div>
+        );
+      })}
     </pre>
   );
 }
@@ -157,12 +253,13 @@ function FilePatch({ file }: { file: DiffFile }) {
  * unhighlighted gutter rather than matching the other side's color. Lines
  * wrap (rather than the unified view's horizontal scroll) so overflow can't
  * bleed past the 50% column into its sibling. */
-function SplitCell({ line }: { line: DiffLine | null }) {
+function SplitCell({ line, sel }: { line: DiffLine | null; sel: LineSel | null }) {
   return (
     <div
       className={cn(
         "min-w-0 flex-1 px-2 break-all whitespace-pre-wrap",
         line ? LINE_CLS[line.kind] : "",
+        line && inSel(line, sel) && "bg-violet-500/20",
       )}
     >
       {line ? line.text || " " : " "}
@@ -170,7 +267,9 @@ function SplitCell({ line }: { line: DiffLine | null }) {
   );
 }
 
-function SplitFilePatch({ file }: { file: DiffFile }) {
+/** Split view shows an active highlight but doesn't create one — range
+ * selection lives in the unified view's gutter. */
+function SplitFilePatch({ file, sel }: { file: DiffFile; sel: LineSel | null }) {
   const rows = useMemo(() => pairDiffLines(file.lines), [file]);
   return (
     <pre className="p-2 font-mono text-xs leading-relaxed">
@@ -178,15 +277,19 @@ function SplitFilePatch({ file }: { file: DiffFile }) {
         "full" in row ? (
           <div
             key={i}
-            className={cn("px-2 break-all whitespace-pre-wrap", LINE_CLS[row.full.kind])}
+            className={cn(
+              "px-2 break-all whitespace-pre-wrap",
+              LINE_CLS[row.full.kind],
+              inSel(row.full, sel) && "bg-violet-500/20",
+            )}
           >
             {row.full.text || " "}
           </div>
         ) : (
           <div key={i} className="flex items-stretch">
-            <SplitCell line={row.left} />
+            <SplitCell line={row.left} sel={sel} />
             <div className="w-px shrink-0 self-stretch bg-border/70" />
-            <SplitCell line={row.right} />
+            <SplitCell line={row.right} sel={sel} />
           </div>
         ),
       )}
@@ -194,19 +297,83 @@ function SplitFilePatch({ file }: { file: DiffFile }) {
   );
 }
 
+/** Floating summary of the active highlight: the range, whether a Claude
+ * session is live for it, and the explicit "send" affordance. */
+function SelectionChip({
+  sel,
+  connected,
+  onSend,
+  onClear,
+}: {
+  sel: LineSel;
+  connected: boolean;
+  onSend: () => void;
+  onClear: () => void;
+}) {
+  const range = sel.start === sel.end ? `L${sel.start}` : `L${sel.start}–${sel.end}`;
+  return (
+    <div className="absolute right-3 bottom-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-md border border-border bg-card px-2 py-1 whitespace-nowrap shadow-md">
+      <span className="font-mono text-xs text-violet-500">✦</span>
+      <span className="font-mono text-[11px] text-foreground tabular-nums">{range}</span>
+      <span className="truncate text-[11px] text-muted-foreground">
+        {connected ? "live to claude" : "no claude connected"}
+      </span>
+      <button
+        type="button"
+        title={
+          connected
+            ? "Insert an @file#range reference into the Claude session's prompt"
+            : "Run `claude` in this folder's terminal to connect it"
+        }
+        disabled={!connected}
+        onClick={onSend}
+        className={cn(
+          "shrink-0 rounded-sm px-1.5 py-0.5 text-[11px] font-medium",
+          connected
+            ? "text-violet-500 hover:bg-accent"
+            : "cursor-not-allowed text-muted-foreground/50",
+        )}
+      >
+        @ send
+      </button>
+      <button
+        type="button"
+        title="Clear the highlight (Esc)"
+        onClick={onClear}
+        className="text-muted-foreground hover:text-foreground"
+      >
+        <X className="size-3" />
+      </button>
+    </div>
+  );
+}
+
 type ViewMode = "unified" | "split";
 
-export function DiffViewer({ text }: { text: string }) {
+export function DiffViewer({ text, ide }: { text: string; ide?: DiffIdeBridge }) {
   const files = useMemo(() => parseDiff(text), [text]);
   const tree = useMemo(() => buildDiffTree(files), [files]);
   const [selected, setSelected] = useState(0);
   const [viewMode, setViewMode] = useState<ViewMode>("unified");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  // Line highlight (new-file coordinates) + drag bookkeeping. Refs, not
+  // state: anchor/drag change on every mousemove and never affect rendering
+  // beyond the derived `sel`.
+  const [sel, setSel] = useState<LineSel | null>(null);
+  const anchorRef = useRef<number | null>(null);
+  const draggingRef = useRef(false);
+  const lastPushedPath = useRef<string | null>(null);
   // A new diff (dialog re-opened for another folder) resets selection + tree state.
   useEffect(() => {
     setSelected(0);
     setCollapsed(new Set());
   }, [text]);
+  // Switching file or refreshing the diff drops the highlight (its line
+  // numbers no longer mean anything).
+  useEffect(() => {
+    setSel(null);
+    anchorRef.current = null;
+  }, [text, selected]);
   const toggleFolder = (path: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -215,6 +382,56 @@ export function DiffViewer({ text }: { text: string }) {
       return next;
     });
   const file = files[Math.min(selected, files.length - 1)];
+
+  // Debounced push of the highlight to the folder's Claude session (VS Code
+  // debounces selection_changed 300ms; match it). Clearing pushes an empty
+  // selection so stale context never rides the next prompt.
+  useEffect(() => {
+    if (!ide) return;
+    if (sel && file) {
+      const timer = setTimeout(() => {
+        ide.select(file.path, sel.start, sel.end);
+        lastPushedPath.current = file.path;
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+    if (lastPushedPath.current) {
+      ide.clear(lastPushedPath.current);
+      lastPushedPath.current = null;
+    }
+  }, [ide, sel, file]);
+
+  // Drag ends anywhere in the window; Esc clears the highlight.
+  useEffect(() => {
+    const onUp = () => {
+      draggingRef.current = false;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSel(null);
+    };
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
+  const beginSelect = (line: number, extend: boolean) => {
+    if (extend && anchorRef.current != null) {
+      const anchor = anchorRef.current;
+      setSel({ start: Math.min(anchor, line), end: Math.max(anchor, line) });
+      return;
+    }
+    anchorRef.current = line;
+    draggingRef.current = true;
+    setSel({ start: line, end: line });
+  };
+  const dragSelect = (line: number) => {
+    if (!draggingRef.current || anchorRef.current == null) return;
+    const anchor = anchorRef.current;
+    setSel({ start: Math.min(anchor, line), end: Math.max(anchor, line) });
+  };
 
   if (files.length === 0) {
     return <p className="p-4 text-sm text-muted-foreground">No changes.</p>;
@@ -283,8 +500,36 @@ export function DiffViewer({ text }: { text: string }) {
           </span>
           <DiffCounts additions={file.additions} deletions={file.deletions} />
         </div>
-        <div className="min-h-0 flex-1 overflow-auto">
-          {viewMode === "split" ? <SplitFilePatch file={file} /> : <FilePatch file={file} />}
+        <div className="relative min-h-0 flex-1">
+          <div className="h-full overflow-auto">
+            {viewMode === "split" ? (
+              <SplitFilePatch file={file} sel={sel} />
+            ) : (
+              <FilePatch
+                file={file}
+                sel={sel}
+                onBegin={ide ? beginSelect : undefined}
+                onDrag={ide ? dragSelect : undefined}
+              />
+            )}
+          </div>
+          {ide && sel && (
+            <SelectionChip
+              sel={sel}
+              connected={ide.connected}
+              onSend={() => ide.send(file.path, sel.start, sel.end)}
+              onClear={() => setSel(null)}
+            />
+          )}
+          {/* Discoverability: with a live claude and no highlight yet, say how. */}
+          {ide?.connected && !sel && viewMode === "unified" && (
+            <div className="pointer-events-none absolute right-3 bottom-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-1.5 rounded-md border border-violet-500/50 bg-violet-500/10 px-2 py-1 whitespace-nowrap">
+              <span className="font-mono text-xs text-violet-500">✦</span>
+              <span className="truncate text-[11px] text-violet-500">
+                claude is connected — click a line number to share lines
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -76,6 +76,60 @@ describe("parseDiff", () => {
   it("returns an empty list for an empty diff", () => {
     expect(parseDiff("")).toEqual([]);
   });
+
+  it("numbers body lines against both file versions from the hunk header", () => {
+    const [modified] = parseDiff(SAMPLE);
+    // @@ -1,3 +1,4 @@ → ctx(1/1), add(new 2), del(old 2), ctx(3/3)
+    const body = modified.lines.filter((l) => l.kind !== "meta" && l.kind !== "hunk");
+    expect(body.map((l) => [l.kind, l.oldLine, l.newLine])).toEqual([
+      ["ctx", 1, 1],
+      ["add", undefined, 2],
+      ["del", 2, undefined],
+      ["ctx", 3, 3],
+    ]);
+  });
+
+  it("restarts numbering at each hunk header", () => {
+    const twoHunks = [
+      "diff --git a/f.ts b/f.ts",
+      "index 1..2 100644",
+      "--- a/f.ts",
+      "+++ b/f.ts",
+      "@@ -1,1 +1,1 @@",
+      "-a",
+      "+b",
+      "@@ -10,2 +10,3 @@",
+      " ten",
+      "+ten-and-a-half",
+      " eleven",
+    ].join("\n");
+    const [file] = parseDiff(twoHunks);
+    const adds = file.lines.filter((l) => l.kind === "add");
+    expect(adds.map((l) => l.newLine)).toEqual([1, 11]);
+    const ctx = file.lines.filter((l) => l.kind === "ctx");
+    expect(ctx.map((l) => [l.oldLine, l.newLine])).toEqual([
+      [10, 10],
+      [11, 12],
+    ]);
+  });
+
+  it("leaves the no-newline marker unnumbered", () => {
+    const marker = [
+      "diff --git a/f.ts b/f.ts",
+      "index 1..2 100644",
+      "--- a/f.ts",
+      "+++ b/f.ts",
+      "@@ -1,1 +1,1 @@",
+      "-a",
+      "+b",
+      "\\ No newline at end of file",
+    ].join("\n");
+    const [file] = parseDiff(marker);
+    const markerLine = file.lines.find((l) => l.text.startsWith("\\"));
+    expect(markerLine?.kind).toBe("ctx");
+    expect(markerLine?.oldLine).toBeUndefined();
+    expect(markerLine?.newLine).toBeUndefined();
+  });
 });
 
 function fakeFile(path: string): DiffFile {

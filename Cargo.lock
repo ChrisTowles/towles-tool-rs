@@ -5808,11 +5808,13 @@ dependencies = [
  "tt-exec",
  "tt-git",
  "tt-graph",
+ "tt-ide",
  "tt-journal",
  "tt-slots",
  "tt-store",
  "tt-update",
  "tt-vt",
+ "uuid",
 ]
 
 [[package]]
@@ -5942,6 +5944,15 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tt-claude-code",
+]
+
+[[package]]
+name = "tt-ide"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

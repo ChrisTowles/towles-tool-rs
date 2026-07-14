@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { GitCompare, Pencil, RefreshCw } from "lucide-react";
-import { DiffViewer } from "@/components/diff-view";
+import { DiffViewer, type DiffIdeBridge } from "@/components/diff-view";
+import { FilesPane } from "@/components/files-pane";
 import { IconBtn } from "@/components/agentboard-bits";
 import { abInvoke, type FolderData } from "@/lib/agentboard";
+import { ideAtMention, ideClearSelection, ideSetSelection, useIdeConnected } from "@/lib/ide";
 import { cn } from "@/lib/utils";
 
 /** Which baseline the pane diffs against (mirrors `DiffMode` in tt-agentboard). */
@@ -39,9 +41,30 @@ export function DiffPane({
   const slotBaseBranch = folder?.slotBaseBranch?.trim() || null;
   const effectiveBase = baseBranch ?? slotBaseBranch;
   const [mode, setMode] = useState<DiffMode>("main");
+  // Which lens: the changed-files diff, or the full checkout tree ("tell
+  // claude about any file").
+  const [tab, setTab] = useState<"changes" | "files">("changes");
   const [text, setText] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [editingBase, setEditingBase] = useState(false);
+
+  // Claude Code IDE bridge: highlights in this pane become the selection
+  // context of the `claude` running in this folder's terminal(s).
+  const ideConnected = useIdeConnected(dir);
+  const ide = useMemo<DiffIdeBridge | undefined>(
+    () =>
+      dir
+        ? {
+            connected: ideConnected,
+            select: (filePath, startLine, endLine) =>
+              ideSetSelection(dir, filePath, startLine, endLine),
+            clear: (filePath) => ideClearSelection(dir, filePath),
+            send: (filePath, startLine, endLine) =>
+              void ideAtMention(dir, filePath, startLine, endLine),
+          }
+        : undefined,
+    [dir, ideConnected],
+  );
 
   const mainMode = {
     key: "main" as const,
@@ -94,8 +117,39 @@ export function DiffPane({
       <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
         <GitCompare className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate font-mono text-xs text-foreground">{folder.name}</span>
-        {editingBase ? (
-          <input
+        {ideConnected && (
+          <span
+            title="A Claude Code session in this folder is connected — highlighted lines become its selection context"
+            className="flex shrink-0 items-center gap-1 rounded-md border border-violet-500/50 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500"
+          >
+            ✦ claude
+          </span>
+        )}
+        <span className="flex shrink-0 items-center rounded-md border border-border/70 p-0.5">
+          {(
+            [
+              { key: "changes" as const, hint: "What changed vs the baseline" },
+              { key: "files" as const, hint: "Every file in the checkout — @ any of them to Claude" },
+            ]
+          ).map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              title={t.hint}
+              aria-pressed={tab === t.key}
+              onClick={() => setTab(t.key)}
+              className={cn(
+                "rounded-[5px] px-1.5 py-px font-mono text-[10.5px] transition-colors",
+                tab === t.key ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t.key}
+            </button>
+          ))}
+        </span>
+        {tab === "changes" &&
+          (editingBase ? (
+            <input
             autoFocus
             defaultValue={baseBranch ?? ""}
             placeholder={
@@ -109,29 +163,29 @@ export function DiffPane({
               if (e.key === "Escape") setEditingBase(false);
             }}
             className="w-48 rounded-sm border border-input bg-background px-1.5 py-0.5 font-mono text-[10.5px] outline-none"
-          />
-        ) : (
-          <span className="flex shrink-0 items-center rounded-md border border-border/70 p-0.5">
-            {modes.map((m) => (
-              <button
-                key={m.key}
-                type="button"
-                title={m.hint}
-                aria-pressed={mode === m.key}
-                onClick={() => setMode(m.key)}
-                className={cn(
-                  "rounded-[5px] px-1.5 py-px font-mono text-[10.5px] transition-colors",
-                  mode === m.key
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {m.label}
-              </button>
-            ))}
-          </span>
-        )}
-        {!editingBase && mode === "main" && (
+            />
+          ) : (
+            <span className="flex shrink-0 items-center rounded-md border border-border/70 p-0.5">
+              {modes.map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  title={m.hint}
+                  aria-pressed={mode === m.key}
+                  onClick={() => setMode(m.key)}
+                  className={cn(
+                    "rounded-[5px] px-1.5 py-px font-mono text-[10.5px] transition-colors",
+                    mode === m.key
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </span>
+          ))}
+        {tab === "changes" && !editingBase && mode === "main" && (
           <IconBtn
             title={
               slotBaseBranch
@@ -145,19 +199,23 @@ export function DiffPane({
           </IconBtn>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          <IconBtn title="refresh diff" onClick={() => void fetchDiff()} className="hover:text-sky-500">
-            <RefreshCw className={refreshing ? "size-3 animate-spin" : "size-3"} />
-          </IconBtn>
+          {tab === "changes" && (
+            <IconBtn title="refresh diff" onClick={() => void fetchDiff()} className="hover:text-sky-500">
+              <RefreshCw className={refreshing ? "size-3 animate-spin" : "size-3"} />
+            </IconBtn>
+          )}
           <IconBtn title="remove pane (diff stays a click away on the folder)" onClick={onClose} className="hover:text-red-500">
             ⊟
           </IconBtn>
         </span>
       </div>
       <div className="flex min-h-0 flex-1 flex-col p-2">
-        {text == null ? (
+        {tab === "files" ? (
+          <FilesPane dir={dir ?? ""} connected={ideConnected} />
+        ) : text == null ? (
           <p className="p-2 text-sm text-muted-foreground">Loading…</p>
         ) : (
-          <DiffViewer text={text} />
+          <DiffViewer text={text} ide={ide} />
         )}
       </div>
     </div>
