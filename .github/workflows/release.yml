@@ -37,12 +37,15 @@ jobs:
           # .deb + .AppImage. rpm bundling needs extra host tooling this
           # runner doesn't have, so it's left out rather than made flaky.
           - platform: ubuntu-latest
+            name: linux
             args: "--bundles deb,appimage"
           # Apple Silicon.
           - platform: macos-latest
+            name: macos-arm
             args: "--target aarch64-apple-darwin"
           # Intel.
           - platform: macos-13
+            name: macos-intel
             args: "--target x86_64-apple-darwin"
     runs-on: ${{ matrix.platform }}
     steps:
@@ -56,6 +59,29 @@ jobs:
       - name: Add macOS Rust targets
         if: startsWith(matrix.platform, 'macos')
         run: rustup target add ${{ matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
+
+      # Xcode 26.4's SDK changed how arm64e-macos is represented in .tbd stub
+      # files, which zig 0.15.x's linker can't match against aarch64-macos
+      # targets — it fails to link zig's own build-runner tool against
+      # libSystem with dozens of "undefined symbol" errors (ziglang/zig#31658
+      # on Codeberg; fixed upstream by zig PR #31673, not yet in a 0.15.x
+      # release). Best-effort: pin to the newest older Xcode still on the
+      # runner image. If none is found this is a no-op and the build will
+      # fail with the same linker errors — check whether a newer zig 0.15.x
+      # patch has the fix before reaching for this again.
+      - name: Work around zig/Xcode 26.4 linker bug (ziglang/zig#31658)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          for dir in $(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -rV); do
+            version=$(basename "$dir" .app | sed 's/Xcode_//')
+            if [ "$(printf '%s\n26.4\n' "$version" | sort -V | head -1)" != "26.4" ]; then
+              sudo xcode-select -s "$dir/Contents/Developer"
+              echo "Selected $dir for zig build (avoiding the 26.4 SDK bug)"
+              xcodebuild -version
+              exit 0
+            fi
+          done
+          echo "::warning::No pre-26.4 Xcode found on this runner; zig build may hit ziglang/zig#31658"
 
       # Tauri v2 Linux prerequisites (see tauri.app/start/prerequisites) — same
       # package set as the rust-app job in ci.yml.
@@ -99,7 +125,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.platform }}-${{ matrix.args }}
+          # The cache-key charset disallows commas, so this uses matrix.name
+          # rather than matrix.args (which contains "deb,appimage").
+          key: release-${{ matrix.name }}
 
       - uses: actions/setup-node@v4
         with:
@@ -116,8 +144,12 @@ jobs:
           GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-src
         with:
           # tauri.conf.json lives with the Tauri crate, not at repo root (this
-          # is a Yaak-style monorepo — see CLAUDE.md).
-          configPath: crates-tauri/tt-app/tauri.conf.json
+          # is a Yaak-style monorepo — see CLAUDE.md). tauri-action has no
+          # config-path input; it shells out to the same `tauri` CLI the root
+          # `npm run build` uses, which auto-discovers tauri.conf.json by
+          # scanning the Cargo workspace members (verified: the local
+          # `npm run run` / `npm run build` scripts already rely on this from
+          # repo root with no explicit path).
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseName: "Towles Tool ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           # Draft so a release is reviewed (notes, artifact sanity) before it
