@@ -44,23 +44,47 @@ export async function invokeCmd<T>(
  *
  * An optional Zod `schema` validates the response (#38); a mismatch throws,
  * matching this function's existing "let errors propagate" contract.
+ *
+ * An optional `timeoutMs` rejects the returned promise once it elapses, so a
+ * command whose backend work never resolves (a stalled subprocess, a stuck
+ * IPC round trip) can't leave a caller's "in progress" UI state stuck
+ * forever. This only abandons *this* promise — the backend command keeps
+ * running to completion regardless, since Tauri commands aren't cancelable.
  */
 export async function invokeOrThrow<T>(
   cmd: string,
   args: Record<string, unknown> = {},
   schema?: ZodType<T>,
+  timeoutMs?: number,
 ): Promise<T> {
   if (!isTauri()) {
     throw new Error("not running under Tauri");
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  const result = await invoke<T>(cmd, args);
+  const invocation = invoke<T>(cmd, args);
+  const result = await (timeoutMs ? withTimeout(invocation, timeoutMs, cmd) : invocation);
   if (!schema) return result;
   const parsed = schema.safeParse(result);
   if (!parsed.success) {
     throw new Error(`invokeOrThrow(${cmd}): response failed schema validation: ${parsed.error.message}`);
   }
   return parsed.data;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
 }
 
 /**

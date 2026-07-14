@@ -137,6 +137,13 @@ export function NewSlotDialog({
     null,
   );
 
+  // The in-flight `create()` call's dismissal flag, if any — a fresh object
+  // per call (not a single shared ref) so a dismiss during one creation can't
+  // bleed into a *different* creation started afterward (dismiss repo A
+  // mid-create, immediately start repo B: A's eventual result must still
+  // resolve against A's own token, not get silently reset by B starting).
+  const activeCreate = useRef<{ dismissed: boolean } | null>(null);
+
   const sortedBranches = [...branches].sort((a, b) => a.localeCompare(b));
 
   const branch = branchEdit ?? goalToBranch(goal);
@@ -261,6 +268,17 @@ export function NewSlotDialog({
     }
   }
 
+  // Tauri commands can't be cancelled once invoked — dismissing the dialog
+  // (see the Cancel button and `onOpenChange` below, both now always
+  // enabled) only stops *waiting* on this promise, it doesn't stop
+  // `slot_create` running server-side. So a still-running creation keeps
+  // going in the background after the user dismisses the dialog, and its
+  // eventual result (success or failure) is surfaced via toast instead of
+  // the now-hidden inline error banner — otherwise a user who dismisses a
+  // slow-but-healthy creation would silently lose the "Claude started" step,
+  // matching the reported "worktree created, Claude never starts" symptom.
+  // `invokeOrThrow`'s `timeoutMs` is a last-resort backstop for a genuine
+  // IPC-level hang so this can't wait forever even if the user never dismisses.
   async function create() {
     if (!repo || busy) return;
     if (!branch) {
@@ -274,25 +292,41 @@ export function NewSlotDialog({
     dictation.stop();
     setBusy(true);
     setError(null);
+    const token = { dismissed: false };
+    activeCreate.current = token;
     try {
       const created = await invokeOrThrow<SlotCreated>(
         "slot_create",
         { root: repo.dir, branch, base },
         SlotCreatedSchema,
+        12 * 60_000,
       );
       for (const warning of created.warnings) {
         toast(warning, warning.startsWith("setup `") ? { action: retryAction(created.dir) } : undefined);
       }
-      close();
+      if (!token.dismissed) close();
       await onCreated(created, goal.trim(), { model, effort });
     } catch (e) {
-      setError(String(e));
-      setBusy(false);
+      if (token.dismissed) {
+        toast.error(`new slot failed: ${String(e)}`);
+      } else {
+        setError(String(e));
+        setBusy(false);
+      }
     }
   }
 
+  function dismiss() {
+    dictation.stop();
+    if (busy && activeCreate.current) {
+      activeCreate.current.dismissed = true;
+      toast("still creating the slot — it'll open once ready, or report an error here");
+    }
+    onClose();
+  }
+
   return (
-    <Dialog open={repo != null} onOpenChange={(open) => !open && !busy && close()}>
+    <Dialog open={repo != null} onOpenChange={(open) => !open && dismiss()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>⬢ New slot{repo ? ` — ${repo.name}` : ""}</DialogTitle>
@@ -465,8 +499,8 @@ export function NewSlotDialog({
           </div>
         )}
         <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" disabled={busy} onClick={close}>
-            Cancel
+          <Button variant="ghost" size="sm" onClick={dismiss}>
+            {busy ? "Close" : "Cancel"}
           </Button>
           <Button size="sm" disabled={busy || !branch} onClick={() => void create()}>
             {busy ? "Creating… (setup can take a minute)" : "Create slot"}
