@@ -11,6 +11,7 @@ members = [
   "crates/tt-exec",
   "crates/tt-git",
   "crates/tt-graph",
+  "crates/tt-ide",
   "crates/tt-journal",
   "crates/tt-mcp",
   "crates/tt-slots",
@@ -66,6 +67,7 @@ tt-doctor = { path = "crates/tt-doctor" }
 tt-exec = { path = "crates/tt-exec" }
 tt-git = { path = "crates/tt-git" }
 tt-graph = { path = "crates/tt-graph" }
+tt-ide = { path = "crates/tt-ide" }
 tt-journal = { path = "crates/tt-journal" }
 tt-mcp = { path = "crates/tt-mcp" }
 tt-slots = { path = "crates/tt-slots" }
