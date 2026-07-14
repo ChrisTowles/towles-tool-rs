@@ -723,6 +723,11 @@ function FolderHeader({
             <Plus className="size-3.5" />
           </IconBtn>
         )}
+        {!missing && onNewSlot && (
+          <IconBtn title="New slot — goal, branch, base" onClick={onNewSlot} className="hover:text-violet-500">
+            <FolderPlus className="size-3.5" />
+          </IconBtn>
+        )}
         {onRemoveRepo && (
           <RepoMenu
             path={folder.dir}
