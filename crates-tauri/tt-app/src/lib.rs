@@ -9,6 +9,7 @@ mod claude_sessions;
 mod dictation;
 mod doctor;
 mod gh_actions;
+mod ide;
 mod instance_lock;
 mod journal;
 mod resources;
@@ -319,6 +320,10 @@ pub fn run() {
             scheduler::spawn(app.handle().clone(), scheduler_reload);
             slack_socket::spawn(app.handle().clone(), slack_socket_reload);
 
+            // Clear IDE lockfiles left by towles-tool processes that died
+            // without cleanup, so Claude Code never dials a dead server.
+            ide::sweep_stale_lockfiles();
+
             // Kick an initial scan so the first snapshot has data.
             scan.notify_one();
             Ok(())
@@ -420,6 +425,11 @@ pub fn run() {
             terminal::term_focus,
             terminal::term_open_path,
             terminal::term_kill,
+            ide::ide_set_selection,
+            ide::ide_clear_selection,
+            ide::ide_at_mention,
+            ide::ide_status,
+            ide::ide_list_files,
             dictation::dictation_status,
             dictation::dictation_start,
             dictation::dictation_stop,

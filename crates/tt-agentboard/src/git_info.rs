@@ -397,6 +397,33 @@ fn parse_numstat(diff_out: &str) -> (i64, i64, HashSet<String>) {
     (lines_added, lines_removed, changed_files)
 }
 
+/// Every file in the checkout worth telling a Claude session about: tracked
+/// plus untracked-but-not-ignored, repo-relative, sorted, deduped, capped at
+/// `cap` (a runaway vendored tree must not ship megabytes to the webview).
+/// Empty when `dir` isn't a git repo — same degradation as the rest of this
+/// module.
+pub fn list_files(dir: &str, cap: usize) -> Vec<String> {
+    let tracked = git_out(dir, &["ls-files"]);
+    let untracked = git_out(dir, &["ls-files", "--others", "--exclude-standard"]);
+    merge_file_lists(&tracked, &untracked, cap)
+}
+
+/// Pure merge of the two `ls-files` outputs (unit-tested; the subprocess layer
+/// above is not).
+fn merge_file_lists(tracked: &str, untracked: &str, cap: usize) -> Vec<String> {
+    let mut files: Vec<String> = tracked
+        .lines()
+        .chain(untracked.lines())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    files.sort();
+    files.dedup();
+    files.truncate(cap);
+    files
+}
+
 /// Parse `git rev-list --left-right --count <origin>...HEAD` ("behind\tahead")
 /// into `(ahead, behind)` counts vs origin/main.
 fn parse_ahead_behind(ahead_behind: &str) -> (i64, i64) {
@@ -412,6 +439,18 @@ fn parse_ahead_behind(ahead_behind: &str) -> (i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_file_lists_sorts_dedupes_and_caps() {
+        let tracked = "src/b.rs\nsrc/a.rs\nREADME.md\n";
+        let untracked = "notes.txt\nsrc/a.rs\n\n  \n";
+        assert_eq!(
+            merge_file_lists(tracked, untracked, 10),
+            vec!["README.md", "notes.txt", "src/a.rs", "src/b.rs"],
+        );
+        assert_eq!(merge_file_lists(tracked, untracked, 2), vec!["README.md", "notes.txt"]);
+        assert!(merge_file_lists("", "", 10).is_empty());
+    }
 
     #[test]
     fn numstat_sums_lines_and_collects_files_skipping_binary() {
