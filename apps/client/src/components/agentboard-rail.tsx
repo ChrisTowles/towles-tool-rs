@@ -519,6 +519,15 @@ export function RepoGroup({
             {repo.needs > 0 && <NeedsBadge n={repo.needs} />}
           </span>
         </button>
+        {isSlotRepo(repo) && (
+          <IconBtn
+            title="New slot — goal, branch, base"
+            onClick={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir })}
+            className="hover:text-violet-500"
+          >
+            <FolderPlus className="size-3.5" />
+          </IconBtn>
+        )}
         <RepoMenu
           onRemove={() =>
             onRemoveRepo(
@@ -527,11 +536,6 @@ export function RepoGroup({
             )
           }
           dir={repo.folders[0].dir}
-          onNewSlot={
-            isSlotRepo(repo)
-              ? () => onNewSlot({ name: repo.name, dir: repo.folders[0].dir })
-              : undefined
-          }
         />
       </div>
       {!repoCollapsed &&
