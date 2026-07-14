@@ -212,6 +212,51 @@ fn new_with_base_records_the_actual_base_not_the_primary_branch() {
     assert!(marker_again.contains("base=develop"), "re-render marker: {marker_again}");
 }
 
+/// A `new` that fails after `git worktree add` (e.g. no env template) must
+/// roll the worktree back — leaving one behind blocks every retry with a
+/// bogus "already exists" and hides the failed attempt from `slot ls`.
+#[test]
+fn new_rolls_back_the_worktree_when_env_render_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let seed = tmp.path().join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    git(tmp.path(), &["init", "seed"]);
+    // no .env.example / slot-env.template at all — render_slot_env must fail
+    std::fs::write(seed.join("README.md"), "demo\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-m", "seed"]);
+    let root = tmp.path().join("demo-repos");
+    std::fs::create_dir_all(&root).unwrap();
+    git(tmp.path(), &["clone", "seed", "demo-repos/demo-primary"]);
+    let root_s = root.to_string_lossy().to_string();
+
+    tt().args(["slot", "new", "-b", "feat/thing", "--root", &root_s])
+        .assert()
+        .failure()
+        .stderr(contains("no template"));
+
+    assert!(!root.join("slots").join("thing").exists(), "the worktree must not be left behind");
+    let worktrees = Command::new("git")
+        .args([
+            "-C",
+            root.join("demo-primary").to_str().unwrap(),
+            "worktree",
+            "list",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&worktrees.stdout).contains("thing"),
+        "git must not still track the rolled-back worktree"
+    );
+
+    // fixing the missing template lets slot creation succeed now that the
+    // worktree (not just the branch, which git worktree remove never
+    // deletes) isn't left dangling from the failed attempt
+    std::fs::write(root.join("slot-env.template"), "NAME=${tt:slot-name}\n").unwrap();
+    tt().args(["slot", "new", "-b", "feat/other", "--root", &root_s]).assert().success();
+}
+
 #[test]
 fn rm_guards_dirty_and_orphan_commits() {
     let tmp = tempfile::tempdir().unwrap();

@@ -298,15 +298,6 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
   );
 }
 
-/** A repo follows the worktree-slot convention when any checkout is a
- * `<repo>-primary` dir or lives under a `slots/` dir — those repos get the
- * new-slot affordance. */
-function isSlotRepo(repo: RepoData): boolean {
-  return repo.folders.some(
-    (f) => /-primary$/.test(f.dir.split("/").pop() ?? "") || /\/slots\/[^/]+$/.test(f.dir),
-  );
-}
-
 export function RepoGroup({
   repo,
   now,
@@ -471,11 +462,7 @@ export function RepoGroup({
             onSelectFolder(folder.dir);
           }}
           onNewSession={() => onNewSession(folder.dir)}
-          onNewSlot={
-            isSlotRepo(repo)
-              ? () => onNewSlot({ name: repo.name, dir: folder.dir })
-              : undefined
-          }
+          onNewSlot={() => onNewSlot({ name: repo.name, dir: folder.dir })}
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
           onDeleteWorktree={
             folder.isWorktree ? () => onDeleteWorktree(folder.dir, repo.name) : undefined
@@ -519,15 +506,13 @@ export function RepoGroup({
             {repo.needs > 0 && <NeedsBadge n={repo.needs} />}
           </span>
         </button>
-        {isSlotRepo(repo) && (
-          <IconBtn
-            title="New slot — goal, branch, base"
-            onClick={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir })}
-            className="hover:text-violet-500"
-          >
-            <FolderPlus className="size-3.5" />
-          </IconBtn>
-        )}
+        <IconBtn
+          title="New slot — goal, branch, base"
+          onClick={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir })}
+          className="hover:text-violet-500"
+        >
+          <FolderPlus className="size-3.5" />
+        </IconBtn>
         <RepoMenu
           onRemove={() =>
             onRemoveRepo(
@@ -536,6 +521,7 @@ export function RepoGroup({
             )
           }
           dir={repo.folders[0].dir}
+          onNewSlot={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir })}
         />
       </div>
       {!repoCollapsed &&

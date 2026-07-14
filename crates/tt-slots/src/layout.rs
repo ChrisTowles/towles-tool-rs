@@ -1,8 +1,13 @@
-//! Slot naming and layout rules: `<root>/<repo>-primary/` + `<root>/slots/<name>/`.
+//! Slot naming and layout rules: `<root>/<repo>-primary/` + `<root>/slots/<name>/`,
+//! with a flat fallback for repos that don't use that nested convention:
+//! `<parent>/<repo>/` + a sibling `<parent>/<repo>-slots/<name>/`.
 //!
 //! The primary is a normal clone that always holds the default branch (it is
 //! where the user runs the app themselves); slots are branch-named, ephemeral
 //! worktrees created from the primary and removed when their branch merges.
+//! The flat fallback exists so any plain checkout (not laid out under a
+//! dedicated `<root>` holding just that one repo) can still use `tt slot` —
+//! its slots land next to it instead of requiring a restructure.
 
 /// The per-slot marker file, written at render time and ignored via the
 /// primary's `.git/info/exclude` (so no repo `.gitignore` change is needed).
@@ -16,9 +21,19 @@ pub const PRIMARY_SUFFIX: &str = "-primary";
 /// Directory under the root that holds the worktree slots.
 pub const SLOTS_DIR: &str = "slots";
 
+/// Directory-name suffix for the flat fallback's sibling slots dir:
+/// `<parent>/<repo>-slots/`, next to a plain `<parent>/<repo>/` checkout.
+pub const SLOTS_SUFFIX: &str = "-slots";
+
 /// Repo name from a primary directory name: `blog-primary` → `blog`.
 pub fn repo_from_primary(dir_name: &str) -> Option<&str> {
     let repo = dir_name.strip_suffix(PRIMARY_SUFFIX)?;
+    (!repo.is_empty()).then_some(repo)
+}
+
+/// Repo name from a flat-fallback slots directory name: `blog-slots` → `blog`.
+pub fn repo_from_slots_dir(dir_name: &str) -> Option<&str> {
+    let repo = dir_name.strip_suffix(SLOTS_SUFFIX)?;
     (!repo.is_empty()).then_some(repo)
 }
 
@@ -78,6 +93,13 @@ mod tests {
         assert_eq!(repo_from_primary("towles-tool-rs-primary"), Some("towles-tool-rs"));
         assert_eq!(repo_from_primary("blog"), None);
         assert_eq!(repo_from_primary("-primary"), None);
+    }
+
+    #[test]
+    fn repo_from_slots_dir_strips_suffix() {
+        assert_eq!(repo_from_slots_dir("scribed-slots"), Some("scribed"));
+        assert_eq!(repo_from_slots_dir("scribed"), None);
+        assert_eq!(repo_from_slots_dir("-slots"), None);
     }
 
     #[test]

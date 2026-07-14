@@ -61,7 +61,12 @@ out — it is where Chris runs the app himself) plus branch-named worktrees unde
 `slots/`, one per parallel line of work (a `.tt-slot` marker file sits at each
 slot's root). Slots are ephemeral: created from the primary for a branch,
 removed when the branch merges. Manage them with `tt slot` — never raw
-`git worktree` or new clones:
+`git worktree` or new clones.
+
+`tt slot` works on *any* repo, not just ones laid out this way: a plain
+checkout with no `<repo>-primary` convention (e.g. `~/code/p/scribed`) falls
+back to a sibling `<repo>-slots/` directory next to it (`~/code/p/scribed-slots/thing/`)
+— no restructuring needed, just run `tt slot new` from inside the repo.
 
 ```sh
 tt slot new -b feat/thing [--base <ref>]  # creates slots/thing on that branch
