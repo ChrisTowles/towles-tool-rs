@@ -18,13 +18,14 @@
 //! under a stable collector key: `claude:calendar`, `issues`, or `prs`.
 
 mod gh;
-mod issues;
+pub mod issues;
 mod prompts;
 mod prs;
 mod quiet_hours;
 mod slack;
 mod slack_socket;
 
+pub use issues::{fetch_importable_issues, fetch_repo_milestones};
 pub use quiet_hours::{should_run_at, should_run_calendar};
 pub use slack::{
     DmFile, DmMessage, SlackDmConfig, SlackFile, SlackUser, dm_channel_id, fetch_dm_history,
@@ -182,7 +183,45 @@ pub fn collect_issues(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> Coll
         None => store.replace_issues(all),
         Some(repos) => store.replace_issues_for_repos(repos, all),
     };
-    finish_sweep(store, "issues", outcome, write, |i| (i.repo.clone(), i.number), now_ms)
+    let summary =
+        finish_sweep(store, "issues", outcome, write, |i| (i.repo.clone(), i.number), now_ms);
+    if let Err(e) = reconcile_linked_task_statuses(store, now_ms) {
+        log::warn!("reconcile_linked_task_statuses failed: {e}");
+    }
+    summary
+}
+
+/// Sync Board todos linked to a GitHub issue (`repo` + `issue_number` set)
+/// against the cached issue state `collect_issues` just refreshed: a closed
+/// issue moves its todo to `done`, a reopened issue moves a `done` todo back
+/// to `backlog`. A todo whose status already matches is left untouched, so
+/// this is safe (and cheap) to call on every poll — it never fights a manual
+/// move that isn't a done/not-done crossing.
+///
+/// This is the read half of the Board↔GitHub sync; the write half (closing
+/// or reopening the GitHub issue when a linked todo's status crosses the done
+/// boundary on the Board) lives in the Tauri app's `store_set_task_status`
+/// command, since that's where the status change originates.
+pub fn reconcile_linked_task_statuses(store: &Store, now_ms: i64) -> tt_store::Result<usize> {
+    let mut changed = 0;
+    for task in store.linked_tasks()? {
+        let (Some(repo), Some(number)) = (task.repo.as_deref(), task.issue_number) else {
+            continue;
+        };
+        let Some(issue) = store.get_issue(repo, number)? else {
+            continue;
+        };
+        let target = match (issue.state.as_str(), task.status.as_str()) {
+            ("closed", status) if status != "done" => Some("done"),
+            ("open", "done") => Some("backlog"),
+            _ => None,
+        };
+        if let Some(status) = target {
+            store.set_task_status(task.id, status, now_ms)?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
 }
 
 /// Collect open + review-requested PRs across `repo_dirs` via `gh` and update
@@ -423,6 +462,12 @@ pub fn tracked_repo_dirs() -> Vec<PathBuf> {
     tt_agentboard::repos::load_repos(&path).into_iter().map(PathBuf::from).collect()
 }
 
+/// `owner/name` for the repo checked out at `dir`, via `gh repo view`. Used to
+/// label a tracked repo dir for the "Import from GitHub" repo picker.
+pub fn resolve_repo_name(dir: &std::path::Path) -> Result<String, String> {
+    gh::repo_name_with_owner(dir)
+}
+
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
@@ -650,6 +695,44 @@ mod tests {
         assert_eq!(summary.message.as_deref(), Some("no repos configured"));
         let runs = store.runs().unwrap();
         assert_eq!(runs[0].collector, "issues");
+    }
+
+    #[test]
+    fn reconcile_moves_linked_task_to_done_when_issue_closes() {
+        let store = Store::open_in_memory().unwrap();
+        store.replace_issues(&[issue("o/r", 1)]).unwrap();
+        let task = store.add_task("linked", None, None, None, 1).unwrap();
+        store.link_task_issue(task.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
+
+        // Matched state (open/not-done): no-op.
+        let changed = reconcile_linked_task_statuses(&store, 2).unwrap();
+        assert_eq!(changed, 0);
+        assert_eq!(store.get_task(task.id).unwrap().unwrap().status, "backlog");
+
+        // Issue closes on GitHub → linked todo follows to done.
+        let mut closed = issue("o/r", 1);
+        closed.state = "closed".to_string();
+        store.replace_issues(&[closed]).unwrap();
+        let changed = reconcile_linked_task_statuses(&store, 3).unwrap();
+        assert_eq!(changed, 1);
+        assert_eq!(store.get_task(task.id).unwrap().unwrap().status, "done");
+
+        // Reopened on GitHub → moves back to backlog.
+        store.replace_issues(&[issue("o/r", 1)]).unwrap();
+        let changed = reconcile_linked_task_statuses(&store, 4).unwrap();
+        assert_eq!(changed, 1);
+        assert_eq!(store.get_task(task.id).unwrap().unwrap().status, "backlog");
+    }
+
+    #[test]
+    fn reconcile_ignores_unlinked_tasks_and_manual_non_done_moves() {
+        let store = Store::open_in_memory().unwrap();
+        let plain = store.add_task("plain", None, None, None, 1).unwrap();
+        store.set_task_status(plain.id, "doing", 1).unwrap();
+
+        let changed = reconcile_linked_task_statuses(&store, 2).unwrap();
+        assert_eq!(changed, 0);
+        assert_eq!(store.get_task(plain.id).unwrap().unwrap().status, "doing");
     }
 
     fn cal_event(ext: &str, start_ts: i64) -> EventInput {

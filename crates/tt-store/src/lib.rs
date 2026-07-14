@@ -950,9 +950,32 @@ impl Store {
             .next())
     }
 
+    /// Todos linked to a GitHub issue (`repo` and `issue_number` both set), any
+    /// status. Used to reconcile local status against the cached `issues` state.
+    pub fn linked_tasks(&self) -> Result<Vec<TaskItem>> {
+        self.query_tasks(
+            &format!(
+                "SELECT {TASK_COLS} FROM tasks
+                 WHERE repo IS NOT NULL AND issue_number IS NOT NULL {TASK_ORDER}"
+            ),
+            [],
+        )
+    }
+
     /// All issue rows, newest update first.
     pub fn issues(&self) -> Result<Vec<IssueItem>> {
         self.query_issues(&format!("SELECT {ISSUE_COLS} FROM issues ORDER BY updated_ts DESC"), [])
+    }
+
+    /// A single cached issue row by `(repo, number)`, if the collector has seen it.
+    pub fn get_issue(&self, repo: &str, number: i64) -> Result<Option<IssueItem>> {
+        Ok(self
+            .query_issues(
+                &format!("SELECT {ISSUE_COLS} FROM issues WHERE repo = ?1 AND number = ?2"),
+                params![repo, number],
+            )?
+            .into_iter()
+            .next())
     }
 
     /// All PR status rows, newest update first.
@@ -1325,6 +1348,24 @@ mod tests {
         let issues = s.issues().unwrap();
         let repos: Vec<&str> = issues.iter().map(|i| i.repo.as_str()).collect();
         assert!(repos.contains(&"o/a") && repos.contains(&"o/b"));
+    }
+
+    #[test]
+    fn linked_tasks_and_get_issue() {
+        let s = Store::open_in_memory().unwrap();
+        s.replace_issues(&[issue("o/r", 1, 100)]).unwrap();
+        let unlinked = s.add_task("plain todo", None, None, None, 1).unwrap();
+        let linked = s.add_task("linked todo", None, None, None, 2).unwrap();
+        s.link_task_issue(linked.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
+
+        let linked_tasks = s.linked_tasks().unwrap();
+        assert_eq!(linked_tasks.len(), 1);
+        assert_eq!(linked_tasks[0].id, linked.id);
+        assert!(!linked_tasks.iter().any(|t| t.id == unlinked.id));
+
+        let found = s.get_issue("o/r", 1).unwrap().unwrap();
+        assert_eq!(found.number, 1);
+        assert!(s.get_issue("o/r", 999).unwrap().is_none());
     }
 
     #[test]
