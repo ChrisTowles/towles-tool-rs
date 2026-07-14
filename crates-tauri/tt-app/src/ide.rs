@@ -55,9 +55,9 @@ struct Shared {
     auth_token: String,
     /// Latest diff-pane selection; serves `getCurrentSelection`/`getLatestSelection`.
     selection: Mutex<Option<tt_ide::Selection>>,
-    /// Absolute path of the file open in the app's code viewer, if any —
-    /// what `getOpenEditors` reports as the active tab.
-    open_file: Mutex<Option<String>>,
+    /// The file open in the app's code viewer (path + dirty), if any —
+    /// what `getOpenEditors` / `checkDocumentDirty` report.
+    open_file: Mutex<Option<tt_ide::OpenFile>>,
     /// Compiler-diagnostics hub, queried per message for this folder's
     /// current `getDiagnostics` payload.
     diagnostics: Arc<crate::diagnostics::DiagHub>,
@@ -183,8 +183,8 @@ impl IdeServer {
     }
 
     /// Record which file the app's code viewer has open (None = closed).
-    pub fn set_open_file(&self, path: Option<String>) {
-        *self.shared.open_file.lock().unwrap() = path;
+    pub fn set_open_file(&self, open: Option<tt_ide::OpenFile>) {
+        *self.shared.open_file.lock().unwrap() = open;
     }
 }
 
@@ -272,7 +272,12 @@ async fn serve_connection(app: &AppHandle, stream: tokio::net::TcpStream, shared
             incoming = source.next() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
-                        if let Some(reply) = tt_ide::handle_message(text.as_str(), &shared.context())
+                        // Tools with app-side effects (openFile) are answered
+                        // here so the webview can act; everything else goes
+                        // through the pure dispatcher.
+                        let reply = intercept_app_tool(app, shared, text.as_str())
+                            .or_else(|| tt_ide::handle_message(text.as_str(), &shared.context()));
+                        if let Some(reply) = reply
                             && sink.send(Message::text(reply)).await.is_err()
                         {
                             break;
@@ -302,6 +307,41 @@ async fn serve_connection(app: &AppHandle, stream: tokio::net::TcpStream, shared
 
     shared.out.lock().unwrap().retain(|sender| !sender.same_channel(&tx));
     emit_status(app, shared);
+}
+
+/// Emitted when a CLI calls `openFile`: the frontend focuses the folder's
+/// Files tab on that file (optionally selecting `startText`..`endText`).
+pub const OPEN_FILE_EVENT: &str = "ide://open-file";
+
+/// Handle `tools/call`s that need the webview to act. Returns the response
+/// to send, or `None` when the message is not an app-side tool (the caller
+/// then runs the pure dispatcher).
+fn intercept_app_tool(app: &AppHandle, shared: &Arc<Shared>, message: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(message).ok()?;
+    if value.get("method").and_then(serde_json::Value::as_str) != Some("tools/call") {
+        return None;
+    }
+    let name = value.pointer("/params/name").and_then(serde_json::Value::as_str)?;
+    if name != "openFile" {
+        return None;
+    }
+    let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    let args = value.pointer("/params/arguments").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let file_path =
+        args.get("filePath").and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    let payload = serde_json::json!({
+        "dir": shared.cwd.to_string_lossy(),
+        "filePath": file_path,
+        "startText": args.get("startText"),
+        "endText": args.get("endText"),
+        "selectToEndOfLine": args.get("selectToEndOfLine"),
+    });
+    let _ = app.emit_to(MAIN_WINDOW_LABEL, OPEN_FILE_EVENT, payload);
+    let result = serde_json::json!({
+        "success": true,
+        "message": format!("Opening {file_path} in Towles Tool"),
+    });
+    Some(tt_ide::tool_result_response(id, &result))
 }
 
 fn emit_status(app: &AppHandle, shared: &Arc<Shared>) {
@@ -449,22 +489,56 @@ pub fn ide_status(app: AppHandle) -> Vec<IdeStatus> {
     app.state::<TermState>().ide_statuses()
 }
 
-/// The code viewer opened (Some) or closed (None) a file in `dir` — reflected
-/// to CLIs via `getOpenEditors`.
+/// The code viewer opened (Some) or closed (None) a file in `dir`, or its
+/// dirty state flipped — reflected to CLIs via `getOpenEditors` /
+/// `checkDocumentDirty`.
 #[tauri::command]
-pub fn ide_set_open_file(state: State<TermState>, dir: String, file_path: Option<String>) {
+pub fn ide_set_open_file(
+    state: State<TermState>,
+    dir: String,
+    file_path: Option<String>,
+    dirty: Option<bool>,
+) {
     let dir = PathBuf::from(dir);
-    let abs = file_path.map(|f| dir.join(f).to_string_lossy().into_owned());
-    state.for_ide_servers(&dir, |server| server.set_open_file(abs.clone()));
+    let open = file_path.map(|f| tt_ide::OpenFile {
+        path: dir.join(f).to_string_lossy().into_owned(),
+        dirty: dirty.unwrap_or(false),
+    });
+    state.for_ide_servers(&dir, |server| server.set_open_file(open.clone()));
+}
+
+/// A viewer file read: the content plus the mtime the save path uses as its
+/// conflict token.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRead {
+    pub content: String,
+    pub mtime_ms: i64,
+}
+
+fn mtime_ms(meta: &std::fs::Metadata) -> i64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Guard against `..` escapes — viewer paths must stay inside the folder.
+fn confined(dir: &Path, file_path: &str) -> Result<PathBuf, String> {
+    if Path::new(file_path).components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(format!("path escapes the folder: {file_path}"));
+    }
+    Ok(dir.join(file_path))
 }
 
 /// Read a repo file for the code viewer. Size-capped and text-only — the
 /// viewer is for code, not assets.
 #[tauri::command]
-pub async fn ide_read_file(dir: String, file_path: String) -> Result<String, String> {
+pub async fn ide_read_file(dir: String, file_path: String) -> Result<FileRead, String> {
     const MAX_BYTES: u64 = 2 * 1024 * 1024;
     tauri::async_runtime::spawn_blocking(move || {
-        let abs = Path::new(&dir).join(&file_path);
+        let abs = confined(Path::new(&dir), &file_path)?;
         let meta = std::fs::metadata(&abs).map_err(|e| format!("cannot open {file_path}: {e}"))?;
         if meta.len() > MAX_BYTES {
             return Err(format!("{file_path} is too large to preview ({} KB)", meta.len() / 1024));
@@ -473,10 +547,50 @@ pub async fn ide_read_file(dir: String, file_path: String) -> Result<String, Str
         if bytes.contains(&0) {
             return Err(format!("{file_path} looks like a binary file"));
         }
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        Ok(FileRead {
+            content: String::from_utf8_lossy(&bytes).into_owned(),
+            mtime_ms: mtime_ms(&meta),
+        })
     })
     .await
     .map_err(|e| format!("read task failed: {e}"))?
+}
+
+/// Save the viewer's buffer: atomic (tmp + rename into place) with an mtime
+/// conflict token — if the file changed on disk since it was read (an agent
+/// edited it), the save is refused rather than silently clobbering. Returns
+/// the new mtime token.
+#[tauri::command]
+pub async fn ide_write_file(
+    dir: String,
+    file_path: String,
+    content: String,
+    expected_mtime_ms: Option<i64>,
+) -> Result<i64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let abs = confined(Path::new(&dir), &file_path)?;
+        if let (Some(expected), Ok(meta)) = (expected_mtime_ms, std::fs::metadata(&abs))
+            && mtime_ms(&meta) != expected
+        {
+            return Err(format!(
+                "{file_path} changed on disk since it was opened — reopen it to pick up the new contents"
+            ));
+        }
+        let parent = abs.parent().ok_or_else(|| format!("no parent dir for {file_path}"))?;
+        let tmp = parent.join(format!(
+            ".{}.tt-tmp",
+            abs.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        ));
+        std::fs::write(&tmp, &content).map_err(|e| format!("cannot write {file_path}: {e}"))?;
+        std::fs::rename(&tmp, &abs).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("cannot save {file_path}: {e}")
+        })?;
+        let meta = std::fs::metadata(&abs).map_err(|e| format!("cannot stat {file_path}: {e}"))?;
+        Ok(mtime_ms(&meta))
+    })
+    .await
+    .map_err(|e| format!("write task failed: {e}"))?
 }
 
 /// Every file in the folder's checkout (tracked + untracked-but-not-ignored),

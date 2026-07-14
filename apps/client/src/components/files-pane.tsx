@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AtSign, ChevronDown, ChevronRight, File, Folder, RefreshCw } from "lucide-react";
-import { CodeViewer } from "@/components/code-viewer";
+import { CodeViewer, type ViewerAnchor } from "@/components/code-viewer";
 import { IconBtn } from "@/components/agentboard-bits";
 import { buildDiffTree, type DiffFile, type DiffTreeNode } from "@/lib/diff";
 import { ideAtMention } from "@/lib/ide";
@@ -158,12 +158,26 @@ function FileTreeRows({
   );
 }
 
-export function FilesPane({ dir, connected }: { dir: string; connected: boolean }) {
+export function FilesPane({
+  dir,
+  connected,
+  openRequest,
+}: {
+  dir: string;
+  connected: boolean;
+  /** Claude called openFile — focus this file (new nonce per request). */
+  openRequest?: { path: string; anchor: ViewerAnchor; nonce: number };
+}) {
   const [files, setFiles] = useState<string[] | null>(null);
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [open, setOpen] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    if (openRequest) setOpen(openRequest.path);
+  }, [openRequest]);
 
   const fetchFiles = useCallback(async () => {
     setRefreshing(true);
@@ -174,6 +188,7 @@ export function FilesPane({ dir, connected }: { dir: string; connected: boolean 
 
   useEffect(() => {
     setOpen(null);
+    setDirty(false);
     void fetchFiles();
   }, [fetchFiles]);
 
@@ -260,7 +275,15 @@ export function FilesPane({ dir, connected }: { dir: string; connected: boolean 
               <span className="min-w-0 truncate font-mono text-xs text-foreground" title={open}>
                 {open}
               </span>
-              <span className="text-[10.5px] text-muted-foreground">read-only</span>
+              {dirty && (
+                <span
+                  title="Unsaved changes — ⌘S saves"
+                  className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                />
+              )}
+              <span className="shrink-0 text-[10.5px] text-muted-foreground">
+                editable · ⌘S saves
+              </span>
               <button
                 type="button"
                 title={
@@ -278,7 +301,16 @@ export function FilesPane({ dir, connected }: { dir: string; connected: boolean 
               </button>
             </div>
             <div className="min-h-0 flex-1">
-              <CodeViewer dir={dir} path={open} />
+              <CodeViewer
+                dir={dir}
+                path={open}
+                anchor={
+                  openRequest && openRequest.path === open
+                    ? { ...openRequest.anchor, nonce: openRequest.nonce }
+                    : undefined
+                }
+                onDirtyChange={setDirty}
+              />
             </div>
           </>
         ) : (

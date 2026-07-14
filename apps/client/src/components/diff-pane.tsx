@@ -4,7 +4,14 @@ import { DiffViewer, type DiffIdeBridge } from "@/components/diff-view";
 import { FilesPane } from "@/components/files-pane";
 import { IconBtn } from "@/components/agentboard-bits";
 import { abInvoke, type FolderData } from "@/lib/agentboard";
-import { ideAtMention, ideClearSelection, ideSetSelection, useIdeConnected } from "@/lib/ide";
+import {
+  ideAtMention,
+  ideClearSelection,
+  ideSetSelection,
+  useIdeConnected,
+  type OpenFileRequest,
+} from "@/lib/ide";
+import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
 /** Which baseline the pane diffs against (mirrors `DiffMode` in tt-agentboard). */
@@ -44,9 +51,46 @@ export function DiffPane({
   // Which lens: the changed-files diff, or the full checkout tree ("tell
   // claude about any file").
   const [tab, setTab] = useState<"changes" | "files">("changes");
+  // Claude called the openFile tool for this folder — jump the pane to the
+  // Files tab focused on that file (nonce keeps repeat requests distinct).
+  const [openRequest, setOpenRequest] = useState<
+    { path: string; anchor: { startText?: string | null; endText?: string | null; selectToEndOfLine?: boolean | null }; nonce: number } | undefined
+  >();
   const [text, setText] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [editingBase, setEditingBase] = useState(false);
+
+  // Claude called openFile → focus the Files tab on that file. The event is
+  // window-global; each pane keeps only requests for its own folder.
+  useEffect(() => {
+    if (!dir || !isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const sub = await listen<OpenFileRequest>("ide://open-file", (e) => {
+        if (e.payload.dir !== dir) return;
+        const raw = e.payload.filePath;
+        const path = raw.startsWith(`${dir}/`) ? raw.slice(dir.length + 1) : raw;
+        setTab("files");
+        setOpenRequest({
+          path,
+          anchor: {
+            startText: e.payload.startText,
+            endText: e.payload.endText,
+            selectToEndOfLine: e.payload.selectToEndOfLine,
+          },
+          nonce: Date.now(),
+        });
+      });
+      if (disposed) sub();
+      else unlisten = sub;
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [dir]);
 
   // Claude Code IDE bridge: highlights in this pane become the selection
   // context of the `claude` running in this folder's terminal(s).
@@ -211,7 +255,7 @@ export function DiffPane({
       </div>
       <div className="flex min-h-0 flex-1 flex-col p-2">
         {tab === "files" ? (
-          <FilesPane dir={dir ?? ""} connected={ideConnected} />
+          <FilesPane dir={dir ?? ""} connected={ideConnected} openRequest={openRequest} />
         ) : text == null ? (
           <p className="p-2 text-sm text-muted-foreground">Loading…</p>
         ) : (

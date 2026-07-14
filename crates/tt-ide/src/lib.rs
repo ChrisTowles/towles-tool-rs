@@ -118,6 +118,15 @@ pub fn at_mentioned_frame(file_path: &str, lines: Option<(u32, u32)>) -> String 
     json!({ "jsonrpc": "2.0", "method": "at_mentioned", "params": params }).to_string()
 }
 
+/// The file open in the app's code viewer: absolute path + whether the
+/// buffer has unsaved edits (feeds `getOpenEditors.isDirty` and
+/// `checkDocumentDirty`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenFile {
+    pub path: String,
+    pub dirty: bool,
+}
+
 /// Per-message snapshot of the server's world, passed in by the transport:
 /// the dispatcher itself is stateless so tests can drive it directly.
 #[derive(Debug, Clone)]
@@ -128,9 +137,9 @@ pub struct ServerContext {
     pub workspace_folder: PathBuf,
     /// The latest selection made in the app's diff pane, if any.
     pub selection: Option<Selection>,
-    /// Absolute path of the file open in the app's code viewer, if any —
-    /// preferred by `getOpenEditors` over the selection's file.
-    pub open_file: Option<String>,
+    /// The file open in the app's code viewer, if any — preferred by
+    /// `getOpenEditors` over the selection's file.
+    pub open_file: Option<OpenFile>,
     /// Current compiler diagnostics for this folder, already in the
     /// `getDiagnostics` wire shape (`[{uri, diagnostics: [...]}]`, see
     /// [`diagnostics::to_wire`]). Empty array when no check has run.
@@ -193,9 +202,24 @@ fn tools_call(id: Value, request: &Value, ctx: &ServerContext) -> String {
         "getWorkspaceFolders" => workspace_folders(ctx),
         "getOpenEditors" => open_editors(ctx),
         "getDiagnostics" => diagnostics_for(ctx, &args),
+        "checkDocumentDirty" => check_document_dirty(ctx, &args),
+        // openFile has app-side effects; the shell intercepts it before this
+        // dispatcher (see the app's ide.rs). Reaching here is a wiring bug.
         _ => return tool_error_response(id, &format!("Unknown tool: {name}")),
     };
     tool_result_response(id, &result)
+}
+
+/// `checkDocumentDirty`: dirty state of the viewer's open file, VS Code's
+/// answer shapes ("Document not open" for anything else).
+fn check_document_dirty(ctx: &ServerContext, args: &Value) -> Value {
+    let requested = args.get("filePath").and_then(Value::as_str).unwrap_or_default();
+    match &ctx.open_file {
+        Some(open) if open.path == requested => {
+            json!({ "success": true, "filePath": open.path, "isDirty": open.dirty })
+        }
+        _ => json!({ "success": false, "message": format!("Document not open: {requested}") }),
+    }
 }
 
 /// `getCurrentSelection` / `getLatestSelection`: for this server the diff
@@ -229,11 +253,12 @@ fn workspace_folders(ctx: &ServerContext) -> Value {
 /// selected file); report it as the single active "tab" so `@`-mention file
 /// pickers have something to anchor on.
 fn open_editors(ctx: &ServerContext) -> Value {
-    let path =
-        ctx.open_file.clone().or_else(|| ctx.selection.as_ref().map(|sel| sel.file_path.clone()));
-    let tabs: Vec<Value> = path
+    let open = ctx.open_file.clone().or_else(|| {
+        ctx.selection.as_ref().map(|sel| OpenFile { path: sel.file_path.clone(), dirty: false })
+    });
+    let tabs: Vec<Value> = open
         .iter()
-        .map(|file_path| {
+        .map(|OpenFile { path: file_path, dirty }| {
             let name = Path::new(file_path)
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -243,7 +268,7 @@ fn open_editors(ctx: &ServerContext) -> Value {
                 "isActive": true,
                 "isPinned": false,
                 "isPreview": false,
-                "isDirty": false,
+                "isDirty": dirty,
                 "label": name,
                 "groupIndex": 0,
                 "viewColumn": 1,
@@ -306,6 +331,35 @@ fn tool_definitions() -> Value {
                 "additionalProperties": false,
             },
         },
+        {
+            "name": "checkDocumentDirty",
+            "description": "Check if a document has unsaved changes",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "filePath": { "type": "string", "description": "Absolute path of the file to check" }
+                },
+                "required": ["filePath"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "openFile",
+            "description": "Open a file in the IDE and optionally select a range of text",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "filePath": { "type": "string", "description": "Path to the file to open" },
+                    "preview": { "type": "boolean" },
+                    "startText": { "type": "string", "description": "Text pattern where the selection starts" },
+                    "endText": { "type": "string", "description": "Text pattern where the selection ends" },
+                    "selectToEndOfLine": { "type": "boolean" },
+                    "makeFrontmost": { "type": "boolean" }
+                },
+                "required": ["filePath"],
+                "additionalProperties": false,
+            },
+        },
     ])
 }
 
@@ -321,8 +375,9 @@ fn error_response(id: Value, code: i64, message: &str) -> String {
 }
 
 /// MCP tool result: the payload rides as a JSON string inside a text content
-/// block (how the VS Code extension answers every tool).
-fn tool_result_response(id: Value, result: &Value) -> String {
+/// block (how the VS Code extension answers every tool). Public so the app
+/// shell can answer the tools it intercepts (openFile) in the same shape.
+pub fn tool_result_response(id: Value, result: &Value) -> String {
     let text = result.to_string();
     json!({
         "jsonrpc": "2.0",
@@ -412,7 +467,9 @@ mod tests {
                 "getLatestSelection",
                 "getWorkspaceFolders",
                 "getOpenEditors",
-                "getDiagnostics"
+                "getDiagnostics",
+                "checkDocumentDirty",
+                "openFile"
             ]
         );
     }
@@ -474,11 +531,39 @@ mod tests {
         let selection =
             Selection::range(Path::new("/repo/slot-a/src/sel.rs"), 0, 0, 1, "x".to_string());
         let mut ctx = ctx_with(Some(selection));
-        ctx.open_file = Some("/repo/slot-a/src/open.rs".to_string());
+        ctx.open_file =
+            Some(OpenFile { path: "/repo/slot-a/src/open.rs".to_string(), dirty: true });
         let editors = call(&ctx, "getOpenEditors");
         assert_eq!(editors["tabs"][0]["fileName"], "/repo/slot-a/src/open.rs");
         assert_eq!(editors["tabs"][0]["label"], "open.rs");
         assert_eq!(editors["tabs"][0]["uri"], "file:///repo/slot-a/src/open.rs");
+        assert_eq!(editors["tabs"][0]["isDirty"], true);
+    }
+
+    #[test]
+    fn check_document_dirty_answers_for_the_open_file_only() {
+        let mut ctx = ctx_with(None);
+        ctx.open_file = Some(OpenFile { path: "/repo/slot-a/a.rs".to_string(), dirty: true });
+
+        let request = |path: &str| {
+            json!({
+                "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+                "params": { "name": "checkDocumentDirty", "arguments": { "filePath": path } },
+            })
+            .to_string()
+        };
+        let parse = |raw: String| -> Value {
+            let response: Value = serde_json::from_str(&raw).unwrap();
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap()
+        };
+
+        let hit = parse(handle_message(&request("/repo/slot-a/a.rs"), &ctx).unwrap());
+        assert_eq!(hit["success"], true);
+        assert_eq!(hit["isDirty"], true);
+
+        let miss = parse(handle_message(&request("/repo/slot-a/b.rs"), &ctx).unwrap());
+        assert_eq!(miss["success"], false);
     }
 
     #[test]
