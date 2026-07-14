@@ -1,0 +1,128 @@
+name: Release
+
+# Builds installer artifacts for the desktop app and attaches them to a GitHub
+# Release. Triggered by pushing a version tag (`v0.2.0`); `workflow_dispatch`
+# lets a run be kicked off by hand (e.g. to rebuild artifacts for an existing
+# tag) without pushing a new one.
+#
+# Bump `crates-tauri/tt-app/tauri.conf.json`'s `version` (and, for parity,
+# `crates-tauri/tt-app/Cargo.toml`'s `[package].version`, which is what the
+# running app reports via `package_info().version` for the update-check
+# banner — see `crates-tauri/tt-app/src/update.rs`) before tagging; this
+# workflow does not bump it for you.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build artifacts for"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned ghostty commit tt-vt builds against (see the GHOSTTY_COMMIT
+  # constant in libghostty-vt-sys's build.rs) — kept in sync with ci.yml.
+  GHOSTTY_COMMIT: fdbf9ff3a31d7531b691cb49c98fc465a1a503a0
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # .deb + .AppImage. rpm bundling needs extra host tooling this
+          # runner doesn't have, so it's left out rather than made flaky.
+          - platform: ubuntu-latest
+            args: "--bundles deb,appimage"
+          # Apple Silicon.
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+          # Intel.
+          - platform: macos-13
+            args: "--target x86_64-apple-darwin"
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Provision pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Add macOS Rust targets
+        if: startsWith(matrix.platform, 'macos')
+        run: rustup target add ${{ matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
+
+      # Tauri v2 Linux prerequisites (see tauri.app/start/prerequisites) — same
+      # package set as the rust-app job in ci.yml.
+      - name: Install Tauri system dependencies (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev
+
+      # tt-vt (a dependency of tt-app) shells out to `zig build` against a
+      # ghostty source checkout — same provisioning as ci.yml's rust-vt/rust-app
+      # jobs, needed on every platform in this matrix.
+      - name: Provision Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Cache ghostty source
+        id: ghostty-cache
+        uses: actions/cache@v4
+        with:
+          path: ghostty-src
+          key: ghostty-src-${{ runner.os }}-${{ env.GHOSTTY_COMMIT }}
+
+      - name: Clone ghostty source
+        if: steps.ghostty-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/ghostty-org/ghostty.git ghostty-src
+          git -C ghostty-src checkout "$GHOSTTY_COMMIT"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.platform }}-${{ matrix.args }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Build and publish release artifacts
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-src
+        with:
+          # tauri.conf.json lives with the Tauri crate, not at repo root (this
+          # is a Yaak-style monorepo — see CLAUDE.md).
+          configPath: crates-tauri/tt-app/tauri.conf.json
+          tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          releaseName: "Towles Tool ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          # Draft so a release is reviewed (notes, artifact sanity) before it
+          # goes live to `releases/latest` — the endpoint the app's update
+          # check polls (crates/tt-update).
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

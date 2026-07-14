@@ -8,6 +8,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { QuickLog } from "@/components/quick-log";
 import { StatusBar } from "@/components/status-bar";
 import { TabBar } from "@/components/tab-bar";
+import { UpdateBanner } from "@/components/update-banner";
 import { ZenIndicator } from "@/components/zen-indicator";
 import {
   ResizableHandle,
@@ -77,6 +78,7 @@ function Workspace() {
     <div className="flex h-screen flex-col bg-background text-foreground">
       {!zen && <AppHeader />}
       {!zen && <DayBar />}
+      <UpdateBanner />
       <DmBanner />
 
       <div className="flex min-h-0 flex-1">
