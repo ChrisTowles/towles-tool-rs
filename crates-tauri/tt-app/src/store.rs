@@ -116,7 +116,12 @@ pub fn store_add_task(
     Ok(())
 }
 
-/// Move a todo to a kanban column (backlog/next/doing/review/done), then re-emit.
+/// Move a todo to a kanban column (backlog/next/doing/review/done), then
+/// re-emit. When the todo is linked to a GitHub issue and this crosses the
+/// `done` boundary, best-effort closes/reopens the issue on a background
+/// thread (fire-and-forget: the local status change and snapshot emit don't
+/// wait on the network round-trip). A failed gh call self-heals on the next
+/// `issues` collector poll via [`tt_collect::reconcile_linked_task_statuses`].
 #[tauri::command]
 pub fn store_set_task_status(
     app: AppHandle,
@@ -124,12 +129,68 @@ pub fn store_set_task_status(
     id: i64,
     status: String,
 ) -> Result<(), String> {
-    with_store(&state, |store| {
+    let sync_target = with_store(&state, |store| {
+        let before = store.get_task(id).map_err(|e| format!("get_task failed: {e}"))?;
         store
             .set_task_status(id, &status, now_ms())
-            .map_err(|e| format!("set_task_status failed: {e}"))
+            .map_err(|e| format!("set_task_status failed: {e}"))?;
+        Ok(before.and_then(|t| gh_close_reopen_target(&t.status, &status, t.repo, t.issue_number)))
     })?;
     emit_snapshot(&app, &state);
+    if let Some((repo, number, close)) = sync_target {
+        std::thread::spawn(move || {
+            let verb = if close { "close" } else { "reopen" };
+            let result =
+                if close { close_gh_issue(&repo, number) } else { reopen_gh_issue(&repo, number) };
+            if let Err(e) = result {
+                eprintln!("store_set_task_status: gh issue {verb} failed for {repo}#{number}: {e}");
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Which gh action (if any) a todo's status change should trigger: `Some((repo,
+/// number, close))` when the todo is linked and the transition crosses the
+/// `done` boundary — entering `done` closes the issue, leaving it reopens.
+/// `None` for unlinked todos or moves that don't touch `done`.
+fn gh_close_reopen_target(
+    old_status: &str,
+    new_status: &str,
+    repo: Option<String>,
+    issue_number: Option<i64>,
+) -> Option<(String, i64, bool)> {
+    let (repo, number) = (repo?, issue_number?);
+    if old_status != new_status && new_status == "done" {
+        Some((repo, number, true))
+    } else if old_status != new_status && old_status == "done" {
+        Some((repo, number, false))
+    } else {
+        None
+    }
+}
+
+/// Run `gh issue close --repo <repo> <number>`.
+fn close_gh_issue(repo: &str, number: i64) -> Result<(), String> {
+    run_gh_issue_state_change(repo, number, "close")
+}
+
+/// Run `gh issue reopen --repo <repo> <number>`.
+fn reopen_gh_issue(repo: &str, number: i64) -> Result<(), String> {
+    run_gh_issue_state_change(repo, number, "reopen")
+}
+
+fn run_gh_issue_state_change(repo: &str, number: i64, verb: &str) -> Result<(), String> {
+    let output = std::process::Command::new("gh")
+        .args(["issue", verb, "--repo", repo, &number.to_string()])
+        .output()
+        .map_err(|e| format!("failed to spawn gh: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "gh issue {verb} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
     Ok(())
 }
 
@@ -251,6 +312,136 @@ pub async fn store_promote_task_to_issue(
     })?;
     emit_snapshot(&app, &state);
     Ok(())
+}
+
+/// One Agentboard-tracked repo, resolved to its GitHub `owner/name` — an
+/// option in the "Import from GitHub" repo picker.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhRepoOption {
+    pub dir: String,
+    pub name: String,
+}
+
+/// Tracked repos resolved to their GitHub `owner/name`, for the "Import from
+/// GitHub" dialog's repo picker. A repo that fails to resolve (offline, no
+/// `gh` auth, non-GitHub remote) is silently skipped rather than failing the
+/// whole list. Deduped by `owner/name`, keeping the first dir seen — several
+/// tracked dirs (a primary checkout plus its worktree slots) commonly share
+/// one GitHub identity, and issues belong to the repo, not to a particular
+/// worktree, so the picker should only list it once. Async: each resolution
+/// shells `gh repo view`.
+#[tauri::command]
+pub async fn store_gh_tracked_repos() -> Result<Vec<GhRepoOption>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let resolved = tt_collect::tracked_repo_dirs()
+            .into_iter()
+            .filter_map(|dir| {
+                let name = tt_collect::resolve_repo_name(&dir).ok()?;
+                Some((dir.to_string_lossy().into_owned(), name))
+            })
+            .collect::<Vec<_>>();
+        dedupe_repo_options(resolved)
+    })
+    .await
+    .map_err(|e| format!("gh tracked repos task failed: {e}"))
+}
+
+/// Collapse `(dir, name)` pairs to one [`GhRepoOption`] per `name`, keeping
+/// the first dir seen for each — several tracked dirs (a primary checkout
+/// plus its worktree slots) commonly share one GitHub identity, and an issue
+/// belongs to the repo, not to a particular worktree.
+fn dedupe_repo_options(resolved: Vec<(String, String)>) -> Vec<GhRepoOption> {
+    let mut seen = std::collections::HashSet::new();
+    resolved
+        .into_iter()
+        .filter_map(|(dir, name)| {
+            if !seen.insert(name.clone()) {
+                return None;
+            }
+            Some(GhRepoOption { dir, name })
+        })
+        .collect()
+}
+
+/// Open issues in the repo checked out at `dir`, for the import dialog's
+/// issue picker: `assigned_to_me` toggles `--assignee @me`, `milestone`
+/// optionally scopes to one milestone title. Read-only — no store write.
+#[tauri::command]
+pub async fn store_gh_issues_list(
+    dir: String,
+    assigned_to_me: bool,
+    milestone: Option<String>,
+) -> Result<Vec<tt_store::IssueInput>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tt_collect::fetch_importable_issues(
+            std::path::Path::new(&dir),
+            assigned_to_me,
+            milestone.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("gh issues list task failed: {e}"))?
+}
+
+/// Open milestone titles for the repo checked out at `dir`, feeding the
+/// import dialog's milestone filter dropdown.
+#[tauri::command]
+pub async fn store_gh_milestones_list(dir: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tt_collect::fetch_repo_milestones(std::path::Path::new(&dir))
+    })
+    .await
+    .map_err(|e| format!("gh milestones list task failed: {e}"))?
+}
+
+/// One issue selected in the import dialog.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportIssueInput {
+    pub repo: String,
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+}
+
+/// Import selected GitHub issues onto the board as new `backlog` todos linked
+/// to their issue, then re-emit the snapshot. Issues already linked to a todo
+/// (including duplicates within `items` itself) are skipped, so re-running
+/// the import dialog over an overlapping selection is a no-op for the
+/// overlap. Returns how many todos were created.
+#[tauri::command]
+pub fn store_import_issues(
+    app: AppHandle,
+    state: State<StoreState>,
+    items: Vec<ImportIssueInput>,
+) -> Result<usize, String> {
+    let imported = with_store(&state, |store| {
+        let mut linked: std::collections::HashSet<(String, i64)> = store
+            .linked_tasks()
+            .map_err(|e| format!("linked_tasks failed: {e}"))?
+            .into_iter()
+            .filter_map(|t| Some((t.repo?, t.issue_number?)))
+            .collect();
+        let mut count = 0;
+        for item in &items {
+            let key = (item.repo.clone(), item.number);
+            if linked.contains(&key) {
+                continue;
+            }
+            let task = store
+                .add_task(&item.title, None, Some(&item.repo), None, now_ms())
+                .map_err(|e| format!("add_task failed: {e}"))?;
+            store
+                .link_task_issue(task.id, &item.repo, item.number, &item.url)
+                .map_err(|e| format!("link_task_issue failed: {e}"))?;
+            linked.insert(key);
+            count += 1;
+        }
+        Ok(count)
+    })?;
+    emit_snapshot(&app, &state);
+    Ok(imported)
 }
 
 /// Create a new GitHub issue directly for the repo checked out at `dir` (no
@@ -448,6 +639,99 @@ mod tests {
         let config = manual_slack_config(&collectors).expect("enabled + token → configured");
         assert_eq!(config.token, "xoxp-real");
         assert_eq!(config.watch_user_id, "U1");
+    }
+
+    #[test]
+    fn dedupe_repo_options_collapses_worktrees_of_the_same_repo() {
+        let resolved = vec![
+            ("/repo-primary".to_string(), "o/r".to_string()),
+            ("/repo-slots/a".to_string(), "o/r".to_string()),
+            ("/repo-slots/b".to_string(), "o/r".to_string()),
+            ("/other".to_string(), "o/other".to_string()),
+        ];
+        let options = dedupe_repo_options(resolved);
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].name, "o/r");
+        assert_eq!(options[0].dir, "/repo-primary", "keeps the first dir seen for the name");
+        assert_eq!(options[1].name, "o/other");
+    }
+
+    #[test]
+    fn gh_close_reopen_target_only_fires_on_a_done_crossing() {
+        // Unlinked: never fires.
+        assert!(gh_close_reopen_target("backlog", "done", None, Some(1)).is_none());
+        assert!(gh_close_reopen_target("backlog", "done", Some("o/r".to_string()), None).is_none());
+
+        // Entering done closes; staying outside done, moving within it (n/a
+        // here since old != new always), or leaving done reopens.
+        assert_eq!(
+            gh_close_reopen_target("backlog", "done", Some("o/r".to_string()), Some(7)),
+            Some(("o/r".to_string(), 7, true))
+        );
+        assert_eq!(
+            gh_close_reopen_target("done", "backlog", Some("o/r".to_string()), Some(7)),
+            Some(("o/r".to_string(), 7, false))
+        );
+        // A move that never touches done is a no-op.
+        assert!(
+            gh_close_reopen_target("backlog", "doing", Some("o/r".to_string()), Some(7)).is_none()
+        );
+    }
+
+    #[test]
+    fn import_issues_skips_already_linked_and_in_batch_duplicates() {
+        let store = Store::open_in_memory().unwrap();
+        let existing = store.add_task("existing", None, None, None, 1).unwrap();
+        store.link_task_issue(existing.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
+        let state = StoreState::from_option(Some(store));
+
+        let items = vec![
+            ImportIssueInput {
+                repo: "o/r".to_string(),
+                number: 1,
+                title: "already linked".to_string(),
+                url: "https://github.com/o/r/issues/1".to_string(),
+            },
+            ImportIssueInput {
+                repo: "o/r".to_string(),
+                number: 2,
+                title: "fresh".to_string(),
+                url: "https://github.com/o/r/issues/2".to_string(),
+            },
+            ImportIssueInput {
+                repo: "o/r".to_string(),
+                number: 2,
+                title: "fresh (duplicate in batch)".to_string(),
+                url: "https://github.com/o/r/issues/2".to_string(),
+            },
+        ];
+        let imported = with_store(&state, |store| {
+            let mut linked: std::collections::HashSet<(String, i64)> = store
+                .linked_tasks()
+                .unwrap()
+                .into_iter()
+                .filter_map(|t| Some((t.repo?, t.issue_number?)))
+                .collect();
+            let mut count = 0;
+            for item in &items {
+                let key = (item.repo.clone(), item.number);
+                if linked.contains(&key) {
+                    continue;
+                }
+                let task =
+                    store.add_task(&item.title, None, Some(&item.repo), None, now_ms()).unwrap();
+                store.link_task_issue(task.id, &item.repo, item.number, &item.url).unwrap();
+                linked.insert(key);
+                count += 1;
+            }
+            Ok::<_, String>(count)
+        })
+        .unwrap();
+        assert_eq!(imported, 1);
+
+        let snap = snapshot_of(&state).unwrap();
+        assert_eq!(snap.tasks.len(), 2);
+        assert!(snap.tasks.iter().any(|t| t.text == "fresh" && t.status == "backlog"));
     }
 
     #[test]

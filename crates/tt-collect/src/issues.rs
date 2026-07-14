@@ -40,6 +40,66 @@ pub(crate) fn collect_repo_issues(dir: &Path) -> Result<(String, Vec<IssueInput>
     Ok((repo, issues))
 }
 
+/// Live fetch of open issues for the import picker: `assigned_to_me` toggles
+/// `--assignee @me`, `milestone` optionally scopes to one milestone title.
+/// Unlike [`collect_repo_issues`] this never writes the store — it's a
+/// read-only lookup for the "Import from GitHub" dialog.
+pub fn fetch_importable_issues(
+    dir: &Path,
+    assigned_to_me: bool,
+    milestone: Option<&str>,
+) -> Result<Vec<IssueInput>, String> {
+    let repo = gh::repo_name_with_owner(dir)?;
+    let args = importable_issue_list_args(assigned_to_me, milestone);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let list = gh::run_json(dir, &arg_refs)?;
+    Ok(map_issue_list(&list, &repo))
+}
+
+/// Build the `gh issue list` args for [`fetch_importable_issues`]. Factored
+/// out so the assignee/milestone combinations are unit-testable without
+/// shelling out.
+fn importable_issue_list_args(assigned_to_me: bool, milestone: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "issue",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        gh::LIST_LIMIT,
+        "--json",
+        ISSUE_LIST_FIELDS,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    if assigned_to_me {
+        args.push("--assignee".to_string());
+        args.push("@me".to_string());
+    }
+    if let Some(milestone) = milestone {
+        args.push("--milestone".to_string());
+        args.push(milestone.to_string());
+    }
+    args
+}
+
+/// Open milestone titles for the repo rooted at `dir`, for the import
+/// dialog's milestone filter.
+pub fn fetch_repo_milestones(dir: &Path) -> Result<Vec<String>, String> {
+    let repo = gh::repo_name_with_owner(dir)?;
+    let stdout = gh::run(
+        dir,
+        &[
+            "api",
+            &format!("repos/{repo}/milestones"),
+            "--jq",
+            ".[].title",
+        ],
+    )?;
+    Ok(stdout.lines().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect())
+}
+
 /// Map a parsed `gh issue list` JSON array to [`IssueInput`]s. Non-array input
 /// yields an empty list.
 pub(crate) fn map_issue_list(list: &serde_json::Value, repo: &str) -> Vec<IssueInput> {
@@ -112,6 +172,23 @@ mod tests {
         assert_eq!(i.state, "open");
         assert_eq!(i.url, "https://github.com/o/r/issues/390");
         assert_eq!(i.updated_ts, 1704164645000);
+    }
+
+    #[test]
+    fn importable_issue_list_args_covers_assignee_and_milestone_combinations() {
+        let base = importable_issue_list_args(false, None);
+        assert!(!base.iter().any(|a| a == "--assignee"));
+        assert!(!base.iter().any(|a| a == "--milestone"));
+
+        let assigned = importable_issue_list_args(true, None);
+        assert!(assigned.windows(2).any(|w| w == ["--assignee", "@me"]));
+
+        let milestoned = importable_issue_list_args(false, Some("v2"));
+        assert!(milestoned.windows(2).any(|w| w == ["--milestone", "v2"]));
+
+        let both = importable_issue_list_args(true, Some("v2"));
+        assert!(both.windows(2).any(|w| w == ["--assignee", "@me"]));
+        assert!(both.windows(2).any(|w| w == ["--milestone", "v2"]));
     }
 
     #[test]

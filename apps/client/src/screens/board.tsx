@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarPlus,
+  Download,
   ExternalLink,
   GripVertical,
   ListTodo,
@@ -9,6 +10,7 @@ import {
   Search,
   StickyNote,
 } from "lucide-react";
+import { ImportIssuesDialog } from "@/components/import-issues-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -111,6 +113,7 @@ export function BoardScreen() {
   const [deletedIds, setDeletedIds] = useState<Set<number>>(() => new Set());
   const [addedTasks, setAddedTasks] = useState<TaskItem[]>([]);
   const [draft, setDraft] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
   // Quick filter: case-insensitive substring over each todo's text + repo tag.
   const [filter, setFilter] = useState("");
   // The insertion slot the current drag would land in: drives both the column
@@ -126,6 +129,17 @@ export function BoardScreen() {
     for (const t of snapshot.tasks) if (t.repo) set.add(t.repo);
     return [...set].sort();
   }, [snapshot.prs, snapshot.issues, snapshot.tasks]);
+
+  // `owner/repo#123` for every todo already linked to a GitHub issue — the
+  // import dialog disables these so re-running it over an overlapping
+  // selection is a visible no-op instead of a silent duplicate.
+  const linkedKeys = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of snapshot.tasks) {
+      if (t.repo && t.issueNumber !== undefined) set.add(`${t.repo}#${t.issueNumber}`);
+    }
+    return set;
+  }, [snapshot.tasks]);
 
   // Drop an optimistic quick-add copy once the store snapshot delivers the real
   // row — matched on the content the add sent, since the store assigns the id.
@@ -341,8 +355,18 @@ export function BoardScreen() {
           <Button variant="ghost" size="icon-sm" aria-label="Add todo" onClick={addTask}>
             <Plus />
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1.5 px-2 text-xs"
+            onClick={() => setImportOpen(true)}
+          >
+            <Download className="size-3.5" />
+            Import
+          </Button>
         </div>
       </div>
+      <ImportIssuesDialog open={importOpen} onOpenChange={setImportOpen} linkedKeys={linkedKeys} />
 
       {isEmpty ? (
         <div ref={focusRef} className="flex min-h-0 flex-1 items-center justify-center p-6">

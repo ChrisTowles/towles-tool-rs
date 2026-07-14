@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invokeOk, invokeToast, isTauri } from "./tauri";
+import { invokeOk, invokeOrThrow, invokeToast, isTauri } from "./tauri";
 
 /**
  * Client-side view of the personal-HQ store (the Rust `tt-store` crate, surfaced
@@ -514,6 +514,32 @@ export const storeClearDone = () => invokeOk("store_clear_done");
 
 export const storePromoteTaskToIssue = (id: number, repo: string) =>
   invokeOk("store_promote_task_to_issue", { id, repo });
+
+/** One Agentboard-tracked repo, resolved to its GitHub `owner/name`. */
+export type GhRepoOption = { dir: string; name: string };
+
+/** Tracked repos resolved to their GitHub identity, for the "Import from
+ * GitHub" dialog's repo picker. Throws (rather than degrading to `null`) so
+ * the dialog can show a real error state instead of an empty list. */
+export const storeGhTrackedRepos = () =>
+  invokeOrThrow<GhRepoOption[]>("store_gh_tracked_repos");
+
+/** Open issues in `dir`'s repo, for the import dialog's issue picker. */
+export const storeGhIssuesList = (dir: string, assignedToMe: boolean, milestone?: string) =>
+  invokeOrThrow<IssueItem[]>("store_gh_issues_list", { dir, assignedToMe, milestone });
+
+/** Open milestone titles in `dir`'s repo, for the import dialog's filter. */
+export const storeGhMilestonesList = (dir: string) =>
+  invokeOrThrow<string[]>("store_gh_milestones_list", { dir });
+
+/** One issue selected in the import dialog. */
+export type ImportIssueInput = { repo: string; number: number; title: string; url: string };
+
+/** Import selected GitHub issues onto the board as new Backlog todos.
+ * Resolves to how many todos were created (issues already linked are
+ * skipped). */
+export const storeImportIssues = (items: ImportIssueInput[]) =>
+  invokeOrThrow<number>("store_import_issues", { items });
 
 export const storeDmDismiss = (channel: string, ts: number) =>
   invokeOk("store_dm_dismiss", { channel, ts });
