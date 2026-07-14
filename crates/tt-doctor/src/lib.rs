@@ -149,6 +149,30 @@ pub fn check_tool(name: &str, version_arg: &str, optional: bool) -> CheckResult 
     }
 }
 
+/// Classify the terminal parser's compile-time optimize mode (the caller —
+/// the app, which is what links `tt-vt` — passes
+/// `tt_vt::parser_optimize_mode()`; the `tt` CLI has no VT engine and never
+/// runs this). A Debug-mode Zig parser is ~3 orders of magnitude slower and
+/// saturates a core at ~130 KB/s of PTY output, so a busy terminal pegs its
+/// engine thread and the whole app reads as laggy. The
+/// `[profile.dev.package.libghostty-vt-sys]` override in the workspace
+/// Cargo.toml makes dev builds use ReleaseFast; this check exists so losing
+/// that override (or a libghostty crate bump changing its build script)
+/// surfaces here instead of as months of unexplained dev-build lag.
+pub fn check_vt_parser(optimize_mode: &str) -> CheckResult {
+    let ok = optimize_mode != "Debug";
+    CheckResult {
+        name: "vt-parser".to_string(),
+        version: Some(optimize_mode.to_string()),
+        ok,
+        warning: (!ok).then(|| {
+            "terminal parser compiled in Zig Debug mode (~1000x slower; busy panes peg a core) \
+             — restore the [profile.dev.package.libghostty-vt-sys] override in Cargo.toml"
+                .to_string()
+        }),
+    }
+}
+
 /// Pull the first version-like token (`1.2.3`) out of arbitrary `--version` output.
 pub fn extract_version(text: &str) -> Option<String> {
     let start = text.find(|c: char| c.is_ascii_digit())?;
@@ -451,6 +475,29 @@ mod tests {
         let good = zig_result(Some("0.15.2".to_string()));
         assert!(good.ok);
         assert!(good.warning.is_none());
+    }
+
+    #[test]
+    fn vt_parser_debug_mode_fails_with_a_restore_hint() {
+        let check = check_vt_parser("Debug");
+        assert!(!check.ok);
+        assert_eq!(check.version.as_deref(), Some("Debug"));
+        assert!(
+            check.warning.as_deref().unwrap_or_default().contains("libghostty-vt-sys"),
+            "the warning must name the Cargo.toml override to restore"
+        );
+    }
+
+    #[test]
+    fn vt_parser_optimized_and_unknown_modes_pass() {
+        // "unknown" (failed build-info query) must not scream — only a
+        // positively-identified Debug parser is the regression this guards.
+        for mode in ["ReleaseFast", "ReleaseSafe", "ReleaseSmall", "unknown"] {
+            let check = check_vt_parser(mode);
+            assert!(check.ok, "{mode} must pass");
+            assert!(check.warning.is_none());
+            assert_eq!(check.version.as_deref(), Some(mode));
+        }
     }
 
     #[test]
