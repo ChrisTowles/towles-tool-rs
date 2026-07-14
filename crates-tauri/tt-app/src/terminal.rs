@@ -241,8 +241,9 @@ fn term_start_blocking(
     // Claude Code IDE pairing: a per-terminal WebSocket MCP server + lockfile
     // (see ide.rs / docs/CLAUDE-CODE-IDE.md). Best-effort — a bind failure
     // costs the pairing, never the shell.
+    let diag_hub = app.state::<std::sync::Arc<crate::diagnostics::DiagHub>>().inner().clone();
     let ide = dir.as_ref().and_then(|d| {
-        match crate::ide::IdeServer::start(app.clone(), term_id.clone(), d.clone()) {
+        match crate::ide::IdeServer::start(app.clone(), term_id.clone(), d.clone(), diag_hub) {
             Ok(server) => Some(server),
             Err(error) => {
                 eprintln!("warning: IDE server for terminal {term_id} unavailable: {error}");

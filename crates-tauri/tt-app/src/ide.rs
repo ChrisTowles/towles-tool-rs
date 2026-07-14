@@ -55,6 +55,9 @@ struct Shared {
     auth_token: String,
     /// Latest diff-pane selection; serves `getCurrentSelection`/`getLatestSelection`.
     selection: Mutex<Option<tt_ide::Selection>>,
+    /// Compiler-diagnostics hub, queried per message for this folder's
+    /// current `getDiagnostics` payload.
+    diagnostics: Arc<crate::diagnostics::DiagHub>,
     /// Outbound frame senders, one per connected CLI process (Claude Code is
     /// multi-process: the TUI and its session daemon may both connect).
     out: Mutex<Vec<UnboundedSender<Message>>>,
@@ -66,6 +69,7 @@ impl Shared {
             ide_name: IDE_NAME.to_string(),
             workspace_folder: self.cwd.clone(),
             selection: self.selection.lock().unwrap().clone(),
+            diagnostics: self.diagnostics.wire_for(&self.cwd),
         }
     }
 
@@ -95,7 +99,12 @@ pub struct IdeServer {
 impl IdeServer {
     /// Bind `127.0.0.1:0` (OS-assigned port — never hardcoded, slots run
     /// concurrently), write the lockfile, and start the accept loop.
-    pub fn start(app: AppHandle, term_id: String, cwd: PathBuf) -> Result<IdeServer, String> {
+    pub fn start(
+        app: AppHandle,
+        term_id: String,
+        cwd: PathBuf,
+        diagnostics: Arc<crate::diagnostics::DiagHub>,
+    ) -> Result<IdeServer, String> {
         let listener = StdTcpListener::bind(("127.0.0.1", 0))
             .map_err(|e| format!("failed to bind IDE server socket: {e}"))?;
         listener
@@ -120,6 +129,7 @@ impl IdeServer {
             port,
             auth_token,
             selection: Mutex::new(None),
+            diagnostics,
             out: Mutex::new(Vec::new()),
         });
 
@@ -159,6 +169,12 @@ impl IdeServer {
     /// CLI was connected to receive it.
     pub fn at_mention(&self, file_path: &str, lines: Option<(u32, u32)>) -> bool {
         self.shared.push(tt_ide::at_mentioned_frame(file_path, lines))
+    }
+
+    /// Tell connected CLIs these files' diagnostics went stale (they re-pull
+    /// via `getDiagnostics`).
+    pub fn notify_diagnostics(&self, uris: &[String]) {
+        self.shared.push(tt_ide::diagnostics::diagnostics_changed_frame(uris));
     }
 }
 
@@ -238,6 +254,8 @@ async fn serve_connection(app: &AppHandle, stream: tokio::net::TcpStream, shared
     let (tx, mut rx) = unbounded_channel::<Message>();
     shared.out.lock().unwrap().push(tx.clone());
     emit_status(app, shared);
+    // A fresh CLI wants fresh diagnostics — kick a (debounced) check run.
+    shared.diagnostics.request(&shared.cwd);
 
     loop {
         tokio::select! {
