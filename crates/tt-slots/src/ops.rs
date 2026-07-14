@@ -217,12 +217,19 @@ pub fn git_primary(primary: &Path, args: &[&str]) -> Result<tt_exec::Output> {
     let primary_s = primary.to_string_lossy();
     let mut full: Vec<&str> = vec!["-C", primary_s.as_ref()];
     full.extend_from_slice(args);
-    tt_exec::run_with_timeout("git", &full, GIT_TIMEOUT).map_err(|e| OpsError::Git(e.to_string()))
+    tt_exec::run_with_timeout_env("git", &full, tt_exec::GIT_NON_INTERACTIVE_ENV, GIT_TIMEOUT)
+        .map_err(|e| OpsError::Git(e.to_string()))
 }
 
 pub fn git_slot(dir: &Path, args: &[&str]) -> Result<tt_exec::Output> {
-    tt_exec::run_in_dir_with_timeout("git", args, dir, GIT_TIMEOUT)
-        .map_err(|e| OpsError::Git(e.to_string()))
+    tt_exec::run_in_dir_with_timeout_env(
+        "git",
+        args,
+        dir,
+        tt_exec::GIT_NON_INTERACTIVE_ENV,
+        GIT_TIMEOUT,
+    )
+    .map_err(|e| OpsError::Git(e.to_string()))
 }
 
 /// The primary's checked-out branch (the repo default), falling back to `main`.

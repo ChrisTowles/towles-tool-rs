@@ -81,6 +81,17 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Env vars that make `git` fail fast instead of blocking on an interactive
+/// credential/SSH prompt. Without these, a missing credential-helper entry or
+/// an SSH key needing a passphrase can pop a GUI prompt (e.g. macOS Keychain
+/// "Allow Access") behind the app window; the git process then blocks reading
+/// stdin until [`run_with_timeout`]'s kill fires, stalling the caller for the
+/// full timeout instead of failing immediately with a clear error.
+pub const GIT_NON_INTERACTIVE_ENV: &[(&str, &str)] = &[
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=10"),
+];
+
 /// Captured output of a finished process.
 #[derive(Debug, Clone)]
 pub struct Output {
@@ -151,7 +162,7 @@ pub fn run_with_stdin(cmd: &str, args: &[&str], stdin: &str) -> Result<Output> {
 /// stdout/stderr are drained on dedicated threads while the child runs, so a
 /// chatty child can't deadlock by filling a pipe the parent isn't reading.
 pub fn run_with_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Result<Output> {
-    run_with_timeout_in(cmd, args, None, timeout)
+    run_with_timeout_in(cmd, args, None, &[], timeout)
 }
 
 /// [`run_with_timeout`], but with the child's working directory set to `dir`.
@@ -162,13 +173,37 @@ pub fn run_in_dir_with_timeout(
     dir: &std::path::Path,
     timeout: Duration,
 ) -> Result<Output> {
-    run_with_timeout_in(cmd, args, Some(dir), timeout)
+    run_with_timeout_in(cmd, args, Some(dir), &[], timeout)
+}
+
+/// [`run_with_timeout`], with extra env vars set on the child (e.g.
+/// [`GIT_NON_INTERACTIVE_ENV`]).
+pub fn run_with_timeout_env(
+    cmd: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<Output> {
+    run_with_timeout_in(cmd, args, None, env, timeout)
+}
+
+/// [`run_in_dir_with_timeout`], with extra env vars set on the child (e.g.
+/// [`GIT_NON_INTERACTIVE_ENV`]).
+pub fn run_in_dir_with_timeout_env(
+    cmd: &str,
+    args: &[&str],
+    dir: &std::path::Path,
+    env: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<Output> {
+    run_with_timeout_in(cmd, args, Some(dir), env, timeout)
 }
 
 fn run_with_timeout_in(
     cmd: &str,
     args: &[&str],
     dir: Option<&std::path::Path>,
+    env: &[(&str, &str)],
     timeout: Duration,
 ) -> Result<Output> {
     use std::io::Read;
@@ -177,7 +212,7 @@ fn run_with_timeout_in(
 
     log::debug!("exec (timeout {timeout:?}): {}", display_cmd(cmd, args));
     let mut command = Command::new(cmd);
-    command.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(args).envs(env.iter().copied()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
@@ -297,6 +332,18 @@ mod tests {
         let err = run_with_timeout("definitely-not-a-real-binary-xyz", &[], Duration::from_secs(5))
             .unwrap_err();
         assert!(matches!(err, Error::Spawn { .. }));
+    }
+
+    #[test]
+    fn run_with_timeout_env_sets_env_vars() {
+        let output = run_with_timeout_env(
+            "sh",
+            &["-c", "echo $FOO"],
+            &[("FOO", "bar")],
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(output.stdout.trim(), "bar");
     }
 
     #[test]
