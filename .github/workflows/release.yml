@@ -39,14 +39,10 @@ jobs:
           - platform: ubuntu-latest
             name: linux
             args: "--bundles deb,appimage"
-          # Apple Silicon.
+          # Apple Silicon only — Intel Macs are not a supported target.
           - platform: macos-latest
             name: macos-arm
             args: "--target aarch64-apple-darwin"
-          # Intel.
-          - platform: macos-13
-            name: macos-intel
-            args: "--target x86_64-apple-darwin"
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -56,9 +52,9 @@ jobs:
       - name: Provision pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Add macOS Rust targets
+      - name: Add macOS Rust target
         if: startsWith(matrix.platform, 'macos')
-        run: rustup target add ${{ matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
+        run: rustup target add aarch64-apple-darwin
 
       # Xcode 26.4's SDK changed how arm64e-macos is represented in .tbd stub
       # files, which zig 0.15.x's linker can't match against aarch64-macos
