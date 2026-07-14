@@ -57,6 +57,7 @@ import { cn } from "@/lib/utils";
 import {
   abInvoke,
   changedFolderDirs,
+  ClaudeLaunchOptions,
   claudeCommand,
   claudeResumeCommand,
   claudeTitleName,
@@ -534,7 +535,7 @@ export function AgentboardScreen() {
 
   // A slot the new-slot modal just created: track it in the rail, open its
   // first session, and start Claude on the goal in that session's PTY.
-  async function slotCreated(created: SlotCreated, goal: string) {
+  async function slotCreated(created: SlotCreated, goal: string, options: ClaudeLaunchOptions) {
     toast(`created ${created.name}${created.branch ? ` on ${created.branch}` : ""}`);
     await abInvoke("ab_add_repo", { path: created.dir });
     // A freshly tracked folder already gets a default not-started session —
@@ -559,6 +560,7 @@ export function AgentboardScreen() {
       await launchClaudeIn(
         { folderDir: created.dir, sessionId: rec.id, sessionName: rec.name, restart: false },
         goal,
+        options,
       );
     }
   }
@@ -575,7 +577,11 @@ export function AgentboardScreen() {
   // Actually launch Claude in `target`'s session, folding in whatever prompt
   // the user entered (or none) — see `commitStartClaude`, which reads the
   // dialog state and calls this.
-  async function launchClaudeIn(target: StartClaudeTarget, prompt: string) {
+  async function launchClaudeIn(
+    target: StartClaudeTarget,
+    prompt: string,
+    options?: ClaudeLaunchOptions,
+  ) {
     const { sessionId, sessionName, restart } = target;
     setOverlay(sessionId, "busy");
     const verb = restart ? "starting over — fresh Claude session" : "starting Claude";
@@ -587,7 +593,7 @@ export function AgentboardScreen() {
       await termWrite(sessionId, "\x04");
       await sleep(300);
     }
-    await termWriteRetry(sessionId, claudeCommand(prompt));
+    await termWriteRetry(sessionId, claudeCommand(prompt, options));
   }
 
   // Dismiss the start-Claude dialog (Enter, Escape, or click-outside all land

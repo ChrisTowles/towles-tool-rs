@@ -802,12 +802,33 @@ export function shellQuote(text: string): string {
   return `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
+/** `claude --model` aliases for the latest model generation (see `claude --help`). */
+export type ClaudeModel = "sonnet" | "opus" | "fable";
+
+/** `claude --effort` levels (see `claude --help`). */
+export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export const DEFAULT_CLAUDE_MODEL: ClaudeModel = "sonnet";
+export const DEFAULT_CLAUDE_EFFORT: ClaudeEffort = "xhigh";
+
+export type ClaudeLaunchOptions = {
+  model?: ClaudeModel;
+  effort?: ClaudeEffort;
+};
+
 /** The `claude` invocation for a session's PTY: bare, or with an initial
  * prompt passed as an argument so Claude starts working on it immediately
- * instead of waiting at an empty prompt. */
-export function claudeCommand(prompt: string): string {
+ * instead of waiting at an empty prompt, plus an optional `--model`/`--effort`
+ * pair for callers (e.g. the new-slot dialog) that let the user pick both. */
+export function claudeCommand(prompt: string, options?: ClaudeLaunchOptions): string {
   const trimmed = prompt.trim();
-  return trimmed ? `claude ${shellQuote(trimmed)}\r` : "claude\r";
+  const parts = [
+    "claude",
+    options?.model ? `--model ${shellQuote(options.model)}` : null,
+    options?.effort ? `--effort ${shellQuote(options.effort)}` : null,
+    trimmed ? shellQuote(trimmed) : null,
+  ].filter((p): p is string => p != null);
+  return `${parts.join(" ")}\r`;
 }
 
 /** The `claude` invocation to resume a past session (from the Claude Sessions
