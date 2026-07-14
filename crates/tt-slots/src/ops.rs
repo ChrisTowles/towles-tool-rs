@@ -311,7 +311,19 @@ pub struct RenderSummary {
 /// local adds). Works for slots and for the primary itself — the primary is
 /// where the user runs the app, so it claims ports like any slot. Slot dirs
 /// also get the `.tt-slot` marker.
-pub fn render_slot_env(sr: &SlotRoot, dir: &Path) -> Result<RenderSummary> {
+///
+/// `new_slot_base` seeds the marker's `base=` field the *first* time a slot
+/// is rendered (at creation, when `dir` has no marker yet) — it should be the
+/// actual ref the worktree was created from ([`create_slot`]'s resolved
+/// `base`), not the primary's current branch. A re-render of an *existing*
+/// slot (`tt slot env <name>`) ignores this and keeps the marker's already
+/// recorded base: it's fixed at creation and must never drift just because
+/// the primary's branch or default has since changed.
+pub fn render_slot_env(
+    sr: &SlotRoot,
+    dir: &Path,
+    new_slot_base: Option<&str>,
+) -> Result<RenderSummary> {
     let name = dir
         .file_name()
         .and_then(|n| n.to_str())
@@ -353,7 +365,16 @@ pub fn render_slot_env(sr: &SlotRoot, dir: &Path) -> Result<RenderSummary> {
         }
     }
 
-    let ctx = crate::SlotContext { slot_name: &name, base_branch: &base_branch(&sr.primary) };
+    // A marker already on disk (re-rendering an existing slot) wins over
+    // `new_slot_base` — the base is set once at creation, not re-derived on
+    // every `tt slot env`. Only a fresh slot (no marker yet) or the primary
+    // (never gets a marker) falls back to `new_slot_base`/the primary's branch.
+    let recorded_base = layout::read_slot_base(dir);
+    let ctx_base = recorded_base
+        .clone()
+        .or_else(|| new_slot_base.map(str::to_string))
+        .unwrap_or_else(|| base_branch(&sr.primary));
+    let ctx = crate::SlotContext { slot_name: &name, base_branch: &ctx_base };
     let outcome =
         crate::render(&template, &ctx, &existing, &sibling_claims, |p| !port_occupied(p))?;
 
@@ -362,7 +383,7 @@ pub fn render_slot_env(sr: &SlotRoot, dir: &Path) -> Result<RenderSummary> {
         .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", env_path.display())))?;
 
     if is_slot {
-        let marker = layout::marker_contents(&name, ctx.base_branch, "main");
+        let marker = layout::marker_contents(&name, &ctx_base, "main");
         fs::write(dir.join(layout::MARKER_FILE), marker)
             .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", layout::MARKER_FILE)))?;
     }
@@ -525,7 +546,7 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
         )));
     }
 
-    let summary = render_slot_env(&sr, &dir)?;
+    let summary = render_slot_env(&sr, &dir, Some(&base))?;
     warnings.extend(summary.warnings);
 
     // Inherit secrets from the first sibling checkout that has a .env — the

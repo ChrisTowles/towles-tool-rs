@@ -91,7 +91,7 @@ fn checkout_dir(sr: &SlotRoot, name: &str) -> Result<std::path::PathBuf, String>
 fn cmd_env(name: &str, root: Option<&Path>) -> Result<(), String> {
     let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
     let dir = checkout_dir(&sr, name)?;
-    let summary = ops::render_slot_env(&sr, &dir).map_err(|e| e.to_string())?;
+    let summary = ops::render_slot_env(&sr, &dir, None).map_err(|e| e.to_string())?;
     for warning in &summary.warnings {
         ui::warning(warning);
     }
