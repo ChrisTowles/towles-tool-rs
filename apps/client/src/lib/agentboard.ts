@@ -99,9 +99,9 @@ export type FolderData = {
   filesChanged: number;
   linesAdded: number;
   linesRemoved: number;
-  /** Commits on this branch that origin/main doesn't have. */
+  /** Commits on this branch that `comparedBase` doesn't have. */
   commitsAhead: number;
-  /** Commits on origin/main that this branch doesn't have. */
+  /** Commits on `comparedBase` that this branch doesn't have. */
   commitsBehind: number;
   sessions: SessionData[];
   needs: number;
@@ -114,8 +114,23 @@ export type FolderData = {
    * `.tt-slot` marker). What the diff pane auto-compares against when
    * `baseBranch` has no manual override — `null` for a non-slot checkout. */
   slotBaseBranch?: string | null;
+  /** The ref `filesChanged`/`linesAdded`/`linesRemoved`/`commitsAhead`/
+   * `commitsBehind` were actually measured against, e.g. `"origin/main"` or
+   * `"origin/docs/readme-slot-clean"` — always matches what the diff pane's
+   * "vs main" mode shows. Empty until the folder's git stats are computed
+   * at least once. */
+  comparedBase?: string;
   metadata?: FolderMetadata | null;
 };
+
+/** `comparedBase` with its `origin/` prefix stripped for display, e.g.
+ * `"origin/main"` → `"main"`. Falls back to `"main"` before the backend has
+ * computed anything yet. */
+export function comparedBaseLabel(folder: Pick<FolderData, "comparedBase">): string {
+  const base = folder.comparedBase?.trim();
+  if (!base) return "main";
+  return base.startsWith("origin/") ? base.slice("origin/".length) : base;
+}
 
 /** A logical repo: the group of checkouts sharing a `git remote origin` URL. */
 export type RepoData = {

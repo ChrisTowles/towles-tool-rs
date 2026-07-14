@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   abInvoke,
+  comparedBaseLabel,
   ctxPct,
   isCacheExpiring,
   isCold,
@@ -170,20 +171,49 @@ export function WorktreeBadge() {
   );
 }
 
-/** Commits ahead/behind origin/main, next to the branch name — `↑3 ↓2`.
+/** Which branch every git stat on this folder was measured against — `vs
+ * main` or `vs docs/readme-slot-clean` for a slot with a different creation
+ * base — next to the branch name so the ↑↓/±  numbers beside it are never
+ * ambiguous about what they mean. */
+export function ComparedBaseBadge({
+  folder,
+}: {
+  folder: Pick<FolderData, "comparedBase" | "baseBranch" | "slotBaseBranch">;
+}) {
+  const label = comparedBaseLabel(folder);
+  const manual = Boolean(folder.baseBranch?.trim());
+  return (
+    <span
+      className="shrink-0 rounded-md border border-border/70 px-1 font-mono text-[10px] text-muted-foreground"
+      title={
+        manual
+          ? `Diffs against "${label}" — your override for this folder`
+          : folder.slotBaseBranch
+            ? `Diffs against "${label}" — the ref this slot was created from`
+            : `Diffs against "${label}" (origin/main-or-master auto-detect)`
+      }
+    >
+      vs {label}
+    </span>
+  );
+}
+
+/** Commits ahead/behind `comparedBase`, next to the branch name — `↑3 ↓2`.
  * Ahead (unmerged local commits) reads emerald like a diff `+`; behind (just
  * staleness, not an attention signal) stays a muted amber. Renders nothing
- * when even with main. */
+ * when even with the compared branch. */
 export function AheadBehind({
-  stats: { commitsAhead, commitsBehind },
+  stats,
 }: {
-  stats: Pick<FolderData, "commitsAhead" | "commitsBehind">;
+  stats: Pick<FolderData, "commitsAhead" | "commitsBehind" | "comparedBase">;
 }) {
+  const { commitsAhead, commitsBehind } = stats;
   if (commitsAhead === 0 && commitsBehind === 0) return null;
+  const base = comparedBaseLabel(stats);
   return (
     <span
       className="shrink-0 font-mono text-[10.5px]"
-      title={`${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} ahead of origin/main, ${commitsBehind} behind`}
+      title={`${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} ahead of ${base}, ${commitsBehind} behind`}
     >
       {commitsAhead > 0 && (
         <span className="text-emerald-600 dark:text-emerald-400">↑{commitsAhead}</span>
@@ -198,13 +228,18 @@ export function AheadBehind({
  * a hover or dropped when the tree is clean, so the feature stays findable).
  * Clean folders read a quiet `diff`; dirty ones carry the ± tally. */
 export function DiffButton({
-  stats: { filesChanged, linesAdded, linesRemoved, commitsAhead },
+  stats,
   onOpen,
 }: {
-  stats: Pick<FolderData, "filesChanged" | "linesAdded" | "linesRemoved" | "commitsAhead">;
+  stats: Pick<
+    FolderData,
+    "filesChanged" | "linesAdded" | "linesRemoved" | "commitsAhead" | "comparedBase"
+  >;
   onOpen: () => void;
 }) {
+  const { filesChanged, linesAdded, linesRemoved, commitsAhead } = stats;
   const clean = linesAdded === 0 && linesRemoved === 0;
+  const base = comparedBaseLabel(stats);
   return (
     <button
       type="button"
@@ -215,8 +250,8 @@ export function DiffButton({
       className="flex h-5 shrink-0 items-center gap-1 rounded-md border border-border/70 px-1.5 font-mono text-[10.5px] text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground"
       title={
         clean
-          ? "No working-tree changes — view diff"
-          : `${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} ahead — view diff`
+          ? `No changes vs ${base} — view diff`
+          : `${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} ahead of ${base} — view diff`
       }
     >
       <GitCompare className="size-3" />

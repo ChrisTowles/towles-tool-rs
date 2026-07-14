@@ -234,6 +234,12 @@ pub struct FolderData {
     /// instead of always claiming "vs main". `None` for a non-slot checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_base_branch: Option<String>,
+    /// The ref `filesChanged`/`linesAdded`/`linesRemoved`/`commitsAhead`/
+    /// `commitsBehind` were actually measured against (`GitInfo::compared_base`)
+    /// — e.g. `"origin/main"` or `"origin/docs/readme-slot-clean"`. Empty
+    /// before the folder's git stats have been computed at least once.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub compared_base: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<SessionMetadata>,
 }

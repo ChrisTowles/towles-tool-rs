@@ -180,8 +180,11 @@ pub fn run() {
                             let warmed = tauri::async_runtime::spawn_blocking(move || {
                                 stale
                                     .into_iter()
-                                    .map(|dir| {
-                                        let info = tt_agentboard::git_info::compute_git_info(&dir);
+                                    .map(|(dir, base_branch)| {
+                                        let info = tt_agentboard::git_info::compute_git_info(
+                                            &dir,
+                                            base_branch.as_deref(),
+                                        );
                                         (dir, info)
                                     })
                                     .collect::<Vec<_>>()
@@ -216,8 +219,11 @@ pub fn run() {
                         let changed = tauri::async_runtime::spawn_blocking(move || {
                             let targets = poll_engine.lock().unwrap().git_targets();
                             let mut changed = false;
-                            for dir in targets {
-                                let info = tt_agentboard::git_info::compute_git_info(&dir);
+                            for (dir, base_branch) in targets {
+                                let info = tt_agentboard::git_info::compute_git_info(
+                                    &dir,
+                                    base_branch.as_deref(),
+                                );
                                 let stored = poll_engine.lock().unwrap().store_git_info(
                                     &dir,
                                     info,
@@ -252,7 +258,13 @@ pub fn run() {
                         interval.tick().await;
                         let fetch_engine = engine.clone();
                         let _ = tauri::async_runtime::spawn_blocking(move || {
-                            let targets = fetch_engine.lock().unwrap().git_targets();
+                            let targets: Vec<String> = fetch_engine
+                                .lock()
+                                .unwrap()
+                                .git_targets()
+                                .into_iter()
+                                .map(|(dir, _)| dir)
+                                .collect();
                             tt_agentboard::git_info::fetch_all(&targets);
                         })
                         .await;

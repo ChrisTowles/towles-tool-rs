@@ -269,15 +269,20 @@ impl Engine {
     }
 
     /// Dirs in the worktree-merged target set whose git-cache entry is
-    /// missing or older than the TTL as of `now` — for the host to compute
-    /// with [`crate::git_info::compute_git_info`] *outside* the engine lock,
-    /// then hand back via [`Self::warm_git_cache`]. Read-only; safe to call
-    /// under the lock since it never shells out.
-    pub fn stale_git_targets(&mut self, now: i64) -> Vec<String> {
+    /// missing or older than the TTL as of `now`, paired with that folder's
+    /// base-branch override (if any) — for the host to compute with
+    /// [`crate::git_info::compute_git_info`] *outside* the engine lock, then
+    /// hand back via [`Self::warm_git_cache`]. Read-only; safe to call under
+    /// the lock since it never shells out.
+    pub fn stale_git_targets(&mut self, now: i64) -> Vec<(String, Option<String>)> {
         self.reload_repos();
         self.expand_with_worktrees()
             .into_iter()
             .filter(|d| !self.git_cache.is_fresh(d, now))
+            .map(|d| {
+                let base = self.folder_meta.base_branch_for(&d).map(str::to_string);
+                (d, base)
+            })
             .collect()
     }
 
@@ -327,12 +332,19 @@ impl Engine {
     }
 
     /// The dirs whose git info the host should recompute (all watched repos,
-    /// freshly reloaded). Cheap; hold the lock only for this, then run
+    /// freshly reloaded), paired with each folder's base-branch override (if
+    /// any). Cheap; hold the lock only for this, then run
     /// [`crate::git_info::compute_git_info`] per dir unlocked and hand the
     /// results back via [`Engine::store_git_info`].
-    pub fn git_targets(&mut self) -> Vec<String> {
+    pub fn git_targets(&mut self) -> Vec<(String, Option<String>)> {
         self.reload_repos();
-        repo_entries(&self.repo_paths).into_iter().map(|e| e.dir).collect()
+        repo_entries(&self.repo_paths)
+            .into_iter()
+            .map(|e| {
+                let base = self.folder_meta.base_branch_for(&e.dir).map(str::to_string);
+                (e.dir, base)
+            })
+            .collect()
     }
 
     /// Store one repo's freshly computed git info. Returns whether it differs
@@ -408,6 +420,10 @@ impl Engine {
         let changed = self.folder_meta.set_base_branch(dir, base_branch);
         if changed {
             let _ = self.folder_meta.save();
+            // The cached stats were computed against the old baseline —
+            // invalidate so the next watcher-scan tick (2s, not the 10s stat
+            // poll) recomputes them against the new override right away.
+            self.git_cache.invalidate(Some(dir));
         }
         changed
     }

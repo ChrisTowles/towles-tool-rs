@@ -18,11 +18,12 @@ use serde::{Deserialize, Serialize};
 
 /// Working-tree/commit stats for a session directory. Ports `GitInfo`.
 ///
-/// `files_changed`/`lines_added`/`lines_removed` measure the working tree against
-/// the pushed baseline (merge-base with upstream, else origin/main).
-/// `commits_ahead`/`commits_behind` use a different baseline (distance from
-/// origin/main), so the two can disagree on a feature branch tracking its own
-/// remote.
+/// `files_changed`/`lines_added`/`lines_removed` and `commits_ahead`/
+/// `commits_behind` all measure against the *same* baseline: `compared_base`
+/// (see [`resolve_base_ref`]) — a per-folder override, else a worktree slot's
+/// own creation base, else origin/main-or-master. They agree by construction,
+/// unlike the old design where the two used different baselines (a branch's
+/// own upstream vs. always origin/main) and could silently disagree.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GitInfo {
     pub branch: String,
@@ -30,9 +31,9 @@ pub struct GitInfo {
     pub files_changed: i64,
     pub lines_added: i64,
     pub lines_removed: i64,
-    /// Commits on HEAD that origin/main doesn't have.
+    /// Commits on HEAD that `compared_base` doesn't have.
     pub commits_ahead: i64,
-    /// Commits on origin/main that HEAD doesn't have. Kept separate from
+    /// Commits on `compared_base` that HEAD doesn't have. Kept separate from
     /// `commits_ahead` (not a signed delta) so "3 ahead, 2 behind" doesn't
     /// collapse to a meaningless "+1".
     pub commits_behind: i64,
@@ -53,6 +54,12 @@ pub struct GitInfo {
     /// for a non-slot checkout. Lets the diff pane (and [`resolve_base_ref`])
     /// know what to auto-compare against without the user typing an override.
     pub slot_base_branch: Option<String>,
+    /// The ref every stat on this struct (`files_changed`, `commits_ahead`,
+    /// …) was actually compared against — [`resolve_base_ref`]'s result, e.g.
+    /// `"origin/main"` or `"origin/docs/readme-slot-clean"`. Lets the Folder
+    /// Rail label its stats with what they mean instead of always implying
+    /// "vs main". Empty when `compute_git_info` never ran (default/missing).
+    pub compared_base: String,
 }
 
 /// Must stay above the git poll interval so the poll keeps entries warm.
@@ -109,9 +116,11 @@ impl GitInfoCache {
     }
 
     /// Recompute git info for `dir` (shells out), cache it at `now_ms`, and return
-    /// it. Ports `refreshGitInfo` (synchronous, no in-flight de-dup).
+    /// it. Ports `refreshGitInfo` (synchronous, no in-flight de-dup). No
+    /// per-folder base-branch override — callers that have one (the app's
+    /// git-stat poll) call [`compute_git_info`] directly instead.
     pub fn refresh(&mut self, dir: &str, now_ms: i64) -> GitInfo {
-        let info = compute_git_info(dir);
+        let info = compute_git_info(dir, None);
         self.insert(dir, info.clone(), now_ms);
         info
     }
@@ -141,7 +150,12 @@ fn git_out(dir: &str, args: &[&str]) -> String {
 /// Compute git info for `dir` by shelling out. Ports `computeGitInfo`. Returns
 /// empty [`GitInfo`] when the directory isn't a git repo. This is the thin
 /// subprocess layer — the parsing it delegates to is unit-tested separately.
-pub fn compute_git_info(dir: &str) -> GitInfo {
+///
+/// `base_branch_override` is the folder's manual "vs main" override (see
+/// [`resolve_base_ref`]), threaded in by the caller from
+/// `FolderMetaStore::base_branch_for` — `compute_git_info` has no store
+/// access of its own, only `dir`.
+pub fn compute_git_info(dir: &str, base_branch_override: Option<&str>) -> GitInfo {
     if dir.is_empty() {
         return GitInfo::default();
     }
@@ -156,8 +170,9 @@ pub fn compute_git_info(dir: &str) -> GitInfo {
     }
     let git_dir = git_out(dir, &["rev-parse", "--git-dir"]);
     let status_out = git_out(dir, &["status", "--porcelain"]);
-    let origin_main = resolve_origin_main(dir);
-    let base = resolve_pushed_base(dir, &origin_main);
+    let compared_base = resolve_base_ref(dir, base_branch_override);
+    let merge_base = git_out(dir, &["merge-base", "HEAD", &compared_base]);
+    let base = if merge_base.is_empty() { "HEAD".to_string() } else { merge_base };
     let diff_out = git_out(dir, &["diff", "--numstat", &base]);
     let ahead_behind = git_out(
         dir,
@@ -165,7 +180,7 @@ pub fn compute_git_info(dir: &str) -> GitInfo {
             "rev-list",
             "--left-right",
             "--count",
-            &format!("{origin_main}...HEAD"),
+            &format!("{compared_base}...HEAD"),
         ],
     );
 
@@ -175,6 +190,7 @@ pub fn compute_git_info(dir: &str) -> GitInfo {
     info.origin_url = (!origin_url.is_empty()).then_some(origin_url);
     info.worktree_dirs = list_other_worktrees(dir);
     info.slot_base_branch = tt_slots::read_slot_base(std::path::Path::new(dir));
+    info.compared_base = compared_base;
     info
 }
 
@@ -238,8 +254,10 @@ fn resolve_origin_main(dir: &str) -> String {
     if verified.is_empty() { "origin/master".to_string() } else { "origin/main".to_string() }
 }
 
-/// The ref the diff pane's "vs main" mode compares against, highest priority
-/// first:
+/// The ref every "vs main" comparison compares against — the diff pane's
+/// `DiffMode::Main` *and* [`compute_git_info`]'s `files_changed`/
+/// `commits_ahead`/etc. stats, so the Folder Rail's numbers always match what
+/// the diff pane actually shows. Highest priority first:
 ///
 /// 1. `base_branch` — a per-folder override for a long-running branch that
 ///    didn't fork from main, set via
@@ -272,23 +290,6 @@ fn resolve_base_ref(dir: &str, base_branch: Option<&str>) -> String {
     resolve_origin_main(dir)
 }
 
-/// The commit HEAD diverged from: merge-base with upstream if set, else with
-/// origin/main, else HEAD. Ports `resolvePushedBase`.
-fn resolve_pushed_base(dir: &str, origin_main: &str) -> String {
-    let upstream = git_out(
-        dir,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ],
-    );
-    let base_ref = if upstream.is_empty() { origin_main } else { &upstream };
-    let merge_base = git_out(dir, &["merge-base", "HEAD", base_ref]);
-    if merge_base.is_empty() { "HEAD".to_string() } else { merge_base }
-}
-
 /// Pure assembly of [`GitInfo`] from raw git command outputs. Unit-tested on
 /// fixture strings. Ports the parsing half of `computeGitInfo`.
 pub fn compute_git_info_from_outputs(
@@ -313,13 +314,14 @@ pub fn compute_git_info_from_outputs(
         lines_removed,
         commits_ahead,
         commits_behind,
-        // The pure parser has no origin/worktree-list/slot-marker knowledge;
-        // `compute_git_info` fills all three in. Existence is decided before
-        // shelling out, so a parsed result is never "missing".
+        // The pure parser has no origin/worktree-list/slot-marker/base-ref
+        // knowledge; `compute_git_info` fills all four in. Existence is
+        // decided before shelling out, so a parsed result is never "missing".
         origin_url: None,
         worktree_dirs: Vec::new(),
         dir_missing: false,
         slot_base_branch: None,
+        compared_base: String::new(),
     }
 }
 
@@ -637,7 +639,7 @@ mod tests {
     fn compute_flags_a_missing_dir() {
         let root = tempfile::TempDir::new().unwrap();
         let gone = root.path().join("moved-away");
-        let info = compute_git_info(gone.to_str().unwrap());
+        let info = compute_git_info(gone.to_str().unwrap(), None);
         assert!(info.dir_missing);
         assert!(info.branch.is_empty());
     }
@@ -646,7 +648,7 @@ mod tests {
     fn compute_does_not_flag_an_existing_dir() {
         let root = tempfile::TempDir::new().unwrap();
         // Present but not a git repo: still not "missing".
-        let info = compute_git_info(root.path().to_str().unwrap());
+        let info = compute_git_info(root.path().to_str().unwrap(), None);
         assert!(!info.dir_missing);
     }
 
@@ -673,7 +675,7 @@ mod tests {
         run(&["commit", "--quiet", "-m", "init"]);
 
         // A non-slot checkout has no marker: no slot base surfaced.
-        let info = compute_git_info(repo.to_str().unwrap());
+        let info = compute_git_info(repo.to_str().unwrap(), None);
         assert_eq!(info.slot_base_branch, None);
 
         // Writing the `.tt-slot` marker surfaces its `base=` field, so the
@@ -683,8 +685,60 @@ mod tests {
             tt_slots::marker_contents("s", "develop", "main"),
         )
         .unwrap();
-        let info = compute_git_info(repo.to_str().unwrap());
+        let info = compute_git_info(repo.to_str().unwrap(), None);
         assert_eq!(info.slot_base_branch, Some("develop".to_string()));
+    }
+
+    /// The bug this module used to have: `commits_ahead`/`files_changed` were
+    /// always measured against origin/main, even for a folder whose diff pane
+    /// compares against something else — so the Folder Rail's numbers
+    /// disagreed with what the diff pane actually showed. Both must now come
+    /// from the same `resolve_base_ref` baseline.
+    #[test]
+    fn compute_measures_stats_against_the_resolved_base_not_always_main() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+
+        run(&["checkout", "--quiet", "-b", "develop"]);
+        std::fs::write(repo.join("f.txt"), "2").unwrap();
+        run(&["commit", "--quiet", "-am", "on develop"]);
+
+        run(&["checkout", "--quiet", "-b", "feature"]);
+        std::fs::write(repo.join("f.txt"), "3").unwrap();
+        run(&["commit", "--quiet", "-am", "on feature"]);
+
+        // Fake remote-tracking refs (no real remote needed for this test).
+        run(&["update-ref", "refs/remotes/origin/main", "main"]);
+        run(&["update-ref", "refs/remotes/origin/develop", "develop"]);
+
+        let dir = repo.to_str().unwrap();
+
+        // vs origin/main (auto-detect, no override): both commits count.
+        let vs_main = compute_git_info(dir, None);
+        assert_eq!(vs_main.compared_base, "origin/main");
+        assert_eq!(vs_main.commits_ahead, 2);
+
+        // vs an explicit "develop" override: only feature's own commit counts.
+        let vs_develop = compute_git_info(dir, Some("develop"));
+        assert_eq!(vs_develop.compared_base, "origin/develop");
+        assert_eq!(vs_develop.commits_ahead, 1);
     }
 
     #[test]
