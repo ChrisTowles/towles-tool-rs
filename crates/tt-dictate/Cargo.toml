@@ -1,0 +1,27 @@
+[package]
+name = "tt-dictate"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Streaming dictation engine (sherpa-onnx ASR, cpal capture) — ported from scribed"
+
+[features]
+default = []
+# Compile the ASR backend. Off by default so pure-core (driver, retype,
+# settings, dsp) compiles and tests everywhere without the sherpa-onnx
+# native lib. tt-app enables this.
+asr = ["dep:sherpa-onnx"]
+
+[dependencies]
+tt-config = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+ureq = { workspace = true }
+cpal = "0.15"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+tempfile = "3.14.0"
+sherpa-onnx = { version = "1.13", default-features = false, features = ["static"], optional = true }
+
+[dev-dependencies]
+proptest = "1"
