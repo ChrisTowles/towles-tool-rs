@@ -21,6 +21,7 @@ pub mod envfile;
 pub mod guards;
 pub mod layout;
 pub mod ops;
+pub mod suggest;
 pub mod template;
 
 pub use guards::{RmBlocked, check_removal, docker_resource_matches};
@@ -29,4 +30,5 @@ pub use ops::{
     CleanOpts, CleanReport, CreateOpts, CreatedSlot, FinishedSlot, KeptSlot, OpsError, RemoveOpts,
     RemovedSlot, SlotRoot, clean_slots, create_slot, discover_root, remove_slot,
 };
+pub use suggest::{SuggestError, Suggestion, suggest};
 pub use template::{RenderOutcome, SlotContext, TemplateError, render};

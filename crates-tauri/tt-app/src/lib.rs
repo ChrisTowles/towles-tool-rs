@@ -151,7 +151,13 @@ pub fn run() {
             }
 
             // Watcher scan: every 2s, or eagerly on a (debounced) fs-notify
-            // signal.
+            // signal. Warms any stale git-cache entries (e.g. a worktree slot
+            // just created — always a cache miss) OUTSIDE the engine lock
+            // first, same reasoning as the stat-poll below: `scan_once` and
+            // every `ab_*` command share this lock and (on Linux) sync
+            // commands dispatch inline on the GTK main thread, so a lock-held
+            // git subprocess chain would freeze the whole app, not just this
+            // loop. See `Engine::expand_with_worktrees`'s doc comment.
             {
                 let engine = engine.clone();
                 let emit = emit.clone();
@@ -163,9 +169,30 @@ pub fn run() {
                             _ = interval.tick() => {}
                             _ = scan.notified() => {}
                         }
+                        let now = now_ms();
+                        let warm_engine = engine.clone();
+                        let stale = tauri::async_runtime::spawn_blocking(move || {
+                            warm_engine.lock().unwrap().stale_git_targets(now)
+                        })
+                        .await
+                        .unwrap_or_default();
+                        if !stale.is_empty() {
+                            let warmed = tauri::async_runtime::spawn_blocking(move || {
+                                stale
+                                    .into_iter()
+                                    .map(|dir| {
+                                        let info = tt_agentboard::git_info::compute_git_info(&dir);
+                                        (dir, info)
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .await
+                            .unwrap_or_default();
+                            engine.lock().unwrap().warm_git_cache(warmed, now);
+                        }
                         {
                             let mut e = engine.lock().unwrap();
-                            e.scan_once(now_ms());
+                            e.scan_once(now);
                         }
                         emit.notify_one();
                     }
@@ -300,8 +327,11 @@ pub fn run() {
             agentboard::ab_open_in_editor,
             agentboard::ab_get_diff,
             slots::slot_base_branches,
+            slots::slot_check_branch,
             slots::slot_create,
             slots::slot_remove,
+            slots::slot_run_setup,
+            slots::slot_suggest,
             store::store_snapshot,
             store::store_add_task,
             store::store_set_task_status,

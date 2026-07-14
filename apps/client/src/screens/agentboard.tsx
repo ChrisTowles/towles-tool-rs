@@ -85,6 +85,7 @@ import {
   termWriteRetry,
   useAgentboardState,
   useNow,
+  waitForFirstFrame,
   type AgentboardNav,
   type AgentStatus,
   type FolderData,
@@ -548,10 +549,13 @@ export function AgentboardScreen() {
     if (!rec) return;
     selectSession(created.dir, rec.id);
     if (goal) {
-      // Selecting mounts the TerminalView, which spawns the PTY; give zsh a
-      // beat to finish init or it can eat the queued claude command (the
+      // Selecting mounts the TerminalView, which spawns the PTY; wait for its
+      // first real output (a proxy for "the shell is actually reading input")
+      // rather than a fixed guess — a successful term_write only proves the
+      // Rust-side write conduit exists, not that zsh has finished sourcing
+      // its rc files, and a queued command typed before that gets eaten (the
       // termWriteRetry window alone lost this race on slower creations).
-      await sleep(1500);
+      await waitForFirstFrame(rec.id);
       await launchClaudeIn(
         { folderDir: created.dir, sessionId: rec.id, sessionName: rec.name, restart: false },
         goal,
