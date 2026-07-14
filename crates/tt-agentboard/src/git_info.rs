@@ -232,14 +232,28 @@ fn resolve_origin_main(dir: &str) -> String {
     if verified.is_empty() { "origin/master".to_string() } else { "origin/main".to_string() }
 }
 
-/// The ref the diff pane's "vs main" mode compares against: `base_branch` (a
-/// per-folder override for a long-running branch that didn't fork from main,
-/// set via [`crate::folder_meta::FolderMetaStore::set_base_branch`]) if it
-/// resolves to a real ref, else the origin/main-or-master auto-detect.
-/// `origin/<name>` is preferred over a same-named local branch since the diff
-/// pane wants the pushed baseline, matching [`resolve_origin_main`].
+/// The ref the diff pane's "vs main" mode compares against, highest priority
+/// first:
+///
+/// 1. `base_branch` — a per-folder override for a long-running branch that
+///    didn't fork from main, set via
+///    [`crate::folder_meta::FolderMetaStore::set_base_branch`].
+/// 2. The worktree slot's own `.tt-slot` marker `base=` field (see
+///    [`tt_slots::read_slot_base`]) — the ref the slot was actually created
+///    from, which may not be main. Not present for a non-slot checkout.
+/// 3. The origin/main-or-master auto-detect.
+///
+/// Whichever name wins resolves to `origin/<name>`, never the local branch:
+/// both the local ref and its origin remote-tracking ref may have moved since
+/// the slot was created, and the diff pane wants the current pushed baseline,
+/// matching [`resolve_origin_main`]. Falls back to the local branch only when
+/// no `origin/<name>` ref exists at all (e.g. a base branch never pushed).
 fn resolve_base_ref(dir: &str, base_branch: Option<&str>) -> String {
-    if let Some(name) = base_branch.map(str::trim).filter(|n| !n.is_empty()) {
+    let candidates = [base_branch.map(str::trim).filter(|n| !n.is_empty()).map(str::to_string)]
+        .into_iter()
+        .flatten()
+        .chain(tt_slots::read_slot_base(std::path::Path::new(dir)));
+    for name in candidates {
         let name = name.trim_start_matches("origin/");
         let remote = format!("origin/{name}");
         if !git_out(dir, &["rev-parse", "--verify", "--quiet", &remote]).is_empty() {
@@ -560,6 +574,50 @@ mod tests {
         assert_eq!(resolve_base_ref(dir, Some("no-such-branch")), resolve_origin_main(dir));
         // No override at all: same auto-detect.
         assert_eq!(resolve_base_ref(dir, None), resolve_origin_main(dir));
+    }
+
+    #[test]
+    fn resolve_base_ref_uses_the_slots_own_creation_base_over_main() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+        // A local "origin/develop" remote-tracking ref so resolve_base_ref
+        // has something to prefer over the local "develop" branch.
+        run(&["branch", "develop"]);
+        run(&["update-ref", "refs/remotes/origin/develop", "develop"]);
+        run(&["update-ref", "refs/remotes/origin/main", "main"]);
+
+        std::fs::write(
+            repo.join(tt_slots::MARKER_FILE),
+            tt_slots::marker_contents("slot-name", "develop", "main"),
+        )
+        .unwrap();
+
+        let dir = repo.to_str().unwrap();
+        // No explicit override: the slot's own marker base wins over the
+        // origin/main auto-detect, and resolves to the origin remote copy.
+        assert_eq!(resolve_base_ref(dir, None), "origin/develop");
+        // An explicit per-folder override still takes priority over the
+        // slot's recorded creation base.
+        run(&["branch", "release"]);
+        run(&["update-ref", "refs/remotes/origin/release", "release"]);
+        assert_eq!(resolve_base_ref(dir, Some("release")), "origin/release");
     }
 
     #[test]

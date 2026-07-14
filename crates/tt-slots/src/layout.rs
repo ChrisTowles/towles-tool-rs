@@ -50,6 +50,24 @@ pub fn marker_contents(slot_name: &str, base_branch: &str, stream: &str) -> Stri
     format!("name={slot_name}\nbase={base_branch}\nstream={stream}\n")
 }
 
+/// Parse `.tt-slot` marker contents (as written by [`marker_contents`]) into
+/// its `key=value` lines. Pure — callers own reading the file.
+pub fn parse_marker(contents: &str) -> std::collections::HashMap<String, String> {
+    contents
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect()
+}
+
+/// The `base=` field from a slot's `.tt-slot` marker at `slot_dir`, if the
+/// marker exists and records a non-empty base. `None` for a non-slot
+/// checkout (no marker) or a marker missing/blank on `base`.
+pub fn read_slot_base(slot_dir: &std::path::Path) -> Option<String> {
+    let contents = std::fs::read_to_string(slot_dir.join(MARKER_FILE)).ok()?;
+    parse_marker(&contents).remove("base").filter(|s| !s.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +100,26 @@ mod tests {
     fn marker_is_line_oriented() {
         let m = marker_contents("slot-migrate", "main", "main");
         assert_eq!(m, "name=slot-migrate\nbase=main\nstream=main\n");
+    }
+
+    #[test]
+    fn parse_marker_reads_key_value_lines() {
+        let fields = parse_marker("name=slot-migrate\nbase=develop\nstream=main\n");
+        assert_eq!(fields.get("base"), Some(&"develop".to_string()));
+        assert_eq!(fields.get("name"), Some(&"slot-migrate".to_string()));
+    }
+
+    #[test]
+    fn read_slot_base_finds_marker_in_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(MARKER_FILE), marker_contents("s", "develop", "main"))
+            .unwrap();
+        assert_eq!(read_slot_base(dir.path()), Some("develop".to_string()));
+    }
+
+    #[test]
+    fn read_slot_base_none_without_marker() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert_eq!(read_slot_base(dir.path()), None);
     }
 }
