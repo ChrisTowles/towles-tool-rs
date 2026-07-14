@@ -162,6 +162,56 @@ fn lifecycle_new_env_ls_rm() {
         .stderr(contains("refusing to remove the primary"));
 }
 
+/// A slot created with `--base <non-default>` records *that* ref, not the
+/// primary's currently-checked-out branch, in both the rendered `.env`'s
+/// `${tt:base}` token and the `.tt-slot` marker — and re-rendering later
+/// (`tt slot env`) must not let that drift even if the primary's branch has
+/// since changed.
+#[test]
+fn new_with_base_records_the_actual_base_not_the_primary_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = make_root(tmp.path());
+    let root_s = root.to_string_lossy().to_string();
+    let primary = root.join("demo-primary");
+
+    git(&primary, &["checkout", "-b", "develop"]);
+    git(&primary, &["checkout", "main"]);
+
+    let out = tt()
+        .args([
+            "slot",
+            "new",
+            "-b",
+            "feat/off-develop",
+            "--base",
+            "develop",
+            "--json",
+            "--root",
+            &root_s,
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(created["base"], "develop");
+
+    let slot = root.join("slots").join("off-develop");
+    let env = std::fs::read_to_string(slot.join(".env")).unwrap();
+    assert!(env.contains("BASE=develop"), "env: {env}");
+    let marker = std::fs::read_to_string(slot.join(".tt-slot")).unwrap();
+    assert!(marker.contains("base=develop"), "marker: {marker}");
+
+    // The primary switches branches after the slot was created (its "current
+    // branch" is no longer `develop`, or even `main`) — re-rendering the
+    // slot's env must still report the base it was actually created from.
+    git(&primary, &["checkout", "-b", "unrelated"]);
+    tt().args(["slot", "env", "off-develop", "--root", &root_s]).assert().success();
+    let env_again = std::fs::read_to_string(slot.join(".env")).unwrap();
+    assert!(env_again.contains("BASE=develop"), "re-render: {env_again}");
+    let marker_again = std::fs::read_to_string(slot.join(".tt-slot")).unwrap();
+    assert!(marker_again.contains("base=develop"), "re-render marker: {marker_again}");
+}
+
 #[test]
 fn rm_guards_dirty_and_orphan_commits() {
     let tmp = tempfile::tempdir().unwrap();
