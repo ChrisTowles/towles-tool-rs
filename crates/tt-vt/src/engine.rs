@@ -241,6 +241,17 @@ impl Engine {
         self.force_full = true;
     }
 
+    /// Whether the application is holding a synchronized-output batch open
+    /// (DEC private mode 2026): frames rendered between BSU (`CSI ? 2026 h`)
+    /// and ESU (`CSI ? 2026 l`) would show a half-drawn update, so the
+    /// session loop holds rendering while this is set (bounded by its
+    /// max-hold — a program that dies mid-batch must not freeze the pane).
+    /// A failed mode query reads as "not synchronized" so rendering can
+    /// never get stuck on an FFI error.
+    pub fn sync_output(&self) -> bool {
+        self.term.mode(Mode::SYNC_OUTPUT).unwrap_or(false)
+    }
+
     /// Drop the scrollback history while leaving the visible screen intact
     /// (right-click "Clear scrollback"). Feeds xterm's "erase saved lines"
     /// sequence (CSI 3 J), which discards rows scrolled off the top but does
