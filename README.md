@@ -89,7 +89,7 @@ The CLI binary is `tt`. Run any command with `--help` for its flags.
 - `agentboard repos|sessions` — manage the watched-repo list and per-folder PTY sessions the app and collectors read (`ag` is an alias).
 - `collect calendar|issues|prs|slack|all|status` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`, and a watched Slack DM; `status` reports each collector's health.
 - `mcp serve` — stdio MCP server exposing the store, live agent sessions, and `journal_append` (register with `claude mcp add tt -- tt mcp serve`).
-- `slot new|ls|rm|env` — manage worktree slots (see [Worktree slots](#worktree-slots) above).
+- `slot new|ls|rm|env|clean` — manage worktree slots (see [Worktree slots](#worktree-slots) above).
 
 ## Crates
 
