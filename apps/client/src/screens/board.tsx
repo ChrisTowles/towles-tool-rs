@@ -10,7 +10,7 @@ import {
   Search,
   StickyNote,
 } from "lucide-react";
-import { ImportIssuesDialog } from "@/components/import-issues-dialog";
+import { ImportIssuesPage } from "@/components/import-issues-page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -303,6 +303,14 @@ export function BoardScreen() {
     void storeAddTask(text, dueTs, repo);
   }
 
+  if (importOpen) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <ImportIssuesPage onClose={() => setImportOpen(false)} linkedKeys={linkedKeys} />
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2.5">
@@ -366,7 +374,6 @@ export function BoardScreen() {
           </Button>
         </div>
       </div>
-      <ImportIssuesDialog open={importOpen} onOpenChange={setImportOpen} linkedKeys={linkedKeys} />
 
       {isEmpty ? (
         <div ref={focusRef} className="flex min-h-0 flex-1 items-center justify-center p-6">

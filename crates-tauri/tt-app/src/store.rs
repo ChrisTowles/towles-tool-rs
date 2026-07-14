@@ -117,11 +117,8 @@ pub fn store_add_task(
 }
 
 /// Move a todo to a kanban column (backlog/next/doing/review/done), then
-/// re-emit. When the todo is linked to a GitHub issue and this crosses the
-/// `done` boundary, best-effort closes/reopens the issue on a background
-/// thread (fire-and-forget: the local status change and snapshot emit don't
-/// wait on the network round-trip). A failed gh call self-heals on the next
-/// `issues` collector poll via [`tt_collect::reconcile_linked_task_statuses`].
+/// re-emit, and sync GitHub if this crosses the `done` boundary (see
+/// [`spawn_gh_status_sync`]). Used by the "Move to" menu.
 #[tauri::command]
 pub fn store_set_task_status(
     app: AppHandle,
@@ -129,25 +126,51 @@ pub fn store_set_task_status(
     id: i64,
     status: String,
 ) -> Result<(), String> {
-    let sync_target = with_store(&state, |store| {
+    let before = with_store(&state, |store| {
         let before = store.get_task(id).map_err(|e| format!("get_task failed: {e}"))?;
         store
             .set_task_status(id, &status, now_ms())
             .map_err(|e| format!("set_task_status failed: {e}"))?;
-        Ok(before.and_then(|t| gh_close_reopen_target(&t.status, &status, t.repo, t.issue_number)))
+        Ok(before)
     })?;
     emit_snapshot(&app, &state);
-    if let Some((repo, number, close)) = sync_target {
-        std::thread::spawn(move || {
-            let verb = if close { "close" } else { "reopen" };
-            let result =
-                if close { close_gh_issue(&repo, number) } else { reopen_gh_issue(&repo, number) };
-            if let Err(e) = result {
-                eprintln!("store_set_task_status: gh issue {verb} failed for {repo}#{number}: {e}");
-            }
-        });
+    if let Some(before) = before {
+        spawn_gh_status_sync(&before.status, &status, before.repo, before.issue_number);
     }
     Ok(())
+}
+
+/// Best-effort close/reopen the GitHub issue linked to a todo whose status
+/// just crossed the `done` boundary (see [`gh_close_reopen_target`]), on a
+/// background thread — fire-and-forget so the caller's snapshot emit doesn't
+/// wait on the network round-trip. A failed gh call self-heals on the next
+/// `issues` collector poll via [`tt_collect::reconcile_linked_task_statuses`].
+///
+/// The single call site for this decision: every command that can change a
+/// todo's status (`store_set_task_status`, `store_set_task_position`) routes
+/// through here rather than each re-deriving/spawning its own sync, so the
+/// close/reopen behavior can't drift between them (#246 shipped only in
+/// `store_set_task_status`, so dragging a card — which goes through
+/// `store_set_task_position` — silently skipped the sync).
+fn spawn_gh_status_sync(
+    old_status: &str,
+    new_status: &str,
+    repo: Option<String>,
+    issue_number: Option<i64>,
+) {
+    let Some((repo, number, close)) =
+        gh_close_reopen_target(old_status, new_status, repo, issue_number)
+    else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let verb = if close { "close" } else { "reopen" };
+        let result =
+            if close { close_gh_issue(&repo, number) } else { reopen_gh_issue(&repo, number) };
+        if let Err(e) = result {
+            eprintln!("gh issue {verb} sync failed for {repo}#{number}: {e}");
+        }
+    });
 }
 
 /// Which gh action (if any) a todo's status change should trigger: `Some((repo,
@@ -196,7 +219,8 @@ fn run_gh_issue_state_change(repo: &str, number: i64, verb: &str) -> Result<(), 
 
 /// Move a todo to `status` at an explicit slot (`index`) within that column,
 /// renumbering the column's positions — powers drag-to-reorder and
-/// position-aware cross-column drops. Then re-emit the snapshot.
+/// position-aware cross-column drops. Then re-emit the snapshot and sync
+/// GitHub if this crosses the `done` boundary (see [`spawn_gh_status_sync`]).
 #[tauri::command]
 pub fn store_set_task_position(
     app: AppHandle,
@@ -205,12 +229,17 @@ pub fn store_set_task_position(
     status: String,
     index: i64,
 ) -> Result<(), String> {
-    with_store(&state, |store| {
+    let before = with_store(&state, |store| {
+        let before = store.get_task(id).map_err(|e| format!("get_task failed: {e}"))?;
         store
             .set_task_position(id, &status, index, now_ms())
-            .map_err(|e| format!("set_task_position failed: {e}"))
+            .map_err(|e| format!("set_task_position failed: {e}"))?;
+        Ok(before)
     })?;
     emit_snapshot(&app, &state);
+    if let Some(before) = before {
+        spawn_gh_status_sync(&before.status, &status, before.repo, before.issue_number);
+    }
     Ok(())
 }
 
