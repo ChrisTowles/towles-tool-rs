@@ -5785,6 +5785,7 @@ dependencies = [
  "dirs",
  "env_logger",
  "futures-util",
+ "libc",
  "native-tls",
  "portable-pty",
  "serde",
