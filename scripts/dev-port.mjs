@@ -8,11 +8,10 @@
 //   2. Otherwise scan upward from this slot's deterministic base port (derived
 //      from the repo-root directory name) for a free port, so different slots
 //      start in different ranges instead of all racing for 1420.
-import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { slotBasePort, loadEnvFiles } from "./slot-port.mjs";
+import { slotBasePort, loadEnvFiles, spawnTauriDev } from "./slot-port.mjs";
 
 const MAX_ATTEMPTS = 100;
 const PORT_ENV = "TT_DEV_PORT";
@@ -68,18 +67,7 @@ if (override !== undefined && override !== "") {
   );
 }
 
-const child = spawn(
-  "tauri",
-  [
-    "dev",
-    "--config",
-    JSON.stringify({ build: { devUrl: `http://localhost:${port}` } }),
-  ],
-  {
-    stdio: "inherit",
-    env: { ...process.env, TT_DEV_PORT: String(port) },
-    shell: process.platform === "win32",
-  },
+spawnTauriDev(
+  ["dev", "--config", JSON.stringify({ build: { devUrl: `http://localhost:${port}` } })],
+  { ...process.env, TT_DEV_PORT: String(port) },
 );
-
-child.on("exit", (code) => process.exit(code ?? 0));

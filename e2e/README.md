@@ -71,6 +71,23 @@ Notes:
   same slot at once.
 - Automation mode: launched with `TAURI_WEBVIEW_AUTOMATION=true`, WebKitGTK may
   show a small "controlled by automation" banner and use ephemeral web storage.
+- **Stopping a stray dev session:** `dev:drive`/`dev` (via `spawnTauriDev` in
+  `scripts/slot-port.mjs`) spawn `tauri` as the leader of its own process
+  group and forward SIGINT/SIGTERM/SIGHUP to that whole group, so a normal
+  Ctrl+C (or `kill` on the wrapper, while it's still alive) tears down `tauri`
+  → `cargo run` → `tt-app` and the `vite`/esbuild dev server together. If a
+  session was backgrounded and its wrapper is already gone (e.g. killed by
+  PID from another shell without the wrapper around to relay the signal),
+  killing only the one PID you can see in `ps` isn't enough — `tauri`'s own
+  node shim, `cargo`, and `vite`/esbuild are separate processes underneath it,
+  and killing the top one doesn't reliably cascade. Instead kill the whole
+  group at once: find any PID in the tree (`ps aux | grep vite` or
+  `lsof -i :<port>` / `ss -tlnp | grep <port>`), then
+  `kill -- -$(ps -o pgid= -p <that pid> | tr -d ' ')`. Confirm the port is
+  actually free afterward with `ss -tlnp | grep <port>` — don't just check
+  that a `ps aux | grep <pattern>` you expected is empty, since a leftover
+  `vite`/esbuild process won't match a pattern like "tauri dev" or the slot's
+  directory name the same way the top-level process did.
 
 ## Regression suite (WebdriverIO)
 
