@@ -14,12 +14,14 @@ import { IconBtn } from "@/components/agentboard-bits";
 import { FilePreview, previewKindFor } from "@/components/file-preview";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { buildDiffTree, type DiffFile, type DiffTreeNode } from "@/lib/diff";
-import { ideAtMention } from "@/lib/ide";
+import { ideAtMention, useIdeConnected } from "@/lib/ide";
 import { invokeCmd } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
+import type { FolderData } from "@/lib/agentboard";
+import { Files as FilesIcon } from "lucide-react";
 
 /**
- * The diff pane's "Files" tab: every file in the checkout (tracked +
+ * The files pane: every file in the checkout (tracked +
  * untracked-not-ignored, via `ide_list_files`), not just what changed. A
  * VS-Code-shaped split: file tree + filter on the left, a Monaco viewer on
  * the right. Clicking a file opens it; selecting text in the viewer streams
@@ -171,6 +173,9 @@ function FileTreeRows({
   );
 }
 
+/** Claude called openFile — focus this file (new nonce per request). */
+export type FilesOpenRequest = { path: string; anchor: ViewerAnchor; nonce: number };
+
 export function FilesPane({
   dir,
   connected,
@@ -178,8 +183,7 @@ export function FilesPane({
 }: {
   dir: string;
   connected: boolean;
-  /** Claude called openFile — focus this file (new nonce per request). */
-  openRequest?: { path: string; anchor: ViewerAnchor; nonce: number };
+  openRequest?: FilesOpenRequest;
 }) {
   const [files, setFiles] = useState<string[] | null>(null);
   const [filter, setFilter] = useState("");
@@ -380,6 +384,61 @@ export function FilesPane({
             Select a file — selections in the viewer stream to Claude
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A folder's file tree as a *pane* in the Agentboard tiling — the sibling of
+ * `DiffPane`, sitting beside the live terminals. Claude's openFile requests
+ * are routed here by the screen (which opens the pane when none exists yet)
+ * via `openRequest`.
+ */
+export function FolderFilesPane({
+  folder,
+  onClose,
+  openRequest,
+}: {
+  /** The checkout this pane browses; undefined when it left the rail. */
+  folder: FolderData | undefined;
+  /** Removes the pane from its window. */
+  onClose: () => void;
+  /** Claude called openFile — focus this file (new nonce per request). */
+  openRequest?: FilesOpenRequest;
+}) {
+  const ideConnected = useIdeConnected(folder?.dir);
+  if (!folder) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground">
+        <span className="text-sm">folder gone</span>
+        <button type="button" onClick={onClose} className="font-mono text-xs hover:text-red-500">
+          ⊟ remove pane
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-full flex-col overflow-hidden rounded-lg border bg-card">
+      <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
+        <FilesIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="truncate font-mono text-xs text-foreground">{folder.name}</span>
+        {ideConnected && (
+          <span
+            title="A Claude Code session in this folder is connected — highlighted lines become its selection context"
+            className="flex shrink-0 items-center gap-1 rounded-md border border-violet-500/50 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500"
+          >
+            ✦ claude
+          </span>
+        )}
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+          <IconBtn title="remove pane (files stay a click away on the folder)" onClick={onClose} className="hover:text-red-500">
+            ⊟
+          </IconBtn>
+        </span>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col p-2">
+        <FilesPane dir={folder.dir} connected={ideConnected} openRequest={openRequest} />
       </div>
     </div>
   );

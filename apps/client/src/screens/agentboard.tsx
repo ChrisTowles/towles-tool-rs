@@ -16,6 +16,7 @@ import { fmtMins } from "@/components/agentboard-bits";
 import { ColdCacheOverlay, PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffPane } from "@/components/diff-pane";
+import { FolderFilesPane, type FilesOpenRequest } from "@/components/files-pane";
 import { type NewSlotRepo, type PendingSlot, type SlotCreated } from "@/components/inline-new-slot";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
@@ -65,11 +66,15 @@ import {
   diffPaneDir,
   diffPaneId,
   dragCol,
+  filesPaneDir,
+  filesPaneId,
+  folderPaneDir,
   dropPane,
   hydrateWins,
   isAgent,
   isCacheExpiring,
   isDiffPane,
+  isFilesPane,
   isFolderQuiet,
   liveSessions,
   normalizeWins,
@@ -105,7 +110,8 @@ import {
   windowColor,
 } from "@/lib/agentboard";
 import { deadPaneAction, exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
-import { invokeOrThrow } from "@/lib/tauri";
+import { invokeOrThrow, isTauri } from "@/lib/tauri";
+import type { OpenFileRequest } from "@/lib/ide";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { useFocusTarget } from "@/lib/focus-target";
@@ -126,8 +132,9 @@ import { toast } from "sonner";
  * status is reported, never re-rendered (the real TUI is the PTY). All
  * opened terminals live in one flat mounted pool (hidden unless in the
  * active folder's active window) so scrollback survives switching and
- * regrouping. A folder's diff opens as a pane in the same tiling (never a
- * modal), so you review while the agents keep working. Layout persists via
+ * regrouping. A folder's diff and its file tree each open as their own pane
+ * in the same tiling (never a modal), so you review while the agents keep
+ * working. Layout persists via
  * debounced `ab_save_windows`. Shortcuts come from the registry in
  * lib/shortcuts.tsx (⌘D new session, ⌘⇧W close session, ⌘⇧G diff pane,
  * ⌘⇧N/⌘⇧P jump to the next/previous session that needs you — `cycleNeedsYou`
@@ -355,6 +362,54 @@ export function AgentboardScreen() {
     setActiveFolderDir(dir);
     addPaneToActive(dir, diffPaneId(dir));
   }
+
+  // Same, for the folder's full file tree.
+  function openFiles(dir: string) {
+    setActiveFolderDir(dir);
+    addPaneToActive(dir, filesPaneId(dir));
+  }
+
+  // Claude called the openFile tool → open (or focus) that folder's files
+  // pane and focus the file. Routed here rather than inside the pane so the
+  // request can *create* the pane when none is open yet. Latest-callback ref:
+  // the listener registers once, the handler sees fresh state.
+  const [filesOpenRequests, setFilesOpenRequests] = useState<Record<string, FilesOpenRequest>>({});
+  const onOpenFileRequest = useRef<(p: OpenFileRequest) => void>(() => {});
+  onOpenFileRequest.current = (p) => {
+    const dir = p.dir;
+    if (!folderByDir.has(dir)) return;
+    const path = p.filePath.startsWith(`${dir}/`) ? p.filePath.slice(dir.length + 1) : p.filePath;
+    setFilesOpenRequests((prev) => ({
+      ...prev,
+      [dir]: {
+        path,
+        anchor: {
+          startText: p.startText,
+          endText: p.endText,
+          selectToEndOfLine: p.selectToEndOfLine,
+        },
+        nonce: Date.now(),
+      },
+    }));
+    openFiles(dir);
+  };
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const sub = await listen<OpenFileRequest>("ide://open-file", (e) =>
+        onOpenFileRequest.current(e.payload),
+      );
+      if (disposed) sub();
+      else unlisten = sub;
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   // --- Window layout (Tier 5): frontend-owned, hydrated once, saved debounced.
   const [wins, setWins] = useState<WindowsPayload | null>(null);
@@ -1035,12 +1090,15 @@ export function AgentboardScreen() {
         "ab-toggle-diff": () => {
           if (activeFolderDir) openDiff(activeFolderDir);
         },
+        "ab-toggle-files": () => {
+          if (activeFolderDir) openFiles(activeFolderDir);
+        },
         "ab-toggle-rail": toggleRail,
         "ab-jump-next": () => jumpToNeedsYou("next"),
         "ab-jump-prev": () => jumpToNeedsYou("prev"),
         "ab-split-session": splitIntoWindow,
       }),
-      // newSession/closeSession/openDiff/jumpToNeedsYou/splitIntoWindow are
+      // newSession/closeSession/openDiff/openFiles/jumpToNeedsYou/splitIntoWindow are
       // stable within a render pass; the state they close over is what matters.
       // eslint-disable-next-line react-hooks/exhaustive-deps
       [activeFolderDir, selected, wins, repos, folderOf, splitCandidates],
@@ -1263,6 +1321,7 @@ export function AgentboardScreen() {
                           onDeleteWorktree={requestDeleteWorktree}
                           onRenameCommit={commitRename}
                           onOpenDiff={openDiff}
+                          onOpenFiles={openFiles}
                           slotFormOpen={openSlotForms.has(repo.key)}
                           onCancelSlotForm={() => closeSlotForm(repo.key)}
                           onSubmitSlotForm={(input) => {
@@ -1298,6 +1357,7 @@ export function AgentboardScreen() {
                   folder={activeFolder}
                   pr={prForFolder(snapshot.prs, activeRepo.originUrl, activeFolder.branch)}
                   onOpenDiff={openDiff}
+                  onOpenFiles={openFiles}
                   onNewSession={newSession}
                   onNewSlot={(r) => {
                     // The inline form still renders in the rail under the
@@ -1506,9 +1566,23 @@ export function AgentboardScreen() {
                           </div>
                         );
                       })}
+                      {/* Files panes: a folder's full tree tiled beside its terminals. */}
+                      {panes.filter(isFilesPane).map((id) => {
+                        const r = rectFor(id);
+                        const dir = filesPaneDir(id) ?? "";
+                        return (
+                          <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
+                            <FolderFilesPane
+                              folder={folderByDir.get(dir)}
+                              openRequest={filesOpenRequests[dir]}
+                              onClose={() => removePane(id)}
+                            />
+                          </div>
+                        );
+                      })}
                       {/* Panes restored from disk but not started this run. */}
                       {panes
-                        .filter((id) => !open.includes(id) && !isDiffPane(id))
+                        .filter((id) => !open.includes(id) && folderPaneDir(id) == null)
                         .map((id) => {
                           const r = rectFor(id);
                           const s = sessionById.get(id);

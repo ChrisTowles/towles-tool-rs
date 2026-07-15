@@ -5,6 +5,7 @@ import {
   ComparedBaseBadge,
   DiffButton,
   Dot,
+  FilesButton,
   fmtMins,
   Glyph,
   IconBtn,
@@ -43,6 +44,7 @@ export function WorkingContext({
   folder,
   pr,
   onOpenDiff,
+  onOpenFiles,
   onNewSession,
   onNewSlot,
   onRemoveRepo,
@@ -53,6 +55,8 @@ export function WorkingContext({
   pr?: PrItem;
   /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: (dir: string) => void;
+  /** Opens the folder's files pane in its focused window. */
+  onOpenFiles: (dir: string) => void;
   /** Starts a new session (shell) in this checkout. */
   onNewSession: (dir: string) => void;
   /** Toggles the inline new-slot form open/closed for this repo (worktree
@@ -125,6 +129,7 @@ export function WorkingContext({
           <AheadBehind stats={folder} />
           {folder.isWorktree && <WorktreeBadge />}
           <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir)} />
+          <FilesButton onOpen={() => onOpenFiles(folder.dir)} />
           {pr && <PrChip pr={pr} />}
         </div>
         <PurposeRow folder={folder} variant="band" />

@@ -2,6 +2,7 @@ import { useState, type ComponentProps, type ReactNode } from "react";
 import {
   ChevronDown,
   CircleDot,
+  Files,
   FolderPlus,
   GitCompare,
   GitPullRequest,
@@ -317,6 +318,26 @@ export function DiffButton({
           <span className="text-red-600 dark:text-red-400">−{linesRemoved}</span>
         </>
       )}
+    </button>
+  );
+}
+
+/** The files entry point, DiffButton's sibling: opens the folder's full file
+ * tree as a pane ("tell claude about any file"), always visible for the same
+ * findability reason. */
+export function FilesButton({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen();
+      }}
+      className="flex h-5 shrink-0 items-center gap-1 rounded-md border border-border/70 px-1.5 font-mono text-[10.5px] text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground"
+      title="Browse every file in this checkout — @ any of them to Claude"
+    >
+      <Files className="size-3" />
+      <span>files</span>
     </button>
   );
 }
