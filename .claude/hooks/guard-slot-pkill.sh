@@ -16,14 +16,20 @@ input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
 [ -z "$cmd" ] && exit 0
 
-# Only broad kill-by-name forms are in scope; `kill <pid>` is always fine.
-if ! printf '%s' "$cmd" | grep -qE '(^|[;&|]|[[:space:]])(pkill|killall)([[:space:]]|$)|kill[[:space:]]+.*\$\([[:space:]]*pgrep'; then
+# Only broad kill-by-name forms are in scope, and only where pkill/killall is
+# actually a command being invoked -- immediately after a real shell
+# separator (;, &&, ||, |, "(") or at the very start of a line -- never a
+# bare mention of the word inside prose, a markdown code span, or a quoted
+# PR-body/commit-message argument (grep's default per-line `^` handles the
+# "start of a line inside a multi-line string" case for free). `kill <pid>`
+# is always fine and never matches this.
+if ! printf '%s\n' "$cmd" | grep -qE '(^|[;&|(])[[:space:]]*(pkill|killall)([[:space:]]|$)|(^|[;&|(])[[:space:]]*kill[[:space:]]+.*\$\([[:space:]]*pgrep'; then
   exit 0
 fi
 
 # Process-name substrings known to be identical across every slot's dev build.
 risky='tt-app|vite|dev-drive|tauri'
-if ! printf '%s' "$cmd" | grep -qE "$risky"; then
+if ! printf '%s\n' "$cmd" | grep -qE "$risky"; then
   exit 0
 fi
 
