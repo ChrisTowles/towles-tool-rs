@@ -161,12 +161,21 @@ export function NewSlotDialog({
     setSuggesting(false);
     setPreSuggest(null);
     setCreatingTemplate(false);
+    // Guarded like the branchCheck effect below: reopening the dialog before
+    // this resolves (a new `repo` object on every "new slot" click) must not
+    // let a stale fetch's `.then` silently revert an already-picked `base`
+    // back to the primary's default branch after the fresh fetch has landed.
+    let cancelled = false;
     invokeOrThrow<string[]>("slot_base_branches", { root: repo.dir }, BaseBranchesSchema)
       .then((list) => {
+        if (cancelled) return;
         setBranches(list);
         setBase(list[0] ?? "main");
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => !cancelled && setError(String(e)));
+    return () => {
+      cancelled = true;
+    };
   }, [repo]);
 
   // Debounced preflight: is `branch` a legal git ref, and would its derived
