@@ -777,8 +777,11 @@ fn local_date_and_time(now_ms: i64) -> Option<(NaiveDate, String)> {
     Some((now.date_naive(), now.format("%H:%M").to_string()))
 }
 
-/// JSON Schema tool descriptors returned by `tools/list`.
-fn tool_definitions() -> Value {
+/// JSON Schema tool descriptors returned by `tools/list` — the MCP contract's
+/// single source of truth. Also called directly by the app's `mcp_tool_docs`
+/// command so the MCP screen's tool documentation can never drift from what
+/// `tt mcp serve` actually exposes.
+pub fn tool_definitions() -> Value {
     let no_args = || json!({ "type": "object", "properties": {}, "required": [] });
     json!([
         {

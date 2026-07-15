@@ -1,4 +1,5 @@
-import { CircleAlert, Copy, Plug, Radio } from "lucide-react";
+import { useEffect, useState } from "react";
+import { BookOpen, CircleAlert, Copy, Plug, Radio } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -6,6 +7,8 @@ import { Empty, Panel } from "@/components/store-bits";
 import { cn } from "@/lib/utils";
 import { fmtAge, useStoreSnapshot, type McpCall } from "@/lib/data";
 import { useNow } from "@/lib/now";
+import { invokeCmd } from "@/lib/tauri";
+import { McpToolDocsSchema, type McpToolDoc } from "@/lib/schemas/mcp";
 
 /**
  * MCP server — the live incoming-call log for the towles-tool MCP server
@@ -19,6 +22,7 @@ import { useNow } from "@/lib/now";
 export function McpScreen() {
   const { snapshot, live } = useStoreSnapshot();
   const now = useNow();
+  const tools = useMcpToolDocs();
 
   const calls = snapshot.mcpCalls;
   const errors = calls.filter((c) => !c.ok).length;
@@ -67,8 +71,76 @@ export function McpScreen() {
             )}
           </Panel>
           {calls.length > 0 && <SetupPanel />}
+          <ToolsPanel tools={tools} />
         </div>
       </ScrollArea>
+    </div>
+  );
+}
+
+/**
+ * Fetches the MCP tool list from the same contract the server answers
+ * `tools/list` with (`tt_mcp::tool_definitions`, via the `mcp_tool_docs`
+ * command) once on mount — this is what keeps the Tools panel from ever
+ * drifting out of sync with what `tt mcp serve` actually exposes. `null`
+ * while loading or outside the app.
+ */
+function useMcpToolDocs(): McpToolDoc[] | null {
+  const [tools, setTools] = useState<McpToolDoc[] | null>(null);
+
+  useEffect(() => {
+    void invokeCmd<McpToolDoc[]>("mcp_tool_docs", {}, McpToolDocsSchema).then(setTools);
+  }, []);
+
+  return tools;
+}
+
+/**
+ * Auto-generated tool documentation, straight from the MCP contract — never
+ * hand-maintained, so it can't fall out of sync as tools are added/changed.
+ */
+function ToolsPanel({ tools }: { tools: McpToolDoc[] | null }) {
+  return (
+    <Panel
+      title="Tools"
+      note={tools ? `${tools.length}` : undefined}
+      icon={<BookOpen className="size-4 text-muted-foreground" />}
+    >
+      {tools === null ? (
+        <Empty>Not available outside the app.</Empty>
+      ) : (
+        tools.map((tool) => <ToolRow key={tool.name} tool={tool} />)
+      )}
+    </Panel>
+  );
+}
+
+/** One tool's docs: name, description, and its parameters (required ones
+ * unmarked, optional ones suffixed `?`) derived straight from its JSON Schema. */
+function ToolRow({ tool }: { tool: McpToolDoc }) {
+  const params = Object.entries(tool.inputSchema.properties);
+  return (
+    <div className="flex flex-col gap-1 px-3 py-2.5">
+      <span className="font-mono text-xs text-foreground">{tool.name}</span>
+      <p className="text-xs text-muted-foreground">{tool.description}</p>
+      {params.length > 0 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 pt-0.5">
+          {params.map(([name, schema]) => {
+            const required = tool.inputSchema.required.includes(name);
+            return (
+              <span
+                key={name}
+                className="font-mono text-[11px] text-muted-foreground/80"
+                title={schema.description}
+              >
+                {name}
+                {required ? "" : "?"}
+                {schema.type && <span className="text-muted-foreground/50">:{schema.type}</span>}
+              </span>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -105,8 +177,7 @@ function SetupPanel() {
         block
       />
       <p className="px-3 py-2 text-xs text-muted-foreground">
-        The server exposes the local store (todos, issues, PRs, day brief, needs-you), live agent
-        sessions, and <span className="font-mono">journal_append</span>. Verify with{" "}
+        See the Tools panel below for everything the server exposes. Verify with{" "}
         <span className="font-mono">claude mcp list</span> — calls appear above as they arrive.
       </p>
     </Panel>
