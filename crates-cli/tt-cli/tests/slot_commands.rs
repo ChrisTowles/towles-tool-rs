@@ -212,6 +212,84 @@ fn new_with_base_records_the_actual_base_not_the_primary_branch() {
     assert!(marker_again.contains("base=develop"), "re-render marker: {marker_again}");
 }
 
+/// If the primary's base branch has fallen behind `origin/<base>` (the user
+/// hasn't pulled `main` in a while), `new` fast-forwards it before branching
+/// — so the new slot starts from current history instead of needing a
+/// rebase the moment it next syncs with base.
+#[test]
+fn new_fast_forwards_a_base_behind_origin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = make_root(tmp.path());
+    let root_s = root.to_string_lossy().to_string();
+    let seed = tmp.path().join("seed");
+    let primary = root.join("demo-primary");
+
+    // origin (seed) moves on after the primary cloned it — a real-world
+    // "someone merged to main since I last pulled" scenario.
+    std::fs::write(seed.join("upstream.txt"), "new on origin\n").unwrap();
+    git(&seed, &["add", "upstream.txt"]);
+    git(&seed, &["commit", "-m", "upstream moves on"]);
+    let origin_head = Command::new("git")
+        .args(["-C", seed.to_str().unwrap(), "rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+
+    tt().args(["slot", "new", "-b", "feat/thing", "--root", &root_s]).assert().success();
+
+    // the primary's local `main` was fast-forwarded to match origin...
+    let primary_head = Command::new("git")
+        .args(["-C", primary.to_str().unwrap(), "rev-parse", "main"])
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(
+        String::from_utf8_lossy(&primary_head).trim(),
+        String::from_utf8_lossy(&origin_head).trim(),
+        "primary's main should be fast-forwarded to origin/main"
+    );
+
+    // ...so the new slot branches from that current history, not the stale
+    // commit the primary had checked out when the slot command started
+    assert!(root.join("slots").join("thing").join("upstream.txt").is_file());
+}
+
+/// When the primary's base branch has diverged from `origin/<base>` (both
+/// moved independently), a plain fast-forward is impossible — `new` must
+/// warn rather than fail, and still create the slot off the primary's local
+/// history as it always did before this check existed.
+#[test]
+fn new_warns_but_still_creates_when_base_diverged_from_origin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = make_root(tmp.path());
+    let root_s = root.to_string_lossy().to_string();
+    let seed = tmp.path().join("seed");
+    let primary = root.join("demo-primary");
+
+    // origin moves on...
+    std::fs::write(seed.join("upstream.txt"), "origin work\n").unwrap();
+    git(&seed, &["add", "upstream.txt"]);
+    git(&seed, &["commit", "-m", "upstream moves on"]);
+
+    // ...and so does the primary's local main, independently — a genuine
+    // divergence a fast-forward can't resolve.
+    std::fs::write(primary.join("local.txt"), "local work\n").unwrap();
+    git(&primary, &["add", "local.txt"]);
+    git(&primary, &["commit", "-m", "local work"]);
+
+    tt().args(["slot", "new", "-b", "feat/thing", "--root", &root_s])
+        .assert()
+        .success()
+        .stdout(contains("diverged from origin/main"))
+        .stdout(contains("could not be fast-forwarded"));
+
+    // creation still succeeds, branching off the primary's own (unmoved)
+    // local main rather than blocking on the divergence
+    let slot = root.join("slots").join("thing");
+    assert!(slot.join("local.txt").is_file());
+    assert!(!slot.join("upstream.txt").is_file());
+}
+
 /// A `new` that fails after `git worktree add` (e.g. no env template) must
 /// roll the worktree back — leaving one behind blocks every retry with a
 /// bogus "already exists" and hides the failed attempt from `slot ls`.
