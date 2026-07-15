@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { FolderGit2 } from "lucide-react";
 import {
   AheadBehind,
@@ -93,13 +94,70 @@ function PaneCacheInfo({ session, now }: { session: SessionData; now: number }) 
       }
       className={cn(
         "shrink-0 font-mono text-[10.5px]",
-        expiring ? "text-amber-500" : "text-muted-foreground/70",
+        expiring
+          ? "text-amber-500"
+          : cold
+            ? "font-medium text-sky-500"
+            : "text-muted-foreground/70",
       )}
     >
       {cold
         ? "❄ cache cold"
         : `${d.cacheTtlMs === 3_600_000 ? "⧗" : "◔"} ${fmtMins(d.cacheExpiresAt - now)} left`}
     </span>
+  );
+}
+
+/** Blocks the terminal until the user deliberately acknowledges a cold prompt
+ * cache: unlike the quiet ❄ in the pane header, a cold resume silently
+ * re-reads the whole transcript at full price, so this earns a click rather
+ * than a glance. The ❄ pulses to draw the eye across a busy multi-pane grid;
+ * the card itself stays put so the buttons are always easy to hit. Re-arms on
+ * the next cold generation (keyed by `cacheExpiresAt`, the same dedup key the
+ * board-wide toast in `screens/agentboard.tsx` uses). */
+export function ColdCacheOverlay({
+  session,
+  now,
+  onCompact,
+}: {
+  session: SessionData;
+  now: number;
+  /** Sends `/compact` to the session in place of acknowledging. */
+  onCompact: () => void;
+}) {
+  const d = session.agentState?.details;
+  const [ackedFor, setAckedFor] = useState<number | null>(null);
+  const cold = session.live && isAgent(session) && !!d?.cacheExpiresAt && isCold(d, now);
+  if (!cold || ackedFor === d!.cacheExpiresAt) return null;
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/90 p-4">
+      <div className="flex max-w-64 flex-col items-center gap-3 rounded-lg border-2 border-sky-500 bg-card px-5 py-4 text-center shadow-lg">
+        <span className="animate-pulse text-2xl text-sky-500">❄</span>
+        <div className="flex flex-col gap-1">
+          <span className="text-sm font-medium text-foreground">prompt cache is cold</span>
+          <span className="text-xs text-muted-foreground">
+            resuming re-reads the full transcript at full price — any message re-warms it
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onCompact}
+            className="rounded-md border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-500 hover:bg-sky-500/20"
+          >
+            /compact instead
+          </button>
+          <button
+            type="button"
+            autoFocus
+            onClick={() => setAckedFor(d!.cacheExpiresAt!)}
+            className="rounded-md border bg-background px-2.5 py-1 text-xs font-medium text-foreground hover:bg-accent"
+          >
+            got it — continue
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
