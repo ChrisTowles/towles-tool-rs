@@ -51,6 +51,21 @@ describe("tab shortcuts", () => {
       false,
     );
   });
+
+  it("next-tab/prev-tab are mod+] and mod+[", () => {
+    expect(matchesShortcut("next-tab", key({ ctrlKey: true, key: "]" }))).toBe(true);
+    expect(matchesShortcut("prev-tab", key({ ctrlKey: true, key: "[" }))).toBe(true);
+    expect(matchesShortcut("next-tab", key({ ctrlKey: true, key: "[" }))).toBe(false);
+  });
+});
+
+describe("board shortcuts", () => {
+  it("registers board-scoped bindings for the new-todo input and filter", () => {
+    expect(SHORTCUTS["board-new-todo"].scope).toBe("board");
+    expect(SHORTCUTS["board-filter"].scope).toBe("board");
+    expect(matchesShortcut("board-new-todo", key({ key: "n" }))).toBe(true);
+    expect(matchesShortcut("board-filter", key({ key: "/" }))).toBe(true);
+  });
 });
 
 describe("editable-target override", () => {

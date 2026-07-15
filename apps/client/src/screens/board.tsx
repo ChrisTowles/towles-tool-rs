@@ -66,6 +66,8 @@ import { parseQuickAdd } from "@/lib/quick-add";
 import { useFocusTarget } from "@/lib/focus-target";
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
+import { useShortcuts } from "@/lib/shortcuts";
+import { useWorkspace } from "@/lib/workspace";
 
 /** Optimistic edits (text/notes/due) applied over a snapshot todo until it
  * re-arrives. */
@@ -103,9 +105,12 @@ function dueDateToMs(value: string): number | undefined {
  */
 export function BoardScreen() {
   const { snapshot } = useStoreSnapshot();
+  const { activeTab } = useWorkspace();
   const now = useNow();
   // Deep-link focus: a promoted-todo / board deep link scrolls the card here.
   const focusRef = useFocusTarget<HTMLDivElement>("board");
+  const draftInputRef = useRef<HTMLInputElement>(null);
+  const filterInputRef = useRef<HTMLInputElement>(null);
 
   const [statusOverrides, setStatusOverrides] = useState<Record<number, TaskStatus>>({});
   const [posOverrides, setPosOverrides] = useState<Record<number, PosOverride>>({});
@@ -116,6 +121,20 @@ export function BoardScreen() {
   const [importOpen, setImportOpen] = useState(false);
   // Quick filter: case-insensitive substring over each todo's text + repo tag.
   const [filter, setFilter] = useState("");
+
+  // Board-scoped shortcuts (see lib/shortcuts.tsx for the registry). Gated on
+  // the tab being active: this screen stays mounted while hidden, so without
+  // the gate "n"/"/" would steal keystrokes from whatever tab is showing.
+  useShortcuts(
+    useMemo(
+      () => ({
+        "board-new-todo": () => draftInputRef.current?.focus(),
+        "board-filter": () => filterInputRef.current?.focus(),
+      }),
+      [],
+    ),
+    activeTab === "board",
+  );
   // The insertion slot the current drag would land in: drives both the column
   // highlight (`dropSlot.status`) and the drop line before `beforeId`.
   const [dropSlot, setDropSlot] = useState<DropSlot | null>(null);
@@ -325,6 +344,7 @@ export function BoardScreen() {
           <div className="relative w-44">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
+              ref={filterInputRef}
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               onKeyDown={(e) => {
@@ -338,6 +358,7 @@ export function BoardScreen() {
           </div>
           <div className="relative w-56">
             <Input
+              ref={draftInputRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
