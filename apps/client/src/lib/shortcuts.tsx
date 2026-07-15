@@ -26,7 +26,7 @@ import type { UserSettings } from "./settings";
  * terminal-owns-everything behavior.
  */
 
-export type ShortcutScope = "global" | "agentboard";
+export type ShortcutScope = "global" | "agentboard" | "board";
 
 /** A parsed key spec: modifiers + one main key. `mod` = ⌘ on mac, Ctrl elsewhere. */
 type KeySpec = {
@@ -116,7 +116,33 @@ export const SHORTCUTS = defineShortcuts([
     description: i === 0 ? "Jump to tab 1–9" : `Jump to tab ${i + 1}`,
     hideInHelp: i > 0,
   })),
+  {
+    id: "next-tab",
+    scope: "global",
+    keys: "mod+]",
+    description: "Cycle to the next tab",
+    when: "more than one tab is open",
+  },
+  {
+    id: "prev-tab",
+    scope: "global",
+    keys: "mod+[",
+    description: "Cycle to the previous tab",
+    when: "more than one tab is open",
+  },
   { id: "help", scope: "global", keys: "?", description: "Keyboard shortcuts (this overlay)" },
+  {
+    id: "board-new-todo",
+    scope: "board",
+    keys: "n",
+    description: "Focus the new-todo input",
+  },
+  {
+    id: "board-filter",
+    scope: "board",
+    keys: "/",
+    description: "Focus the todo filter",
+  },
   {
     id: "ab-new-session",
     scope: "agentboard",
@@ -313,6 +339,7 @@ export function useShortcuts(
 const SCOPE_TITLES: Record<ShortcutScope, string> = {
   global: "Everywhere",
   agentboard: "Agentboard",
+  board: "Board",
 };
 
 /**

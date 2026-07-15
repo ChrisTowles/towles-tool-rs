@@ -40,6 +40,14 @@ function Shortcuts() {
         zen: toggleZen,
         quicklog: () => window.dispatchEvent(new Event("quicklog:open")),
         "close-tab": () => closeTab(activeTab),
+        "next-tab": () => {
+          const idx = visited.indexOf(activeTab);
+          if (idx !== -1) openTab(visited[(idx + 1) % visited.length]);
+        },
+        "prev-tab": () => {
+          const idx = visited.indexOf(activeTab);
+          if (idx !== -1) openTab(visited[(idx - 1 + visited.length) % visited.length]);
+        },
       };
       // Register only the tab-jump bindings that map to an open tab, so an
       // unused digit falls through instead of being swallowed as a no-op.
@@ -51,7 +59,11 @@ function Shortcuts() {
   );
 
   const activeScopes: ShortcutScope[] =
-    activeTab === "agentboard" ? ["global", "agentboard"] : ["global"];
+    activeTab === "agentboard"
+      ? ["global", "agentboard"]
+      : activeTab === "board"
+        ? ["global", "board"]
+        : ["global"];
   return <ShortcutHelpHost activeScopes={activeScopes} />;
 }
 
