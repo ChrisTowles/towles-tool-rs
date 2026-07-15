@@ -74,7 +74,7 @@ fn cmd_hook_create() -> Result<(), String> {
 
     let opts = CreateOpts {
         root: root.clone(),
-        branch,
+        branch: branch.clone(),
         base: hook_str(&input, &["source_ref"]).map(str::to_string),
         run_setup: true,
     };
@@ -85,9 +85,26 @@ fn cmd_hook_create() -> Result<(), String> {
             }
             created.dir
         }
-        // An existing slot is a resume, not an error — Claude Code re-enters
-        // worktrees by name; hand back the same path.
-        Err(OpsError::SlotExists { dir, .. }) => PathBuf::from(dir),
+        // A slot whose folder already exists is a resume ONLY if it's still
+        // on the requested branch — Claude Code re-enters worktrees by name.
+        // Distinct branches can slug to the same folder (`feat/thing` and a
+        // literal `feat-thing` both land on `feat-thing`), so this must be
+        // checked, not assumed: silently handing back an unrelated branch's
+        // worktree would be worse than failing loudly.
+        Err(OpsError::SlotExists { dir, .. }) => {
+            let existing_branch = ops::git_slot(Path::new(&dir), &["branch", "--show-current"])
+                .ok()
+                .filter(|out| out.ok())
+                .map(|out| out.stdout.trim().to_string());
+            if existing_branch.as_deref() != Some(branch.as_str()) {
+                return Err(format!(
+                    "slot folder {dir} already exists on branch {:?}, not the requested {branch:?} \
+                     — its name collides with a different branch's slug",
+                    existing_branch.unwrap_or_else(|| "<unreadable>".to_string())
+                ));
+            }
+            PathBuf::from(dir)
+        }
         Err(e) => return Err(e.to_string()),
     };
     println!("{}", dir.display());

@@ -488,8 +488,8 @@ fn lockfile_detection_installs_without_declared_setup() {
 }
 
 /// The Claude Code WorktreeCreate hook shell: stdin is the hook JSON, stdout
-/// is exactly the slot path, the branch is tt-named (`feat/<name>`), and a
-/// re-request for the same name returns the same path instead of failing.
+/// is exactly the slot path, the requested name IS the branch verbatim, and
+/// a re-request for the same name returns the same path instead of failing.
 #[test]
 fn hook_create_creates_a_slot_and_is_idempotent() {
     let tmp = tempfile::tempdir().unwrap();
@@ -526,6 +526,48 @@ fn hook_create_creates_a_slot_and_is_idempotent() {
     let again = tt().args(["slot", "hook-create"]).write_stdin(hook_input).output().unwrap();
     assert!(again.status.success());
     assert_eq!(String::from_utf8_lossy(&again.stdout).trim(), expected.to_string_lossy());
+}
+
+/// Distinct branches can slug to the same slot folder (`feat/thing` and a
+/// literal `feat-thing` both slug to `feat-thing`). A second WorktreeCreate
+/// hitting that same folder on a different requested branch must fail loudly
+/// instead of silently resuming into someone else's worktree.
+#[test]
+fn hook_create_refuses_to_resume_a_slug_collision_on_a_different_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+
+    let hook_input = |name: &str| {
+        serde_json::json!({
+            "hook_event_name": "WorktreeCreate",
+            "cwd": checkout.to_string_lossy(),
+            "name": name,
+        })
+        .to_string()
+    };
+
+    let first =
+        tt().args(["slot", "hook-create"]).write_stdin(hook_input("feat/thing")).output().unwrap();
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+
+    let collided =
+        tt().args(["slot", "hook-create"]).write_stdin(hook_input("feat-thing")).output().unwrap();
+    assert!(!collided.status.success(), "must not silently resume a different branch's slot");
+    let stderr = String::from_utf8_lossy(&collided.stderr);
+    assert!(stderr.contains("feat/thing"), "stderr: {stderr}");
+    assert!(stderr.contains("feat-thing"), "stderr: {stderr}");
+
+    // The original slot is untouched — still on its own branch.
+    let branch = Command::new("git")
+        .args([
+            "-C",
+            slot_dir(&checkout, "feat-thing").to_str().unwrap(),
+            "branch",
+            "--show-current",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&branch.stdout).trim(), "feat/thing");
 }
 
 /// The WorktreeRemove hook shell runs the same guards as `tt slot rm`: a
