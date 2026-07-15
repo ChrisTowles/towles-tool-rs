@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { InlineNewSlot, PendingSlotRow, type NewSlotRepo, type PendingSlot } from "@/components/inline-new-slot";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
@@ -61,6 +62,7 @@ import {
   windowColor,
   windowOf,
   type AgWindow,
+  type ClaudeLaunchOptions,
   type FolderData,
   type Overlay,
   type RepoData,
@@ -325,6 +327,13 @@ export function RepoGroup({
   quietDirs,
   quietRevealed,
   onToggleQuiet,
+  slotFormOpen,
+  onCancelSlotForm,
+  onSubmitSlotForm,
+  pendingSlots,
+  onRetryPendingSlot,
+  onDismissPendingSlot,
+  onCreateTemplateRetry,
 }: {
   repo: RepoData;
   now: number;
@@ -342,8 +351,9 @@ export function RepoGroup({
   onSelectFolder: (folderDir: string) => void;
   onSelect: (folderDir: string, sessionId: string) => void;
   onNewSession: (folderDir: string, launchClaude?: boolean) => void;
-  /** Open the new-slot modal for a slot-convention repo (worktree hub). */
-  onNewSlot: (repo: { name: string; dir: string }) => void;
+  /** Toggles the inline new-slot form open/closed for a slot-convention repo
+   * (worktree hub) — never a blocking modal, see InlineNewSlot. */
+  onNewSlot: (repo: NewSlotRepo) => void;
   onRemoveRepo: (dirs: string[], label: string) => void;
   /** Delete a worktree slot from disk (guarded `slot_remove`). */
   onDeleteWorktree: (dir: string, label: string) => void;
@@ -357,10 +367,35 @@ export function RepoGroup({
   /** Whether this repo's quiet folders are temporarily shown. */
   quietRevealed?: boolean;
   onToggleQuiet?: () => void;
+  /** Whether this repo's inline new-slot form is open. */
+  slotFormOpen: boolean;
+  onCancelSlotForm: () => void;
+  onSubmitSlotForm: (input: {
+    goal: string;
+    branch: string;
+    base: string;
+    options: ClaudeLaunchOptions;
+  }) => void;
+  /** This repo's in-flight `slot_create` calls — see PendingSlot. */
+  pendingSlots: PendingSlot[];
+  onRetryPendingSlot: (id: string) => void;
+  onDismissPendingSlot: (id: string) => void;
+  onCreateTemplateRetry: (id: string) => void;
 }) {
   const solo = isSoloRepo(repo);
   const quiet = quietDirs ?? new Set<string>();
   const showQuiet = quietRevealed ?? false;
+
+  const pendingRows = pendingSlots.map((p) => (
+    <PendingSlotRow
+      key={p.id}
+      pending={p}
+      now={now}
+      onRetry={onRetryPendingSlot}
+      onDismiss={onDismissPendingSlot}
+      onCreateTemplate={onCreateTemplateRetry}
+    />
+  ));
 
   const sessionRow = (folder: FolderData, s: SessionData) => (
     <SessionRow
@@ -464,7 +499,7 @@ export function RepoGroup({
             onSelectFolder(folder.dir);
           }}
           onNewSession={() => onNewSession(folder.dir)}
-          onNewSlot={() => onNewSlot({ name: repo.name, dir: folder.dir })}
+          onNewSlot={() => onNewSlot({ name: repo.name, dir: folder.dir, key: repo.key })}
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
           onDeleteWorktree={
             folder.isWorktree ? () => onDeleteWorktree(folder.dir, repo.name) : undefined
@@ -474,6 +509,14 @@ export function RepoGroup({
         {/* The note is a folder label — visible under the header even when the
             folder is collapsed (renders nothing when unset). */}
         <PurposeRow folder={folder} />
+        {slotFormOpen && (
+          <InlineNewSlot
+            repo={{ name: repo.name, dir: folder.dir, key: repo.key }}
+            onCancel={onCancelSlotForm}
+            onSubmit={onSubmitSlotForm}
+          />
+        )}
+        {pendingRows}
         {!isCollapsed && <div className="pb-2">{sessionRows(folder)}</div>}
         {quiet.size > 0 && showQuiet && (
           <QuietToggleRow count={quiet.size} revealed onToggle={onToggleQuiet} />
@@ -510,7 +553,7 @@ export function RepoGroup({
         </button>
         <IconBtn
           title="New slot — goal, branch, base"
-          onClick={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir })}
+          onClick={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir, key: repo.key })}
           className="hover:text-violet-500"
         >
           <FolderPlus className="size-3.5" />
@@ -523,9 +566,17 @@ export function RepoGroup({
             )
           }
           dir={repo.folders[0].dir}
-          onNewSlot={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir })}
+          onNewSlot={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir, key: repo.key })}
         />
       </div>
+      {slotFormOpen && (
+        <InlineNewSlot
+          repo={{ name: repo.name, dir: repo.folders[0].dir, key: repo.key }}
+          onCancel={onCancelSlotForm}
+          onSubmit={onSubmitSlotForm}
+        />
+      )}
+      {pendingRows}
       {!repoCollapsed &&
         shownFolders.map((folder) => {
           const key = `${repo.key}::${folder.dir}`;

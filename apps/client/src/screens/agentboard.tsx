@@ -16,11 +16,7 @@ import { fmtMins } from "@/components/agentboard-bits";
 import { ColdCacheOverlay, PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffPane } from "@/components/diff-pane";
-import {
-  NewSlotDialog,
-  type NewSlotRepo,
-  type SlotCreated,
-} from "@/components/new-slot-dialog";
+import { type NewSlotRepo, type PendingSlot, type SlotCreated } from "@/components/inline-new-slot";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import {
@@ -53,6 +49,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { SlotCreatedSchema } from "@/lib/schemas/slots";
 import { cn } from "@/lib/utils";
 import {
   abInvoke,
@@ -200,8 +197,14 @@ export function AgentboardScreen() {
   // Session awaiting the "what are you working toward?" prompt before Claude
   // actually launches — see `commitStartClaude`.
   const [startClaudeTarget, setStartClaudeTarget] = useState<StartClaudeTarget | null>(null);
-  // Repo the new-slot modal is open for (null = closed) — see NewSlotDialog.
-  const [newSlotRepo, setNewSlotRepo] = useState<NewSlotRepo | null>(null);
+  // Repo keys whose inline new-slot form is open — see InlineNewSlot. A form
+  // stays embedded in the rail rather than a modal, so several repos can have
+  // one open (or a create in flight) at once without blocking each other.
+  const [openSlotForms, setOpenSlotForms] = useState<Set<string>>(new Set());
+  // `slot_create` calls fired from an inline form and still running (or
+  // failed) — rendered as a PendingSlotRow until they resolve. See
+  // `createSlot`.
+  const [pendingSlots, setPendingSlots] = useState<PendingSlot[]>([]);
   const [startClaudePrompt, setStartClaudePrompt] = useState("");
   // Session ids whose PTY is mounted (kept alive for scrollback), + their cwd.
   const [open, setOpen] = useState<string[]>([]);
@@ -608,7 +611,120 @@ export function AgentboardScreen() {
     selectSession(folderDir, target.id);
   }
 
-  // A slot the new-slot modal just created: track it in the rail, open its
+  // Toggle the inline new-slot form open/closed for a repo — the "+"/"New
+  // slot…" affordances all funnel through this, same as clicking it again
+  // closes the form rather than only ever opening one.
+  function toggleSlotForm(repo: NewSlotRepo) {
+    setOpenSlotForms((prev) => {
+      const next = new Set(prev);
+      if (next.has(repo.key)) next.delete(repo.key);
+      else next.add(repo.key);
+      return next;
+    });
+  }
+
+  function closeSlotForm(key: string) {
+    setOpenSlotForms((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  }
+
+  // The setup step (npm install/etc.) can fail without invalidating the slot
+  // itself — `slot_create`'s warning already says so. Give it a one-click
+  // retry rather than making the user remember to re-run it from a terminal.
+  async function retrySetup(dir: string) {
+    try {
+      const warning = await invokeOrThrow<string | null>("slot_run_setup", { dir });
+      if (warning) toast(warning, { action: retryAction(dir) });
+      else toast("setup succeeded");
+    } catch (e) {
+      toast(String(e));
+    }
+  }
+
+  function retryAction(dir: string) {
+    return { label: "Retry", onClick: () => void retrySetup(dir) };
+  }
+
+  // Fires `slot_create` in the background and tracks it as a PendingSlotRow
+  // in the rail instead of a blocking modal — the caller can keep working
+  // anywhere else in the app while the worktree + setup finish. Keyed by
+  // branch (unique per repo, since a collision is already rejected before
+  // submit), so a retry just re-runs this under the same id.
+  async function createSlot(
+    repo: NewSlotRepo,
+    input: { goal: string; branch: string; base: string; options: ClaudeLaunchOptions },
+  ) {
+    const id = `${repo.key}::${input.branch}`;
+    setPendingSlots((prev) => [
+      ...prev.filter((p) => p.id !== id),
+      {
+        id,
+        repoKey: repo.key,
+        repoDir: repo.dir,
+        repoName: repo.name,
+        goal: input.goal,
+        branch: input.branch,
+        base: input.base,
+        options: input.options,
+        startedAt: Date.now(),
+        status: "creating",
+      },
+    ]);
+    try {
+      const created = await invokeOrThrow<SlotCreated>(
+        "slot_create",
+        { root: repo.dir, branch: input.branch, base: input.base },
+        SlotCreatedSchema,
+        12 * 60_000,
+      );
+      for (const warning of created.warnings) {
+        toast(warning, warning.startsWith("setup `") ? { action: retryAction(created.dir) } : undefined);
+      }
+      setPendingSlots((prev) => prev.filter((p) => p.id !== id));
+      await slotCreated(created, input.goal, input.options);
+    } catch (e) {
+      setPendingSlots((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, status: "error" as const, error: String(e) } : p)),
+      );
+    }
+  }
+
+  function retryPendingSlot(id: string) {
+    const p = pendingSlots.find((x) => x.id === id);
+    if (!p) return;
+    void createSlot(
+      { name: p.repoName, dir: p.repoDir, key: p.repoKey },
+      { goal: p.goal, branch: p.branch, base: p.base, options: p.options },
+    );
+  }
+
+  function dismissPendingSlot(id: string) {
+    setPendingSlots((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  // `slot_create`'s "no template" error means this repo has neither a
+  // tokenized .env.example nor the root-side sidecar — offer to create an
+  // empty sidecar (comment-only, no ${tt:...} tokens) right from the pending
+  // row instead of sending the user to a terminal, then retry immediately.
+  async function createTemplateAndRetryPending(id: string) {
+    const p = pendingSlots.find((x) => x.id === id);
+    if (!p) return;
+    try {
+      await invokeOrThrow("slot_init_template", { root: p.repoDir });
+      void createSlot(
+        { name: p.repoName, dir: p.repoDir, key: p.repoKey },
+        { goal: p.goal, branch: p.branch, base: p.base, options: p.options },
+      );
+    } catch (e) {
+      setPendingSlots((prev) => prev.map((x) => (x.id === id ? { ...x, error: String(e) } : x)));
+    }
+  }
+
+  // A slot the inline form just created: track it in the rail, open its
   // first session, and start Claude on the goal in that session's PTY.
   async function slotCreated(created: SlotCreated, goal: string, options: ClaudeLaunchOptions) {
     toast(`created ${created.name}${created.branch ? ` on ${created.branch}` : ""}`);
@@ -1142,11 +1258,24 @@ export function AgentboardScreen() {
                           onSelectFolder={selectFolder}
                           onSelect={selectSession}
                           onNewSession={newSession}
-                          onNewSlot={setNewSlotRepo}
+                          onNewSlot={toggleSlotForm}
                           onRemoveRepo={requestRemoveRepo}
                           onDeleteWorktree={requestDeleteWorktree}
                           onRenameCommit={commitRename}
                           onOpenDiff={openDiff}
+                          slotFormOpen={openSlotForms.has(repo.key)}
+                          onCancelSlotForm={() => closeSlotForm(repo.key)}
+                          onSubmitSlotForm={(input) => {
+                            closeSlotForm(repo.key);
+                            void createSlot(
+                              { name: repo.name, dir: repo.folders[0].dir, key: repo.key },
+                              input,
+                            );
+                          }}
+                          pendingSlots={pendingSlots.filter((p) => p.repoKey === repo.key)}
+                          onRetryPendingSlot={retryPendingSlot}
+                          onDismissPendingSlot={dismissPendingSlot}
+                          onCreateTemplateRetry={createTemplateAndRetryPending}
                         />
                       ))}
                     </div>
@@ -1675,12 +1804,6 @@ export function AgentboardScreen() {
           />
         </DialogContent>
       </Dialog>
-
-      <NewSlotDialog
-        repo={newSlotRepo}
-        onClose={() => setNewSlotRepo(null)}
-        onCreated={slotCreated}
-      />
 
       <Dialog
         open={trackRepoOpen}
