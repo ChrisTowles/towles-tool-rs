@@ -41,26 +41,21 @@ pub fn main_checkout_for(dir: &Path) -> Option<&Path> {
         .then(|| claude.parent())?
 }
 
-/// Slot directory name for a branch: the segment after the last `/` (branch
-/// type prefixes like `feat/` carry no information inside the worktrees dir),
-/// reduced to `[A-Za-z0-9._-]`. Falls back to the whole branch when the last
-/// segment sanitizes to nothing.
+/// Slot directory name for a branch: the *whole* branch, reduced to
+/// `[A-Za-z0-9._-]` (`feat/thing` → `feat-thing`) — the folder keeps the
+/// branch's full shape instead of discarding its type prefix.
+///
+/// This mapping is strictly ONE-WAY (branch → folder). Nothing may ever
+/// derive a branch back from a folder name — a dash-from-slash and a literal
+/// dash are indistinguishable, so any reverse parse would be a guess. The
+/// branch is always taken from ground truth instead: read from git in the
+/// slot (`branch --show-current`), or supplied verbatim by the caller (the
+/// WorktreeCreate hook uses the requested worktree name AS the branch).
+/// Distinct branches can collide on one slug (`feat/thing` vs a literal
+/// `feat-thing`); creation then fails loudly with `SlotExists`.
 pub fn slot_name_from_branch(branch: &str) -> Option<String> {
-    let last = branch.rsplit('/').next().unwrap_or(branch);
-    let name = sanitize_segment(last);
-    if !name.is_empty() {
-        return Some(name);
-    }
-    let whole = sanitize_segment(branch);
-    (!whole.is_empty()).then_some(whole)
-}
-
-/// Branch name for a bare worktree name (the reverse direction, used by the
-/// WorktreeCreate hook where Claude Code hands us only a name): a name that
-/// already looks like a branch (contains `/`) is used verbatim; a bare name
-/// gets the `feat/` prefix, matching the one-branch-per-slot convention.
-pub fn branch_from_worktree_name(name: &str) -> String {
-    if name.contains('/') { name.to_string() } else { format!("feat/{name}") }
+    let name = sanitize_segment(branch);
+    (!name.is_empty()).then_some(name)
 }
 
 fn sanitize_segment(raw: &str) -> String {
@@ -119,25 +114,19 @@ mod tests {
     }
 
     #[test]
-    fn slot_name_takes_last_branch_segment() {
-        assert_eq!(slot_name_from_branch("feat/slot-migrate"), Some("slot-migrate".into()));
-        assert_eq!(slot_name_from_branch("fix/rail-overflow"), Some("rail-overflow".into()));
+    fn slot_name_keeps_the_whole_branch_shape() {
+        assert_eq!(slot_name_from_branch("feat/slot-migrate"), Some("feat-slot-migrate".into()));
+        assert_eq!(slot_name_from_branch("fix/rail-overflow"), Some("fix-rail-overflow".into()));
         assert_eq!(slot_name_from_branch("standalone"), Some("standalone".into()));
-        assert_eq!(slot_name_from_branch("chris/wip/thing"), Some("thing".into()));
+        assert_eq!(slot_name_from_branch("chris/wip/thing"), Some("chris-wip-thing".into()));
     }
 
     #[test]
-    fn slot_name_sanitizes_and_falls_back() {
-        assert_eq!(slot_name_from_branch("feat/hello world!"), Some("hello-world".into()));
-        // last segment sanitizes to nothing → whole branch, slugged
+    fn slot_name_sanitizes_and_trims() {
+        assert_eq!(slot_name_from_branch("feat/hello world!"), Some("feat-hello-world".into()));
+        // slug degenerates to separators only → no name
         assert_eq!(slot_name_from_branch("feat/---"), Some("feat".into()));
         assert_eq!(slot_name_from_branch("///"), None);
-    }
-
-    #[test]
-    fn branch_from_worktree_name_prefixes_bare_names() {
-        assert_eq!(branch_from_worktree_name("auth-flow"), "feat/auth-flow");
-        assert_eq!(branch_from_worktree_name("fix/rail-overflow"), "fix/rail-overflow");
     }
 
     #[test]

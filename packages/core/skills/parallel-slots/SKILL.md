@@ -19,8 +19,8 @@ guarded removal (nothing with unsaved or unreachable work gets deleted).
 ```
 ~/code/<scope>/<repo>/            # the main checkout — a normal clone
   .claude/worktrees/
-    thing/                        # slot for branch feat/thing (.tt-slot marker at root)
-    rail-overflow/                # slot for branch fix/rail-overflow
+    feat-thing/                   # slot for branch feat/thing (.tt-slot marker at root)
+    fix-rail-overflow/            # slot for branch fix/rail-overflow
 ```
 
 Any plain git checkout works — there is no layout to set up. All slots share
@@ -38,8 +38,8 @@ tt slot clean [--dry-run]                 # remove every merged/gone slot
 Repos that wire `WorktreeCreate`/`WorktreeRemove` hooks to
 `tt slot hook-create`/`hook-remove` in `.claude/settings.json` get the same
 slots from Claude Code's own surfaces — `claude --worktree <name>` creates a
-tt-managed slot on branch `feat/<name>` (tt names branches, never
-`worktree-<name>`).
+tt-managed slot whose branch is `<name>` verbatim (the slot folder is the
+slugged branch, e.g. `feat/thing` → `feat-thing`; never `worktree-<name>`).
 
 ## When to fan out
 

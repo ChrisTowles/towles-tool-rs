@@ -97,30 +97,30 @@ fn clean_removes_merged_slot_and_sweeps_state_keeps_the_rest() {
 
     // done: committed and classically merged into main → finished.
     new_slot(&home, &root_s, "feat/done");
-    commit_file(&slot_dir(&checkout, "done"), "done.txt");
+    commit_file(&slot_dir(&checkout, "feat-done"), "done.txt");
     git(&checkout, &["merge", "--no-ff", "feat/done", "-m", "merge done"]);
 
     // dirty-done: merged too, but the tree is dirty → guard keeps it.
     new_slot(&home, &root_s, "feat/dirty-done");
-    commit_file(&slot_dir(&checkout, "dirty-done"), "dd.txt");
+    commit_file(&slot_dir(&checkout, "feat-dirty-done"), "dd.txt");
     git(&checkout, &["merge", "--no-ff", "feat/dirty-done", "-m", "merge dd"]);
-    std::fs::write(slot_dir(&checkout, "dirty-done").join("junk.txt"), "wip").unwrap();
+    std::fs::write(slot_dir(&checkout, "feat-dirty-done").join("junk.txt"), "wip").unwrap();
 
     // fresh: created from the current tip, no commits → not finished.
     new_slot(&home, &root_s, "feat/fresh");
 
     // wip: has its own unmerged commit → active.
     new_slot(&home, &root_s, "feat/wip");
-    commit_file(&slot_dir(&checkout, "wip"), "wip.txt");
+    commit_file(&slot_dir(&checkout, "feat-wip"), "wip.txt");
 
     // Instance-state dirs: the removed slot's scope, an old orphan, a live
     // slot's scope, and a foreign repo's scope.
     let data_slots = home.join(".local/share/towles-tool/slots");
     let cfg_slots = home.join(".config/towles-tool/slots");
     for dir in [
-        data_slots.join("demo-done"),
+        data_slots.join("demo-feat-done"),
         data_slots.join("demo-stale-old"),
-        data_slots.join("demo-wip"),
+        data_slots.join("demo-feat-wip"),
         data_slots.join("blog-x"),
         cfg_slots.join("demo-stale-cfg"),
     ] {
@@ -153,29 +153,29 @@ fn clean_removes_merged_slot_and_sweeps_state_keeps_the_rest() {
     // Only the merged-and-clean slot goes; its branch goes with it.
     let removed: Vec<&str> =
         report["removed"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
-    assert_eq!(removed, vec!["done"]);
+    assert_eq!(removed, vec!["feat-done"]);
     assert!(report["removed"][0]["reason"].as_str().unwrap().contains("merged into main"));
-    assert!(!slot_dir(&checkout, "done").exists());
+    assert!(!slot_dir(&checkout, "feat-done").exists());
     assert!(!branch_exists(&checkout, "feat/done"));
 
     let kept: Vec<&str> =
         report["kept"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
-    assert_eq!(kept, vec!["dirty-done", "fresh", "wip"]);
+    assert_eq!(kept, vec!["feat-dirty-done", "feat-fresh", "feat-wip"]);
     let dd = &report["kept"][0];
     assert!(dd["why"][0].as_str().unwrap().contains("not clean"), "got {dd}");
-    assert!(slot_dir(&checkout, "dirty-done").exists());
-    assert!(slot_dir(&checkout, "fresh").exists());
-    assert!(slot_dir(&checkout, "wip").exists());
+    assert!(slot_dir(&checkout, "feat-dirty-done").exists());
+    assert!(slot_dir(&checkout, "feat-fresh").exists());
+    assert!(slot_dir(&checkout, "feat-wip").exists());
     assert!(branch_exists(&checkout, "feat/wip"));
 
     // Sweep: our stale scopes go (including the just-removed slot's), live and
     // foreign scopes stay.
     let swept: Vec<&str> =
         report["sweptStateDirs"].as_array().unwrap().iter().map(|p| p.as_str().unwrap()).collect();
-    assert!(!data_slots.join("demo-done").exists(), "swept: {swept:?}");
+    assert!(!data_slots.join("demo-feat-done").exists(), "swept: {swept:?}");
     assert!(!data_slots.join("demo-stale-old").exists());
     assert!(!cfg_slots.join("demo-stale-cfg").exists());
-    assert!(data_slots.join("demo-wip").exists(), "live slot scope must survive");
+    assert!(data_slots.join("demo-feat-wip").exists(), "live slot scope must survive");
     assert!(data_slots.join("blog-x").exists(), "foreign repo scope must survive");
 
     // Agentboard store: the dead folder's window + session records are gone.
@@ -213,13 +213,13 @@ fn clean_removes_slot_whose_upstream_is_gone() {
     // squash-merge signature: commits landed under new SHAs, remote branch
     // deleted, so only `fetch --prune` + gone-upstream detection catches it.
     new_slot(&home, &root_s, "feat/push");
-    let slot = slot_dir(&checkout, "push");
+    let slot = slot_dir(&checkout, "feat-push");
     commit_file(&slot, "pushed.txt");
     git(&slot, &["push", "-u", "origin", "feat/push"]);
     git(&tmp.path().join("seed"), &["branch", "-D", "feat/push"]);
 
     let report = clean_json(&home, &root_s, &[]);
-    assert_eq!(report["removed"][0]["name"], "push");
+    assert_eq!(report["removed"][0]["name"], "feat-push");
     assert!(report["removed"][0]["reason"].as_str().unwrap().contains("upstream gone"));
     assert!(!slot.exists());
     assert!(!branch_exists(&checkout, "feat/push"));
@@ -234,15 +234,15 @@ fn clean_dry_run_touches_nothing() {
     let root_s = checkout.to_string_lossy().to_string();
 
     new_slot(&home, &root_s, "feat/done");
-    commit_file(&slot_dir(&checkout, "done"), "done.txt");
+    commit_file(&slot_dir(&checkout, "feat-done"), "done.txt");
     git(&checkout, &["merge", "--no-ff", "feat/done", "-m", "merge done"]);
     let stale = home.join(".local/share/towles-tool/slots/demo-gone");
     std::fs::create_dir_all(&stale).unwrap();
 
     let report = clean_json(&home, &root_s, &["--dry-run"]);
     assert_eq!(report["dryRun"], true);
-    assert_eq!(report["removed"][0]["name"], "done");
-    assert!(slot_dir(&checkout, "done").exists(), "dry run must not remove");
+    assert_eq!(report["removed"][0]["name"], "feat-done");
+    assert!(slot_dir(&checkout, "feat-done").exists(), "dry run must not remove");
     assert!(branch_exists(&checkout, "feat/done"));
     assert!(stale.exists(), "dry run must not sweep");
     let swept: Vec<&str> =

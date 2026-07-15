@@ -29,8 +29,8 @@ pub mod template;
 
 pub use guards::{RmBlocked, check_removal, docker_resource_matches};
 pub use layout::{
-    CLAUDE_DIR, MARKER_FILE, WORKTREES_DIR, branch_from_worktree_name, main_checkout_for,
-    marker_contents, parse_marker, read_slot_base, slot_name_from_branch, worktrees_dir,
+    CLAUDE_DIR, MARKER_FILE, WORKTREES_DIR, main_checkout_for, marker_contents, parse_marker,
+    read_slot_base, slot_name_from_branch, worktrees_dir,
 };
 pub use ops::{
     CleanOpts, CleanReport, CreateOpts, CreatedSlot, FinishedSlot, KeptSlot, OpsError, RemoveOpts,
