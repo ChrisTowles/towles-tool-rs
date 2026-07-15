@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { GitCompare, Pencil, RefreshCw } from "lucide-react";
 import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
 import { DiffViewer, type DiffIdeBridge } from "@/components/diff-view";
-import { FilesPane } from "@/components/files-pane";
 import { IconBtn } from "@/components/agentboard-bits";
 import { abInvoke, type FolderData } from "@/lib/agentboard";
 import {
@@ -11,7 +10,6 @@ import {
   ideReadFile,
   ideSetSelection,
   useIdeConnected,
-  type OpenFileRequest,
 } from "@/lib/ide";
 import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -31,7 +29,8 @@ const UNCOMMITTED_MODE = {
  * modal. Content refetches whenever the folder's git stats change (the 1.5s
  * poll only bumps them on real change), so the patch tracks the agent's edits
  * without a manual refresh. The header's segmented toggle picks the baseline:
- * the whole branch vs main, or just the uncommitted working tree.
+ * the whole branch vs main, or just the uncommitted working tree. The full
+ * checkout tree is its own pane (`FolderFilesPane`), not a tab here.
  */
 export function DiffPane({
   folder,
@@ -50,14 +49,6 @@ export function DiffPane({
   const slotBaseBranch = folder?.slotBaseBranch?.trim() || null;
   const effectiveBase = baseBranch ?? slotBaseBranch;
   const [mode, setMode] = useState<DiffMode>("main");
-  // Which lens: the changed-files diff, or the full checkout tree ("tell
-  // claude about any file").
-  const [tab, setTab] = useState<"changes" | "files">("changes");
-  // Claude called the openFile tool for this folder — jump the pane to the
-  // Files tab focused on that file (nonce keeps repeat requests distinct).
-  const [openRequest, setOpenRequest] = useState<
-    { path: string; anchor: { startText?: string | null; endText?: string | null; selectToEndOfLine?: boolean | null }; nonce: number } | undefined
-  >();
   const [text, setText] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [editingBase, setEditingBase] = useState(false);
@@ -66,38 +57,6 @@ export function DiffPane({
   const [reviews, setReviews] = useState<Array<DiffReviewRequest & { originalContent: string }>>(
     [],
   );
-
-  // Claude called openFile → focus the Files tab on that file. The event is
-  // window-global; each pane keeps only requests for its own folder.
-  useEffect(() => {
-    if (!dir || !isTauri()) return;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void (async () => {
-      const { listen } = await import("@tauri-apps/api/event");
-      const sub = await listen<OpenFileRequest>("ide://open-file", (e) => {
-        if (e.payload.dir !== dir) return;
-        const raw = e.payload.filePath;
-        const path = raw.startsWith(`${dir}/`) ? raw.slice(dir.length + 1) : raw;
-        setTab("files");
-        setOpenRequest({
-          path,
-          anchor: {
-            startText: e.payload.startText,
-            endText: e.payload.endText,
-            selectToEndOfLine: e.payload.selectToEndOfLine,
-          },
-          nonce: Date.now(),
-        });
-      });
-      if (disposed) sub();
-      else unlisten = sub;
-    })();
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [dir]);
 
   // Claude called openDiff → queue an accept/reject review; close_tab /
   // closeAllDiffTabs dismiss (Rust already rejected the blocked calls).
@@ -218,31 +177,8 @@ export function DiffPane({
             ✦ claude
           </span>
         )}
-        <span className="flex shrink-0 items-center rounded-md border border-border/70 p-0.5">
-          {(
-            [
-              { key: "changes" as const, hint: "What changed vs the baseline" },
-              { key: "files" as const, hint: "Every file in the checkout — @ any of them to Claude" },
-            ]
-          ).map((t) => (
-            <button
-              key={t.key}
-              type="button"
-              title={t.hint}
-              aria-pressed={tab === t.key}
-              onClick={() => setTab(t.key)}
-              className={cn(
-                "rounded-[5px] px-1.5 py-px font-mono text-[10.5px] transition-colors",
-                tab === t.key ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {t.key}
-            </button>
-          ))}
-        </span>
-        {tab === "changes" &&
-          (editingBase ? (
-            <input
+        {editingBase ? (
+          <input
             autoFocus
             defaultValue={baseBranch ?? ""}
             placeholder={
@@ -256,29 +192,29 @@ export function DiffPane({
               if (e.key === "Escape") setEditingBase(false);
             }}
             className="w-48 rounded-sm border border-input bg-background px-1.5 py-0.5 font-mono text-[10.5px] outline-none"
-            />
-          ) : (
-            <span className="flex shrink-0 items-center rounded-md border border-border/70 p-0.5">
-              {modes.map((m) => (
-                <button
-                  key={m.key}
-                  type="button"
-                  title={m.hint}
-                  aria-pressed={mode === m.key}
-                  onClick={() => setMode(m.key)}
-                  className={cn(
-                    "rounded-[5px] px-1.5 py-px font-mono text-[10.5px] transition-colors",
-                    mode === m.key
-                      ? "bg-accent text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </span>
-          ))}
-        {tab === "changes" && !editingBase && mode === "main" && (
+          />
+        ) : (
+          <span className="flex shrink-0 items-center rounded-md border border-border/70 p-0.5">
+            {modes.map((m) => (
+              <button
+                key={m.key}
+                type="button"
+                title={m.hint}
+                aria-pressed={mode === m.key}
+                onClick={() => setMode(m.key)}
+                className={cn(
+                  "rounded-[5px] px-1.5 py-px font-mono text-[10.5px] transition-colors",
+                  mode === m.key
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {m.label}
+              </button>
+            ))}
+          </span>
+        )}
+        {!editingBase && mode === "main" && (
           <IconBtn
             title={
               slotBaseBranch
@@ -292,20 +228,16 @@ export function DiffPane({
           </IconBtn>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          {tab === "changes" && (
-            <IconBtn title="refresh diff" onClick={() => void fetchDiff()} className="hover:text-sky-500">
-              <RefreshCw className={refreshing ? "size-3 animate-spin" : "size-3"} />
-            </IconBtn>
-          )}
+          <IconBtn title="refresh diff" onClick={() => void fetchDiff()} className="hover:text-sky-500">
+            <RefreshCw className={refreshing ? "size-3 animate-spin" : "size-3"} />
+          </IconBtn>
           <IconBtn title="remove pane (diff stays a click away on the folder)" onClick={onClose} className="hover:text-red-500">
             ⊟
           </IconBtn>
         </span>
       </div>
       <div className="relative flex min-h-0 flex-1 flex-col p-2">
-        {tab === "files" ? (
-          <FilesPane dir={dir ?? ""} connected={ideConnected} openRequest={openRequest} />
-        ) : text == null ? (
+        {text == null ? (
           <p className="p-2 text-sm text-muted-foreground">Loading…</p>
         ) : (
           <DiffViewer text={text} ide={ide} />

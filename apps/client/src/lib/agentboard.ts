@@ -229,13 +229,15 @@ export function windowOf(wins: AgWindow[], sessionId: string): AgWindow | undefi
   return wins.find((w) => w.panes.includes(sessionId));
 }
 
-// --- Diff panes ---
+// --- Folder panes (diff, files) ---
 // A window's `panes` normally hold session ids (`s<16 hex>` from the backend's
-// `gen_id`). A folder's diff view rides the same tiling as a sentinel pane id
-// (`~diff:<folderDir>` — `~` can never open a session id), so the diff renders
-// *beside* the live terminals instead of covering them in a modal.
+// `gen_id`). A folder's diff and files views ride the same tiling as sentinel
+// pane ids (`~diff:<folderDir>` / `~files:<folderDir>` — `~` can never open a
+// session id), so they render *beside* the live terminals instead of covering
+// them in a modal.
 
 const DIFF_PANE_PREFIX = "~diff:";
+const FILES_PANE_PREFIX = "~files:";
 
 /** The (per-folder) pane id of the folder's diff pane. */
 export function diffPaneId(folderDir: string): string {
@@ -246,9 +248,29 @@ export function isDiffPane(paneId: string): boolean {
   return paneId.startsWith(DIFF_PANE_PREFIX);
 }
 
-/** The folder dir a diff pane id points at (null for session panes). */
+/** The folder dir a diff pane id points at (null otherwise). */
 export function diffPaneDir(paneId: string): string | null {
   return isDiffPane(paneId) ? paneId.slice(DIFF_PANE_PREFIX.length) : null;
+}
+
+/** The (per-folder) pane id of the folder's files pane. */
+export function filesPaneId(folderDir: string): string {
+  return `${FILES_PANE_PREFIX}${folderDir}`;
+}
+
+export function isFilesPane(paneId: string): boolean {
+  return paneId.startsWith(FILES_PANE_PREFIX);
+}
+
+/** The folder dir a files pane id points at (null otherwise). */
+export function filesPaneDir(paneId: string): string | null {
+  return isFilesPane(paneId) ? paneId.slice(FILES_PANE_PREFIX.length) : null;
+}
+
+/** The folder dir any sentinel pane id (diff or files) points at — null for
+ * session panes. */
+export function folderPaneDir(paneId: string): string | null {
+  return diffPaneDir(paneId) ?? filesPaneDir(paneId);
 }
 
 // --- Pure window-layout reducers (unit-tested; the screen wraps them in
@@ -369,7 +391,7 @@ export function hydrateWins(w: WireWindowsPayload): WindowsPayload {
  * a dead dashed pane (so a fresh pane lands in spot two behind a corpse).
  *
  * Drops windows of folders not in `validFolderDirs`, then panes that are
- * neither a known session id nor a valid folder's diff pane. A window emptied
+ * neither a known session id nor a valid folder's diff/files pane. A window emptied
  * by this prune vanishes like a closed-out window (`dropPane`'s rule — the
  * empty-pane state is unrepresentable); `placePane` mints a fresh "primary"
  * lazily when the folder next opens a pane. Returns `w` itself when nothing
@@ -384,7 +406,7 @@ export function pruneWins(
     if (!validFolderDirs.has(win.folderDir)) continue;
     const panes = toPanes(
       win.panes.filter((p) => {
-        const dir = diffPaneDir(p);
+        const dir = folderPaneDir(p);
         return dir !== null ? validFolderDirs.has(dir) : validSessionIds.has(p);
       }),
     );

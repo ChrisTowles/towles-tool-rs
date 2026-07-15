@@ -12,6 +12,10 @@ import {
   fmtWaitingAge,
   hydrateWins,
   isDiffPane,
+  isFilesPane,
+  filesPaneDir,
+  filesPaneId,
+  folderPaneDir,
   isCacheExpiring,
   isFolderQuiet,
   needingSessionsOldestFirst,
@@ -168,7 +172,7 @@ describe("sessionNeeds", () => {
   });
 });
 
-describe("diff pane ids", () => {
+describe("folder pane ids", () => {
   it("round-trips the folder dir and never collides with session ids", () => {
     const id = diffPaneId("/home/me/code/p/proj");
     expect(isDiffPane(id)).toBe(true);
@@ -176,6 +180,19 @@ describe("diff pane ids", () => {
     // Backend session ids are `s<16 hex>` (sessions.rs `gen_id`).
     expect(isDiffPane("s00deadbeef00cafe")).toBe(false);
     expect(diffPaneDir("s00deadbeef00cafe")).toBeNull();
+  });
+
+  it("keeps diff and files panes distinct while folderPaneDir spans both", () => {
+    const diff = diffPaneId("/home/me/code/p/proj");
+    const files = filesPaneId("/home/me/code/p/proj");
+    expect(diff).not.toBe(files);
+    expect(isFilesPane(files)).toBe(true);
+    expect(isFilesPane(diff)).toBe(false);
+    expect(isDiffPane(files)).toBe(false);
+    expect(filesPaneDir(files)).toBe("/home/me/code/p/proj");
+    expect(folderPaneDir(diff)).toBe("/home/me/code/p/proj");
+    expect(folderPaneDir(files)).toBe("/home/me/code/p/proj");
+    expect(folderPaneDir("s00deadbeef00cafe")).toBeNull();
   });
 });
 
@@ -320,13 +337,25 @@ describe("pruneWins", () => {
     expect(next.activeWindows).toEqual({ "/f": "w2" });
   });
 
-  it("keeps a valid folder's diff pane, drops a removed folder's", () => {
+  it("keeps a valid folder's diff/files panes, drops a removed folder's", () => {
     const w: WindowsPayload = {
-      windows: [win("w1", "/f", [diffPaneId("/f"), diffPaneId("/gone"), "s1"])],
+      windows: [
+        win("w1", "/f", [
+          diffPaneId("/f"),
+          filesPaneId("/f"),
+          diffPaneId("/gone"),
+          filesPaneId("/gone"),
+          "s1",
+        ]),
+      ],
       activeWindows: { "/f": "w1" },
     };
     const [s, f] = valid(["s1"], ["/f"]);
-    expect(pruneWins(w, s, f).windows[0].panes).toEqual([diffPaneId("/f"), "s1"]);
+    expect(pruneWins(w, s, f).windows[0].panes).toEqual([
+      diffPaneId("/f"),
+      filesPaneId("/f"),
+      "s1",
+    ]);
   });
 
   it("returns the same object when nothing changed", () => {

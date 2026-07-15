@@ -15,6 +15,7 @@ import {
   CacheBadge,
   Chevron,
   DiffButton,
+  FilesButton,
   Dot,
   DotCount,
   GhostBadge,
@@ -316,6 +317,7 @@ export function RepoGroup({
   onDeleteWorktree,
   onRenameCommit,
   onOpenDiff,
+  onOpenFiles,
   quietDirs,
   quietRevealed,
   onToggleQuiet,
@@ -352,6 +354,8 @@ export function RepoGroup({
   onRenameCommit: (sessionId: string, name: string) => void;
   /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: (dir: string) => void;
+  /** Opens the folder's files pane in its focused window. */
+  onOpenFiles: (dir: string) => void;
   /** Dirs the hide-inactive filter tucks behind a "N quiet" stub (empty/
    * undefined when the filter is off). Quiet folders demote to the stub
    * instead of vanishing — nothing ever silently disappears from the rail. */
@@ -497,6 +501,7 @@ export function RepoGroup({
             folder.isWorktree ? () => onDeleteWorktree(folder.dir, repo.name) : undefined
           }
           onOpenDiff={() => onOpenDiff(folder.dir)}
+          onOpenFiles={() => onOpenFiles(folder.dir)}
         />
         {/* The note is a folder label — visible under the header even when the
             folder is collapsed (renders nothing when unset). */}
@@ -596,6 +601,7 @@ export function RepoGroup({
                     : undefined
                 }
                 onOpenDiff={() => onOpenDiff(folder.dir)}
+                onOpenFiles={() => onOpenFiles(folder.dir)}
               />
               {/* Note is a folder label — shown under the header even when the
                   folder is collapsed (renders nothing when unset). */}
@@ -678,6 +684,7 @@ function FolderHeader({
   onRemoveRepo,
   onDeleteWorktree,
   onOpenDiff,
+  onOpenFiles,
 }: {
   scope: "repo" | "folder";
   /** repo.name at repo scope, folder.name at folder scope. */
@@ -704,6 +711,8 @@ function FolderHeader({
   onDeleteWorktree?: () => void;
   /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: () => void;
+  /** Opens the folder's files pane in its focused window. */
+  onOpenFiles: () => void;
 }) {
   const scopePrefix = pathScope(folder.dir);
   const progress = folder.metadata?.progress;
@@ -817,6 +826,7 @@ function FolderHeader({
           {folder.isWorktree && <WorktreeBadge />}
           {folder.hasPortDrift && <PortDriftBadge drift={folderPortDrift(folder)} />}
           <DiffButton stats={folder} onOpen={onOpenDiff} />
+          <FilesButton onOpen={onOpenFiles} />
           {pr && <PrChip pr={pr} />}
           {typeof progress?.percent === "number" && (
             <span
