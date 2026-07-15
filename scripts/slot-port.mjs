@@ -8,6 +8,7 @@
 // (shell env, `.env.local` pin, or `.env` rendered by `tt slot`) wins over this.
 import { basename, join } from "node:path";
 import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 
 export const PORT_MIN = 1420;
 const PORT_SPAN = 200; // ports 1420–1619, partitioned across slots by name hash
@@ -78,4 +79,51 @@ export function resolveDevPort(repoRoot) {
  */
 export function resolveWebdriverPort(devPort) {
   return Number(process.env.TT_E2E_WEBDRIVER_PORT) || devPort + 3000;
+}
+
+/**
+ * Spawn `tauri dev` (or `dev` with extra flags) as the leader of its own
+ * process group, so its whole subtree — the `tauri` CLI's own node shim,
+ * `cargo run`, `tt-app`, and the `vite`/esbuild dev server `beforeDevCommand`
+ * launches — always shares one group id (== this process's pid), no matter
+ * how many shell layers npm/tauri interpose. Without this, a signal aimed at
+ * only the one pid you can see (e.g. killing what `ps` shows for "tauri dev")
+ * leaves vite/esbuild orphaned and still bound to the dev port — the next
+ * `npm run dev`/`dev:drive` in this slot then fails with "port already in
+ * use" until someone finds and kills the leftovers by hand. Forwarding
+ * SIGINT/SIGTERM/SIGHUP from this wrapper to that whole group means the
+ * normal case (Ctrl+C in the terminal this was started from) tears
+ * everything down together, and a still-alive wrapper can always be killed
+ * by itself to the same effect — but the group id is the one thing that's
+ * always reliable, even if the wrapper itself is already gone (see
+ * e2e/README.md's "stopping a stray dev session").
+ */
+export function spawnTauriDev(args, env) {
+  const posix = process.platform !== "win32";
+  const child = spawn("tauri", args, {
+    stdio: "inherit",
+    env,
+    shell: !posix,
+    // Windows has no POSIX process groups; `detached` there just means "own
+    // console", which isn't what we want, so leave it plain and rely on the
+    // OS's own console Ctrl+C propagation (existing behavior, unchanged).
+    detached: posix,
+  });
+
+  if (posix) {
+    const forward = (signal) => {
+      if (!child.pid) return;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        // Already gone.
+      }
+    };
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+      process.on(signal, () => forward(signal));
+    }
+  }
+
+  child.on("exit", (code) => process.exit(code ?? 0));
+  return child;
 }

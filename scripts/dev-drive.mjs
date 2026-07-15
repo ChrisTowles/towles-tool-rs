@@ -11,10 +11,9 @@
 // Ports come from `.env.local` exactly like `npm run dev` (deterministic per slot,
 // NOT a free-port scan) so `drive.mjs` can find the automation server without
 // being told: wdPort = TT_DEV_PORT + 3000 (override with TT_E2E_WEBDRIVER_PORT).
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { resolveDevPort, resolveWebdriverPort } from "./slot-port.mjs";
+import { resolveDevPort, resolveWebdriverPort, spawnTauriDev } from "./slot-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -35,8 +34,7 @@ console.log(
 // `tauri dev` builds the app (with our feature) and runs beforeDevCommand (vite).
 // devUrl is baked to the dev port so the WebView is a trusted Tauri origin (IPC
 // invokes allowed); VITE_WDIO makes the frontend load @wdio/tauri-plugin.
-const child = spawn(
-  "tauri",
+spawnTauriDev(
   [
     "dev",
     "--features",
@@ -45,16 +43,10 @@ const child = spawn(
     JSON.stringify({ build: { devUrl: `http://localhost:${devPort}` } }),
   ],
   {
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      TT_DEV_PORT: String(devPort),
-      VITE_WDIO: "1",
-      TAURI_WEBVIEW_AUTOMATION: "true",
-      TAURI_WEBDRIVER_PORT: String(wdPort),
-    },
-    shell: process.platform === "win32",
+    ...process.env,
+    TT_DEV_PORT: String(devPort),
+    VITE_WDIO: "1",
+    TAURI_WEBVIEW_AUTOMATION: "true",
+    TAURI_WEBDRIVER_PORT: String(wdPort),
   },
 );
-
-child.on("exit", (code) => process.exit(code ?? 0));
