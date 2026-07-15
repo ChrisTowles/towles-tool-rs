@@ -12,7 +12,7 @@ use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
 use tt_slots::ops::{self, CleanOpts, CreateOpts, OpsError, RemoveOpts, SlotRoot};
-use tt_slots::{envfile, guards, layout};
+use tt_slots::{envfile, guards};
 
 use crate::cli::SlotCommands;
 use crate::ui;
@@ -57,10 +57,11 @@ fn hook_str<'a>(input: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> 
 }
 
 /// WorktreeCreate hook: create (or reuse) the slot for the requested name and
-/// print its path — the one line of stdout Claude Code parses. The branch is
-/// tt-owned: `feat/<name>` for a bare name, the name verbatim when it already
-/// looks like a branch (see `layout::branch_from_worktree_name`) — never the
-/// native `worktree-<name>` scheme. Claude Code observed (2.1.210) sends
+/// print its path — the one line of stdout Claude Code parses. The requested
+/// name IS the branch, verbatim (`claude -w feat/thing` → branch
+/// `feat/thing`, slot folder `feat-thing` — the folder is a one-way slug of
+/// the branch, never parsed back) — and never the native `worktree-<name>`
+/// scheme or a guessed prefix. Claude Code observed (2.1.210) sends
 /// `{session_id, transcript_path, cwd, hook_event_name, name}` with `cwd`
 /// already the main checkout root; `worktree_name`/`source_ref` are accepted
 /// too for the documented shape.
@@ -69,7 +70,7 @@ fn cmd_hook_create() -> Result<(), String> {
     let name = hook_str(&input, &["name", "worktree_name"])
         .ok_or("hook input has no worktree name (`name`/`worktree_name`)")?;
     let root = hook_str(&input, &["cwd"]).map(PathBuf::from);
-    let branch = layout::branch_from_worktree_name(name);
+    let branch = name.to_string();
 
     let opts = CreateOpts {
         root: root.clone(),

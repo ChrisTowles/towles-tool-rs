@@ -65,7 +65,7 @@ created for a branch, removed when the branch merges. Manage them with
 checkout root is safe — git skips nested repositories without a second `-f`.)
 
 ```sh
-tt slot new -b feat/thing [--base <ref>]  # creates .claude/worktrees/thing on that branch
+tt slot new -b feat/thing [--base <ref>]  # creates .claude/worktrees/feat-thing on that branch
 tt slot ls [--json]                       # fleet: main checkout + slots, branch, dirty, ports
 tt slot env <name>                        # (re)render .env — idempotent, keeps claims
 tt slot env primary                       # same, for the main checkout
@@ -85,9 +85,9 @@ machinery when the repo's `.claude/settings.json` wires the hooks:
 ```
 
 `hook-create` reads the hook JSON on stdin and prints the slot path (its one
-line of stdout — the hook contract); the branch is **tt-named** (`feat/<name>`
-for a bare worktree name, the name verbatim when it already contains `/`),
-never Claude Code's `worktree-<name>` scheme. `hook-remove` runs the same
+line of stdout — the hook contract); the requested worktree name IS the
+branch, verbatim (`claude -w feat/thing` → branch `feat/thing`, folder
+`feat-thing`), never Claude Code's `worktree-<name>` scheme. `hook-remove` runs the same
 guarded removal as `tt slot rm`. Hooks execute from the *session checkout's
 committed copy* of `.claude/`, so hook config edits only take effect in new
 worktrees once committed. The blog repo (`~/code/p/blog`) is wired this way
@@ -105,7 +105,9 @@ Rules when working in a slot:
   default branch directly (git itself blocks a second checkout of it while
   the main checkout holds it).
 - **One branch per slot, named after it.** `tt slot new -b feat/thing`
-  creates `.claude/worktrees/thing` (`--base` when not branching off the
+  creates `.claude/worktrees/feat-thing` (the folder is the slugged branch —
+  one-way; the branch is always read from git, never parsed back from the
+  folder) (`--base` when not branching off the
   default). A slot whose PR merged is done — `tt slot rm` it (or
   `tt slot clean`, which finds every merged/gone slot); commits reachable
   from no branch or remote block removal by design.

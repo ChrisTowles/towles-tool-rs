@@ -1310,9 +1310,9 @@ mod tests {
     #[test]
     fn check_branch_flags_an_existing_slot_name() {
         let (_tmp, sr) = temp_slot_root();
-        fs::create_dir_all(sr.slot_dir("hello-world")).unwrap();
+        fs::create_dir_all(sr.slot_dir("feat-hello-world")).unwrap();
         let check = check_branch(&sr, "feat/hello-world");
-        assert_eq!(check.name.as_deref(), Some("hello-world"));
+        assert_eq!(check.name.as_deref(), Some("feat-hello-world"));
         assert!(check.taken);
         assert!(check.error.is_none());
     }
@@ -1321,7 +1321,7 @@ mod tests {
     fn check_branch_clears_a_free_name() {
         let (_tmp, sr) = temp_slot_root();
         let check = check_branch(&sr, "feat/brand-new");
-        assert_eq!(check.name.as_deref(), Some("brand-new"));
+        assert_eq!(check.name.as_deref(), Some("feat-brand-new"));
         assert!(!check.taken);
         assert!(check.error.is_none());
     }

@@ -79,13 +79,13 @@ fn lifecycle_new_env_ls_rm() {
         .unwrap();
     assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
     let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(created["name"], "thing");
+    assert_eq!(created["name"], "feat-thing");
     assert_eq!(created["branch"], "feat/thing");
     assert_eq!(created["base"], "main");
-    let slot = slot_dir(&checkout, "thing");
+    let slot = slot_dir(&checkout, "feat-thing");
     assert_eq!(created["dir"], slot.to_string_lossy().as_ref());
     let env = std::fs::read_to_string(slot.join(".env")).unwrap();
-    assert!(env.contains("NAME=thing"), "env: {env}");
+    assert!(env.contains("NAME=feat-thing"), "env: {env}");
     assert!(env.contains("BASE=main"));
     let ui_port = created["ports"]["UI_PORT"].as_u64().expect("UI_PORT claimed");
     assert!((42410..=42429).contains(&ui_port));
@@ -119,7 +119,7 @@ fn lifecycle_new_env_ls_rm() {
     let filled = env.replace("SECRET=", "SECRET=hunter2");
     std::fs::write(slot.join(".env"), filled).unwrap();
     tt().args(["slot", "new", "-b", "fix/other", "--root", &root_s]).assert().success();
-    let env2 = std::fs::read_to_string(slot_dir(&checkout, "other").join(".env")).unwrap();
+    let env2 = std::fs::read_to_string(slot_dir(&checkout, "fix-other").join(".env")).unwrap();
     assert!(env2.contains("SECRET=hunter2"), "new slot inherits sibling secrets: {env2}");
     assert!(!env2.contains(&format!("UI_PORT={ui_port}")), "new slot claims a different port");
 
@@ -130,7 +130,7 @@ fn lifecycle_new_env_ls_rm() {
         .stderr(contains("already exists"));
 
     // env re-render is idempotent: same port, secrets kept
-    tt().args(["slot", "env", "thing", "--root", &root_s]).assert().success();
+    tt().args(["slot", "env", "feat-thing", "--root", &root_s]).assert().success();
     let env_again = std::fs::read_to_string(slot.join(".env")).unwrap();
     assert!(env_again.contains(&format!("UI_PORT={ui_port}")), "re-render keeps the claim");
     assert!(env_again.contains("SECRET=hunter2"), "re-render keeps merged secrets");
@@ -146,22 +146,22 @@ fn lifecycle_new_env_ls_rm() {
     // worktrees-inside-worktrees
     let slot_s = slot.to_string_lossy().to_string();
     tt().args(["slot", "new", "-b", "feat/from-inside", "--root", &slot_s]).assert().success();
-    assert!(slot_dir(&checkout, "from-inside").is_dir());
-    assert!(!slot_dir(&slot, "from-inside").exists());
-    tt().args(["slot", "rm", "from-inside", "--root", &root_s]).assert().success();
+    assert!(slot_dir(&checkout, "feat-from-inside").is_dir());
+    assert!(!slot_dir(&slot, "feat-from-inside").exists());
+    tt().args(["slot", "rm", "feat-from-inside", "--root", &root_s]).assert().success();
 
     // ls --json: the main checkout first, then slots by name
     let out = tt().args(["slot", "ls", "--json", "--root", &root_s]).output().unwrap();
     let listed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let names: Vec<&str> =
         listed.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["primary", "other", "thing"]);
+    assert_eq!(names, vec!["primary", "feat-thing", "fix-other"]);
     assert_eq!(listed[0]["primary"], true);
     assert_eq!(listed[0]["branch"], "main");
 
     // rm a clean slot succeeds and releases the dir; the branch survives
-    tt().args(["slot", "rm", "other", "--root", &root_s]).assert().success();
-    assert!(!slot_dir(&checkout, "other").exists());
+    tt().args(["slot", "rm", "fix-other", "--root", &root_s]).assert().success();
+    assert!(!slot_dir(&checkout, "fix-other").exists());
     let branches = Command::new("git")
         .args([
             "-C",
@@ -220,7 +220,7 @@ fn new_with_base_records_the_actual_base_not_the_primary_branch() {
     let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(created["base"], "develop");
 
-    let slot = slot_dir(&checkout, "off-develop");
+    let slot = slot_dir(&checkout, "feat-off-develop");
     let env = std::fs::read_to_string(slot.join(".env")).unwrap();
     assert!(env.contains("BASE=develop"), "env: {env}");
     let marker = std::fs::read_to_string(slot.join(".tt-slot")).unwrap();
@@ -231,7 +231,7 @@ fn new_with_base_records_the_actual_base_not_the_primary_branch() {
     // re-rendering the slot's env must still report the base it was
     // actually created from.
     git(&checkout, &["checkout", "-b", "unrelated"]);
-    tt().args(["slot", "env", "off-develop", "--root", &root_s]).assert().success();
+    tt().args(["slot", "env", "feat-off-develop", "--root", &root_s]).assert().success();
     let env_again = std::fs::read_to_string(slot.join(".env")).unwrap();
     assert!(env_again.contains("BASE=develop"), "re-render: {env_again}");
     let marker_again = std::fs::read_to_string(slot.join(".tt-slot")).unwrap();
@@ -276,7 +276,7 @@ fn new_fast_forwards_a_base_behind_origin() {
 
     // ...so the new slot branches from that current history, not the stale
     // commit the checkout had when the slot command started
-    assert!(slot_dir(&checkout, "thing").join("upstream.txt").is_file());
+    assert!(slot_dir(&checkout, "feat-thing").join("upstream.txt").is_file());
 }
 
 /// When the checkout's base branch has diverged from `origin/<base>` (both
@@ -309,7 +309,7 @@ fn new_warns_but_still_creates_when_base_diverged_from_origin() {
 
     // creation still succeeds, branching off the checkout's own (unmoved)
     // local main rather than blocking on the divergence
-    let slot = slot_dir(&checkout, "thing");
+    let slot = slot_dir(&checkout, "feat-thing");
     assert!(slot.join("local.txt").is_file());
     assert!(!slot.join("upstream.txt").is_file());
 }
@@ -336,7 +336,7 @@ fn new_rolls_back_the_worktree_when_env_render_fails() {
         .failure()
         .stderr(contains("no template"));
 
-    assert!(!slot_dir(&checkout, "thing").exists(), "the worktree must not be left behind");
+    assert!(!slot_dir(&checkout, "feat-thing").exists(), "the worktree must not be left behind");
     let worktrees = Command::new("git")
         .args(["-C", checkout.to_str().unwrap(), "worktree", "list"])
         .output()
@@ -363,11 +363,11 @@ fn rm_guards_dirty_and_orphan_commits() {
     let root_s = checkout.to_string_lossy().to_string();
 
     tt().args(["slot", "new", "-b", "feat/work", "--root", &root_s]).assert().success();
-    let slot = slot_dir(&checkout, "work");
+    let slot = slot_dir(&checkout, "feat-work");
 
     // dirty tree refuses
     std::fs::write(slot.join("junk.txt"), "wip").unwrap();
-    tt().args(["slot", "rm", "work", "--root", &root_s])
+    tt().args(["slot", "rm", "feat-work", "--root", &root_s])
         .assert()
         .failure()
         .stderr(contains("not clean"));
@@ -379,7 +379,7 @@ fn rm_guards_dirty_and_orphan_commits() {
     std::fs::write(slot.join("work.txt"), "real work").unwrap();
     git(&slot, &["add", "work.txt"]);
     git(&slot, &["commit", "-m", "detached work"]);
-    tt().args(["slot", "rm", "work", "--root", &root_s])
+    tt().args(["slot", "rm", "feat-work", "--root", &root_s])
         .assert()
         .failure()
         .stderr(contains("orphan"));
@@ -387,17 +387,17 @@ fn rm_guards_dirty_and_orphan_commits() {
     // parking the commit on a branch makes removal safe (branches live in the
     // main checkout's .git)
     git(&slot, &["branch", "parked/detached-work"]);
-    tt().args(["slot", "rm", "work", "--root", &root_s]).assert().success();
+    tt().args(["slot", "rm", "feat-work", "--root", &root_s]).assert().success();
     assert!(!slot.exists());
 
     // --force path: recreate, dirty it, force through
     tt().args(["slot", "new", "-b", "feat/redo", "--root", &root_s]).assert().success();
-    std::fs::write(slot_dir(&checkout, "redo").join("junk.txt"), "wip").unwrap();
-    tt().args(["slot", "rm", "redo", "--force", "--root", &root_s])
+    std::fs::write(slot_dir(&checkout, "feat-redo").join("junk.txt"), "wip").unwrap();
+    tt().args(["slot", "rm", "feat-redo", "--force", "--root", &root_s])
         .assert()
         .success()
         .stdout(contains("skipping guard"));
-    assert!(!slot_dir(&checkout, "redo").exists());
+    assert!(!slot_dir(&checkout, "feat-redo").exists());
 }
 
 #[test]
@@ -416,11 +416,11 @@ fn rm_untracks_the_slot_and_removes_its_instance_state() {
     ];
 
     tt().args(["slot", "new", "-b", "feat/tracked", "--root", &root_s]).assert().success();
-    let slot = slot_dir(&checkout, "tracked");
+    let slot = slot_dir(&checkout, "feat-tracked");
 
     // Give the slot checkout this repo's scope marker (committed, so the tree
     // stays clean for the removal guards): its state scope becomes
-    // `demo-tracked` (main checkout dir name + slot name).
+    // `demo-feat-tracked` (main checkout dir name + slot name).
     std::fs::create_dir_all(slot.join("crates").join("tt-config")).unwrap();
     std::fs::write(slot.join("crates").join("tt-config").join(".gitkeep"), "").unwrap();
     git(&slot, &["add", "."]);
@@ -442,13 +442,13 @@ fn rm_untracks_the_slot_and_removes_its_instance_state() {
     .unwrap();
 
     // Leftover instance state the removed slot's app instance wrote.
-    let state_dir = shared.join("slots").join("demo-tracked");
+    let state_dir = shared.join("slots").join("demo-feat-tracked");
     std::fs::create_dir_all(state_dir.join("agentboard")).unwrap();
     std::fs::write(state_dir.join("agentboard").join("sessions.json"), "{}\n").unwrap();
 
     let mut cmd = tt();
     cmd.envs(scope_env.iter().map(|(k, v)| (*k, v.as_str())));
-    cmd.args(["slot", "rm", "tracked", "--root", &root_s])
+    cmd.args(["slot", "rm", "feat-tracked", "--root", &root_s])
         .assert()
         .success()
         .stdout(contains("untracked from the agentboard rail"))
@@ -484,7 +484,7 @@ fn lockfile_detection_installs_without_declared_setup() {
     let root_s = checkout.to_string_lossy().to_string();
 
     tt().args(["slot", "new", "-b", "feat/plain", "--root", &root_s]).assert().success();
-    assert!(slot_dir(&checkout, "plain").join(".env").is_file());
+    assert!(slot_dir(&checkout, "feat-plain").join(".env").is_file());
 }
 
 /// The Claude Code WorktreeCreate hook shell: stdin is the hook JSON, stdout
@@ -517,8 +517,8 @@ fn hook_create_creates_a_slot_and_is_idempotent() {
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&branch.stdout).trim(),
-        "feat/auth-flow",
-        "the hook names the branch, not Claude Code"
+        "auth-flow",
+        "the requested worktree name is the branch, verbatim"
     );
     assert!(expected.join(".env").is_file(), "hook-created slots render .env like tt slot new");
 
@@ -538,7 +538,7 @@ fn hook_remove_is_guarded_like_rm() {
     let root_s = checkout.to_string_lossy().to_string();
 
     tt().args(["slot", "new", "-b", "feat/done", "--root", &root_s]).assert().success();
-    let slot = slot_dir(&checkout, "done");
+    let slot = slot_dir(&checkout, "feat-done");
     let hook_input = serde_json::json!({
         "hook_event_name": "WorktreeRemove",
         "cwd": checkout.to_string_lossy(),

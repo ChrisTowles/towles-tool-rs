@@ -99,7 +99,8 @@ pub enum SlotCommands {
     /// rendered .env (port claims, inherited sibling secrets) + setup step
     /// (TT_SLOT_SETUP from the rendered .env, else lockfile-detected install)
     New {
-        /// Branch to create and check out (the slot is named after its last segment)
+        /// Branch to create and check out (the slot folder is the slugged branch,
+        /// e.g. feat/thing -> feat-thing)
         #[arg(long, short = 'b')]
         branch: String,
 
