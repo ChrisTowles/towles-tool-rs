@@ -715,16 +715,16 @@ export function agentRollup(
 export function rollupAlertColor(r: AgentRollup): string | null {
   if (r.error > 0) return "bg-red-500";
   if (r.waiting > 0) return "bg-blue-500";
-  if (r.busy > 0) return "bg-yellow-500";
+  if (r.busy > 0) return "bg-cyan-500";
   if (r.total > 0) return "bg-emerald-500";
   return null;
 }
 
 /** Badge text color to pair with `rollupAlertColor`'s background — white
- * reads fine on the red/blue/emerald fills, but on yellow-500 (busy) it's
+ * reads fine on the red/blue/emerald fills, but on cyan-500 (busy) it's
  * nearly illegible, so that one badge needs dark text instead. */
 export function rollupAlertTextColor(bg: string | null): string {
-  return bg === "bg-yellow-500" ? "text-yellow-950" : "text-white";
+  return bg === "bg-cyan-500" ? "text-cyan-950" : "text-white";
 }
 
 const EMPTY_WINDOWS: WindowsPayload = { windows: [], activeWindows: {} };
@@ -797,11 +797,23 @@ export function useAgentboardState(): StatePayload {
   return state;
 }
 
-/** Status dot color, mirroring the Rust `AgentStatus::color` intent. */
+/** Status dot color, mirroring the Rust `AgentStatus::color` intent.
+ * `busy` is cyan rather than the more obvious amber/yellow: amber is this
+ * app's needs-you accent (`sessionCatchesEye`, folder badges), and
+ * yellow-500 sits only ~8° from amber-500 in hue — close enough that a busy
+ * (no action needed) dot reads as an attention flag at a glance. Cyan stays
+ * unambiguously "working", not "look at this".
+ * `interrupted` is orange-800 rather than orange-500 for the same reason:
+ * orange-500 sits inside both amber-500's and red-500's confusion radius
+ * (OKLab ΔE ~10, under the ~15 floor where even normal color vision starts
+ * struggling — checked with the dataviz skill's palette validator) and an
+ * unseen interrupted session shows this dot inside an amber-washed
+ * needs-you row, i.e. right next to the color it must stay distinct from.
+ * orange-800 clears both by a wide margin (ΔE 18–31). */
 export function statusColor(status: AgentStatus): string {
   switch (status) {
     case "busy":
-      return "bg-yellow-500";
+      return "bg-cyan-500";
     case "complete":
       return "bg-green-500";
     case "error":
@@ -809,7 +821,7 @@ export function statusColor(status: AgentStatus): string {
     case "waiting":
       return "bg-blue-500";
     case "interrupted":
-      return "bg-orange-500";
+      return "bg-orange-800";
     default:
       return "bg-muted-foreground/40";
   }

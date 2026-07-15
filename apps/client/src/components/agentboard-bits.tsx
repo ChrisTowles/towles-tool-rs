@@ -361,8 +361,10 @@ export function CacheBadge({
   const cold = isCold(d, now);
 
   if (needsCompact(d, now, compactPct)) {
+    // Pulses like the busy dot — a cold-and-huge session is a live nudge
+    // ("compact this before you resume it"), not a passive fact.
     const pill =
-      "shrink-0 rounded-md border border-sky-500/50 bg-sky-500/10 px-1.5 font-mono text-[10.5px] text-sky-500";
+      "shrink-0 animate-pulse rounded-md border border-sky-500/50 bg-sky-500/10 px-1.5 font-mono text-[10.5px] text-sky-500";
     const hint = `${pct}% of context used and the prompt cache expired — resuming re-reads everything.`;
     return onCompact ? (
       <button

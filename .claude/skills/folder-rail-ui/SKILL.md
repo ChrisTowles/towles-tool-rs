@@ -30,24 +30,39 @@ Radius: cards/panels `rounded-lg`, chips/badges/tabs `rounded-md`, dots circular
 ## Status dots — mirror `statusColor()` in `apps/client/src/lib/agentboard.ts` exactly
 | `AgentStatus` | class |
 |---|---|
-| `busy` | `bg-yellow-500` (`animate-pulse` while live only) |
+| `busy` | `bg-cyan-500` (`animate-pulse` while live only) — deliberately *not* amber/yellow, which reads as the needs-you accent below |
 | `waiting` | `bg-blue-500` |
 | `error` | `bg-red-500` |
 | `complete` | `bg-green-500` |
-| `interrupted` | `bg-orange-500` |
+| `interrupted` | `bg-orange-800` — not orange-500, which sits inside amber-500's *and* red-500's confusion radius (OKLab ΔE ~10, checked with the dataviz skill's palette validator); an unseen interrupted session shows this dot inside an amber-washed needs-you row, so it must stay clearly not-amber |
 | `idle` (default) | `bg-muted-foreground/40` |
 
 Dot = `size-2 rounded-full`.
 
+When adding or re-tuning a status/accent color, don't eyeball hue distance —
+run the `dataviz` skill's `scripts/validate_palette.js` against the full set
+of colors that can appear adjacent (status dots + amber + violet), `--pairs
+all`. A normal-vision ΔE under ~15 between two colors that can co-occur is a
+real risk, not a nitpick — that's how the original yellow/amber busy bug and
+the orange/amber interrupted bug both got in.
+
 ## Two accent hues, one rule each
 - **Amber (`amber-500`)** = needs-you (`status ∈ {waiting, error}` + failing
-  PRs). Left border `border-l-2 border-l-amber-500`, folder count badge
+  PRs). A needs-you *row* (session list) gets the full treatment: left border
+  `border-l-2 border-l-amber-500`, a row-wide wash `bg-amber-500/10`
+  (`/15` on hover), and a flag dot `bg-amber-500` sitting right after the
+  status dot — in the same glance as the glyph and name, not stranded at the
+  row's far edge. A thin border alone was tested and rejected: it reads as a
+  decoration you have to go looking for, not an alert. A needs-you *badge*
+  (folder/repo aggregate count, not a full row) stays the lighter chip:
   `text-amber-500 border border-amber-500/50 bg-amber-500/10`.
 - **Violet (`violet-500`)** = agent-ness / currently focused. Agent glyph `✦`,
   active row `border-l-2 border-l-violet-500 bg-accent`, `+ session` action,
   terminal prompt caret.
-- If a row is both active and needs-you: **amber wins the border**; show
-  violet elsewhere (glyph, tab).
+- If a row is both active and needs-you: **amber wins the border and the
+  fill**; show violet elsewhere (glyph, tab). Needs-you is the rarer, more
+  urgent signal — "this is where you're currently looking" is redundant once
+  you're looking at it.
 
 ## Level ladder (never let a deeper level outrank its parent)
 | Level | Glyph | Weight | Indent |
@@ -73,18 +88,21 @@ Every header row (repo, folder, or a solo-repo's collapsed header) gets
 // session row
 <button className={cn(
   "flex items-center gap-2.5 py-1.5 pr-3 pl-9 text-left border-l-2 border-transparent",
-  hovered && "bg-accent",
-  active && "bg-accent border-l-violet-500",
-  needsYou && "border-l-amber-500",
+  hovered && !needsYou && "bg-accent",
+  active && !needsYou && "bg-accent border-l-violet-500",
+  // needs-you wins the edge AND the fill over hover/active — see "Two accent
+  // hues" above for why a thin border alone isn't enough.
+  needsYou && "border-l-amber-500 bg-amber-500/10",
+  needsYou && hovered && "bg-amber-500/15",
 )}>
   <span className={cn("font-mono text-xs w-4 text-center",
     type === "agent" ? "text-violet-500" : "text-muted-foreground/60")}>
     {type === "agent" ? "✦" : "❯"}
   </span>
   <span className={cn("size-2 rounded-full", statusColor(status))} />
+  {needsYou && <span className="size-1.5 rounded-full bg-amber-500" />}
   <span className="text-foreground">{name}</span>
   <span className="ml-auto text-[11px] text-muted-foreground">{message}</span>
-  {needsYou && <span className="size-1.5 rounded-full bg-amber-500" />}
 </button>
 
 // folder count badge (needs-you)
@@ -103,7 +121,9 @@ Every header row (repo, folder, or a solo-repo's collapsed header) gets
   a new color implies a new *status*, question it.
 - Do use shadcn tokens (not raw colors) so light + dark both work.
 - Don't hand-write CSS/CSS-in-JS — Tailwind + shadcn only (`npx shadcn@latest add <name>`).
-- Don't animate resting UI — `animate-pulse` is for a live/busy dot only.
+- Don't animate resting UI — `animate-pulse` is reserved for a live, currently-
+  true nudge (the busy dot; the cache badge's "cold and worth compacting"
+  pill), never a passive fact or a summary/rollup count.
 - Don't let violet (focus) override amber (attention) on a row's border.
 
 ## Source of truth in the app

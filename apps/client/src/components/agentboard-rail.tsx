@@ -74,14 +74,14 @@ import type { PrItem } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
 
 /** Ambient status color for a set of sessions hidden behind a collapse:
- * red if one errored, blue if one is waiting on you, yellow while an agent is
+ * red if one errored, blue if one is waiting on you, cyan while an agent is
  * busy, else a calm emerald for "live but idle". Null when nothing is live. */
 function collapsedLiveColor(sessions: SessionData[]): string | null {
   const live = sessions.filter((s) => s.live);
   if (live.length === 0) return null;
   if (live.some((s) => s.agentState?.status === "error")) return "bg-red-500";
   if (live.some((s) => s.agentState?.status === "waiting")) return "bg-blue-500";
-  if (live.some((s) => s.agentState?.status === "busy")) return "bg-yellow-500";
+  if (live.some((s) => s.agentState?.status === "busy")) return "bg-cyan-500";
   return "bg-emerald-500";
 }
 
@@ -1048,13 +1048,18 @@ function SessionRow({
       onMouseLeave={() => setHovered(false)}
       className={cn(
         "relative ml-1.5 flex cursor-pointer items-center gap-2.5 border-l-2 border-transparent py-1.5 pr-3 pl-9",
-        hovered && "bg-accent",
-        active && "border-l-violet-500 bg-accent",
-        needs && "border-l-amber-500",
+        hovered && !needs && "bg-accent",
+        active && !needs && "border-l-violet-500 bg-accent",
+        // Needs-you wins over hover/active for both the edge and the fill —
+        // a thin 2px border alone was too easy to miss scanning the rail, so
+        // the whole row washes amber, not just its left pixel.
+        needs && "border-l-amber-500 bg-amber-500/10",
+        needs && hovered && "bg-amber-500/15",
       )}
     >
       <Glyph agent={agent} />
       <Dot session={eff} />
+      {needs && <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
       {renaming ? (
         <input
           autoFocus
@@ -1124,9 +1129,6 @@ function SessionRow({
               {sessionStatusText(eff)}
             </span>
           </span>
-          {needs && (
-            <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />
-          )}
           {(active || hovered) && (
             <span className="absolute inset-y-0 right-2 z-10 flex items-center gap-1 bg-accent pl-1.5">
               <RowControls session={eff} folderDir={folderDir} grouped={!!grouped} actions={actions} />
