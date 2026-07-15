@@ -112,12 +112,14 @@ mod tests {
                     name: "primary".into(),
                     folder_dir: live.clone(),
                     panes: vec![s_live.id.clone()],
+                    cols: None,
                 },
                 windows::AgWindow {
                     id: "w2".into(),
                     name: "primary".into(),
                     folder_dir: dead.clone(),
                     panes: vec![s_dead.id.clone()],
+                    cols: None,
                 },
             ],
             active_windows: [
