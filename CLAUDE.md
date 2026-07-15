@@ -160,12 +160,26 @@ Cargo workspace + npm workspace (`apps/client` only):
     removed in the day-screens pivot.
   - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`tt mcp serve`) exposing
     the store + live agent sessions + `journal_append` to claude sessions.
+  - `tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and
+    lockfile schema the app uses to pose as an "IDE" a Claude Code CLI session
+    connects to. Transport-free by design (sockets, auth, clocks live in
+    `tt-app`); the lockfile's *filename* is the port (Claude Code parses it
+    from the path, there's no port field in the JSON).
   - `tt-vt` — libghostty-vt terminal-state engine used by the app's canvas
-    terminals (needs zig 0.15.x; see the frontend section).
+    terminals. Needs zig 0.15.x on PATH to build; see
+    [`crates/tt-vt/CLAUDE.md`](crates/tt-vt/CLAUDE.md) for the Debug-mode
+    parser perf trap and other gotchas.
+  - `tt-dictate` — streaming dictation engine (sherpa-onnx ASR over `cpal` mic
+    capture, ported from the standalone `scribed` daemon). See
+    [`crates/tt-dictate/CLAUDE.md`](crates/tt-dictate/CLAUDE.md) for the `asr`
+    feature gate and threading model.
   - `tt-agentboard` — agentboard watchers/engine: repo list, session tracking,
     needs-you synthesis (consumed by the app shell).
   - `tt-claude-code` — Claude Code transcript/session parsing models.
   - `tt-doctor` — doctor checks logic (CLI + app screen both consume it).
+  - `tt-update` — checks GitHub Releases for a newer version than the running
+    app. Uses `native-tls` (not rustls/webpki-roots) for the same
+    Zscaler-proxy reason called out below.
 - `crates-cli/tt-cli` — `clap` 4 CLI, binary `tt`. Commands:
   `config show|validate|schema|reset`, `doctor [--json --track --diff]`,
   `journal daily-notes|note|meeting|list|search` (+ `today` alias),
@@ -182,39 +196,33 @@ Cargo workspace + npm workspace (`apps/client` only):
   Pin a slot to a fixed port with `TT_DEV_PORT` in a gitignored root
   `.env.local` (dev-port reads it and passes it through to vite). Each window is
   labeled by slot: the title bar reads `Towles Tool — <slot>` and the app
-  header shows a colored slot badge (`app_slot` command).
+  header shows a colored slot badge (`app_slot` command). See
+  [`crates-tauri/tt-app/CLAUDE.md`](crates-tauri/tt-app/CLAUDE.md) for the
+  crate's internal locking/ordering/singleton invariants — it's the largest
+  crate in the repo and the easiest one to introduce a subtle bug in.
 - `apps/client` — React 19 + Vite frontend styled with Tailwind CSS v4 +
   shadcn/ui (`@/*` → `src/*` alias, components vendored into
   `src/components/ui/`, light/dark via the `.dark` class). Yaak-style app
-  shell: resizable sidebar + closable tabs (`src/lib/workspace.tsx` context),
-  command palette (⌘K), settings dialog, status bar, keyboard shortcuts via
-  the validated registry in `src/lib/shortcuts.tsx` (`?` opens the help
-  overlay; screen-scoped bindings gate on their tab). Screens live in
-  `src/screens/` (registry in
-  `src/lib/screens.ts`). Live data flows through `src/lib/data.ts`
-  (`useStoreSnapshot` → `store_snapshot` command + `store://snapshot` event)
-  and `src/lib/agentboard.ts`; both fall back to mock data in plain-Vite
-  browser dev. Older screens still render static mocks from
-  `src/lib/mock-data.ts`. The three "Focus" screens are **Cockpit** (default
-  day home — next-meeting countdown + PRs + issue queue), **Board** (cross-repo
-  kanban over local todos grouped by status, with promote-to-issue), and
-  **Agentboard** (repos + per-repo terminals). Terminals are a canvas
-  renderer (`components/terminal-view.tsx` + `src/lib/term-protocol.ts`)
-  over **libghostty-vt** terminal state in Rust (`crates/tt-vt`, one engine
-  thread per terminal): the PTY host (`crates-tauri/tt-app/src/terminal.rs`)
-  spawns shells with portable-pty, feeds bytes to the engine, and emits
-  `terminal://frame` events (dirty-row style runs + cursor + selection +
-  mode hints); input/resize/scroll/selection/copy go back as `term_*`
-  commands. Building tt-vt needs **zig 0.15.x** on PATH (dotfiles
-  `functions/18-zig.sh`). No cross-restart persistence; closing the app
-  kills the shells. Product rules: the
-  app is for getting in the zone —
-  manage PRs and work issues across repos; calendar is only *time until the
-  next meeting*. Agent status is **reported, never re-rendered** (interaction
-  happens in the real PTY via the terminal view); the day
-  bar (`day-bar.tsx`) and the Agentboard needs-you feed unify agents, PRs, and
-  calendar into one attention model. Verify frontend/IPC changes by driving the
-  real shell with `npm run e2e` (see the Commands section and
+  shell: resizable sidebar + closable tabs, command palette (⌘K), settings
+  dialog, status bar, keyboard shortcuts (`?` opens the help overlay).
+  Screens live in `src/screens/`; the three "Focus" screens are **Cockpit**
+  (default day home — next-meeting countdown + PRs + issue queue), **Board**
+  (cross-repo kanban over local todos grouped by status, with
+  promote-to-issue), and **Agentboard** (repos + per-repo terminals).
+  Terminals are a canvas renderer over **libghostty-vt** terminal state in
+  Rust (`crates/tt-vt`); the PTY host
+  (`crates-tauri/tt-app/src/terminal.rs`) spawns shells with portable-pty and
+  streams frames over `terminal://frame`. No cross-restart persistence;
+  closing the app kills the shells. Product rules: the app is for getting in
+  the zone — manage PRs and work issues across repos; calendar is only *time
+  until the next meeting*. Agent status is **reported, never re-rendered**
+  (interaction happens in the real PTY via the terminal view); the day bar
+  (`day-bar.tsx`) and the Agentboard needs-you feed unify agents, PRs, and
+  calendar into one attention model. See
+  [`apps/client/CLAUDE.md`](apps/client/CLAUDE.md) for frontend-internal
+  conventions (screen registration, the shortcuts registry, invoke-wrapper
+  semantics, the terminal wire protocol). Verify frontend/IPC changes by
+  driving the real shell with `npm run e2e` (see the Commands section and
   [e2e/README.md](e2e/README.md)) — not just the mock browser dev server.
 
 ## Migration

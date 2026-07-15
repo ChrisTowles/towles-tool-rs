@@ -13,6 +13,8 @@ mod gh_actions;
 mod ide;
 mod instance_lock;
 mod journal;
+#[cfg(target_os = "linux")]
+mod linux_desktop;
 mod resources;
 mod scheduler;
 mod settings;
@@ -90,6 +92,12 @@ pub fn run() {
             // builds never reference the plugins' ACL and stay clean.
             #[cfg(feature = "wdio")]
             app.handle().add_capability(include_str!("../wdio-capability.json"))?;
+
+            // Register (or refresh) the desktop entry + icon this app-id
+            // resolves to — see linux_desktop's module doc for why this is
+            // needed even outside a packaged build.
+            #[cfg(target_os = "linux")]
+            linux_desktop::ensure_installed(&app.config().identifier);
 
             // Distinguish concurrent slot windows in the title bar / taskbar.
             if let Some(win) = app.get_webview_window("main") {
