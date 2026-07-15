@@ -55,15 +55,22 @@ fn app_slot() -> String {
     slot_label()
 }
 
-/// Per-slot Tauri app identifier, so each worktree slot's build registers as a
-/// distinct GTK/D-Bus application instead of sharing `base`. Without this,
-/// `enableGTKAppId` (tauri.conf.json) makes every slot's binary register the
-/// *same* D-Bus-activatable app id; launching a second slot's app doesn't spawn
-/// a new process, it gets forwarded via D-Bus `activate()` into the first
-/// slot's already-running app, which re-enters Tauri's internal `setup()` and
-/// panics trying to rebuild the config's `"main"` webview a second time. The
-/// primary checkout (not under a `slots/` parent) keeps the base identifier
-/// unscoped, matching how it's the one instance meant to daily-drive.
+/// Per-slot Tauri app identifier, so each worktree slot's self-installed
+/// `.desktop` entry + icon (`linux_desktop::ensure_installed`) gets its own
+/// filename instead of every slot's binary overwriting the same one on
+/// startup. The primary checkout (not under a `slots/` parent) keeps the
+/// base identifier unscoped, matching how it's the one instance meant to
+/// daily-drive.
+///
+/// This used to also be load-bearing for `enableGTKAppId` (tauri.conf.json),
+/// which made every same-identifier binary register as the *same*
+/// D-Bus-activatable GTK application — any activation of it (a second
+/// launch, but *also* a dock/taskbar icon click, `gio launch`, systemd, with
+/// no new process involved at all) re-entered Tauri's internal `setup()` and
+/// panicked rebuilding the config's `"main"` webview a second time.
+/// `enableGTKAppId` is off now (that whole class of activation can't be
+/// scoped away, only eliminated — see `linux_desktop`'s module doc), so this
+/// identifier no longer affects GTK/D-Bus at all.
 fn app_identifier(base: &str) -> String {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let under_slots = manifest_dir.ancestors().nth(3).and_then(|p| p.file_name())
@@ -101,13 +108,11 @@ pub fn run() {
     context.config_mut().identifier = identifier.clone();
 
     // Guard against a second launch of the *same* checkout (same resolved
-    // identifier — the primary, or one specific slot): without this, GTK
-    // forwards the second process's `activate()` via D-Bus into the
-    // already-running one (`enableGTKAppId` in tauri.conf.json), which
-    // re-enters Tauri's internal `setup()` and panics rebuilding the "main"
-    // webview a second time. `app_identifier` already keeps slots from
-    // colliding with each other; this keeps one checkout from colliding with
-    // itself. Held for the whole process lifetime; a lock left by a killed
+    // identifier — the primary, or one specific slot) running concurrently:
+    // with no GTK/D-Bus single-instance registration (`enableGTKAppId` is
+    // off — see `linux_desktop`'s module doc for why), nothing else stops
+    // two processes both opening a window, duplicating PTYs and scheduler
+    // polling. Held for the whole process lifetime; a lock left by a killed
     // process is detected and stolen (see `InstanceLock`).
     let Some(_instance_lock) =
         instance_lock::InstanceLock::try_acquire(&format!("app-{identifier}"))

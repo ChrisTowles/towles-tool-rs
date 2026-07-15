@@ -35,6 +35,26 @@ follows is a cross-cutting rule that spans multiple files.
 
 ## Singletons and cross-slot state
 
+- **`tauri.conf.json` has no `enableGTKAppId`, deliberately — do not re-add
+  it.** It used to be `true`, which made `tao` register a real
+  D-Bus-activatable GTK `Application` per resolved identifier. That doesn't
+  just risk two *processes* colliding: **any** activation of that D-Bus name
+  — a dock/taskbar icon click, `gio launch`, systemd, literally
+  `gdbus call --dest <id> --object-path /<id-with-slashes> --method
+  org.freedesktop.Application.Activate '{}'` — re-enters Tauri's internal
+  `setup()` (`tauri::app::make_run_event_loop_callback`'s `Ready` arm calls
+  it unconditionally, with no re-entrancy guard) and panics rebuilding the
+  config's `"main"` webview a second time (`a webview with label 'main'
+  already exists`, tauri-2.11.5's `app.rs:1425`). Reproduced live: with
+  `enableGTKAppId` on, a single `gdbus` `Activate` call crashed an
+  already-running instance with **zero second process involved** — so a
+  per-slot/per-checkout identifier can reduce the collision surface but
+  can't close it; only dropping `enableGTKAppId` does, since without an
+  app-id `tao` never asks GLib to register a bus name at all. The identifier
+  is still patched per-slot at runtime (`lib.rs`'s `app_identifier`, applied
+  to `context` right after `generate_context!()`) so `linux_desktop::
+  ensure_installed`'s self-installed `.desktop` entry/icon get their own
+  filename per slot instead of every slot's binary overwriting the same one.
 - **`InstanceLock` is a generic, PID-tagged file lock** (`instance_lock.rs`),
   reused for two unrelated purposes under different lock names — don't
   assume every holder is cross-slot or every holder is per-checkout; it
@@ -44,27 +64,12 @@ follows is a cross-cutting rule that spans multiple files.
     open slot's process reads the same token, and without this guard N
     open slots would each open a duplicate Socket Mode websocket on it.
   - `"app-<identifier>"` (`lib.rs`'s `run`, acquired before `.run()`) is
-    **per-checkout**: it stops the *same* checkout (primary, or one
-    specific slot) from launching twice, which crashes exactly like the
-    cross-slot case below but can't be fixed by scoping the identifier
-    since it already matches. A second launch just prints "already
-    running" and exits instead of proceeding.
-- **The Tauri `identifier` is patched per-slot at runtime** (`lib.rs`'s
-  `app_identifier`, applied to `context` right after `generate_context!()`)
-  — `tauri.conf.json`'s `identifier` plus `enableGTKAppId: true` means every
-  slot's binary would otherwise register the *same* D-Bus-activatable GTK
-  app id. Launching a second slot's app then doesn't spawn a new process;
-  GTK forwards its `activate()` into the first slot's already-running app
-  via D-Bus, which re-enters Tauri's internal `setup()` and panics
-  rebuilding the config's `"main"` webview a second time (`a webview with
-  label 'main' already exists`). `app_identifier` detects a `slots/` parent
-  at compile time (`CARGO_MANIFEST_DIR`, same signal as `slot_label`) and
-  suffixes the base identifier so each slot is a genuinely separate app
-  instance; the primary keeps the bare identifier. `linux_desktop::
-  ensure_installed` already reads `app.config().identifier` (post-patch),
-  so it needs no separate change. This alone doesn't stop the *same*
-  checkout being launched twice (same identifier both times) — that's what
-  the `"app-<identifier>"` `InstanceLock` above is for.
+    **per-checkout**: with no GTK/D-Bus single-instance registration
+    anymore (see above), nothing else stops the *same* checkout being
+    launched twice at once, duplicating windows/PTYs/scheduler polling. A
+    second launch just prints "already running" and exits instead of
+    proceeding — this is a resource-duplication guard now, not the crash
+    fix (dropping `enableGTKAppId` is).
 - **Nested shells get their env scrubbed and re-stamped** (`terminal.rs`,
   issue #39): a `tt-app` or `npm run dev` launched *inside* an embedded
   terminal doesn't collide with the outer instance's port/session identity.
@@ -94,11 +99,15 @@ follows is a cross-cutting rule that spans multiple files.
   explicit user setting.
 - **Linux app-id / desktop-entry self-registration** (`linux_desktop.rs`):
   `tauri build`'s packaging step normally writes a `.desktop` file + themed
-  icon so GNOME/COSMIC can resolve a running window's Wayland `app_id` to
-  the right dock icon — but the daily-driver flow (`npm run run`) runs
-  `tauri build --no-bundle` and execs the raw binary, skipping packaging
-  entirely. `linux_desktop::ensure_installed` (called from `.setup()`)
-  self-registers both into `~/.local/share/{applications,icons}` on every
-  startup instead, idempotently. This pairs with `enableGTKAppId: true` in
-  `tauri.conf.json`, which is what actually sets the running window's
-  app-id — without it the desktop entry has nothing to match against.
+  icon so GNOME/COSMIC can show the right entry/icon in the launcher/search
+  — but the daily-driver flow (`npm run run`) runs `tauri build --no-bundle`
+  and execs the raw binary, skipping packaging entirely.
+  `linux_desktop::ensure_installed` (called from `.setup()`) self-registers
+  both into `~/.local/share/{applications,icons}` on every startup instead,
+  idempotently, one `.desktop`/icon pair per slot (keyed by the per-slot
+  identifier). `StartupWMClass` is the constant binary name (`tt-app`), not
+  the per-slot identifier — `enableGTKAppId` is off (see "Singletons and
+  cross-slot state" above for why), so the running window's real WM_CLASS is
+  GTK's default, not our identifier; matching on the identifier here would
+  never resolve. The running window's dock/taskbar icon is best-effort as a
+  result — the launcher/search entry's icon is still exact.
