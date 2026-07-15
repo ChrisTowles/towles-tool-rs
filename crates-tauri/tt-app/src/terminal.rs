@@ -19,7 +19,7 @@
 //! reader thread (dropped — and joined — at EOF, after the map entry is
 //! resolved); the map only holds a cloneable input sender for resize/scroll.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Mutex;
@@ -77,6 +77,16 @@ struct Session {
     /// `None` when the server failed to start — the shell still works, it just
     /// gets no IDE pairing.
     ide: Option<crate::ide::IdeServer>,
+    /// The resolved working directory this shell was rooted in (`start_dir`'s
+    /// result), if any. `None` for a shell that fell back to portable-pty
+    /// inheriting the app's own cwd (no `cwd` requested and no home dir
+    /// resolvable) — port-drift has nothing to check against then.
+    dir: Option<std::path::PathBuf>,
+    /// Ports `dir`'s `.env` claimed at spawn time (see
+    /// `tt_agentboard::env_drift`) — the baseline a later drift check diffs
+    /// against the file's current claims. Empty when `dir` is `None` or the
+    /// file didn't exist yet at spawn.
+    env_ports_at_spawn: BTreeMap<String, u16>,
 }
 
 /// All live terminals, keyed by the frontend's `term_id`, plus which one
@@ -122,6 +132,27 @@ impl TermState {
             .unwrap()
             .iter()
             .map(|(id, s)| (id.clone(), s.shell_kind.clone()))
+            .collect()
+    }
+
+    /// Each live session's port-claim drift: what its folder's `.env` claimed
+    /// at spawn time vs what it claims right now. The agentboard bridge
+    /// stamps these onto `SessionData.portDrift` before every emit (same
+    /// pattern as `live`/`shell_kinds`). Re-reads each session's `.env`
+    /// fresh — a small file, and only run on the poll/emit path, never per
+    /// keystroke. Sessions with nothing to compare (`dir` unresolved) or no
+    /// drift are simply absent from the map.
+    pub fn port_drift(&self) -> HashMap<String, Vec<tt_agentboard::env_drift::PortDrift>> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(id, s)| {
+                let dir = s.dir.as_deref()?;
+                let current = tt_agentboard::env_drift::read_current_ports(dir);
+                let drift = tt_agentboard::env_drift::diff(&s.env_ports_at_spawn, &current);
+                (!drift.is_empty()).then(|| (id.clone(), drift))
+            })
             .collect()
     }
 
@@ -237,6 +268,12 @@ fn term_start_blocking(
     let shell = default_shell(std::env::var(SHELL_ENV_VAR).ok());
     let shell_kind = shell_kind_from_path(&shell);
     let dir = start_dir(cwd);
+    // Snapshot the folder's current port claims now — the baseline a later
+    // drift check compares against `.env`'s live claims (see
+    // `tt_agentboard::env_drift`). The shell itself never reads this; it's
+    // purely bookkeeping for the agentboard bridge.
+    let env_ports_at_spawn =
+        dir.as_deref().map(tt_agentboard::env_drift::read_current_ports).unwrap_or_default();
 
     // Claude Code IDE pairing: a per-terminal WebSocket MCP server + lockfile
     // (see ide.rs / docs/CLAUDE-CODE-IDE.md). Best-effort — a bind failure
@@ -341,6 +378,8 @@ fn term_start_blocking(
             generation,
             shell_kind,
             ide,
+            dir,
+            env_ports_at_spawn,
         },
     );
 

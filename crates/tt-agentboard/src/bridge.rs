@@ -193,6 +193,7 @@ fn build_folder(
                 agent_state,
                 agents,
                 purpose: r.purpose.clone(),
+                port_drift: Vec::new(), // stamped by the app from its terminal registry
             }
         })
         .collect();
@@ -217,6 +218,7 @@ fn build_folder(
         slot_base_branch: git.slot_base_branch.clone(),
         compared_base: git.compared_base.clone(),
         metadata: metadata.get(&entry.name).cloned(),
+        has_port_drift: false, // stamped by the app from its terminal registry
     }
 }
 
@@ -523,6 +525,7 @@ mod tests {
             }),
             agents: Vec::new(),
             purpose: None,
+            port_drift: Vec::new(),
         }
     }
 

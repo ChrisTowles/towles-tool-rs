@@ -14,6 +14,7 @@ import {
   type FolderData,
   type FolderMetadata,
   type MetadataTone,
+  type PortDrift,
   type SessionData,
 } from "@/lib/agentboard";
 import type { PrItem } from "@/lib/data";
@@ -168,6 +169,38 @@ export function WorktreeBadge() {
     >
       ⬡ wt
     </span>
+  );
+}
+
+/** Marks a folder where a live pane's ports have drifted from what `.env`
+ * currently claims — a sibling slot's re-render (or a manual `tt slot env`)
+ * rotated a port this pane already bound to. Amber like `NeedsBadge`: unlike
+ * the grayscale `GhostBadge`, this is something worth acting on (restart the
+ * pane, or re-run `tt slot env` and restart whatever's bound to the stale
+ * port), not a dead state. */
+export function PortDriftBadge({ drift }: { drift: PortDrift[] }) {
+  if (drift.length === 0) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="shrink-0 rounded-md border border-amber-500/50 bg-amber-500/10 px-1 font-mono text-[10px] text-amber-500">
+          ⚡ port drift
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="start">
+        <div className="flex flex-col gap-0.5 font-mono text-[11px]">
+          <span className="text-muted-foreground">
+            {drift.length === 1 ? "A pane" : "Panes"} started before {drift.length === 1 ? "this" : "these"}{" "}
+            port{drift.length === 1 ? "" : "s"} last changed — restart to pick up the current .env:
+          </span>
+          {drift.map((d) => (
+            <span key={`${d.key}:${d.spawnedPort}:${d.currentPort}`}>
+              {d.key} {d.spawnedPort} → {d.currentPort}
+            </span>
+          ))}
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

@@ -121,6 +121,7 @@ mod tests {
             }),
             agents: vec![],
             purpose: None,
+            port_drift: vec![],
         }
     }
 
@@ -148,6 +149,7 @@ mod tests {
                     slot_base_branch: None,
                     compared_base: String::new(),
                     metadata: None,
+                    has_port_drift: false,
                 }],
                 needs: 0,
             }],

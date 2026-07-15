@@ -432,6 +432,7 @@ function folder(overrides: Partial<FolderData>): FolderData {
     commitsBehind: 0,
     sessions: [],
     needs: 0,
+    hasPortDrift: false,
     ...overrides,
   };
 }

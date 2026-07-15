@@ -190,6 +190,14 @@ pub struct SessionData {
     /// starting Claude (sessions.json).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
+    /// Ports this session's shell saw in the folder's `.env` at spawn time
+    /// that it now claims differently (see [`crate::env_drift`]) — e.g. a
+    /// sibling slot's re-render rotated a port this pane already bound to.
+    /// Empty when nothing has drifted (the common case) or PTY liveness
+    /// hasn't been stamped yet. Assembled empty here; the app stamps it from
+    /// its terminal registry before emitting, same as `live`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub port_drift: Vec<crate::env_drift::PortDrift>,
 }
 
 /// One checkout of a repo on disk (a clone, a worktree, or a slot). Holds 1..N
@@ -242,6 +250,11 @@ pub struct FolderData {
     pub compared_base: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<SessionMetadata>,
+    /// True when any live session in this folder has `port_drift` — bubbles
+    /// the per-session detail up to a rail badge. Computed app-side after PTY
+    /// liveness stamping (mirrors `needs`).
+    #[serde(default)]
+    pub has_port_drift: bool,
 }
 
 /// A logical repo: the group of checkouts sharing a `git remote origin` URL.
