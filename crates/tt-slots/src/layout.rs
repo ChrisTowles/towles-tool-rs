@@ -124,8 +124,8 @@ mod tests {
     #[test]
     fn slot_name_sanitizes_and_trims() {
         assert_eq!(slot_name_from_branch("feat/hello world!"), Some("feat-hello-world".into()));
-        // slug degenerates to separators only → no name
         assert_eq!(slot_name_from_branch("feat/---"), Some("feat".into()));
+        // slug degenerates to separators only → no name
         assert_eq!(slot_name_from_branch("///"), None);
     }
 
