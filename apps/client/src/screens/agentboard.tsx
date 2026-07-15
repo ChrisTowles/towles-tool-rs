@@ -395,11 +395,19 @@ export function AgentboardScreen() {
   // crash before the debounced save), leaving ghost pane ids that hold a tile
   // slot and render as a dead dashed pane. Locally-mounted terminals (`open`)
   // count as valid even before the backend's state event catches up, so a
-  // just-created session's pane never loses the race to this prune.
+  // just-created session's pane never loses the race to this prune — and so
+  // do their folders (via the cwd recorded at mount): a just-created slot's
+  // window is keyed on a folder dir the backend hasn't broadcast yet, and
+  // without that carve-out this prune ate the whole window (and persisted the
+  // loss), leaving the new slot's main area empty until re-clicked.
   useEffect(() => {
     if (!wins) return;
     const validSessions = new Set(open);
     const validFolders = new Set<string>();
+    for (const id of open) {
+      const dir = cwds.current[id];
+      if (dir) validFolders.add(dir);
+    }
     for (const r of repos)
       for (const f of r.folders) {
         validFolders.add(f.dir);

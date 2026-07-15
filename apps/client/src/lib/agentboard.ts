@@ -701,8 +701,17 @@ export function useAgentboardState(): StatePayload {
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
 
+      // Every payload is stamped with its compute time (`ts`) — never let an
+      // older snapshot replace a newer one. The initial `ab_get_state` fetch
+      // below resolves *after* the subscription is live, so a debounced
+      // `agentboard://state` event (e.g. the one `ab_add_repo` triggers during
+      // slot creation) can land first; without the guard the slower fetch
+      // would roll the rail back to a snapshot that predates it.
+      const accept = (payload: StatePayload) =>
+        setState((cur) => (payload.ts < cur.ts ? cur : payload));
+
       const sub = await listen<StatePayload>("agentboard://state", (e) => {
-        setState(e.payload);
+        accept(e.payload);
       });
       if (disposed) {
         sub();
@@ -712,7 +721,7 @@ export function useAgentboardState(): StatePayload {
 
       try {
         const initial = await invoke<StatePayload>("ab_get_state");
-        if (!disposed) setState(initial);
+        if (!disposed) accept(initial);
       } catch {
         // Bridge not ready — stay on EMPTY.
       }
