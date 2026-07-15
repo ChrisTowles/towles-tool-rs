@@ -20,6 +20,13 @@ use crate::cli::{CollectCommands, CollectStatusArgs};
 use crate::ui;
 
 pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
+    // Deliberately bypasses the store entirely: this runs inside a Claude Code
+    // hook's timeout budget, so it must stay a cheap filesystem touch, not pay
+    // for opening (and migrating) tt.db like every other collect subcommand.
+    if matches!(command, CollectCommands::Nudge) {
+        return run_nudge();
+    }
+
     let store = match Store::open_default() {
         Ok(store) => store,
         Err(e) => {
@@ -83,7 +90,7 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
             summaries
         }
         // Handled by the early return above; never reached here.
-        CollectCommands::Status(_) => return 0,
+        CollectCommands::Nudge | CollectCommands::Status(_) => return 0,
     };
 
     print_summaries(&summaries);
@@ -94,6 +101,32 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
 /// the library collectors stay clock-injected and deterministic.
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// Touch the PR-refresh nudge file (creating its directory if needed). The
+/// app's scheduler watches this directory and, on any change, runs a `prs`
+/// collect immediately instead of waiting for its normal poll cadence — see
+/// `crates-tauri/tt-app/src/scheduler.rs`. Content is just the timestamp, for
+/// debuggability; only the file's existence/mtime is ever read.
+fn run_nudge() -> i32 {
+    let dir = match tt_config::nudge_dir_path() {
+        Ok(dir) => dir,
+        Err(e) => {
+            ui::error(&format!("Failed to resolve nudge dir: {e}"));
+            return 1;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        ui::error(&format!("Failed to create nudge dir: {e}"));
+        return 1;
+    }
+    match std::fs::write(dir.join("prs"), now_ms().to_string()) {
+        Ok(()) => 0,
+        Err(e) => {
+            ui::error(&format!("Failed to write nudge file: {e}"));
+            1
+        }
+    }
 }
 
 /// Load the collector settings block. Defaults if the settings file can't be

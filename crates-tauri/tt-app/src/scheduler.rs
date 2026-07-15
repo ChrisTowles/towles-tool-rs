@@ -8,6 +8,9 @@
 //! connection (tt-store opens WAL + busy-timeout), so a slow `claude -p` never
 //! holds the UI's store mutex. After every batch the fresh snapshot is emitted
 //! as `store://snapshot`.
+//!
+//! A `prs` batch can also fire early, outside its normal cadence: see the
+//! nudge-dir watch in [`spawn`], which reacts to `tt collect nudge`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -127,6 +130,19 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
         // In-flight guards also persist across reloads: a batch spawned under the
         // old cadence must still block a duplicate under the new one.
         let guards = BatchGuards::default();
+        // Eager-refresh accelerant: an external process (the `towles-tool-app`
+        // Claude Code plugin's PostToolUse hook, via `tt collect nudge`) can
+        // touch a file in the nudge dir right after a `gh pr merge`/`gh pr
+        // create` to make the PR view update well before the next `pr_tick`.
+        // Same debounced fs-notify pattern as the agentboard journal watch in
+        // `lib.rs` — `.ok()` so a watch failure (e.g. inotify limits) just
+        // falls back to the normal poll cadence instead of breaking startup.
+        let nudge_notify = Arc::new(Notify::new());
+        let _nudge_watcher = tt_config::nudge_dir_path().ok().and_then(|dir| {
+            std::fs::create_dir_all(&dir).ok()?;
+            let n = nudge_notify.clone();
+            tt_agentboard::fs_notify::DirNotifier::watch(&dir, move || n.notify_one()).ok()
+        });
         loop {
             // (Re)load config and rebuild the tick intervals for this cycle.
             let collectors = tt_config::load().map(|s| s.collectors).unwrap_or_default();
@@ -200,6 +216,9 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                             calendar_period_ms,
                             &guards.slack,
                         );
+                    }
+                    _ = nudge_notify.notified(), if collectors.prs.enabled => {
+                        spawn_batch(&app, Batch::Prs, provider, calendar_period_ms, &guards.prs);
                     }
                     _ = notify_tick.tick() => {
                         run_notify_check(

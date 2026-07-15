@@ -44,6 +44,14 @@ const REQUIRED_PLUGINS: &[RequiredPlugin] = &[
         }),
     },
     RequiredPlugin {
+        id: "towles-tool-app@towles-tool",
+        name: "towles-tool-app",
+        marketplace: Some(Marketplace {
+            name: "towles-tool",
+            url: "https://github.com/ChrisTowles/towles-tool",
+        }),
+    },
+    RequiredPlugin {
         id: "code-simplifier@claude-plugins-official",
         name: "code-simplifier",
         marketplace: None,

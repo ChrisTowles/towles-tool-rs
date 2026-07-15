@@ -8,6 +8,11 @@
       "name": "tt",
       "source": "./packages/core",
       "description": "Commands for discovering your unknowns across the map-vs-territory workflow (trq212, 'The map is not the territory'). Numbered by phase — 0x before: /01-blindspot, /02-brainstorm, /03-interview, /04-references; 1x plan/during: /10-plan; 2x after: /20-pitch, /21-comprehend, /22-memories. Plus skills towles-tool and parallel-slots."
+    },
+    {
+      "name": "towles-tool-app",
+      "source": "./packages/app",
+      "description": "Bridges Claude Code to the towles-tool desktop app — its MCP server (day brief, needs-you, PR/issue status, todos, journal) plus a hook that nudges the app to refresh PR data immediately after gh pr merge/create."
     }
   ]
 }

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "towles-tool": {
+      "command": "tt",
+      "args": ["mcp", "serve"]
+    }
+  }
+}

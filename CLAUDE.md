@@ -233,6 +233,34 @@ Cargo workspace + npm workspace (`apps/client` only):
   driving the real shell with `npm run e2e` (see the Commands section and
   [e2e/README.md](e2e/README.md)) — not just the mock browser dev server.
 
+## Claude Code plugin marketplace
+
+The repo root doubles as a Claude Code plugin marketplace
+(`.claude-plugin/marketplace.json`); each plugin lives in its own
+`packages/<name>/` with a `.claude-plugin/plugin.json` manifest, following
+the standard plugin layout (`commands/`, `skills/`, `hooks/`, `.mcp.json` —
+see [docs](https://docs.claude.com/en/docs/claude-code/plugins)). Two
+plugins ship today:
+
+- `tt` (`packages/core`) — the map-vs-territory workflow commands/skills
+  (`/tt:01-blindspot` … `/tt:22-memories`).
+- `towles-tool-app` (`packages/app`) — bridges Claude Code to the desktop
+  app itself: registers its `tt mcp serve` MCP server (day brief, needs-you,
+  PR/issue status, todos, journal) and a `PostToolUse` hook
+  (`hooks/scripts/gh-pr-nudge.sh`) that nudges a running app instance to
+  refresh its PR data immediately after `gh pr merge`/`gh pr create` via
+  `tt collect nudge`, rather than waiting for the app's normal poll
+  interval — see the "nudge" mechanism note in
+  [`crates-tauri/tt-app/CLAUDE.md`](crates-tauri/tt-app/CLAUDE.md). Meant to
+  be enabled globally (its MCP tools are useful from any project), so its
+  hook fails open/no-ops outside a towles-tool-relevant session — don't
+  drop that guard when touching it.
+
+A new hook/skill/MCP entry belongs in one of these plugin packages, not
+loose in `.claude/` — `.claude/hooks/` is reserved for hooks scoped to
+*this repo's own* Claude Code sessions (e.g. `guard-slot-pkill.sh`), not
+things meant to ship to other checkouts.
+
 ## Migration
 
 Features are ported from the TypeScript CLI at

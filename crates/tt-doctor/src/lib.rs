@@ -233,29 +233,62 @@ pub fn check_gh_auth() -> bool {
     matches!(tt_exec::run("gh", &["auth", "status"]), Ok(out) if out.ok())
 }
 
-/// Claude plugins the workflows expect (currently `code-simplifier`).
-pub fn check_claude_plugins() -> Vec<PluginCheck> {
-    const REQUIRED_ID: &str = "code-simplifier@claude-plugins-official";
-    const NAME: &str = "code-simplifier";
-    let install_hint = format!("Run: claude plugin install {REQUIRED_ID} --scope user");
+/// One Claude plugin `tt doctor` checks for, with a fix hint tailored to how
+/// it's actually installed.
+struct RequiredPlugin {
+    /// Fully-qualified plugin id, e.g. `towles-tool-app@towles-tool`.
+    id: &'static str,
+    /// Short display name shown in the report.
+    name: &'static str,
+    /// Shown when missing.
+    install_hint: &'static str,
+}
 
+/// Claude plugins the workflows expect: `code-simplifier` (an official
+/// plugin some skills shell out to) and this repo's own `towles-tool-app`
+/// (registers the `tt` MCP server plus the `gh pr merge`/`create` nudge
+/// hook — see `packages/app`). `tt install` is what actually performs both
+/// installs (marketplace add included), so that's the hint for anything it
+/// covers rather than a raw `claude plugin install` incantation.
+const REQUIRED_PLUGINS: &[RequiredPlugin] = &[
+    RequiredPlugin {
+        id: "code-simplifier@claude-plugins-official",
+        name: "code-simplifier",
+        install_hint: "Run: claude plugin install code-simplifier@claude-plugins-official --scope user",
+    },
+    RequiredPlugin {
+        id: "towles-tool-app@towles-tool",
+        name: "towles-tool-app",
+        install_hint: "Run: tt install",
+    },
+];
+
+/// Claude plugins the workflows expect — see [`REQUIRED_PLUGINS`]. One shared
+/// `claude plugin list --json` call, checked against every required id.
+pub fn check_claude_plugins() -> Vec<PluginCheck> {
     #[derive(Deserialize)]
     struct Entry {
         id: String,
     }
 
-    let installed = match tt_exec::run("claude", &["plugin", "list", "--json"]) {
+    let installed_ids: Vec<String> = match tt_exec::run("claude", &["plugin", "list", "--json"]) {
         Ok(out) if out.ok() => serde_json::from_str::<Vec<Entry>>(&out.stdout)
-            .map(|plugins| plugins.iter().any(|p| p.id == REQUIRED_ID))
-            .unwrap_or(false),
-        _ => false,
+            .map(|plugins| plugins.into_iter().map(|p| p.id).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
     };
 
-    vec![PluginCheck {
-        name: NAME.to_string(),
-        ok: installed,
-        install_hint: if installed { None } else { Some(install_hint) },
-    }]
+    REQUIRED_PLUGINS
+        .iter()
+        .map(|plugin| {
+            let ok = installed_ids.iter().any(|id| id == plugin.id);
+            PluginCheck {
+                name: plugin.name.to_string(),
+                ok,
+                install_hint: (!ok).then(|| plugin.install_hint.to_string()),
+            }
+        })
+        .collect()
 }
 
 /// Agentboard/data-hub state, post-pivot: repos on the rail (the watch list
@@ -536,6 +569,13 @@ chrome-devtools: npx chrome-devtools-mcp@latest - ✔ Connected
 tt: tt mcp serve - ✔ Connected
 ";
         assert!(tt_mcp_registered(listed));
+    }
+
+    #[test]
+    fn required_plugins_cover_code_simplifier_and_the_app_plugin() {
+        let ids: Vec<&str> = REQUIRED_PLUGINS.iter().map(|p| p.id).collect();
+        assert!(ids.contains(&"code-simplifier@claude-plugins-official"));
+        assert!(ids.contains(&"towles-tool-app@towles-tool"));
     }
 
     #[test]

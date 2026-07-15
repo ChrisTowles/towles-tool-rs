@@ -1,0 +1,40 @@
+# towles-tool-app
+
+Bridges Claude Code to the towles-tool desktop app (`tt-app`) — the MCP tools it
+exposes and one hook that keeps its PR view fresh.
+
+## MCP server
+
+Registers the app's own `tt mcp serve` (`crates/tt-mcp`), so any session with this
+plugin enabled gets these tools without manual `claude mcp add` setup:
+
+`day_brief`, `needs_you`, `prs_status`, `issues_open`, `todo_create`,
+`todo_update`, `todo_set_status`, `todo_delete`, `todo_link_issue`,
+`todo_clear_done`, `journal_append`, `collect_refresh`, `collect_status`,
+`agent_sessions`, `calendar_next`, `calendar_today`, `dm_status`, `snapshot`,
+`tasks_open`.
+
+Requires `tt` on `PATH` (see the root [README](../../README.md) / `install`
+command).
+
+## Hooks
+
+| Hook                            | Event                | Does…                                                                 |
+| -------------------------------- | --------------------- | ---------------------------------------------------------------------- |
+| `hooks/scripts/gh-pr-nudge.sh`  | `PostToolUse` (Bash)  | After `gh pr merge`/`gh pr create`, nudges a running `tt-app` instance to refresh its PR data immediately instead of waiting for its normal poll interval (`tt collect nudge`). |
+
+The hook is a no-op unless the session looks towles-tool-relevant — either it's
+running inside a terminal the app itself spawned (`TT_SESSION_ID`/
+`TT_APP_INSTANCE` set), or its working directory is inside a towles-tool-rs
+checkout (a `crates/tt-config` ancestor). This plugin is meant to be enabled
+globally, so without that guard the hook would still fire — harmlessly, but
+uselessly — for `gh` commands run in unrelated projects. It also does nothing
+if the towles-tool app isn't actually running for that checkout; the nudge is
+picked up on the app's next start otherwise.
+
+## Installation
+
+```bash
+claude plugin marketplace add ChrisTowles/towles-tool-rs
+claude plugin enable towles-tool-app@towles-tool
+```

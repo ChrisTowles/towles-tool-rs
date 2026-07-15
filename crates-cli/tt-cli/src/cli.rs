@@ -215,6 +215,10 @@ pub enum CollectCommands {
     /// Run every collector (calendar, issues, PRs, Slack)
     All,
 
+    /// Touch the PR-refresh nudge file so a running app instance in this
+    /// checkout refreshes its PR data immediately instead of on its next poll
+    Nudge,
+
     /// Show each collector's enabled state and last-run health (no collection)
     Status(CollectStatusArgs),
 }

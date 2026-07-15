@@ -605,6 +605,16 @@ pub fn store_db_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("tt.db"))
 }
 
+/// Directory watched by the app's scheduler for an eager PR-refresh nudge
+/// (any file touched inside it triggers an immediate `prs` collect instead of
+/// waiting for the normal poll cadence). Instance-scoped like `data_dir()` so
+/// a nudge in one worktree slot only wakes that slot's own running app. Kept
+/// as its own subdirectory rather than nested directly under `data_dir()` so
+/// a directory-watch on it isn't spammed by tt.db's own WAL/SHM churn.
+pub fn nudge_dir_path() -> Result<PathBuf> {
+    Ok(data_dir()?.join("nudge"))
+}
+
 /// Dictation ASR model cache: `~/.cache/towles-tool/models`. Machine-shared,
 /// NOT instance-scoped — a downloaded model bundle is ~442MB, so every
 /// worktree slot must reuse the same one copy rather than each holding its
