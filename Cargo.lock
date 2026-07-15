@@ -5811,6 +5811,7 @@ dependencies = [
  "tt-graph",
  "tt-ide",
  "tt-journal",
+ "tt-mcp",
  "tt-slots",
  "tt-store",
  "tt-update",

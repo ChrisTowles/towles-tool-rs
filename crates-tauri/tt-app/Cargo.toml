@@ -27,6 +27,7 @@ tt-git = { workspace = true }
 tt-graph = { workspace = true }
 tt-ide = { workspace = true }
 tt-journal = { workspace = true }
+tt-mcp = { workspace = true }
 tt-slots = { workspace = true }
 tt-store = { workspace = true }
 tt-update = { workspace = true }

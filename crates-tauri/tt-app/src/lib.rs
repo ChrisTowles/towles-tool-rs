@@ -15,6 +15,7 @@ mod instance_lock;
 mod journal;
 #[cfg(target_os = "linux")]
 mod linux_desktop;
+mod mcp;
 mod resources;
 mod scheduler;
 mod settings;
@@ -467,6 +468,7 @@ pub fn run() {
             gh_actions::cockpit_assign_issue,
             gh_actions::cockpit_create_issue_branch,
             store::store_dm_dismiss,
+            mcp::mcp_tool_docs,
             slack::slack_dm_history,
             slack::slack_dm_send,
             slack::slack_dm_file,
