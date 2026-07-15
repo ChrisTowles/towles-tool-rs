@@ -365,7 +365,11 @@ export function CacheBadge({
       }
       className={cn(
         "shrink-0 font-mono text-[10.5px]",
-        expiring ? "text-amber-500" : "text-muted-foreground/70",
+        expiring
+          ? "text-amber-500"
+          : cold
+            ? "font-medium text-sky-500"
+            : "text-muted-foreground/70",
       )}
     >
       {pct}% {warmth}

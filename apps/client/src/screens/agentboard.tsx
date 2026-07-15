@@ -13,7 +13,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { fmtMins } from "@/components/agentboard-bits";
-import { PaneHeader, WorkingContext } from "@/components/agentboard-pane";
+import { ColdCacheOverlay, PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffPane } from "@/components/diff-pane";
 import {
@@ -989,7 +989,7 @@ export function AgentboardScreen() {
           {/* Rail: rollup tally + header + attention strip + Repo → Folder → Session tree. */}
           {!railCollapsed && (
             <>
-              <ResizablePanel defaultSize="280px" minSize="220px" maxSize="480px">
+              <ResizablePanel defaultSize="520px" minSize="220px" maxSize="760px">
                 <div className="flex h-full flex-col border-r">
                   <RollupChip state={state} now={now} />
                   <div className="flex items-center justify-between border-b px-3 py-2">
@@ -1334,13 +1334,20 @@ export function AgentboardScreen() {
                               {/* data-term-host marks terminal territory for the
                                   shortcut guard — keys typed here belong to the
                                   shell (Ctrl+D is EOF, not "new session"). */}
-                              <div className="min-h-0 flex-1" data-term-host>
+                              <div className="relative min-h-0 flex-1" data-term-host>
                                 <TerminalView
                                   termId={id}
                                   cwd={folderOf.get(id)?.dir ?? cwds.current[id]}
                                   onExit={(exit) => handleExit(id, exit)}
                                   onTitle={onTitle}
                                 />
+                                {s && (
+                                  <ColdCacheOverlay
+                                    session={s}
+                                    now={now}
+                                    onCompact={() => actions.compactClaude(s)}
+                                  />
+                                )}
                               </div>
                             </div>
                           </div>
