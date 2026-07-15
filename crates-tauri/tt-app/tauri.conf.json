@@ -16,7 +16,8 @@
         "label": "main",
         "title": "Towles Tool",
         "width": 1440,
-        "height": 900
+        "height": 900,
+        "dragDropEnabled": false
       }
     ],
     "security": {
