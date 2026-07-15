@@ -1,8 +1,9 @@
 // Deterministic per-slot Vite dev-server port.
 //
-// Multiple checkouts of this repo (towles-tool-rs-primary, slots/thing, …) run
-// `tauri dev` at the same time. If every slot defaults to 1420 they collide, so
-// we derive a stable base port from the slot's repo-root directory name: each
+// Multiple checkouts of this repo (the main checkout, .claude/worktrees/thing,
+// …) run `tauri dev` at the same time. If every slot defaults to 1420 they
+// collide, so we derive a stable base port from the checkout's directory name
+// (the worktree dir's basename — unchanged by the nesting): each
 // slot prefers its own port and keeps it run-to-run, and `dev-port.mjs` scans
 // upward from there for a free one as a safety net. An explicit TT_DEV_PORT
 // (shell env, `.env.local` pin, or `.env` rendered by `tt slot`) wins over this.

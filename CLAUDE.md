@@ -55,27 +55,43 @@ both at once in one slot. Full docs + Linux gotchas: [e2e/README.md](e2e/README.
 
 ## Worktree slots — you are probably working in one
 
-This repo is checked out as **primary + slots**: `~/code/p/towles-tool-repos/`
-holds `towles-tool-rs-primary/` (a normal clone that always has `main` checked
-out — it is where Chris runs the app himself) plus branch-named worktrees under
-`slots/`, one per parallel line of work (a `.tt-slot` marker file sits at each
-slot's root). Slots are ephemeral: created from the primary for a branch,
-removed when the branch merges. Manage them with `tt slot` — never raw
-`git worktree` or new clones.
-
-`tt slot` works on *any* repo, not just ones laid out this way: a plain
-checkout with no `<repo>-primary` convention (e.g. `~/code/p/scribed`) falls
-back to a sibling `<repo>-slots/` directory next to it (`~/code/p/scribed-slots/thing/`)
-— no restructuring needed, just run `tt slot new` from inside the repo.
+Slots are branch-named git worktrees nested **inside** the checkout at
+`<checkout>/.claude/worktrees/<name>/` — Claude Code's native worktree
+location — one per parallel line of work (a `.tt-slot` marker file sits at
+each slot's root). Any plain git checkout is slot-capable with no
+restructuring: just run `tt slot new` from inside it. Slots are ephemeral:
+created for a branch, removed when the branch merges. Manage them with
+`tt slot` — never raw `git worktree` or new clones. (`git clean -fdx` at the
+checkout root is safe — git skips nested repositories without a second `-f`.)
 
 ```sh
-tt slot new -b feat/thing [--base <ref>]  # creates slots/thing on that branch
-tt slot ls [--json]                       # fleet: primary + slots, branch, dirty, ports
+tt slot new -b feat/thing [--base <ref>]  # creates .claude/worktrees/thing on that branch
+tt slot ls [--json]                       # fleet: main checkout + slots, branch, dirty, ports
 tt slot env <name>                        # (re)render .env — idempotent, keeps claims
-tt slot env primary                       # same, for the primary checkout
+tt slot env primary                       # same, for the main checkout
 tt slot rm <name> [--force]               # guarded removal + docker cleanup
 tt slot clean [--dry-run]                 # rm every merged/gone slot + sweep stale state
 ```
+
+Claude Code's own worktree surfaces (`claude --worktree`, background
+sessions, the desktop app's parallel sessions) route through the same
+machinery when the repo's `.claude/settings.json` wires the hooks:
+
+```json
+"hooks": {
+  "WorktreeCreate": [{ "hooks": [{ "type": "command", "command": "tt slot hook-create" }] }],
+  "WorktreeRemove":  [{ "hooks": [{ "type": "command", "command": "tt slot hook-remove" }] }]
+}
+```
+
+`hook-create` reads the hook JSON on stdin and prints the slot path (its one
+line of stdout — the hook contract); the branch is **tt-named** (`feat/<name>`
+for a bare worktree name, the name verbatim when it already contains `/`),
+never Claude Code's `worktree-<name>` scheme. `hook-remove` runs the same
+guarded removal as `tt slot rm`. Hooks execute from the *session checkout's
+committed copy* of `.claude/`, so hook config edits only take effect in new
+worktrees once committed. The blog repo (`~/code/p/blog`) is wired this way
+and is the reference example.
 
 The Agentboard rail shows the whole fleet automatically (worktrees of any
 tracked checkout are discovered per poll), and the `+` button on the repo
@@ -84,19 +100,20 @@ Claude starts on the goal in the new slot's terminal.
 
 Rules when working in a slot:
 
-- **The primary is load-bearing.** Every slot's git state lives in
-  `towles-tool-rs-primary/.git` — never delete, move, or re-clone the primary.
-  `main` stays checked out there (git itself blocks a second checkout of it);
-  slots never work on `main` directly.
+- **The main checkout is load-bearing.** Every slot's git state lives in its
+  `.git` — never delete, move, or re-clone it. Slots never work on the
+  default branch directly (git itself blocks a second checkout of it while
+  the main checkout holds it).
 - **One branch per slot, named after it.** `tt slot new -b feat/thing`
-  creates `slots/thing` (`--base` when not branching off the default). A slot
-  whose PR merged is done — `tt slot rm` it (or `tt slot clean`, which finds
-  every merged/gone slot); commits reachable from no branch or remote block
-  removal by design.
+  creates `.claude/worktrees/thing` (`--base` when not branching off the
+  default). A slot whose PR merged is done — `tt slot rm` it (or
+  `tt slot clean`, which finds every merged/gone slot); commits reachable
+  from no branch or remote block removal by design.
 - **Ports come from the rendered `.env`** — `.env.example` is the template
-  (`${tt:port A-B}` pool claims, `${tt:slot-name}`, `${tt:var NAME}`), and a
-  manual `.env.local` pin overrides it; shell env overrides both. Never
-  hardcode a port anywhere. The primary claims its ports the same way.
+  (`${tt:port A-B}` pool claims, `${tt:slot-name}`, `${tt:var NAME}`; a repo
+  without tokens uses the `.claude/slot-env.template` sidecar), and a manual
+  `.env.local` pin overrides it; shell env overrides both. Never hardcode a
+  port anywhere. The main checkout claims its ports the same way.
 - **No setup scripts.** `tt slot new` runs the `TT_SLOT_SETUP` command
   declared in `.env.example` (spawned directly, no shell — `npm install`
   here), falling back to lockfile detection in repos that don't declare one.
@@ -108,6 +125,11 @@ Rules when working in a slot:
   pure decisions) with shared orchestration in `tt_slots::ops`; the CLI and
   the app's `slot_create` command are thin shells over it. Change behavior
   there, not in the shells.
+- **Migration state:** this repo's own checkouts still use the retired
+  sibling layout (`~/code/p/towles-tool-repos/towles-tool-rs-primary` +
+  `slots/`). Running from an old-layout slot still anchors correctly (the
+  `.git` file's worktree pointer resolves to the primary), but new slots land
+  in `<primary>/.claude/worktrees/`; old slots drain as their branches merge.
 - **Any code path that removes a slot checkout must also untrack its dir
   from the shared `repos.json`** (`tt_agentboard::repos::remove_repo_persisted`),
   the same way `tt slot rm`'s CLI shell and the app's `slot_remove` command
@@ -135,8 +157,8 @@ Cargo workspace + npm workspace (`apps/client` only):
     **instance state** (`tt.db`, agentboard sessions/windows/collapse — one
     running checkout's world) nests under `…/towles-tool/slots/<scope>/…` when
     `state_scope()` detects the process runs from a checkout of this repo (cwd
-    walks up to a dir containing `crates/tt-config`; `slots/<name>` checkouts
-    get repo-qualified scopes). A branch's schema experiments therefore never
+    walks up to a dir containing `crates/tt-config`; `.claude/worktrees/<name>`
+    checkouts get repo-qualified scopes). A branch's schema experiments therefore never
     touch the daily driver's `tt.db`, but tracking a repo shows up everywhere.
     An explicitly set `TT_STATE_SCOPE` isolates *everything*, shared stores
     included (tests must never write real settings); empty = force unscoped.

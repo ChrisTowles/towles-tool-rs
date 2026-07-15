@@ -63,11 +63,12 @@ pub fn upstream_gone(track: &str) -> bool {
 
 /// Which of the `existing` per-scope state dirs (children of a
 /// `…/towles-tool/slots/` parent; see `tt_config::state_scope`) are stale:
-/// they belong to `repo` — scopes are `<repo>-primary` / `<repo>-<slot>`, so
-/// membership is an anchored `<repo>-` prefix (never a bare substring, so
-/// repo `blog` doesn't claim `blog2-thing`) — but no live checkout claims
-/// them. Scopes of other repos and hand-forced `TT_STATE_SCOPE` names are
-/// left alone. Sorted for deterministic output.
+/// they belong to `repo` — slot scopes are `<repo>-<slot>`, so membership is
+/// an anchored `<repo>-` prefix (never a bare substring, so repo `blog`
+/// doesn't claim `blog2-thing`; the main checkout's own scope is its bare
+/// dir name, which the anchored prefix never matches) — but no live checkout
+/// claims them. Scopes of other repos and hand-forced `TT_STATE_SCOPE` names
+/// are left alone. Sorted for deterministic output.
 pub fn stale_scope_dirs(
     repo: &str,
     live_scopes: &BTreeSet<String>,

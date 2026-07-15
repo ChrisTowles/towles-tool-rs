@@ -1,6 +1,6 @@
 // Inline new-slot flow: give a goal, pick the base branch, and a branch-named
-// worktree slot is created under the repo root's slots/ dir (`slot_create` →
-// tt-slots ops, shared with `tt slot new`). The goal slugs the branch name
+// worktree slot is created under the repo's .claude/worktrees/ dir
+// (`slot_create` → tt-slots ops, shared with `tt slot new`). The goal slugs the branch name
 // (editable). Unlike the old modal this never blocks the rest of the rail —
 // the form hands off to the caller on submit (which fires `slot_create`
 // without awaiting it here) and a `PendingSlotRow` tracks the in-flight

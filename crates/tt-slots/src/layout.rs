@@ -1,46 +1,50 @@
-//! Slot naming and layout rules: `<root>/<repo>-primary/` + `<root>/slots/<name>/`,
-//! with a flat fallback for repos that don't use that nested convention:
-//! `<parent>/<repo>/` + a sibling `<parent>/<repo>-slots/<name>/`.
+//! Slot naming and layout rules: worktree slots live *inside* the checkout at
+//! `<checkout>/.claude/worktrees/<name>/` — Claude Code's native worktree
+//! location — so any plain git checkout is slot-capable with no restructuring
+//! and no sibling directories, and worktrees created by Claude Code's own
+//! surfaces (`claude --worktree`, background sessions) land in the same place
+//! `tt slot` manages (via the repo's WorktreeCreate/WorktreeRemove hooks).
 //!
-//! The primary is a normal clone that always holds the default branch (it is
-//! where the user runs the app themselves); slots are branch-named, ephemeral
-//! worktrees created from the primary and removed when their branch merges.
-//! The flat fallback exists so any plain checkout (not laid out under a
-//! dedicated `<root>` holding just that one repo) can still use `tt slot` —
-//! its slots land next to it instead of requiring a restructure.
+//! The main checkout is a normal clone (it is where the user runs the app
+//! themselves); slots are branch-named, ephemeral worktrees created from it
+//! and removed when their branch merges. `git clean -fdx` at the checkout
+//! root skips nested worktrees (git refuses to touch untracked repositories
+//! without a second `-f`), so the nesting is safe.
+
+use std::path::{Path, PathBuf};
 
 /// The per-slot marker file, written at render time and ignored via the
-/// primary's `.git/info/exclude` (so no repo `.gitignore` change is needed).
-/// Records the slot's identity for other tooling (state scoping, agents
-/// landing cold).
+/// main checkout's `.git/info/exclude` (so no repo `.gitignore` change is
+/// needed). Records the slot's identity for other tooling (state scoping,
+/// agents landing cold).
 pub const MARKER_FILE: &str = ".tt-slot";
 
-/// Directory-name suffix that marks a repo's primary checkout.
-pub const PRIMARY_SUFFIX: &str = "-primary";
+/// First path segment of the worktrees dir under the checkout root.
+pub const CLAUDE_DIR: &str = ".claude";
 
-/// Directory under the root that holds the worktree slots.
-pub const SLOTS_DIR: &str = "slots";
+/// Second path segment: `<checkout>/.claude/worktrees/<name>`.
+pub const WORKTREES_DIR: &str = "worktrees";
 
-/// Directory-name suffix for the flat fallback's sibling slots dir:
-/// `<parent>/<repo>-slots/`, next to a plain `<parent>/<repo>/` checkout.
-pub const SLOTS_SUFFIX: &str = "-slots";
-
-/// Repo name from a primary directory name: `blog-primary` → `blog`.
-pub fn repo_from_primary(dir_name: &str) -> Option<&str> {
-    let repo = dir_name.strip_suffix(PRIMARY_SUFFIX)?;
-    (!repo.is_empty()).then_some(repo)
+/// The directory holding a checkout's worktree slots:
+/// `<checkout>/.claude/worktrees`.
+pub fn worktrees_dir(checkout: &Path) -> PathBuf {
+    checkout.join(CLAUDE_DIR).join(WORKTREES_DIR)
 }
 
-/// Repo name from a flat-fallback slots directory name: `blog-slots` → `blog`.
-pub fn repo_from_slots_dir(dir_name: &str) -> Option<&str> {
-    let repo = dir_name.strip_suffix(SLOTS_SUFFIX)?;
-    (!repo.is_empty()).then_some(repo)
+/// If `dir` is a slot checkout (`<main>/.claude/worktrees/<name>`), the main
+/// checkout `<main>`. Pure path shape — no filesystem probes; callers verify
+/// `.git` presence themselves.
+pub fn main_checkout_for(dir: &Path) -> Option<&Path> {
+    let worktrees = dir.parent()?;
+    let claude = worktrees.parent()?;
+    (worktrees.file_name()? == WORKTREES_DIR && claude.file_name()? == CLAUDE_DIR)
+        .then(|| claude.parent())?
 }
 
 /// Slot directory name for a branch: the segment after the last `/` (branch
-/// type prefixes like `feat/` carry no information inside `slots/`), reduced
-/// to `[A-Za-z0-9._-]`. Falls back to the whole branch when the last segment
-/// sanitizes to nothing.
+/// type prefixes like `feat/` carry no information inside the worktrees dir),
+/// reduced to `[A-Za-z0-9._-]`. Falls back to the whole branch when the last
+/// segment sanitizes to nothing.
 pub fn slot_name_from_branch(branch: &str) -> Option<String> {
     let last = branch.rsplit('/').next().unwrap_or(branch);
     let name = sanitize_segment(last);
@@ -49,6 +53,14 @@ pub fn slot_name_from_branch(branch: &str) -> Option<String> {
     }
     let whole = sanitize_segment(branch);
     (!whole.is_empty()).then_some(whole)
+}
+
+/// Branch name for a bare worktree name (the reverse direction, used by the
+/// WorktreeCreate hook where Claude Code hands us only a name): a name that
+/// already looks like a branch (contains `/`) is used verbatim; a bare name
+/// gets the `feat/` prefix, matching the one-branch-per-slot convention.
+pub fn branch_from_worktree_name(name: &str) -> String {
+    if name.contains('/') { name.to_string() } else { format!("feat/{name}") }
 }
 
 fn sanitize_segment(raw: &str) -> String {
@@ -78,7 +90,7 @@ pub fn parse_marker(contents: &str) -> std::collections::HashMap<String, String>
 /// The `base=` field from a slot's `.tt-slot` marker at `slot_dir`, if the
 /// marker exists and records a non-empty base. `None` for a non-slot
 /// checkout (no marker) or a marker missing/blank on `base`.
-pub fn read_slot_base(slot_dir: &std::path::Path) -> Option<String> {
+pub fn read_slot_base(slot_dir: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(slot_dir.join(MARKER_FILE)).ok()?;
     parse_marker(&contents).remove("base").filter(|s| !s.is_empty())
 }
@@ -88,18 +100,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repo_from_primary_strips_suffix() {
-        assert_eq!(repo_from_primary("blog-primary"), Some("blog"));
-        assert_eq!(repo_from_primary("towles-tool-rs-primary"), Some("towles-tool-rs"));
-        assert_eq!(repo_from_primary("blog"), None);
-        assert_eq!(repo_from_primary("-primary"), None);
+    fn worktrees_dir_nests_under_claude() {
+        assert_eq!(
+            worktrees_dir(Path::new("/home/u/blog")),
+            PathBuf::from("/home/u/blog/.claude/worktrees")
+        );
     }
 
     #[test]
-    fn repo_from_slots_dir_strips_suffix() {
-        assert_eq!(repo_from_slots_dir("scribed-slots"), Some("scribed"));
-        assert_eq!(repo_from_slots_dir("scribed"), None);
-        assert_eq!(repo_from_slots_dir("-slots"), None);
+    fn main_checkout_for_matches_only_the_nested_shape() {
+        assert_eq!(
+            main_checkout_for(Path::new("/home/u/blog/.claude/worktrees/thing")),
+            Some(Path::new("/home/u/blog"))
+        );
+        assert_eq!(main_checkout_for(Path::new("/home/u/blog")), None);
+        assert_eq!(main_checkout_for(Path::new("/home/u/blog/.claude/other/thing")), None);
+        assert_eq!(main_checkout_for(Path::new("/home/u/slots/thing")), None);
     }
 
     #[test]
@@ -116,6 +132,12 @@ mod tests {
         // last segment sanitizes to nothing → whole branch, slugged
         assert_eq!(slot_name_from_branch("feat/---"), Some("feat".into()));
         assert_eq!(slot_name_from_branch("///"), None);
+    }
+
+    #[test]
+    fn branch_from_worktree_name_prefixes_bare_names() {
+        assert_eq!(branch_from_worktree_name("auth-flow"), "feat/auth-flow");
+        assert_eq!(branch_from_worktree_name("fix/rail-overflow"), "fix/rail-overflow");
     }
 
     #[test]

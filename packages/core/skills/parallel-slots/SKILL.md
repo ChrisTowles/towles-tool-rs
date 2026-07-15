@@ -1,33 +1,56 @@
 ---
 name: parallel-slots
-description: Use when the user wants to dispatch parallel Claude Code agents across slot clones of a repo, asks to "fan out", "run N in parallel", "use the slots", or wants to coordinate multiple isolated working copies of the same repo. Explains the slot directory layout, when to fan out vs. work in a single slot, and the `gh`-driven workflow that ties slots together.
+description: Use when the user wants to dispatch parallel Claude Code agents across worktree slots of a repo, asks to "fan out", "run N in parallel", "use the slots", or wants to coordinate multiple isolated working copies of the same repo. Explains the nested .claude/worktrees layout, the `tt slot` lifecycle, when to fan out vs. work in a single slot, and the `gh`-driven workflow that ties slots together.
 user_invocable: true
 ---
 
 # Parallel slots
 
-The slot pattern lets you run independent Claude Code sessions on the same repo without stepping on each other. Mirrors Boris Cherny's "5 terminal tabs, each a separate git checkout" workflow.
+The slot pattern lets you run independent Claude Code sessions on the same
+repo without stepping on each other. A slot is a branch-named **git worktree
+nested inside the checkout** at `<checkout>/.claude/worktrees/<name>/` —
+Claude Code's native worktree location — managed by `tt slot`, which adds
+what raw worktrees lack: per-slot `.env` rendering with collision-free port
+claims, a setup step (`TT_SLOT_SETUP` or lockfile-detected install), and
+guarded removal (nothing with unsaved or unreachable work gets deleted).
 
 ## Layout
 
 ```
-~/code/<scope>/<repo>-repos/
-  <repo>-slot-1/    # interchangeable slot — interactive or agent work
-  <repo>-slot-2/
-  <repo>-slot-3/
-  <repo>-slot-4/
-  <repo>-slot-5/
+~/code/<scope>/<repo>/            # the main checkout — a normal clone
+  .claude/worktrees/
+    thing/                        # slot for branch feat/thing (.tt-slot marker at root)
+    rail-overflow/                # slot for branch fix/rail-overflow
 ```
 
-Each slot is a full clone of the same GitHub remote, not a worktree. They check out branches independently. Use the `gh` CLI for all GitHub-side operations (issue → branch, PR create, PR merge, status). If the repo ships a tmux sidebar (e.g. AgentBoard in towles-tool), it watches every slot and surfaces completion via the stop-hook sweep.
+Any plain git checkout works — there is no layout to set up. All slots share
+the main checkout's `.git`; branches survive slot removal.
+
+## Lifecycle
+
+```sh
+tt slot new -b feat/thing [--base <ref>]  # create + render .env + setup
+tt slot ls [--json]                       # fleet: branch, dirty count, ports
+tt slot rm <name> [--force]               # guarded removal + docker cleanup
+tt slot clean [--dry-run]                 # remove every merged/gone slot
+```
+
+Repos that wire `WorktreeCreate`/`WorktreeRemove` hooks to
+`tt slot hook-create`/`hook-remove` in `.claude/settings.json` get the same
+slots from Claude Code's own surfaces — `claude --worktree <name>` creates a
+tt-managed slot on branch `feat/<name>` (tt names branches, never
+`worktree-<name>`).
 
 ## When to fan out
 
-Fan out (use multiple slots) when:
+Fan out (multiple slots) when:
 
-- Three or more independent tasks would benefit from running simultaneously (e.g. one PR, one bug, one refactor).
-- A task is risky and you want a clean, throwaway slot that won't pollute another slot's working tree.
-- You're iterating on the agent harness itself and want to leave your current slot stable.
+- Three or more independent tasks would benefit from running simultaneously
+  (e.g. one PR, one bug, one refactor).
+- A task is risky and you want a clean, throwaway slot that won't pollute
+  another slot's working tree.
+- You're iterating on the agent harness itself and want to leave your
+  current slot stable.
 
 Stay in a single slot when:
 
@@ -36,33 +59,49 @@ Stay in a single slot when:
 
 ## Dispatch flow
 
-1. Pick a free slot (any slot whose sidebar pane is idle).
-2. `cd` into it and confirm the working tree is clean.
-3. Branch off from a GitHub issue: `gh issue develop <issue-number> --checkout` — creates a remote branch tied to the issue and switches the slot to it. If there's no issue, name the branch and use `gh pr checkout <pr>` later if you need to hop onto a colleague's PR.
-4. Hand the task to Claude in that slot via the repo's sidebar TUI.
-5. Watch the sidebar pane for completion. The stop-hook prints results back to it.
+1. `tt slot new -b <branch>` (or create from the Agentboard rail's `+`
+   button: goal → branch → base, and Claude starts on the goal in the new
+   slot's terminal). Branch off a GitHub issue with
+   `gh issue develop <n>` first when one exists.
+2. Hand the task to Claude in that slot.
+3. Watch the Agentboard rail — it discovers every worktree of a tracked
+   checkout automatically and surfaces needs-you status per slot.
 
 ## Coordination rules
 
-- Never run two agents on the _same_ branch in two slots — push/pull races destroy work.
-- Branch names should be unique per slot for the duration of the run.
-- If a slot's working tree is dirty when you arrive, treat it as in-progress work — investigate before resetting.
-- Pre-commit hooks (format + lint + typecheck) run in every slot, so `--no-verify` is forbidden.
+- Never run two agents on the _same_ branch in two slots — push/pull races
+  destroy work. One branch per slot, named after it.
+- If a slot's working tree is dirty when you arrive, treat it as in-progress
+  work — investigate before resetting.
+- Never touch sibling slot directories; other agents work there concurrently.
+- Ports come from the slot's rendered `.env` — never hardcode one.
 
 ## Verifying a slot's output
 
-Before merging from a slot, run that repo's verify command (`/verify` in towles-tool) inside it. Don't trust the slot's own self-report; the agent that wrote the change is not the right reviewer.
+Before merging from a slot, run that repo's verify command (`/verify` in
+towles-tool) inside it. Don't trust the slot's own self-report; the agent
+that wrote the change is not the right reviewer.
 
 ## Shipping from a slot
 
-Open the PR with `gh pr create` (use `--fill` to seed title/body from commits, or pass `--title`/`--body` explicitly). Merge with `gh pr merge --rebase --admin` — the standard merge style.
+Open the PR with `gh pr create` (use `--fill` to seed title/body from
+commits, or pass `--title`/`--body` explicitly). Merge with
+`gh pr merge --rebase --admin` — the standard merge style.
 
 ## Cleanup
 
-After a slot's branch is merged: confirm with `gh pr status` that the slot's PR is merged, then prune the local branch. Use `compound-engineering:ce-clean-gone-branches` to bulk-prune across multiple slots in one pass.
+After merging, `tt slot clean` removes every slot whose branch's work landed
+(classic merge or squash-merge with the remote branch deleted) and deletes
+the branch — guarded, so anything dirty or unpushed is kept and reported.
+`tt slot rm <name>` for one-offs.
 
 ## Anti-patterns
 
-- Spinning all 5 slots on the same task "for redundancy". You'll spend the time merging conflicts.
-- Treating slots as long-lived workspaces. They are scratch checkouts — keep them transient.
-- Editing the same files in two slots at once. Stay in one slot for any given file.
+- Spinning five slots on the same task "for redundancy". You'll spend the
+  time merging conflicts.
+- Treating slots as long-lived workspaces. They are scratch checkouts — keep
+  them transient.
+- Editing the same files in two slots at once. Stay in one slot for any
+  given file.
+- Raw `git worktree add`/`remove` in a tt-managed repo — you'd skip port
+  claims, setup, and the removal guards.
