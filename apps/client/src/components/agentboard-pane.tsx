@@ -13,6 +13,8 @@ import {
   WorktreeBadge,
 } from "@/components/agentboard-bits";
 import {
+  fmtElapsed,
+  fmtWaitingAge,
   isAgent,
   isCacheExpiring,
   isCold,
@@ -161,10 +163,13 @@ export function ColdCacheOverlay({
   );
 }
 
-/** One pane's chrome: glyph · dot · session name · cache info · lifecycle
- * buttons. The repo / folder / branch / diff live once in the working-context
- * band above (every pane in a window shares that folder), so they're not
- * repeated here — the pane header only identifies *which session* this is. */
+/** One pane's chrome: glyph · dot · session name · shell kind · running time ·
+ * waiting age · cache info · lifecycle buttons. The repo / folder / branch /
+ * diff live once in the working-context band above (every pane in a window
+ * shares that folder), so they're not repeated here — the pane header only
+ * identifies *which session* this is and how it's doing, mirroring the same
+ * badges the rail row shows (`fmtElapsed`, `fmtWaitingAge`) so the two
+ * surfaces never disagree. */
 export function PaneHeader({
   session,
   label,
@@ -179,12 +184,28 @@ export function PaneHeader({
   onUngroup: () => void;
 }) {
   const agent = isAgent(session) && session.live;
+  const waitingAge = fmtWaitingAge(session.needsSinceMs, now);
   return (
     <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
       <Glyph agent={isAgent(session)} />
       <Dot session={session} />
       <span className="truncate text-xs text-foreground">{label}</span>
+      {!isAgent(session) && session.shellKind && (
+        <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/50">
+          {session.shellKind}
+        </span>
+      )}
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {session.live && (
+          <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70" title="running for">
+            {fmtElapsed(now - session.createdAt)}
+          </span>
+        )}
+        {waitingAge && (
+          <span className="shrink-0 font-mono text-[10.5px] text-amber-500/80" title="how long this has been needing you">
+            {waitingAge}
+          </span>
+        )}
         <PaneCacheInfo session={session} now={now} />
         {agent && (
           <IconBtn title="stop Claude (shell survives)" onClick={() => actions.stopClaude(session)} className="hover:text-red-500">
