@@ -96,6 +96,26 @@ pub fn run() {
         unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
     }
 
+    let mut context = tauri::generate_context!();
+    let identifier = app_identifier(&context.config().identifier);
+    context.config_mut().identifier = identifier.clone();
+
+    // Guard against a second launch of the *same* checkout (same resolved
+    // identifier — the primary, or one specific slot): without this, GTK
+    // forwards the second process's `activate()` via D-Bus into the
+    // already-running one (`enableGTKAppId` in tauri.conf.json), which
+    // re-enters Tauri's internal `setup()` and panics rebuilding the "main"
+    // webview a second time. `app_identifier` already keeps slots from
+    // colliding with each other; this keeps one checkout from colliding with
+    // itself. Held for the whole process lifetime; a lock left by a killed
+    // process is detected and stolen (see `InstanceLock`).
+    let Some(_instance_lock) =
+        instance_lock::InstanceLock::try_acquire(&format!("app-{identifier}"))
+    else {
+        eprintln!("Towles Tool ({identifier}) is already running — focus its existing window.");
+        return;
+    };
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -492,11 +512,6 @@ pub fn run() {
             dictation::dictation_model_fetch,
             dictation::dictation_devices,
         ])
-        .run({
-            let mut context = tauri::generate_context!();
-            let identifier = app_identifier(&context.config().identifier);
-            context.config_mut().identifier = identifier;
-            context
-        })
+        .run(context)
         .expect("error while running Towles Tool application");
 }

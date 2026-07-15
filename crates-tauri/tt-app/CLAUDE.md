@@ -35,23 +35,36 @@ follows is a cross-cutting rule that spans multiple files.
 
 ## Singletons and cross-slot state
 
-- **`InstanceLock` is a shared, cross-slot singleton**, not per-checkout
-  (`instance_lock.rs`) — it gates Slack Socket Mode, since settings/tokens
-  are machine-wide. Without it, every open worktree slot would open a
-  duplicate websocket on the same token.
+- **`InstanceLock` is a generic, PID-tagged file lock** (`instance_lock.rs`),
+  reused for two unrelated purposes under different lock names — don't
+  assume every holder is cross-slot or every holder is per-checkout; it
+  depends which name was passed to `try_acquire`:
+  - `"slack-socket"` (`slack_socket.rs`) is a **shared, cross-slot**
+    singleton: Slack credentials live in the shared config dir, so every
+    open slot's process reads the same token, and without this guard N
+    open slots would each open a duplicate Socket Mode websocket on it.
+  - `"app-<identifier>"` (`lib.rs`'s `run`, acquired before `.run()`) is
+    **per-checkout**: it stops the *same* checkout (primary, or one
+    specific slot) from launching twice, which crashes exactly like the
+    cross-slot case below but can't be fixed by scoping the identifier
+    since it already matches. A second launch just prints "already
+    running" and exits instead of proceeding.
 - **The Tauri `identifier` is patched per-slot at runtime** (`lib.rs`'s
-  `app_identifier`, called just before `.run()`) — `tauri.conf.json`'s
-  `identifier` plus `enableGTKAppId: true` means every slot's binary would
-  otherwise register the *same* D-Bus-activatable GTK app id. Launching a
-  second slot's app then doesn't spawn a new process; GTK forwards its
-  `activate()` into the first slot's already-running app via D-Bus, which
-  re-enters Tauri's internal `setup()` and panics rebuilding the config's
-  `"main"` webview a second time (`a webview with label 'main' already
-  exists`). `app_identifier` detects a `slots/` parent at compile time
-  (`CARGO_MANIFEST_DIR`, same signal as `slot_label`) and suffixes the base
-  identifier so each slot is a genuinely separate app instance; the primary
-  keeps the bare identifier. `linux_desktop::ensure_installed` already reads
-  `app.config().identifier` (post-patch), so it needs no separate change.
+  `app_identifier`, applied to `context` right after `generate_context!()`)
+  — `tauri.conf.json`'s `identifier` plus `enableGTKAppId: true` means every
+  slot's binary would otherwise register the *same* D-Bus-activatable GTK
+  app id. Launching a second slot's app then doesn't spawn a new process;
+  GTK forwards its `activate()` into the first slot's already-running app
+  via D-Bus, which re-enters Tauri's internal `setup()` and panics
+  rebuilding the config's `"main"` webview a second time (`a webview with
+  label 'main' already exists`). `app_identifier` detects a `slots/` parent
+  at compile time (`CARGO_MANIFEST_DIR`, same signal as `slot_label`) and
+  suffixes the base identifier so each slot is a genuinely separate app
+  instance; the primary keeps the bare identifier. `linux_desktop::
+  ensure_installed` already reads `app.config().identifier` (post-patch),
+  so it needs no separate change. This alone doesn't stop the *same*
+  checkout being launched twice (same identifier both times) — that's what
+  the `"app-<identifier>"` `InstanceLock` above is for.
 - **Nested shells get their env scrubbed and re-stamped** (`terminal.rs`,
   issue #39): a `tt-app` or `npm run dev` launched *inside* an embedded
   terminal doesn't collide with the outer instance's port/session identity.

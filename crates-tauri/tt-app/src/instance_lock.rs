@@ -1,13 +1,20 @@
-//! A single-instance guard so only one running `tt-app` process — across every
-//! worktree slot, not just one window — holds a scarce shared resource.
+//! A generic single-instance guard: only the process holding a named,
+//! PID-tagged lock file proceeds past [`InstanceLock::try_acquire`]; a lock
+//! left behind by a process that's no longer running is detected and stolen.
+//! Reused for two differently-scoped resources under different lock names —
+//! the name is what determines the scope, not the type:
 //!
-//! Settings (including Slack credentials) live in the *shared* config dir
-//! (`tt_config::config_dir()` only re-scopes under a forced `TT_STATE_SCOPE`),
-//! so every open slot's process reads the same token. Without a guard, N open
-//! slots each open their own Slack Socket Mode connection and poll on the same
-//! token — see #227. [`InstanceLock`] names one shared, PID-tagged lock file
-//! so only the process holding it proceeds; a lock left behind by a process
-//! that's no longer running is detected and stolen.
+//! - `"slack-socket"` (`slack_socket.rs`): Slack credentials live in the
+//!   *shared* config dir (`tt_config::config_dir()` only re-scopes under a
+//!   forced `TT_STATE_SCOPE`), so every open worktree slot's process reads the
+//!   same token. Without this guard, N open slots would each open their own
+//!   Slack Socket Mode connection and poll on the same token — see #227.
+//! - `"app-<identifier>"` (`lib.rs`'s `run`): stops the *same* checkout
+//!   (primary, or one specific slot) from being launched twice, which
+//!   otherwise crashes — GTK forwards the second process's `activate()` via
+//!   D-Bus into the already-running one, re-entering Tauri's internal
+//!   `setup()`. Different slots already get different identifiers (see
+//!   `app_identifier`), so this only ever fires within one checkout.
 
 use std::fs;
 use std::io::ErrorKind;
