@@ -141,14 +141,42 @@ export type RepoData = {
   needs: number;
 };
 
+/** A window's tiled pane ids: always at least one — the empty-pane state is
+ * unrepresentable. Windows are minted lazily around their first pane
+ * (`placePane`, the "+ window" flow) and die with their last (`dropPane`,
+ * `pruneWins`); blobs persisted before this rule may still hold paneless
+ * windows, which `hydrateWins` sweeps at the parse boundary. */
+export type Panes = [string, ...string[]];
+
+/** Parse a plain id list into `Panes` (`null` when empty) — the one blessed
+ * spot where `string[]` narrows to the non-empty pane type. */
+export function toPanes(ids: string[]): Panes | null {
+  return ids.length > 0 ? (ids as Panes) : null;
+}
+
 /** One in-app window: a named tiling of pane session-ids. Scoped to a single
- * folder — a window may never hold panes from more than one checkout. */
-export type AgWindow = { id: string; name: string; folderDir: string; panes: string[] };
+ * folder — a window may never hold panes from more than one checkout. `cols`
+ * holds user-dragged column widths in per-mille of the tiling width (summing
+ * to `COL_TOTAL`, one entry per column of the current layout — see
+ * `colCount`); absent or mismatched (the pane count changed since the drag)
+ * means equal columns. */
+export type AgWindow = {
+  id: string;
+  name: string;
+  folderDir: string;
+  panes: Panes;
+  cols?: number[];
+};
 
 /** The whole window layout. Frontend-owned: mutated locally, saved debounced
  * via `ab_save_windows`, hydrated once from `ab_get_state`. `activeWindows`
  * tracks the focused window per folder (keyed by `AgWindow.folderDir`). */
 export type WindowsPayload = { windows: AgWindow[]; activeWindows: Record<string, string> };
+
+/** `AgWindow` as persisted / sent over the wire, before parsing: `panes` may
+ * be empty in blobs written before empty windows became unrepresentable. */
+export type WireWindow = Omit<AgWindow, "panes"> & { panes: string[] };
+export type WireWindowsPayload = { windows: WireWindow[]; activeWindows: Record<string, string> };
 
 export type StatePayload = {
   repos: RepoData[];
@@ -156,8 +184,9 @@ export type StatePayload = {
   preferredEditor: string;
   /** Context-% at/above which a cold session shows the compact nudge. */
   compactRecommendPercent: number;
-  /** Persisted window layout (hydration source only — see WindowsPayload). */
-  windows: WindowsPayload;
+  /** Persisted window layout (hydration source only — parse with
+   * `hydrateWins`; see WindowsPayload). */
+  windows: WireWindowsPayload;
   /** Persisted folder-rail collapse/expand state, keyed by row key (hydration
    * source only — saved incrementally via `ab_save_collapsed`). Absent key ⇒
    * expanded. */
@@ -227,66 +256,78 @@ export function placePane(
       ? w
       : { ...w, activeWindows: { ...w.activeWindows, [folderDir]: host.id } };
   }
-  let windows = w.windows;
   let windowId = w.activeWindows[folderDir];
-  if (!windows.some((win) => win.id === windowId && win.folderDir === folderDir)) {
+  if (!w.windows.some((win) => win.id === windowId && win.folderDir === folderDir)) {
     // Stale/missing active entry: reuse the folder's first existing window
     // before minting a new one — otherwise a dangling entry spawns a duplicate
     // "primary" beside the window the user already has.
-    const existing = windows.find((win) => win.folderDir === folderDir);
-    if (existing) {
-      windowId = existing.id;
-    } else {
-      windowId = newWindowId();
-      windows = [...windows, { id: windowId, name: "primary", folderDir, panes: [] }];
+    const existing = w.windows.find((win) => win.folderDir === folderDir);
+    if (!existing) {
+      // Windows are born around their first pane — never empty.
+      const id = newWindowId();
+      return {
+        windows: [...w.windows, { id, name: "primary", folderDir, panes: [paneId] }],
+        activeWindows: { ...w.activeWindows, [folderDir]: id },
+      };
     }
+    windowId = existing.id;
   }
   return {
-    windows: windows.map((win) =>
-      win.id === windowId ? { ...win, panes: [...win.panes, paneId] } : win,
+    windows: w.windows.map((win) =>
+      win.id === windowId ? { ...win, panes: appendPane(win.panes, paneId) } : win,
     ),
     activeWindows: { ...w.activeWindows, [folderDir]: windowId },
   };
 }
 
+/** Append while keeping the non-empty tuple type (a plain spread widens to
+ * `string[]`). */
+function appendPane(panes: Panes, paneId: string): Panes {
+  const [first, ...rest] = panes;
+  return [first, ...rest, paneId];
+}
+
 /** Drop a pane from the window that holds it (pane ids are unique — session
  * ids globally, diff ids per folder — so at most one window matches). A window
- * is a tiling of panes, not a container worth keeping empty: when the pane was
- * the window's last, the window goes with it and the folder's active window
- * moves to a sibling — unless it's the folder's only window, which stays as
- * the landing surface for the next pane. */
+ * is a tiling of at least one pane, never an empty container: when the pane
+ * was the window's last, the window goes with it, the folder's active window
+ * moves to a sibling (or unsets — `placePane` mints a fresh "primary" lazily
+ * when the folder next opens a pane). */
 export function dropPane(w: WindowsPayload, paneId: string): WindowsPayload {
   const host = w.windows.find((win) => win.panes.includes(paneId));
   if (!host) return w;
-  const siblings = w.windows.filter(
-    (win) => win.folderDir === host.folderDir && win.id !== host.id,
-  );
-  if (host.panes.length === 1 && siblings.length > 0) {
+  const remaining = toPanes(host.panes.filter((p) => p !== paneId));
+  if (!remaining) {
+    const sibling = w.windows.find(
+      (win) => win.folderDir === host.folderDir && win.id !== host.id,
+    );
     const activeWindows = { ...w.activeWindows };
     if (activeWindows[host.folderDir] === host.id) {
-      activeWindows[host.folderDir] = siblings[0].id;
+      if (sibling) activeWindows[host.folderDir] = sibling.id;
+      else delete activeWindows[host.folderDir];
     }
     return { windows: w.windows.filter((win) => win.id !== host.id), activeWindows };
   }
   return {
     ...w,
     windows: w.windows.map((win) =>
-      win.id === host.id ? { ...win, panes: win.panes.filter((p) => p !== paneId) } : win,
+      win.id === host.id ? { ...win, panes: remaining } : win,
     ),
   };
 }
 
 /** The folder dirs whose slice of the layout (their windows, in order, or
  * their active-window entry) differs between two payloads — exactly the
- * `touchedFolders` the backend's merge-by-folder save needs. */
-export function changedFolderDirs(a: WindowsPayload, b: WindowsPayload): string[] {
+ * `touchedFolders` the backend's merge-by-folder save needs. Accepts the wire
+ * shape so hydration can diff the raw blob against its parsed form. */
+export function changedFolderDirs(a: WireWindowsPayload, b: WireWindowsPayload): string[] {
   const dirs = new Set<string>([
     ...a.windows.map((win) => win.folderDir),
     ...b.windows.map((win) => win.folderDir),
     ...Object.keys(a.activeWindows),
     ...Object.keys(b.activeWindows),
   ]);
-  const sig = (p: WindowsPayload, dir: string) =>
+  const sig = (p: WireWindowsPayload, dir: string) =>
     JSON.stringify([
       p.windows.filter((win) => win.folderDir === dir),
       p.activeWindows[dir] ?? null,
@@ -294,16 +335,17 @@ export function changedFolderDirs(a: WindowsPayload, b: WindowsPayload): string[
   return [...dirs].filter((d) => sig(a, d) !== sig(b, d));
 }
 
-/** Hydration-time sweep: drop every zero-pane window. Windows are created
- * lazily (`placePane` mints "primary" on demand), so an empty window restored
- * from disk is pure residue — it holds no panes, and its only state worth
- * missing is a name. Only safe at hydration: run mid-session it would eat a
- * window the user just created via "+ window" and hasn't filled yet. */
-export function dropEmptyWindows(w: WindowsPayload): WindowsPayload {
-  const windows = w.windows.filter((win) => win.panes.length > 0);
-  return windows.length === w.windows.length
-    ? w
-    : normalizeWins({ windows, activeWindows: w.activeWindows });
+/** Parse a persisted layout into the live shape: sweep paneless windows
+ * (residue from blobs written before empty windows became unrepresentable —
+ * windows are minted lazily, so nothing of value is lost) and drop dangling
+ * active-window entries. */
+export function hydrateWins(w: WireWindowsPayload): WindowsPayload {
+  const windows: AgWindow[] = [];
+  for (const win of w.windows) {
+    const panes = toPanes(win.panes);
+    if (panes) windows.push({ ...win, panes });
+  }
+  return normalizeWins({ windows, activeWindows: w.activeWindows });
 }
 
 /** Reconcile the persisted layout against what actually exists. The blob on
@@ -313,37 +355,28 @@ export function dropEmptyWindows(w: WindowsPayload): WindowsPayload {
  * a dead dashed pane (so a fresh pane lands in spot two behind a corpse).
  *
  * Drops windows of folders not in `validFolderDirs`, then panes that are
- * neither a known session id nor a valid folder's diff pane. Windows *emptied
- * by this prune* vanish like a closed-out window (`dropPane`'s rule), keeping
- * one per folder when the prune emptied them all; a window that was already
- * empty going in is deliberate (freshly created via "+ window") and is never
- * touched. Returns `w` itself when nothing changed, so callers can cheaply
- * skip the save. */
+ * neither a known session id nor a valid folder's diff pane. A window emptied
+ * by this prune vanishes like a closed-out window (`dropPane`'s rule — the
+ * empty-pane state is unrepresentable); `placePane` mints a fresh "primary"
+ * lazily when the folder next opens a pane. Returns `w` itself when nothing
+ * changed, so callers can cheaply skip the save. */
 export function pruneWins(
   w: WindowsPayload,
   validSessionIds: ReadonlySet<string>,
   validFolderDirs: ReadonlySet<string>,
 ): WindowsPayload {
-  const pruned: AgWindow[] = [];
-  const emptied = new Set<string>();
+  const kept: AgWindow[] = [];
   for (const win of w.windows) {
     if (!validFolderDirs.has(win.folderDir)) continue;
-    const panes = win.panes.filter((p) => {
-      const dir = diffPaneDir(p);
-      return dir !== null ? validFolderDirs.has(dir) : validSessionIds.has(p);
-    });
-    if (panes.length === 0 && win.panes.length > 0) emptied.add(win.id);
-    pruned.push(panes.length === win.panes.length ? win : { ...win, panes });
+    const panes = toPanes(
+      win.panes.filter((p) => {
+        const dir = diffPaneDir(p);
+        return dir !== null ? validFolderDirs.has(dir) : validSessionIds.has(p);
+      }),
+    );
+    if (!panes) continue;
+    kept.push(panes.length === win.panes.length ? win : { ...win, panes });
   }
-  const kept = pruned.filter((win) => {
-    if (!emptied.has(win.id)) return true;
-    const folderWins = pruned.filter((x) => x.folderDir === win.folderDir);
-    if (folderWins.some((x) => !emptied.has(x.id))) return false;
-    // The prune emptied every window of this folder — keep the active one.
-    const keeper =
-      folderWins.find((x) => x.id === w.activeWindows[win.folderDir]) ?? folderWins[0];
-    return win.id === keeper.id;
-  });
   const activeWindows: Record<string, string> = {};
   for (const win of kept) {
     if (win.folderDir in activeWindows) continue;
@@ -945,23 +978,95 @@ export type SessionActions = {
  * three across, a 2-column grid from four panes on. */
 export type PaneRect = { left: number; top: number; width: number; height: number };
 
-export function paneRects(n: number): PaneRect[] {
+/** Column widths (`AgWindow.cols`) are stored in per-mille of the tiling width
+ * so persisted layouts stay integer (the Rust mirror keeps `Eq`). */
+export const COL_TOTAL = 1000;
+/** Narrowest a column can be dragged, per-mille (10%). */
+const MIN_COL = 100;
+/** Divider snap targets: thirds and fifths of the tiling width, plus the even
+ * split so a drag can land back on the default. Magnetic within
+ * `SNAP_THRESHOLD`; outside it the divider moves freely. */
+const SNAP_POINTS = [200, 333, 400, 500, 600, 667, 800];
+const SNAP_THRESHOLD = 25;
+
+/** How many resizable columns an `n`-pane tiling has: the row of n up to
+ * three, then the grid's fixed two. */
+export function colCount(n: number): number {
+  return n <= 3 ? n : 2;
+}
+
+/** `cols` when it matches the current layout (right length, sane values), else
+ * `null` — a pane count changed since the drag falls back to equal columns. */
+function validCols(n: number, cols: number[] | undefined): number[] | null {
+  const k = colCount(n);
+  if (!cols || cols.length !== k) return null;
+  if (cols.some((c) => !Number.isInteger(c) || c < MIN_COL)) return null;
+  return cols.reduce((a, b) => a + b, 0) === COL_TOTAL ? cols : null;
+}
+
+/** Equal per-mille split, remainder on the last column (k=3 → 333/333/334). */
+function equalCols(k: number): number[] {
+  const base = Math.floor(COL_TOTAL / k);
+  return Array.from({ length: k }, (_, i) => (i === k - 1 ? COL_TOTAL - base * (k - 1) : base));
+}
+
+/** Column widths in percent for an `n`-pane tiling under `cols`. */
+function colWidths(n: number, cols: number[] | undefined): number[] {
+  const valid = validCols(n, cols);
+  // Multiply first: `(c * 100) / 1000` divides integers, so 200‰ → exactly 20.
+  if (valid) return valid.map((c) => (c * 100) / COL_TOTAL);
+  const k = colCount(n);
+  return Array.from({ length: k }, () => 100 / k);
+}
+
+export function paneRects(n: number, cols?: number[]): PaneRect[] {
   if (n <= 0) return [];
+  const widths = colWidths(n, cols);
   if (n <= 3) {
-    const w = 100 / n;
-    return Array.from({ length: n }, (_, i) => ({ left: i * w, top: 0, width: w, height: 100 }));
+    let left = 0;
+    return widths.map((width) => {
+      const r = { left, top: 0, width, height: 100 };
+      left += width;
+      return r;
+    });
   }
   const rows = Math.ceil(n / 2);
   const h = 100 / rows;
   return Array.from({ length: n }, (_, i) => {
     const lastRowSolo = n % 2 === 1 && i === n - 1;
     return {
-      left: lastRowSolo ? 0 : (i % 2) * 50,
+      left: lastRowSolo || i % 2 === 0 ? 0 : widths[0],
       top: Math.floor(i / 2) * h,
-      width: lastRowSolo ? 100 : 50,
+      width: lastRowSolo ? 100 : widths[i % 2],
       height: h,
     };
   });
+}
+
+/** Magnetic snap: pull a divider position (per-mille) onto the nearest
+ * third/fifth/half when within `SNAP_THRESHOLD`, else keep it (integered). */
+export function snapCol(pos: number): number {
+  for (const p of SNAP_POINTS) {
+    if (Math.abs(pos - p) <= SNAP_THRESHOLD) return p;
+  }
+  return Math.round(pos);
+}
+
+/** Column widths after dragging divider `i` (the boundary between columns `i`
+ * and `i+1`) to `pos` per-mille from the tiling's left edge. Snaps via
+ * `snapCol`, then clamps so both adjacent columns keep `MIN_COL`; columns not
+ * adjacent to the divider are untouched. */
+export function dragCol(n: number, cols: number[] | undefined, i: number, pos: number): number[] {
+  const widths = [...(validCols(n, cols) ?? equalCols(colCount(n)))];
+  if (i < 0 || i >= widths.length - 1) return widths;
+  const leftEdge = widths.slice(0, i).reduce((a, b) => a + b, 0);
+  const lo = leftEdge + MIN_COL;
+  const hi = leftEdge + widths[i] + widths[i + 1] - MIN_COL;
+  const target = Math.min(hi, Math.max(lo, snapCol(pos)));
+  const pair = widths[i] + widths[i + 1];
+  widths[i] = target - leftEdge;
+  widths[i + 1] = pair - widths[i];
+  return widths;
 }
 
 /** Optimistic status shown for ~2.5s after a lifecycle action, until the

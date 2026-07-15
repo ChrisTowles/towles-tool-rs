@@ -4,17 +4,20 @@ import {
   cacheWarnMs,
   changedFolderDirs,
   cycleNeedsYou,
+  colCount,
   diffPaneDir,
   diffPaneId,
-  dropEmptyWindows,
+  dragCol,
   dropPane,
   fmtWaitingAge,
+  hydrateWins,
   isDiffPane,
   isCacheExpiring,
   isFolderQuiet,
   needingSessionsOldestFirst,
   normalizeWins,
   paneRects,
+  snapCol,
   pathScope,
   placePane,
   prForFolder,
@@ -24,9 +27,11 @@ import {
   waitForFirstFrame,
   type AgentStatus,
   type FolderData,
+  type Panes,
   type RepoData,
   type SessionData,
   type WindowsPayload,
+  type WireWindowsPayload,
 } from "./agentboard";
 import type { PrItem } from "./data";
 
@@ -174,7 +179,7 @@ describe("diff pane ids", () => {
   });
 });
 
-const win = (id: string, folderDir: string, panes: string[]) => ({
+const win = (id: string, folderDir: string, panes: Panes) => ({
   id,
   name: id,
   folderDir,
@@ -245,21 +250,22 @@ describe("dropPane", () => {
     expect(next.activeWindows["/f"]).toBe("w2");
   });
 
-  it("keeps the folder's last window when its last pane closes", () => {
+  it("deletes the folder's last window with its last pane (no empty windows)", () => {
     const w: WindowsPayload = { windows: [win("w1", "/f", ["s1"])], activeWindows: { "/f": "w1" } };
     const next = dropPane(w, "s1");
-    expect(next.windows).toEqual([win("w1", "/f", [])]);
-    expect(next.activeWindows["/f"]).toBe("w1");
+    expect(next.windows).toEqual([]);
+    expect(next.activeWindows).toEqual({});
   });
 
-  it("only counts same-folder windows as siblings", () => {
-    // /f's only window empties; /g's window must not count as a sibling.
+  it("only refocuses onto same-folder siblings", () => {
+    // /f's only window dies; /g's window must not inherit /f's focus.
     const w: WindowsPayload = {
       windows: [win("w1", "/f", ["s1"]), win("w2", "/g", ["s2"])],
       activeWindows: { "/f": "w1", "/g": "w2" },
     };
     const next = dropPane(w, "s1");
-    expect(next.windows).toEqual([win("w1", "/f", []), win("w2", "/g", ["s2"])]);
+    expect(next.windows).toEqual([win("w2", "/g", ["s2"])]);
+    expect(next.activeWindows).toEqual({ "/g": "w2" });
   });
 
   it("is a no-op for a pane no window holds", () => {
@@ -292,24 +298,15 @@ describe("pruneWins", () => {
     expect(next.activeWindows["/f"]).toBe("w2");
   });
 
-  it("keeps one (active-preferred) window when pruning empties them all", () => {
+  it("drops the folder's layout entirely when pruning empties every window", () => {
     const w: WindowsPayload = {
       windows: [win("w1", "/f", ["g1"]), win("w2", "/f", ["g2"])],
       activeWindows: { "/f": "w2" },
     };
     const [s, f] = valid([], ["/f"]);
     const next = pruneWins(w, s, f);
-    expect(next.windows).toEqual([win("w2", "/f", [])]);
-    expect(next.activeWindows["/f"]).toBe("w2");
-  });
-
-  it("never touches a deliberately-empty window", () => {
-    const w: WindowsPayload = {
-      windows: [win("w1", "/f", ["s1"]), win("w2", "/f", [])],
-      activeWindows: { "/f": "w2" },
-    };
-    const [s, f] = valid(["s1"], ["/f"]);
-    expect(pruneWins(w, s, f)).toBe(w);
+    expect(next.windows).toEqual([]);
+    expect(next.activeWindows).toEqual({});
   });
 
   it("drops windows of folders no longer on the rail", () => {
@@ -342,20 +339,30 @@ describe("pruneWins", () => {
   });
 });
 
-describe("dropEmptyWindows", () => {
-  it("sweeps zero-pane windows and their active entries", () => {
-    const w: WindowsPayload = {
-      windows: [win("w1", "/f", ["s1"]), win("w2", "/f", []), win("w3", "/g", [])],
+describe("hydrateWins", () => {
+  const wireWin = (id: string, folderDir: string, panes: string[]) => ({
+    id,
+    name: id,
+    folderDir,
+    panes,
+  });
+
+  it("sweeps legacy paneless windows and their active entries", () => {
+    const w: WireWindowsPayload = {
+      windows: [wireWin("w1", "/f", ["s1"]), wireWin("w2", "/f", []), wireWin("w3", "/g", [])],
       activeWindows: { "/f": "w2", "/g": "w3" },
     };
-    const next = dropEmptyWindows(w);
+    const next = hydrateWins(w);
     expect(next.windows).toEqual([win("w1", "/f", ["s1"])]);
     expect(next.activeWindows).toEqual({});
   });
 
-  it("returns the same object when no window is empty", () => {
-    const w: WindowsPayload = { windows: [win("w1", "/f", ["s1"])], activeWindows: {} };
-    expect(dropEmptyWindows(w)).toBe(w);
+  it("keeps a fully valid layout intact, cols included", () => {
+    const w: WireWindowsPayload = {
+      windows: [{ ...wireWin("w1", "/f", ["s1", "s2"]), cols: [333, 667] }],
+      activeWindows: { "/f": "w1" },
+    };
+    expect(hydrateWins(w)).toEqual(w);
   });
 });
 
@@ -375,7 +382,7 @@ describe("changedFolderDirs", () => {
 
   it("catches an active-window-only change", () => {
     const a: WindowsPayload = {
-      windows: [win("w1", "/f", []), win("w2", "/f", [])],
+      windows: [win("w1", "/f", ["s1"]), win("w2", "/f", ["s2"])],
       activeWindows: { "/f": "w1" },
     };
     const b: WindowsPayload = { ...a, activeWindows: { "/f": "w2" } };
@@ -386,7 +393,7 @@ describe("changedFolderDirs", () => {
 describe("normalizeWins", () => {
   it("drops active-window entries whose window is gone or moved folders", () => {
     const w: WindowsPayload = {
-      windows: [win("w1", "/f", [])],
+      windows: [win("w1", "/f", ["s1"])],
       activeWindows: { "/f": "w1", "/g": "w1", "/h": "gone" },
     };
     expect(normalizeWins(w).activeWindows).toEqual({ "/f": "w1" });
@@ -413,8 +420,65 @@ describe("paneRects", () => {
     expect(five[4]).toEqual({ left: 0, top: (200 / 3), width: 100, height: 100 / 3 });
   });
 
-  it("returns nothing for an empty window", () => {
+  it("returns nothing for zero panes", () => {
     expect(paneRects(0)).toEqual([]);
+  });
+
+  it("applies dragged column widths in the row layout", () => {
+    const rects = paneRects(2, [333, 667]);
+    expect(rects.map((r) => [r.left, r.width])).toEqual([
+      [0, 33.3],
+      [33.3, 66.7],
+    ]);
+  });
+
+  it("applies the shared column split to every grid row except a solo one", () => {
+    const rects = paneRects(5, [200, 800]);
+    expect(rects[0].width).toBe(20);
+    expect(rects[1]).toMatchObject({ left: 20, width: 80 });
+    expect(rects[3]).toMatchObject({ left: 20, width: 80 });
+    expect(rects[4]).toMatchObject({ left: 0, width: 100 }); // solo last row spans
+  });
+
+  it("falls back to equal columns when cols don't match the layout", () => {
+    // Wrong length (stored before a pane was added), wrong sum, sub-minimum.
+    expect(paneRects(3, [333, 667]).map((r) => r.width)).toEqual([100 / 3, 100 / 3, 100 / 3]);
+    expect(paneRects(2, [900, 99]).map((r) => r.width)).toEqual([50, 50]);
+    expect(paneRects(2, [950, 50]).map((r) => r.width)).toEqual([50, 50]);
+  });
+});
+
+describe("column drag + snap", () => {
+  it("counts columns: row of n up to three, then the grid's two", () => {
+    expect([1, 2, 3, 4, 7].map(colCount)).toEqual([1, 2, 3, 2, 2]);
+  });
+
+  it("snaps a divider onto thirds and fifths within the threshold", () => {
+    expect(snapCol(340)).toBe(333); // pulled onto 1/3
+    expect(snapCol(190)).toBe(200); // pulled onto 1/5
+    expect(snapCol(510)).toBe(500); // pulled onto the even split
+    expect(snapCol(450)).toBe(450); // free between snap points
+  });
+
+  it("drags a two-pane divider, snapping and keeping the per-mille total", () => {
+    expect(dragCol(2, undefined, 0, 660)).toEqual([667, 333]);
+    expect(dragCol(2, undefined, 0, 450)).toEqual([450, 550]);
+  });
+
+  it("moves only the divider's two columns in a three-pane row", () => {
+    const cols = dragCol(3, undefined, 1, 810); // second divider toward 4/5
+    expect(cols).toEqual([333, 467, 200]);
+    expect(cols.reduce((a, b) => a + b, 0)).toBe(1000);
+  });
+
+  it("clamps so both adjacent columns keep the minimum width", () => {
+    expect(dragCol(2, undefined, 0, 20)).toEqual([100, 900]);
+    expect(dragCol(2, undefined, 0, 990)).toEqual([900, 100]);
+  });
+
+  it("rebases from equal columns when the stored cols no longer fit", () => {
+    // Stored for a 2-col layout, now three panes: stale cols are ignored.
+    expect(dragCol(3, [500, 500], 0, 200)).toEqual([200, 466, 334]);
   });
 });
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   CalendarClock,
   Eye,
@@ -64,10 +64,12 @@ import {
   consumePendingAgentboardNav,
   consumePendingOpenSession,
   cycleNeedsYou,
+  COL_TOTAL,
   diffPaneDir,
   diffPaneId,
-  dropEmptyWindows,
+  dragCol,
   dropPane,
+  hydrateWins,
   isAgent,
   isCacheExpiring,
   isDiffPane,
@@ -89,6 +91,7 @@ import {
   waitForFirstFrame,
   type AgentboardNav,
   type AgentStatus,
+  type AgWindow,
   type FolderData,
   type Overlay,
   type PaneRect,
@@ -360,15 +363,15 @@ export function AgentboardScreen() {
   const dirtyWinFolders = useRef<Set<string>>(new Set());
   useEffect(() => {
     // Hydrate from the first real payload (mock or ab_get_state); after that
-    // the local copy is the live truth and only flows outward. Empty windows
-    // restored from disk are residue (windows are created lazily) — sweep
-    // them here, and persist the sweep if it changed anything.
+    // the local copy is the live truth and only flows outward. `hydrateWins`
+    // is the parse boundary: paneless windows restored from old blobs are
+    // residue (the empty-pane state is unrepresentable now) — swept there,
+    // and the sweep is persisted if it changed anything.
     if (wins !== null || state.ts === 0) return;
-    const hydrated = normalizeWins(state.windows);
-    const swept = dropEmptyWindows(hydrated);
-    setWins(swept);
-    const touched = changedFolderDirs(hydrated, swept);
-    if (touched.length > 0) scheduleSave(swept, touched);
+    const hydrated = hydrateWins(state.windows);
+    setWins(hydrated);
+    const touched = changedFolderDirs(state.windows, hydrated);
+    if (touched.length > 0) scheduleSave(hydrated, touched);
   }, [wins, state.ts, state.windows]);
 
   function scheduleSave(next: WindowsPayload, folderDirs: string[]) {
@@ -469,6 +472,70 @@ export function AgentboardScreen() {
     const folderDir = wins?.windows.find((win) => win.panes.includes(paneId))?.folderDir;
     updateWins(folderDir ? [folderDir] : [], (w) => dropPane(w, paneId));
     clearExit(paneId);
+  }
+
+  // "+ window": a window can't exist without panes, so minting one means
+  // giving it content — spawn a fresh session and open the new window around
+  // it in one move.
+  async function newWindow(folderDir: string) {
+    const rec = await abInvoke<SessionData>("ab_add_session", { dir: folderDir, name: null });
+    if (!rec) return;
+    const id = `w${Date.now()}`;
+    updateWins([folderDir], (cur) => {
+      const count = cur.windows.filter((w) => w.folderDir === folderDir).length;
+      return {
+        windows: [
+          ...cur.windows,
+          { id, name: `window ${count + 1}`, folderDir, panes: [rec.id] },
+        ],
+        activeWindows: { ...cur.activeWindows, [folderDir]: id },
+      };
+    });
+    // Mount + focus the session; `placePane` sees it already hosted here.
+    selectSession(folderDir, rec.id);
+  }
+
+  // --- Column resize: drag the divider between two side-by-side panes. Live
+  // widths ride local state so the terminals reflow while dragging; the
+  // result commits to the window's `cols` (debounced save) on release.
+  // `dragCol` snaps to thirds/fifths of the tiling width.
+  const paneAreaRef = useRef<HTMLDivElement>(null);
+  const [colDrag, setColDrag] = useState<{ winId: string; cols: number[] } | null>(null);
+
+  function startColDrag(e: ReactPointerEvent<HTMLDivElement>, win: AgWindow, divider: number) {
+    e.preventDefault();
+    const area = paneAreaRef.current;
+    if (!area) return;
+    const n = win.panes.length;
+    const posOf = (clientX: number) => {
+      const r = area.getBoundingClientRect();
+      return ((clientX - r.left) / r.width) * COL_TOTAL;
+    };
+    let cols = dragCol(n, win.cols, divider, posOf(e.clientX));
+    const move = (ev: PointerEvent) => {
+      cols = dragCol(n, win.cols, divider, posOf(ev.clientX));
+      setColDrag({ winId: win.id, cols });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setColDrag(null);
+      updateWins([win.folderDir], (w) => ({
+        ...w,
+        windows: w.windows.map((x) => (x.id === win.id ? { ...x, cols } : x)),
+      }));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    setColDrag({ winId: win.id, cols });
+  }
+
+  /** Double-click a divider: back to equal columns. */
+  function resetCols(win: AgWindow) {
+    updateWins([win.folderDir], (w) => ({
+      ...w,
+      windows: w.windows.map((x) => (x.id === win.id ? { ...x, cols: undefined } : x)),
+    }));
   }
 
   /** Forget a session's recorded exit status (on restart or pane removal). */
@@ -1171,25 +1238,16 @@ export function AgentboardScreen() {
                       )}
                     </button>
                   ))}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      updateWins([activeFolderDir], (cur) => {
-                        const id = `w${Date.now()}`;
-                        const count = cur.windows.filter((w) => w.folderDir === activeFolderDir).length;
-                        return {
-                          windows: [
-                            ...cur.windows,
-                            { id, name: `window ${count + 1}`, folderDir: activeFolderDir, panes: [] },
-                          ],
-                          activeWindows: { ...cur.activeWindows, [activeFolderDir]: id },
-                        };
-                      })
-                    }
-                    className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
-                  >
-                    <Plus className="size-3" /> window
-                  </button>
+                  {activeFolderDir && (
+                    <button
+                      type="button"
+                      onClick={() => void newWindow(activeFolderDir)}
+                      title="New window around a fresh session"
+                      className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
+                    >
+                      <Plus className="size-3" /> window
+                    </button>
+                  )}
                   {activeFolderDir && (
                     <button
                       type="button"
@@ -1217,10 +1275,14 @@ export function AgentboardScreen() {
               {/* One flat pool of mounted terminals (never remounted — a remount
                   would respawn the shell). The active window's pane order assigns
                   each a percent-rect; panes in other windows stay hidden. */}
-              <div className="relative min-h-0 flex-1 overflow-hidden p-2">
+              <div ref={paneAreaRef} className="relative min-h-0 flex-1 overflow-hidden p-2">
                 {(() => {
-                  const panes = activeWin?.panes ?? [];
-                  const rects = paneRects(panes.length);
+                  const panes: string[] = activeWin?.panes ?? [];
+                  const liveCols =
+                    colDrag && activeWin && colDrag.winId === activeWin.id
+                      ? colDrag.cols
+                      : activeWin?.cols;
+                  const rects = paneRects(panes.length, liveCols);
                   const rectFor = (id: string) => {
                     const i = panes.indexOf(id);
                     return i < 0 ? undefined : rects[i];
@@ -1374,12 +1436,33 @@ export function AgentboardScreen() {
                             </div>
                           );
                         })}
+                      {/* Column dividers: drag to resize (snaps to thirds and
+                          fifths), double-click for equal columns. Row layout
+                          (≤3) has one per boundary; the ≥4 grid shares one
+                          column boundary across rows. */}
+                      {activeWin &&
+                        panes.length >= 2 &&
+                        (panes.length <= 3 ? rects.slice(1).map((r) => r.left) : [rects[1].left]).map(
+                          (x, i) => (
+                            <div
+                              key={`divider-${i}`}
+                              role="separator"
+                              aria-orientation="vertical"
+                              aria-label="resize panes"
+                              title="Drag to resize (snaps to thirds and fifths) — double-click for equal columns"
+                              onPointerDown={(e) => startColDrag(e, activeWin, i)}
+                              onDoubleClick={() => resetCols(activeWin)}
+                              className="absolute top-0 z-10 h-full w-2 -translate-x-1/2 cursor-col-resize transition-colors hover:bg-violet-500/40 active:bg-violet-500/60"
+                              style={{ left: `${x}%` }}
+                            />
+                          ),
+                        )}
                       {panes.length === 0 && (
                         <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
                           <TerminalSquare className="size-10" />
                           <p className="text-sm">
                             {activeFolderDir
-                              ? "Empty window — click a session in the rail to open it here."
+                              ? "No open panes — click a session in the rail to open it here."
                               : "Select a folder in the rail to see its sessions."}
                           </p>
                         </div>
