@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AtSign, ChevronDown, ChevronRight, File, Folder, RefreshCw } from "lucide-react";
+import {
+  AtSign,
+  ChevronDown,
+  ChevronRight,
+  Columns2,
+  File,
+  Folder,
+  RefreshCw,
+  WrapText,
+} from "lucide-react";
 import { CodeViewer, type ViewerAnchor } from "@/components/code-viewer";
 import { IconBtn } from "@/components/agentboard-bits";
+import { FilePreview, previewKindFor } from "@/components/file-preview";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { buildDiffTree, type DiffFile, type DiffTreeNode } from "@/lib/diff";
 import { ideAtMention } from "@/lib/ide";
 import { invokeCmd } from "@/lib/tauri";
@@ -10,10 +21,12 @@ import { cn } from "@/lib/utils";
 /**
  * The diff pane's "Files" tab: every file in the checkout (tracked +
  * untracked-not-ignored, via `ide_list_files`), not just what changed. A
- * VS-Code-shaped split: file tree + filter on the left, a read-only Monaco
- * viewer on the right. Clicking a file opens it; selecting text in the
- * viewer streams to the folder's Claude session as selection context, and
- * the per-file @ button sends a whole-file mention.
+ * VS-Code-shaped split: file tree + filter on the left, a Monaco viewer on
+ * the right. Clicking a file opens it; selecting text in the viewer streams
+ * to the folder's Claude session as selection context, and the per-file @
+ * button sends a whole-file mention. Long lines wrap by default (toggle in
+ * the viewer toolbar); Markdown/HTML files get a second toggle that opens a
+ * resizable split preview alongside the editor.
  */
 
 /** Wrap plain paths in the shape `buildDiffTree` groups on. */
@@ -174,10 +187,20 @@ export function FilesPane({
   const [open, setOpen] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [wordWrap, setWordWrap] = useState(true);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   useEffect(() => {
     if (openRequest) setOpen(openRequest.path);
   }, [openRequest]);
+
+  // A newly-opened file starts with the preview pane closed — it only makes
+  // sense for the file that was previewable, not whatever's opened next.
+  useEffect(() => {
+    setPreviewOpen(false);
+  }, [open]);
+
+  const previewKind = open ? previewKindFor(open) : null;
 
   const fetchFiles = useCallback(async () => {
     setRefreshing(true);
@@ -284,6 +307,22 @@ export function FilesPane({
               <span className="shrink-0 text-[10.5px] text-muted-foreground">
                 editable · ⌘S saves
               </span>
+              <IconBtn
+                title={wordWrap ? "Wrapping long lines — click to scroll instead" : "Scrolling long lines — click to wrap instead"}
+                onClick={() => setWordWrap((w) => !w)}
+                className={cn("ml-auto", wordWrap && "text-violet-500")}
+              >
+                <WrapText className="size-3.5" />
+              </IconBtn>
+              {previewKind && (
+                <IconBtn
+                  title={previewOpen ? "Close preview" : `Open a ${previewKind} preview`}
+                  onClick={() => setPreviewOpen((p) => !p)}
+                  className={previewOpen ? "text-violet-500" : undefined}
+                >
+                  <Columns2 className="size-3.5" />
+                </IconBtn>
+              )}
               <button
                 type="button"
                 title={
@@ -293,7 +332,7 @@ export function FilesPane({
                 }
                 onClick={() => mention(open)}
                 className={cn(
-                  "ml-auto flex shrink-0 items-center gap-0.5 rounded-sm px-1.5 py-0.5 font-mono text-[10.5px]",
+                  "flex shrink-0 items-center gap-0.5 rounded-sm px-1.5 py-0.5 font-mono text-[10.5px]",
                   connected ? "text-violet-500 hover:bg-accent" : "text-muted-foreground/50",
                 )}
               >
@@ -301,16 +340,39 @@ export function FilesPane({
               </button>
             </div>
             <div className="min-h-0 flex-1">
-              <CodeViewer
-                dir={dir}
-                path={open}
-                anchor={
-                  openRequest && openRequest.path === open
-                    ? { ...openRequest.anchor, nonce: openRequest.nonce }
-                    : undefined
-                }
-                onDirtyChange={setDirty}
-              />
+              {previewOpen && previewKind ? (
+                <ResizablePanelGroup orientation="horizontal">
+                  <ResizablePanel defaultSize={50} minSize={20}>
+                    <CodeViewer
+                      dir={dir}
+                      path={open}
+                      wordWrap={wordWrap}
+                      anchor={
+                        openRequest && openRequest.path === open
+                          ? { ...openRequest.anchor, nonce: openRequest.nonce }
+                          : undefined
+                      }
+                      onDirtyChange={setDirty}
+                    />
+                  </ResizablePanel>
+                  <ResizableHandle withHandle />
+                  <ResizablePanel defaultSize={50} minSize={20}>
+                    <FilePreview dir={dir} path={open} kind={previewKind} />
+                  </ResizablePanel>
+                </ResizablePanelGroup>
+              ) : (
+                <CodeViewer
+                  dir={dir}
+                  path={open}
+                  wordWrap={wordWrap}
+                  anchor={
+                    openRequest && openRequest.path === open
+                      ? { ...openRequest.anchor, nonce: openRequest.nonce }
+                      : undefined
+                  }
+                  onDirtyChange={setDirty}
+                />
+              )}
             </div>
           </>
         ) : (

@@ -28,12 +28,15 @@ export function CodeViewer({
   dir,
   path,
   anchor,
+  wordWrap = true,
   onDirtyChange,
 }: {
   dir: string;
   path: string;
   /** Changes identity per openFile request so re-anchoring re-runs. */
   anchor?: ViewerAnchor & { nonce?: number };
+  /** Soft-wrap long lines instead of horizontal scrolling. Defaults on. */
+  wordWrap?: boolean;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -45,6 +48,8 @@ export function CodeViewer({
   const dirtyRef = useRef(false);
   const onDirtyRef = useRef(onDirtyChange);
   onDirtyRef.current = onDirtyChange;
+  const wordWrapRef = useRef(wordWrap);
+  wordWrapRef.current = wordWrap;
 
   useEffect(() => {
     let disposed = false;
@@ -89,6 +94,7 @@ export function CodeViewer({
         renderLineHighlight: "line",
         occurrencesHighlight: "off",
         contextmenu: false,
+        wordWrap: wordWrapRef.current ? "on" : "off",
       });
       editorRef.current = editor;
       savedVersionRef.current = model.getAlternativeVersionId();
@@ -148,6 +154,10 @@ export function CodeViewer({
       ideSetOpenFile(dir, null);
     };
   }, [dir, path]);
+
+  useEffect(() => {
+    editorRef.current?.updateOptions({ wordWrap: wordWrap ? "on" : "off" });
+  }, [wordWrap]);
 
   // Claude's openFile can ask for a startText..endText selection — find the
   // anchors in the buffer, select, and scroll them into view.
