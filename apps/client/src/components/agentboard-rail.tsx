@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  CircleDot,
   Folder,
   FolderGit2,
   FolderPlus,
@@ -8,7 +7,6 @@ import {
   MoreVertical,
   PanelLeftOpen,
   Plus,
-  StickyNote,
   Trash2,
 } from "lucide-react";
 import {
@@ -26,6 +24,7 @@ import {
   PortDriftBadge,
   PrChip,
   PurposeRow,
+  RepoMenu,
   WorktreeBadge,
 } from "@/components/agentboard-bits";
 import { Button } from "@/components/ui/button";
@@ -33,19 +32,14 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { InlineNewSlot, PendingSlotRow, type NewSlotRepo, type PendingSlot } from "@/components/inline-new-slot";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import {
-  abCreateIssue,
   abInvoke,
   agentRollup,
   claudeTitleName,
@@ -71,9 +65,7 @@ import {
   type StatePayload,
   type WindowsPayload,
 } from "@/lib/agentboard";
-import { toast } from "sonner";
 import type { PrItem } from "@/lib/data";
-import { openExternalUrl } from "@/lib/open-url";
 
 /** Ambient status color for a set of sessions hidden behind a collapse:
  * red if one errored, blue if one is waiting on you, cyan while an agent is
@@ -841,164 +833,6 @@ function FolderHeader({
         <AgentStatusLine metadata={folder.metadata} now={now} />
       </div>
     </div>
-  );
-}
-
-/** "···" overflow menu on a repo/folder header — the one place every
- * secondary action lives, so the row itself only ever shows "+ session" next
- * to this trigger: full folder path (when given), "New slot…" (slot-convention
- * repos), "Delete worktree…" (worktree checkouts, guarded `slot_remove`),
- * "Set/Edit note…" (when a `folder` is given — the note shown under the
- * folder in the rail), "Create issue…" (shells `gh issue create` in `dir`),
- * and "Remove from rail". */
-function RepoMenu({
-  path,
-  onRemove,
-  dir,
-  folder,
-  isWorktree,
-  onNewSlot,
-  onDeleteWorktree,
-}: {
-  path?: string;
-  onRemove: () => void;
-  dir: string;
-  /** When set, the menu offers note editing for this checkout. */
-  folder?: FolderData;
-  /** Worktree checkouts have no "Remove from rail" — meaningless (they are
-   * auto-discovered from the primary and would reappear next poll); deletion
-   * is the "Delete worktree…" item instead. */
-  isWorktree?: boolean;
-  /** Opens the new-slot modal — set only on a slot-convention repo. */
-  onNewSlot?: () => void;
-  /** Deletes this worktree slot from disk (guarded, `slot_remove`) — set only
-   * on worktree checkouts. */
-  onDeleteWorktree?: () => void;
-}) {
-  const [issueOpen, setIssueOpen] = useState(false);
-  const [issueTitle, setIssueTitle] = useState("");
-  const [noteOpen, setNoteOpen] = useState(false);
-  const [noteText, setNoteText] = useState("");
-  const purpose = folder?.purpose?.trim() ?? "";
-
-  async function createIssue() {
-    const title = issueTitle.trim();
-    if (!title) return;
-    setIssueOpen(false);
-    setIssueTitle("");
-    try {
-      const url = await abCreateIssue(dir, title);
-      toast.success("Issue created", {
-        action: { label: "Open", onClick: () => void openExternalUrl(url) },
-      });
-    } catch (e) {
-      toast.error(String(e));
-    }
-  }
-
-  async function saveNote() {
-    setNoteOpen(false);
-    const trimmed = noteText.trim();
-    if (trimmed === purpose) return;
-    await abInvoke("ab_set_folder_purpose", { dir, text: trimmed || null });
-  }
-
-  return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="outline"
-            size="icon-xs"
-            title="More actions"
-            className="text-muted-foreground"
-          >
-            <MoreVertical className="size-3.5" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-auto min-w-56">
-          {path && (
-            <>
-              <DropdownMenuLabel className="font-mono text-[11px] font-normal whitespace-nowrap text-muted-foreground">
-                {path}
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-            </>
-          )}
-          {onNewSlot && (
-            <DropdownMenuItem onSelect={onNewSlot} className="whitespace-nowrap">
-              <FolderPlus className="size-3.5" /> New slot…
-            </DropdownMenuItem>
-          )}
-          {onDeleteWorktree && (
-            <DropdownMenuItem
-              variant="destructive"
-              onSelect={onDeleteWorktree}
-              className="whitespace-nowrap"
-            >
-              <Trash2 className="size-3.5" /> Delete worktree…
-            </DropdownMenuItem>
-          )}
-          {(onNewSlot || onDeleteWorktree) && <DropdownMenuSeparator />}
-          {folder && (
-            <DropdownMenuItem
-              onSelect={() => {
-                setNoteText(purpose);
-                setNoteOpen(true);
-              }}
-              className="whitespace-nowrap"
-            >
-              <StickyNote className="size-3.5" /> {purpose ? "Edit note…" : "Set note…"}
-            </DropdownMenuItem>
-          )}
-          <DropdownMenuItem onSelect={() => setIssueOpen(true)} className="whitespace-nowrap">
-            <CircleDot className="size-3.5" /> Create issue…
-          </DropdownMenuItem>
-          {!isWorktree && (
-            <DropdownMenuItem
-              variant="destructive"
-              onSelect={onRemove}
-              className="whitespace-nowrap"
-            >
-              <Trash2 className="size-3.5" /> Remove from rail
-            </DropdownMenuItem>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <Dialog open={noteOpen} onOpenChange={setNoteOpen}>
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>{purpose ? "Edit note" : "Set note"}</DialogTitle>
-          </DialogHeader>
-          <Input
-            autoFocus
-            value={noteText}
-            onChange={(e) => setNoteText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void saveNote();
-              if (e.key === "Escape") setNoteOpen(false);
-            }}
-            placeholder="what are you working toward here? (blank clears)"
-          />
-        </DialogContent>
-      </Dialog>
-      <Dialog open={issueOpen} onOpenChange={setIssueOpen}>
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>New issue</DialogTitle>
-          </DialogHeader>
-          <Input
-            autoFocus
-            value={issueTitle}
-            onChange={(e) => setIssueTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void createIssue();
-            }}
-            placeholder="Issue title…"
-          />
-        </DialogContent>
-      </Dialog>
-    </>
   );
 }
 

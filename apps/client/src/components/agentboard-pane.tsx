@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FolderGit2 } from "lucide-react";
+import { FolderGit2, FolderPlus, Plus } from "lucide-react";
 import {
   AheadBehind,
   ComparedBaseBadge,
@@ -10,8 +10,10 @@ import {
   IconBtn,
   PrChip,
   PurposeRow,
+  RepoMenu,
   WorktreeBadge,
 } from "@/components/agentboard-bits";
+import type { NewSlotRepo } from "@/components/inline-new-slot";
 import {
   fmtElapsed,
   fmtWaitingAge,
@@ -32,29 +34,88 @@ import { cn } from "@/lib/utils";
  * screen — with the repo and branch (plus git facts: worktree badge, diff
  * button, PR chip) on a quieter line below it, then the folder's purpose line.
  * One glance answers which checkout the terminals below belong to and what you
- * set out to do there. */
+ * set out to do there. The trailing action cluster mirrors the rail's options
+ * for this checkout — new session, new slot, and the shared "···" RepoMenu —
+ * so every repo-rail option stays reachable atop the panes even when the rail
+ * is collapsed or the folder's row is scrolled out of view. */
 export function WorkingContext({
   repo,
   folder,
   pr,
   onOpenDiff,
+  onNewSession,
+  onNewSlot,
+  onRemoveRepo,
+  onDeleteWorktree,
 }: {
   repo: RepoData;
   folder: FolderData;
   pr?: PrItem;
   /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: (dir: string) => void;
+  /** Starts a new session (shell) in this checkout. */
+  onNewSession: (dir: string) => void;
+  /** Toggles the inline new-slot form open/closed for this repo (worktree
+   * hub) — never a blocking modal, see InlineNewSlot. The form itself still
+   * renders in the rail under the repo's header, so this only opens it when
+   * the rail is expanded; the caller is responsible for expanding a
+   * collapsed rail first if it wants the form to be visible. */
+  onNewSlot: (repo: NewSlotRepo) => void;
+  /** Untracks this checkout from the rail. */
+  onRemoveRepo: (dirs: string[], label: string) => void;
+  /** Deletes a worktree slot from disk (guarded `slot_remove`). */
+  onDeleteWorktree: (dir: string, label: string) => void;
 }) {
   const scope = pathScope(folder.dir);
   // A slot/worktree has a distinct checkout name; a lone clone shares the
   // repo's, so we don't repeat it on the line below.
   const repoDistinct = folder.name !== repo.name;
+  // Same gating as the rail headers: no session/slot actions on a ghost
+  // checkout whose directory is gone.
+  const missing = folder.dirMissing;
+  const newSlot = () => onNewSlot({ name: repo.name, dir: repo.folders[0].dir, key: repo.key });
   return (
     <div className="flex items-start gap-3 border-b bg-card px-4 py-2.5">
       <FolderGit2 className="mt-0.5 size-5 shrink-0 text-violet-500" />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        {/* Line 1: the checkout — largest, first. */}
-        <span className="truncate text-2xl font-semibold leading-tight">{folder.name}</span>
+        {/* Line 1: the checkout — largest, first — with the rail's action
+            cluster for this checkout pinned at the trailing edge. */}
+        <div className="flex items-center gap-2">
+          <span className="min-w-0 flex-1 truncate text-2xl font-semibold leading-tight">
+            {folder.name}
+          </span>
+          {!missing && (
+            <IconBtn
+              title="New session (⌘D)"
+              onClick={() => onNewSession(folder.dir)}
+              className="hover:text-violet-500"
+            >
+              <Plus className="size-3.5" />
+            </IconBtn>
+          )}
+          {!missing && (
+            <IconBtn
+              title="New slot — goal, branch, base"
+              onClick={newSlot}
+              className="hover:text-violet-500"
+            >
+              <FolderPlus className="size-3.5" />
+            </IconBtn>
+          )}
+          <RepoMenu
+            path={folder.dir}
+            dir={folder.dir}
+            folder={folder}
+            isWorktree={folder.isWorktree}
+            onNewSlot={!missing ? newSlot : undefined}
+            onDeleteWorktree={
+              !missing && folder.isWorktree
+                ? () => onDeleteWorktree(folder.dir, folder.name)
+                : undefined
+            }
+            onRemove={() => onRemoveRepo([folder.dir], folder.name)}
+          />
+        </div>
         {/* Line 2: repo · branch + git facts, quieter. */}
         <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
           {scope && <span className="shrink-0 font-mono text-muted-foreground/60">{scope}</span>}
