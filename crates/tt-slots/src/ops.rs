@@ -242,6 +242,45 @@ pub fn base_branch(primary: &Path) -> String {
         .unwrap_or_else(|| "main".to_string())
 }
 
+/// If `base` is the primary's checked-out branch and `origin/<base>` exists,
+/// fast-forward it to match — so a new slot branches from current history
+/// instead of stale local history, which otherwise means its first sync with
+/// base is an unnecessary rebase. The existence check (`rev-parse --verify
+/// --quiet`) mirrors how `tt-agentboard`'s Folder Rail stats and `tt-git`'s
+/// `gh sync` confirm a remote-tracking ref before comparing against it.
+/// `git merge --ff-only` is itself a no-op when already current, so this
+/// attempts it unconditionally rather than counting commits behind first.
+/// Only ever touches the primary's own checkout: a `base` that's some other
+/// ref (a tag, a SHA, a branch checked out in a different worktree, or one
+/// with no `origin/<base>` upstream) is left alone, since moving a ref out
+/// from under another checkout would fight whatever's using it. A genuine
+/// divergence (or uncommitted local changes ff-only won't overwrite) warns
+/// rather than blocks creation — the slot still branches from local
+/// history.
+fn fast_forward_base_if_behind(sr: &SlotRoot, base: &str, warnings: &mut Vec<String>) {
+    if base_branch(&sr.primary) != base {
+        return;
+    }
+    let upstream = format!("origin/{base}");
+    let Ok(verify_out) = git_primary(&sr.primary, &["rev-parse", "--verify", "--quiet", &upstream])
+    else {
+        return;
+    };
+    if !verify_out.ok() {
+        return; // no origin/<base> to compare against (never pushed, etc.)
+    }
+    match git_primary(&sr.primary, &["merge", "--ff-only", &upstream]) {
+        Ok(out) if out.ok() => {}
+        Ok(out) => warnings.push(format!(
+            "base branch '{base}' has diverged from {upstream} and could not be fast-forwarded \
+             ({}) — the new slot may need a rebase later",
+            out.stderr.trim()
+        )),
+        Err(e) => warnings
+            .push(format!("base branch '{base}' could not be checked against {upstream}: {e}")),
+    }
+}
+
 /// Every local branch, default branch first, the rest sorted.
 pub fn primary_branches(primary: &Path) -> Result<Vec<String>> {
     let default = base_branch(primary);
@@ -600,6 +639,7 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
         warnings.push("fetch failed (offline?) — using local refs".into());
     }
     let base = opts.base.clone().unwrap_or_else(|| base_branch(&sr.primary));
+    fast_forward_base_if_behind(&sr, &base, &mut warnings);
     let name = layout::slot_name_from_branch(&opts.branch)
         .ok_or_else(|| OpsError::BadBranchName(opts.branch.clone()))?;
     let dir = sr.slot_dir(&name);
