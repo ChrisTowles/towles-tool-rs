@@ -161,11 +161,15 @@ pub struct SlotRemoved {
 /// claimed ports block with an explanatory error (no force path in the app;
 /// use `tt slot rm --force`). Before touching the worktree, closes out the
 /// folder's live rail state in order — kill its PTYs (SIGHUPing any Claude
-/// Code session running inside), drop its window/pane records — so removal
-/// never leaves a shell orphaned on a deleted cwd or a ghost pane/window
-/// lingering in the rail until the next poll notices the directory is gone.
-/// Then cleans up docker resources, the worktree registration, and the
-/// slot's agentboard tracking. Long-running → off the main thread.
+/// Code session running inside, then SIGKILLing anything else still sharing
+/// the shell's session — see `terminal::kill_session_stragglers` — so a
+/// backgrounded job that dodged the shell's own signal forwarding doesn't
+/// survive as an orphan on a deleted cwd), drop its window/pane records — so
+/// removal never leaves a shell (or a stray background job) orphaned on a
+/// deleted cwd or a ghost pane/window lingering in the rail until the next
+/// poll notices the directory is gone. Then cleans up docker resources, the
+/// worktree registration, and the slot's agentboard tracking. Long-running →
+/// off the main thread.
 #[tauri::command]
 pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemoved, String> {
     let mut messages = Vec::new();

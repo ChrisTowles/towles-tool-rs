@@ -28,6 +28,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
+use sysinfo::{Pid as SysPid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tt_vt::{
     EngineOptions, Event as VtEvent, Frame, Input as VtInput, SearchMatch, Select as VtSelect,
@@ -128,11 +129,19 @@ impl TermState {
     /// Kill, reap, and drop the session with `term_id`, if any. The kill/wait
     /// runs after the map lock is released. `pub(crate)` so slot removal
     /// (`slots.rs`) can tear down a folder's live PTYs before its worktree is
-    /// deleted.
+    /// deleted. Also sweeps every other process sharing the shell's POSIX
+    /// session (see [`kill_session_stragglers`]) — SIGHUP to the shell alone
+    /// only reaches jobs the shell still tracks, so this is what actually
+    /// catches a backgrounded subshell (`(cmd &)`) or anything else disowned
+    /// from the job table.
     pub(crate) fn kill(&self, term_id: &str) {
         let session = self.sessions.lock().unwrap().remove(term_id);
         if let Some(mut session) = session {
+            let shell_pid = session.child.process_id();
             let _ = session.child.kill();
+            if let Some(pid) = shell_pid {
+                kill_session_stragglers(pid);
+            }
             let _ = session.child.wait();
         }
     }
@@ -142,7 +151,11 @@ impl TermState {
         let sessions: Vec<Session> =
             self.sessions.lock().unwrap().drain().map(|(_, s)| s).collect();
         for mut session in sessions {
+            let shell_pid = session.child.process_id();
             let _ = session.child.kill();
+            if let Some(pid) = shell_pid {
+                kill_session_stragglers(pid);
+            }
             let _ = session.child.wait();
         }
     }
@@ -180,6 +193,37 @@ impl TermState {
         None
     }
 }
+
+/// SIGKILL every live process that shares `shell_pid`'s POSIX session,
+/// except the shell itself (the caller already handles that one). A
+/// backgrounded subshell (`(cmd &)`) never calls `setsid`, so it keeps the
+/// shell's original session id for its whole life even after its immediate
+/// parent (the subshell) exits and it gets reparented to init — invisible to
+/// any parent-child process-tree walk, but still found here. This
+/// deliberately does NOT reach a process that called `setsid` itself (a
+/// genuinely daemonized `nohup`/`setsid` command): that's a real, deliberate
+/// detach from the controlling terminal, the same boundary every terminal
+/// emulator respects.
+///
+/// Unix-only: on Windows, sysinfo's `session_id` means the login/RDP
+/// session, not a POSIX job/session group, so applying this logic there
+/// would kill unrelated processes sharing the user's desktop session.
+/// Windows has no equivalent fix here yet — it relies solely on
+/// `ProcessSignaller`'s direct-child `TerminateProcess`.
+#[cfg(unix)]
+fn kill_session_stragglers(shell_pid: u32) {
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let sid = SysPid::from_u32(shell_pid);
+    for (pid, process) in sys.processes() {
+        if *pid != sid && process.session_id() == Some(sid) {
+            process.kill();
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_session_stragglers(_shell_pid: u32) {}
 
 /// Render frame streamed to the frontend; `termId` routes it to the right
 /// terminal view.
@@ -742,6 +786,83 @@ fn shell_kind_from_path(shell: &str) -> String {
 mod tests {
     use super::{TermState, default_shell, resolve_clicked_path, shell_kind_from_path, start_dir};
     use std::path::PathBuf;
+
+    /// Whether `pid` is still alive (`kill(pid, 0)` — no signal sent, just an
+    /// existence/permission probe).
+    #[cfg(unix)]
+    fn pid_alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// The gap this closes: a shell's own `SIGHUP` only reaches jobs the
+    /// shell still tracks in its job table. `(sleep 30 &)` backgrounds a
+    /// subshell that exits immediately, reparenting `sleep` to init — it's
+    /// invisible to a parent-child walk from the shell, but it never calls
+    /// `setsid`, so it keeps the shell's session id for its whole life.
+    /// `kill_session_stragglers` must still find and kill it, while leaving
+    /// the "shell" (the session leader itself) alone — the caller kills that
+    /// one separately.
+    #[cfg(unix)]
+    #[test]
+    fn kill_session_stragglers_reaps_detached_background_jobs() {
+        use std::io::Read;
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let pid_file =
+            std::env::temp_dir().join(format!("tt-term-test-{}-{}.pid", std::process::id(), 0));
+        let script = format!("(sleep 30 & echo $! > {}); sleep 30", pid_file.to_string_lossy());
+
+        // Stand in for the shell portable-pty spawns: made a session leader
+        // via setsid in pre_exec, exactly like unix.rs does for every PTY
+        // child.
+        let mut leader = unsafe {
+            Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                })
+                .spawn()
+                .expect("spawn session leader")
+        };
+        let leader_pid = leader.id() as i32;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut detached_pid = None;
+        while std::time::Instant::now() < deadline {
+            if let Ok(mut f) = std::fs::File::open(&pid_file) {
+                let mut s = String::new();
+                let _ = f.read_to_string(&mut s);
+                if let Ok(pid) = s.trim().parse::<i32>() {
+                    detached_pid = Some(pid);
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_file(&pid_file);
+        let detached_pid = detached_pid.expect("detached process wrote its pid in time");
+        assert!(pid_alive(detached_pid), "detached process should have started");
+
+        super::kill_session_stragglers(leader_pid as u32);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && pid_alive(detached_pid) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!pid_alive(detached_pid), "detached process should have been killed");
+        assert!(pid_alive(leader_pid), "the session leader itself must survive the sweep");
+
+        let _ = leader.kill();
+        let _ = leader.wait();
+    }
 
     #[test]
     fn focus_gate_tracks_the_focused_terminal() {
