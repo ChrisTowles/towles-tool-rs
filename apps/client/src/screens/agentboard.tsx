@@ -1298,6 +1298,17 @@ export function AgentboardScreen() {
                   folder={activeFolder}
                   pr={prForFolder(snapshot.prs, activeRepo.originUrl, activeFolder.branch)}
                   onOpenDiff={openDiff}
+                  onNewSession={newSession}
+                  onNewSlot={(r) => {
+                    // The inline form still renders in the rail under the
+                    // repo's header — expand a collapsed rail first so
+                    // triggering it from the pane band doesn't open a form
+                    // nobody can see.
+                    if (railCollapsed) toggleRail();
+                    toggleSlotForm(r);
+                  }}
+                  onRemoveRepo={requestRemoveRepo}
+                  onDeleteWorktree={requestDeleteWorktree}
                 />
               )}
               {wins && activeFolderDir && (
