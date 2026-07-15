@@ -3,7 +3,14 @@ name: Frontend
 on:
   push:
     branches: [main]
+    paths: &client-paths
+      - "apps/client/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/frontend.yml"
   pull_request:
+    paths: *client-paths
 
 # Cancel superseded runs on the same ref to keep CI fast.
 concurrency:
