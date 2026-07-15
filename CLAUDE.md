@@ -108,6 +108,14 @@ Rules when working in a slot:
   pure decisions) with shared orchestration in `tt_slots::ops`; the CLI and
   the app's `slot_create` command are thin shells over it. Change behavior
   there, not in the shells.
+- **Any code path that removes a slot checkout must also untrack its dir
+  from the shared `repos.json`** (`tt_agentboard::repos::remove_repo_persisted`),
+  the same way `tt slot rm`'s CLI shell and the app's `slot_remove` command
+  already do right after `ops::remove_slot`/`ops::clean_slots` returns —
+  `FinishedSlot`/`RemovedSlot` carry `dir` for exactly this. Skip it and a
+  removed slot's stale path lingers in the tracked-repos list forever, and
+  the scheduler's `prs`/`issues` collectors retry `gh`/`git` against a
+  directory with no `.git` on every tick.
 
 ## Architecture
 

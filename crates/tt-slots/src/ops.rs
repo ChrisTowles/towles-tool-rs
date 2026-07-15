@@ -902,6 +902,10 @@ pub struct FinishedSlot {
     /// Removal progress notes (docker resources, branch deletion). Empty on
     /// dry-run.
     pub messages: Vec<String>,
+    /// The removed checkout's directory (now gone from disk, except on
+    /// dry-run) — callers use it to untrack the slot from stores keyed by dir
+    /// (the agentboard rail), the same way `tt slot rm` does.
+    pub dir: PathBuf,
 }
 
 /// A slot `clean` left alone, and why.
@@ -1033,6 +1037,7 @@ pub fn clean_slots(
                 branch,
                 reason: reason.to_string(),
                 messages: Vec::new(),
+                dir,
             });
             continue;
         }
@@ -1046,7 +1051,13 @@ pub fn clean_slots(
                         "could not delete branch {branch} — remove it with `git branch -D`"
                     )),
                 }
-                removed.push(FinishedSlot { name, branch, reason: reason.to_string(), messages });
+                removed.push(FinishedSlot {
+                    name,
+                    branch,
+                    reason: reason.to_string(),
+                    messages,
+                    dir: r.dir,
+                });
             }
             Err(OpsError::RemovalBlocked { reasons, .. }) => keep(name, branch, reasons),
             Err(e) => keep(name, branch, vec![e.to_string()]),

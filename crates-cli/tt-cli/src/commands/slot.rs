@@ -201,6 +201,20 @@ fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), Strin
     let report =
         ops::clean_slots(&opts, tt_config::slot_scope_from_dir).map_err(|e| e.to_string())?;
 
+    // Each removed slot may be tracked on the agentboard rail (same rationale
+    // as `tt slot rm`'s untracking below) — drop its now-dangling repos.json
+    // entry so collectors (`prs`/`issues`) don't keep retrying a gone dir.
+    if !dry_run {
+        let repos_path = tt_agentboard::repos::default_repos_path();
+        for slot in &report.removed {
+            let dir_s = slot.dir.to_string_lossy();
+            if let Ok((_, true)) = tt_agentboard::repos::remove_repo_persisted(&repos_path, &dir_s)
+            {
+                ui::warning(&format!("untracked {} from the agentboard rail", slot.name));
+            }
+        }
+    }
+
     // Agentboard stores that survive the sweep: the unscoped daily driver's
     // plus every remaining checkout's scope. Removed scopes' stores just got
     // deleted wholesale with their state dir.
