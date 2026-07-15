@@ -3,7 +3,18 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: &non-rust-paths
+      - "apps/client/**"
+      - "e2e/**"
+      - "docs/**"
+      - "scripts/**"
+      - "**/*.md"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/frontend.yml"
+      - ".github/workflows/release.yml"
   pull_request:
+    paths-ignore: *non-rust-paths
 
 # Cancel superseded runs on the same ref to keep CI fast.
 concurrency:
@@ -14,6 +25,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # rust-vt and rust-app provision zig + a ghostty checkout on top of the
+  # base toolchain, so they're the most expensive jobs here. Most PRs touch
+  # neither tt-vt nor tt-app — gate those two jobs on paths-filter output
+  # instead of running them unconditionally on every push/PR. Workspace-wide
+  # files (Cargo.lock/.toml, the toolchain pin, this workflow) always count
+  # as "changed" since a dependency or toolchain bump can affect either crate
+  # without touching its directory.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      vt_or_app: ${{ steps.filter.outputs.vt_or_app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            vt_or_app:
+              - 'crates/tt-vt/**'
+              - 'crates-tauri/tt-app/**'
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+
   rust:
     name: Rust (fmt, clippy, test)
     runs-on: ubuntu-latest
@@ -56,6 +93,8 @@ jobs:
 
   rust-vt:
     name: Rust tt-vt (zig + ghostty)
+    needs: changes
+    if: needs.changes.outputs.vt_or_app == 'true'
     runs-on: ubuntu-latest
     # Pinned ghostty commit that libghostty-vt-sys 0.2.0 builds against (see the
     # GHOSTTY_COMMIT constant in that crate's build.rs). Keep this in sync when
@@ -112,6 +151,8 @@ jobs:
 
   rust-app:
     name: Rust tt-app (webkit2gtk + zig)
+    needs: changes
+    if: needs.changes.outputs.vt_or_app == 'true'
     runs-on: ubuntu-latest
     # tt-app is the Tauri shell: it needs webkit2gtk/GTK system libs (below) and,
     # via its tt-vt dependency, zig + a ghostty checkout — so it can't ride the
