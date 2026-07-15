@@ -5,7 +5,7 @@
 //! rendered `.env` doubles as the slot's port-claim record, so [`port_claims`]
 //! is how sibling slots learn which ports are taken.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The `KEY` of a `KEY=VALUE` line, when the line is a well-formed assignment
 /// (ASCII identifier key, not a comment).
@@ -35,13 +35,16 @@ pub fn parse(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Ports this env file claims: every `*PORT` assignment whose value is a bare
-/// decimal port number. The key filter is load-bearing: identity values like
-/// `SLOT=3` are small bare numbers too, and treating them as claims made the
-/// removal guard report "port 3 in use" (binding low ports always fails
-/// without root). The rendered `.env` is the claim record — stable until the
-/// slot is removed, at which point the ports self-release.
-pub fn port_claims(text: &str) -> BTreeSet<u16> {
+/// Ports this env file claims, keyed by the assignment's `KEY`: every `*PORT`
+/// assignment whose value is a bare decimal port number. The key filter is
+/// load-bearing: identity values like `SLOT=3` are small bare numbers too, and
+/// treating them as claims made the removal guard report "port 3 in use"
+/// (binding low ports always fails without root). The rendered `.env` is the
+/// claim record — stable until the slot is removed (or re-rendered), at which
+/// point the ports self-release. Keeping the key lets a drift check report
+/// *which* var's port changed (e.g. `UI_PORT 3001 -> 3007`), not just that the
+/// claimed set differs.
+pub fn port_claims_by_key(text: &str) -> BTreeMap<String, u16> {
     parse(text)
         .into_iter()
         .filter(|(k, v)| {
@@ -49,8 +52,15 @@ pub fn port_claims(text: &str) -> BTreeSet<u16> {
                 && (1..=5).contains(&v.len())
                 && v.bytes().all(|b| b.is_ascii_digit())
         })
-        .filter_map(|(_, v)| v.parse::<u16>().ok().filter(|&p| p > 0))
+        .filter_map(|(k, v)| v.parse::<u16>().ok().filter(|&p| p > 0).map(|p| (k, p)))
         .collect()
+}
+
+/// Ports this env file claims, as a flat set — [`port_claims_by_key`] without
+/// the keys, for callers that only care what's taken (sibling-claim scanning,
+/// the removal guard).
+pub fn port_claims(text: &str) -> BTreeSet<u16> {
+    port_claims_by_key(text).into_values().collect()
 }
 
 /// Merge `src`'s assignments into `dst` without disturbing anything `dst`
@@ -123,6 +133,17 @@ mod tests {
         assert!(!claims.contains(&9999), "numbers inside URLs are not claims");
         assert!(!claims.contains(&0));
         assert_eq!(claims.len(), 2);
+    }
+
+    #[test]
+    fn port_claims_by_key_keeps_the_owning_var_name() {
+        let text = "UI_PORT=3000\nDB_PORT=5439\nSLOT=3\nURL=http://x:9999/\n";
+        let claims = port_claims_by_key(text);
+        assert_eq!(claims.get("UI_PORT"), Some(&3000));
+        assert_eq!(claims.get("DB_PORT"), Some(&5439));
+        assert_eq!(claims.len(), 2, "SLOT and URL are not port claims");
+        // Consistent with the flat set view.
+        assert_eq!(port_claims(text), claims.into_values().collect());
     }
 
     #[test]

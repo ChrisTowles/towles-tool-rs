@@ -34,10 +34,10 @@ pub struct Ab {
     pub needs_since: Mutex<tt_agentboard::bridge::NeedsSince>,
 }
 
-/// Stamp `SessionData.live`/`shellKind` from the app's PTY registry. The
-/// engine assembles them false/None (the Tauri-free crate can't see PTYs);
-/// every payload leaving the app — command return or event — passes through
-/// here first.
+/// Stamp `SessionData.live`/`shellKind`/`portDrift` from the app's PTY
+/// registry. The engine assembles them false/None/empty (the Tauri-free crate
+/// can't see PTYs); every payload leaving the app — command return or event —
+/// passes through here first.
 pub fn stamp_pty_state(
     payload: &mut StatePayload,
     terms: &crate::terminal::TermState,
@@ -46,12 +46,23 @@ pub fn stamp_pty_state(
 ) {
     let live = terms.live_ids();
     let shell_kinds = terms.shell_kinds();
+    let port_drift = terms.port_drift();
     for repo in &mut payload.repos {
         for folder in &mut repo.folders {
+            let mut has_port_drift = false;
             for session in &mut folder.sessions {
                 session.live = live.contains(&session.id);
                 session.shell_kind = shell_kinds.get(&session.id).cloned();
+                // Only a live PTY's drift is meaningful — a stopped shell's
+                // last-known ports say nothing about anything running now.
+                session.port_drift = if session.live {
+                    port_drift.get(&session.id).cloned().unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                has_port_drift |= !session.port_drift.is_empty();
             }
+            folder.has_port_drift = has_port_drift;
         }
     }
     // Now that `live` is truthful, recompute every folder/repo `needs` count

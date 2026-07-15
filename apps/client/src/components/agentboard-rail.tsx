@@ -23,6 +23,7 @@ import {
   Glyph,
   IconBtn,
   NeedsBadge,
+  PortDriftBadge,
   PrChip,
   PurposeRow,
   WorktreeBadge,
@@ -49,6 +50,7 @@ import {
   claudeTitleName,
   fmtElapsed,
   fmtWaitingAge,
+  folderPortDrift,
   isAgent,
   isSoloRepo,
   pathScope,
@@ -770,6 +772,7 @@ function FolderHeader({
           </span>
           <AheadBehind stats={folder} />
           {folder.isWorktree && <WorktreeBadge />}
+          {folder.hasPortDrift && <PortDriftBadge drift={folderPortDrift(folder)} />}
           <DiffButton stats={folder} onOpen={onOpenDiff} />
           {pr && <PrChip pr={pr} />}
           {typeof progress?.percent === "number" && (
@@ -1091,6 +1094,7 @@ function SessionRow({
               controls overlay it (absolute, opaque accent) instead of
               swapping it out, so hovering never reflows the row. */}
           <span className="ml-auto flex min-w-0 shrink items-center gap-2">
+            {eff.live && <PortDriftBadge drift={eff.portDrift ?? []} />}
             <CacheBadge
               session={eff}
               now={now}

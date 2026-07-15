@@ -29,6 +29,7 @@ pub mod claude_cli;
 pub mod cleanup;
 pub mod collapse;
 pub mod engine;
+pub mod env_drift;
 pub mod folder_meta;
 pub mod fs_notify;
 pub mod git_info;
@@ -64,6 +65,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 // Re-export the public surface.
 pub use bridge::{StatePayload, assemble_state};
 pub use collapse::{CollapsePayload, CollapseStore, default_collapse_path};
+pub use env_drift::PortDrift;
 pub use folder_meta::{FolderMeta, FolderMetaStore, default_folder_meta_path};
 pub use git_info::{DiffMode, GitInfo, GitInfoCache, compute_git_info, diff_patch};
 pub use metadata::SessionMetadataStore;

@@ -45,6 +45,12 @@ export type AgentEvent = {
   details?: AgentEventDetails | null;
 };
 
+/** One port a session's shell saw in its folder's `.env` at spawn time that
+ * the file now claims differently — e.g. a sibling slot's re-render rotated
+ * it out from under an already-running pane. Mirrors the Rust `PortDrift`
+ * (`crates/tt-agentboard/src/env_drift.rs`). */
+export type PortDrift = { key: string; spawnedPort: number; currentPort: number };
+
 /** One PTY shell inside a folder. "Agent" is a badge: `agentState` is set when
  * Claude (or another agent) is detected running in this PTY. */
 export type SessionData = {
@@ -70,6 +76,11 @@ export type SessionData = {
   /** User-authored "what am I working toward here" — captured when starting
    * Claude, so the rail can explain why this session exists. */
   purpose?: string | null;
+  /** Ports this session's shell saw at spawn time that its folder's `.env`
+   * now claims differently (stamped by the app). Omitted from the wire
+   * payload — and so absent here — when nothing has drifted or the session
+   * isn't live. */
+  portDrift?: PortDrift[];
 };
 
 /** Tone hint on agent-pushed status/log lines (Rust `MetadataTone`). */
@@ -121,6 +132,9 @@ export type FolderData = {
    * at least once. */
   comparedBase?: string;
   metadata?: FolderMetadata | null;
+  /** True when a live session in this folder has drifted ports — bubbles
+   * `SessionData.portDrift` up for the rail badge. */
+  hasPortDrift: boolean;
 };
 
 /** `comparedBase` with its `origin/` prefix stripped for display, e.g.
@@ -479,6 +493,20 @@ export function cycleNeedsYou(
 /** A folder's currently-running (PTY-live) sessions. */
 export function liveSessions(folder: FolderData): SessionData[] {
   return folder.sessions.filter((s) => s.live);
+}
+
+/** Every distinct port-drift entry across a folder's live sessions, deduped
+ * by key + spawned/current pair (several panes spawned at different times
+ * can carry the same drift, or genuinely different ones if a port rotated
+ * more than once) — the detail list for the folder-header badge's tooltip. */
+export function folderPortDrift(folder: FolderData): PortDrift[] {
+  const seen = new Map<string, PortDrift>();
+  for (const s of folder.sessions) {
+    for (const d of s.portDrift ?? []) {
+      seen.set(`${d.key}:${d.spawnedPort}:${d.currentPort}`, d);
+    }
+  }
+  return [...seen.values()];
 }
 
 /** Display names of every live session across a repo's checkouts, for the
