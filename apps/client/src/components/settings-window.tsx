@@ -62,6 +62,7 @@ const TABS = [
 const SCOPE_LABELS: Record<ShortcutScope, string> = {
   global: "",
   agentboard: "Agentboard",
+  board: "Board",
 };
 
 /** Toggle/select row: label + description on the left, control on the right. */
