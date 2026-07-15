@@ -1,0 +1,8 @@
+{
+  "name": "towles-tool-app",
+  "description": "Bridges Claude Code to the towles-tool desktop app: registers its MCP server (day brief, needs-you, PR/issue status, kanban todos, journal) and a hook that nudges the app to refresh PR data immediately after `gh pr merge`/`gh pr create`.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Chris Towles"
+  }
+}

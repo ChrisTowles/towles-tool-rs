@@ -76,6 +76,14 @@ claude plugin enable tt@towles-tool
 Already installed? Pull the latest version with
 `claude plugin marketplace update towles-tool`.
 
+A second, separate plugin — `towles-tool-app` (in
+[`packages/app`](packages/app/README.md)) — bridges Claude Code to the
+desktop app itself: it registers the app's MCP server (`tt mcp serve` — day
+brief, needs-you, PR/issue status, kanban todos, journal) and a hook that
+nudges a running app instance to refresh its PR data immediately after `gh pr
+merge`/`gh pr create`, instead of waiting for its normal poll interval.
+Enable it the same way: `claude plugin enable towles-tool-app@towles-tool`.
+
 ## Commands
 
 The CLI binary is `tt`. Run any command with `--help` for its flags.
@@ -87,7 +95,7 @@ The CLI binary is `tt`. Run any command with `--help` for its flags.
 - `install [-o/--observability]` — apply recommended Claude Code settings and ensure required plugins.
 - `claude-sessions [-s/--session] [--days N] [-f html|json|csv] [--open/--no-open]` — Claude Code session summary across every repo; HTML treemap report to `~/.claude/reports`, or JSON/CSV to stdout.
 - `agentboard repos|sessions` — manage the watched-repo list and per-folder PTY sessions the app and collectors read (`ag` is an alias).
-- `collect calendar|issues|prs|slack|all|status` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`, and a watched Slack DM; `status` reports each collector's health.
+- `collect calendar|issues|prs|slack|all|status|nudge` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`, and a watched Slack DM; `status` reports each collector's health; `nudge` makes a running app instance refresh its PR data immediately instead of waiting for its normal poll interval (used by the `towles-tool-app` plugin's `gh pr merge`/`create` hook).
 - `mcp serve` — stdio MCP server exposing the store, live agent sessions, and `journal_append` (register with `claude mcp add tt -- tt mcp serve`).
 - `slot new|ls|rm|env|clean` — manage worktree slots (see [Worktree slots](#worktree-slots) above).
 
@@ -114,6 +122,7 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 ## More
 
 - [packages/core/README.md](packages/core/README.md) — the `tt` Claude Code plugin in detail
+- [packages/app/README.md](packages/app/README.md) — the `towles-tool-app` Claude Code plugin in detail
 - [ATTRIBUTION.md](ATTRIBUTION.md) — derivation from Yaak and its MIT license
 - [docs/MIGRATION.md](docs/MIGRATION.md) — the feature-port backlog
 - [docs/CODING-STANDARDS.md](docs/CODING-STANDARDS.md) — Rust/TypeScript coding standards

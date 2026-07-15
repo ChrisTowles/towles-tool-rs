@@ -79,6 +79,18 @@ follows is a cross-cutting rule that spans multiple files.
 - **The scheduler's watchers/in-flight guards persist across a
   settings-reload rebuild** (`scheduler.rs`), and a failed `claude:calendar`
   run still counts as "recent" — this avoids re-billing tokens on relaunch.
+- **An external process can force an eager `prs` collect via the nudge dir**
+  (`tt_config::nudge_dir_path()`, watched in `scheduler.rs` via
+  `tt_agentboard::fs_notify::DirNotifier`, same accelerant pattern as the
+  agentboard journal watch in `lib.rs`). `tt collect nudge` (a plain
+  filesystem touch, no store I/O) is the write side — the `towles-tool-app`
+  Claude Code plugin's `gh pr merge`/`gh pr create` hook is the only current
+  caller. It's a directory *separate* from `data_dir()` itself deliberately,
+  so the watch isn't spammed by tt.db's own WAL/SHM churn; the notified arm
+  reuses `spawn_batch`/`guards.prs`, so it can't stack a duplicate run
+  alongside `pr_tick`. The watcher construction is `.ok()`-swallowed like
+  every other `DirNotifier` use — a failed watch (e.g. inotify limits) just
+  falls back to the normal poll cadence, never breaks startup.
 
 ## IDE bridge
 
