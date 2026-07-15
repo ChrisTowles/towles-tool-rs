@@ -55,6 +55,29 @@ fn app_slot() -> String {
     slot_label()
 }
 
+/// Per-slot Tauri app identifier, so each worktree slot's build registers as a
+/// distinct GTK/D-Bus application instead of sharing `base`. Without this,
+/// `enableGTKAppId` (tauri.conf.json) makes every slot's binary register the
+/// *same* D-Bus-activatable app id; launching a second slot's app doesn't spawn
+/// a new process, it gets forwarded via D-Bus `activate()` into the first
+/// slot's already-running app, which re-enters Tauri's internal `setup()` and
+/// panics trying to rebuild the config's `"main"` webview a second time. The
+/// primary checkout (not under a `slots/` parent) keeps the base identifier
+/// unscoped, matching how it's the one instance meant to daily-drive.
+fn app_identifier(base: &str) -> String {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let under_slots = manifest_dir.ancestors().nth(3).and_then(|p| p.file_name())
+        == Some(std::ffi::OsStr::new("slots"));
+    if !under_slots {
+        return base.to_string();
+    }
+    let suffix: String = slot_label()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    format!("{base}.slot-{suffix}")
+}
+
 pub fn run() {
     // `log::*` calls (tt-dictate's engine thread especially) are dropped
     // without a logger installed; errors always print, more with RUST_LOG.
@@ -469,6 +492,11 @@ pub fn run() {
             dictation::dictation_model_fetch,
             dictation::dictation_devices,
         ])
-        .run(tauri::generate_context!())
+        .run({
+            let mut context = tauri::generate_context!();
+            let identifier = app_identifier(&context.config().identifier);
+            context.config_mut().identifier = identifier;
+            context
+        })
         .expect("error while running Towles Tool application");
 }

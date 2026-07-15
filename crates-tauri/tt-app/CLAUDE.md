@@ -39,6 +39,19 @@ follows is a cross-cutting rule that spans multiple files.
   (`instance_lock.rs`) — it gates Slack Socket Mode, since settings/tokens
   are machine-wide. Without it, every open worktree slot would open a
   duplicate websocket on the same token.
+- **The Tauri `identifier` is patched per-slot at runtime** (`lib.rs`'s
+  `app_identifier`, called just before `.run()`) — `tauri.conf.json`'s
+  `identifier` plus `enableGTKAppId: true` means every slot's binary would
+  otherwise register the *same* D-Bus-activatable GTK app id. Launching a
+  second slot's app then doesn't spawn a new process; GTK forwards its
+  `activate()` into the first slot's already-running app via D-Bus, which
+  re-enters Tauri's internal `setup()` and panics rebuilding the config's
+  `"main"` webview a second time (`a webview with label 'main' already
+  exists`). `app_identifier` detects a `slots/` parent at compile time
+  (`CARGO_MANIFEST_DIR`, same signal as `slot_label`) and suffixes the base
+  identifier so each slot is a genuinely separate app instance; the primary
+  keeps the bare identifier. `linux_desktop::ensure_installed` already reads
+  `app.config().identifier` (post-patch), so it needs no separate change.
 - **Nested shells get their env scrubbed and re-stamped** (`terminal.rs`,
   issue #39): a `tt-app` or `npm run dev` launched *inside* an embedded
   terminal doesn't collide with the outer instance's port/session identity.
