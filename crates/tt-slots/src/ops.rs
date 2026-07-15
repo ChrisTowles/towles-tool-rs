@@ -29,14 +29,8 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Error)]
 pub enum OpsError {
-    #[error(
-        "no slot root found walking up from {0} — expected either a <repo>-primary checkout \
-         or a plain git checkout that can use a sibling <repo>-slots directory"
-    )]
-    NoPrimary(String),
-
-    #[error("{dir} contains {count} <repo>-primary checkouts — expected exactly one")]
-    MultiplePrimaries { dir: String, count: usize },
+    #[error("no git checkout found walking up from {0}")]
+    NoCheckout(String),
 
     #[error("cannot derive a slot name from branch {0}")]
     BadBranchName(String),
@@ -79,22 +73,21 @@ pub enum OpsError {
 
 pub type Result<T> = std::result::Result<T, OpsError>;
 
-/// A discovered slot root: the parent directory, the repo's primary checkout,
-/// and the repo name.
+/// A discovered slot root: the repo's main checkout and the repo name (its
+/// directory basename). Slots nest inside the checkout at
+/// `.claude/worktrees/<name>` — see the [`crate::layout`] docs.
 pub struct SlotRoot {
-    pub root: PathBuf,
+    /// The main checkout — a normal clone whose `.git` directory owns every
+    /// slot's git state. Kept named `primary` from the old sibling-slots
+    /// convention; it is simply the repo root now.
     pub primary: PathBuf,
     pub repo: String,
-    /// `true` for the flat fallback layout (`<parent>/<repo>-slots/<name>`,
-    /// see [`discover_flat_root`]) — slots live directly under `root` instead
-    /// of `root/slots`.
-    flat: bool,
 }
 
 impl SlotRoot {
     /// The directory holding the worktree slots (may not exist yet).
     pub fn slots_dir(&self) -> PathBuf {
-        if self.flat { self.root.clone() } else { self.root.join(layout::SLOTS_DIR) }
+        layout::worktrees_dir(&self.primary)
     }
 
     pub fn slot_dir(&self, name: &str) -> PathBuf {
@@ -135,16 +128,48 @@ fn dir_names(dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Whether `dir/name` is a repo's primary checkout: named `<repo>-primary`
-/// and containing a `.git` (a normal clone, not bare).
-fn is_primary(dir: &Path, name: &str) -> bool {
-    layout::repo_from_primary(name).is_some() && dir.join(name).join(".git").exists()
+/// Resolve the *main* checkout for `dir`, which must contain `.git`: a `.git`
+/// directory means `dir` is the main checkout itself; a `.git` *file* (a
+/// linked worktree) points at `<main>/.git/worktrees/<wt>` — hop to `<main>`,
+/// so slot commands anchor at the repo root no matter which worktree they run
+/// from. A `.git` file that is not a worktree pointer (a submodule's
+/// `gitdir: ../.git/modules/<x>`) keeps `dir` itself as the checkout — a
+/// submodule is its own repo and gets its own nested worktrees.
+fn main_checkout(dir: &Path) -> PathBuf {
+    let dotgit = dir.join(".git");
+    if dotgit.is_dir() {
+        return dir.to_path_buf();
+    }
+    let Some(gitdir) = fs::read_to_string(&dotgit)
+        .ok()
+        .and_then(|text| text.strip_prefix("gitdir:").map(|p| p.trim().to_string()))
+    else {
+        return dir.to_path_buf();
+    };
+    let gitdir =
+        if Path::new(&gitdir).is_absolute() { PathBuf::from(gitdir) } else { dir.join(gitdir) };
+    // `<main>/.git/worktrees/<wt>` → `<main>`; anything else is not a linked
+    // worktree.
+    for ancestor in gitdir.ancestors() {
+        if ancestor.file_name().is_some_and(|n| n == ".git")
+            && gitdir
+                .strip_prefix(ancestor)
+                .ok()
+                .and_then(|rest| rest.components().next())
+                .is_some_and(|c| c.as_os_str() == "worktrees")
+            && let Some(main) = ancestor.parent()
+        {
+            return main.to_path_buf();
+        }
+    }
+    dir.to_path_buf()
 }
 
-/// Find the slot root: `explicit` if given, else walk up from the current
-/// working directory looking for a directory holding exactly one
-/// `<repo>-primary` checkout. Falls back to the flat sibling-`<repo>-slots`
-/// layout (see [`discover_flat_root`]) when no nested convention is found.
+/// Find the slot root: walk up from `explicit` (or the current working
+/// directory) to the nearest dir containing `.git`, then hop from a linked
+/// worktree to its main checkout (see [`main_checkout`]) — so running from
+/// inside a slot anchors at the repo root, never nesting worktrees inside
+/// worktrees. Any plain git checkout qualifies; there is no layout to set up.
 pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
     let start = match explicit {
         Some(dir) => dir.to_path_buf(),
@@ -153,61 +178,18 @@ pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
         }
     };
     for dir in start.ancestors() {
-        let primaries: Vec<String> =
-            dir_names(dir).into_iter().filter(|name| is_primary(dir, name)).collect();
-        if primaries.len() == 1 {
-            let repo = layout::repo_from_primary(&primaries[0]).unwrap_or_default().to_string();
-            return Ok(SlotRoot {
-                root: dir.to_path_buf(),
-                primary: dir.join(&primaries[0]),
-                repo,
-                flat: false,
-            });
+        if !dir.join(".git").exists() {
+            continue;
         }
-        if primaries.len() > 1 {
-            return Err(OpsError::MultiplePrimaries {
-                dir: dir.display().to_string(),
-                count: primaries.len(),
-            });
-        }
+        let primary = main_checkout(dir);
+        let repo = primary
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| OpsError::Io(format!("bad checkout path {}", primary.display())))?
+            .to_string();
+        return Ok(SlotRoot { primary, repo });
     }
-    if let Some(sr) = discover_flat_root(&start) {
-        return Ok(sr);
-    }
-    Err(OpsError::NoPrimary(start.display().to_string()))
-}
-
-/// Fallback for repos not laid out under a dedicated `<root>/<repo>-primary`
-/// checkout: a plain `<parent>/<repo>/` clone gets its slots in a sibling
-/// `<parent>/<repo>-slots/<name>/` directory instead. Walks up from `start`
-/// looking either for the checkout itself (a `.git` dir that isn't itself a
-/// slot) or, if already inside a slot, the `<repo>-slots` ancestor and its
-/// sibling checkout.
-fn discover_flat_root(start: &Path) -> Option<SlotRoot> {
-    for dir in start.ancestors() {
-        let name = dir.file_name().and_then(|n| n.to_str())?;
-
-        if let Some(repo) = layout::repo_from_slots_dir(name) {
-            let primary = dir.parent()?.join(repo);
-            if primary.join(".git").exists() {
-                return Some(SlotRoot {
-                    root: dir.to_path_buf(),
-                    primary,
-                    repo: repo.to_string(),
-                    flat: true,
-                });
-            }
-        } else if dir.join(".git").exists() && !dir.join(layout::MARKER_FILE).exists() {
-            let root = dir.parent()?.join(format!("{name}{}", layout::SLOTS_SUFFIX));
-            return Some(SlotRoot {
-                root,
-                primary: dir.to_path_buf(),
-                repo: name.to_string(),
-                flat: true,
-            });
-        }
-    }
-    None
+    Err(OpsError::NoCheckout(start.display().to_string()))
 }
 
 /// Bounded like [`git_slot`] — a stalled network op (stuck proxy/VPN, an SSH
@@ -387,18 +369,26 @@ impl Drop for ClaimLock {
 // ---------------------------------------------------------------------------
 // rendering
 
-/// Create the root-side [`TEMPLATE_SIDECAR`] for repos that don't commit a
-/// tokenized `.env.example` — the fix for [`OpsError::NoTemplate`]. A repo
-/// with nothing to template (no ports, no per-slot config) gets an empty
-/// sidecar with just an explanatory comment; slots still render (an empty
-/// `.env`). Idempotent: an existing sidecar is left untouched.
+/// The template sidecar's path: `<checkout>/.claude/slot-env.template`,
+/// next to the repo's Claude Code settings (committable, but gitignoring it
+/// works too — render only reads it).
+pub fn template_sidecar_path(sr: &SlotRoot) -> PathBuf {
+    sr.primary.join(layout::CLAUDE_DIR).join(TEMPLATE_SIDECAR)
+}
+
+/// Create the [`TEMPLATE_SIDECAR`] for repos that don't commit a tokenized
+/// `.env.example` — the fix for [`OpsError::NoTemplate`]. A repo with
+/// nothing to template (no ports, no per-slot config) gets an empty sidecar
+/// with just an explanatory comment; slots still render (an empty `.env`).
+/// Idempotent: an existing sidecar is left untouched.
 pub fn init_template_sidecar(sr: &SlotRoot) -> Result<PathBuf> {
-    let sidecar = sr.root.join(TEMPLATE_SIDECAR);
+    let sidecar = template_sidecar_path(sr);
     if sidecar.is_file() {
         return Ok(sidecar);
     }
-    fs::create_dir_all(&sr.root)
-        .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", sr.root.display())))?;
+    let claude_dir = sr.primary.join(layout::CLAUDE_DIR);
+    fs::create_dir_all(&claude_dir)
+        .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", claude_dir.display())))?;
     fs::write(
         &sidecar,
         "# tt slot env template — this repo declares no ports/env vars for slots.\n\
@@ -444,10 +434,10 @@ pub fn render_slot_env(
     let is_slot = dir.parent().is_some_and(|p| p == sr.slots_dir());
 
     // template: the repo's own .env.example when it carries ${tt:...} tokens
-    // (the committed convention), else the root-side sidecar (repos that
-    // don't commit tt artifacts)
+    // (the committed convention), else the .claude/ sidecar (repos that
+    // don't commit tt tokens in their .env.example)
     let repo_template = dir.join(".env.example");
-    let sidecar = sr.root.join(TEMPLATE_SIDECAR);
+    let sidecar = template_sidecar_path(sr);
     let template_path = match fs::read_to_string(&repo_template) {
         Ok(text) if text.contains("${tt:") => repo_template,
         _ if sidecar.is_file() => sidecar,
@@ -518,13 +508,20 @@ pub fn render_slot_env(
     })
 }
 
-/// Ignore the marker in every worktree via the primary's `.git/info/exclude`
-/// — no repo `.gitignore` commit needed.
+/// Ignore the marker and the nested worktrees dir via the main checkout's
+/// `.git/info/exclude` — no repo `.gitignore` commit needed. The worktrees
+/// entry keeps `git status` at the checkout root clean even in repos that
+/// never added `.claude/worktrees/` to their `.gitignore`.
 fn ensure_excludes(primary: &Path) -> Result<()> {
     let info = primary.join(".git").join("info");
     let exclude = info.join("exclude");
     let current = fs::read_to_string(&exclude).unwrap_or_default();
-    if current.lines().any(|l| l.trim() == layout::MARKER_FILE) {
+    let worktrees_entry = format!("{}/{}/", layout::CLAUDE_DIR, layout::WORKTREES_DIR);
+    let missing: Vec<&str> = [layout::MARKER_FILE, worktrees_entry.as_str()]
+        .into_iter()
+        .filter(|entry| !current.lines().any(|l| l.trim() == *entry))
+        .collect();
+    if missing.is_empty() {
         return Ok(());
     }
     fs::create_dir_all(&info)
@@ -533,8 +530,10 @@ fn ensure_excludes(primary: &Path) -> Result<()> {
     if !next.is_empty() && !next.ends_with('\n') {
         next.push('\n');
     }
-    next.push_str(layout::MARKER_FILE);
-    next.push('\n');
+    for entry in missing {
+        next.push_str(entry);
+        next.push('\n');
+    }
     fs::write(&exclude, next)
         .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", exclude.display())))
 }
@@ -717,6 +716,10 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     created.inspect_err(|_| {
         let _ = git_primary(&sr.primary, &["worktree", "remove", "--force", &dir_s]);
         let _ = fs::remove_dir_all(Path::new(&dir_s));
+        // `worktree add -b` succeeded, so the branch is ours and still points
+        // at base — delete it too, or the retry dies on "branch already
+        // exists" after e.g. fixing a template error.
+        let _ = git_primary(&sr.primary, &["branch", "-D", &opts.branch]);
     })
 }
 
@@ -1041,7 +1044,7 @@ pub fn clean_slots(
             });
             continue;
         }
-        let rm = RemoveOpts { root: Some(sr.root.clone()), name: name.clone(), force: false };
+        let rm = RemoveOpts { root: Some(sr.primary.clone()), name: name.clone(), force: false };
         match remove_slot(&rm) {
             Ok(r) => {
                 let mut messages = r.messages;
@@ -1192,79 +1195,92 @@ mod tests {
         assert!(validate_branch_name("-leading-dash").is_err());
     }
 
-    /// Minimal slot root under a tempdir: `<root>/repo-primary/.git`.
+    /// Minimal slot root under a tempdir: `<tmp>/repo/.git`.
     fn temp_slot_root() -> (tempfile::TempDir, SlotRoot) {
         let tmp = tempfile::tempdir().unwrap();
-        let primary = tmp.path().join("repo-primary");
+        let primary = tmp.path().join("repo");
         fs::create_dir_all(primary.join(".git")).unwrap();
-        let sr = SlotRoot {
-            root: tmp.path().to_path_buf(),
-            primary,
-            repo: "repo".to_string(),
-            flat: false,
-        };
+        let sr = SlotRoot { primary, repo: "repo".to_string() };
         (tmp, sr)
     }
 
     #[test]
-    fn discover_root_nested_convention() {
+    fn discover_root_finds_the_nearest_checkout() {
         let tmp = tempfile::tempdir().unwrap();
-        let primary = tmp.path().join("repo-primary");
-        fs::create_dir_all(primary.join(".git")).unwrap();
-        fs::create_dir_all(primary.join("src")).unwrap();
-
-        let sr = discover_root(Some(&primary.join("src"))).unwrap();
-        assert!(!sr.flat);
-        assert_eq!(sr.root, tmp.path());
-        assert_eq!(sr.primary, primary);
-        assert_eq!(sr.repo, "repo");
-        assert_eq!(sr.slots_dir(), tmp.path().join("slots"));
-    }
-
-    #[test]
-    fn discover_root_flat_fallback_from_repo() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("scribed");
+        let repo = tmp.path().join("blog");
         fs::create_dir_all(repo.join(".git")).unwrap();
-        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::create_dir_all(repo.join("src").join("deep")).unwrap();
 
-        let sr = discover_root(Some(&repo.join("src"))).unwrap();
-        assert!(sr.flat);
+        let sr = discover_root(Some(&repo.join("src").join("deep"))).unwrap();
         assert_eq!(sr.primary, repo);
-        assert_eq!(sr.repo, "scribed");
-        assert_eq!(sr.root, tmp.path().join("scribed-slots"));
-        assert_eq!(sr.slots_dir(), tmp.path().join("scribed-slots"));
+        assert_eq!(sr.repo, "blog");
+        assert_eq!(sr.slots_dir(), repo.join(".claude").join("worktrees"));
     }
 
     #[test]
-    fn discover_root_flat_fallback_from_inside_a_slot() {
+    fn discover_root_hops_from_a_worktree_to_the_main_checkout() {
         let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("scribed");
-        fs::create_dir_all(repo.join(".git")).unwrap();
-        let slot = tmp.path().join("scribed-slots").join("feat-thing");
-        fs::create_dir_all(slot.join(".git")).unwrap();
-        fs::write(slot.join(layout::MARKER_FILE), "name=feat-thing\n").unwrap();
+        let repo = tmp.path().join("blog");
+        let slot = repo.join(".claude").join("worktrees").join("thing");
+        fs::create_dir_all(repo.join(".git").join("worktrees").join("thing")).unwrap();
+        fs::create_dir_all(&slot).unwrap();
+        fs::write(
+            slot.join(".git"),
+            format!("gitdir: {}\n", repo.join(".git/worktrees/thing").display()),
+        )
+        .unwrap();
 
         let sr = discover_root(Some(&slot)).unwrap();
-        assert!(sr.flat);
         assert_eq!(sr.primary, repo);
-        assert_eq!(sr.repo, "scribed");
-        assert_eq!(sr.root, tmp.path().join("scribed-slots"));
+        assert_eq!(sr.repo, "blog");
     }
 
     #[test]
-    fn discover_root_errors_with_no_convention_found() {
+    fn discover_root_hops_even_from_a_worktree_outside_the_checkout() {
+        // Old-layout stragglers (slots that still live in a sibling dir) must
+        // still anchor at the main checkout, not become their own root.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("blog");
+        let stray = tmp.path().join("elsewhere").join("thing");
+        fs::create_dir_all(repo.join(".git").join("worktrees").join("thing")).unwrap();
+        fs::create_dir_all(&stray).unwrap();
+        fs::write(
+            stray.join(".git"),
+            format!("gitdir: {}\n", repo.join(".git/worktrees/thing").display()),
+        )
+        .unwrap();
+
+        let sr = discover_root(Some(&stray)).unwrap();
+        assert_eq!(sr.primary, repo);
+    }
+
+    #[test]
+    fn discover_root_keeps_a_submodule_as_its_own_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let superproject = tmp.path().join("super");
+        let submodule = superproject.join("vendored");
+        fs::create_dir_all(superproject.join(".git").join("modules").join("vendored")).unwrap();
+        fs::create_dir_all(&submodule).unwrap();
+        fs::write(submodule.join(".git"), "gitdir: ../.git/modules/vendored\n").unwrap();
+
+        let sr = discover_root(Some(&submodule)).unwrap();
+        assert_eq!(sr.primary, submodule);
+        assert_eq!(sr.repo, "vendored");
+    }
+
+    #[test]
+    fn discover_root_errors_outside_any_checkout() {
         let tmp = tempfile::tempdir().unwrap();
         let plain = tmp.path().join("just-a-dir");
         fs::create_dir_all(&plain).unwrap();
-        assert!(matches!(discover_root(Some(&plain)), Err(OpsError::NoPrimary(_))));
+        assert!(matches!(discover_root(Some(&plain)), Err(OpsError::NoCheckout(_))));
     }
 
     #[test]
     fn init_template_sidecar_creates_a_usable_empty_template() {
         let (_tmp, sr) = temp_slot_root();
         let path = init_template_sidecar(&sr).unwrap();
-        assert_eq!(path, sr.root.join(TEMPLATE_SIDECAR));
+        assert_eq!(path, sr.primary.join(".claude").join(TEMPLATE_SIDECAR));
         let contents = fs::read_to_string(&path).unwrap();
         assert!(
             contents.lines().all(|l| l.trim().is_empty() || l.trim_start().starts_with('#')),
@@ -1276,10 +1292,10 @@ mod tests {
     fn init_template_sidecar_is_idempotent() {
         let (_tmp, sr) = temp_slot_root();
         init_template_sidecar(&sr).unwrap();
-        fs::write(sr.root.join(TEMPLATE_SIDECAR), "NAME=${tt:slot-name}\n").unwrap();
+        fs::write(template_sidecar_path(&sr), "NAME=${tt:slot-name}\n").unwrap();
         // a second call must not clobber a sidecar the user has since edited
         init_template_sidecar(&sr).unwrap();
-        let contents = fs::read_to_string(sr.root.join(TEMPLATE_SIDECAR)).unwrap();
+        let contents = fs::read_to_string(template_sidecar_path(&sr)).unwrap();
         assert!(contents.contains("${tt:slot-name}"));
     }
 

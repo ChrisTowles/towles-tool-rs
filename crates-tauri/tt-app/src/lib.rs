@@ -58,9 +58,9 @@ fn app_slot() -> String {
 /// Per-slot Tauri app identifier, so each worktree slot's self-installed
 /// `.desktop` entry + icon (`linux_desktop::ensure_installed`) gets its own
 /// filename instead of every slot's binary overwriting the same one on
-/// startup. The primary checkout (not under a `slots/` parent) keeps the
-/// base identifier unscoped, matching how it's the one instance meant to
-/// daily-drive.
+/// startup. The main checkout (not under a `.claude/worktrees/` parent)
+/// keeps the base identifier unscoped, matching how it's the one instance
+/// meant to daily-drive.
 ///
 /// This used to also be load-bearing for `enableGTKAppId` (tauri.conf.json),
 /// which made every same-identifier binary register as the *same*
@@ -73,9 +73,13 @@ fn app_slot() -> String {
 /// identifier no longer affects GTK/D-Bus at all.
 fn app_identifier(base: &str) -> String {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let under_slots = manifest_dir.ancestors().nth(3).and_then(|p| p.file_name())
-        == Some(std::ffi::OsStr::new("slots"));
-    if !under_slots {
+    // `<repo>/.claude/worktrees/<slot>/crates-tauri/tt-app` — ancestors 3/4
+    // are the worktrees/.claude segments exactly when this is a slot build.
+    let under_worktrees = manifest_dir.ancestors().nth(3).and_then(|p| p.file_name())
+        == Some(std::ffi::OsStr::new("worktrees"))
+        && manifest_dir.ancestors().nth(4).and_then(|p| p.file_name())
+            == Some(std::ffi::OsStr::new(".claude"));
+    if !under_worktrees {
         return base.to_string();
     }
     let suffix: String = slot_label()

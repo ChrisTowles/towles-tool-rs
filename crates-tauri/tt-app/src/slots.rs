@@ -47,10 +47,10 @@ pub fn slot_base_branches(root: String) -> Result<Vec<String>, String> {
     ops::primary_branches(&sr.primary).map_err(|e| e.to_string())
 }
 
-/// Create the root-side sidecar template (`slot-env.template`) for a repo
-/// that has neither it nor a tokenized `.env.example` — the New Slot
-/// dialog's one-click fix for `slot_create`'s "no template" error. Returns
-/// the created (or already-existing) sidecar path.
+/// Create the `.claude/slot-env.template` sidecar for a repo that has
+/// neither it nor a tokenized `.env.example` — the New Slot dialog's
+/// one-click fix for `slot_create`'s "no template" error. Returns the
+/// created (or already-existing) sidecar path.
 #[tauri::command]
 pub fn slot_init_template(root: String) -> Result<String, String> {
     let sr = ops::discover_root(Some(&PathBuf::from(root))).map_err(|e| e.to_string())?;
@@ -201,7 +201,7 @@ pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemov
         if sr.slot_dir(&name) != path {
             return Err(format!("{dir} is not a worktree slot of {}", sr.repo));
         }
-        ops::remove_slot(&RemoveOpts { root: Some(sr.root.clone()), name, force: false })
+        ops::remove_slot(&RemoveOpts { root: Some(sr.primary.clone()), name, force: false })
             .map_err(|e| e.to_string())
     })
     .await

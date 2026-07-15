@@ -95,15 +95,15 @@ pub struct SlotArgs {
 
 #[derive(Subcommand)]
 pub enum SlotCommands {
-    /// Create the slot for a branch: worktree under slots/ + rendered .env
-    /// (port claims, inherited sibling secrets) + setup step (TT_SLOT_SETUP
-    /// from the rendered .env, else lockfile-detected install)
+    /// Create the slot for a branch: worktree under .claude/worktrees/ +
+    /// rendered .env (port claims, inherited sibling secrets) + setup step
+    /// (TT_SLOT_SETUP from the rendered .env, else lockfile-detected install)
     New {
         /// Branch to create and check out (the slot is named after its last segment)
         #[arg(long, short = 'b')]
         branch: String,
 
-        /// Base ref for the new branch (default: the primary's branch)
+        /// Base ref for the new branch (default: the main checkout's branch)
         #[arg(long, value_name = "REF")]
         base: Option<String>,
 
@@ -111,18 +111,18 @@ pub enum SlotCommands {
         #[arg(long)]
         json: bool,
 
-        /// Slot root directory (default: walk up from cwd to a dir holding <repo>-primary)
+        /// Repo checkout (default: walk up from cwd to the nearest git checkout)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
 
-    /// List the primary and slots with branch, dirty count, and claimed ports
+    /// List the main checkout and slots with branch, dirty count, and claimed ports
     Ls {
         /// Emit checkouts as a JSON array
         #[arg(long)]
         json: bool,
 
-        /// Slot root directory (default: walk up from cwd to a dir holding <repo>-primary)
+        /// Repo checkout (default: walk up from cwd to the nearest git checkout)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
@@ -131,14 +131,14 @@ pub enum SlotCommands {
     /// branch or remote, nothing foreign on its ports), then docker compose
     /// down -v, anchored container/volume sweep, worktree remove
     Rm {
-        /// Slot directory name under slots/, e.g. slot-migrate
+        /// Slot directory name under .claude/worktrees/, e.g. slot-migrate
         name: String,
 
         /// Skip guards (each skip is printed) and force worktree removal
         #[arg(long)]
         force: bool,
 
-        /// Slot root directory (default: walk up from cwd to a dir holding <repo>-primary)
+        /// Repo checkout (default: walk up from cwd to the nearest git checkout)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
@@ -146,19 +146,32 @@ pub enum SlotCommands {
     /// (Re)render a checkout's .env from the template — idempotent: existing
     /// port claims and keys the template doesn't know are preserved
     Env {
-        /// Slot directory name under slots/, or `primary`
+        /// Slot directory name under .claude/worktrees/, or `primary` for the
+        /// main checkout
         name: String,
 
-        /// Slot root directory (default: walk up from cwd to a dir holding <repo>-primary)
+        /// Repo checkout (default: walk up from cwd to the nearest git checkout)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
 
+    /// Claude Code WorktreeCreate hook shell: reads the hook JSON on stdin,
+    /// creates (or reuses) the slot, prints its path on stdout — wire it as
+    /// the repo's WorktreeCreate hook so `claude --worktree` and background
+    /// sessions land in tt-managed slots
+    #[command(hide = true)]
+    HookCreate,
+
+    /// Claude Code WorktreeRemove hook shell: reads the hook JSON on stdin
+    /// and runs the same guarded removal as `tt slot rm`
+    #[command(hide = true)]
+    HookRemove,
+
     /// Remove every slot whose branch's work has landed (merged into the
-    /// primary's branch, or upstream deleted after a squash/rebase merge) —
-    /// same guards as rm, never forced — then sweep the per-checkout state
-    /// dirs and agentboard windows/sessions left behind by checkouts that no
-    /// longer exist
+    /// main checkout's branch, or upstream deleted after a squash/rebase
+    /// merge) — same guards as rm, never forced — then sweep the
+    /// per-checkout state dirs and agentboard windows/sessions left behind
+    /// by checkouts that no longer exist
     Clean {
         /// Report what would be removed/swept without touching anything
         #[arg(long)]
@@ -168,7 +181,7 @@ pub enum SlotCommands {
         #[arg(long)]
         json: bool,
 
-        /// Slot root directory (default: walk up from cwd to a dir holding <repo>-primary)
+        /// Repo checkout (default: walk up from cwd to the nearest git checkout)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },

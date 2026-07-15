@@ -1,15 +1,18 @@
-//! `tt slot` — worktree-slot lifecycle over a primary checkout.
+//! `tt slot` — worktree-slot lifecycle over any git checkout.
 //!
 //! Thin CLI shell: creation/rendering/removal all live in `tt_slots::ops`
 //! (shared with the app's `slot_create`/`slot_remove` commands). See the
 //! tt-slots crate docs for the convention and the `${tt:...}` template
-//! grammar.
+//! grammar. `hook-create`/`hook-remove` are the Claude Code
+//! WorktreeCreate/WorktreeRemove hook shells — stdin is the hook JSON and
+//! (for create) stdout is *only* the worktree path, per the hook contract.
 
 use std::fs;
-use std::path::Path;
+use std::io::{IsTerminal, Read};
+use std::path::{Path, PathBuf};
 
-use tt_slots::ops::{self, CleanOpts, CreateOpts, RemoveOpts, SlotRoot};
-use tt_slots::{envfile, guards};
+use tt_slots::ops::{self, CleanOpts, CreateOpts, OpsError, RemoveOpts, SlotRoot};
+use tt_slots::{envfile, guards, layout};
 
 use crate::cli::SlotCommands;
 use crate::ui;
@@ -23,6 +26,8 @@ pub fn run(command: SlotCommands) -> i32 {
         SlotCommands::Rm { name, force, root } => cmd_rm(&name, force, root.as_deref()),
         SlotCommands::Env { name, root } => cmd_env(&name, root.as_deref()),
         SlotCommands::Clean { dry_run, json, root } => cmd_clean(dry_run, json, root.as_deref()),
+        SlotCommands::HookCreate => cmd_hook_create(),
+        SlotCommands::HookRemove => cmd_hook_remove(),
     };
     match result {
         Ok(()) => 0,
@@ -30,6 +35,100 @@ pub fn run(command: SlotCommands) -> i32 {
             ui::error(&message);
             1
         }
+    }
+}
+
+/// The hook JSON Claude Code writes to the hook's stdin. TTY-guarded so a
+/// hand-run `tt slot hook-create` fails fast instead of hanging on a read.
+fn read_hook_input() -> Result<serde_json::Value, String> {
+    let mut stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return Err("hook-create/hook-remove read Claude Code's hook JSON on stdin — \
+                    they are not meant to be run by hand"
+            .to_string());
+    }
+    let mut raw = String::new();
+    stdin.read_to_string(&mut raw).map_err(|e| format!("cannot read hook stdin: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("hook stdin is not valid JSON: {e}"))
+}
+
+fn hook_str<'a>(input: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|k| input.get(k).and_then(|v| v.as_str())).filter(|s| !s.is_empty())
+}
+
+/// WorktreeCreate hook: create (or reuse) the slot for the requested name and
+/// print its path — the one line of stdout Claude Code parses. The branch is
+/// tt-owned: `feat/<name>` for a bare name, the name verbatim when it already
+/// looks like a branch (see `layout::branch_from_worktree_name`) — never the
+/// native `worktree-<name>` scheme. Claude Code observed (2.1.210) sends
+/// `{session_id, transcript_path, cwd, hook_event_name, name}` with `cwd`
+/// already the main checkout root; `worktree_name`/`source_ref` are accepted
+/// too for the documented shape.
+fn cmd_hook_create() -> Result<(), String> {
+    let input = read_hook_input()?;
+    let name = hook_str(&input, &["name", "worktree_name"])
+        .ok_or("hook input has no worktree name (`name`/`worktree_name`)")?;
+    let root = hook_str(&input, &["cwd"]).map(PathBuf::from);
+    let branch = layout::branch_from_worktree_name(name);
+
+    let opts = CreateOpts {
+        root: root.clone(),
+        branch,
+        base: hook_str(&input, &["source_ref"]).map(str::to_string),
+        run_setup: true,
+    };
+    let dir = match ops::create_slot(&opts) {
+        Ok(created) => {
+            for warning in &created.warnings {
+                eprintln!("tt slot: {warning}");
+            }
+            created.dir
+        }
+        // An existing slot is a resume, not an error — Claude Code re-enters
+        // worktrees by name; hand back the same path.
+        Err(OpsError::SlotExists { dir, .. }) => PathBuf::from(dir),
+        Err(e) => return Err(e.to_string()),
+    };
+    println!("{}", dir.display());
+    Ok(())
+}
+
+/// WorktreeRemove hook: the same guarded removal as `tt slot rm` (never
+/// forced — a slot with unpushed work stays on disk and the refusal lands in
+/// Claude Code's hook log on stderr), plus the agentboard untracking every
+/// removal path owes.
+fn cmd_hook_remove() -> Result<(), String> {
+    let input = read_hook_input()?;
+    let path = hook_str(&input, &["worktree_path", "path"])
+        .map(PathBuf::from)
+        .ok_or("hook input has no worktree path (`worktree_path`/`path`)")?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("bad worktree path {}", path.display()))?
+        .to_string();
+    if !path.exists() {
+        eprintln!("tt slot: {} is already gone — nothing to remove", path.display());
+        return Ok(());
+    }
+    let opts = RemoveOpts { root: Some(path.clone()), name, force: false };
+    let removed = ops::remove_slot(&opts).map_err(|e| e.to_string())?;
+    for message in &removed.messages {
+        eprintln!("tt slot: {message}");
+    }
+    untrack_from_agentboard(&removed.dir);
+    Ok(())
+}
+
+/// Drop a removed checkout's now-dangling agentboard rail entry (see the
+/// repo rule: every removal path must untrack the dir from repos.json).
+fn untrack_from_agentboard(dir: &Path) {
+    let dir_s = dir.to_string_lossy();
+    if let Ok((_, true)) = tt_agentboard::repos::remove_repo_persisted(
+        &tt_agentboard::repos::default_repos_path(),
+        &dir_s,
+    ) {
+        eprintln!("tt slot: untracked {dir_s} from the agentboard rail");
     }
 }
 
