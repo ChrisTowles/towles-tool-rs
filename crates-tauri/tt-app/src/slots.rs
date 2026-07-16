@@ -44,7 +44,7 @@ pub struct SlotCreated {
 #[tauri::command]
 pub fn slot_base_branches(root: String) -> Result<Vec<String>, String> {
     let sr = ops::discover_root(Some(&PathBuf::from(root))).map_err(|e| e.to_string())?;
-    ops::primary_branches(&sr.primary).map_err(|e| e.to_string())
+    ops::checkout_branches(&sr.checkout).map_err(|e| e.to_string())
 }
 
 /// Create the `.claude/slot-env.template` sidecar for a repo that has
@@ -159,35 +159,32 @@ pub struct SlotRemoved {
 /// Remove the worktree slot at `dir`, guarded — a dirty tree, commits
 /// unreachable from any branch/remote, or a foreign listener on the slot's
 /// claimed ports block with an explanatory error (no force path in the app;
-/// use `tt slot rm --force`). Before touching the worktree, closes out the
-/// folder's live rail state in order — kill its PTYs (SIGHUPing any Claude
-/// Code session running inside, then SIGKILLing anything else still sharing
-/// the shell's session — see `terminal::kill_session_stragglers` — so a
-/// backgrounded job that dodged the shell's own signal forwarding doesn't
-/// survive as an orphan on a deleted cwd), drop its window/pane records — so
-/// removal never leaves a shell (or a stray background job) orphaned on a
-/// deleted cwd or a ghost pane/window lingering in the rail until the next
-/// poll notices the directory is gone. Then cleans up docker resources, the
-/// worktree registration, and the slot's agentboard tracking. Long-running →
-/// off the main thread.
+/// use `tt slot rm --force`). Before touching the worktree, kills the
+/// folder's live PTYs (SIGHUPing any Claude Code session running inside,
+/// then SIGKILLing anything else still sharing the shell's session — see
+/// `terminal::kill_session_stragglers`) so a backgrounded job that dodged the
+/// shell's own signal forwarding doesn't survive as an orphan on a deleted
+/// cwd — but does NOT drop the session/window/pane records yet. Those are
+/// only removed (and persisted) once `ops::remove_slot` has actually
+/// succeeded: dropping them up front used to leave the rail looking like a
+/// clean removal — panes gone — while a blocked or failed removal left the
+/// worktree sitting on disk forever with nothing left on the rail to retry
+/// from. On failure the killed-but-still-tracked sessions surface as dead
+/// panes so the user can see the slot is still there. Then cleans up docker
+/// resources, the worktree registration, and the slot's agentboard tracking.
+/// Long-running → off the main thread.
 #[tauri::command]
 pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemoved, String> {
     let mut messages = Vec::new();
     {
         let ab = app.state::<crate::agentboard::Ab>();
-        let closed_ids = ab.engine.lock().unwrap().close_folder(&dir);
-        if !closed_ids.is_empty() {
+        let ids = ab.engine.lock().unwrap().session_ids_for(&dir);
+        if !ids.is_empty() {
             let term_state = app.state::<crate::terminal::TermState>();
-            for id in &closed_ids {
+            for id in &ids {
                 term_state.kill(id);
             }
-            messages.push(format!(
-                "closed {} session{} and their panes/windows",
-                closed_ids.len(),
-                if closed_ids.len() == 1 { "" } else { "s" }
-            ));
         }
-        ab.emit.notify_one();
     }
 
     let removed = tauri::async_runtime::spawn_blocking(move || {
@@ -201,7 +198,7 @@ pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemov
         if sr.slot_dir(&name) != path {
             return Err(format!("{dir} is not a worktree slot of {}", sr.repo));
         }
-        ops::remove_slot(&RemoveOpts { root: Some(sr.primary.clone()), name, force: false })
+        ops::remove_slot(&RemoveOpts { root: Some(sr.checkout.clone()), name, force: false })
             .map_err(|e| e.to_string())
     })
     .await
@@ -211,6 +208,14 @@ pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemov
     let ab = app.state::<crate::agentboard::Ab>();
     let untracked = {
         let mut engine = ab.engine.lock().unwrap();
+        let closed_ids = engine.close_folder(&removed.dir.to_string_lossy());
+        if !closed_ids.is_empty() {
+            messages.push(format!(
+                "closed {} session{} and their panes/windows",
+                closed_ids.len(),
+                if closed_ids.len() == 1 { "" } else { "s" }
+            ));
+        }
         engine.remove_repo(&removed.dir.to_string_lossy())
     };
     if untracked {

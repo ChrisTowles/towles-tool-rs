@@ -78,16 +78,15 @@ pub type Result<T> = std::result::Result<T, OpsError>;
 /// `.claude/worktrees/<name>` — see the [`crate::layout`] docs.
 pub struct SlotRoot {
     /// The main checkout — a normal clone whose `.git` directory owns every
-    /// slot's git state. Kept named `primary` from the old sibling-slots
-    /// convention; it is simply the repo root now.
-    pub primary: PathBuf,
+    /// slot's git state.
+    pub checkout: PathBuf,
     pub repo: String,
 }
 
 impl SlotRoot {
     /// The directory holding the worktree slots (may not exist yet).
     pub fn slots_dir(&self) -> PathBuf {
-        layout::worktrees_dir(&self.primary)
+        layout::worktrees_dir(&self.checkout)
     }
 
     pub fn slot_dir(&self, name: &str) -> PathBuf {
@@ -107,10 +106,10 @@ impl SlotRoot {
         slots
     }
 
-    /// The primary plus every slot — every checkout whose `.env` can hold
+    /// The checkout plus every slot — every checkout whose `.env` can hold
     /// port claims.
     pub fn checkouts(&self) -> Vec<PathBuf> {
-        let mut dirs = vec![self.primary.clone()];
+        let mut dirs = vec![self.checkout.clone()];
         dirs.extend(self.slots().into_iter().map(|(_, dir)| dir));
         dirs
     }
@@ -181,13 +180,13 @@ pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
         if !dir.join(".git").exists() {
             continue;
         }
-        let primary = main_checkout(dir);
-        let repo = primary
+        let checkout = main_checkout(dir);
+        let repo = checkout
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or_else(|| OpsError::Io(format!("bad checkout path {}", primary.display())))?
+            .ok_or_else(|| OpsError::Io(format!("bad checkout path {}", checkout.display())))?
             .to_string();
-        return Ok(SlotRoot { primary, repo });
+        return Ok(SlotRoot { checkout, repo });
     }
     Err(OpsError::NoCheckout(start.display().to_string()))
 }
@@ -195,9 +194,9 @@ pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
 /// Bounded like [`git_slot`] — a stalled network op (stuck proxy/VPN, an SSH
 /// prompt with nothing to answer it) must fail after `GIT_TIMEOUT`, not hang
 /// the caller (`create_slot`/`remove_slot`/`clean_slots`) forever.
-pub fn git_primary(primary: &Path, args: &[&str]) -> Result<tt_exec::Output> {
-    let primary_s = primary.to_string_lossy();
-    let mut full: Vec<&str> = vec!["-C", primary_s.as_ref()];
+pub fn git_checkout(checkout: &Path, args: &[&str]) -> Result<tt_exec::Output> {
+    let checkout_s = checkout.to_string_lossy();
+    let mut full: Vec<&str> = vec!["-C", checkout_s.as_ref()];
     full.extend_from_slice(args);
     tt_exec::run_with_timeout_env("git", &full, tt_exec::GIT_NON_INTERACTIVE_ENV, GIT_TIMEOUT)
         .map_err(|e| OpsError::Git(e.to_string()))
@@ -214,9 +213,9 @@ pub fn git_slot(dir: &Path, args: &[&str]) -> Result<tt_exec::Output> {
     .map_err(|e| OpsError::Git(e.to_string()))
 }
 
-/// The primary's checked-out branch (the repo default), falling back to `main`.
-pub fn base_branch(primary: &Path) -> String {
-    git_primary(primary, &["symbolic-ref", "--short", "HEAD"])
+/// The checkout's checked-out branch (the repo default), falling back to `main`.
+pub fn base_branch(checkout: &Path) -> String {
+    git_checkout(checkout, &["symbolic-ref", "--short", "HEAD"])
         .ok()
         .filter(|o| o.ok())
         .map(|o| o.stdout.trim().to_string())
@@ -224,7 +223,7 @@ pub fn base_branch(primary: &Path) -> String {
         .unwrap_or_else(|| "main".to_string())
 }
 
-/// If `base` is the primary's checked-out branch and `origin/<base>` exists,
+/// If `base` is the checkout's checked-out branch and `origin/<base>` exists,
 /// fast-forward it to match — so a new slot branches from current history
 /// instead of stale local history, which otherwise means its first sync with
 /// base is an unnecessary rebase. The existence check (`rev-parse --verify
@@ -232,7 +231,7 @@ pub fn base_branch(primary: &Path) -> String {
 /// `gh sync` confirm a remote-tracking ref before comparing against it.
 /// `git merge --ff-only` is itself a no-op when already current, so this
 /// attempts it unconditionally rather than counting commits behind first.
-/// Only ever touches the primary's own checkout: a `base` that's some other
+/// Only ever touches the main checkout's own branch: a `base` that's some other
 /// ref (a tag, a SHA, a branch checked out in a different worktree, or one
 /// with no `origin/<base>` upstream) is left alone, since moving a ref out
 /// from under another checkout would fight whatever's using it. A genuine
@@ -240,18 +239,19 @@ pub fn base_branch(primary: &Path) -> String {
 /// rather than blocks creation — the slot still branches from local
 /// history.
 fn fast_forward_base_if_behind(sr: &SlotRoot, base: &str, warnings: &mut Vec<String>) {
-    if base_branch(&sr.primary) != base {
+    if base_branch(&sr.checkout) != base {
         return;
     }
     let upstream = format!("origin/{base}");
-    let Ok(verify_out) = git_primary(&sr.primary, &["rev-parse", "--verify", "--quiet", &upstream])
+    let Ok(verify_out) =
+        git_checkout(&sr.checkout, &["rev-parse", "--verify", "--quiet", &upstream])
     else {
         return;
     };
     if !verify_out.ok() {
         return; // no origin/<base> to compare against (never pushed, etc.)
     }
-    match git_primary(&sr.primary, &["merge", "--ff-only", &upstream]) {
+    match git_checkout(&sr.checkout, &["merge", "--ff-only", &upstream]) {
         Ok(out) if out.ok() => {}
         Ok(out) => warnings.push(format!(
             "base branch '{base}' has diverged from {upstream} and could not be fast-forwarded \
@@ -264,9 +264,9 @@ fn fast_forward_base_if_behind(sr: &SlotRoot, base: &str, warnings: &mut Vec<Str
 }
 
 /// Every local branch, default branch first, the rest sorted.
-pub fn primary_branches(primary: &Path) -> Result<Vec<String>> {
-    let default = base_branch(primary);
-    let out = git_primary(primary, &["for-each-ref", "refs/heads", "--format=%(refname:short)"])?;
+pub fn checkout_branches(checkout: &Path) -> Result<Vec<String>> {
+    let default = base_branch(checkout);
+    let out = git_checkout(checkout, &["for-each-ref", "refs/heads", "--format=%(refname:short)"])?;
     if !out.ok() {
         return Err(OpsError::Git(out.stderr.trim().to_string()));
     }
@@ -337,8 +337,8 @@ struct ClaimLock {
 }
 
 impl ClaimLock {
-    fn acquire(primary: &Path) -> Result<Self> {
-        let path = primary.join(".git").join(LOCK_FILE);
+    fn acquire(checkout: &Path) -> Result<Self> {
+        let path = checkout.join(".git").join(LOCK_FILE);
         for _ in 0..100 {
             match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(_) => return Ok(Self { path }),
@@ -373,7 +373,7 @@ impl Drop for ClaimLock {
 /// next to the repo's Claude Code settings (committable, but gitignoring it
 /// works too — render only reads it).
 pub fn template_sidecar_path(sr: &SlotRoot) -> PathBuf {
-    sr.primary.join(layout::CLAUDE_DIR).join(TEMPLATE_SIDECAR)
+    sr.checkout.join(layout::CLAUDE_DIR).join(TEMPLATE_SIDECAR)
 }
 
 /// Create the [`TEMPLATE_SIDECAR`] for repos that don't commit a tokenized
@@ -386,7 +386,7 @@ pub fn init_template_sidecar(sr: &SlotRoot) -> Result<PathBuf> {
     if sidecar.is_file() {
         return Ok(sidecar);
     }
-    let claude_dir = sr.primary.join(layout::CLAUDE_DIR);
+    let claude_dir = sr.checkout.join(layout::CLAUDE_DIR);
     fs::create_dir_all(&claude_dir)
         .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", claude_dir.display())))?;
     fs::write(
@@ -410,17 +410,17 @@ pub struct RenderSummary {
 
 /// Render a checkout's `.env`: template → text (reusing existing claims),
 /// then merge back any keys the template doesn't know (inherited secrets,
-/// local adds). Works for slots and for the primary itself — the primary is
+/// local adds). Works for slots and for the checkout itself — the checkout is
 /// where the user runs the app, so it claims ports like any slot. Slot dirs
 /// also get the `.tt-slot` marker.
 ///
 /// `new_slot_base` seeds the marker's `base=` field the *first* time a slot
 /// is rendered (at creation, when `dir` has no marker yet) — it should be the
 /// actual ref the worktree was created from ([`create_slot`]'s resolved
-/// `base`), not the primary's current branch. A re-render of an *existing*
+/// `base`), not the checkout's current branch. A re-render of an *existing*
 /// slot (`tt slot env <name>`) ignores this and keeps the marker's already
 /// recorded base: it's fixed at creation and must never drift just because
-/// the primary's branch or default has since changed.
+/// the checkout's branch or default has since changed.
 pub fn render_slot_env(
     sr: &SlotRoot,
     dir: &Path,
@@ -451,7 +451,7 @@ pub fn render_slot_env(
     let template = fs::read_to_string(&template_path)
         .map_err(|e| OpsError::Io(format!("cannot read {}: {e}", template_path.display())))?;
 
-    let _lock = ClaimLock::acquire(&sr.primary)?;
+    let _lock = ClaimLock::acquire(&sr.checkout)?;
 
     let env_path = dir.join(".env");
     let old_text = fs::read_to_string(&env_path).unwrap_or_default();
@@ -469,13 +469,13 @@ pub fn render_slot_env(
 
     // A marker already on disk (re-rendering an existing slot) wins over
     // `new_slot_base` — the base is set once at creation, not re-derived on
-    // every `tt slot env`. Only a fresh slot (no marker yet) or the primary
-    // (never gets a marker) falls back to `new_slot_base`/the primary's branch.
+    // every `tt slot env`. Only a fresh slot (no marker yet) or the checkout
+    // (never gets a marker) falls back to `new_slot_base`/the checkout's branch.
     let recorded_base = layout::read_slot_base(dir);
     let ctx_base = recorded_base
         .clone()
         .or_else(|| new_slot_base.map(str::to_string))
-        .unwrap_or_else(|| base_branch(&sr.primary));
+        .unwrap_or_else(|| base_branch(&sr.checkout));
     let ctx = crate::SlotContext { slot_name: &name, base_branch: &ctx_base };
     let outcome =
         crate::render(&template, &ctx, &existing, &sibling_claims, |p| !port_occupied(p))?;
@@ -489,7 +489,7 @@ pub fn render_slot_env(
         fs::write(dir.join(layout::MARKER_FILE), marker)
             .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", layout::MARKER_FILE)))?;
     }
-    ensure_excludes(&sr.primary)?;
+    ensure_excludes(&sr.checkout)?;
 
     let mut warnings = Vec::new();
     if let Ok(out) = git_slot(dir, &["check-ignore", "-q", ".env"])
@@ -512,8 +512,8 @@ pub fn render_slot_env(
 /// `.git/info/exclude` — no repo `.gitignore` commit needed. The worktrees
 /// entry keeps `git status` at the checkout root clean even in repos that
 /// never added `.claude/worktrees/` to their `.gitignore`.
-fn ensure_excludes(primary: &Path) -> Result<()> {
-    let info = primary.join(".git").join("info");
+fn ensure_excludes(checkout: &Path) -> Result<()> {
+    let info = checkout.join(".git").join("info");
     let exclude = info.join("exclude");
     let current = fs::read_to_string(&exclude).unwrap_or_default();
     let worktrees_entry = format!("{}/{}/", layout::CLAUDE_DIR, layout::WORKTREES_DIR);
@@ -608,7 +608,7 @@ pub struct CreateOpts {
     /// Branch to create and check out. Slots are branch-named and ephemeral —
     /// there is no detached/parked mode.
     pub branch: String,
-    /// Base ref for the new branch; `None` = the primary's branch.
+    /// Base ref for the new branch; `None` = the checkout's branch.
     pub base: Option<String>,
     /// Run the setup step in the new slot (declared `TT_SLOT_SETUP` from the
     /// rendered `.env`, else lockfile-detected package-manager install).
@@ -631,13 +631,13 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     let sr = discover_root(opts.root.as_deref())?;
     validate_branch_name(&opts.branch)?;
     let mut warnings = Vec::new();
-    let _ = git_primary(&sr.primary, &["worktree", "prune"]);
-    if let Ok(out) = git_primary(&sr.primary, &["fetch", "--quiet", "origin"])
+    let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
+    if let Ok(out) = git_checkout(&sr.checkout, &["fetch", "--quiet", "origin"])
         && !out.ok()
     {
         warnings.push("fetch failed (offline?) — using local refs".into());
     }
-    let base = opts.base.clone().unwrap_or_else(|| base_branch(&sr.primary));
+    let base = opts.base.clone().unwrap_or_else(|| base_branch(&sr.checkout));
     fast_forward_base_if_behind(&sr, &base, &mut warnings);
     let name = layout::slot_name_from_branch(&opts.branch)
         .ok_or_else(|| OpsError::BadBranchName(opts.branch.clone()))?;
@@ -650,7 +650,7 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     let dir_s = dir.to_string_lossy().to_string();
 
     let add_result =
-        git_primary(&sr.primary, &["worktree", "add", "-b", &opts.branch, &dir_s, &base])?;
+        git_checkout(&sr.checkout, &["worktree", "add", "-b", &opts.branch, &dir_s, &base])?;
     if !add_result.ok() {
         return Err(OpsError::Git(format!(
             "git worktree add failed:\n{}",
@@ -667,11 +667,11 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
         warnings.extend(summary.warnings);
 
         // Inherit secrets from the first sibling checkout that has a .env —
-        // the primary first (`sr.checkouts()` orders it that way; it's the
-        // longest-lived and least likely to carry stale branch-specific
+        // the main checkout first (`sr.checkouts()` orders it that way; it's
+        // the longest-lived and least likely to carry stale branch-specific
         // values), else the alphabetically-first slot. Surfaced in a warning
-        // when it wasn't the primary, since a slot's secrets can be
-        // branch-specific or stale in a way the primary's never are.
+        // when it wasn't the main checkout, since a slot's secrets can be
+        // branch-specific or stale in a way the main checkout's never are.
         let mut inherited = 0;
         for sib_dir in sr.checkouts() {
             if sib_dir == dir {
@@ -684,12 +684,12 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
                 fs::write(&env_path, merged)
                     .map_err(|e| OpsError::Io(format!("cannot write .env: {e}")))?;
                 inherited = count;
-                if count > 0 && sib_dir != sr.primary {
+                if count > 0 && sib_dir != sr.checkout {
                     let source =
                         sib_dir.file_name().and_then(|n| n.to_str()).unwrap_or("a sibling slot");
                     warnings.push(format!(
-                        "inherited {count} .env key(s) from {source}, not the primary — \
-                         the primary has no .env yet, so these may be branch-specific or stale"
+                        "inherited {count} .env key(s) from {source}, not the main checkout — \
+                         the main checkout has no .env yet, so these may be branch-specific or stale"
                     ));
                 }
                 break;
@@ -714,12 +714,12 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     })();
 
     created.inspect_err(|_| {
-        let _ = git_primary(&sr.primary, &["worktree", "remove", "--force", &dir_s]);
+        let _ = git_checkout(&sr.checkout, &["worktree", "remove", "--force", &dir_s]);
         let _ = fs::remove_dir_all(Path::new(&dir_s));
         // `worktree add -b` succeeded, so the branch is ours and still points
         // at base — delete it too, or the retry dies on "branch already
         // exists" after e.g. fixing a template error.
-        let _ = git_primary(&sr.primary, &["branch", "-D", &opts.branch]);
+        let _ = git_checkout(&sr.checkout, &["branch", "-D", &opts.branch]);
     })
 }
 
@@ -755,7 +755,7 @@ pub struct RemovedSlot {
 pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
     let sr = discover_root(opts.root.as_deref())?;
     let name = opts.name.clone();
-    if name == "primary" || sr.primary.file_name().and_then(|n| n.to_str()) == Some(&name) {
+    if name == "primary" || sr.checkout.file_name().and_then(|n| n.to_str()) == Some(&name) {
         return Err(OpsError::PrimaryRemoval);
     }
     let dir = sr.slot_dir(&name);
@@ -775,7 +775,7 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
     // and a branch merged just now can look falsely safe to remove before
     // its remote ref disappears. `--prune` mirrors `clean_slots` so a
     // deleted remote branch is reflected too.
-    match git_primary(&sr.primary, &["fetch", "--prune", "--quiet", "origin"]) {
+    match git_checkout(&sr.checkout, &["fetch", "--prune", "--quiet", "origin"]) {
         Ok(out) if out.ok() => {}
         _ => messages
             .push("fetch --prune failed (offline?) — using local refs for guard checks".into()),
@@ -793,7 +793,7 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
         docker_cleanup(&name, &dir, &mut messages);
         fs::remove_dir_all(&dir)
             .map_err(|e| OpsError::Io(format!("cannot remove {dir_s}: {e}")))?;
-        let _ = git_primary(&sr.primary, &["worktree", "prune"]);
+        let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
         state_cleanup(state_scope.as_deref(), &mut messages);
         return Ok(RemovedSlot { name, dir, messages });
     }
@@ -838,9 +838,9 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
     docker_cleanup(&name, &dir, &mut messages);
 
     let remove = if opts.force {
-        git_primary(&sr.primary, &["worktree", "remove", "--force", &dir_s])
+        git_checkout(&sr.checkout, &["worktree", "remove", "--force", &dir_s])
     } else {
-        git_primary(&sr.primary, &["worktree", "remove", &dir_s])
+        git_checkout(&sr.checkout, &["worktree", "remove", &dir_s])
     };
     match remove {
         Ok(out) if out.ok() => {}
@@ -857,7 +857,7 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
                 .map_err(|e| OpsError::Io(format!("cannot remove {dir_s}: {e}")))?;
         }
     }
-    let _ = git_primary(&sr.primary, &["worktree", "prune"]);
+    let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
     state_cleanup(state_scope.as_deref(), &mut messages);
     Ok(RemovedSlot { name, dir, messages })
 }
@@ -925,14 +925,14 @@ pub struct CleanReport {
     pub kept: Vec<KeptSlot>,
     /// Orphaned per-scope state dirs swept (dry-run: would sweep).
     pub swept_state_dirs: Vec<PathBuf>,
-    /// State scopes of the checkouts that remain (primary + kept slots) —
+    /// State scopes of the checkouts that remain (checkout + kept slots) —
     /// callers prune *these* agentboard stores plus the unscoped one.
     pub live_scopes: Vec<String>,
     pub warnings: Vec<String>,
 }
 
 /// Remove every *finished* slot — its branch is a strict ancestor of the
-/// primary's branch (classic merge) or its upstream is gone after
+/// checkout's branch (classic merge) or its upstream is gone after
 /// `fetch --prune` (squash/rebase merge) — via the same guarded
 /// [`remove_slot`], never forced: a finished slot with uncommitted changes,
 /// orphanable commits, or a live dev server is reported and kept. A removed
@@ -942,7 +942,7 @@ pub struct CleanReport {
 ///
 /// `scope_of` maps a checkout dir to its instance-state scope
 /// (`tt_config::slot_scope_from_dir`); it is injected so the scope rule has
-/// exactly one owner. When it can't scope the primary (a repo that never
+/// exactly one owner. When it can't scope the checkout (a repo that never
 /// produces scoped state), the sweep is skipped entirely.
 pub fn clean_slots(
     opts: &CleanOpts,
@@ -950,9 +950,9 @@ pub fn clean_slots(
 ) -> Result<CleanReport> {
     let sr = discover_root(opts.root.as_deref())?;
     let mut warnings = Vec::new();
-    let _ = git_primary(&sr.primary, &["worktree", "prune"]);
+    let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
     // --prune is what flips a merged-and-deleted remote branch to "gone".
-    match git_primary(&sr.primary, &["fetch", "--prune", "--quiet", "origin"]) {
+    match git_checkout(&sr.checkout, &["fetch", "--prune", "--quiet", "origin"]) {
         Ok(out) if out.ok() => {}
         _ => warnings.push(
             "fetch --prune failed (offline?) — merges that deleted the remote branch may not \
@@ -961,9 +961,9 @@ pub fn clean_slots(
         ),
     }
 
-    let base = base_branch(&sr.primary);
+    let base = base_branch(&sr.checkout);
     let rev_parse = |refname: &str| {
-        git_primary(&sr.primary, &["rev-parse", "--quiet", "--verify", refname])
+        git_checkout(&sr.checkout, &["rev-parse", "--quiet", "--verify", refname])
             .ok()
             .filter(|o| o.ok())
             .map(|o| o.stdout.trim().to_string())
@@ -972,8 +972,8 @@ pub fn clean_slots(
 
     let mut removed = Vec::new();
     let mut kept = Vec::new();
-    let mut live_scopes: Vec<String> = scope_of(&sr.primary).into_iter().collect();
-    let primary_scoped = !live_scopes.is_empty();
+    let mut live_scopes: Vec<String> = scope_of(&sr.checkout).into_iter().collect();
+    let checkout_scoped = !live_scopes.is_empty();
 
     for (name, dir) in sr.slots() {
         // Computed before removal — a removed slot's dir is gone afterwards.
@@ -1008,15 +1008,18 @@ pub fn clean_slots(
         }
 
         let branch_ref = format!("refs/heads/{branch}");
-        let merged = git_primary(&sr.primary, &["merge-base", "--is-ancestor", &branch_ref, &base])
-            .map(|o| o.ok())
-            .unwrap_or(false);
-        let gone =
-            git_primary(&sr.primary, &["for-each-ref", &branch_ref, "--format=%(upstream:track)"])
-                .ok()
-                .filter(|o| o.ok())
-                .map(|o| crate::clean::upstream_gone(&o.stdout))
+        let merged =
+            git_checkout(&sr.checkout, &["merge-base", "--is-ancestor", &branch_ref, &base])
+                .map(|o| o.ok())
                 .unwrap_or(false);
+        let gone = git_checkout(
+            &sr.checkout,
+            &["for-each-ref", &branch_ref, "--format=%(upstream:track)"],
+        )
+        .ok()
+        .filter(|o| o.ok())
+        .map(|o| crate::clean::upstream_gone(&o.stdout))
+        .unwrap_or(false);
         let tip_equals_base = match (rev_parse(&branch_ref), &base_tip) {
             (Some(tip), Some(base_tip)) => tip == *base_tip,
             _ => false,
@@ -1044,11 +1047,11 @@ pub fn clean_slots(
             });
             continue;
         }
-        let rm = RemoveOpts { root: Some(sr.primary.clone()), name: name.clone(), force: false };
+        let rm = RemoveOpts { root: Some(sr.checkout.clone()), name: name.clone(), force: false };
         match remove_slot(&rm) {
             Ok(r) => {
                 let mut messages = r.messages;
-                match git_primary(&sr.primary, &["branch", "-D", &branch]) {
+                match git_checkout(&sr.checkout, &["branch", "-D", &branch]) {
                     Ok(out) if out.ok() => messages.push(format!("deleted branch {branch}")),
                     _ => messages.push(format!(
                         "could not delete branch {branch} — remove it with `git branch -D`"
@@ -1069,10 +1072,10 @@ pub fn clean_slots(
 
     // Sweep per-scope instance state whose checkout no longer exists — the
     // dirs `tt slot rm` never touches (see tt_config::state_scope). Only in
-    // repos that actually produce scopes: if the primary itself has none,
+    // repos that actually produce scopes: if the checkout itself has none,
     // nothing under these parents can be ours.
     let mut swept_state_dirs = Vec::new();
-    if primary_scoped {
+    if checkout_scoped {
         let live: BTreeSet<String> = live_scopes.iter().cloned().collect();
         for parent in &opts.scope_parents {
             let names = dir_names(parent);
@@ -1198,9 +1201,9 @@ mod tests {
     /// Minimal slot root under a tempdir: `<tmp>/repo/.git`.
     fn temp_slot_root() -> (tempfile::TempDir, SlotRoot) {
         let tmp = tempfile::tempdir().unwrap();
-        let primary = tmp.path().join("repo");
-        fs::create_dir_all(primary.join(".git")).unwrap();
-        let sr = SlotRoot { primary, repo: "repo".to_string() };
+        let checkout = tmp.path().join("repo");
+        fs::create_dir_all(checkout.join(".git")).unwrap();
+        let sr = SlotRoot { checkout, repo: "repo".to_string() };
         (tmp, sr)
     }
 
@@ -1212,7 +1215,7 @@ mod tests {
         fs::create_dir_all(repo.join("src").join("deep")).unwrap();
 
         let sr = discover_root(Some(&repo.join("src").join("deep"))).unwrap();
-        assert_eq!(sr.primary, repo);
+        assert_eq!(sr.checkout, repo);
         assert_eq!(sr.repo, "blog");
         assert_eq!(sr.slots_dir(), repo.join(".claude").join("worktrees"));
     }
@@ -1231,7 +1234,7 @@ mod tests {
         .unwrap();
 
         let sr = discover_root(Some(&slot)).unwrap();
-        assert_eq!(sr.primary, repo);
+        assert_eq!(sr.checkout, repo);
         assert_eq!(sr.repo, "blog");
     }
 
@@ -1251,7 +1254,7 @@ mod tests {
         .unwrap();
 
         let sr = discover_root(Some(&stray)).unwrap();
-        assert_eq!(sr.primary, repo);
+        assert_eq!(sr.checkout, repo);
     }
 
     #[test]
@@ -1264,7 +1267,7 @@ mod tests {
         fs::write(submodule.join(".git"), "gitdir: ../.git/modules/vendored\n").unwrap();
 
         let sr = discover_root(Some(&submodule)).unwrap();
-        assert_eq!(sr.primary, submodule);
+        assert_eq!(sr.checkout, submodule);
         assert_eq!(sr.repo, "vendored");
     }
 
@@ -1280,7 +1283,7 @@ mod tests {
     fn init_template_sidecar_creates_a_usable_empty_template() {
         let (_tmp, sr) = temp_slot_root();
         let path = init_template_sidecar(&sr).unwrap();
-        assert_eq!(path, sr.primary.join(".claude").join(TEMPLATE_SIDECAR));
+        assert_eq!(path, sr.checkout.join(".claude").join(TEMPLATE_SIDECAR));
         let contents = fs::read_to_string(&path).unwrap();
         assert!(
             contents.lines().all(|l| l.trim().is_empty() || l.trim_start().starts_with('#')),

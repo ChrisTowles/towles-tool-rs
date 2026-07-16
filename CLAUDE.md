@@ -130,8 +130,9 @@ Rules when working in a slot:
 - **Migration state:** this repo's own checkouts still use the retired
   sibling layout (`~/code/p/towles-tool-repos/towles-tool-rs-primary` +
   `slots/`). Running from an old-layout slot still anchors correctly (the
-  `.git` file's worktree pointer resolves to the primary), but new slots land
-  in `<primary>/.claude/worktrees/`; old slots drain as their branches merge.
+  `.git` file's worktree pointer resolves to the main checkout), but new
+  slots land in `<checkout>/.claude/worktrees/`; old slots drain as their
+  branches merge.
 - **Any code path that removes a slot checkout must also untrack its dir
   from the shared `repos.json`** (`tt_agentboard::repos::remove_repo_persisted`),
   the same way `tt slot rm`'s CLI shell and the app's `slot_remove` command
