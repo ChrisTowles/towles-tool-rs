@@ -827,7 +827,7 @@ function FolderHeader({
           {folder.hasPortDrift && <PortDriftBadge drift={folderPortDrift(folder)} />}
           <DiffButton stats={folder} onOpen={onOpenDiff} />
           <FilesButton onOpen={onOpenFiles} />
-          {pr && <PrChip pr={pr} />}
+          {pr && <PrChip pr={pr} stats={folder} />}
           {typeof progress?.percent === "number" && (
             <span
               title={progress.label ?? "agent-reported progress"}

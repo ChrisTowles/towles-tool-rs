@@ -31,6 +31,7 @@ import {
   isCacheExpiring,
   isCold,
   needsCompact,
+  prMergedButFolderHasWork,
   statusColor,
   type AgentStatus,
   type FolderData,
@@ -343,20 +344,34 @@ export function FilesButton({ onOpen }: { onOpen: () => void }) {
 }
 
 /** Clickable `#N` chip for the folder's PR, tinted by its checks state (red
- * failing · green passing · yellow pending · gray none) once merged the chip
- * turns purple regardless of checks — the slot is done, time to `tt slot rm`
- * it. Opens GitHub. */
-export function PrChip({ pr }: { pr: PrItem }) {
+ * failing · green passing · yellow pending · gray none). Once merged the
+ * chip normally turns purple — the slot is done, time to `tt slot rm` it —
+ * but merged only means the *PR's* content is safe; it says nothing about
+ * this checkout. If `stats` shows uncommitted changes or commits not yet in
+ * the merge (`filesChanged`/`commitsAhead`), the chip turns amber (this
+ * app's needs-you hue) instead, since removing the slot would lose that
+ * work despite the PR being merged. Opens GitHub. */
+export function PrChip({
+  pr,
+  stats,
+}: {
+  pr: PrItem;
+  stats: Pick<FolderData, "filesChanged" | "commitsAhead">;
+}) {
+  const merged = pr.state === "merged";
+  const hasLocalWork = prMergedButFolderHasWork(pr, stats);
   const tone =
-    pr.state === "merged"
-      ? "border-purple-500/50 bg-purple-500/10 text-purple-600 hover:bg-purple-500/20 dark:text-purple-400"
-      : pr.checks === "failing"
-        ? "border-red-500/50 bg-red-500/10 text-red-600 hover:bg-red-500/20 dark:text-red-400"
-        : pr.checks === "passing"
-          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
-          : pr.checks === "pending"
-            ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-600 hover:bg-yellow-500/20 dark:text-yellow-400"
-            : "border-border/70 text-muted-foreground hover:bg-accent hover:text-foreground";
+    hasLocalWork
+      ? "border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
+      : merged
+        ? "border-purple-500/50 bg-purple-500/10 text-purple-600 hover:bg-purple-500/20 dark:text-purple-400"
+        : pr.checks === "failing"
+          ? "border-red-500/50 bg-red-500/10 text-red-600 hover:bg-red-500/20 dark:text-red-400"
+          : pr.checks === "passing"
+            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
+            : pr.checks === "pending"
+              ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-600 hover:bg-yellow-500/20 dark:text-yellow-400"
+              : "border-border/70 text-muted-foreground hover:bg-accent hover:text-foreground";
   return (
     <button
       type="button"
@@ -369,12 +384,15 @@ export function PrChip({ pr }: { pr: PrItem }) {
         tone,
       )}
       title={
-        pr.state === "merged"
-          ? `${pr.title} — merged. Open on GitHub.`
-          : `${pr.title} — checks ${pr.checks}${pr.reviewState === "review_requested" ? ", review requested" : ""}. Open on GitHub.`
+        hasLocalWork
+          ? `${pr.title} — merged, but this checkout still has ${stats.filesChanged} file${stats.filesChanged === 1 ? "" : "s"} changed and ${stats.commitsAhead} commit${stats.commitsAhead === 1 ? "" : "s"} not in that merge. Removing the slot would lose them — commit/push first. Open on GitHub.`
+          : merged
+            ? `${pr.title} — merged. Open on GitHub.`
+            : `${pr.title} — checks ${pr.checks}${pr.reviewState === "review_requested" ? ", review requested" : ""}. Open on GitHub.`
       }
     >
       <GitPullRequest className="size-3" />#{pr.number}
+      {hasLocalWork && <span aria-hidden>⚑</span>}
     </button>
   );
 }
