@@ -223,6 +223,17 @@ pub struct FolderData {
     pub commits_ahead: i64,
     /// Commits on origin/main that this branch doesn't have.
     pub commits_behind: i64,
+    /// True when the working tree has uncommitted changes (staged, unstaged,
+    /// or untracked) — `GitInfo::dirty`. Unlike `files_changed`, which stays
+    /// nonzero for any real branch even once merged, this is the real "no
+    /// uncommitted changes" fact a "safe to delete" check needs.
+    pub dirty: bool,
+    /// Of `commits_ahead`, how many haven't landed on `compared_base` yet —
+    /// `GitInfo::commits_unlanded`. 0 once every commit on this branch is
+    /// patch-equivalent to something already there, even across a
+    /// rebase/squash merge that gave them new SHAs (which `commits_ahead`,
+    /// being SHA-reachability, can never see past).
+    pub commits_unlanded: i64,
     pub sessions: Vec<SessionData>,
     /// Number of sessions that "need you" (see `bridge::session_needs`): a live
     /// shell whose agent is waiting/errored, or whose turn just ended and is

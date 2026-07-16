@@ -114,6 +114,19 @@ export type FolderData = {
   commitsAhead: number;
   /** Commits on `comparedBase` that this branch doesn't have. */
   commitsBehind: number;
+  /** True when the working tree has uncommitted changes (staged, unstaged,
+   * or untracked). Unlike `filesChanged` — the branch's whole *committed*
+   * diff vs `comparedBase`, which stays nonzero for any real feature branch
+   * even once it's merged — this is the actual "no uncommitted changes"
+   * fact a safe-to-delete check needs. */
+  dirty: boolean;
+  /** Of `commitsAhead`, how many haven't landed on `comparedBase` yet
+   * (patch-equivalence via `git cherry`, not SHA reachability). 0 once every
+   * commit on this branch has landed there — even after a rebase/squash
+   * merge gave the landed commits new SHAs, which `commitsAhead` can never
+   * see past (it stays nonzero forever in that case). See
+   * `folderSafeToDelete`. */
+  commitsUnlanded: number;
   sessions: SessionData[];
   needs: number;
   /** User-authored "what am I working toward here" (persisted per folder). */
@@ -653,17 +666,33 @@ export function prForFolder(
   );
 }
 
+/** True when a folder is provably safe to delete: no uncommitted changes
+ * (`dirty`) and every commit on this branch has landed on `comparedBase`
+ * (`commitsUnlanded === 0`). Deliberately independent of any PR's state —
+ * it's a pure git fact — so call sites that want to gate on "PR merged" do
+ * that themselves (see `prMergedButFolderHasWork`). Note this checks a
+ * narrower, more optimistic thing than `tt slot rm`'s own removal guard
+ * (`crates/tt-slots/src/guards.rs`): that guard only blocks on a dirty tree
+ * or commits unreachable from *any* branch/remote (deleting a worktree never
+ * deletes its branch, so an unmerged-but-pushed branch is still "safe" by
+ * its math). This is the stricter "nothing left to do here" signal — the
+ * guard remains the last line of defense either way. */
+export function folderSafeToDelete(
+  folder: Pick<FolderData, "dirty" | "commitsUnlanded">,
+): boolean {
+  return !folder.dirty && folder.commitsUnlanded === 0;
+}
+
 /** True when a PR's merge doesn't actually make its folder safe to delete:
- * the PR's content merged, but the checkout itself still has a dirty working
- * tree or commits `tt slot rm`'s guard hasn't seen land anywhere else
- * (`filesChanged`/`commitsAhead` — the same "mid-work" pair `isFolderQuiet`
- * checks). The rail's merged PR badge shouldn't read "safe to remove" when
- * this is true. */
+ * the PR's content merged, but the checkout itself still has uncommitted
+ * changes or commits that haven't landed on `comparedBase` yet
+ * (`!folderSafeToDelete`). The rail's merged PR badge shouldn't read "safe to
+ * remove" when this is true. */
 export function prMergedButFolderHasWork(
   pr: Pick<PrItem, "state">,
-  folder: Pick<FolderData, "filesChanged" | "commitsAhead">,
+  folder: Pick<FolderData, "dirty" | "commitsUnlanded">,
 ): boolean {
-  return pr.state === "merged" && (folder.filesChanged > 0 || folder.commitsAhead > 0);
+  return pr.state === "merged" && !folderSafeToDelete(folder);
 }
 
 /** `0:04` / `3:20` / `1:02:30` — elapsed duration since a session started. */

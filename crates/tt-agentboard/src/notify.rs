@@ -142,6 +142,8 @@ mod tests {
                     lines_removed: 0,
                     commits_ahead: 0,
                     commits_behind: 0,
+                    dirty: false,
+                    commits_unlanded: 0,
                     sessions,
                     needs: 0,
                     purpose: None,

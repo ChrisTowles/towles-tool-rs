@@ -1,5 +1,6 @@
 import { useState, type ComponentProps, type ReactNode } from "react";
 import {
+  Check,
   ChevronDown,
   CircleDot,
   Files,
@@ -343,23 +344,44 @@ export function FilesButton({ onOpen }: { onOpen: () => void }) {
   );
 }
 
+/** Precise reason a merged PR's checkout still isn't safe to delete — the two
+ * conditions `folderSafeToDelete` checks, spelled out separately so the
+ * tooltip never leaves you guessing which one is blocking it. Null once both
+ * are satisfied (the caller has nothing left to warn about). */
+function unsafeToDeleteReason(
+  stats: Pick<FolderData, "dirty" | "commitsUnlanded">,
+  base: string,
+): string | null {
+  const reasons: string[] = [];
+  if (stats.dirty) reasons.push("has uncommitted changes");
+  if (stats.commitsUnlanded > 0) {
+    reasons.push(
+      `has ${stats.commitsUnlanded} commit${stats.commitsUnlanded === 1 ? "" : "s"} that haven't landed on ${base} yet`,
+    );
+  }
+  if (reasons.length === 0) return null;
+  return `this checkout still ${reasons.join(" and ")}`;
+}
+
 /** Clickable `#N` chip for the folder's PR, tinted by its checks state (red
  * failing · green passing · yellow pending · gray none). Once merged the
  * chip normally turns purple — the slot is done, time to `tt slot rm` it —
  * but merged only means the *PR's* content is safe; it says nothing about
- * this checkout. If `stats` shows uncommitted changes or commits not yet in
- * the merge (`filesChanged`/`commitsAhead`), the chip turns amber (this
- * app's needs-you hue) instead, since removing the slot would lose that
- * work despite the PR being merged. Opens GitHub. */
+ * this checkout. If `stats` shows uncommitted changes or commits that
+ * haven't landed on the base branch yet (`folderSafeToDelete`), the chip
+ * turns amber (this app's needs-you hue) instead, since removing the slot
+ * would lose that work despite the PR being merged — see the adjacent
+ * `SafeToDeleteBadge` for the positive case. Opens GitHub. */
 export function PrChip({
   pr,
   stats,
 }: {
   pr: PrItem;
-  stats: Pick<FolderData, "filesChanged" | "commitsAhead">;
+  stats: Pick<FolderData, "dirty" | "commitsUnlanded" | "comparedBase">;
 }) {
   const merged = pr.state === "merged";
   const hasLocalWork = prMergedButFolderHasWork(pr, stats);
+  const base = comparedBaseLabel(stats);
   const tone =
     hasLocalWork
       ? "border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
@@ -385,7 +407,7 @@ export function PrChip({
       )}
       title={
         hasLocalWork
-          ? `${pr.title} — merged, but this checkout still has ${stats.filesChanged} file${stats.filesChanged === 1 ? "" : "s"} changed and ${stats.commitsAhead} commit${stats.commitsAhead === 1 ? "" : "s"} not in that merge. Removing the slot would lose them — commit/push first. Open on GitHub.`
+          ? `${pr.title} — merged, but ${unsafeToDeleteReason(stats, base)}. Removing the slot would lose them — commit/push first. Open on GitHub.`
           : merged
             ? `${pr.title} — merged. Open on GitHub.`
             : `${pr.title} — checks ${pr.checks}${pr.reviewState === "review_requested" ? ", review requested" : ""}. Open on GitHub.`
@@ -394,6 +416,46 @@ export function PrChip({
       <GitPullRequest className="size-3" />#{pr.number}
       {hasLocalWork && <span aria-hidden>⚑</span>}
     </button>
+  );
+}
+
+/** The positive counterpart to `PrChip`'s amber warning: a folder whose PR
+ * merged, has no uncommitted changes, and has every commit landed on its
+ * base — `folderSafeToDelete`. Deliberately louder than a bare chip (the bug
+ * this replaces: a subdued purple "#N" was the *only* signal, indistinguishable
+ * at a glance from an ordinary merged-but-still-active checkout). Emerald
+ * (this app's "done/complete" hue — matches `statusColor`'s `complete` dot and
+ * the diff `+` count) rather than the PR chip's purple, so it reads as a
+ * distinct, actionable "you're done here" rather than another PR-state tint.
+ * Clicking goes straight to the same guarded delete-worktree confirmation as
+ * the folder's "···" menu — not a shortcut around it, just a louder path to
+ * it, since this state is exactly when you'd want to take that action. */
+export function SafeToDeleteBadge({
+  base,
+  onDeleteWorktree,
+}: {
+  base: string;
+  onDeleteWorktree: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDeleteWorktree();
+          }}
+          className="flex h-5 shrink-0 items-center gap-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-1.5 font-mono text-[10.5px] text-emerald-600 transition-colors hover:bg-emerald-500/20 dark:text-emerald-400"
+        >
+          <Check className="size-3" /> safe to delete
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="start">
+        No uncommitted changes, and every commit has landed on {base}. Nothing here would be
+        lost — click to delete this worktree.
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

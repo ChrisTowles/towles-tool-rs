@@ -26,6 +26,7 @@ import {
   PrChip,
   PurposeRow,
   RepoMenu,
+  SafeToDeleteBadge,
   WorktreeBadge,
 } from "@/components/agentboard-bits";
 import { Button } from "@/components/ui/button";
@@ -44,9 +45,11 @@ import {
   abInvoke,
   agentRollup,
   claudeTitleName,
+  comparedBaseLabel,
   fmtElapsed,
   fmtWaitingAge,
   folderPortDrift,
+  folderSafeToDelete,
   isAgent,
   isSoloRepo,
   pathScope,
@@ -838,6 +841,15 @@ function FolderHeader({
           <DiffButton stats={folder} onOpen={onOpenDiff} />
           <FilesButton onOpen={onOpenFiles} />
           {pr && <PrChip pr={pr} stats={folder} />}
+          {pr?.state === "merged" &&
+            folder.isWorktree &&
+            onDeleteWorktree &&
+            folderSafeToDelete(folder) && (
+              <SafeToDeleteBadge
+                base={comparedBaseLabel(folder)}
+                onDeleteWorktree={onDeleteWorktree}
+              />
+            )}
           {typeof progress?.percent === "number" && (
             <span
               title={progress.label ?? "agent-reported progress"}

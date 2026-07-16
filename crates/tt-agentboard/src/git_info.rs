@@ -37,6 +37,22 @@ pub struct GitInfo {
     /// `commits_ahead` (not a signed delta) so "3 ahead, 2 behind" doesn't
     /// collapse to a meaningless "+1".
     pub commits_behind: i64,
+    /// True when `git status --porcelain` reports anything (staged, unstaged,
+    /// or untracked) — an actual dirty working tree. Distinct from
+    /// `files_changed`/`lines_added`/`lines_removed`, which measure the
+    /// branch's whole *committed* diff vs `compared_base` and stay nonzero
+    /// for any real feature branch even once it's merged — those answer "what
+    /// does this branch contain", not "is anything uncommitted".
+    pub dirty: bool,
+    /// Of `commits_ahead`, how many aren't yet patch-equivalent to a commit
+    /// already on `compared_base` (`git cherry`, which compares diffs rather
+    /// than commit SHAs). 0 whenever `commits_ahead` is 0, but — unlike
+    /// `commits_ahead` — it *also* drops to 0 once a rebase or squash merge
+    /// has landed this branch's changes upstream, even though the landed
+    /// commits carry brand-new SHAs that never become reachable from this
+    /// branch's HEAD. `commits_ahead` alone can never reach 0 in that case,
+    /// which is exactly why it can't answer "has everything landed".
+    pub commits_unlanded: i64,
     /// `git remote get-url origin`, if the checkout has an origin remote.
     /// Display-only (repo name derivation) — NOT a Folder Rail nesting signal;
     /// two unrelated clones can share an origin without being linked worktrees
@@ -194,8 +210,24 @@ pub fn compute_git_info(dir: &str, base_branch_override: Option<&str>) -> GitInf
     info.origin_url = (!origin_url.is_empty()).then_some(origin_url);
     info.worktree_dirs = list_other_worktrees(dir);
     info.slot_base_branch = tt_slots::read_slot_base(std::path::Path::new(dir));
+    // Only worth the extra shell-out once there's something to check —
+    // nothing ahead trivially means nothing unlanded.
+    info.commits_unlanded = if info.commits_ahead > 0 {
+        parse_cherry_unlanded(&git_out(dir, &["cherry", &compared_base, "HEAD"]))
+    } else {
+        0
+    };
     info.compared_base = compared_base;
     info
+}
+
+/// Count commits `git cherry <upstream> <head>` reports as NOT yet
+/// patch-equivalent to anything on `<upstream>` (`+`-prefixed lines; a `-`
+/// prefix means that commit's diff already exists there, however it got
+/// there). Pure — unit-tested on fixture output; the shell-out lives in
+/// [`compute_git_info`].
+fn parse_cherry_unlanded(cherry_out: &str) -> i64 {
+    cherry_out.lines().filter(|l| l.starts_with("+ ")).count() as i64
 }
 
 /// Fetch `origin` for each distinct repo among `dirs`, deduped by common git
@@ -308,6 +340,7 @@ pub fn compute_git_info_from_outputs(
     // Untracked files aren't in the diff but still count as changed.
     let untracked = status_out.lines().filter(|l| l.starts_with("??")).count() as i64;
     let files_changed = changed_files.len() as i64 + untracked;
+    let dirty = status_out.lines().any(|l| !l.trim().is_empty());
 
     let (commits_ahead, commits_behind) = parse_ahead_behind(ahead_behind);
     GitInfo {
@@ -318,6 +351,10 @@ pub fn compute_git_info_from_outputs(
         lines_removed,
         commits_ahead,
         commits_behind,
+        dirty,
+        // `compute_git_info` fills this in — it needs `compared_base`, which
+        // this pure parser never sees.
+        commits_unlanded: 0,
         // The pure parser has no origin/worktree-list/slot-marker/base-ref
         // knowledge; `compute_git_info` fills all four in. Existence is
         // decided before shelling out, so a parsed result is never "missing".
@@ -473,6 +510,24 @@ mod tests {
         let info = compute_git_info_from_outputs("main", "/repo/.git", status, diff, "");
         // 1 changed file (tracked.rs) + 2 untracked.
         assert_eq!(info.files_changed, 3);
+    }
+
+    #[test]
+    fn dirty_reflects_any_porcelain_line_blank_or_not() {
+        let info = compute_git_info_from_outputs("main", "/repo/.git", "", "", "");
+        assert!(!info.dirty);
+        let dirty = compute_git_info_from_outputs("main", "/repo/.git", "?? new.txt\n", "", "");
+        assert!(dirty.dirty);
+    }
+
+    #[test]
+    fn cherry_unlanded_counts_only_plus_prefixed_lines() {
+        assert_eq!(parse_cherry_unlanded(""), 0);
+        assert_eq!(
+            parse_cherry_unlanded("- 1111111 landed already\n+ 2222222 not landed yet\n"),
+            1,
+        );
+        assert_eq!(parse_cherry_unlanded("- 1111111 one\n- 2222222 two\n"), 0,);
     }
 
     #[test]
@@ -782,6 +837,102 @@ mod tests {
         let vs_develop = compute_git_info(dir, Some("develop"));
         assert_eq!(vs_develop.compared_base, "origin/develop");
         assert_eq!(vs_develop.commits_ahead, 1);
+    }
+
+    /// The scenario this field exists for: this repo's convention only allows
+    /// rebase merges (see root CLAUDE.md), which replay a branch's commits
+    /// onto main under brand-new SHAs. `commits_ahead` (SHA reachability)
+    /// then never reaches 0 for that branch's own checkout, forever — even
+    /// though its content landed. `commits_unlanded` (patch-id equivalence
+    /// via `git cherry`) must reach 0 anyway, since that's the only way a
+    /// "safe to delete" signal can ever fire on this repo's workflow.
+    #[test]
+    fn commits_unlanded_reaches_zero_after_a_rebase_style_landing_even_though_ahead_does_not() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+
+        run(&["checkout", "--quiet", "-b", "feature"]);
+        std::fs::write(repo.join("f.txt"), "2").unwrap();
+        run(&["commit", "--quiet", "-am", "on feature"]);
+        let feature_commit = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout;
+        let feature_commit = String::from_utf8(feature_commit).unwrap().trim().to_string();
+
+        // Simulate what a rebase-merged PR leaves behind: the same change,
+        // landed on main as a brand-new commit (different SHA — main moves on
+        // with an unrelated commit first, same as real life, so the
+        // cherry-picked commit gets a different parent) via cherry-pick
+        // rather than a fast-forward/true-merge.
+        run(&["checkout", "--quiet", "main"]);
+        std::fs::write(repo.join("other.txt"), "unrelated").unwrap();
+        run(&["add", "other.txt"]);
+        run(&["commit", "--quiet", "-m", "unrelated on main"]);
+        run(&["cherry-pick", "--quiet", &feature_commit]);
+        run(&["update-ref", "refs/remotes/origin/main", "main"]);
+        run(&["checkout", "--quiet", "feature"]);
+
+        let dir = repo.to_str().unwrap();
+        let info = compute_git_info(dir, None);
+        // Still "ahead" by SHA reachability — feature's own commit is a
+        // different object than the one cherry-picked onto main.
+        assert_eq!(info.commits_ahead, 1);
+        // But fully landed by content — nothing to unland.
+        assert_eq!(info.commits_unlanded, 0);
+    }
+
+    #[test]
+    fn commits_unlanded_counts_a_commit_whose_content_never_landed() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+        run(&["update-ref", "refs/remotes/origin/main", "main"]);
+
+        run(&["checkout", "--quiet", "-b", "feature"]);
+        std::fs::write(repo.join("f.txt"), "2").unwrap();
+        run(&["commit", "--quiet", "-am", "on feature, never merged"]);
+
+        let dir = repo.to_str().unwrap();
+        let info = compute_git_info(dir, None);
+        assert_eq!(info.commits_ahead, 1);
+        assert_eq!(info.commits_unlanded, 1);
     }
 
     #[test]
