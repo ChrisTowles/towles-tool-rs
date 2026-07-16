@@ -130,7 +130,7 @@ export function WorkingContext({
           {folder.isWorktree && <WorktreeBadge />}
           <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir)} />
           <FilesButton onOpen={() => onOpenFiles(folder.dir)} />
-          {pr && <PrChip pr={pr} />}
+          {pr && <PrChip pr={pr} stats={folder} />}
         </div>
         <PurposeRow folder={folder} variant="band" />
       </div>

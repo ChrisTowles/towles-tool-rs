@@ -649,6 +649,19 @@ export function prForFolder(
   );
 }
 
+/** True when a PR's merge doesn't actually make its folder safe to delete:
+ * the PR's content merged, but the checkout itself still has a dirty working
+ * tree or commits `tt slot rm`'s guard hasn't seen land anywhere else
+ * (`filesChanged`/`commitsAhead` — the same "mid-work" pair `isFolderQuiet`
+ * checks). The rail's merged PR badge shouldn't read "safe to remove" when
+ * this is true. */
+export function prMergedButFolderHasWork(
+  pr: Pick<PrItem, "state">,
+  folder: Pick<FolderData, "filesChanged" | "commitsAhead">,
+): boolean {
+  return pr.state === "merged" && (folder.filesChanged > 0 || folder.commitsAhead > 0);
+}
+
 /** `0:04` / `3:20` / `1:02:30` — elapsed duration since a session started. */
 export function fmtElapsed(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000));

@@ -25,6 +25,7 @@ import {
   pathScope,
   placePane,
   prForFolder,
+  prMergedButFolderHasWork,
   pruneWins,
   QUIET_GRACE_MS,
   sessionNeeds,
@@ -119,6 +120,30 @@ describe("prForFolder", () => {
 
   it("returns undefined for an empty branch", () => {
     expect(prForFolder([pr({})], "x", "")).toBeUndefined();
+  });
+});
+
+describe("prMergedButFolderHasWork", () => {
+  it("is false for a merged PR when the folder is clean and even", () => {
+    expect(prMergedButFolderHasWork(pr({ state: "merged" }), folder({}))).toBe(false);
+  });
+
+  it("is true for a merged PR with a dirty working tree", () => {
+    expect(
+      prMergedButFolderHasWork(pr({ state: "merged" }), folder({ filesChanged: 2 })),
+    ).toBe(true);
+  });
+
+  it("is true for a merged PR with unpushed local commits", () => {
+    expect(
+      prMergedButFolderHasWork(pr({ state: "merged" }), folder({ commitsAhead: 1 })),
+    ).toBe(true);
+  });
+
+  it("is false for an open PR even with local work — that's normal, not a data-loss warning", () => {
+    expect(
+      prMergedButFolderHasWork(pr({ state: "open" }), folder({ filesChanged: 2, commitsAhead: 1 })),
+    ).toBe(false);
   });
 });
 
