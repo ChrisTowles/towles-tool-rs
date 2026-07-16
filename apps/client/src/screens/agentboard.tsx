@@ -1392,9 +1392,13 @@ export function AgentboardScreen() {
                       title="double-click to rename"
                       aria-pressed={w.id === activeWin?.id}
                       className={cn(
-                        "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
+                        // border-b-2 mirrors the rail's border-l-2 active edge,
+                        // rotated to match this strip's horizontal layout — kept
+                        // transparent at rest so the violet edge never shifts
+                        // the tab's size when it becomes active.
+                        "flex shrink-0 items-center gap-1.5 rounded-md border-b-2 border-transparent px-2 py-1 text-[11px]",
                         w.id === activeWin?.id
-                          ? "bg-accent text-foreground"
+                          ? "border-b-violet-500 bg-accent text-foreground"
                           : "text-muted-foreground hover:bg-accent/50",
                       )}
                     >
