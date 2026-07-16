@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn, execFileSync } from "node:child_process";
 
 import {
   PORT_MIN,
@@ -13,6 +14,8 @@ import {
   loadEnvFiles,
   resolveDevPort,
   resolveWebdriverPort,
+  isPortFree,
+  killPort,
 } from "./slot-port.mjs";
 
 const PORT_SPAN = 200; // mirrors the private span in slot-port.mjs
@@ -222,4 +225,52 @@ test("loadEnvFiles: keys merge across both files, first seen wins per key", () =
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+// --- killPort ---
+
+async function findEphemeralFreePort() {
+  const { createServer } = await import("node:net");
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+test(
+  "killPort stops a detached listener and frees the port",
+  { skip: process.platform === "win32" },
+  async () => {
+    const port = await findEphemeralFreePort();
+    const child = spawn(
+      process.execPath,
+      ["-e", `require("node:net").createServer((s) => s.destroy()).listen(${port}, "127.0.0.1")`],
+      { stdio: "ignore", detached: true },
+    );
+    const pid = child.pid;
+    child.unref();
+
+    // Wait for it to actually bind before asserting it's up.
+    for (let i = 0; i < 50 && (await isPortFree(port)); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(await isPortFree(port), false, "child should be bound to the port");
+
+    await killPort(port);
+
+    assert.equal(await isPortFree(port), true, "port should be free after killPort");
+    assert.throws(
+      () => execFileSync("ps", ["-p", String(pid)], { stdio: "ignore" }),
+      "child process should no longer exist",
+    );
+  },
+);
+
+test("killPort is a no-op when nothing is listening", { skip: process.platform === "win32" }, async () => {
+  const port = await findEphemeralFreePort();
+  await assert.doesNotReject(() => killPort(port));
 });

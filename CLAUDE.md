@@ -222,12 +222,14 @@ Cargo workspace + npm workspace (`apps/client` only):
   `collect calendar|issues|prs|slack|all`, `mcp serve`,
   `slot new|ls|rm|env|clean` (worktree slots — see the Worktree slots section).
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
-  `npm run dev` (root) picks a free dev-server port automatically
-  (`scripts/dev-port.mjs`), scanning up from a per-slot base port derived from
-  the slot's directory name (`scripts/slot-port.mjs`) instead of a hardcoded
-  1420, so multiple worktree slots run the app concurrently without colliding.
-  Pin a slot to a fixed port with `TT_DEV_PORT` in a gitignored root
-  `.env.local` (dev-port reads it and passes it through to vite). Each window is
+  `npm run dev` (root) picks a deterministic per-slot dev-server port
+  automatically (`scripts/dev-port.mjs`), derived from the slot's directory
+  name (`scripts/slot-port.mjs`) instead of a hardcoded 1420, so multiple
+  worktree slots run the app concurrently without colliding; anything already
+  listening on that port (almost always this slot's own orphaned session) is
+  killed first rather than scanned past. Pin a slot to a fixed port with
+  `TT_DEV_PORT` in a gitignored root `.env.local` (dev-port reads it and
+  passes it through to vite). Each window is
   labeled by slot: the title bar reads `Towles Tool — <slot>` and the app
   header shows a colored slot badge (`app_slot` command). See
   [`crates-tauri/tt-app/CLAUDE.md`](crates-tauri/tt-app/CLAUDE.md) for the
@@ -323,8 +325,8 @@ etc.). The points below are repo-specific specializations of that doc.
   slots of this repo concurrently (see [ATTRIBUTION.md](ATTRIBUTION.md) /
   `tt:parallel-slots`), so a fixed port, lockfile path, or other singleton
   resource makes copies collide. Default to dynamic allocation (e.g.
-  `scripts/dev-port.mjs` picks a free port derived from the slot dir name)
-  over a hardcoded value like `1420`.
+  `scripts/dev-port.mjs` picks a deterministic port derived from the slot dir
+  name) over a hardcoded value like `1420`.
 - **No planning/implementation-notes docs committed to the repo** (e.g.
   `docs/<feature>/plan.html`, `implementation-notes.md`), even when a
   planning skill calls for writing one during implementation. Write them to

@@ -21,3 +21,9 @@ export function resolveDevPort(repoRoot: string): number | null;
 
 /** The embedded WebDriver server's port for a given dev port. */
 export function resolveWebdriverPort(devPort: number): number;
+
+/** Whether `port` is free to bind on both IPv4 and IPv6 loopback. */
+export function isPortFree(port: number): Promise<boolean>;
+
+/** Kill whatever's already listening on `port` (whole process group). */
+export function killPort(port: number): Promise<void>;

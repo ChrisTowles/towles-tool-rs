@@ -2,69 +2,36 @@
 // Picks the port for the Vite dev server before launching `tauri dev`, so
 // running this repo from multiple worktree slots at once doesn't collide.
 //
-// Port resolution, in order:
-//   1. TT_DEV_PORT — an explicit override (shell env, `.env.local`, or rendered `.env` at the
-//      repo root). Used as-is.
-//   2. Otherwise scan upward from this slot's deterministic base port (derived
-//      from the repo-root directory name) for a free port, so different slots
-//      start in different ranges instead of all racing for 1420.
-import { createServer } from "node:net";
+// The port is always deterministic, never scanned: an explicit TT_DEV_PORT
+// (shell env, `.env.local`, or rendered `.env` at the repo root) wins,
+// otherwise this slot's stable base port (derived from the repo-root
+// directory name — see `slotBasePort`). Whatever's already listening there
+// gets killed first (almost always this slot's own orphaned dev session,
+// since the port is pinned per-slot, not shared) — see `killPort` in
+// slot-port.mjs. If it's still occupied after that, we fail rather than
+// silently moving to a different port.
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { slotBasePort, loadEnvFiles, spawnTauriDev } from "./slot-port.mjs";
-
-const MAX_ATTEMPTS = 100;
-const PORT_ENV = "TT_DEV_PORT";
+import { resolveDevPort, spawnTauriDev, isPortFree, killPort } from "./slot-port.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
 
-// A port is free only if BOTH loopback stacks are bindable: another slot may
-// hold it on IPv6 (::1) while IPv4 (127.0.0.1) looks open, and vite would still
-// collide. Only EADDRINUSE counts as "taken"; other errors (e.g. no IPv6) don't.
-function isPortFree(port) {
-  const tryHost = (host) =>
-    new Promise((resolve) => {
-      const server = createServer();
-      server.once("error", (err) => resolve(err.code !== "EADDRINUSE"));
-      server.once("listening", () => server.close(() => resolve(true)));
-      server.listen(port, host);
-    });
-  return Promise.all([tryHost("127.0.0.1"), tryHost("::1")]).then((results) =>
-    results.every(Boolean),
+const port = resolveDevPort(repoRoot);
+if (!port) {
+  console.error(
+    `[dev-port] TT_DEV_PORT=${process.env.TT_DEV_PORT} is not a valid port (1-65535)`,
   );
+  process.exit(1);
 }
+console.log(`[dev-port] using port ${port} (set TT_DEV_PORT in .env.local to pin a different one)`);
 
-async function findFreePort(start) {
-  for (let port = start; port < start + MAX_ATTEMPTS; port++) {
-    if (await isPortFree(port)) return port;
-  }
-  throw new Error(
-    `no free port found in range ${start}-${start + MAX_ATTEMPTS}`,
-  );
-}
-
-loadEnvFiles(repoRoot);
-
-let port;
-const override = process.env[PORT_ENV];
-if (override !== undefined && override !== "") {
-  port = Number(override);
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-    console.error(
-      `[dev-port] ${PORT_ENV}=${override} is not a valid port (1-65535)`,
-    );
-    process.exit(1);
-  }
-  console.log(`[dev-port] using ${PORT_ENV}=${port}`);
-} else {
-  const base = slotBasePort(repoRoot);
-  port = await findFreePort(base);
-  console.log(
-    `[dev-port] using port ${port} (slot base ${base}; set ${PORT_ENV} in .env.local to pin one, or let tt slot claim one in .env)`,
-  );
+await killPort(port);
+if (!(await isPortFree(port))) {
+  console.error(`[dev-port] port ${port} is still in use — couldn't free it, aborting`);
+  process.exit(1);
 }
 
 spawnTauriDev(

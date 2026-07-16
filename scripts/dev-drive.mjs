@@ -13,7 +13,7 @@
 // being told: wdPort = TT_DEV_PORT + 3000 (override with TT_E2E_WEBDRIVER_PORT).
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { resolveDevPort, resolveWebdriverPort, spawnTauriDev } from "./slot-port.mjs";
+import { resolveDevPort, resolveWebdriverPort, spawnTauriDev, killPort } from "./slot-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -25,6 +25,11 @@ if (!devPort) {
   process.exit(1);
 }
 const wdPort = resolveWebdriverPort(devPort);
+
+// This port is always pinned to the slot (never scanned), so anything
+// already listening here is almost certainly this slot's own orphaned
+// session — safe to kill before we rebind. See killPort in slot-port.mjs.
+await killPort(devPort);
 
 console.log(`[dev-drive] dev server ${devPort} · automation server ${wdPort}`);
 console.log(

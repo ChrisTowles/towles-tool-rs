@@ -3,13 +3,15 @@
 // Multiple checkouts of this repo (the main checkout, .claude/worktrees/thing,
 // …) run `tauri dev` at the same time. If every slot defaults to 1420 they
 // collide, so we derive a stable base port from the checkout's directory name
-// (the worktree dir's basename — unchanged by the nesting): each
-// slot prefers its own port and keeps it run-to-run, and `dev-port.mjs` scans
-// upward from there for a free one as a safety net. An explicit TT_DEV_PORT
-// (shell env, `.env.local` pin, or `.env` rendered by `tt slot`) wins over this.
+// (the worktree dir's basename — unchanged by the nesting): each slot gets
+// its own port and keeps it run-to-run — no scanning for a free one, since
+// that would just paper over a stuck orphaned process instead of clearing
+// it (see `killPort`). An explicit TT_DEV_PORT (shell env, `.env.local` pin,
+// or `.env` rendered by `tt slot`) wins over the base port.
 import { basename, join } from "node:path";
 import { readFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
+import { createServer } from "node:net";
 
 export const PORT_MIN = 1420;
 const PORT_SPAN = 200; // ports 1420–1619, partitioned across slots by name hash
@@ -80,6 +82,100 @@ export function resolveDevPort(repoRoot) {
  */
 export function resolveWebdriverPort(devPort) {
   return Number(process.env.TT_E2E_WEBDRIVER_PORT) || devPort + 3000;
+}
+
+// A port is free only if BOTH loopback stacks are bindable: another slot may
+// hold it on IPv6 (::1) while IPv4 (127.0.0.1) looks open. Only EADDRINUSE
+// counts as "taken"; other errors (e.g. no IPv6) don't.
+export function isPortFree(port) {
+  const tryHost = (host) =>
+    new Promise((resolve) => {
+      const server = createServer();
+      server.once("error", (err) => resolve(err.code !== "EADDRINUSE"));
+      server.once("listening", () => server.close(() => resolve(true)));
+      server.listen(port, host);
+    });
+  return Promise.all([tryHost("127.0.0.1"), tryHost("::1")]).then((results) =>
+    results.every(Boolean),
+  );
+}
+
+function listeningPids(port) {
+  try {
+    const out = execFileSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return [...new Set(out.split("\n").map((s) => s.trim()).filter(Boolean))];
+  } catch {
+    return []; // lsof missing, or exits 1 when nothing matches
+  }
+}
+
+function pgidOf(pid) {
+  try {
+    return execFileSync("ps", ["-o", "pgid=", "-p", pid], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null; // process already gone
+  }
+}
+
+async function waitUntilFree(port, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isPortFree(port)) return true;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return isPortFree(port);
+}
+
+/**
+ * Kill whatever's already listening on `port` — whole process group, not
+ * just the one pid `lsof` reports — before we bind there ourselves.
+ * `spawnTauriDev` groups tauri/cargo/tt-app/vite under one pgid so a normal
+ * Ctrl+C tears it all down together, but a session killed by pid alone (e.g.
+ * a backgrounded terminal closed without Ctrl+C) leaves vite/esbuild
+ * orphaned and still bound to the port — see e2e/README.md's "stopping a
+ * stray dev session" for the manual version of this recovery. Only meant for
+ * a port this slot deterministically owns (an explicit `TT_DEV_PORT`, or
+ * `dev:drive`'s always-pinned port) — never call this on a scanned/shared
+ * port, since whatever's listening there may be another slot's legitimate
+ * dev server. No-op on Windows (no lsof/ps/POSIX process groups) and when
+ * nothing is listening.
+ */
+export async function killPort(port) {
+  if (process.platform === "win32") return;
+  const pids = listeningPids(port);
+  if (!pids.length) return;
+
+  const pgids = new Set(pids.map(pgidOf).filter(Boolean));
+  if (!pgids.size) return;
+
+  console.log(
+    `[slot-port] port ${port} is already in use — stopping it (pgid ${[...pgids].join(", ")})`,
+  );
+  for (const pgid of pgids) {
+    try {
+      process.kill(-Number(pgid), "SIGTERM");
+    } catch {
+      // already gone
+    }
+  }
+
+  if (await waitUntilFree(port, 3000, 100)) return;
+
+  console.log(`[slot-port] port ${port} still in use after SIGTERM — sending SIGKILL`);
+  for (const pgid of pgids) {
+    try {
+      process.kill(-Number(pgid), "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+  await waitUntilFree(port, 2000, 100);
 }
 
 /**
