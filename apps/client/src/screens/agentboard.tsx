@@ -956,11 +956,21 @@ export function AgentboardScreen() {
   }
 
   async function performDeleteWorktree(target: RemoveTarget) {
-    for (const id of target.sessionIds) await closeSession(id);
+    // `slot_remove` kills the folder's live PTYs itself before attempting
+    // the (fallible) worktree removal, and only tears down the session
+    // records once removal actually succeeds — closing sessions here first
+    // would untrack them even when removal is blocked (dirty tree, unpushed
+    // commits, a foreign port), leaving the rail looking clean while the
+    // worktree stays on disk.
     try {
       const removed = await invokeOrThrow<{ name: string; messages: string[] }>("slot_remove", {
         dir: target.dirs[0],
       });
+      for (const id of target.sessionIds) {
+        setOpen((prev) => prev.filter((x) => x !== id));
+        setSelected((cur) => (cur?.sessionId === id ? null : cur));
+        removePane(id);
+      }
       for (const message of removed?.messages ?? []) toast(message);
       toast.success(`Deleted worktree ${removed?.name ?? target.label}`);
     } catch (e) {

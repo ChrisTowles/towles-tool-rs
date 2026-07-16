@@ -194,8 +194,8 @@ fn cmd_new(
 
 /// Resolve `name` to a checkout dir: `primary` or a dir under `slots/`.
 fn checkout_dir(sr: &SlotRoot, name: &str) -> Result<std::path::PathBuf, String> {
-    if name == "primary" || name == sr.primary.file_name().and_then(|n| n.to_str()).unwrap_or("") {
-        return Ok(sr.primary.clone());
+    if name == "primary" || name == sr.checkout.file_name().and_then(|n| n.to_str()).unwrap_or("") {
+        return Ok(sr.checkout.clone());
     }
     let dir = sr.slot_dir(name);
     if dir.is_dir() {
@@ -221,9 +221,9 @@ fn cmd_env(name: &str, root: Option<&Path>) -> Result<(), String> {
 
 fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
     let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
-    let _ = ops::git_primary(&sr.primary, &["worktree", "prune"]);
+    let _ = ops::git_checkout(&sr.checkout, &["worktree", "prune"]);
     let mut checkouts: Vec<(String, std::path::PathBuf, bool)> =
-        vec![("primary".to_string(), sr.primary.clone(), true)];
+        vec![("primary".to_string(), sr.checkout.clone(), true)];
     checkouts.extend(sr.slots().into_iter().map(|(name, dir)| (name, dir, false)));
 
     let mut rows = Vec::new();

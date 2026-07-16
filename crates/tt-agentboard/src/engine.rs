@@ -684,6 +684,14 @@ impl Engine {
         removed
     }
 
+    /// Session ids scoped to `dir`, without removing anything — a slot
+    /// removal must kill live PTYs *before* attempting the (fallible)
+    /// worktree removal, but must not drop the records until removal has
+    /// actually succeeded (see [`Self::close_folder`]).
+    pub fn session_ids_for(&self, dir: &str) -> Vec<String> {
+        self.sessions.sessions_for(dir).iter().map(|r| r.id.clone()).collect()
+    }
+
     /// Tear a folder's live rail state down immediately, ahead of its
     /// checkout disappearing (a slot removal): drop every session record and
     /// every window/pane scoped to it, persisting both right away instead of
