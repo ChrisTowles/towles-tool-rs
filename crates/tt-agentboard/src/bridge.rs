@@ -8,8 +8,11 @@
 //!
 //! - A [`FolderData`] is one checkout on disk (a `RepoEntry`), carrying its git
 //!   stats and its 1..N PTY [`SessionData`]s.
-//! - Folders group into a [`RepoData`] by `git remote get-url origin` (a
-//!   remoteless folder stands alone under `key = "path:<dir>"`).
+//! - Folders nest into a [`RepoData`] only when they're linked `git worktree`
+//!   checkouts of the same repo (they share a `git rev-parse --git-common-dir`
+//!   — see [`GitInfo::common_dir`]). A folder with no worktree siblings stands
+//!   alone under `key = "path:<dir>"`, even if another tracked folder happens
+//!   to share its origin remote — same origin doesn't imply same checkout.
 //! - Each folder's agent events (from the tracker, keyed by folder name) are
 //!   distributed across its sessions by the `attribute` closure — which maps an
 //!   event to the PTY `TT_SESSION_ID` it ran in. An attributed event renders
@@ -50,7 +53,9 @@ pub struct StatePayload {
 
 /// Assemble the [`StatePayload`] from the current inputs. Pure. Maps each repo
 /// entry to a [`FolderData`] (git stats + persisted sessions + attributed
-/// agents + `needs`), then groups folders into [`RepoData`] by origin URL.
+/// agents + `needs`), then nests folders into [`RepoData`] by shared git
+/// common dir — i.e. only actual `git worktree` siblings of one checkout, see
+/// [`GitInfo::common_dir`].
 ///
 /// `attribute` maps an agent event to the PTY session id it was detected in
 /// (via `TT_SESSION_ID`); an id that matches none of the folder's records drops
@@ -59,7 +64,7 @@ pub struct StatePayload {
 /// session. `session_agents` (keyed by session id) supplements the tracker with
 /// app-spawned agents the CLI snapshot missed — used only for sessions that end
 /// up with no tracker-attributed state. Entries are assumed pre-sorted by the
-/// caller (the engine sorts by name); repo grouping preserves first-seen order.
+/// caller (the engine sorts by name); nesting preserves first-seen order.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_state(
     entries: &[RepoEntry],
@@ -92,7 +97,15 @@ pub fn assemble_state(
         );
 
         let origin = git.origin_url.clone();
-        let key = origin.clone().unwrap_or_else(|| format!("path:{}", entry.dir));
+        // Nesting key: the shared git common dir (identical across every
+        // linked worktree of one checkout), never the origin URL — two
+        // unrelated clones of the same remote must render as separate rows,
+        // not merge into one. Falls back to a path key for a non-repo dir.
+        let key = if !git.common_dir.is_empty() {
+            git.common_dir.clone()
+        } else {
+            format!("path:{}", entry.dir)
+        };
         let repo_name =
             origin.as_deref().and_then(repo_name_from_origin).unwrap_or_else(|| entry.name.clone());
 
@@ -414,7 +427,8 @@ mod tests {
         );
         assert_eq!(payload.ts, 999);
         assert_eq!(payload.theme.as_deref(), Some("mocha"));
-        // Two distinct origins (alpha has one; beta has none → path key) → two repos.
+        // Neither folder has a common dir set (no worktree relationship) →
+        // each stands alone under its own path key → two repos.
         assert_eq!(payload.repos.len(), 2);
         let alpha = &payload.repos[0];
         assert_eq!(alpha.name, "alpha"); // derived from origin repo segment
@@ -463,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn same_origin_folders_group_into_one_repo() {
+    fn same_common_dir_folders_nest_into_one_repo() {
         let tracker = AgentTracker::new();
         let metadata = SessionMetadataStore::new();
         let mut store = SessionStore::new(None);
@@ -474,7 +488,11 @@ mod tests {
         for dir in ["/r/slot-0", "/r/slot-1"] {
             git.insert(
                 dir.to_string(),
-                GitInfo { origin_url: Some(origin.into()), ..Default::default() },
+                GitInfo {
+                    origin_url: Some(origin.into()),
+                    common_dir: "/r/slot-0/.git".into(),
+                    ..Default::default()
+                },
             );
         }
         let entries = vec![
@@ -495,10 +513,61 @@ mod tests {
             30,
             0,
         );
-        // One repo, two folders (the checkouts).
+        // Same git common dir (linked worktrees) → one repo, two folders.
         assert_eq!(payload.repos.len(), 1);
         assert_eq!(payload.repos[0].name, "proj");
         assert_eq!(payload.repos[0].folders.len(), 2);
+    }
+
+    #[test]
+    fn same_origin_but_different_common_dir_stays_separate() {
+        // Two independent clones of the same remote (not worktrees of each
+        // other) must NOT merge into one row — sharing an origin isn't enough,
+        // only actual `git worktree` siblings nest.
+        let tracker = AgentTracker::new();
+        let metadata = SessionMetadataStore::new();
+        let mut store = SessionStore::new(None);
+        store.ensure_default("/r/clone-a", 1);
+        store.ensure_default("/r/clone-b", 1);
+        let origin = "https://github.com/me/proj.git";
+        let mut git = HashMap::new();
+        git.insert(
+            "/r/clone-a".to_string(),
+            GitInfo {
+                origin_url: Some(origin.into()),
+                common_dir: "/r/clone-a/.git".into(),
+                ..Default::default()
+            },
+        );
+        git.insert(
+            "/r/clone-b".to_string(),
+            GitInfo {
+                origin_url: Some(origin.into()),
+                common_dir: "/r/clone-b/.git".into(),
+                ..Default::default()
+            },
+        );
+        let entries = vec![
+            RepoEntry { name: "clone-a".into(), dir: "/r/clone-a".into() },
+            RepoEntry { name: "clone-b".into(), dir: "/r/clone-b".into() },
+        ];
+        let payload = assemble_state(
+            &entries,
+            &git,
+            &tracker,
+            &metadata,
+            &store,
+            &FolderMetaStore::default(),
+            &no_attr,
+            &HashMap::new(),
+            None,
+            "code",
+            30,
+            0,
+        );
+        assert_eq!(payload.repos.len(), 2);
+        assert_eq!(payload.repos[0].folders.len(), 1);
+        assert_eq!(payload.repos[1].folders.len(), 1);
     }
 
     /// A `SessionData` with just the fields `session_needs` reads set; the rest
@@ -565,6 +634,7 @@ mod tests {
         store.ensure_default("/r/demo", 1);
         let info = crate::git_info::GitInfo {
             origin_url: Some("https://github.com/x/demo.git".into()),
+            common_dir: "/r/demo/.git".into(),
             ..Default::default()
         };
         let mut git = HashMap::new();
@@ -590,7 +660,7 @@ mod tests {
             30,
             0,
         );
-        assert_eq!(payload.repos.len(), 1, "same origin groups into one repo");
+        assert_eq!(payload.repos.len(), 1, "same git common dir nests into one repo");
         let dirs: Vec<&str> = payload.repos[0].folders.iter().map(|f| f.dir.as_str()).collect();
         assert_eq!(dirs, vec!["/r/demo", "/r/demo/.claude/worktrees/apple"]);
     }

@@ -257,11 +257,14 @@ pub struct FolderData {
     pub has_port_drift: bool,
 }
 
-/// A logical repo: the group of checkouts sharing a `git remote origin` URL.
+/// A logical repo: a checkout and any other tracked folders that are `git
+/// worktree` siblings of it (share its `.git` common dir) — never folders
+/// that merely share an origin remote.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoData {
-    /// Grouping key: the origin URL, or `"path:<dir>"` for a remoteless folder.
+    /// Nesting key: the shared git common dir, or `"path:<dir>"` for a folder
+    /// with no worktree siblings (including any non-repo/remoteless folder).
     pub key: String,
     /// Display name: the repo segment of `owner/repo`, else the folder basename.
     pub name: String,

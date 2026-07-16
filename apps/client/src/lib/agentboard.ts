@@ -146,7 +146,10 @@ export function comparedBaseLabel(folder: Pick<FolderData, "comparedBase">): str
   return base.startsWith("origin/") ? base.slice("origin/".length) : base;
 }
 
-/** A logical repo: the group of checkouts sharing a `git remote origin` URL. */
+/** A logical repo: a checkout plus any other tracked folders that are `git
+ * worktree` siblings of it (nested by the backend on shared git common dir —
+ * see `RepoData` in `crates/tt-agentboard/src/types.rs`), never folders that
+ * merely share an origin remote. */
 export type RepoData = {
   key: string;
   name: string;

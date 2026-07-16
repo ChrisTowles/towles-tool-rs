@@ -251,8 +251,8 @@ impl Engine {
     /// Cache-only: never shells to git. `compute_payload_for_entries` also
     /// reads `git_infos` cache-only, so a dir whose git info was never warmed
     /// (a worktree freshly discovered this tick) shows up with an empty
-    /// `GitInfo` — no `origin_url`, so it renders as its own standalone entry
-    /// instead of grouping under its parent repo, until [`Self::stale_git_targets`]
+    /// `GitInfo` — no `common_dir`, so it renders as its own standalone entry
+    /// instead of nesting under its parent repo, until [`Self::stale_git_targets`]
     /// and [`Self::warm_git_cache`] catch it up. That's a deliberate tradeoff:
     /// this method runs under the engine lock (every `ab_*` command and the
     /// watcher-scan loop share it), and every other command is dispatched
