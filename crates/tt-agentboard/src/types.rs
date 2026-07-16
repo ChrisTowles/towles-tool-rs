@@ -257,14 +257,16 @@ pub struct FolderData {
     pub has_port_drift: bool,
 }
 
-/// A logical repo: a checkout and any other tracked folders that are `git
-/// worktree` siblings of it (share its `.git` common dir) — never folders
-/// that merely share an origin remote.
+/// A logical repo: one explicitly tracked folder, plus any `git worktree`
+/// checkouts discovered under it (see `Engine::expand_with_worktrees`) that
+/// aren't themselves separately tracked. Two tracked folders never merge into
+/// one `RepoData`, even if they share an origin remote or are worktrees of
+/// each other — tracking a folder always gets it its own row.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoData {
-    /// Nesting key: the shared git common dir, or `"path:<dir>"` for a folder
-    /// with no worktree siblings (including any non-repo/remoteless folder).
+    /// `"path:<dir>"` of this row's own folder (the tracked root, or an
+    /// orphaned discovered child whose parent isn't in the current snapshot).
     pub key: String,
     /// Display name: the repo segment of `owner/repo`, else the folder basename.
     pub name: String,
