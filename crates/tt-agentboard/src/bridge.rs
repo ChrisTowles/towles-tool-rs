@@ -8,11 +8,14 @@
 //!
 //! - A [`FolderData`] is one checkout on disk (a `RepoEntry`), carrying its git
 //!   stats and its 1..N PTY [`SessionData`]s.
-//! - Folders nest into a [`RepoData`] only when they're linked `git worktree`
-//!   checkouts of the same repo (they share a `git rev-parse --git-common-dir`
-//!   — see [`GitInfo::common_dir`]). A folder with no worktree siblings stands
-//!   alone under `key = "path:<dir>"`, even if another tracked folder happens
-//!   to share its origin remote — same origin doesn't imply same checkout.
+//! - Every explicitly tracked folder (an entry in `repos.json`) is always its
+//!   own top-level [`RepoData`] row — full stop, never merged with another
+//!   tracked folder no matter what it shares (origin remote, even an actual
+//!   `git worktree` relationship). A folder only ever nests under another when
+//!   it's a *discovered, untracked* `git worktree` checkout — see the
+//!   `parents` map built by `Engine::expand_with_worktrees` from `git
+//!   worktree list`, threaded straight through to [`assemble_state`] with no
+//!   re-derivation here.
 //! - Each folder's agent events (from the tracker, keyed by folder name) are
 //!   distributed across its sessions by the `attribute` closure — which maps an
 //!   event to the PTY `TT_SESSION_ID` it ran in. An attributed event renders
@@ -32,8 +35,8 @@ use crate::sessions::SessionStore;
 use crate::tracker::AgentTracker;
 use crate::types::{AgentEvent, AgentStatus, FolderData, NeedsYouReason, RepoData, SessionData};
 
-/// The state snapshot emitted to the client: repos, each grouping its folders,
-/// each holding its PTY sessions.
+/// The state snapshot emitted to the client: repos, each nesting its
+/// discovered-worktree folders, each holding its PTY sessions.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatePayload {
@@ -53,9 +56,20 @@ pub struct StatePayload {
 
 /// Assemble the [`StatePayload`] from the current inputs. Pure. Maps each repo
 /// entry to a [`FolderData`] (git stats + persisted sessions + attributed
-/// agents + `needs`), then nests folders into [`RepoData`] by shared git
-/// common dir — i.e. only actual `git worktree` siblings of one checkout, see
-/// [`GitInfo::common_dir`].
+/// agents + `needs`), then builds [`RepoData`] rows in two passes over
+/// `parents` (see `Engine::expand_with_worktrees`, which builds it from `git
+/// worktree list`, keyed by each discovered dir → the tracked dir it was
+/// found from):
+///
+/// 1. Every entry that ISN'T a key in `parents` becomes its own top-level
+///    row — this includes every explicitly tracked (`repos.json`) folder,
+///    always, and is what makes "track a folder" mean "get a row" with no
+///    exceptions (see the module doc).
+/// 2. Every entry that IS a key in `parents` nests as an extra folder under
+///    the row for its recorded parent dir. A parent dir absent from this
+///    `entries` snapshot (shouldn't normally happen — see
+///    `Engine::expand_with_worktrees`) still surfaces its child standalone
+///    rather than dropping it.
 ///
 /// `attribute` maps an agent event to the PTY session id it was detected in
 /// (via `TT_SESSION_ID`); an id that matches none of the folder's records drops
@@ -64,11 +78,13 @@ pub struct StatePayload {
 /// session. `session_agents` (keyed by session id) supplements the tracker with
 /// app-spawned agents the CLI snapshot missed — used only for sessions that end
 /// up with no tracker-attributed state. Entries are assumed pre-sorted by the
-/// caller (the engine sorts by name); nesting preserves first-seen order.
+/// caller (the engine sorts by name); nesting preserves that order, root
+/// first (pass 1 runs first), then each root's children in entries order.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_state(
     entries: &[RepoEntry],
     git_infos: &HashMap<String, GitInfo>,
+    parents: &HashMap<String, String>,
     tracker: &AgentTracker,
     metadata: &SessionMetadataStore,
     sessions: &SessionStore,
@@ -81,9 +97,9 @@ pub fn assemble_state(
     ts: i64,
 ) -> StatePayload {
     let mut repos: Vec<RepoData> = Vec::new();
-    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut index: HashMap<String, usize> = HashMap::new(); // root dir -> repos index
 
-    for entry in entries {
+    let build = |entry: &RepoEntry| -> (GitInfo, FolderData) {
         let git = git_infos.get(&entry.dir).cloned().unwrap_or_default();
         let folder = build_folder(
             entry,
@@ -95,45 +111,36 @@ pub fn assemble_state(
             attribute,
             session_agents,
         );
+        (git, folder)
+    };
 
-        let origin = git.origin_url.clone();
-        // Nesting key: the shared git common dir (identical across every
-        // linked worktree of one checkout), never the origin URL — two
-        // unrelated clones of the same remote must render as separate rows,
-        // not merge into one. Falls back to a path key for a non-repo dir.
-        let key = if !git.common_dir.is_empty() {
-            git.common_dir.clone()
-        } else {
-            format!("path:{}", entry.dir)
+    // Pass 1: every non-nested entry is always its own row.
+    for entry in entries {
+        if parents.contains_key(&entry.dir) {
+            continue;
+        }
+        let (git, folder) = build(entry);
+        index.insert(entry.dir.clone(), repos.len());
+        repos.push(new_repo_row(entry, &git, folder));
+    }
+
+    // Pass 2: attach each discovered worktree child to its recorded parent.
+    for entry in entries {
+        let Some(parent_dir) = parents.get(&entry.dir) else {
+            continue;
         };
-        let repo_name =
-            origin.as_deref().and_then(repo_name_from_origin).unwrap_or_else(|| entry.name.clone());
-
+        let (git, folder) = build(entry);
         let needs = folder.needs;
-        match index.get(&key) {
+        match index.get(parent_dir) {
             Some(&i) => {
                 repos[i].folders.push(folder);
                 repos[i].needs += needs;
             }
             None => {
-                index.insert(key.clone(), repos.len());
-                repos.push(RepoData {
-                    key,
-                    name: repo_name,
-                    origin_url: origin,
-                    folders: vec![folder],
-                    needs,
-                });
+                index.insert(entry.dir.clone(), repos.len());
+                repos.push(new_repo_row(entry, &git, folder));
             }
         }
-    }
-
-    // The main checkout (the worktree-slot convention's long-lived repo
-    // root — its slots nest under `.claude/worktrees/`) always leads its
-    // repo group; the stable sort keeps the engine's name order for
-    // everything else.
-    for repo in &mut repos {
-        repo.folders.sort_by_key(|f| !is_primary_checkout(&f.dir));
     }
 
     StatePayload {
@@ -344,10 +351,25 @@ fn status_rank(s: AgentStatus) -> u8 {
     }
 }
 
-/// Whether `dir` is a repo's main checkout under the worktree-slot
-/// convention: anything *not* nested at `…/.claude/worktrees/<name>`.
-fn is_primary_checkout(dir: &str) -> bool {
-    tt_slots::main_checkout_for(std::path::Path::new(dir)).is_none()
+/// Start a new top-level [`RepoData`] row for `entry` holding just `folder`.
+/// Used both for a normal root (pass 1 of [`assemble_state`]) and for a
+/// discovered worktree child whose recorded parent isn't in this snapshot
+/// (pass 2's fallback) — either way it's the row's first and, so far, only
+/// folder.
+fn new_repo_row(entry: &RepoEntry, git: &GitInfo, folder: FolderData) -> RepoData {
+    let name = git
+        .origin_url
+        .as_deref()
+        .and_then(repo_name_from_origin)
+        .unwrap_or_else(|| entry.name.clone());
+    let needs = folder.needs;
+    RepoData {
+        key: format!("path:{}", entry.dir),
+        name,
+        origin_url: git.origin_url.clone(),
+        folders: vec![folder],
+        needs,
+    }
 }
 
 /// The repo segment of an origin URL: strips a trailing `.git` / `/` and takes
@@ -390,6 +412,10 @@ mod tests {
         None
     }
 
+    fn no_parents() -> HashMap<String, String> {
+        HashMap::new()
+    }
+
     #[test]
     fn folders_map_fields_and_seed_sessions() {
         let mut tracker = AgentTracker::new();
@@ -414,6 +440,7 @@ mod tests {
         let payload = assemble_state(
             &entries(),
             &git,
+            &no_parents(),
             &tracker,
             &metadata,
             &store,
@@ -427,8 +454,8 @@ mod tests {
         );
         assert_eq!(payload.ts, 999);
         assert_eq!(payload.theme.as_deref(), Some("mocha"));
-        // Neither folder has a common dir set (no worktree relationship) →
-        // each stands alone under its own path key → two repos.
+        // Neither folder is a discovered worktree child of the other (empty
+        // `parents`) → each is its own top-level row → two repos.
         assert_eq!(payload.repos.len(), 2);
         let alpha = &payload.repos[0];
         assert_eq!(alpha.name, "alpha"); // derived from origin repo segment
@@ -459,6 +486,7 @@ mod tests {
         let payload = assemble_state(
             &entries(),
             &git,
+            &no_parents(),
             &tracker,
             &metadata,
             &store,
@@ -477,31 +505,26 @@ mod tests {
     }
 
     #[test]
-    fn same_common_dir_folders_nest_into_one_repo() {
+    fn discovered_worktree_child_nests_after_its_tracked_root() {
         let tracker = AgentTracker::new();
         let metadata = SessionMetadataStore::new();
         let mut store = SessionStore::new(None);
-        store.ensure_default("/r/slot-0", 1);
-        store.ensure_default("/r/slot-1", 1);
-        let origin = "https://github.com/me/proj.git";
-        let mut git = HashMap::new();
-        for dir in ["/r/slot-0", "/r/slot-1"] {
-            git.insert(
-                dir.to_string(),
-                GitInfo {
-                    origin_url: Some(origin.into()),
-                    common_dir: "/r/slot-0/.git".into(),
-                    ..Default::default()
-                },
-            );
-        }
+        store.ensure_default("/r/demo", 1);
+        store.ensure_default("/r/demo/.claude/worktrees/apple", 1);
+        let git = HashMap::new();
+        // Entries arrive name-sorted (as the engine does), which puts the
+        // slot ("apple") ahead of the main checkout — nesting must still
+        // lead with the root regardless of entries order.
         let entries = vec![
-            RepoEntry { name: "slot-0".into(), dir: "/r/slot-0".into() },
-            RepoEntry { name: "slot-1".into(), dir: "/r/slot-1".into() },
+            RepoEntry { name: "apple".into(), dir: "/r/demo/.claude/worktrees/apple".into() },
+            RepoEntry { name: "demo".into(), dir: "/r/demo".into() },
         ];
+        let mut parents = HashMap::new();
+        parents.insert("/r/demo/.claude/worktrees/apple".to_string(), "/r/demo".to_string());
         let payload = assemble_state(
             &entries,
             &git,
+            &parents,
             &tracker,
             &metadata,
             &store,
@@ -513,47 +536,32 @@ mod tests {
             30,
             0,
         );
-        // Same git common dir (linked worktrees) → one repo, two folders.
-        assert_eq!(payload.repos.len(), 1);
-        assert_eq!(payload.repos[0].name, "proj");
-        assert_eq!(payload.repos[0].folders.len(), 2);
+        assert_eq!(payload.repos.len(), 1, "discovered worktree nests under its tracked root");
+        let dirs: Vec<&str> = payload.repos[0].folders.iter().map(|f| f.dir.as_str()).collect();
+        assert_eq!(dirs, vec!["/r/demo", "/r/demo/.claude/worktrees/apple"]);
     }
 
     #[test]
-    fn same_origin_but_different_common_dir_stays_separate() {
-        // Two independent clones of the same remote (not worktrees of each
-        // other) must NOT merge into one row — sharing an origin isn't enough,
-        // only actual `git worktree` siblings nest.
+    fn explicitly_tracked_worktree_siblings_never_merge() {
+        // /r/slot-0 and /r/slot-1 are git-worktree siblings of each other,
+        // but BOTH are explicitly tracked — so neither shows up as a key in
+        // `parents` (the engine's dedup never records a parent for an
+        // already-configured dir). Each must render as its own standalone
+        // row: "track the folder only" wins over any worktree relationship.
         let tracker = AgentTracker::new();
         let metadata = SessionMetadataStore::new();
         let mut store = SessionStore::new(None);
-        store.ensure_default("/r/clone-a", 1);
-        store.ensure_default("/r/clone-b", 1);
-        let origin = "https://github.com/me/proj.git";
-        let mut git = HashMap::new();
-        git.insert(
-            "/r/clone-a".to_string(),
-            GitInfo {
-                origin_url: Some(origin.into()),
-                common_dir: "/r/clone-a/.git".into(),
-                ..Default::default()
-            },
-        );
-        git.insert(
-            "/r/clone-b".to_string(),
-            GitInfo {
-                origin_url: Some(origin.into()),
-                common_dir: "/r/clone-b/.git".into(),
-                ..Default::default()
-            },
-        );
+        store.ensure_default("/r/slot-0", 1);
+        store.ensure_default("/r/slot-1", 1);
+        let git = HashMap::new();
         let entries = vec![
-            RepoEntry { name: "clone-a".into(), dir: "/r/clone-a".into() },
-            RepoEntry { name: "clone-b".into(), dir: "/r/clone-b".into() },
+            RepoEntry { name: "slot-0".into(), dir: "/r/slot-0".into() },
+            RepoEntry { name: "slot-1".into(), dir: "/r/slot-1".into() },
         ];
         let payload = assemble_state(
             &entries,
             &git,
+            &no_parents(),
             &tracker,
             &metadata,
             &store,
@@ -568,6 +576,38 @@ mod tests {
         assert_eq!(payload.repos.len(), 2);
         assert_eq!(payload.repos[0].folders.len(), 1);
         assert_eq!(payload.repos[1].folders.len(), 1);
+    }
+
+    #[test]
+    fn orphaned_worktree_child_with_unknown_root_surfaces_standalone() {
+        // `parents` claims a root dir that isn't present in this entries
+        // snapshot (shouldn't normally happen) — the child must still
+        // render as its own row rather than silently vanishing.
+        let tracker = AgentTracker::new();
+        let metadata = SessionMetadataStore::new();
+        let mut store = SessionStore::new(None);
+        store.ensure_default("/r/orphan", 1);
+        let git = HashMap::new();
+        let entries = vec![RepoEntry { name: "orphan".into(), dir: "/r/orphan".into() }];
+        let mut parents = HashMap::new();
+        parents.insert("/r/orphan".to_string(), "/r/missing-root".to_string());
+        let payload = assemble_state(
+            &entries,
+            &git,
+            &parents,
+            &tracker,
+            &metadata,
+            &store,
+            &FolderMetaStore::default(),
+            &no_attr,
+            &HashMap::new(),
+            None,
+            "code",
+            30,
+            0,
+        );
+        assert_eq!(payload.repos.len(), 1);
+        assert_eq!(payload.repos[0].folders[0].dir, "/r/orphan");
     }
 
     /// A `SessionData` with just the fields `session_needs` reads set; the rest
@@ -617,55 +657,6 @@ mod tests {
     }
 
     #[test]
-    fn is_primary_checkout_matches_everything_but_nested_worktrees() {
-        assert!(is_primary_checkout("/a/b/demo"));
-        assert!(is_primary_checkout("/a/b/demo-primary"));
-        assert!(!is_primary_checkout("/a/demo/.claude/worktrees/thing"));
-        assert!(is_primary_checkout("/a/demo/.claude/other/thing"));
-        assert!(is_primary_checkout("/a/slots/thing"));
-    }
-
-    #[test]
-    fn primary_checkout_sorts_first_in_its_repo_group() {
-        let tracker = AgentTracker::new();
-        let metadata = SessionMetadataStore::new();
-        let mut store = SessionStore::new(None);
-        store.ensure_default("/r/demo/.claude/worktrees/apple", 1);
-        store.ensure_default("/r/demo", 1);
-        let info = crate::git_info::GitInfo {
-            origin_url: Some("https://github.com/x/demo.git".into()),
-            common_dir: "/r/demo/.git".into(),
-            ..Default::default()
-        };
-        let mut git = HashMap::new();
-        git.insert("/r/demo/.claude/worktrees/apple".to_string(), info.clone());
-        git.insert("/r/demo".to_string(), info);
-        // Entries arrive name-sorted, which puts the slot ("apple") ahead of
-        // the main checkout — the group re-sort must still lead with it.
-        let entries = vec![
-            RepoEntry { name: "apple".into(), dir: "/r/demo/.claude/worktrees/apple".into() },
-            RepoEntry { name: "demo".into(), dir: "/r/demo".into() },
-        ];
-        let payload = assemble_state(
-            &entries,
-            &git,
-            &tracker,
-            &metadata,
-            &store,
-            &FolderMetaStore::default(),
-            &no_attr,
-            &HashMap::new(),
-            None,
-            "code",
-            30,
-            0,
-        );
-        assert_eq!(payload.repos.len(), 1, "same git common dir nests into one repo");
-        let dirs: Vec<&str> = payload.repos[0].folders.iter().map(|f| f.dir.as_str()).collect();
-        assert_eq!(dirs, vec!["/r/demo", "/r/demo/.claude/worktrees/apple"]);
-    }
-
-    #[test]
     fn assemble_time_needs_is_zero_before_stamping() {
         // The engine assembles live=false, so even a waiting agent yields
         // needs=0 until the app stamps shell liveness and recomputes.
@@ -679,6 +670,7 @@ mod tests {
         let payload = assemble_state(
             &entries,
             &git,
+            &no_parents(),
             &tracker,
             &metadata,
             &store,
@@ -706,6 +698,7 @@ mod tests {
         let mut payload = assemble_state(
             &entries,
             &git,
+            &no_parents(),
             &tracker,
             &metadata,
             &store,
@@ -746,6 +739,7 @@ mod tests {
             assemble_state(
                 &entries,
                 &git,
+                &no_parents(),
                 tracker,
                 &metadata,
                 &store,
@@ -803,6 +797,7 @@ mod tests {
         let payload = assemble_state(
             &entries,
             &git,
+            &no_parents(),
             &tracker,
             &metadata,
             &store,
@@ -839,6 +834,7 @@ mod tests {
         let payload = assemble_state(
             &entries,
             &git,
+            &no_parents(),
             &tracker,
             &metadata,
             &store,
@@ -883,6 +879,7 @@ mod tests {
         let payload = assemble_state(
             &entries,
             &git,
+            &no_parents(),
             &tracker,
             &metadata,
             &store,
@@ -907,6 +904,7 @@ mod tests {
         let payload2 = assemble_state(
             &entries,
             &git,
+            &no_parents(),
             &tracker2,
             &metadata,
             &store,
