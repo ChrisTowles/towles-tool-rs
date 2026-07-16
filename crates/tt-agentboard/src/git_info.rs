@@ -37,8 +37,12 @@ pub struct GitInfo {
     /// `commits_ahead` (not a signed delta) so "3 ahead, 2 behind" doesn't
     /// collapse to a meaningless "+1".
     pub commits_behind: i64,
-    /// `git remote get-url origin`, if the checkout has an origin remote. Used to
-    /// group folders (checkouts) of the same logical repo in the Folder Rail.
+    /// `git remote get-url origin`, if the checkout has an origin remote.
+    /// Display-only (repo name derivation) — NOT a Folder Rail nesting signal;
+    /// two unrelated clones can share an origin without being linked worktrees
+    /// of each other. Nesting is decided structurally by
+    /// `Engine::expand_with_worktrees`'s discovery, not by anything on this
+    /// struct — see [`crate::bridge::assemble_state`].
     pub origin_url: Option<String>,
     /// Absolute paths of this repo's OTHER `git worktree` checkouts (this dir
     /// excluded), from `git worktree list`. Not part of the wire payload — the
