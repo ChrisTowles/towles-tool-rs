@@ -530,9 +530,19 @@ export function RepoGroup({
   if (shownFolders.length === 0) {
     return <QuietRepoStub name={repo.name} count={quiet.size} onToggle={onToggleQuiet} />;
   }
+  // One of this repo's checkouts is the focused folder — bubble the violet
+  // active edge up to the repo header too, so a collapsed (or just
+  // easy-to-miss) repo row still shows it holds the folder you're looking
+  // at (folder-rail rule: focus never stops at the child level).
+  const repoActive = repo.folders.some((f) => f.dir === activeFolderDir);
   return (
     <div className="border-b" data-focus-kind="repo" data-focus-id={repo.key}>
-      <div className="sticky top-0 z-10 flex w-full items-center gap-2 border-b border-l-2 border-border border-l-transparent bg-card px-3 py-2 hover:bg-accent/50">
+      <div
+        className={cn(
+          "sticky top-0 z-10 flex w-full items-center gap-2 border-b border-l-2 border-border border-l-transparent bg-card px-3 py-2 hover:bg-accent/50",
+          repoActive && "border-l-violet-500 bg-accent/60",
+        )}
+      >
         <button
           type="button"
           onClick={() => onToggle(repo.key)}
