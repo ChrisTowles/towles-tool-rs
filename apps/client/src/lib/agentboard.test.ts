@@ -10,6 +10,7 @@ import {
   dragCol,
   dropPane,
   fmtWaitingAge,
+  folderSafeToDelete,
   hydrateWins,
   isDiffPane,
   isFilesPane,
@@ -123,26 +124,55 @@ describe("prForFolder", () => {
   });
 });
 
+describe("folderSafeToDelete", () => {
+  it("is true for a clean folder with nothing unlanded", () => {
+    expect(folderSafeToDelete(folder({}))).toBe(true);
+  });
+
+  it("is false for a dirty working tree", () => {
+    expect(folderSafeToDelete(folder({ dirty: true }))).toBe(false);
+  });
+
+  it("is false with commits that haven't landed on comparedBase yet", () => {
+    expect(folderSafeToDelete(folder({ commitsUnlanded: 1 }))).toBe(false);
+  });
+
+  it("stays true despite a nonzero commitsAhead — that's just SHA reachability, not unlanded work", () => {
+    // The rebase/squash-merge case: commitsAhead never reaches 0, but
+    // commitsUnlanded (patch-equivalence) does once the content has landed.
+    expect(folderSafeToDelete(folder({ commitsAhead: 2, commitsUnlanded: 0 }))).toBe(true);
+  });
+});
+
 describe("prMergedButFolderHasWork", () => {
-  it("is false for a merged PR when the folder is clean and even", () => {
+  it("is false for a merged PR when the folder is clean and everything landed", () => {
     expect(prMergedButFolderHasWork(pr({ state: "merged" }), folder({}))).toBe(false);
   });
 
   it("is true for a merged PR with a dirty working tree", () => {
     expect(
-      prMergedButFolderHasWork(pr({ state: "merged" }), folder({ filesChanged: 2 })),
+      prMergedButFolderHasWork(pr({ state: "merged" }), folder({ dirty: true })),
     ).toBe(true);
   });
 
-  it("is true for a merged PR with unpushed local commits", () => {
+  it("is true for a merged PR with commits that haven't landed on comparedBase yet", () => {
     expect(
-      prMergedButFolderHasWork(pr({ state: "merged" }), folder({ commitsAhead: 1 })),
+      prMergedButFolderHasWork(pr({ state: "merged" }), folder({ commitsUnlanded: 1 })),
     ).toBe(true);
+  });
+
+  it("is false for a merged, rebase/squash-merged branch — commitsAhead alone isn't unlanded work", () => {
+    expect(
+      prMergedButFolderHasWork(
+        pr({ state: "merged" }),
+        folder({ commitsAhead: 2, commitsUnlanded: 0 }),
+      ),
+    ).toBe(false);
   });
 
   it("is false for an open PR even with local work — that's normal, not a data-loss warning", () => {
     expect(
-      prMergedButFolderHasWork(pr({ state: "open" }), folder({ filesChanged: 2, commitsAhead: 1 })),
+      prMergedButFolderHasWork(pr({ state: "open" }), folder({ dirty: true, commitsUnlanded: 1 })),
     ).toBe(false);
   });
 });
@@ -548,6 +578,8 @@ function folder(overrides: Partial<FolderData>): FolderData {
     linesRemoved: 0,
     commitsAhead: 0,
     commitsBehind: 0,
+    dirty: false,
+    commitsUnlanded: 0,
     sessions: [],
     needs: 0,
     hasPortDrift: false,

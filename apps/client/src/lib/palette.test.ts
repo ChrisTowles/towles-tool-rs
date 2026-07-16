@@ -35,6 +35,8 @@ function folder(overrides: Partial<FolderData>): FolderData {
     linesRemoved: 0,
     commitsAhead: 0,
     commitsBehind: 0,
+    dirty: false,
+    commitsUnlanded: 0,
     sessions: [],
     needs: 0,
     hasPortDrift: false,

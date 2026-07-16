@@ -232,6 +232,8 @@ fn build_folder(
         lines_removed: git.lines_removed,
         commits_ahead: git.commits_ahead,
         commits_behind: git.commits_behind,
+        dirty: git.dirty,
+        commits_unlanded: git.commits_unlanded,
         sessions: session_data,
         needs,
         purpose: folder_meta.purpose_for(&entry.dir).map(str::to_string),
