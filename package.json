@@ -13,6 +13,7 @@
     "run": "node scripts/run.mjs",
     "dev:drive": "node scripts/dev-drive.mjs",
     "drive": "node scripts/drive.mjs",
+    "clean": "cargo clean && rm -rf apps/client/dist node_modules apps/client/node_modules",
     "build": "tauri build",
     "tauri": "tauri",
     "client:dev": "npm run dev --workspace @towles-tool/client",
