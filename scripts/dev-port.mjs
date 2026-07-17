@@ -2,30 +2,24 @@
 // Picks the port for the Vite dev server before launching `tauri dev`, so
 // running this repo from multiple worktree slots at once doesn't collide.
 //
-// The port is always deterministic, never scanned: an explicit TT_DEV_PORT
-// (shell env, `.env.local`, or rendered `.env` at the repo root) wins,
-// otherwise this slot's stable base port (derived from the repo-root
-// directory name — see `slotBasePort`). Whatever's already listening there
-// gets killed first (almost always this slot's own orphaned dev session,
-// since the port is pinned per-slot, not shared) — see `killPort` in
-// slot-port.mjs. If it's still occupied after that, we fail rather than
-// silently moving to a different port.
+// The port is always an explicit per-checkout claim, never scanned or
+// derived: TT_DEV_PORT from shell env, `.env.local` pin, or the `.env`
+// rendered by `tt slot env` (which `requireDevPort` runs for us when the
+// checkout has no claim yet). Whatever's already listening there gets killed
+// first (almost always this slot's own orphaned dev session, since the port
+// is claimed per-checkout, not shared) — see `killPort` in slot-port.mjs. If
+// it's still occupied after that, we fail rather than silently moving to a
+// different port.
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { resolveDevPort, spawnTauriDev, isPortFree, killPort } from "./slot-port.mjs";
+import { requireDevPort, spawnTauriDev, isPortFree, killPort } from "./slot-port.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
 
-const port = resolveDevPort(repoRoot);
-if (!port) {
-  console.error(
-    `[dev-port] TT_DEV_PORT=${process.env.TT_DEV_PORT} is not a valid port (1-65535)`,
-  );
-  process.exit(1);
-}
+const port = requireDevPort(repoRoot, { tag: "dev-port", render: true });
 console.log(`[dev-port] using port ${port} (set TT_DEV_PORT in .env.local to pin a different one)`);
 
 await killPort(port);

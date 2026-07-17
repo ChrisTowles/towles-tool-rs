@@ -45,9 +45,10 @@ client (no `@wdio/*` at runtime): session-less `POST /wdio/eval` for `status` /
 `window.__TAURI_INTERNALS__.invoke`, so it doesn't depend on the frontend plugin.
 
 Notes:
-- **Ports come from `.env.local`** (same as `npm run dev`): `wdPort = TT_DEV_PORT
-  + 3000` (override `TT_E2E_WEBDRIVER_PORT`). Deterministic per slot so
-  `drive.mjs` finds the server without arguments; different slots don't collide.
+- **Ports come from the rendered `.env`/`.env.local`** (same as `npm run dev`):
+  `wdPort` is the slot's `TT_E2E_WEBDRIVER_PORT` claim, falling back to
+  `TT_DEV_PORT + 3000`. Per-slot claims, so `drive.mjs` finds the server
+  without arguments and different slots don't collide.
 - **`click`/`type` take CSS selectors only** (W3C `POST /element`), which can't
   match by text. To click a text-only button/link, use `clicktext "<text>"`
   instead — it matches trimmed visible text across clickable elements (buttons,
@@ -121,11 +122,11 @@ npm run e2e        # build the app (--features wdio) + serve + run the suite
 npm run e2e:run    # run against an already-built binary (skips the build)
 ```
 
-`scripts/e2e.mjs` orchestrates everything. **Ports come from `.env.local`** (the
-same `TT_DEV_PORT` mechanism as `npm run dev`): the Vite dev server uses
-`TT_DEV_PORT`, and the embedded WebDriver server uses `TT_DEV_PORT + 3000`
-(override with `TT_E2E_WEBDRIVER_PORT`). Nothing is hardcoded, so slots don't
-collide. `e2e:run` assumes the binary was already built for this slot's port —
+`scripts/e2e.mjs` orchestrates everything. **Ports come from the rendered
+`.env`/`.env.local`** (the same `TT_DEV_PORT` mechanism as `npm run dev`): the
+Vite dev server uses `TT_DEV_PORT`, and the embedded WebDriver server uses the
+`TT_E2E_WEBDRIVER_PORT` claim (falling back to `TT_DEV_PORT + 3000`). Nothing
+is hardcoded, so slots don't collide. `e2e:run` assumes the binary was already built for this slot's port —
 use `e2e` after changing the port or the Rust commands.
 
 ## How it works (the non-obvious bits)

@@ -8,22 +8,17 @@
 // window. `scripts/drive.mjs` connects to that server to drive the window while
 // you watch — no WDIO, no spawn/kill. See e2e/README.md ("Live drive").
 //
-// Ports come from `.env.local` exactly like `npm run dev` (deterministic per slot,
-// NOT a free-port scan) so `drive.mjs` can find the automation server without
-// being told: wdPort = TT_DEV_PORT + 3000 (override with TT_E2E_WEBDRIVER_PORT).
+// Ports come from the rendered `.env`/`.env.local` exactly like `npm run dev`
+// (per-checkout claims, NOT a free-port scan) so `drive.mjs` can find the
+// automation server without being told: wdPort = the .env claim
+// TT_E2E_WEBDRIVER_PORT, else TT_DEV_PORT + 3000.
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { resolveDevPort, resolveWebdriverPort, spawnTauriDev, killPort } from "./slot-port.mjs";
+import { requireDevPort, resolveWebdriverPort, spawnTauriDev, killPort } from "./slot-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const devPort = resolveDevPort(repoRoot);
-if (!devPort) {
-  console.error(
-    `[dev-drive] TT_DEV_PORT=${process.env.TT_DEV_PORT} is not a valid port (1-65535)`,
-  );
-  process.exit(1);
-}
+const devPort = requireDevPort(repoRoot, { tag: "dev-drive", render: true });
 const wdPort = resolveWebdriverPort(devPort);
 
 // This port is always pinned to the slot (never scanned), so anything

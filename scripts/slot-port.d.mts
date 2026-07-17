@@ -2,22 +2,29 @@
 // (apps/client/vite.config.ts, wdio.conf.ts) type-check under `tsc -b`.
 // Keep in sync with the exports in slot-port.mjs.
 
-export const PORT_MIN: number;
-
-/** Stable base port for the slot rooted at `repoRoot` (keyed on its dir name). */
-export function slotBasePort(repoRoot: string): number;
-
 /**
- * Load `.env.local` (at `repoRoot`) into `process.env`. Real env vars win over
- * the file; a missing file is a no-op.
+ * Load `.env.local` then `.env` (at `repoRoot`) into `process.env`. Real env
+ * vars win over the files; missing files are a no-op.
  */
-export function loadEnvLocal(repoRoot: string): void;
+export function loadEnvFiles(repoRoot: string): void;
 
 /**
- * Resolve the dev-server port after loading `.env.local`; `null` for an
- * invalid explicit `TT_DEV_PORT`.
+ * Resolve the dev-server port after loading the env files; `null` when
+ * `TT_DEV_PORT` is unset or invalid.
  */
 export function resolveDevPort(repoRoot: string): number | null;
+
+/** The `tt slot env` name for the checkout at `repoRoot` (`primary` or the slot dir name). */
+export function slotEnvName(repoRoot: string): string;
+
+/**
+ * Resolve the dev port or exit(1): invalid TT_DEV_PORT errors; unset with
+ * `render` runs `tt slot env` to claim ports first.
+ */
+export function requireDevPort(
+  repoRoot: string,
+  opts?: { tag?: string; render?: boolean },
+): number;
 
 /** The embedded WebDriver server's port for a given dev port. */
 export function resolveWebdriverPort(devPort: number): number;

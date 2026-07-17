@@ -606,3 +606,40 @@ fn hook_remove_is_guarded_like_rm() {
     // hook for a worktree the user already cleaned up)
     tt().args(["slot", "hook-remove"]).write_stdin(hook_input).assert().success();
 }
+
+#[test]
+fn init_onboards_a_bare_repo_idempotently() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A repo with no tokenized .env.example, no .gitignore, no settings.json.
+    let checkout = tmp.path().join("bare");
+    std::fs::create_dir_all(&checkout).unwrap();
+    git(tmp.path(), &["init", "bare"]);
+    std::fs::write(checkout.join("README.md"), "hi\n").unwrap();
+    git(&checkout, &["add", "."]);
+    git(&checkout, &["commit", "-m", "seed"]);
+    let root_s = checkout.to_string_lossy().to_string();
+
+    tt().args(["slot", "init", "--root", &root_s])
+        .assert()
+        .success()
+        .stdout(contains("slot-env.template"))
+        .stdout(contains("gitignore: added .env"))
+        .stdout(contains("hooks: wired"));
+
+    assert!(checkout.join(".claude").join("slot-env.template").is_file());
+    assert!(checkout.join(".env").is_file());
+    let gitignore = std::fs::read_to_string(checkout.join(".gitignore")).unwrap();
+    assert!(gitignore.contains(".env"));
+    let settings = std::fs::read_to_string(checkout.join(".claude").join("settings.json")).unwrap();
+    assert!(settings.contains("tt slot hook-create"));
+    assert!(settings.contains("tt slot hook-remove"));
+
+    // Re-run: nothing to do, nothing clobbered.
+    tt().args(["slot", "init", "--root", &root_s])
+        .assert()
+        .success()
+        .stdout(contains("hooks: already wired"));
+    let settings_again =
+        std::fs::read_to_string(checkout.join(".claude").join("settings.json")).unwrap();
+    assert_eq!(settings, settings_again);
+}

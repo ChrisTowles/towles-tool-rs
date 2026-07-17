@@ -9,16 +9,13 @@ import { join } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 
 import {
-  PORT_MIN,
-  slotBasePort,
   loadEnvFiles,
   resolveDevPort,
+  slotEnvName,
   resolveWebdriverPort,
   isPortFree,
   killPort,
 } from "./slot-port.mjs";
-
-const PORT_SPAN = 200; // mirrors the private span in slot-port.mjs
 
 // Run `fn` with `process.env` restored afterwards, so env-reading functions
 // (resolveDevPort/resolveWebdriverPort) don't leak state between tests.
@@ -43,38 +40,27 @@ function makeRepoRoot(envLocal) {
   return root;
 }
 
-test("slotBasePort is stable for a given slot name", () => {
-  const root = "/home/x/code/towles-tool-rs-slot-3";
-  assert.equal(slotBasePort(root), slotBasePort(root));
-  // Keyed only on the basename, not the full path.
-  assert.equal(slotBasePort(root), slotBasePort("/other/prefix/towles-tool-rs-slot-3"));
+test("slotEnvName maps a nested worktree slot to its dir name", () => {
+  assert.equal(slotEnvName("/home/x/code/blog/.claude/worktrees/feat-thing"), "feat-thing");
 });
 
-test("slotBasePort stays within the partitioned range", () => {
-  for (const name of ["slot-0", "slot-1", "towles-tool-rs-slot-7", "a", "", "zzzzzzzzzz"]) {
-    const port = slotBasePort(`/root/${name}`);
-    assert.ok(port >= PORT_MIN && port < PORT_MIN + PORT_SPAN, `${name} -> ${port}`);
-  }
+test("slotEnvName maps any other checkout to primary", () => {
+  assert.equal(slotEnvName("/home/x/code/blog"), "primary");
+  assert.equal(slotEnvName("/home/x/code/blog/.claude/other/feat-thing"), "primary");
 });
 
-test("slotBasePort separates distinct slot names", () => {
-  const a = slotBasePort("/root/towles-tool-rs-slot-0");
-  const b = slotBasePort("/root/towles-tool-rs-slot-1");
-  assert.notEqual(a, b);
-});
-
-test("resolveDevPort falls back to the slot base port with no override", () => {
+test("resolveDevPort is null with no TT_DEV_PORT anywhere (no derived fallback)", () => {
   withCleanEnv(["TT_DEV_PORT"], () => {
     const root = makeRepoRoot();
     try {
-      assert.equal(resolveDevPort(root), slotBasePort(root));
+      assert.equal(resolveDevPort(root), null);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 });
 
-test("resolveDevPort: shell TT_DEV_PORT wins over the base port", () => {
+test("resolveDevPort: shell TT_DEV_PORT wins", () => {
   withCleanEnv(["TT_DEV_PORT"], () => {
     const root = makeRepoRoot();
     try {
@@ -123,12 +109,12 @@ test("resolveDevPort returns null for an invalid TT_DEV_PORT", () => {
   }
 });
 
-test("resolveDevPort ignores an empty TT_DEV_PORT and uses the base port", () => {
+test("resolveDevPort treats an empty TT_DEV_PORT as unset", () => {
   withCleanEnv(["TT_DEV_PORT"], () => {
     const root = makeRepoRoot();
     try {
       process.env.TT_DEV_PORT = "";
-      assert.equal(resolveDevPort(root), slotBasePort(root));
+      assert.equal(resolveDevPort(root), null);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -144,6 +144,16 @@ pub enum SlotCommands {
         root: Option<PathBuf>,
     },
 
+    /// Onboard this repo onto the slot convention (idempotent): pick/create
+    /// the env template, gitignore .env, wire the Claude Code
+    /// WorktreeCreate/WorktreeRemove hooks into .claude/settings.json, and
+    /// render the primary checkout's .env so it claims its ports
+    Init {
+        /// Repo checkout (default: walk up from cwd to the nearest git checkout)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
+
     /// (Re)render a checkout's .env from the template — idempotent: existing
     /// port claims and keys the template doesn't know are preserved
     Env {

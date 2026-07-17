@@ -1,29 +1,18 @@
-// Deterministic per-slot Vite dev-server port.
+// Per-slot Vite dev-server port, from the slot's rendered `.env`.
 //
 // Multiple checkouts of this repo (the main checkout, .claude/worktrees/thing,
-// …) run `tauri dev` at the same time. If every slot defaults to 1420 they
-// collide, so we derive a stable base port from the checkout's directory name
-// (the worktree dir's basename — unchanged by the nesting): each slot gets
-// its own port and keeps it run-to-run — no scanning for a free one, since
-// that would just paper over a stuck orphaned process instead of clearing
-// it (see `killPort`). An explicit TT_DEV_PORT (shell env, `.env.local` pin,
-// or `.env` rendered by `tt slot`) wins over the base port.
-import { basename, join } from "node:path";
+// …) run `tauri dev` at the same time, so every checkout needs its own port.
+// The single source of truth is the `${tt:port}` claim `tt slot env` renders
+// into `.env` (TT_DEV_PORT) — claims are unique across sibling checkouts by
+// construction. There is deliberately NO derived/hashed fallback here: a port
+// picked outside the claim system can collide with a sibling's claim, and
+// `killPort` would then kill that sibling's legitimate dev server. A checkout
+// with no rendered `.env` must run `tt slot env` (the launchers do this
+// automatically — see `requireDevPort`) or pin TT_DEV_PORT in `.env.local`.
+import { basename, dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:net";
-
-export const PORT_MIN = 1420;
-const PORT_SPAN = 200; // ports 1420–1619, partitioned across slots by name hash
-
-/** Stable base port for the slot rooted at `repoRoot` (keyed on its dir name). */
-export function slotBasePort(repoRoot) {
-  const name = basename(repoRoot);
-  let hash = 0;
-  for (let i = 0; i < name.length; i++)
-    hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  return PORT_MIN + (Math.abs(hash) % PORT_SPAN);
-}
 
 /**
  * Load `.env.local` then `.env` (at `repoRoot`) into `process.env` so per-slot
@@ -58,20 +47,66 @@ export function loadEnvFiles(repoRoot) {
 }
 
 /**
- * Resolve the dev-server port after loading the env files: an explicit
- * `TT_DEV_PORT` (shell env, `.env.local`, or rendered `.env`) wins, otherwise
- * the slot base port. Returns `null` for an invalid `TT_DEV_PORT` so the
- * caller can decide.
+ * Resolve the dev-server port after loading the env files: `TT_DEV_PORT`
+ * from shell env, `.env.local`, or the rendered `.env` (that precedence).
+ * Returns `null` when it's unset or invalid — use `requireDevPort` in
+ * launchers to turn that into a render-or-die.
  */
 export function resolveDevPort(repoRoot) {
   loadEnvFiles(repoRoot);
   const override = process.env.TT_DEV_PORT;
-  if (override !== undefined && override !== "") {
-    const port = Number(override);
-    if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
-    return port;
+  if (override === undefined || override === "") return null;
+  const port = Number(override);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+  return port;
+}
+
+/**
+ * The `tt slot env` name for this checkout: the slot's dir name when it sits
+ * at `<main>/.claude/worktrees/<name>`, else `primary` (the main checkout).
+ */
+export function slotEnvName(repoRoot) {
+  const worktrees = dirname(repoRoot);
+  const claude = dirname(worktrees);
+  return basename(worktrees) === "worktrees" && basename(claude) === ".claude"
+    ? basename(repoRoot)
+    : "primary";
+}
+
+/**
+ * Resolve the dev port or die trying. Invalid `TT_DEV_PORT` → error + exit.
+ * Unset with `render: true` (launchers: dev/dev:drive) → run
+ * `tt slot env <this checkout>` to claim ports, then re-resolve; unset
+ * otherwise (or when the render fails) → exit with instructions. The
+ * returned port is always an explicit claim or pin, so `killPort` on it is
+ * safe — it can only be this checkout's own orphaned session.
+ */
+export function requireDevPort(repoRoot, { tag = "slot-port", render = false } = {}) {
+  let port = resolveDevPort(repoRoot);
+  if (port === null && process.env.TT_DEV_PORT) {
+    console.error(
+      `[${tag}] TT_DEV_PORT=${process.env.TT_DEV_PORT} is not a valid port (1-65535)`,
+    );
+    process.exit(1);
   }
-  return slotBasePort(repoRoot);
+  const name = slotEnvName(repoRoot);
+  if (port === null && render) {
+    console.log(`[${tag}] no TT_DEV_PORT yet — rendering .env via \`tt slot env ${name}\``);
+    try {
+      execFileSync("tt", ["slot", "env", name], { cwd: repoRoot, stdio: "inherit" });
+    } catch {
+      // `tt` missing or render failed — fall through to the instructions below.
+    }
+    port = resolveDevPort(repoRoot);
+  }
+  if (port === null) {
+    console.error(
+      `[${tag}] no TT_DEV_PORT for this checkout — run \`tt slot env ${name}\` to claim ports, ` +
+        `or pin TT_DEV_PORT in .env.local`,
+    );
+    process.exit(1);
+  }
+  return port;
 }
 
 /**
