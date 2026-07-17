@@ -1338,8 +1338,8 @@ export function SettingsScreen() {
   const run = (key: string) => snapshot.runs.find((r) => r.collector === key);
 
   // Escape clears the filter (a second, empty-box Escape has no further
-  // action here — closing this screen is a tab-bar action, not a shortcut
-  // owned by the filter input).
+  // action here — closing this screen is the close-tab shortcut's job, not
+  // one owned by the filter input).
   const onFilterKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== "Escape") return;
     if (isEmptyQuery(query)) return;

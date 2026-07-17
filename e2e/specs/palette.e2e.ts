@@ -35,17 +35,20 @@ async function navigateTo(query: string): Promise<void> {
 }
 
 /**
- * Wait until an active (aria-current) control is labelled `title`. Both the
- * sidebar and the tab bar mark the current screen with aria-current, but only
- * the tab bar carries its title as text — the sidebar buttons are icon-only —
- * so matching on exact text lands on the tab bar's rendered tab.
+ * Wait until an active (aria-current) sidebar control is labelled `title`.
+ * Expanded, it's a visible-text button (`AppSidebar`); icon-collapsed (the
+ * e2e default), it's icon-only with the title as `aria-label`
+ * (`AppSidebarIcons`) — check both so the assertion holds regardless of
+ * collapse state.
  */
 async function expectActiveTab(title: string): Promise<void> {
   await browser.waitUntil(
     async () => {
       const tabs = await browser.$$('button[aria-current="true"]');
       for (const tab of tabs) {
-        if ((await tab.getText()).trim() === title) return true;
+        const text = (await tab.getText()).trim();
+        const label = await tab.getAttribute("aria-label");
+        if (text === title || label === title) return true;
       }
       return false;
     },
