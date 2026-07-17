@@ -41,7 +41,7 @@ import { abInvoke } from "@/lib/agentboard";
 import { storeCollectNow, useStoreSnapshot, type CollectRun } from "@/lib/data";
 import { useNow } from "@/lib/now";
 import { isEmptyQuery, matchesFilter } from "@/lib/settings-filter";
-import { settingsTargetStore } from "@/lib/settings-target";
+import { settingsTargetStore, type SettingsTarget } from "@/lib/settings-target";
 import { slackListUsers, type SlackUser } from "@/lib/slack";
 import { useUserSettings, type UserSettings } from "@/lib/settings";
 import { DEFAULT_TERMINAL_FONT_SIZE, clampTerminalFontSize } from "@/lib/terminal-prefs";
@@ -1297,7 +1297,7 @@ function AboutInfo({ query, version }: { query: string; version: string }) {
 /** The tab + prefilled filter this screen was deep-linked to (see
  * `useWorkspace().openSettingsTab`), consumed once from `settingsTargetStore`.
  * An unknown tab falls back to General. */
-function resolveTarget(target: { tab: string; filter?: string } | null): {
+function resolveTarget(target: SettingsTarget | null): {
   tab: string;
   filter: string;
 } {
