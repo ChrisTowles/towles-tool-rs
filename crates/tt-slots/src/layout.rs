@@ -90,6 +90,19 @@ pub fn read_slot_base(slot_dir: &Path) -> Option<String> {
     parse_marker(&contents).remove("base").filter(|s| !s.is_empty())
 }
 
+/// Whether `dir` is a worktree slot `tt slot` (or a repo's wired
+/// WorktreeCreate hook) actually created: it sits at
+/// `<checkout>/.claude/worktrees/<name>` ([`main_checkout_for`]) AND carries
+/// the `.tt-slot` marker written at creation time. A worktree satisfying
+/// only one of the two is NOT a managed slot — e.g. `claude --worktree` ran
+/// in a repo whose hooks aren't wired, so the marker was never written, or a
+/// worktree added by hand somewhere else on disk entirely — even though
+/// `git worktree list` still discovers it. The canonical check callers use
+/// to tell a `tt slot` worktree apart from any other.
+pub fn is_managed_slot(dir: &Path) -> bool {
+    main_checkout_for(dir).is_some() && dir.join(MARKER_FILE).is_file()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +167,28 @@ mod tests {
     fn read_slot_base_none_without_marker() {
         let dir = tempfile::TempDir::new().unwrap();
         assert_eq!(read_slot_base(dir.path()), None);
+    }
+
+    #[test]
+    fn is_managed_slot_requires_both_location_and_marker() {
+        let root = tempfile::TempDir::new().unwrap();
+        let checkout = root.path().join("checkout");
+        let slot_dir = checkout.join(CLAUDE_DIR).join(WORKTREES_DIR).join("thing");
+        std::fs::create_dir_all(&slot_dir).unwrap();
+
+        // Right location, no marker: an unwired-hook Claude Code worktree.
+        assert!(!is_managed_slot(&slot_dir));
+
+        // Right location, marker present: a real `tt slot`.
+        std::fs::write(slot_dir.join(MARKER_FILE), marker_contents("thing", "main", "main"))
+            .unwrap();
+        assert!(is_managed_slot(&slot_dir));
+
+        // Wrong location, even with a stray marker file: not a slot shape.
+        let elsewhere = root.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join(MARKER_FILE), marker_contents("thing", "main", "main"))
+            .unwrap();
+        assert!(!is_managed_slot(&elsewhere));
     }
 }
