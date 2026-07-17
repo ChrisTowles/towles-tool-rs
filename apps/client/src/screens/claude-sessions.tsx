@@ -5,12 +5,18 @@ import {
   ArrowUp,
   ArrowUpDown,
   BarChart3,
-  Boxes,
+  CircleCheck,
+  DatabaseZap,
+  Flame,
+  Lightbulb,
   List,
   Loader2,
+  MessagesSquare,
   RefreshCw,
+  Repeat2,
   Search,
   TerminalSquare,
+  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -23,15 +29,26 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { abOpenSessionForCwd, requestOpenSession } from "@/lib/agentboard";
 import {
+  claudeSessionsBreakdown,
+  claudeSessionsInsights,
   claudeSessionsSearch,
   claudeSessionsSummary,
-  claudeSessionsTreemapHtml,
   type ClaudeSession,
+  type ClaudeSessionInsight,
   type ClaudeSessionsSummary,
+  type InsightKind,
   type LedgerDay,
+  type SessionBreakdown,
 } from "@/lib/claude-sessions";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/lib/workspace";
@@ -49,6 +66,48 @@ const MAX_STACKED_REPOS = 4;
 /** A session whose in+out volume is ≥ this multiple of the visible median gets
  * the amber outlier treatment — "this one is not like the others". */
 const OUTLIER_FACTOR = 5;
+
+/** CVD-validated categorical palette (carried over from the retired HTML
+ * report, `dataviz`-skill validated). This screen is a data-exploration
+ * surface: hue encodes series identity here, a sanctioned exception to the
+ * app's hue-is-for-status default. */
+const PALETTE = [
+  "#3987e5", // blue
+  "#008300", // green
+  "#d55181", // magenta
+  "#c98500", // amber
+  "#199e70", // teal
+  "#d95926", // orange
+  "#9085e9", // violet
+  "#e66767", // red
+];
+/** Uncommon tools and the "Other" fold both land on neutral gray. */
+const FALLBACK_COLOR = "#8a8a8a";
+
+/** The 8 common tools get dedicated hues (same assignment the old report
+ * used); anything else folds to gray so the legend stays honest. */
+const TOOL_COLORS: Record<string, string> = {
+  Glob: PALETTE[0],
+  Read: PALETTE[1],
+  Task: PALETTE[3],
+  Grep: PALETTE[4],
+  Edit: PALETTE[5],
+  MultiEdit: PALETTE[5],
+  Bash: PALETTE[6],
+  Write: PALETTE[7],
+};
+
+function toolColor(name: string | null | undefined): string {
+  if (!name) return FALLBACK_COLOR;
+  return TOOL_COLORS[name] ?? (name.startsWith("mcp") ? PALETTE[2] : FALLBACK_COLOR);
+}
+
+const INSIGHT_META: Record<InsightKind, { label: string; icon: LucideIcon; color: string }> = {
+  tokenOutlier: { label: "Token outlier", icon: Flame, color: PALETTE[3] },
+  rereadLoop: { label: "Re-read loop", icon: Repeat2, color: PALETTE[7] },
+  cacheChurn: { label: "Cache churn", icon: DatabaseZap, color: PALETTE[6] },
+  marathon: { label: "Marathon session", icon: MessagesSquare, color: PALETTE[0] },
+};
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -121,9 +180,9 @@ function stackSeries(days: LedgerDay[]): { repos: string[]; rows: Map<string, nu
   return { repos, rows };
 }
 
-/** Stacked day×repo bars. Series identity rides the grayscale chart tokens
- * (hue stays reserved for status, per the app's design language); the legend
- * and tooltip carry the names. */
+/** Stacked day×repo bars. Repos are ranked by window total, so a repo's
+ * palette hue matches its row in the "By repo" ranked chart; the "Other" fold
+ * stays neutral gray. */
 function DayStackChart({ days }: { days: LedgerDay[] }) {
   const ref = useEChart(
     (chart) => {
@@ -132,9 +191,6 @@ function DayStackChart({ days }: { days: LedgerDay[] }) {
       const muted = cssVar("--muted-foreground");
       const border = cssVar("--border");
       const card = cssVar("--card");
-      // Darkest-first so the biggest repo is the most legible on both themes;
-      // "Other" (last) lands on the faintest step.
-      const shades = ["--chart-2", "--chart-3", "--chart-4", "--chart-5", "--chart-1"].map(cssVar);
 
       chart.setOption({
         grid: { left: 8, right: 8, top: 8, bottom: 44, containLabel: true },
@@ -170,7 +226,9 @@ function DayStackChart({ days }: { days: LedgerDay[] }) {
           stack: "day",
           barMaxWidth: 26,
           data: rows.get(repo),
-          itemStyle: { color: shades[i % shades.length] },
+          itemStyle: {
+            color: repo === "Other" ? FALLBACK_COLOR : PALETTE[i % PALETTE.length],
+          },
         })),
       });
     },
@@ -182,7 +240,9 @@ function DayStackChart({ days }: { days: LedgerDay[] }) {
   return <div ref={ref} style={{ height: 240 }} />;
 }
 
-/** A horizontal ranked bar chart: one series, identity on the axis label. */
+/** A horizontal ranked bar chart: identity on the axis label, one palette hue
+ * per rank (rows are sorted descending, matching the day-stack's ordering so
+ * a repo keeps its hue across both charts). */
 function RankedBarChart({ bars }: { bars: { label: string; totalTokens: number }[] }) {
   const ref = useEChart(
     (chart) => {
@@ -217,9 +277,14 @@ function RankedBarChart({ bars }: { bars: { label: string; totalTokens: number }
         series: [
           {
             type: "bar",
-            data: bars.map((b) => b.totalTokens),
+            data: bars.map((b, i) => ({
+              value: b.totalTokens,
+              itemStyle: {
+                color: PALETTE[i % PALETTE.length],
+                borderRadius: [0, 4, 4, 0],
+              },
+            })),
             barMaxWidth: 22,
-            itemStyle: { color: cssVar("--chart-2"), borderRadius: [0, 4, 4, 0] },
             label: {
               show: true,
               position: "right",
@@ -327,6 +392,210 @@ function SortableTh({
   );
 }
 
+/** Resolve `s.cwd` to an Agentboard folder (registering the repo first if it
+ * isn't on the rail yet — the backend handles that), then hand off selecting +
+ * resuming it to Agentboard itself (see `lib/agentboard.ts`'s
+ * pending-open-session bridge for why this can't just call into Agentboard
+ * directly: it may not be mounted yet). Shared by the Sessions table and the
+ * Insights cards. */
+function useOpenInAgentboard() {
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const { openTab } = useWorkspace();
+
+  async function open(s: ClaudeSession) {
+    if (!s.cwd) {
+      toast.error("No working directory recorded for this session");
+      return;
+    }
+    setOpeningId(s.sessionId);
+    try {
+      const opened = await abOpenSessionForCwd(s.cwd);
+      openTab("agentboard");
+      requestOpenSession({
+        folderDir: opened.folderDir,
+        sessionId: opened.sessionId,
+        resumeId: s.sessionId,
+        label: s.title ?? s.sessionId.slice(0, 8),
+      });
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setOpeningId(null);
+    }
+  }
+
+  return { openingId, open };
+}
+
+/** Icon button that resumes a session in Agentboard, with the disabled/tooltip
+ * treatment shared between the table rows and insight cards. */
+function OpenInAgentboardButton({
+  session,
+  opening,
+  onOpen,
+}: {
+  session: ClaudeSession;
+  opening: boolean;
+  onOpen: (s: ClaudeSession) => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          disabled={!session.cwd || opening}
+          onClick={(e) => {
+            e.stopPropagation();
+            void onOpen(session);
+          }}
+          className="text-violet-500 hover:text-violet-400 disabled:text-muted-foreground/40"
+        >
+          {opening ? <Loader2 className="animate-spin" /> : <TerminalSquare />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>
+        {session.cwd
+          ? "Open in Agentboard (resumes this session)"
+          : "No working directory recorded for this session"}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** One horizontal magnitude bar, scaled against the section's max. */
+function TokenBar({ color, fraction }: { color: string; fraction: number }) {
+  return (
+    <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+      <div
+        className="h-full rounded-full"
+        style={{ width: `${Math.max(2, fraction * 100)}%`, background: color }}
+      />
+    </div>
+  );
+}
+
+/** Turn/tool drill-down for one session — fetched on open, the only
+ * per-session re-parse in the screen. */
+function BreakdownDialog({
+  session,
+  onClose,
+}: {
+  session: ClaudeSession | null;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<SessionBreakdown | null>(null);
+  const [loading, setLoading] = useState(false);
+  const sessionId = session?.sessionId;
+
+  useEffect(() => {
+    if (!sessionId) return;
+    setData(null);
+    setLoading(true);
+    void claudeSessionsBreakdown(sessionId).then((b) => {
+      setData(b);
+      setLoading(false);
+    });
+  }, [sessionId]);
+
+  const topTools = data?.tools.slice(0, 10) ?? [];
+  const maxTool = Math.max(1, ...topTools.map((t) => t.inputTokens + t.outputTokens));
+  const topTurns = [...(data?.turns ?? [])]
+    .sort((a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens))
+    .slice(0, 10);
+  const maxTurn = Math.max(1, ...topTurns.map((t) => t.inputTokens + t.outputTokens));
+
+  return (
+    <Dialog open={!!session} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="pr-6">
+            {session?.title ?? session?.sessionId.slice(0, 8)}
+          </DialogTitle>
+          <DialogDescription>
+            {session?.project} · {session?.date} ·{" "}
+            {formatTokens((session?.inputTokens ?? 0) + (session?.outputTokens ?? 0))} in+out
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Parsing session…</p>
+        ) : data ? (
+          <div className="flex flex-col gap-5">
+            <section>
+              <h4 className="mb-2 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+                Where the tokens went
+              </h4>
+              {topTools.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No tool calls recorded.</p>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  {topTools.map((t) => (
+                    <div key={t.name} className="flex items-center gap-2 text-sm">
+                      <span
+                        className="size-2.5 shrink-0 rounded-[3px]"
+                        style={{ background: toolColor(t.name) }}
+                      />
+                      <span className="w-40 truncate text-foreground">{t.name}</span>
+                      <span className="w-10 shrink-0 text-right font-mono text-xs text-muted-foreground">
+                        {t.detail}
+                      </span>
+                      <TokenBar
+                        color={toolColor(t.name)}
+                        fraction={(t.inputTokens + t.outputTokens) / maxTool}
+                      />
+                      <span className="w-14 shrink-0 text-right font-mono text-xs text-muted-foreground">
+                        {formatTokens(t.inputTokens + t.outputTokens)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section>
+              <h4 className="mb-2 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+                Heaviest steps
+              </h4>
+              {topTurns.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No token-bearing steps.</p>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  {topTurns.map((t, i) => (
+                    <div key={i} className="flex items-center gap-2 text-sm">
+                      <span
+                        className="size-2.5 shrink-0 rounded-[3px]"
+                        style={{ background: toolColor(t.toolName) }}
+                      />
+                      <span className="w-52 truncate text-foreground" title={t.name}>
+                        {t.name}
+                      </span>
+                      <TokenBar
+                        color={toolColor(t.toolName)}
+                        fraction={(t.inputTokens + t.outputTokens) / maxTurn}
+                      />
+                      <span className="w-14 shrink-0 text-right font-mono text-xs text-muted-foreground">
+                        {formatTokens(t.inputTokens + t.outputTokens)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {data.turns.length > topTurns.length && (
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  Top {topTurns.length} of {data.turns.length} token-bearing steps.
+                </p>
+              )}
+            </section>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Could not load this session.</p>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function SessionTable({
   sessions,
   searching,
@@ -335,8 +604,8 @@ function SessionTable({
   searching: boolean;
 }) {
   const [sort, setSort] = useState<{ key: SessionSortKey; dir: SortDir } | null>(null);
-  const [openingId, setOpeningId] = useState<string | null>(null);
-  const { openTab } = useWorkspace();
+  const [breakdownFor, setBreakdownFor] = useState<ClaudeSession | null>(null);
+  const { openingId, open } = useOpenInAgentboard();
 
   const medianBillable = useMemo(() => {
     const sorted = sessions.map((s) => s.inputTokens + s.outputTokens).sort((a, b) => a - b);
@@ -360,33 +629,6 @@ function SessionTable({
         ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
         : { key, dir: DEFAULT_SORT_DIR[key] },
     );
-
-  // Resolve `s.cwd` to an Agentboard folder (registering the repo first if
-  // it isn't on the rail yet — the backend handles that), then hand off
-  // selecting + resuming it to Agentboard itself (see `lib/agentboard.ts`'s
-  // pending-open-session bridge for why this can't just call into Agentboard
-  // directly: it may not be mounted yet).
-  async function openInAgentboard(s: ClaudeSession) {
-    if (!s.cwd) {
-      toast.error("No working directory recorded for this session");
-      return;
-    }
-    setOpeningId(s.sessionId);
-    try {
-      const opened = await abOpenSessionForCwd(s.cwd);
-      openTab("agentboard");
-      requestOpenSession({
-        folderDir: opened.folderDir,
-        sessionId: opened.sessionId,
-        resumeId: s.sessionId,
-        label: s.title ?? s.sessionId.slice(0, 8),
-      });
-    } catch (e) {
-      toast.error(String(e));
-    } finally {
-      setOpeningId(null);
-    }
-  }
 
   if (sessions.length === 0)
     return (
@@ -445,7 +687,11 @@ function SessionTable({
             const outlier = medianBillable > 0 && billable >= OUTLIER_FACTOR * medianBillable;
             const opening = openingId === s.sessionId;
             return (
-              <tr key={s.sessionId} className="border-b border-border/60 hover:bg-accent/50">
+              <tr
+                key={s.sessionId}
+                className="cursor-pointer border-b border-border/60 hover:bg-accent/50"
+                onClick={() => setBreakdownFor(s)}
+              >
                 <td className="max-w-[340px] py-1.5 pr-3">
                   <div className="truncate text-foreground">
                     {s.title ?? <span className="font-mono text-xs">{s.sessionId.slice(0, 8)}</span>}
@@ -471,41 +717,23 @@ function SessionTable({
                   {formatTokens(s.cacheCreationTokens)}
                 </td>
                 <td className="py-1.5 pl-3 text-right">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        disabled={!s.cwd || opening}
-                        onClick={() => void openInAgentboard(s)}
-                        className="text-violet-500 hover:text-violet-400 disabled:text-muted-foreground/40"
-                      >
-                        {opening ? <Loader2 className="animate-spin" /> : <TerminalSquare />}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {s.cwd
-                        ? "Open in Agentboard (resumes this session)"
-                        : "No working directory recorded for this session"}
-                    </TooltipContent>
-                  </Tooltip>
+                  <OpenInAgentboardButton session={s} opening={opening} onOpen={open} />
                 </td>
               </tr>
             );
           })}
         </tbody>
       </table>
+      <BreakdownDialog session={breakdownFor} onClose={() => setBreakdownFor(null)} />
     </div>
   );
 }
 
-/** The embedded treemap/bar-chart report. Fetches only while this tab is the
- * active one (a `days` change on another tab is picked up on the next
- * activation); the report's rich categorical palette is its own self-contained
- * visual system, deliberately distinct from the app's grayscale charts. The
- * generated document is fixed-size (1200×800), so the iframe scrolls
- * internally rather than reflowing. */
-function TreemapTab({
+/** Ranked waste findings for the window — answer-first: each card names one
+ * session, one number, and why it matters, with the same resume-in-Agentboard
+ * action as the table. Fetches only while this tab is the active one (a
+ * `days` change on another tab is picked up on the next activation). */
+function InsightsTab({
   days,
   nonce,
   active,
@@ -514,8 +742,10 @@ function TreemapTab({
   nonce: number;
   active: boolean;
 }) {
-  const [html, setHtml] = useState<string | null>(null);
+  const [insights, setInsights] = useState<ClaudeSessionInsight[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [breakdownFor, setBreakdownFor] = useState<ClaudeSession | null>(null);
+  const { openingId, open } = useOpenInAgentboard();
   const fetchedKey = useRef<string | null>(null);
 
   useEffect(() => {
@@ -523,27 +753,80 @@ function TreemapTab({
     if (!active || fetchedKey.current === key) return;
     fetchedKey.current = key;
     setLoading(true);
-    void claudeSessionsTreemapHtml(Number(days)).then((h) => {
-      setHtml(h);
+    void claudeSessionsInsights(Number(days)).then((r) => {
+      setInsights(r);
       setLoading(false);
     });
   }, [active, days, nonce]);
 
-  if (loading)
-    return <p className="p-4 text-sm text-muted-foreground">Building treemap…</p>;
-  if (!html)
+  if (loading && !insights)
+    return <p className="p-4 text-sm text-muted-foreground">Scanning for patterns…</p>;
+  if (!insights) return null;
+  if (insights.length === 0)
     return (
-      <p className="p-4 text-sm text-muted-foreground">
-        No treemap to show — no sessions in this range.
-      </p>
+      <div className="flex items-center gap-2.5 p-4 text-sm text-muted-foreground">
+        <CircleCheck className="size-4 shrink-0" style={{ color: PALETTE[1] }} />
+        No waste patterns in this window — sessions look healthy.
+      </div>
     );
+
   return (
-    <iframe
-      srcDoc={html}
-      sandbox="allow-scripts"
-      className="h-full w-full border-0"
-      title="Claude Code usage treemap"
-    />
+    <div className="flex flex-col gap-3 p-4">
+      {insights.map((insight, i) => {
+        const meta = INSIGHT_META[insight.kind];
+        const s = insight.session;
+        return (
+          <div
+            key={`${insight.kind}-${s.sessionId}-${i}`}
+            role="button"
+            tabIndex={0}
+            onClick={() => setBreakdownFor(s)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setBreakdownFor(s);
+              }
+            }}
+            className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-card p-3.5 text-left hover:bg-accent/50"
+          >
+            <span
+              className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md"
+              style={{ background: `${meta.color}26`, color: meta.color }}
+            >
+              <meta.icon className="size-4" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="flex items-baseline gap-2">
+                <span className="text-sm font-medium text-foreground">{meta.label}</span>
+                <span className="font-mono text-xs" style={{ color: meta.color }}>
+                  {insight.metric}
+                </span>
+              </span>
+              <span className="mt-0.5 block truncate text-sm text-foreground">
+                {s.title ?? s.sessionId.slice(0, 8)}
+                <span className="ml-2 font-mono text-xs text-muted-foreground">
+                  {s.project} · {s.date}
+                </span>
+              </span>
+              <span className="mt-0.5 block text-[12px] leading-snug text-muted-foreground">
+                {insight.detail}
+              </span>
+            </span>
+            <OpenInAgentboardButton
+              session={s}
+              opening={openingId === s.sessionId}
+              onOpen={open}
+            />
+          </div>
+        );
+      })}
+      <p className="text-[11px] text-muted-foreground">
+        Click a finding for its turn/tool breakdown, or{" "}
+        <TerminalSquare className="inline size-3 align-[-2px]" /> to resume the session in
+        Agentboard.
+      </p>
+      <BreakdownDialog session={breakdownFor} onClose={() => setBreakdownFor(null)} />
+    </div>
   );
 }
 
@@ -652,9 +935,9 @@ export function ClaudeSessionsScreen() {
                 <List className="size-4" />
                 Sessions{searching ? " · search" : ""}
               </TabsTrigger>
-              <TabsTrigger value="treemap" className="justify-start gap-2 px-2 py-1.5">
-                <Boxes className="size-4" />
-                Treemap
+              <TabsTrigger value="insights" className="justify-start gap-2 px-2 py-1.5">
+                <Lightbulb className="size-4" />
+                Insights
               </TabsTrigger>
             </TabsList>
 
@@ -706,8 +989,8 @@ export function ClaudeSessionsScreen() {
                 </div>
               </TabsContent>
 
-              <TabsContent value="treemap" className="h-full">
-                <TreemapTab days={days} nonce={refreshNonce} active={tab === "treemap"} />
+              <TabsContent value="insights">
+                <InsightsTab days={days} nonce={refreshNonce} active={tab === "insights"} />
               </TabsContent>
             </div>
           </Tabs>

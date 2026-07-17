@@ -173,7 +173,8 @@ Cargo workspace + npm workspace (`apps/client` only):
     filtering, issue parsing, picker layout.
   - `tt-claude-sessions` — backs the app's Claude Sessions screen:
     session-JSONL token accounting, the single-parse ledger scan/search path,
-    treemap/bar-chart building, and the embedded-HTML report render.
+    ranked waste insights (`insights`), and the per-session turn/tool
+    drill-down (`breakdown`).
   - `tt-slots` — the worktree-slot convention (see the Worktree slots section):
     the `${tt:...}` env-template renderer with port-pool claims, dotenv-lite
     parse/merge, slot naming/layout, removal guards, and the shared

@@ -138,10 +138,14 @@ commands work, plus Chris's explicit go-ahead — not full parity.
   surfaces per-session `SessionResult` data the app wasn't showing yet.
   **2026-07-17 app-only cutover:** the `tt claude-sessions` CLI command is
   removed entirely (all formats — hard cutover, no alias) and the crate is
-  renamed `tt-graph` → `tt-claude-sessions`; the treemap/bar-chart HTML
-  report now renders inside the app's Claude Sessions screen (Treemap tab,
-  `claude_sessions_treemap_html` Tauri command + iframe embed), and the
-  CLI-only `format` module plus other dead code were deleted.
+  renamed `tt-graph` → `tt-claude-sessions`; the CLI-only `format` module
+  plus other dead code were deleted. The treemap explorer itself (deep
+  project→date→session→turn→tool d3 report, `graph-template.html`) was then
+  retired the same day in favor of an answer-first **Insights** tab (ranked
+  waste findings — token outliers, re-read loops, cache churn, marathons —
+  riding the cached ledger scan) plus a per-session turn/tool breakdown
+  dialog opened from the Sessions table; the Overview charts picked up the
+  report's CVD-validated categorical palette.
 
 - [~] **5 — Claude plugin carry-over.** `packages/core/` (plugin manifest, hooks,
   skills, README) is copied across **verbatim** from slot-1 — pure markdown/JSON,
