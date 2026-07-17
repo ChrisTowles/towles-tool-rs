@@ -40,7 +40,9 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::engine::{Engine, EngineOptions, KeyEvent, PasteOutcome, Select, Theme, VtError};
+use crate::engine::{
+    Engine, EngineOptions, KeyEvent, MouseInput, PasteOutcome, Select, Theme, VtError,
+};
 use crate::frame::Frame;
 use crate::search::SearchMatch;
 
@@ -85,10 +87,17 @@ pub enum Input {
     },
     /// Scroll the viewport by rows (up is negative); `None` jumps to bottom.
     Scroll(Option<isize>),
-    /// Report a mouse-wheel gesture at viewport cell (`x`, `y`) to the
-    /// application in its negotiated mouse protocol (`lines` rows, up is
-    /// negative). No-op unless the application enabled mouse tracking.
+    /// A mouse-wheel gesture at viewport cell (`x`, `y`), `lines` rows (up
+    /// is negative). The engine picks what it means: scrollback paging, a
+    /// wheel report to the program, or alternate-scroll arrow keys (see
+    /// [`Engine::wheel`]).
     Wheel { x: u16, y: u16, lines: i32 },
+    /// A pointer event for the program, when it enabled mouse tracking (see
+    /// [`Engine::mouse`]).
+    Mouse(MouseInput),
+    /// The pane gained/lost keyboard focus — reported to the program when it
+    /// asked for focus events, mode 1004 (see [`Engine::focus`]).
+    Focus(bool),
     /// Apply a selection operation.
     Select(Select),
     /// Reply with the active selection's plain text on the provided channel.
@@ -244,6 +253,12 @@ impl Session {
                 // best-effort like any other input.
                 Input::Wheel { x, y, lines } => {
                     let _ = engine.wheel(x, y, lines);
+                }
+                Input::Mouse(input) => {
+                    let _ = engine.mouse(&input);
+                }
+                Input::Focus(focused) => {
+                    let _ = engine.focus(focused);
                 }
                 // Out-of-bounds coordinates (layout races) are ignored;
                 // the selection just doesn't change.

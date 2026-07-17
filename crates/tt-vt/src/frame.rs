@@ -85,18 +85,16 @@ pub struct Colors {
     pub bg: u32,
 }
 
-/// Terminal mode hints the renderer needs for input encoding and wheel
-/// behavior. Mirrors what xterm.js tracks internally.
+/// Terminal mode hints the view needs for input *routing* — all encoding
+/// happens in the engine, so only the modes that change where an event goes
+/// ship on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Modes {
-    /// DECCKM: arrows send SS3 (`ESC O A`) instead of CSI (`ESC [ A`).
-    pub app_cursor_keys: bool,
-    /// Mode 2004: wrap pasted text in `ESC [200~` / `ESC [201~`.
-    pub bracketed_paste: bool,
-    /// Alternate screen active (fullscreen TUI; wheel becomes arrow keys).
+    /// Alternate screen active (fullscreen TUI owns the scrollback chords).
     pub alt_screen: bool,
-    /// Any mouse tracking mode enabled.
+    /// Any mouse tracking mode enabled (clicks go to the program, not local
+    /// selection; Shift bypasses).
     pub mouse_tracking: bool,
 }
 
@@ -230,17 +228,10 @@ mod tests {
     fn modes_use_camel_case_keys() {
         // These multi-word fields are where a serde rename would silently
         // diverge from the TS `Modes` type.
-        let modes = Modes {
-            app_cursor_keys: true,
-            bracketed_paste: false,
-            alt_screen: true,
-            mouse_tracking: false,
-        };
+        let modes = Modes { alt_screen: true, mouse_tracking: false };
         assert_eq!(
             to_value(modes).unwrap(),
             json!({
-                "appCursorKeys": true,
-                "bracketedPaste": false,
                 "altScreen": true,
                 "mouseTracking": false,
             }),
@@ -273,12 +264,7 @@ mod tests {
             }],
             cursor: cursor(),
             colors: Colors { fg: 0xffffff, bg: 0x000000 },
-            modes: Modes {
-                app_cursor_keys: false,
-                bracketed_paste: false,
-                alt_screen: false,
-                mouse_tracking: false,
-            },
+            modes: Modes { alt_screen: false, mouse_tracking: false },
             title: Some("bash".to_string()),
             scrollback_rows: 100,
             viewport_top: 42,
@@ -298,8 +284,6 @@ mod tests {
                 },
                 "colors": { "fg": 0xffffff, "bg": 0x000000 },
                 "modes": {
-                    "appCursorKeys": false,
-                    "bracketedPaste": false,
                     "altScreen": false,
                     "mouseTracking": false,
                 },
@@ -319,12 +303,7 @@ mod tests {
             changed: vec![],
             cursor: cursor(),
             colors: Colors { fg: 0, bg: 0 },
-            modes: Modes {
-                app_cursor_keys: false,
-                bracketed_paste: false,
-                alt_screen: false,
-                mouse_tracking: false,
-            },
+            modes: Modes { alt_screen: false, mouse_tracking: false },
             title: None,
             scrollback_rows: 0,
             viewport_top: 0,

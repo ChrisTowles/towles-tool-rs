@@ -31,8 +31,8 @@ use serde::{Deserialize, Serialize};
 use sysinfo::{Pid as SysPid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tt_vt::{
-    EngineOptions, Event as VtEvent, Frame, Input as VtInput, KeyAction, KeyEvent, SearchMatch,
-    Select as VtSelect, Sender as VtSender,
+    EngineOptions, Event as VtEvent, Frame, Input as VtInput, KeyAction, KeyEvent, MouseAction,
+    MouseButton, MouseInput, SearchMatch, Select as VtSelect, Sender as VtSender,
 };
 
 pub const FRAME_EVENT: &str = "terminal://frame";
@@ -578,13 +578,11 @@ pub fn term_scroll(
     Ok(())
 }
 
-/// Report a mouse-wheel gesture at viewport cell (`x`, `y`) to the program
-/// running in the terminal (`lines` rows, up is negative). The engine encodes
-/// it in whatever mouse protocol the program negotiated and the bytes ride
-/// the reply path into the PTY; when the program never enabled mouse tracking
-/// nothing is written. The view only calls this when the frame's mode hints
-/// say the mouse is tracked, but the engine re-checks, so a stale hint can't
-/// inject input — and a wheel never turns into arrow keys.
+/// A mouse-wheel gesture at viewport cell (`x`, `y`), `lines` rows (up is
+/// negative). The view always forwards the wheel; the engine owns the whole
+/// policy — scrollback paging when scrolled back, wheel reports when the
+/// program tracks the mouse, alternate-scroll arrow keys on the alt screen
+/// (mode 1007), viewport scrolling otherwise.
 #[tauri::command]
 pub fn term_wheel(
     state: State<TermState>,
@@ -603,6 +601,80 @@ pub fn term_wheel(
 /// calls this when a pane transitions from hidden (`display:none`) back to
 /// visible: dirty-only frames never resend rows the engine considers clean,
 /// so a stale canvas would otherwise stay stale until a scroll (#47).
+/// A pointer event from the terminal view (mirrors `tt_vt::MouseInput`),
+/// forwarded to the program when it enabled mouse tracking. The view only
+/// sends these while the frame's mode hints say the mouse is tracked, but
+/// the engine re-checks, so a stale hint can't inject input.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TermMouse {
+    action: TermMouseAction,
+    #[serde(default)]
+    button: Option<TermMouseButton>,
+    x: u16,
+    y: u16,
+    #[serde(default)]
+    shift: bool,
+    #[serde(default)]
+    alt: bool,
+    #[serde(default)]
+    ctrl: bool,
+    #[serde(default)]
+    any_button: bool,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TermMouseAction {
+    Press,
+    Release,
+    Motion,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TermMouseButton {
+    Left,
+    Middle,
+    Right,
+}
+
+impl From<TermMouse> for MouseInput {
+    fn from(m: TermMouse) -> Self {
+        MouseInput {
+            action: match m.action {
+                TermMouseAction::Press => MouseAction::Press,
+                TermMouseAction::Release => MouseAction::Release,
+                TermMouseAction::Motion => MouseAction::Motion,
+            },
+            button: m.button.map(|b| match b {
+                TermMouseButton::Left => MouseButton::Left,
+                TermMouseButton::Middle => MouseButton::Middle,
+                TermMouseButton::Right => MouseButton::Right,
+            }),
+            x: m.x,
+            y: m.y,
+            shift: m.shift,
+            alt: m.alt,
+            ctrl: m.ctrl,
+            any_button: m.any_button,
+        }
+    }
+}
+
+/// Forward a pointer event to the program in its negotiated mouse protocol.
+#[tauri::command]
+pub fn term_mouse(
+    state: State<TermState>,
+    term_id: String,
+    event: TermMouse,
+) -> Result<(), String> {
+    let guard = state.sessions.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::Mouse(event.into()));
+    Ok(())
+}
+
 #[tauri::command]
 pub fn term_request_full(state: State<TermState>, term_id: String) -> Result<(), String> {
     let guard = state.sessions.lock().unwrap();
@@ -872,6 +944,11 @@ pub fn term_theme(
 /// (blur A then focus B) can't clear B's focus if the events arrive reordered.
 #[tauri::command]
 pub fn term_focus(state: State<TermState>, term_id: String, focused: bool) {
+    // Also tell the engine: a program that asked for focus events (mode
+    // 1004) gets CSI I / CSI O; the engine is silent otherwise.
+    if let Some(session) = state.sessions.lock().unwrap().get(&term_id) {
+        let _ = session.vt.send(VtInput::Focus(focused));
+    }
     state.set_focus(term_id, focused);
 }
 

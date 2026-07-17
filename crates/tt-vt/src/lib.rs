@@ -18,7 +18,8 @@ pub mod search;
 pub mod session;
 
 pub use engine::{
-    Engine, EngineOptions, KeyAction, KeyEvent, PasteOutcome, Select, Theme, VtError,
+    Engine, EngineOptions, KeyAction, KeyEvent, MouseAction, MouseButton, MouseInput, PasteOutcome,
+    Select, Theme, VtError,
 };
 pub use frame::{Frame, Modes};
 pub use search::SearchMatch;
@@ -233,6 +234,113 @@ mod tests {
         assert_eq!(encoded(&mut e, &key_press("Enter", "Enter")), b"\r");
     }
 
+    fn left_click(x: u16, y: u16) -> MouseInput {
+        MouseInput {
+            action: MouseAction::Press,
+            button: Some(MouseButton::Left),
+            x,
+            y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+            any_button: true,
+        }
+    }
+
+    #[test]
+    fn mouse_click_reports_in_the_negotiated_protocol() {
+        let mut e = engine(40, 5);
+        // No tracking: a click writes nothing — local selection territory.
+        e.mouse(&left_click(3, 2)).expect("mouse");
+        assert!(e.take_pty_output().is_empty());
+
+        // The program negotiates click tracking + SGR format (1000 + 1006);
+        // reports are 1-based, `M` press / `m` release.
+        e.feed(b"\x1b[?1000h\x1b[?1006h");
+        e.mouse(&left_click(3, 2)).expect("mouse");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[<0;4;3M");
+        let release =
+            MouseInput { action: MouseAction::Release, any_button: false, ..left_click(3, 2) };
+        e.mouse(&release).expect("mouse");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[<0;4;3m");
+    }
+
+    #[test]
+    fn motion_is_silent_under_click_only_tracking() {
+        let mut e = engine(40, 5);
+        e.feed(b"\x1b[?1000h\x1b[?1006h");
+        let motion = MouseInput {
+            action: MouseAction::Motion,
+            button: None,
+            any_button: false,
+            ..left_click(5, 1)
+        };
+        e.mouse(&motion).expect("mouse");
+        assert!(e.take_pty_output().is_empty(), "mode 1000 wants clicks only");
+
+        // Any-motion tracking (1003): now bare motion reports (32 + 3 = 35).
+        e.feed(b"\x1b[?1003h");
+        e.mouse(&motion).expect("mouse");
+        let out = e.take_pty_output();
+        assert!(out.starts_with(b"\x1b[<35;"), "got {:?}", String::from_utf8_lossy(&out));
+    }
+
+    #[test]
+    fn focus_reports_only_when_mode_1004_is_on() {
+        let mut e = engine(40, 5);
+        e.focus(true).expect("focus");
+        assert!(e.take_pty_output().is_empty(), "no focus events unless asked");
+
+        e.feed(b"\x1b[?1004h");
+        e.focus(true).expect("focus");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[I");
+        e.focus(false).expect("focus");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[O");
+    }
+
+    #[test]
+    fn wheel_scrolls_the_viewport_on_the_primary_screen() {
+        let mut e = engine(10, 3);
+        for i in 0..8 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        let live_top = e.viewport_top().expect("viewport_top");
+        assert!(live_top > 0, "output built scrollback");
+
+        e.wheel(0, 0, -2).expect("wheel");
+        assert!(e.take_pty_output().is_empty(), "no bytes reach the program");
+        assert_eq!(e.viewport_top().expect("viewport_top"), live_top - 2, "viewport scrolled");
+    }
+
+    #[test]
+    fn wheel_becomes_arrows_on_the_alt_screen_until_1007_off() {
+        let mut e = engine(10, 3);
+        e.feed(b"\x1b[?1049h");
+        e.take_pty_output();
+
+        // Alternate-scroll (mode 1007) is on by default in libghostty: the
+        // wheel types arrow keys into the fullscreen TUI (how `less` and
+        // `git log` scroll), one per line.
+        e.wheel(0, 0, -1).expect("wheel");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[A");
+        e.wheel(0, 0, 2).expect("wheel");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[B\x1b[B");
+
+        // A program that turns 1007 off gets silence, not stray arrows.
+        e.feed(b"\x1b[?1007l");
+        e.wheel(0, 0, -1).expect("wheel");
+        assert!(e.take_pty_output().is_empty());
+    }
+
+    #[test]
+    fn wheel_reports_to_a_mouse_tracking_program() {
+        let mut e = engine(10, 3);
+        e.feed(b"\x1b[?1000h\x1b[?1006h");
+        e.wheel(2, 1, -1).expect("wheel");
+        // SGR wheel-up is button 64, 1-based coords.
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[<64;3;2M");
+    }
+
     #[test]
     fn key_release_is_silent_without_kitty_report_events() {
         let mut e = engine(40, 5);
@@ -354,15 +462,12 @@ mod tests {
         let mut e = engine(20, 4);
         e.feed(b"x");
         let frame = e.render().expect("render").expect("frame");
-        assert!(!frame.modes.app_cursor_keys);
         assert!(!frame.modes.alt_screen);
 
-        // Enter alt screen (1049), app cursor keys (DECCKM), bracketed paste.
-        e.feed(b"\x1b[?1049h\x1b[?1h\x1b[?2004h");
+        // Enter alt screen (1049).
+        e.feed(b"\x1b[?1049h");
         let frame = e.render().expect("render").expect("frame");
-        assert!(frame.modes.app_cursor_keys);
         assert!(frame.modes.alt_screen);
-        assert!(frame.modes.bracketed_paste);
         assert!(!frame.modes.mouse_tracking);
 
         // Mode flips alone don't dirty cells (no frame goes out until

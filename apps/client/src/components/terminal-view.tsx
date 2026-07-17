@@ -261,7 +261,7 @@ export function TerminalView({
       rows: Math.max(1, Math.floor(host.clientHeight / cellH)),
       lines: [] as { runs: Run[]; sel?: [number, number] }[],
       cursor: null as Cursor | null,
-      modes: { appCursorKeys: false, bracketedPaste: false, altScreen: false, mouseTracking: false },
+      modes: { altScreen: false, mouseTracking: false },
       scrolledBack: false,
       /** URL under the mouse — underlined and Ctrl/Cmd-clickable. */
       hoveredLink: null as TermLink | null,
@@ -713,12 +713,11 @@ export function TerminalView({
         if (e.data) write(e.data);
         input.value = "";
       };
-      // The wheel never synthesizes key input (no xterm alt-scroll):
-      // scrolling over a fullscreen TUI must not type ↑/↓ into it — wheeling
-      // over an agent's session used to feed it stray arrow keys. Programs
-      // that asked for mouse tracking (vim, htop, ...) get real wheel events
-      // in their negotiated protocol; the primary screen scrolls our own
-      // scrollback; anything else swallows the gesture.
+      // The engine owns the whole wheel policy (see tt-vt's Engine::wheel):
+      // scrollback paging when scrolled back, wheel reports when the program
+      // tracks the mouse, alternate-scroll arrows on the alt screen (mode
+      // 1007 — how `less`/`git log` wheel-scroll), viewport scrolling
+      // otherwise. The view just reports the gesture and its cell.
       const onWheel = (e: WheelEvent) => {
         e.preventDefault();
         const lines =
@@ -726,15 +725,10 @@ export function TerminalView({
             ? Math.round(e.deltaY)
             : Math.round(e.deltaY / cellH) || Math.sign(e.deltaY);
         if (lines === 0) return;
-        if (grid.modes.mouseTracking && !grid.scrolledBack) {
-          const rect = canvas.getBoundingClientRect();
-          const x = Math.max(0, Math.min(grid.cols - 1, Math.floor((e.clientX - rect.left) / cellW)));
-          const y = Math.max(0, Math.min(grid.rows - 1, Math.floor((e.clientY - rect.top) / cellH)));
-          void invoke("term_wheel", { termId, x, y, lines }).catch(() => {});
-        } else if (!grid.modes.altScreen) {
-          grid.scrolledBack = true;
-          scroll(lines);
-        }
+        const rect = canvas.getBoundingClientRect();
+        const x = Math.max(0, Math.min(grid.cols - 1, Math.floor((e.clientX - rect.left) / cellW)));
+        const y = Math.max(0, Math.min(grid.rows - 1, Math.floor((e.clientY - rect.top) / cellH)));
+        void invoke("term_wheel", { termId, x, y, lines }).catch(() => {});
       };
       const focusInput = () => input.focus({ preventScroll: true });
 
@@ -821,9 +815,45 @@ export function TerminalView({
       });
       let anchor: { x: number; y: number } | null = null;
       let dragged = false;
+      // Pointer events belong to the program when it negotiated mouse
+      // tracking, the view is at the live bottom, and Shift isn't held —
+      // Shift+click/drag is the local-selection escape hatch, like every
+      // terminal. Right-click always stays local (the context menu).
+      const mouseToProgram = (e: MouseEvent) =>
+        grid.modes.mouseTracking && !grid.scrolledBack && !e.shiftKey;
+      const MOUSE_BUTTONS = ["left", "middle", "right"] as const;
+      let mouseGestureToProgram = false;
+      let lastMotionCell: { x: number; y: number } | null = null;
+      const sendMouse = (
+        e: MouseEvent,
+        action: "press" | "release" | "motion",
+        cell: { x: number; y: number },
+      ) =>
+        void invoke("term_mouse", {
+          termId,
+          event: {
+            action,
+            button: action === "motion" ? undefined : MOUSE_BUTTONS[e.button],
+            x: cell.x,
+            y: cell.y,
+            shift: e.shiftKey,
+            alt: e.altKey,
+            ctrl: e.ctrlKey,
+            anyButton: e.buttons !== 0,
+          },
+        }).catch(() => {});
       const onMouseDown = (e: MouseEvent) => {
         focusInput();
-        if (e.button !== 0) return;
+        if (e.button !== 0) {
+          // Middle-click goes to a tracking program; right-click is the
+          // context menu's, always.
+          if (e.button === 1 && mouseToProgram(e)) {
+            e.preventDefault();
+            mouseGestureToProgram = true;
+            sendMouse(e, "press", cellOf(e));
+          }
+          return;
+        }
         e.preventDefault(); // keep focus on the hidden input
         const cell = cellOf(e);
         // Ctrl/Cmd+click on a link opens it (VS Code terminal convention):
@@ -837,6 +867,12 @@ export function TerminalView({
             return;
           }
         }
+        if (mouseToProgram(e)) {
+          mouseGestureToProgram = true;
+          lastMotionCell = cell;
+          sendMouse(e, "press", cell);
+          return;
+        }
         const kind = selectionKindForDetail(e.detail);
         if (kind === "word" || kind === "line") {
           void select(kind, cell);
@@ -848,6 +884,17 @@ export function TerminalView({
       };
       const onMouseMove = (e: MouseEvent) => {
         const cell = cellOf(e);
+        // Motion for the program: during a forwarded gesture, or hover
+        // motion while tracking is on (any-motion mode 1003 wants it; the
+        // engine drops what the negotiated mode doesn't report). Deduped to
+        // cell granularity.
+        if (mouseGestureToProgram || (!anchor && mouseToProgram(e))) {
+          if (lastMotionCell?.x !== cell.x || lastMotionCell?.y !== cell.y) {
+            lastMotionCell = cell;
+            sendMouse(e, "motion", cell);
+          }
+          if (mouseGestureToProgram) return;
+        }
         if (!anchor) {
           setHoveredLink(linkAt(grid.lines, grid.cols, cell.x, cell.y));
           return;
@@ -857,7 +904,12 @@ export function TerminalView({
         setHoveredLink(null);
         void select("drag", anchor, cell);
       };
-      const onMouseUp = () => {
+      const onMouseUp = (e: MouseEvent) => {
+        if (mouseGestureToProgram) {
+          mouseGestureToProgram = false;
+          sendMouse(e, "release", lastMotionCell ?? cellOf(e));
+          return;
+        }
         if (anchor && !dragged) void select("clear");
         else if (dragged) maybeCopyOnSelect("drag");
         anchor = null;

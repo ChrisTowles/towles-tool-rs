@@ -8,6 +8,7 @@ use std::cell::{Cell as StdCell, RefCell};
 use std::rc::Rc;
 
 use libghostty_vt::fmt::{Formatter, FormatterOptions};
+use libghostty_vt::focus;
 use libghostty_vt::key;
 use libghostty_vt::mouse;
 use libghostty_vt::render::{
@@ -123,6 +124,40 @@ pub enum KeyAction {
     Release,
 }
 
+/// A pointer event from the UI, forwarded to the program when it enabled
+/// mouse tracking. The engine encodes it in whatever protocol the program
+/// negotiated (X10, SGR, …); events the current tracking mode doesn't want
+/// (e.g. motion under click-only mode 1000) produce no bytes.
+#[derive(Debug, Clone, Copy)]
+pub struct MouseInput {
+    pub action: MouseAction,
+    /// The button involved; `None` for a pure motion event.
+    pub button: Option<MouseButton>,
+    /// Viewport cell coordinates.
+    pub x: u16,
+    pub y: u16,
+    pub shift: bool,
+    pub alt: bool,
+    pub ctrl: bool,
+    /// Whether any button is held during this event — drives button-event
+    /// (drag) tracking, mode 1002.
+    pub any_button: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseAction {
+    Press,
+    Release,
+    Motion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+}
+
 /// Cap on mouse-wheel reports emitted for one wheel gesture. Bounds the
 /// bytes a single high-delta event (a wheel fling, a coalesced touchpad
 /// swipe) can inject into the application's input stream.
@@ -150,6 +185,9 @@ pub struct Engine {
     /// Reused keystroke encoder; re-synced from terminal state per event
     /// (see [`Engine::key`]).
     key_encoder: key::Encoder<'static>,
+    /// Reused pointer encoder; re-synced from terminal state per event
+    /// (see [`Engine::mouse`] / [`Engine::wheel`]).
+    mouse_encoder: mouse::Encoder<'static>,
     /// Force the next render to be a full frame (selection changed).
     force_full: bool,
     /// Cursor state as of the last emitted frame. libghostty-vt's dirty
@@ -197,6 +235,7 @@ impl Engine {
             osc52: Osc52Scanner::new(),
             osc_color: OscColorScanner::new(),
             key_encoder: key::Encoder::new()?,
+            mouse_encoder: mouse::Encoder::new()?,
             force_full: false,
             last_cursor: None,
         })
@@ -392,21 +431,11 @@ impl Engine {
         });
     }
 
-    /// Report a mouse-wheel gesture at viewport cell (`x`, `y`) to the
-    /// application, encoded in whatever mouse protocol it negotiated (X10,
-    /// SGR, ...) — one report per line (`lines` rows, up is negative), capped
-    /// at [`MAX_WHEEL_REPORTS`]. When the application never enabled mouse
-    /// tracking this writes nothing, so a stale mode hint on the caller's
-    /// side can't inject bytes — and a wheel is never translated into arrow
-    /// keys. Reports ride the same pty-out path as query replies; the caller
-    /// drains them via [`Engine::take_pty_output`].
-    pub fn wheel(&mut self, x: u16, y: u16, lines: i32) -> Result<()> {
-        if lines == 0 {
-            return Ok(());
-        }
-        let mut encoder = mouse::Encoder::new()?;
-        encoder.set_options_from_terminal(&self.term).set_size(mouse::EncoderSize {
-            // 1px cells make surface-space positions equal cell coordinates.
+    /// Sync the reused pointer encoder to current terminal state (tracking
+    /// mode, report format, grid size). 1px cells make surface-space
+    /// positions equal cell coordinates.
+    fn sync_mouse_encoder(&mut self) -> Result<()> {
+        self.mouse_encoder.set_options_from_terminal(&self.term).set_size(mouse::EncoderSize {
             screen_width: u32::from(self.term.cols()?),
             screen_height: u32::from(self.term.rows()?),
             cell_width: 1,
@@ -416,17 +445,117 @@ impl Engine {
             padding_right: 0,
             padding_left: 0,
         });
+        Ok(())
+    }
+
+    /// Forward a pointer event to the program, encoded in its negotiated
+    /// mouse protocol. Writes nothing when the program never enabled mouse
+    /// tracking (a stale hint on the caller's side can't inject bytes) or
+    /// when the tracking mode doesn't want this event kind — the encoder
+    /// owns those rules.
+    pub fn mouse(&mut self, input: &MouseInput) -> Result<()> {
+        if !self.term.is_mouse_tracking()? {
+            return Ok(());
+        }
+        self.sync_mouse_encoder()?;
+        self.mouse_encoder.set_any_button_pressed(input.any_button);
         let mut event = mouse::Event::new()?;
         event
-            .set_action(mouse::Action::Press)
-            // xterm wheel buttons: 4 scrolls up, 5 scrolls down (press-only).
-            .set_button(Some(if lines < 0 { mouse::Button::Four } else { mouse::Button::Five }))
-            .set_position(mouse::Position { x: f32::from(x), y: f32::from(y) });
-        let mut buf = Vec::new();
-        for _ in 0..lines.unsigned_abs().min(MAX_WHEEL_REPORTS) {
-            encoder.encode_to_vec(&event, &mut buf)?;
+            .set_action(match input.action {
+                MouseAction::Press => mouse::Action::Press,
+                MouseAction::Release => mouse::Action::Release,
+                MouseAction::Motion => mouse::Action::Motion,
+            })
+            .set_button(input.button.map(|b| match b {
+                MouseButton::Left => mouse::Button::Left,
+                MouseButton::Middle => mouse::Button::Middle,
+                MouseButton::Right => mouse::Button::Right,
+            }))
+            .set_position(mouse::Position { x: f32::from(input.x), y: f32::from(input.y) });
+        let mut mods = key::Mods::empty();
+        if input.shift {
+            mods |= key::Mods::SHIFT;
         }
+        if input.alt {
+            mods |= key::Mods::ALT;
+        }
+        if input.ctrl {
+            mods |= key::Mods::CTRL;
+        }
+        event.set_mods(mods);
+        let mut buf = Vec::new();
+        self.mouse_encoder.encode_to_vec(&event, &mut buf)?;
         self.pty_out.borrow_mut().extend_from_slice(&buf);
+        Ok(())
+    }
+
+    /// Report a focus change to the program when it asked for focus events
+    /// (mode 1004): `CSI I` on gain, `CSI O` on loss. Silent otherwise.
+    pub fn focus(&mut self, focused: bool) -> Result<()> {
+        if !self.term.mode(Mode::FOCUS_EVENT)? {
+            return Ok(());
+        }
+        let event = if focused { focus::Event::Gained } else { focus::Event::Lost };
+        let mut buf = [0u8; 8];
+        let len = event.encode(&mut buf)?;
+        self.pty_out.borrow_mut().extend_from_slice(&buf[..len]);
+        Ok(())
+    }
+
+    /// A mouse-wheel gesture at viewport cell (`x`, `y`), `lines` rows (up is
+    /// negative). The engine owns the whole policy:
+    ///
+    /// 1. Scrolled back into history: the wheel pages our scrollback.
+    /// 2. Mouse tracking negotiated: wheel reports (buttons 4/5) in the
+    ///    program's protocol, one per line, capped at [`MAX_WHEEL_REPORTS`].
+    /// 3. Alternate screen with alternate-scroll (mode 1007): arrow keys via
+    ///    the key encoder (so DECCKM is honored), same cap.
+    /// 4. Otherwise: scroll our viewport (no-op on the alt screen, which has
+    ///    no scrollback).
+    pub fn wheel(&mut self, x: u16, y: u16, lines: i32) -> Result<()> {
+        if lines == 0 {
+            return Ok(());
+        }
+        if self.viewport_top()? < self.term.scrollback_rows()? {
+            self.scroll(Some(lines as isize));
+            return Ok(());
+        }
+        if self.term.is_mouse_tracking()? {
+            self.sync_mouse_encoder()?;
+            let mut event = mouse::Event::new()?;
+            event
+                .set_action(mouse::Action::Press)
+                // xterm wheel buttons: 4 scrolls up, 5 scrolls down (press-only).
+                .set_button(Some(if lines < 0 { mouse::Button::Four } else { mouse::Button::Five }))
+                .set_position(mouse::Position { x: f32::from(x), y: f32::from(y) });
+            let mut buf = Vec::new();
+            for _ in 0..lines.unsigned_abs().min(MAX_WHEEL_REPORTS) {
+                self.mouse_encoder.encode_to_vec(&event, &mut buf)?;
+            }
+            self.pty_out.borrow_mut().extend_from_slice(&buf);
+            return Ok(());
+        }
+        if self.term.active_screen()? == Screen::Alternate {
+            if self.term.mode(Mode::ALT_SCROLL)? {
+                let arrow = if lines < 0 { "ArrowUp" } else { "ArrowDown" };
+                let event = KeyEvent {
+                    code: arrow.to_string(),
+                    key: arrow.to_string(),
+                    action: KeyAction::Press,
+                    shift: false,
+                    alt: false,
+                    ctrl: false,
+                    meta: false,
+                    caps_lock: false,
+                    num_lock: false,
+                };
+                for _ in 0..lines.unsigned_abs().min(MAX_WHEEL_REPORTS) {
+                    self.key(&event)?;
+                }
+            }
+            return Ok(());
+        }
+        self.scroll(Some(lines as isize));
         Ok(())
     }
 
@@ -716,8 +845,6 @@ impl Engine {
             cursor,
             colors: Colors { fg: pack_rgb(palette.foreground), bg: pack_rgb(palette.background) },
             modes: Modes {
-                app_cursor_keys: self.term.mode(Mode::DECCKM)?,
-                bracketed_paste: self.term.mode(Mode::BRACKETED_PASTE)?,
                 alt_screen: self.term.active_screen()? == Screen::Alternate,
                 mouse_tracking: self.term.is_mouse_tracking()?,
             },

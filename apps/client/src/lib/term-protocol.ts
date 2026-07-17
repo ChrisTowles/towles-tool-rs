@@ -31,10 +31,11 @@ export interface Cursor {
   blinking: boolean;
 }
 
+/** Mode hints for input *routing* only — all encoding happens engine-side. */
 export interface Modes {
-  appCursorKeys: boolean;
-  bracketedPaste: boolean;
+  /** Alternate screen active (fullscreen TUI owns the scrollback chords). */
   altScreen: boolean;
+  /** Clicks go to the program instead of local selection; Shift bypasses. */
   mouseTracking: boolean;
 }
 
