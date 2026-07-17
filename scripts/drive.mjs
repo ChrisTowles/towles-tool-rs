@@ -31,20 +31,17 @@
 //   node scripts/drive.mjs click "[role=menuitem]" --session <id>
 //   node scripts/drive.mjs session-close <id>
 //
-// Ports come from `.env.local` (same as dev:drive): wdPort = TT_DEV_PORT + 3000,
-// override with TT_E2E_WEBDRIVER_PORT.
+// Ports come from the rendered `.env`/`.env.local` (same as dev:drive):
+// wdPort = the .env claim TT_E2E_WEBDRIVER_PORT, else TT_DEV_PORT + 3000.
 import { writeFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { resolveDevPort, resolveWebdriverPort } from "./slot-port.mjs";
+import { requireDevPort, resolveWebdriverPort } from "./slot-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf";
 
-const devPort = resolveDevPort(repoRoot);
-if (!devPort) {
-  fail(`TT_DEV_PORT=${process.env.TT_DEV_PORT} is not a valid port`);
-}
+const devPort = requireDevPort(repoRoot, { tag: "drive" });
 const wdPort = resolveWebdriverPort(devPort);
 const base = `http://127.0.0.1:${wdPort}`;
 

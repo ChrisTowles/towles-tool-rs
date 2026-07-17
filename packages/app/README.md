@@ -17,6 +17,16 @@ plugin enabled gets these tools without manual `claude mcp add` setup:
 Requires `tt` on `PATH` (see the root [README](../../README.md) / `install`
 command).
 
+## Skills
+
+- **`slot-onboarding`** — walks a repo through adopting tt worktree slots:
+  discover what the repo needs per-slot (dev ports, docker names, setup),
+  pick `${tt:port A-B}` pools that don't overlap other onboarded repos,
+  write the tokenized `.env.example` (or `.claude/slot-env.template`
+  sidecar), then run the mechanical half with `tt slot init` and verify with
+  a smoke slot. Triggers on "onboard this repo for slots" / "set up tt
+  slots" / a `tt slot new` "no template" error.
+
 ## Hooks
 
 | Hook                            | Event                | Does…                                                                 |

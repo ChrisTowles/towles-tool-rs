@@ -46,7 +46,7 @@ the mock dev server:
 
 Both are gated behind the `wdio` cargo feature + `VITE_WDIO` flag, so nothing
 ships in normal/release builds. Ports come from the env files (`TT_DEV_PORT` in `.env.local`, or `.env` rendered by `tt slot`;
-webdriver = `+3000`); `dev:drive` and `e2e` share a slot's ports, so don't run
+webdriver = the `TT_E2E_WEBDRIVER_PORT` claim, falling back to `+3000`); `dev:drive` and `e2e` share a slot's ports, so don't run
 both at once in one slot. Full docs + Linux gotchas: [e2e/README.md](e2e/README.md).
 
 > The binary is **`tt`**. The `ttr` → `tt` cutover from the TypeScript CLI
@@ -65,6 +65,7 @@ created for a branch, removed when the branch merges. Manage them with
 checkout root is safe — git skips nested repositories without a second `-f`.)
 
 ```sh
+tt slot init                              # onboard a repo: template, .gitignore, worktree hooks, primary .env
 tt slot new -b feat/thing [--base <ref>]  # creates .claude/worktrees/feat-thing on that branch
 tt slot ls [--json]                       # fleet: main checkout + slots, branch, dirty, ports
 tt slot env <name>                        # (re)render .env — idempotent, keeps claims
@@ -221,16 +222,17 @@ Cargo workspace + npm workspace (`apps/client` only):
   `gh pr|branch|branch-clean|assign` (+ `pr` alias), `install [-o]`,
   `agentboard repos|sessions` (+ `ag` alias),
   `collect calendar|issues|prs|slack|all`, `mcp serve`,
-  `slot new|ls|rm|env|clean` (worktree slots — see the Worktree slots section).
+  `slot init|new|ls|rm|env|clean` (worktree slots — see the Worktree slots section).
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
-  `npm run dev` (root) picks a deterministic per-slot dev-server port
-  automatically (`scripts/dev-port.mjs`), derived from the slot's directory
-  name (`scripts/slot-port.mjs`) instead of a hardcoded 1420, so multiple
-  worktree slots run the app concurrently without colliding; anything already
-  listening on that port (almost always this slot's own orphaned session) is
-  killed first rather than scanned past. Pin a slot to a fixed port with
-  `TT_DEV_PORT` in a gitignored root `.env.local` (dev-port reads it and
-  passes it through to vite). Each window is
+  `npm run dev` (root) resolves the per-slot dev-server port from the
+  checkout's rendered `.env` (`scripts/dev-port.mjs` / `slot-port.mjs`,
+  running `tt slot env` automatically when the checkout has no claim yet) —
+  the `${tt:port}` claims in `.env.example` are the single source of truth,
+  never a hardcoded 1420 or a derived/hashed port; anything already
+  listening on the claimed port (almost always this slot's own orphaned
+  session) is killed first rather than scanned past. Pin a slot to a fixed
+  port with `TT_DEV_PORT` in a gitignored root `.env.local` (dev-port reads
+  it and passes it through to vite). Each window is
   labeled by slot: the title bar reads `Towles Tool — <slot>` and the app
   header shows a colored slot badge (`app_slot` command). See
   [`crates-tauri/tt-app/CLAUDE.md`](crates-tauri/tt-app/CLAUDE.md) for the
@@ -275,7 +277,9 @@ plugins ship today:
   (`/tt:01-blindspot` … `/tt:22-memories`).
 - `towles-tool-app` (`packages/app`) — bridges Claude Code to the desktop
   app itself: registers its `tt mcp serve` MCP server (day brief, needs-you,
-  PR/issue status, todos, journal) and a `PostToolUse` hook
+  PR/issue status, todos, journal), ships the `slot-onboarding` skill
+  (guides onboarding any repo onto worktree slots — port discovery, template
+  authoring, `tt slot init`), and a `PostToolUse` hook
   (`hooks/scripts/gh-pr-nudge.sh`) that nudges a running app instance to
   refresh its PR or issue data immediately after a `gh pr`/`gh issue`
   mutation via `tt collect nudge prs`/`tt collect nudge issues`, rather than
@@ -326,9 +330,10 @@ etc.). The points below are repo-specific specializations of that doc.
 - **Dev tooling must not hardcode ports/paths.** Chris runs multiple worktree
   slots of this repo concurrently (see the Worktree slots section above), so
   a fixed port, lockfile path, or other singleton resource makes copies
-  collide. Default to dynamic allocation (e.g.
-  `scripts/dev-port.mjs` picks a deterministic port derived from the slot dir
-  name) over a hardcoded value like `1420`.
+  collide. Ports belong in `.env.example` as `${tt:port A-B}` claims rendered
+  per checkout by `tt slot env` (what `scripts/dev-port.mjs` resolves) —
+  never a hardcoded value like `1420`, and never a second derivation scheme
+  outside the claim system.
 - **No planning/implementation-notes docs committed to the repo** (e.g.
   `docs/<feature>/plan.html`, `implementation-notes.md`), even when a
   planning skill calls for writing one during implementation. Write them to

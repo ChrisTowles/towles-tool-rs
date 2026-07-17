@@ -24,6 +24,7 @@ pub fn run(command: SlotCommands) -> i32 {
         }
         SlotCommands::Ls { json, root } => cmd_ls(json, root.as_deref()),
         SlotCommands::Rm { name, force, root } => cmd_rm(&name, force, root.as_deref()),
+        SlotCommands::Init { root } => cmd_init(root.as_deref()),
         SlotCommands::Env { name, root } => cmd_env(&name, root.as_deref()),
         SlotCommands::Clean { dry_run, json, root } => cmd_clean(dry_run, json, root.as_deref()),
         SlotCommands::HookCreate => cmd_hook_create(),
@@ -203,6 +204,42 @@ fn checkout_dir(sr: &SlotRoot, name: &str) -> Result<std::path::PathBuf, String>
     } else {
         Err(format!("no slot {name} in {}", sr.slots_dir().display()))
     }
+}
+
+fn cmd_init(root: Option<&Path>) -> Result<(), String> {
+    let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
+    let report = ops::init_repo(&sr).map_err(|e| e.to_string())?;
+
+    println!("template: {}", report.template.display());
+    if report.sidecar_created {
+        println!(
+            "  created (empty) — add ${{tt:port A-B}} tokens there, or commit a tokenized \
+             .env.example instead"
+        );
+    }
+    if report.gitignore_added {
+        println!("gitignore: added .env");
+    }
+    if report.hooks_wired {
+        println!(
+            "hooks: wired WorktreeCreate/WorktreeRemove into {}",
+            report.settings_path.display()
+        );
+        println!("  commit it — hooks run from the committed copy, new worktrees only");
+    } else {
+        println!("hooks: already wired in {}", report.settings_path.display());
+    }
+    for warning in &report.render.warnings {
+        ui::warning(warning);
+    }
+    for (key, port) in &report.render.ports {
+        println!("  {key}={port}");
+    }
+    ui::success(&format!(
+        "rendered primary/.env ({} reused, {} fresh claim(s))",
+        report.render.reused, report.render.claimed
+    ));
+    Ok(())
 }
 
 fn cmd_env(name: &str, root: Option<&Path>) -> Result<(), String> {

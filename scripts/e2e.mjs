@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Orchestrates the WebdriverIO E2E run against the *real* Tauri shell.
 //
-// Ports come from `.env.local` (same mechanism as `npm run dev`): TT_DEV_PORT is
-// the Vite dev-server port; the embedded WebDriver port defaults to
-// TT_DEV_PORT + 3000 (override with TT_E2E_WEBDRIVER_PORT). Nothing is
-// hardcoded.
+// Ports come from the rendered `.env`/`.env.local` (same mechanism as
+// `npm run dev`): TT_DEV_PORT is the Vite dev-server port; the embedded
+// WebDriver port is the .env claim TT_E2E_WEBDRIVER_PORT, else
+// TT_DEV_PORT + 3000. Nothing is hardcoded.
 //
 // Steps:
 //   1. resolve the dev port from .env.local,
@@ -17,7 +17,7 @@ import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveDevPort, resolveWebdriverPort } from "./slot-port.mjs";
+import { requireDevPort, resolveWebdriverPort } from "./slot-port.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -25,13 +25,7 @@ const repoRoot = path.resolve(
 );
 const noBuild = process.argv.includes("--no-build");
 
-const devPort = resolveDevPort(repoRoot);
-if (!devPort) {
-  console.error(
-    `[e2e] TT_DEV_PORT=${process.env.TT_DEV_PORT} is not a valid port`,
-  );
-  process.exit(1);
-}
+const devPort = requireDevPort(repoRoot, { tag: "e2e" });
 const wdPort = resolveWebdriverPort(devPort);
 
 function tryConnect(port, host) {
