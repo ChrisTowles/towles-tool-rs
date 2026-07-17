@@ -259,7 +259,7 @@ export function TerminalView({
     const grid = {
       cols: Math.max(2, Math.floor(host.clientWidth / cellW)),
       rows: Math.max(1, Math.floor(host.clientHeight / cellH)),
-      lines: [] as { runs: Run[]; sel?: [number, number] }[],
+      lines: [] as { runs: Run[]; wrapped?: boolean; sel?: [number, number] }[],
       cursor: null as Cursor | null,
       modes: { altScreen: false, mouseTracking: false },
       scrolledBack: false,
@@ -472,7 +472,8 @@ export function TerminalView({
         while (grid.lines.length < frame.rows) grid.lines.push({ runs: [] });
         grid.lines.length = frame.rows;
       }
-      for (const row of frame.changed) grid.lines[row.y] = { runs: row.runs, sel: row.sel };
+      for (const row of frame.changed)
+        grid.lines[row.y] = { runs: row.runs, wrapped: row.wrapped, sel: row.sel };
       // Text under a hovered link may have changed; drop the highlight rather
       // than underline stale cells (the next mousemove re-detects).
       if (

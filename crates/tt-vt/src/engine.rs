@@ -853,6 +853,15 @@ impl Engine {
                     }
                     let fg = cell.fg_color()?.map(pack_rgb);
                     let bg = cell.bg_color()?.map(pack_rgb);
+                    // OSC 8 hyperlinks are rare, so this per-cell lookup (a
+                    // separate FFI round-trip from the bulk render-state
+                    // iteration) only fires when the cell is actually flagged.
+                    let link = if raw.has_hyperlink()? {
+                        let point = Point::Viewport(PointCoordinate { x, y: u32::from(y) });
+                        Some(read_hyperlink_uri(&self.term.grid_ref(point)?)?)
+                    } else {
+                        None
+                    };
                     let ul = match style.underline {
                         Underline::Double => Some(2u8),
                         Underline::Curly => Some(3),
@@ -885,6 +894,7 @@ impl Engine {
                             if run.fg == fg
                                 && run.bg == bg
                                 && run.flags == f
+                                && run.link == link
                                 && run.ul == ul
                                 && run.ulc == ulc =>
                         {
@@ -898,6 +908,7 @@ impl Engine {
                             fg,
                             bg,
                             flags: f,
+                            link,
                             ul,
                             ulc,
                         }),
@@ -908,7 +919,8 @@ impl Engine {
                 // merge into a preceding default-style text run, so trim
                 // inside the last run too (spaces are always 1 column).
                 if let Some(run) = runs.last_mut() {
-                    if run.fg.is_none() && run.bg.is_none() && run.flags == 0 {
+                    if run.fg.is_none() && run.bg.is_none() && run.flags == 0 && run.link.is_none()
+                    {
                         let trimmed = run.text.trim_end_matches(' ');
                         let cut = (run.text.chars().count() - trimmed.chars().count()) as u16;
                         run.text.truncate(trimmed.len());
@@ -919,7 +931,8 @@ impl Engine {
                     }
                 }
                 let sel = row.selection()?.map(|s| (s.start_x, s.end_x));
-                changed.push(crate::frame::RowUpdate { y, runs, sel });
+                let wrapped = row.raw_row()?.is_wrapped()?;
+                changed.push(crate::frame::RowUpdate { y, runs, wrapped, sel });
                 row.set_dirty(false)?;
             }
             y += 1;
@@ -961,6 +974,23 @@ fn grapheme_text(cell: &CellIteration) -> Result<String> {
         text.push(' ');
     }
     Ok(text)
+}
+
+/// Read the OSC 8 hyperlink URI at a grid reference, growing the scratch
+/// buffer on `OutOfSpace` (most URIs fit the initial guess; a handful of
+/// pathologically long ones retry once at the exact required size).
+fn read_hyperlink_uri(gref: &libghostty_vt::screen::GridRef<'_>) -> Result<String> {
+    let mut buf = vec![0u8; 128];
+    loop {
+        match gref.hyperlink_uri(&mut buf) {
+            Ok(len) => {
+                buf.truncate(len);
+                return Ok(String::from_utf8_lossy(&buf).into_owned());
+            }
+            Err(libghostty_vt::error::Error::OutOfSpace { required }) => buf.resize(required, 0),
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 fn pack_rgb(c: libghostty_vt::style::RgbColor) -> u32 {
