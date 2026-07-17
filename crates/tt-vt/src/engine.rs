@@ -8,6 +8,7 @@ use std::cell::{Cell as StdCell, RefCell};
 use std::rc::Rc;
 
 use libghostty_vt::fmt::{Formatter, FormatterOptions};
+use libghostty_vt::key;
 use libghostty_vt::mouse;
 use libghostty_vt::render::{
     CellIteration, CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator,
@@ -20,6 +21,7 @@ use libghostty_vt::terminal::{
 };
 
 use crate::frame::{flags, Colors, Cursor, CursorShape, Frame, Modes};
+use crate::keymap;
 use crate::osc52::Osc52Scanner;
 use crate::osc_color::{ColorQuery, OscColorScanner};
 use crate::search::{self, SearchMatch};
@@ -92,6 +94,35 @@ pub enum PasteOutcome {
     NeedsConfirm,
 }
 
+/// A keystroke from the UI, in DOM `KeyboardEvent` terms. The engine encodes
+/// it against live terminal state (kitty keyboard flags, DECCKM, keypad
+/// mode, modifyOtherKeys, …) — the frontend never encodes escape sequences.
+#[derive(Debug, Clone)]
+pub struct KeyEvent {
+    /// DOM `KeyboardEvent.code` — the physical key (`"KeyA"`, `"Enter"`).
+    pub code: String,
+    /// DOM `KeyboardEvent.key` — the produced text when printable (`"a"`,
+    /// `"A"`, `"é"`), or a named key (`"Enter"`, `"ArrowUp"`).
+    pub key: String,
+    pub action: KeyAction,
+    pub shift: bool,
+    pub alt: bool,
+    pub ctrl: bool,
+    /// Super/Command/Windows key.
+    pub meta: bool,
+    pub caps_lock: bool,
+    pub num_lock: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyAction {
+    Press,
+    Repeat,
+    /// Only encoded when the program asked for release events (kitty
+    /// REPORT_EVENTS); a no-op otherwise, so the UI can always send it.
+    Release,
+}
+
 /// Cap on mouse-wheel reports emitted for one wheel gesture. Bounds the
 /// bytes a single high-delta event (a wheel fling, a coalesced touchpad
 /// swipe) can inject into the application's input stream.
@@ -116,6 +147,9 @@ pub struct Engine {
     /// Watches the byte feed for OSC 10/11 color queries, which libghostty-vt
     /// does not answer; [`Engine::feed`] synthesizes the replies.
     osc_color: OscColorScanner,
+    /// Reused keystroke encoder; re-synced from terminal state per event
+    /// (see [`Engine::key`]).
+    key_encoder: key::Encoder<'static>,
     /// Force the next render to be a full frame (selection changed).
     force_full: bool,
     /// Cursor state as of the last emitted frame. libghostty-vt's dirty
@@ -162,9 +196,81 @@ impl Engine {
             dark,
             osc52: Osc52Scanner::new(),
             osc_color: OscColorScanner::new(),
+            key_encoder: key::Encoder::new()?,
             force_full: false,
             last_cursor: None,
         })
+    }
+
+    /// Encode a keystroke against live terminal state and queue the bytes for
+    /// the PTY. The encoder speaks whatever the program negotiated — kitty
+    /// keyboard protocol (Claude Code's Shift+Enter), legacy xterm for
+    /// readline, DECCKM application cursor keys, keypad application mode,
+    /// modifyOtherKeys — because its options are re-read from the terminal on
+    /// every event. A keystroke the current mode set doesn't encode (e.g. a
+    /// bare modifier without kitty REPORT_ALL) simply produces no bytes.
+    pub fn key(&mut self, event: &KeyEvent) -> Result<()> {
+        self.key_encoder.set_options_from_terminal(&self.term);
+
+        let mut ev = key::Event::new()?;
+        ev.set_action(match event.action {
+            KeyAction::Press => key::Action::Press,
+            KeyAction::Repeat => key::Action::Repeat,
+            KeyAction::Release => key::Action::Release,
+        })
+        .set_key(keymap::key_from_dom_code(&event.code));
+
+        let mut mods = key::Mods::empty();
+        if event.shift {
+            mods |= key::Mods::SHIFT;
+        }
+        if event.alt {
+            mods |= key::Mods::ALT;
+        }
+        if event.ctrl {
+            mods |= key::Mods::CTRL;
+        }
+        if event.meta {
+            mods |= key::Mods::SUPER;
+        }
+        if event.caps_lock {
+            mods |= key::Mods::CAPS_LOCK;
+        }
+        if event.num_lock {
+            mods |= key::Mods::NUM_LOCK;
+        }
+        ev.set_mods(mods);
+
+        // A single-codepoint DOM `key` is the text the OS produced for this
+        // keystroke ("a", "A", "é", " "); named keys ("Enter", "ArrowUp")
+        // are multi-char and carry no text. Ctrl/Super chords produce no
+        // text event on a real terminal, so they get no utf8 either — the
+        // encoder derives control bytes from the key identity. Shift (and
+        // caps lock) that shaped the text is reported consumed, kitty-style.
+        let mut chars = event.key.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            if !event.ctrl && !event.meta {
+                ev.set_utf8(Some(event.key.as_str()));
+                let mut consumed = key::Mods::empty();
+                if event.shift {
+                    consumed |= key::Mods::SHIFT;
+                }
+                if event.caps_lock {
+                    consumed |= key::Mods::CAPS_LOCK;
+                }
+                ev.set_consumed_mods(consumed);
+            }
+            // Best-effort unshifted identity (kitty reports it): lowercase of
+            // the produced text. A layout-shifted symbol ("!" over "1") keeps
+            // its shifted form — deriving the base key needs OS keymap access
+            // we don't have.
+            ev.set_unshifted_codepoint(c.to_lowercase().next().unwrap_or(c));
+        }
+
+        let mut buf = Vec::new();
+        self.key_encoder.encode_to_vec(&ev, &mut buf)?;
+        self.pty_out.borrow_mut().extend_from_slice(&buf);
+        Ok(())
     }
 
     /// Push the UI theme into the emulator: default fg/bg/cursor colors, the

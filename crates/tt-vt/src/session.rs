@@ -40,7 +40,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::engine::{Engine, EngineOptions, PasteOutcome, Select, Theme, VtError};
+use crate::engine::{Engine, EngineOptions, KeyEvent, PasteOutcome, Select, Theme, VtError};
 use crate::frame::Frame;
 use crate::search::SearchMatch;
 
@@ -74,6 +74,9 @@ const MAX_QUEUED_BYTE_CHUNKS: usize = 64;
 pub enum Input {
     /// Raw PTY output bytes.
     Bytes(Vec<u8>),
+    /// A keystroke to encode against live terminal state and write to the
+    /// PTY (see [`Engine::key`]).
+    Key(KeyEvent),
     Resize {
         cols: u16,
         rows: u16,
@@ -232,6 +235,11 @@ impl Session {
                     let _ = engine.resize(cols, rows, cell_width_px, cell_height_px);
                 }
                 Input::Scroll(delta) => engine.scroll(delta),
+                // Encoding can only fail on allocation; a lost keystroke
+                // reads like a dropped input, never a crash.
+                Input::Key(event) => {
+                    let _ = engine.key(&event);
+                }
                 // Encoding can only fail on allocation; the report is
                 // best-effort like any other input.
                 Input::Wheel { x, y, lines } => {

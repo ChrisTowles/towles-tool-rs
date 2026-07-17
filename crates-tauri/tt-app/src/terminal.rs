@@ -31,8 +31,8 @@ use serde::{Deserialize, Serialize};
 use sysinfo::{Pid as SysPid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tt_vt::{
-    EngineOptions, Event as VtEvent, Frame, Input as VtInput, SearchMatch, Select as VtSelect,
-    Sender as VtSender,
+    EngineOptions, Event as VtEvent, Frame, Input as VtInput, KeyAction, KeyEvent, SearchMatch,
+    Select as VtSelect, Sender as VtSender,
 };
 
 pub const FRAME_EVENT: &str = "terminal://frame";
@@ -519,9 +519,12 @@ fn notify_agentboard(app: &AppHandle) {
     }
 }
 
-/// Forward keyboard input (UTF-8 text / escape sequences the terminal view
-/// encoded) to the shell. Queues onto the session's writer thread — never
-/// blocks, even against a shell that has stopped reading its PTY.
+/// Forward raw text to the shell (IME-composed input, the image-paste
+/// signal byte). Keystrokes ride [`term_key`] instead, where the engine
+/// encodes them against live terminal state — this command is the plain-text
+/// escape hatch, not an escape-sequence path. Queues onto the session's
+/// writer thread — never blocks, even against a shell that has stopped
+/// reading its PTY.
 #[tauri::command]
 pub fn term_write(state: State<TermState>, term_id: String, data: String) -> Result<(), String> {
     let guard = state.sessions.lock().unwrap();
@@ -723,6 +726,68 @@ pub async fn term_search(
     })
     .await
     .map_err(|e| format!("search task failed: {e}"))?
+}
+
+/// A keystroke from the terminal view, in DOM `KeyboardEvent` terms
+/// (mirrors `tt_vt::KeyEvent`). The engine encodes it against live terminal
+/// state — kitty keyboard protocol, DECCKM, keypad mode — so the frontend
+/// never builds escape sequences.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TermKey {
+    code: String,
+    key: String,
+    action: TermKeyAction,
+    #[serde(default)]
+    shift: bool,
+    #[serde(default)]
+    alt: bool,
+    #[serde(default)]
+    ctrl: bool,
+    #[serde(default)]
+    meta: bool,
+    #[serde(default)]
+    caps_lock: bool,
+    #[serde(default)]
+    num_lock: bool,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TermKeyAction {
+    Press,
+    Repeat,
+    Release,
+}
+
+impl From<TermKey> for KeyEvent {
+    fn from(k: TermKey) -> Self {
+        KeyEvent {
+            code: k.code,
+            key: k.key,
+            action: match k.action {
+                TermKeyAction::Press => KeyAction::Press,
+                TermKeyAction::Repeat => KeyAction::Repeat,
+                TermKeyAction::Release => KeyAction::Release,
+            },
+            shift: k.shift,
+            alt: k.alt,
+            ctrl: k.ctrl,
+            meta: k.meta,
+            caps_lock: k.caps_lock,
+            num_lock: k.num_lock,
+        }
+    }
+}
+
+/// Encode a keystroke in the terminal engine and write the bytes to the
+/// shell. Control-channel send: never blocked behind queued output.
+#[tauri::command]
+pub fn term_key(state: State<TermState>, term_id: String, event: TermKey) -> Result<(), String> {
+    let guard = state.sessions.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::Key(event.into()));
+    Ok(())
 }
 
 /// Reply of [`term_paste`]: whether the engine wants user confirmation before

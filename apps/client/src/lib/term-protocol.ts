@@ -188,53 +188,14 @@ type KeyEventLike = Pick<
   "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey"
 >;
 
-/** xterm-style modifier parameter: 1 + shift(1) + alt(2) + ctrl(4) + meta(8). */
-function modParam(e: KeyEventLike): number {
-  return (
-    1 +
-    (e.shiftKey ? 1 : 0) +
-    (e.altKey ? 2 : 0) +
-    (e.ctrlKey ? 4 : 0) +
-    (e.metaKey ? 8 : 0)
-  );
-}
-
-const CURSOR_FINAL: Record<string, string> = {
-  ArrowUp: "A",
-  ArrowDown: "B",
-  ArrowRight: "C",
-  ArrowLeft: "D",
-  Home: "H",
-  End: "F",
-};
-
-const TILDE_CODE: Record<string, number> = {
-  Insert: 2,
-  Delete: 3,
-  PageUp: 5,
-  PageDown: 6,
-};
-
-const FN_SS3: Record<string, string> = { F1: "P", F2: "Q", F3: "R", F4: "S" };
-const FN_TILDE: Record<string, number> = {
-  F5: 15,
-  F6: 17,
-  F7: 18,
-  F8: 19,
-  F9: 20,
-  F10: 21,
-  F11: 23,
-  F12: 24,
-};
-
 export type ScrollbackAction = "page-up" | "page-down" | "top" | "bottom";
 
 /**
  * The terminal-emulator scrollback chords — Shift+PageUp/PageDown scroll a
  * page, Shift+Home/End jump to the top / live bottom. The canvas view drives
- * its own scrollback for these (see terminal-view.tsx), so `encodeKey` returns
- * null for them rather than sending them to the shell. Returns the action, or
- * null when the event isn't a bare-shift scrollback chord.
+ * its own scrollback for these (see terminal-view.tsx) instead of sending
+ * them to the shell. Returns the action, or null when the event isn't a
+ * bare-shift scrollback chord.
  */
 export function scrollbackKey(e: KeyEventLike): ScrollbackAction | null {
   if (!e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return null;
@@ -252,70 +213,63 @@ export function scrollbackKey(e: KeyEventLike): ScrollbackAction | null {
   }
 }
 
+/** A keystroke on the `term_key` wire (mirrors tt-app's `TermKey` /
+ * tt-vt's `KeyEvent`): DOM `code`/`key` plus modifiers. The Rust engine
+ * encodes it against live terminal state — kitty keyboard protocol, DECCKM,
+ * keypad mode — so no escape sequences are built in the frontend. */
+export interface KeyEventWire {
+  code: string;
+  key: string;
+  action: "press" | "repeat" | "release";
+  shift: boolean;
+  alt: boolean;
+  ctrl: boolean;
+  meta: boolean;
+  capsLock: boolean;
+  numLock: boolean;
+}
+
+/** The subset of `KeyboardEvent` the wire mapper reads. */
+export type KeyWireEventLike = KeyEventLike &
+  Pick<KeyboardEvent, "code" | "repeat"> & {
+    getModifierState?: (key: string) => boolean;
+  };
+
+/** Bare modifier keys: wired to the engine (kitty REPORT_ALL wants them) but
+ * they never mean "the user typed something" — the view uses this to skip
+ * its jump-to-live-bottom on a plain Shift press. */
+export const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "NumLock"]);
+
 /**
- * Encode a keydown into the bytes a terminal expects, or `null` when the
- * event is not ours to handle (browser shortcut, plain char during IME
- * composition, copy/paste chords, scrollback-navigation chords).
+ * Map a DOM key event onto the `term_key` wire, or null when the keystroke
+ * isn't the shell's to consume: Super/Cmd chords stay with the OS, and
+ * Ctrl+Shift+C/V are the app's copy/paste chords (Ctrl+Shift+V must reach
+ * the native paste event). Everything else is routed — the engine decides
+ * what bytes, if any, the current terminal modes produce for it.
  */
-export function encodeKey(e: KeyEventLike, modes: Pick<Modes, "appCursorKeys">): string | null {
-  // Leave clipboard chords to the paste/copy handlers.
-  if (e.ctrlKey && e.shiftKey && (e.key === "V" || e.key === "C" || e.key === "v" || e.key === "c")) {
-    return null;
+export function keyEventWire(
+  e: KeyWireEventLike,
+  action: "press" | "release" = "press",
+): KeyEventWire | null {
+  if (e.metaKey) return null; // OS shortcuts stay with the OS
+  if (
+    e.ctrlKey &&
+    e.shiftKey &&
+    (e.key === "C" || e.key === "c" || e.key === "V" || e.key === "v")
+  ) {
+    return null; // copy/paste chords are the app's
   }
-  // Scrollback-navigation chords belong to the view (it scrolls its own
-  // buffer), not the shell.
-  if (scrollbackKey(e)) return null;
-
-  const mods = modParam(e);
-
-  const cursorFinal = CURSOR_FINAL[e.key];
-  if (cursorFinal) {
-    if (mods > 1) return `\x1b[1;${mods}${cursorFinal}`;
-    return modes.appCursorKeys ? `\x1bO${cursorFinal}` : `\x1b[${cursorFinal}`;
-  }
-  const tilde = TILDE_CODE[e.key];
-  if (tilde) return mods > 1 ? `\x1b[${tilde};${mods}~` : `\x1b[${tilde}~`;
-  const ss3 = FN_SS3[e.key];
-  if (ss3) return mods > 1 ? `\x1b[1;${mods}${ss3}` : `\x1bO${ss3}`;
-  const fnTilde = FN_TILDE[e.key];
-  if (fnTilde) return mods > 1 ? `\x1b[${fnTilde};${mods}~` : `\x1b[${fnTilde}~`;
-
-  switch (e.key) {
-    case "Enter":
-      return e.altKey ? "\x1b\r" : "\r";
-    case "Tab":
-      return e.shiftKey ? "\x1b[Z" : "\t";
-    case "Backspace": {
-      const base = e.ctrlKey ? "\x08" : "\x7f";
-      return e.altKey ? `\x1b${base}` : base;
-    }
-    case "Escape":
-      return "\x1b";
-  }
-
-  if (e.key.length === 1) {
-    // Ctrl combos map into C0 control codes.
-    if (e.ctrlKey && !e.altKey && !e.metaKey) {
-      const c = e.key.toLowerCase().charCodeAt(0);
-      if (c >= 97 && c <= 122) return String.fromCharCode(c - 96); // ctrl+a..z
-      const special: Record<string, string> = {
-        " ": "\x00",
-        "[": "\x1b",
-        "\\": "\x1c",
-        "]": "\x1d",
-        "^": "\x1e",
-        _: "\x1f",
-      };
-      if (e.key in special) return special[e.key];
-      return null;
-    }
-    if (e.metaKey) return null; // OS shortcuts
-    // Alt+char sends ESC-prefixed char.
-    if (e.altKey) return `\x1b${e.key}`;
-    return e.key;
-  }
-
-  return null;
+  return {
+    code: e.code,
+    key: e.key,
+    action: action === "press" && e.repeat ? "repeat" : action,
+    shift: e.shiftKey,
+    alt: e.altKey,
+    ctrl: e.ctrlKey,
+    meta: e.metaKey,
+    capsLock: e.getModifierState?.("CapsLock") ?? false,
+    numLock: e.getModifierState?.("NumLock") ?? false,
+  };
 }
 
 // Paste encoding lives in the Rust engine (`term_paste` → tt-vt's

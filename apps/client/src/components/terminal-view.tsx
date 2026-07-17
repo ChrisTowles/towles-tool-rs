@@ -9,16 +9,18 @@ import {
   OVERLINE,
   STRIKETHROUGH,
   UNDERLINE,
-  encodeKey,
   graphemeClusters,
   isWideRun,
   rgb,
+  keyEventWire,
   scrollbackKey,
   stepMatch,
+  MODIFIER_KEYS,
   viewportMatches,
   TERM_CLEAR_COMMAND,
   type Cursor,
   type Frame,
+  type KeyEventWire,
   type Run,
   type SearchMatch,
   type TermExit,
@@ -558,6 +560,11 @@ export function TerminalView({
           scroll(null);
         }
       };
+      // Keystrokes ride term_key into the engine, which encodes them against
+      // live terminal state (kitty protocol, DECCKM, keypad mode) — the view
+      // never builds escape sequences.
+      const sendKey = (event: KeyEventWire) =>
+        void invoke("term_key", { termId, event }).catch(() => {});
       // Paste through the engine's encoder (term_paste): it strips bytes
       // that could escape the paste bracket (an embedded ESC[201~ can't
       // inject commands) and answers needsConfirm when a multi-line paste
@@ -632,11 +639,17 @@ export function TerminalView({
         if (scrollback) {
           e.preventDefault();
           if (grid.modes.altScreen) {
-            const base = encodeKey(
-              { key: e.key, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false },
-              grid.modes,
-            );
-            if (base !== null) write(base);
+            sendKey({
+              code: e.code,
+              key: e.key,
+              action: "press",
+              shift: false,
+              alt: false,
+              ctrl: false,
+              meta: false,
+              capsLock: false,
+              numLock: false,
+            });
             return;
           }
           const page = Math.max(1, grid.rows - 1);
@@ -660,12 +673,22 @@ export function TerminalView({
           }
           return;
         }
-        const seq = encodeKey(e, grid.modes);
-        if (seq !== null) {
+        const wire = keyEventWire(e);
+        if (wire) {
           e.preventDefault();
-          backToLive();
-          write(seq);
+          // A bare modifier press is wired (kitty REPORT_ALL wants it) but
+          // must not yank a scrolled-back viewport to the bottom.
+          if (!MODIFIER_KEYS.has(e.key)) backToLive();
+          sendKey(wire);
         }
+      };
+      // Key releases matter only under kitty REPORT_EVENTS; the engine
+      // no-ops them otherwise, so they're always safe to send. No
+      // preventDefault — a release has no browser default to suppress.
+      const onKeyUp = (e: KeyboardEvent) => {
+        if (e.isComposing) return;
+        const wire = keyEventWire(e, "release");
+        if (wire) sendKey(wire);
       };
       const onPaste = (e: ClipboardEvent) => {
         e.preventDefault();
@@ -848,6 +871,7 @@ export function TerminalView({
       const onBlur = () => setFocus(false);
 
       input.addEventListener("keydown", onKeyDown);
+      input.addEventListener("keyup", onKeyUp);
       input.addEventListener("paste", onPaste);
       input.addEventListener("compositionend", onComposed);
       input.addEventListener("focus", onFocus);
@@ -859,6 +883,7 @@ export function TerminalView({
       window.addEventListener("mouseup", onMouseUp);
       disposers.push(() => {
         input.removeEventListener("keydown", onKeyDown);
+        input.removeEventListener("keyup", onKeyUp);
         input.removeEventListener("paste", onPaste);
         input.removeEventListener("compositionend", onComposed);
         input.removeEventListener("focus", onFocus);

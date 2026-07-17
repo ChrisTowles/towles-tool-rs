@@ -11,12 +11,15 @@
 
 pub mod engine;
 pub mod frame;
+pub mod keymap;
 pub mod osc52;
 pub mod osc_color;
 pub mod search;
 pub mod session;
 
-pub use engine::{Engine, EngineOptions, PasteOutcome, Select, Theme, VtError};
+pub use engine::{
+    Engine, EngineOptions, KeyAction, KeyEvent, PasteOutcome, Select, Theme, VtError,
+};
 pub use frame::{Frame, Modes};
 pub use search::SearchMatch;
 pub use session::{Event, Input, Sender, Session, SpawnError};
@@ -172,6 +175,69 @@ mod tests {
         let mut e = engine(40, 5);
         assert_eq!(e.paste("hello world", false).expect("paste"), PasteOutcome::Pasted);
         assert_eq!(e.take_pty_output().as_slice(), b"hello world");
+    }
+
+    fn key_press(code: &str, key: &str) -> KeyEvent {
+        KeyEvent {
+            code: code.into(),
+            key: key.into(),
+            action: KeyAction::Press,
+            shift: false,
+            alt: false,
+            ctrl: false,
+            meta: false,
+            caps_lock: false,
+            num_lock: false,
+        }
+    }
+
+    /// Encode one keystroke and return the bytes it queued for the PTY.
+    fn encoded(e: &mut Engine, event: &KeyEvent) -> Vec<u8> {
+        e.key(event).expect("encode key");
+        e.take_pty_output()
+    }
+
+    #[test]
+    fn plain_keys_encode_legacy_bytes() {
+        let mut e = engine(40, 5);
+        assert_eq!(encoded(&mut e, &key_press("KeyA", "a")), b"a");
+        assert_eq!(encoded(&mut e, &key_press("Enter", "Enter")), b"\r");
+        let ctrl_c = KeyEvent { ctrl: true, ..key_press("KeyC", "c") };
+        assert_eq!(encoded(&mut e, &ctrl_c), b"\x03");
+        let shift_a = KeyEvent { shift: true, ..key_press("KeyA", "A") };
+        assert_eq!(encoded(&mut e, &shift_a), b"A");
+    }
+
+    #[test]
+    fn cursor_keys_honor_application_mode() {
+        let mut e = engine(40, 5);
+        assert_eq!(encoded(&mut e, &key_press("ArrowUp", "ArrowUp")), b"\x1b[A");
+        e.feed(b"\x1b[?1h"); // DECCKM: application cursor keys
+        assert_eq!(encoded(&mut e, &key_press("ArrowUp", "ArrowUp")), b"\x1bOA");
+    }
+
+    #[test]
+    fn kitty_disambiguate_encodes_shift_enter() {
+        let mut e = engine(40, 5);
+        // Even in legacy mode ghostty's encoder disambiguates Shift+Enter,
+        // using xterm's CSI 27 (modifyOtherKeys-style) form — already better
+        // than the old frontend encoder, which sent a bare \r.
+        let shift_enter = KeyEvent { shift: true, ..key_press("Enter", "Enter") };
+        assert_eq!(encoded(&mut e, &shift_enter), b"\x1b[27;2;13~");
+
+        // The program pushes kitty disambiguation (CSI > 1 u), like Claude
+        // Code does at startup; now Shift+Enter gets its own sequence while
+        // plain Enter stays legacy.
+        e.feed(b"\x1b[>1u");
+        assert_eq!(encoded(&mut e, &shift_enter), b"\x1b[13;2u");
+        assert_eq!(encoded(&mut e, &key_press("Enter", "Enter")), b"\r");
+    }
+
+    #[test]
+    fn key_release_is_silent_without_kitty_report_events() {
+        let mut e = engine(40, 5);
+        let release = KeyEvent { action: KeyAction::Release, ..key_press("KeyA", "a") };
+        assert_eq!(encoded(&mut e, &release), b"", "legacy mode ignores releases");
     }
 
     #[test]
