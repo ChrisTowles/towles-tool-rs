@@ -775,9 +775,14 @@ pub fn term_select(
     Ok(())
 }
 
-/// Plain text of the terminal's active selection (empty string when there is
-/// none). The engine thread answers over a bounded channel; a dead engine
-/// yields an error rather than a hang.
+/// Copy the terminal's active selection to the system clipboard, entirely in
+/// Rust. The webview's `navigator.clipboard` is unreliable in WebKitGTK (and
+/// undefined on insecure dev origins), which silently broke copy-on-select —
+/// so the clipboard write happens here, through the same plugin the OSC 52
+/// path uses. User-initiated (chord, context menu, copy-on-select), so unlike
+/// OSC 52 it is not focus-gated. Returns the copied text (empty when there
+/// was no selection); the engine thread answers over a bounded channel, and a
+/// dead engine yields an error rather than a hang.
 #[tauri::command]
 pub async fn term_copy(app: AppHandle, term_id: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -790,10 +795,17 @@ pub async fn term_copy(app: AppHandle, term_id: String) -> Result<String, String
                 return Err("terminal engine gone".to_string());
             }
         }
-        reply_rx
+        let text = reply_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .map(|text| text.unwrap_or_default())
-            .map_err(|_| "terminal engine did not answer".to_string())
+            .map_err(|_| "terminal engine did not answer".to_string())?;
+        if !text.is_empty() {
+            use tauri_plugin_clipboard_manager::ClipboardExt;
+            app.clipboard()
+                .write_text(text.clone())
+                .map_err(|e| format!("clipboard write failed: {e}"))?;
+        }
+        Ok(text)
     })
     .await
     .map_err(|e| format!("copy task failed: {e}"))?

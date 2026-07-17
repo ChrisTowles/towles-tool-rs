@@ -553,11 +553,10 @@ export function TerminalView({
       const scroll = (delta: number | null) =>
         void invoke("term_scroll", { termId, delta }).catch(() => {});
       // Copy the engine's active selection to the system clipboard. Shared by
-      // the Ctrl/⌘+Shift+C chord, the context menu, and copy-on-select.
-      const copySelection = () =>
-        void invoke<string>("term_copy", { termId })
-          .then((text) => (text ? navigator.clipboard.writeText(text) : undefined))
-          .catch(() => {});
+      // the Ctrl/⌘+Shift+C chord, the context menu, and copy-on-select. The
+      // clipboard write happens in Rust — the webview's navigator.clipboard
+      // is unreliable in WebKitGTK and silently broke copy-on-select.
+      const copySelection = () => void invoke("term_copy", { termId }).catch(() => {});
 
       const onFrame = await listen<{ termId: string; frame: Frame }>("terminal://frame", (e) => {
         if (e.payload.termId === termId) applyFrame(e.payload.frame);
