@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use tt_claude_code::{
     UsageTotals, parse_transcript_file, session_cwd, session_title, usage_totals, user_prompt_blob,
+    user_prompts,
 };
 
 use crate::Result;
@@ -40,6 +41,10 @@ pub struct SessionDetail {
     pub sonnet_tokens: i64,
     pub haiku_tokens: i64,
     pub fable_tokens: i64,
+    /// Extra reads of files already read this session (a context-loss smell).
+    pub repeated_reads: i64,
+    /// Number of human prompts in the session.
+    pub user_turns: i64,
     /// Human prompt text, newline-joined, capped — the search corpus.
     pub prompt_blob: String,
 }
@@ -118,6 +123,9 @@ pub fn scan_sessions_detailed(
     for (mtime, session_id, encoded, path) in candidates {
         let entries = parse_transcript_file(&path);
         let analysis = analyze_session(&entries);
+        // Human prompts only — the transcript's `user` lines are mostly
+        // machine noise (tool results, envelopes), which must not count.
+        let user_turns = user_prompts(&entries).len() as i64;
         details.push(SessionDetail {
             session_id,
             project: normalize_repo_name(&encoded),
@@ -130,6 +138,8 @@ pub fn scan_sessions_detailed(
             sonnet_tokens: analysis.sonnet_tokens,
             haiku_tokens: analysis.haiku_tokens,
             fable_tokens: analysis.fable_tokens,
+            repeated_reads: analysis.repeated_reads,
+            user_turns,
             prompt_blob: user_prompt_blob(&entries, PROMPT_BLOB_MAX_BYTES),
             path,
         });
@@ -298,6 +308,8 @@ mod tests {
             sonnet_tokens: 0,
             haiku_tokens: 0,
             fable_tokens: input + output,
+            repeated_reads: 0,
+            user_turns: 0,
             prompt_blob: String::new(),
         }
     }

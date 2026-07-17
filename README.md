@@ -105,7 +105,7 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-exec` — process/command wrappers.
 - `crates/tt-journal` — journal/note logic and date-token path templating.
 - `crates/tt-git` — git/GitHub helpers (branch names, PR content, issue parsing).
-- `crates/tt-claude-sessions` — session token accounting, treemap/bar-chart building, and the HTML report behind the app's Claude Sessions screen.
+- `crates/tt-claude-sessions` — session token accounting, ranked waste insights, and the per-session drill-down behind the app's Claude Sessions screen.
 - `crates/tt-doctor` — dependency/environment checks (CLI `doctor` and the app screen both consume it).
 - `crates/tt-slots` — the worktree-slot convention: `${tt:...}` env-template renderer with port-pool claims, slot naming/layout, removal guards, and the shared `ops` orchestration behind `tt slot` and the app.
 - `crates/tt-claude-code` — shared Claude Code transcript parsing (session JSONL, titles, token usage, model table).

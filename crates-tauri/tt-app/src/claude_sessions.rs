@@ -1,9 +1,9 @@
-//! Tauri bridge for the Claude Sessions screen: token spend by day/repo/model
-//! plus session search, computed from `tt-claude-sessions` over Claude Code
-//! session JSONL files. One scan parses each transcript once
-//! (`scan_sessions_detailed`) and is cached in managed state so search
-//! keystrokes never re-read the disk. The Treemap tab's HTML report is built
-//! on demand (`claude_sessions_treemap_html`) and embedded in an iframe.
+//! Tauri bridge for the Claude Sessions screen: token spend by day/repo/model,
+//! session search, and ranked waste insights, computed from
+//! `tt-claude-sessions` over Claude Code session JSONL files. One scan parses
+//! each transcript once (`scan_sessions_detailed`) and is cached in managed
+//! state so search keystrokes and the Insights tab never re-read the disk;
+//! only a single session's turn/tool breakdown re-parses, on demand.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 
 use tt_claude_sessions::{
-    BarChartDay, LedgerTotals, ModelBar, ProjectBar, SessionDetail, build_all_sessions_treemap,
-    build_bar_chart_data, build_ledger_days, build_ledger_model_totals,
-    build_ledger_project_totals, find_recent_sessions, generate_treemap_html, ledger_totals,
+    BarChartDay, LedgerTotals, ModelBar, ProjectBar, SessionBreakdown, SessionDetail,
+    build_insights, build_ledger_days, build_ledger_model_totals, build_ledger_project_totals,
+    build_session_breakdown, find_session_path, ledger_totals, parse_transcript_file,
     scan_sessions_detailed, search_sessions,
 };
 
@@ -133,30 +133,60 @@ pub async fn claude_sessions_summary(
     .map_err(|e| format!("claude sessions scan task panicked: {e}"))?
 }
 
-/// Build the interactive treemap + bar-chart HTML report for the last `days`
-/// (blocking pool — it re-parses every transcript). Returned as a full HTML
-/// document the frontend embeds via `<iframe srcDoc>`; computed only when the
-/// Treemap tab asks, so it stays uncached.
+/// One ranked waste finding with its session attached, for the Insights tab.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeSessionInsight {
+    /// Discriminant the frontend maps to icon/color: `tokenOutlier`,
+    /// `rereadLoop`, `cacheChurn`, `marathon`.
+    pub kind: tt_claude_sessions::InsightKind,
+    pub metric: String,
+    pub detail: String,
+    pub session: ClaudeSessionRow,
+}
+
+/// Ranked waste/habit findings for the window, riding the cached scan (same
+/// rescan-on-mismatch rule as search).
 #[tauri::command]
-pub async fn claude_sessions_treemap_html(days: f64) -> Result<String, String> {
+pub async fn claude_sessions_insights(
+    days: f64,
+    cache: tauri::State<'_, ClaudeSessionsCache>,
+) -> Result<Vec<ClaudeSessionInsight>, String> {
+    let handle = cache.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let projects_dir = claude_dir().join("projects");
-        if !projects_dir.exists() {
-            return Err("No Claude projects directory found at ~/.claude/projects/".to_string());
+        let mut guard = handle.lock().expect("claude sessions cache poisoned");
+        if !guard.as_ref().is_some_and(|c| c.days == days) {
+            let details = scan(days)?;
+            *guard = Some(CachedScan { days, details });
         }
-        let now_ms = chrono::Local::now().timestamp_millis();
-        let sessions = find_recent_sessions(&projects_dir, SESSION_LIMIT, days, now_ms)
-            .map_err(|e| format!("Failed to scan sessions: {e}"))?;
-        if sessions.is_empty() {
-            return Err("No sessions found in this range".to_string());
-        }
-        let bar_chart = build_bar_chart_data(&sessions);
-        let treemap = build_all_sessions_treemap(&sessions)
-            .map_err(|e| format!("Failed to build treemap: {e}"))?;
-        Ok(generate_treemap_html(&treemap, &bar_chart))
+        let details = &guard.as_ref().expect("cache populated above").details;
+        Ok(build_insights(details)
+            .into_iter()
+            .map(|i| ClaudeSessionInsight {
+                kind: i.kind,
+                metric: i.metric,
+                detail: i.detail,
+                session: ClaudeSessionRow::from_detail(&details[i.index], None),
+            })
+            .collect())
     })
     .await
-    .map_err(|e| format!("claude sessions treemap task panicked: {e}"))?
+    .map_err(|e| format!("claude sessions insights task panicked: {e}"))?
+}
+
+/// One session's turn/tool breakdown (the Sessions-table drill-down). The only
+/// per-session re-parse in the screen, done when a row is opened.
+#[tauri::command]
+pub async fn claude_sessions_breakdown(session_id: String) -> Result<SessionBreakdown, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let projects_dir = claude_dir().join("projects");
+        let path = find_session_path(&projects_dir, &session_id)
+            .map_err(|e| format!("Failed to search sessions: {e}"))?
+            .ok_or_else(|| format!("Session {session_id} not found"))?;
+        Ok(build_session_breakdown(&parse_transcript_file(&path)))
+    })
+    .await
+    .map_err(|e| format!("claude sessions breakdown task panicked: {e}"))?
 }
 
 /// Search the cached scan's titles + prompt text; rescans only when the cache
