@@ -25,6 +25,7 @@ use crate::frame::{flags, Colors, Cursor, CursorShape, Frame, Modes};
 use crate::keymap;
 use crate::osc52::Osc52Scanner;
 use crate::osc_color::{ColorQuery, OscColorScanner};
+use crate::osc_notify::OscNotifyScanner;
 use crate::search::{self, SearchMatch};
 
 /// A selection operation, in viewport cell coordinates.
@@ -172,6 +173,10 @@ pub struct Engine {
     /// filled synchronously during `feed` by the pty-write effect.
     pty_out: Rc<RefCell<Vec<u8>>>,
     title_changed: Rc<StdCell<bool>>,
+    /// BEL received since the last drain (see [`Engine::take_bell`]).
+    bell: Rc<StdCell<bool>>,
+    /// OSC 7 working directory changed since the last frame.
+    pwd_changed: Rc<StdCell<bool>>,
     /// Whether the pushed theme is dark (see [`Theme::dark`]); read by the
     /// color-scheme query callback registered in [`Engine::new`].
     dark: Rc<StdCell<bool>>,
@@ -182,6 +187,12 @@ pub struct Engine {
     /// Watches the byte feed for OSC 10/11 color queries, which libghostty-vt
     /// does not answer; [`Engine::feed`] synthesizes the replies.
     osc_color: OscColorScanner,
+    /// Watches the byte feed for OSC 9/777 desktop notifications (no payload
+    /// or callback in libghostty-vt); drained by [`Engine::take_notifications`].
+    osc_notify: OscNotifyScanner,
+    /// Cell pixel dimensions from the last resize — answers XTWINOPS size
+    /// queries (CSI 14/16 t).
+    cell_px: Rc<StdCell<(u32, u32)>>,
     /// Reused keystroke encoder; re-synced from terminal state per event
     /// (see [`Engine::key`]).
     key_encoder: key::Encoder<'static>,
@@ -208,6 +219,12 @@ impl Engine {
 
         let pty_out: Rc<RefCell<Vec<u8>>> = Rc::default();
         let title_changed: Rc<StdCell<bool>> = Rc::default();
+        let bell: Rc<StdCell<bool>> = Rc::default();
+        let pwd_changed: Rc<StdCell<bool>> = Rc::default();
+        // 0×0 until the first resize supplies real cell metrics; a size query
+        // before then reports zero pixel dims, which XTWINOPS consumers treat
+        // as unknown.
+        let cell_px: Rc<StdCell<(u32, u32)>> = Rc::default();
         // Dark until the first `set_theme` — the app's default look. The cell
         // is shared with the color-scheme query callback below.
         let dark: Rc<StdCell<bool>> = Rc::new(StdCell::new(true));
@@ -222,6 +239,27 @@ impl Engine {
         .on_color_scheme({
             let dark = Rc::clone(&dark);
             move |_term| Some(if dark.get() { ColorScheme::Dark } else { ColorScheme::Light })
+        })?
+        .on_bell({
+            let bell = Rc::clone(&bell);
+            move |_term| bell.set(true)
+        })?
+        .on_pwd_changed({
+            let pwd_changed = Rc::clone(&pwd_changed);
+            move |_term| pwd_changed.set(true)
+        })?
+        .on_xtversion(move |_term| Some("towles-tool"))?
+        .on_size({
+            let cell_px = Rc::clone(&cell_px);
+            move |term| {
+                let (cell_width, cell_height) = cell_px.get();
+                Some(libghostty_vt::terminal::SizeReportSize {
+                    rows: term.rows().unwrap_or(0),
+                    columns: term.cols().unwrap_or(0),
+                    cell_width,
+                    cell_height,
+                })
+            }
         })?;
 
         Ok(Self {
@@ -231,9 +269,13 @@ impl Engine {
             cells: CellIterator::new()?,
             pty_out,
             title_changed,
+            bell,
+            pwd_changed,
             dark,
             osc52: Osc52Scanner::new(),
             osc_color: OscColorScanner::new(),
+            osc_notify: OscNotifyScanner::new(),
+            cell_px,
             key_encoder: key::Encoder::new()?,
             mouse_encoder: mouse::Encoder::new()?,
             force_full: false,
@@ -369,6 +411,7 @@ impl Engine {
         self.term.vt_write(bytes);
         self.osc52.feed(bytes);
         self.osc_color.feed(bytes);
+        self.osc_notify.feed(bytes);
         // Answer OSC 10/11 color queries libghostty leaves unanswered, from
         // the *effective* colors — a program's own OSC set-override wins over
         // the pushed theme, matching xterm. An unreadable color (FFI error or
@@ -404,6 +447,18 @@ impl Engine {
         self.osc52.take()
     }
 
+    /// Whether a BEL arrived since the last call — the universal TUI
+    /// attention signal, surfaced so the UI can badge the session.
+    pub fn take_bell(&mut self) -> bool {
+        self.bell.replace(false)
+    }
+
+    /// Drain desktop-notification bodies (OSC 9 / OSC 777) recognized in the
+    /// byte feed since the last call — how Claude Code raises attention.
+    pub fn take_notifications(&mut self) -> Vec<String> {
+        self.osc_notify.take()
+    }
+
     /// Drain bytes the terminal produced in response to control sequences
     /// (device attribute queries, size reports, ...). The caller must write
     /// these back to the PTY.
@@ -418,6 +473,8 @@ impl Engine {
         cell_width_px: u32,
         cell_height_px: u32,
     ) -> Result<()> {
+        // Remember the cell metrics for XTWINOPS size queries (CSI 14/16 t).
+        self.cell_px.set((cell_width_px, cell_height_px));
         self.term.resize(cols, rows, cell_width_px, cell_height_px)?;
         Ok(())
     }
@@ -714,6 +771,11 @@ impl Engine {
             .replace(false)
             .then(|| self.term.title().map(str::to_owned))
             .transpose()?;
+        let pwd = self
+            .pwd_changed
+            .replace(false)
+            .then(|| self.term.pwd().map(str::to_owned))
+            .transpose()?;
 
         let snap = self.render.update(&self.term)?;
         let dirty = snap.dirty()?;
@@ -736,7 +798,8 @@ impl Engine {
         };
         let cursor_moved = self.last_cursor != Some(cursor);
 
-        if dirty == Dirty::Clean && title.is_none() && !force_full && !cursor_moved {
+        if dirty == Dirty::Clean && title.is_none() && pwd.is_none() && !force_full && !cursor_moved
+        {
             return Ok(None);
         }
         self.last_cursor = Some(cursor);
@@ -875,6 +938,7 @@ impl Engine {
                 mouse_tracking: self.term.is_mouse_tracking()?,
             },
             title,
+            pwd,
             scrollback_rows: self.term.scrollback_rows()?,
             viewport_top: self.viewport_top()?,
         }))

@@ -140,6 +140,11 @@ pub enum Event {
     Frame(Frame),
     /// Bytes the terminal wants written back to the PTY (query replies).
     PtyReply(Vec<u8>),
+    /// The program rang the bell (BEL) — an attention signal for the UI.
+    Bell,
+    /// The program raised a desktop notification (OSC 9 / OSC 777) — e.g.
+    /// Claude Code asking for input. The body is the notification text.
+    Notify(String),
     /// Text a program copied via an OSC 52 set-clipboard sequence. The host
     /// writes it to the system clipboard, gated on this terminal being focused.
     Clipboard(String),
@@ -361,6 +366,12 @@ impl Session {
                 }
                 for text in engine.take_clipboard() {
                     sink(Event::Clipboard(text));
+                }
+                if engine.take_bell() {
+                    sink(Event::Bell);
+                }
+                for body in engine.take_notifications() {
+                    sink(Event::Notify(body));
                 }
                 match engine.render() {
                     Ok(Some(frame)) => {

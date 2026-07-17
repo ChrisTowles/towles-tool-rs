@@ -37,6 +37,7 @@ use tt_vt::{
 
 pub const FRAME_EVENT: &str = "terminal://frame";
 pub const EXIT_EVENT: &str = "terminal://exit";
+pub const NOTIFY_EVENT: &str = "terminal://notify";
 const MAIN_WINDOW_LABEL: &str = "main";
 
 /// Scrollback kept per terminal, in rows. Lives in the Rust engine, not the
@@ -299,6 +300,20 @@ impl From<TermTheme> for tt_vt::Theme {
     }
 }
 
+/// Payload of a `terminal://notify` event: the program in a terminal raised
+/// attention — a BEL, or a desktop notification (OSC 9/777, e.g. Claude Code
+/// asking for input). The agentboard badges the session and shows the body.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TermNotify {
+    term_id: String,
+    /// "bell" or "notify".
+    kind: &'static str,
+    /// Notification body; absent for a bell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+}
+
 /// Spawn a shell in a fresh PTY sized to the xterm.js grid, rooted at `cwd`
 /// (falls back to `$HOME` when `cwd` is missing or not an existing dir).
 /// Replaces any existing terminal with the same `term_id`. Async: runs on a
@@ -426,6 +441,22 @@ fn term_start_blocking(
             // system clipboard, but ONLY when this terminal is the focused one:
             // a background pane (another agent's shell) must not be able to
             // silently overwrite the clipboard. Read-side OSC 52 is not handled.
+            // Attention signals (BEL / OSC 9 notifications) go to the
+            // agentboard, which badges the session and feeds needs-you.
+            VtEvent::Bell => {
+                let _ = app.emit_to(
+                    MAIN_WINDOW_LABEL,
+                    NOTIFY_EVENT,
+                    TermNotify { term_id: term_id.clone(), kind: "bell", body: None },
+                );
+            }
+            VtEvent::Notify(body) => {
+                let _ = app.emit_to(
+                    MAIN_WINDOW_LABEL,
+                    NOTIFY_EVENT,
+                    TermNotify { term_id: term_id.clone(), kind: "notify", body: Some(body) },
+                );
+            }
             VtEvent::Clipboard(text) => {
                 use tauri_plugin_clipboard_manager::ClipboardExt;
                 if app.state::<TermState>().is_focused(&term_id) {

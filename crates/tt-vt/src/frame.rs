@@ -132,6 +132,10 @@ pub struct Frame {
     /// Present only on the frame where the OSC 0/2 title changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Present only on the frame where the OSC 7 working directory changed
+    /// (a `file://` URI as the shell reported it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pwd: Option<String>,
     /// Rows available above the viewport (drives the scrollbar).
     pub scrollback_rows: usize,
     /// Absolute row index of the viewport's top (0 = oldest scrollback row);
@@ -325,6 +329,7 @@ mod tests {
             colors: Colors { fg: 0xffffff, bg: 0x000000 },
             modes: Modes { alt_screen: false, mouse_tracking: false },
             title: Some("bash".to_string()),
+            pwd: None,
             scrollback_rows: 100,
             viewport_top: 42,
         };
@@ -364,6 +369,7 @@ mod tests {
             colors: Colors { fg: 0, bg: 0 },
             modes: Modes { alt_screen: false, mouse_tracking: false },
             title: None,
+            pwd: None,
             scrollback_rows: 0,
             viewport_top: 0,
         };

@@ -14,6 +14,7 @@ pub mod frame;
 pub mod keymap;
 pub mod osc52;
 pub mod osc_color;
+pub mod osc_notify;
 pub mod search;
 pub mod session;
 
@@ -388,6 +389,51 @@ mod tests {
     }
 
     #[test]
+    fn bell_and_notifications_surface_once() {
+        let mut e = engine(20, 4);
+        assert!(!e.take_bell());
+        e.feed(b"ding\x07");
+        assert!(e.take_bell(), "BEL sets the attention flag");
+        assert!(!e.take_bell(), "drained after take");
+
+        e.feed(b"\x1b]9;Claude needs your input\x07");
+        assert_eq!(e.take_notifications(), vec!["Claude needs your input".to_string()]);
+        assert!(e.take_notifications().is_empty());
+        // Progress reports are not notifications.
+        e.feed(b"\x1b]9;4;1;50\x07");
+        assert!(e.take_notifications().is_empty());
+    }
+
+    #[test]
+    fn pwd_change_rides_the_next_frame() {
+        let mut e = engine(20, 4);
+        e.feed(b"x");
+        let frame = e.render().expect("render").expect("frame");
+        assert_eq!(frame.pwd, None);
+
+        // OSC 7: shell integration reports the cwd as a file:// URI. A pwd
+        // change alone (no cell writes) must still produce a frame.
+        e.feed(b"\x1b]7;file://host/home/ctowles/code\x1b\\");
+        let frame = e.render().expect("render").expect("pwd change produces a frame");
+        assert_eq!(frame.pwd.as_deref(), Some("file://host/home/ctowles/code"));
+        let next = e.render().expect("render");
+        assert!(
+            next.map_or(true, |f| f.pwd.is_none()),
+            "pwd ships only on the frame where it changed"
+        );
+    }
+
+    #[test]
+    fn xtwinops_size_query_answers_from_resize_metrics() {
+        let mut e = engine(20, 4);
+        e.resize(20, 4, 8, 16).expect("resize");
+        e.feed(b"\x1b[14t"); // report text area size in pixels
+        let reply = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        // 20 cols × 8px = 160 wide, 4 rows × 16px = 64 high: CSI 4 ; 64 ; 160 t
+        assert!(reply.contains("4;64;160t"), "pixel size from cell metrics, got {reply:?}");
+    }
+
+    #[test]
     fn key_release_is_silent_without_kitty_report_events() {
         let mut e = engine(40, 5);
         let release = KeyEvent { action: KeyAction::Release, ..key_press("KeyA", "a") };
@@ -744,7 +790,7 @@ mod tests {
                 .expect("session produced an event")
             {
                 Event::Frame(f) => break f,
-                Event::PtyReply(_) | Event::Clipboard(_) => {}
+                Event::PtyReply(_) | Event::Clipboard(_) | Event::Bell | Event::Notify(_) => {}
             }
         };
         assert_eq!(
@@ -773,7 +819,7 @@ mod tests {
                 .expect("session produced an event")
             {
                 Event::Clipboard(text) => break text,
-                Event::Frame(_) | Event::PtyReply(_) => {}
+                Event::Frame(_) | Event::PtyReply(_) | Event::Bell | Event::Notify(_) => {}
             }
         };
         assert_eq!(clip, "hi");
@@ -843,7 +889,7 @@ mod tests {
                 .expect("closing the batch must release a frame")
             {
                 Event::Frame(f) => break f,
-                Event::PtyReply(_) | Event::Clipboard(_) => {}
+                Event::PtyReply(_) | Event::Clipboard(_) | Event::Bell | Event::Notify(_) => {}
             }
         };
         assert_eq!(
@@ -873,7 +919,7 @@ mod tests {
                 .expect("the hold cap must force a frame out")
             {
                 Event::Frame(f) => break f,
-                Event::PtyReply(_) | Event::Clipboard(_) => {}
+                Event::PtyReply(_) | Event::Clipboard(_) | Event::Bell | Event::Notify(_) => {}
             }
         };
         assert_eq!(
