@@ -782,11 +782,14 @@ export function TerminalView({
         selectAll: () => void select("all"),
         hasSelection: () => rowsHaveSelection(grid.lines),
         clearScrollback: () => void invoke(TERM_CLEAR_COMMAND, { termId }).catch(() => {}),
-        // Open a clicked file path in the editor. Relative paths resolve
-        // against this pane's `cwd` (the backend joins them). Report-only —
-        // this opens an editor, it never writes to the PTY.
+        // Open a clicked file path in the editor, seeking to its `:line` if
+        // it had one. Relative paths resolve against this pane's `cwd` (the
+        // backend joins them). Report-only — this opens an editor, it never
+        // writes to the PTY.
         openPath: (link) =>
-          void invoke("term_open_path", { path: link.path, cwd }).catch(() => {}),
+          void invoke("term_open_path", { path: link.path, cwd, line: link.line }).catch(
+            () => {},
+          ),
         linkAtPoint: (offsetX, offsetY) => {
           const x = Math.max(0, Math.min(grid.cols - 1, Math.floor(offsetX / cellW)));
           const y = Math.max(0, Math.min(grid.rows - 1, Math.floor(offsetY / cellH)));
