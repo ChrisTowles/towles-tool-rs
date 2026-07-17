@@ -11,11 +11,17 @@
 
 pub mod engine;
 pub mod frame;
+pub mod keymap;
 pub mod osc52;
+pub mod osc_color;
+pub mod osc_notify;
 pub mod search;
 pub mod session;
 
-pub use engine::{Engine, EngineOptions, Select, VtError};
+pub use engine::{
+    Engine, EngineOptions, KeyAction, KeyEvent, MouseAction, MouseButton, MouseInput, PasteOutcome,
+    Select, Theme, VtError,
+};
 pub use frame::{Frame, Modes};
 pub use search::SearchMatch;
 pub use session::{Event, Input, Sender, Session, SpawnError};
@@ -55,6 +61,383 @@ mod tests {
             .find(|r| r.y == y)
             .map(|r| r.runs.iter().map(|run| run.text.as_str()).collect::<String>())
             .unwrap_or_default()
+    }
+
+    fn theme(dark: bool) -> Theme {
+        Theme {
+            fg: 0xcdd6f4,
+            bg: 0x112233,
+            cursor: None,
+            // ANSI 1 (red) set to a sentinel so indexed resolution is provable.
+            palette16: {
+                let mut p = [0u32; 16];
+                p[1] = 0xaa0000;
+                p
+            },
+            dark,
+        }
+    }
+
+    #[test]
+    fn theme_defaults_flow_into_frame_colors() {
+        let mut e = engine(20, 4);
+        e.set_theme(&theme(true)).expect("set theme");
+        e.feed(b"hi");
+        let frame = e.render().expect("render").expect("frame");
+        assert_eq!(frame.colors.bg, 0x112233);
+        assert_eq!(frame.colors.fg, 0xcdd6f4);
+    }
+
+    #[test]
+    fn theme_palette_resolves_indexed_colors() {
+        let mut e = engine(20, 4);
+        e.set_theme(&theme(true)).expect("set theme");
+        e.feed(b"\x1b[31mred");
+        let frame = e.render().expect("render").expect("frame");
+        let row = frame.changed.iter().find(|r| r.y == 0).unwrap();
+        let red = row.runs.iter().find(|r| r.text == "red").expect("styled run");
+        assert_eq!(red.fg, Some(0xaa0000), "SGR 31 resolves via the pushed palette");
+    }
+
+    #[test]
+    fn theme_answers_osc_background_query() {
+        let mut e = engine(20, 4);
+        e.set_theme(&theme(true)).expect("set theme");
+        e.feed(b"\x1b]11;?\x1b\\");
+        let reply = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        // xterm reply format doubles each channel byte: rgb:1111/2222/3333.
+        assert!(
+            reply.contains("rgb:1111/2222/3333"),
+            "OSC 11 answers the pushed background, got {reply:?}"
+        );
+    }
+
+    #[test]
+    fn program_color_override_wins_the_osc_query() {
+        let mut e = engine(20, 4);
+        e.set_theme(&theme(true)).expect("set theme");
+        // The program sets its own background (OSC 11 set), then queries it
+        // back — the override must win over the pushed theme, like xterm.
+        e.feed(b"\x1b]11;#445566\x07");
+        e.take_pty_output();
+        e.feed(b"\x1b]11;?\x07");
+        let reply = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        assert!(
+            reply.contains("rgb:4444/5555/6666"),
+            "override wins over the theme, got {reply:?}"
+        );
+    }
+
+    #[test]
+    fn theme_answers_color_scheme_query() {
+        let mut e = engine(20, 4);
+        e.set_theme(&theme(true)).expect("set theme");
+        e.feed(b"\x1b[?996n");
+        let dark_reply = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        assert!(dark_reply.contains("997;1"), "dark scheme reports 997;1, got {dark_reply:?}");
+
+        e.set_theme(&theme(false)).expect("set theme");
+        e.feed(b"\x1b[?996n");
+        let light_reply = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        assert!(light_reply.contains("997;2"), "light scheme reports 997;2, got {light_reply:?}");
+    }
+
+    #[test]
+    fn bracketed_paste_wraps_and_defuses_the_terminator() {
+        let mut e = engine(40, 5);
+        // The program negotiates bracketed paste (mode 2004), then the user
+        // pastes text carrying an embedded bracket terminator — the classic
+        // paste-injection payload. The encoder must scrub the ESC so the
+        // payload cannot close the bracket and execute.
+        e.feed(b"\x1b[?2004h");
+        e.take_pty_output();
+        assert_eq!(e.paste("hi\x1b[201~rm -rf /\n", false).expect("paste"), PasteOutcome::Pasted);
+        let out = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        assert!(out.starts_with("\x1b[200~"), "paste opens the bracket, got {out:?}");
+        assert!(out.ends_with("\x1b[201~"), "paste closes the bracket, got {out:?}");
+        let body = &out["\x1b[200~".len()..out.len() - "\x1b[201~".len()];
+        assert!(!body.contains('\x1b'), "embedded ESC scrubbed inside the bracket: {body:?}");
+    }
+
+    #[test]
+    fn bare_shell_multiline_paste_needs_confirmation() {
+        let mut e = engine(40, 5);
+        // No bracketed paste: a newline would execute immediately, so the
+        // engine writes nothing until the caller confirms with force.
+        assert_eq!(e.paste("rm -rf /\n", false).expect("paste"), PasteOutcome::NeedsConfirm);
+        assert!(e.take_pty_output().is_empty(), "nothing reaches the shell unconfirmed");
+
+        assert_eq!(e.paste("rm -rf /\n", true).expect("paste"), PasteOutcome::Pasted);
+        let out = e.take_pty_output();
+        assert_eq!(out.as_slice(), b"rm -rf /\r", "newline becomes CR on a bare shell");
+    }
+
+    #[test]
+    fn single_line_paste_never_prompts() {
+        let mut e = engine(40, 5);
+        assert_eq!(e.paste("hello world", false).expect("paste"), PasteOutcome::Pasted);
+        assert_eq!(e.take_pty_output().as_slice(), b"hello world");
+    }
+
+    fn key_press(code: &str, key: &str) -> KeyEvent {
+        KeyEvent {
+            code: code.into(),
+            key: key.into(),
+            action: KeyAction::Press,
+            shift: false,
+            alt: false,
+            ctrl: false,
+            meta: false,
+            caps_lock: false,
+            num_lock: false,
+        }
+    }
+
+    /// Encode one keystroke and return the bytes it queued for the PTY.
+    fn encoded(e: &mut Engine, event: &KeyEvent) -> Vec<u8> {
+        e.key(event).expect("encode key");
+        e.take_pty_output()
+    }
+
+    #[test]
+    fn plain_keys_encode_legacy_bytes() {
+        let mut e = engine(40, 5);
+        assert_eq!(encoded(&mut e, &key_press("KeyA", "a")), b"a");
+        assert_eq!(encoded(&mut e, &key_press("Enter", "Enter")), b"\r");
+        let ctrl_c = KeyEvent { ctrl: true, ..key_press("KeyC", "c") };
+        assert_eq!(encoded(&mut e, &ctrl_c), b"\x03");
+        let shift_a = KeyEvent { shift: true, ..key_press("KeyA", "A") };
+        assert_eq!(encoded(&mut e, &shift_a), b"A");
+    }
+
+    #[test]
+    fn cursor_keys_honor_application_mode() {
+        let mut e = engine(40, 5);
+        assert_eq!(encoded(&mut e, &key_press("ArrowUp", "ArrowUp")), b"\x1b[A");
+        e.feed(b"\x1b[?1h"); // DECCKM: application cursor keys
+        assert_eq!(encoded(&mut e, &key_press("ArrowUp", "ArrowUp")), b"\x1bOA");
+    }
+
+    #[test]
+    fn kitty_disambiguate_encodes_shift_enter() {
+        let mut e = engine(40, 5);
+        // Even in legacy mode ghostty's encoder disambiguates Shift+Enter,
+        // using xterm's CSI 27 (modifyOtherKeys-style) form — already better
+        // than the old frontend encoder, which sent a bare \r.
+        let shift_enter = KeyEvent { shift: true, ..key_press("Enter", "Enter") };
+        assert_eq!(encoded(&mut e, &shift_enter), b"\x1b[27;2;13~");
+
+        // The program pushes kitty disambiguation (CSI > 1 u), like Claude
+        // Code does at startup; now Shift+Enter gets its own sequence while
+        // plain Enter stays legacy.
+        e.feed(b"\x1b[>1u");
+        assert_eq!(encoded(&mut e, &shift_enter), b"\x1b[13;2u");
+        assert_eq!(encoded(&mut e, &key_press("Enter", "Enter")), b"\r");
+    }
+
+    fn left_click(x: u16, y: u16) -> MouseInput {
+        MouseInput {
+            action: MouseAction::Press,
+            button: Some(MouseButton::Left),
+            x,
+            y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+            any_button: true,
+        }
+    }
+
+    #[test]
+    fn mouse_click_reports_in_the_negotiated_protocol() {
+        let mut e = engine(40, 5);
+        // No tracking: a click writes nothing — local selection territory.
+        e.mouse(&left_click(3, 2)).expect("mouse");
+        assert!(e.take_pty_output().is_empty());
+
+        // The program negotiates click tracking + SGR format (1000 + 1006);
+        // reports are 1-based, `M` press / `m` release.
+        e.feed(b"\x1b[?1000h\x1b[?1006h");
+        e.mouse(&left_click(3, 2)).expect("mouse");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[<0;4;3M");
+        let release =
+            MouseInput { action: MouseAction::Release, any_button: false, ..left_click(3, 2) };
+        e.mouse(&release).expect("mouse");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[<0;4;3m");
+    }
+
+    #[test]
+    fn motion_is_silent_under_click_only_tracking() {
+        let mut e = engine(40, 5);
+        e.feed(b"\x1b[?1000h\x1b[?1006h");
+        let motion = MouseInput {
+            action: MouseAction::Motion,
+            button: None,
+            any_button: false,
+            ..left_click(5, 1)
+        };
+        e.mouse(&motion).expect("mouse");
+        assert!(e.take_pty_output().is_empty(), "mode 1000 wants clicks only");
+
+        // Any-motion tracking (1003): now bare motion reports (32 + 3 = 35).
+        e.feed(b"\x1b[?1003h");
+        e.mouse(&motion).expect("mouse");
+        let out = e.take_pty_output();
+        assert!(out.starts_with(b"\x1b[<35;"), "got {:?}", String::from_utf8_lossy(&out));
+    }
+
+    #[test]
+    fn focus_reports_only_when_mode_1004_is_on() {
+        let mut e = engine(40, 5);
+        e.focus(true).expect("focus");
+        assert!(e.take_pty_output().is_empty(), "no focus events unless asked");
+
+        e.feed(b"\x1b[?1004h");
+        e.focus(true).expect("focus");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[I");
+        e.focus(false).expect("focus");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[O");
+    }
+
+    #[test]
+    fn wheel_scrolls_the_viewport_on_the_primary_screen() {
+        let mut e = engine(10, 3);
+        for i in 0..8 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        let live_top = e.viewport_top().expect("viewport_top");
+        assert!(live_top > 0, "output built scrollback");
+
+        e.wheel(0, 0, -2).expect("wheel");
+        assert!(e.take_pty_output().is_empty(), "no bytes reach the program");
+        assert_eq!(e.viewport_top().expect("viewport_top"), live_top - 2, "viewport scrolled");
+    }
+
+    #[test]
+    fn wheel_becomes_arrows_on_the_alt_screen_until_1007_off() {
+        let mut e = engine(10, 3);
+        e.feed(b"\x1b[?1049h");
+        e.take_pty_output();
+
+        // Alternate-scroll (mode 1007) is on by default in libghostty: the
+        // wheel types arrow keys into the fullscreen TUI (how `less` and
+        // `git log` scroll), one per line.
+        e.wheel(0, 0, -1).expect("wheel");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[A");
+        e.wheel(0, 0, 2).expect("wheel");
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[B\x1b[B");
+
+        // A program that turns 1007 off gets silence, not stray arrows.
+        e.feed(b"\x1b[?1007l");
+        e.wheel(0, 0, -1).expect("wheel");
+        assert!(e.take_pty_output().is_empty());
+    }
+
+    #[test]
+    fn wheel_reports_to_a_mouse_tracking_program() {
+        let mut e = engine(10, 3);
+        e.feed(b"\x1b[?1000h\x1b[?1006h");
+        e.wheel(2, 1, -1).expect("wheel");
+        // SGR wheel-up is button 64, 1-based coords.
+        assert_eq!(e.take_pty_output().as_slice(), b"\x1b[<64;3;2M");
+    }
+
+    #[test]
+    fn underline_styles_and_color_ride_their_run() {
+        let mut e = engine(40, 5);
+        // Curly underline (SGR 4:3) in red (SGR 58:2::255:0:0) — the shape
+        // diagnostics squiggles take in nvim/helix.
+        e.feed(b"\x1b[4:3m\x1b[58:2::255:0:0mwavy\x1b[0m plain \x1b[21mdouble");
+        let frame = e.render().expect("render").expect("frame");
+        let row = frame.changed.iter().find(|r| r.y == 0).unwrap();
+
+        let wavy = row.runs.iter().find(|r| r.text == "wavy").expect("curly run");
+        assert_ne!(wavy.flags & flags::UNDERLINE, 0, "any-underline flag still set");
+        assert_eq!(wavy.ul, Some(3), "curly is style 3");
+        assert_eq!(wavy.ulc, Some(0xff0000), "SGR 58 direct color");
+
+        let double = row.runs.iter().find(|r| r.text == "double").expect("double run");
+        assert_eq!(double.ul, Some(2));
+        assert_eq!(double.ulc, None, "no SGR 58: underline uses fg");
+
+        let plain = row.runs.iter().find(|r| r.text.contains("plain")).expect("plain run");
+        assert_eq!(plain.ul, None);
+        assert_eq!(plain.flags & flags::UNDERLINE, 0);
+    }
+
+    #[test]
+    fn single_underline_keeps_a_compact_run() {
+        let mut e = engine(40, 5);
+        e.feed(b"\x1b[4munderlined");
+        let frame = e.render().expect("render").expect("frame");
+        let row = frame.changed.iter().find(|r| r.y == 0).unwrap();
+        let run = row.runs.iter().find(|r| r.text == "underlined").expect("run");
+        assert_ne!(run.flags & flags::UNDERLINE, 0);
+        assert_eq!(run.ul, None, "single underline needs no style field");
+    }
+
+    #[test]
+    fn cursor_color_reports_the_osc_12_override() {
+        let mut e = engine(20, 4);
+        e.feed(b"x");
+        let frame = e.render().expect("render").expect("frame");
+        assert_eq!(frame.cursor.color, None, "no override: theme cursor");
+
+        e.feed(b"\x1b]12;#00ff88\x07y");
+        let frame = e.render().expect("render").expect("frame");
+        assert_eq!(frame.cursor.color, Some(0x00ff88));
+    }
+
+    #[test]
+    fn bell_and_notifications_surface_once() {
+        let mut e = engine(20, 4);
+        assert!(!e.take_bell());
+        e.feed(b"ding\x07");
+        assert!(e.take_bell(), "BEL sets the attention flag");
+        assert!(!e.take_bell(), "drained after take");
+
+        e.feed(b"\x1b]9;Claude needs your input\x07");
+        assert_eq!(e.take_notifications(), vec!["Claude needs your input".to_string()]);
+        assert!(e.take_notifications().is_empty());
+        // Progress reports are not notifications.
+        e.feed(b"\x1b]9;4;1;50\x07");
+        assert!(e.take_notifications().is_empty());
+    }
+
+    #[test]
+    fn pwd_change_rides_the_next_frame() {
+        let mut e = engine(20, 4);
+        e.feed(b"x");
+        let frame = e.render().expect("render").expect("frame");
+        assert_eq!(frame.pwd, None);
+
+        // OSC 7: shell integration reports the cwd as a file:// URI. A pwd
+        // change alone (no cell writes) must still produce a frame.
+        e.feed(b"\x1b]7;file://host/home/ctowles/code\x1b\\");
+        let frame = e.render().expect("render").expect("pwd change produces a frame");
+        assert_eq!(frame.pwd.as_deref(), Some("file://host/home/ctowles/code"));
+        let next = e.render().expect("render");
+        assert!(
+            next.map_or(true, |f| f.pwd.is_none()),
+            "pwd ships only on the frame where it changed"
+        );
+    }
+
+    #[test]
+    fn xtwinops_size_query_answers_from_resize_metrics() {
+        let mut e = engine(20, 4);
+        e.resize(20, 4, 8, 16).expect("resize");
+        e.feed(b"\x1b[14t"); // report text area size in pixels
+        let reply = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        // 20 cols × 8px = 160 wide, 4 rows × 16px = 64 high: CSI 4 ; 64 ; 160 t
+        assert!(reply.contains("4;64;160t"), "pixel size from cell metrics, got {reply:?}");
+    }
+
+    #[test]
+    fn key_release_is_silent_without_kitty_report_events() {
+        let mut e = engine(40, 5);
+        let release = KeyEvent { action: KeyAction::Release, ..key_press("KeyA", "a") };
+        assert_eq!(encoded(&mut e, &release), b"", "legacy mode ignores releases");
     }
 
     #[test]
@@ -171,15 +554,12 @@ mod tests {
         let mut e = engine(20, 4);
         e.feed(b"x");
         let frame = e.render().expect("render").expect("frame");
-        assert!(!frame.modes.app_cursor_keys);
         assert!(!frame.modes.alt_screen);
 
-        // Enter alt screen (1049), app cursor keys (DECCKM), bracketed paste.
-        e.feed(b"\x1b[?1049h\x1b[?1h\x1b[?2004h");
+        // Enter alt screen (1049).
+        e.feed(b"\x1b[?1049h");
         let frame = e.render().expect("render").expect("frame");
-        assert!(frame.modes.app_cursor_keys);
         assert!(frame.modes.alt_screen);
-        assert!(frame.modes.bracketed_paste);
         assert!(!frame.modes.mouse_tracking);
 
         // Mode flips alone don't dirty cells (no frame goes out until
@@ -410,7 +790,7 @@ mod tests {
                 .expect("session produced an event")
             {
                 Event::Frame(f) => break f,
-                Event::PtyReply(_) | Event::Clipboard(_) => {}
+                Event::PtyReply(_) | Event::Clipboard(_) | Event::Bell | Event::Notify(_) => {}
             }
         };
         assert_eq!(
@@ -439,7 +819,7 @@ mod tests {
                 .expect("session produced an event")
             {
                 Event::Clipboard(text) => break text,
-                Event::Frame(_) | Event::PtyReply(_) => {}
+                Event::Frame(_) | Event::PtyReply(_) | Event::Bell | Event::Notify(_) => {}
             }
         };
         assert_eq!(clip, "hi");
@@ -509,7 +889,7 @@ mod tests {
                 .expect("closing the batch must release a frame")
             {
                 Event::Frame(f) => break f,
-                Event::PtyReply(_) | Event::Clipboard(_) => {}
+                Event::PtyReply(_) | Event::Clipboard(_) | Event::Bell | Event::Notify(_) => {}
             }
         };
         assert_eq!(
@@ -539,7 +919,7 @@ mod tests {
                 .expect("the hold cap must force a frame out")
             {
                 Event::Frame(f) => break f,
-                Event::PtyReply(_) | Event::Clipboard(_) => {}
+                Event::PtyReply(_) | Event::Clipboard(_) | Event::Bell | Event::Notify(_) => {}
             }
         };
         assert_eq!(

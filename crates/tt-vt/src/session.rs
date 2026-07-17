@@ -40,7 +40,9 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::engine::{Engine, EngineOptions, Select, VtError};
+use crate::engine::{
+    Engine, EngineOptions, KeyEvent, MouseInput, PasteOutcome, Select, Theme, VtError,
+};
 use crate::frame::Frame;
 use crate::search::SearchMatch;
 
@@ -74,6 +76,9 @@ const MAX_QUEUED_BYTE_CHUNKS: usize = 64;
 pub enum Input {
     /// Raw PTY output bytes.
     Bytes(Vec<u8>),
+    /// A keystroke to encode against live terminal state and write to the
+    /// PTY (see [`Engine::key`]).
+    Key(KeyEvent),
     Resize {
         cols: u16,
         rows: u16,
@@ -82,14 +87,30 @@ pub enum Input {
     },
     /// Scroll the viewport by rows (up is negative); `None` jumps to bottom.
     Scroll(Option<isize>),
-    /// Report a mouse-wheel gesture at viewport cell (`x`, `y`) to the
-    /// application in its negotiated mouse protocol (`lines` rows, up is
-    /// negative). No-op unless the application enabled mouse tracking.
+    /// A mouse-wheel gesture at viewport cell (`x`, `y`), `lines` rows (up
+    /// is negative). The engine picks what it means: scrollback paging, a
+    /// wheel report to the program, or alternate-scroll arrow keys (see
+    /// [`Engine::wheel`]).
     Wheel { x: u16, y: u16, lines: i32 },
+    /// A pointer event for the program, when it enabled mouse tracking (see
+    /// [`Engine::mouse`]).
+    Mouse(MouseInput),
+    /// The pane gained/lost keyboard focus — reported to the program when it
+    /// asked for focus events, mode 1004 (see [`Engine::focus`]).
+    Focus(bool),
     /// Apply a selection operation.
     Select(Select),
     /// Reply with the active selection's plain text on the provided channel.
     Copy(mpsc::SyncSender<Option<String>>),
+    /// Paste text into the shell through libghostty's paste encoder (strips
+    /// dangerous control bytes, honors bracketed paste). The outcome is sent
+    /// on `reply`; `NeedsConfirm` means nothing was written (see
+    /// [`Engine::paste`]).
+    Paste {
+        text: String,
+        force: bool,
+        reply: mpsc::SyncSender<PasteOutcome>,
+    },
     /// Case-insensitive scrollback search; matches (up to `limit`) are sent
     /// back on the provided channel, top to bottom.
     Search {
@@ -108,6 +129,9 @@ pub enum Input {
     /// The pane was shown or hidden in the frontend — widens the render
     /// interval to [`HIDDEN_FRAME_INTERVAL`] while hidden.
     Visibility(bool),
+    /// Push the UI theme (default colors, ANSI palette, dark/light) into the
+    /// emulator so color queries answer the truth (see [`Engine::set_theme`]).
+    Theme(Theme),
 }
 
 #[derive(Debug)]
@@ -116,6 +140,11 @@ pub enum Event {
     Frame(Frame),
     /// Bytes the terminal wants written back to the PTY (query replies).
     PtyReply(Vec<u8>),
+    /// The program rang the bell (BEL) — an attention signal for the UI.
+    Bell,
+    /// The program raised a desktop notification (OSC 9 / OSC 777) — e.g.
+    /// Claude Code asking for input. The body is the notification text.
+    Notify(String),
     /// Text a program copied via an OSC 52 set-clipboard sequence. The host
     /// writes it to the system clipboard, gated on this terminal being focused.
     Clipboard(String),
@@ -220,10 +249,21 @@ impl Session {
                     let _ = engine.resize(cols, rows, cell_width_px, cell_height_px);
                 }
                 Input::Scroll(delta) => engine.scroll(delta),
+                // Encoding can only fail on allocation; a lost keystroke
+                // reads like a dropped input, never a crash.
+                Input::Key(event) => {
+                    let _ = engine.key(&event);
+                }
                 // Encoding can only fail on allocation; the report is
                 // best-effort like any other input.
                 Input::Wheel { x, y, lines } => {
                     let _ = engine.wheel(x, y, lines);
+                }
+                Input::Mouse(input) => {
+                    let _ = engine.mouse(&input);
+                }
+                Input::Focus(focused) => {
+                    let _ = engine.focus(focused);
                 }
                 // Out-of-bounds coordinates (layout races) are ignored;
                 // the selection just doesn't change.
@@ -232,6 +272,13 @@ impl Session {
                 }
                 Input::Copy(reply) => {
                     let _ = reply.try_send(engine.copy_selection().ok().flatten());
+                }
+                // An FFI failure (allocation-only) reads as pasted-and-lost,
+                // like input dropped by a full queue — never as NeedsConfirm,
+                // which would raise a spurious dialog.
+                Input::Paste { text, force, reply } => {
+                    let _ =
+                        reply.try_send(engine.paste(&text, force).unwrap_or(PasteOutcome::Pasted));
                 }
                 Input::Search { query, limit, reply } => {
                     let _ = reply.try_send(engine.search(&query, limit).unwrap_or_default());
@@ -242,6 +289,11 @@ impl Session {
                 Input::RequestFull => engine.request_full(),
                 Input::ClearScrollback => engine.clear_scrollback(),
                 Input::Visibility(visible) => *hidden = !visible,
+                // A failed theme push keeps the old colors; the next theme
+                // change (or a restart) retries.
+                Input::Theme(theme) => {
+                    let _ = engine.set_theme(&theme);
+                }
             };
 
             // Start in the past so the first input renders immediately.
@@ -314,6 +366,12 @@ impl Session {
                 }
                 for text in engine.take_clipboard() {
                     sink(Event::Clipboard(text));
+                }
+                if engine.take_bell() {
+                    sink(Event::Bell);
+                }
+                for body in engine.take_notifications() {
+                    sink(Event::Notify(body));
                 }
                 match engine.render() {
                     Ok(Some(frame)) => {

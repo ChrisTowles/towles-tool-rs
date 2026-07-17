@@ -39,10 +39,22 @@ pub struct Run {
     pub bg: Option<u32>,
     #[serde(skip_serializing_if = "is_zero")]
     pub flags: u16,
+    /// Underline style past Single — 2 double, 3 curly, 4 dotted, 5 dashed
+    /// (SGR 4:x). Absent for none/single; `flags::UNDERLINE` still answers
+    /// "any underline" so the renderer keeps its one-bit fast path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ul: Option<u8>,
+    /// SGR 58 underline color, packed 0xRRGGBB; absent = underline in `fg`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ulc: Option<u32>,
 }
 
 fn is_zero(v: &u16) -> bool {
     *v == 0
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 /// One changed viewport row.
@@ -74,6 +86,12 @@ pub struct Cursor {
     pub visible: bool,
     pub shape: CursorShape,
     pub blinking: bool,
+    /// Cursor color a program set (OSC 12), packed 0xRRGGBB; absent = theme.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<u32>,
+    /// The program signalled password input — the renderer shows a lock hint.
+    #[serde(skip_serializing_if = "is_false")]
+    pub password: bool,
 }
 
 /// Terminal-level default colors, packed 0xRRGGBB. Always resolved — runs
@@ -85,18 +103,16 @@ pub struct Colors {
     pub bg: u32,
 }
 
-/// Terminal mode hints the renderer needs for input encoding and wheel
-/// behavior. Mirrors what xterm.js tracks internally.
+/// Terminal mode hints the view needs for input *routing* — all encoding
+/// happens in the engine, so only the modes that change where an event goes
+/// ship on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Modes {
-    /// DECCKM: arrows send SS3 (`ESC O A`) instead of CSI (`ESC [ A`).
-    pub app_cursor_keys: bool,
-    /// Mode 2004: wrap pasted text in `ESC [200~` / `ESC [201~`.
-    pub bracketed_paste: bool,
-    /// Alternate screen active (fullscreen TUI; wheel becomes arrow keys).
+    /// Alternate screen active (fullscreen TUI owns the scrollback chords).
     pub alt_screen: bool,
-    /// Any mouse tracking mode enabled.
+    /// Any mouse tracking mode enabled (clicks go to the program, not local
+    /// selection; Shift bypasses).
     pub mouse_tracking: bool,
 }
 
@@ -116,6 +132,10 @@ pub struct Frame {
     /// Present only on the frame where the OSC 0/2 title changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Present only on the frame where the OSC 7 working directory changed
+    /// (a `file://` URI as the shell reported it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pwd: Option<String>,
     /// Rows available above the viewport (drives the scrollbar).
     pub scrollback_rows: usize,
     /// Absolute row index of the viewport's top (0 = oldest scrollback row);
@@ -135,7 +155,15 @@ mod tests {
     use serde_json::{json, to_value};
 
     fn cursor() -> Cursor {
-        Cursor { x: 3, y: 4, visible: true, shape: CursorShape::Block, blinking: false }
+        Cursor {
+            x: 3,
+            y: 4,
+            visible: true,
+            shape: CursorShape::Block,
+            blinking: false,
+            color: None,
+            password: false,
+        }
     }
 
     #[test]
@@ -161,6 +189,8 @@ mod tests {
             fg: Some(0x00ff00),
             bg: Some(0x000000),
             flags: flags::BOLD | flags::UNDERLINE,
+            ul: Some(3),
+            ulc: Some(0xff0000),
         };
         assert_eq!(
             to_value(&run).unwrap(),
@@ -171,6 +201,8 @@ mod tests {
                 "fg": 0x00ff00,
                 "bg": 0x000000,
                 "flags": 9,
+                "ul": 3,
+                "ulc": 0xff0000,
             }),
         );
     }
@@ -180,7 +212,16 @@ mod tests {
         // `fg`/`bg` None means "terminal default" and `flags == 0` means plain
         // text; all three are skipped to keep the common run compact. The TS
         // reader treats their absence as exactly those defaults.
-        let run = Run { x: 0, width: 4, text: "text".to_string(), fg: None, bg: None, flags: 0 };
+        let run = Run {
+            x: 0,
+            width: 4,
+            text: "text".to_string(),
+            fg: None,
+            bg: None,
+            flags: 0,
+            ul: None,
+            ulc: None,
+        };
         assert_eq!(to_value(&run).unwrap(), json!({ "x": 0, "width": 4, "text": "text" }),);
     }
 
@@ -189,7 +230,16 @@ mod tests {
         // A CJK/emoji run occupies more columns than it has chars: two glyphs,
         // four columns. `width` is authoritative for layout, independent of
         // `text` length, and the serialized `width` must reflect the columns.
-        let run = Run { x: 0, width: 4, text: "漢字".to_string(), fg: None, bg: None, flags: 0 };
+        let run = Run {
+            x: 0,
+            width: 4,
+            text: "漢字".to_string(),
+            fg: None,
+            bg: None,
+            flags: 0,
+            ul: None,
+            ulc: None,
+        };
         assert_eq!(run.text.chars().count(), 2);
         assert!(run.width as usize > run.text.chars().count());
         assert_eq!(to_value(&run).unwrap()["width"], json!(4));
@@ -199,7 +249,16 @@ mod tests {
     fn row_update_serializes_selection_as_inclusive_pair() {
         let row = RowUpdate {
             y: 2,
-            runs: vec![Run { x: 0, width: 1, text: "a".to_string(), fg: None, bg: None, flags: 0 }],
+            runs: vec![Run {
+                x: 0,
+                width: 1,
+                text: "a".to_string(),
+                fg: None,
+                bg: None,
+                flags: 0,
+                ul: None,
+                ulc: None,
+            }],
             sel: Some((1, 6)),
         };
         assert_eq!(
@@ -230,17 +289,10 @@ mod tests {
     fn modes_use_camel_case_keys() {
         // These multi-word fields are where a serde rename would silently
         // diverge from the TS `Modes` type.
-        let modes = Modes {
-            app_cursor_keys: true,
-            bracketed_paste: false,
-            alt_screen: true,
-            mouse_tracking: false,
-        };
+        let modes = Modes { alt_screen: true, mouse_tracking: false };
         assert_eq!(
             to_value(modes).unwrap(),
             json!({
-                "appCursorKeys": true,
-                "bracketedPaste": false,
                 "altScreen": true,
                 "mouseTracking": false,
             }),
@@ -268,18 +320,16 @@ mod tests {
                     fg: Some(0xffffff),
                     bg: None,
                     flags: flags::BOLD,
+                    ul: None,
+                    ulc: None,
                 }],
                 sel: None,
             }],
             cursor: cursor(),
             colors: Colors { fg: 0xffffff, bg: 0x000000 },
-            modes: Modes {
-                app_cursor_keys: false,
-                bracketed_paste: false,
-                alt_screen: false,
-                mouse_tracking: false,
-            },
+            modes: Modes { alt_screen: false, mouse_tracking: false },
             title: Some("bash".to_string()),
+            pwd: None,
             scrollback_rows: 100,
             viewport_top: 42,
         };
@@ -298,8 +348,6 @@ mod tests {
                 },
                 "colors": { "fg": 0xffffff, "bg": 0x000000 },
                 "modes": {
-                    "appCursorKeys": false,
-                    "bracketedPaste": false,
                     "altScreen": false,
                     "mouseTracking": false,
                 },
@@ -319,13 +367,9 @@ mod tests {
             changed: vec![],
             cursor: cursor(),
             colors: Colors { fg: 0, bg: 0 },
-            modes: Modes {
-                app_cursor_keys: false,
-                bracketed_paste: false,
-                alt_screen: false,
-                mouse_tracking: false,
-            },
+            modes: Modes { alt_screen: false, mouse_tracking: false },
             title: None,
+            pwd: None,
             scrollback_rows: 0,
             viewport_top: 0,
         };

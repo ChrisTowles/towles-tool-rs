@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  encodeKey,
   exitIsCrash,
   exitLabel,
   graphemeClusters,
   isWideRun,
+  keyEventWire,
   scrollbackKey,
   stepMatch,
   viewportMatches,
@@ -86,20 +86,53 @@ describe("scrollbackKey", () => {
   });
 });
 
-describe("encodeKey", () => {
-  const modes = { appCursorKeys: false };
+type WireEventLike = Parameters<typeof keyEventWire>[0];
 
-  it("returns null for the scrollback chords so the view handles them", () => {
-    expect(encodeKey(key("PageUp", { shiftKey: true }), modes)).toBeNull();
-    expect(encodeKey(key("PageDown", { shiftKey: true }), modes)).toBeNull();
-    expect(encodeKey(key("Home", { shiftKey: true }), modes)).toBeNull();
-    expect(encodeKey(key("End", { shiftKey: true }), modes)).toBeNull();
+/** Minimal keydown for the wire mapper. */
+function wireKey(k: string, code: string, mods: Partial<WireEventLike> = {}): WireEventLike {
+  return {
+    key: k,
+    code,
+    repeat: false,
+    shiftKey: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    ...mods,
+  };
+}
+
+describe("keyEventWire", () => {
+  it("routes a plain key with its DOM identity intact", () => {
+    const wire = keyEventWire(wireKey("a", "KeyA"));
+    expect(wire).toMatchObject({ code: "KeyA", key: "a", action: "press", shift: false });
   });
 
-  it("still encodes the unshifted keys as ordinary PTY input", () => {
-    expect(encodeKey(key("PageUp"), modes)).toBe("\x1b[5~");
-    expect(encodeKey(key("Home"), modes)).toBe("\x1b[H");
-    expect(encodeKey(key("Home"), { appCursorKeys: true })).toBe("\x1bOH");
+  it("marks held-key repeats", () => {
+    expect(keyEventWire(wireKey("a", "KeyA", { repeat: true }))?.action).toBe("repeat");
+  });
+
+  it("passes the release action through", () => {
+    expect(keyEventWire(wireKey("a", "KeyA"), "release")?.action).toBe("release");
+  });
+
+  it("yields OS chords and the app's clipboard chords", () => {
+    expect(keyEventWire(wireKey("v", "KeyV", { metaKey: true }))).toBeNull();
+    expect(keyEventWire(wireKey("V", "KeyV", { ctrlKey: true, shiftKey: true }))).toBeNull();
+    expect(keyEventWire(wireKey("C", "KeyC", { ctrlKey: true, shiftKey: true }))).toBeNull();
+  });
+
+  it("keeps plain ctrl combos for the shell", () => {
+    const wire = keyEventWire(wireKey("c", "KeyC", { ctrlKey: true }));
+    expect(wire).toMatchObject({ code: "KeyC", ctrl: true, shift: false });
+  });
+
+  it("reads lock-state modifiers when the event exposes them", () => {
+    const wire = keyEventWire(
+      wireKey("A", "KeyA", { getModifierState: (k: string) => k === "CapsLock" }),
+    );
+    expect(wire?.capsLock).toBe(true);
+    expect(wire?.numLock).toBe(false);
   });
 });
 

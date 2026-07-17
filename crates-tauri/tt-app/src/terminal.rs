@@ -27,16 +27,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sysinfo::{Pid as SysPid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tt_vt::{
-    EngineOptions, Event as VtEvent, Frame, Input as VtInput, SearchMatch, Select as VtSelect,
-    Sender as VtSender,
+    EngineOptions, Event as VtEvent, Frame, Input as VtInput, KeyAction, KeyEvent, MouseAction,
+    MouseButton, MouseInput, SearchMatch, Select as VtSelect, Sender as VtSender,
 };
 
 pub const FRAME_EVENT: &str = "terminal://frame";
 pub const EXIT_EVENT: &str = "terminal://exit";
+pub const NOTIFY_EVENT: &str = "terminal://notify";
 const MAIN_WINDOW_LABEL: &str = "main";
 
 /// Scrollback kept per terminal, in rows. Lives in the Rust engine, not the
@@ -278,6 +279,41 @@ struct TermExit {
     signal: Option<String>,
 }
 
+/// UI theme for a terminal engine (mirrors `tt_vt::Theme`): default colors
+/// packed 0xRRGGBB, the ANSI 0–15 palette, and whether the theme is dark.
+/// Sent at spawn (so color queries answer correctly from the first byte) and
+/// again on every app theme change via [`term_theme`].
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TermTheme {
+    fg: u32,
+    bg: u32,
+    #[serde(default)]
+    cursor: Option<u32>,
+    palette16: [u32; 16],
+    dark: bool,
+}
+
+impl From<TermTheme> for tt_vt::Theme {
+    fn from(t: TermTheme) -> Self {
+        tt_vt::Theme { fg: t.fg, bg: t.bg, cursor: t.cursor, palette16: t.palette16, dark: t.dark }
+    }
+}
+
+/// Payload of a `terminal://notify` event: the program in a terminal raised
+/// attention — a BEL, or a desktop notification (OSC 9/777, e.g. Claude Code
+/// asking for input). The agentboard badges the session and shows the body.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TermNotify {
+    term_id: String,
+    /// "bell" or "notify".
+    kind: &'static str,
+    /// Notification body; absent for a bell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+}
+
 /// Spawn a shell in a fresh PTY sized to the xterm.js grid, rooted at `cwd`
 /// (falls back to `$HOME` when `cwd` is missing or not an existing dir).
 /// Replaces any existing terminal with the same `term_id`. Async: runs on a
@@ -289,10 +325,13 @@ pub async fn term_start(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    theme: Option<TermTheme>,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || term_start_blocking(app, term_id, cols, rows, cwd))
-        .await
-        .map_err(|e| format!("terminal spawn task failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        term_start_blocking(app, term_id, cols, rows, cwd, theme)
+    })
+    .await
+    .map_err(|e| format!("terminal spawn task failed: {e}"))?
 }
 
 fn term_start_blocking(
@@ -301,6 +340,7 @@ fn term_start_blocking(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    theme: Option<TermTheme>,
 ) -> Result<(), String> {
     let state = app.state::<TermState>();
     state.kill(&term_id);
@@ -401,6 +441,22 @@ fn term_start_blocking(
             // system clipboard, but ONLY when this terminal is the focused one:
             // a background pane (another agent's shell) must not be able to
             // silently overwrite the clipboard. Read-side OSC 52 is not handled.
+            // Attention signals (BEL / OSC 9 notifications) go to the
+            // agentboard, which badges the session and feeds needs-you.
+            VtEvent::Bell => {
+                let _ = app.emit_to(
+                    MAIN_WINDOW_LABEL,
+                    NOTIFY_EVENT,
+                    TermNotify { term_id: term_id.clone(), kind: "bell", body: None },
+                );
+            }
+            VtEvent::Notify(body) => {
+                let _ = app.emit_to(
+                    MAIN_WINDOW_LABEL,
+                    NOTIFY_EVENT,
+                    TermNotify { term_id: term_id.clone(), kind: "notify", body: Some(body) },
+                );
+            }
             VtEvent::Clipboard(text) => {
                 use tauri_plugin_clipboard_manager::ClipboardExt;
                 if app.state::<TermState>().is_focused(&term_id) {
@@ -411,6 +467,13 @@ fn term_start_blocking(
     })
     .map_err(|e| format!("failed to start terminal engine: {e}"))?;
     let vt_tx = vt.sender();
+    // Push the UI theme before the reader thread pumps the shell's first
+    // output, so an early OSC 10/11 probe (how Claude Code detects dark vs
+    // light) already answers the app's real colors — control inputs drain
+    // ahead of bytes in the engine.
+    if let Some(theme) = theme {
+        let _ = vt_tx.send(VtInput::Theme(theme.into()));
+    }
 
     state.sessions.lock().unwrap().insert(
         term_id.clone(),
@@ -487,9 +550,12 @@ fn notify_agentboard(app: &AppHandle) {
     }
 }
 
-/// Forward keyboard input (UTF-8 text / escape sequences the terminal view
-/// encoded) to the shell. Queues onto the session's writer thread — never
-/// blocks, even against a shell that has stopped reading its PTY.
+/// Forward raw text to the shell (IME-composed input, the image-paste
+/// signal byte). Keystrokes ride [`term_key`] instead, where the engine
+/// encodes them against live terminal state — this command is the plain-text
+/// escape hatch, not an escape-sequence path. Queues onto the session's
+/// writer thread — never blocks, even against a shell that has stopped
+/// reading its PTY.
 #[tauri::command]
 pub fn term_write(state: State<TermState>, term_id: String, data: String) -> Result<(), String> {
     let guard = state.sessions.lock().unwrap();
@@ -543,13 +609,11 @@ pub fn term_scroll(
     Ok(())
 }
 
-/// Report a mouse-wheel gesture at viewport cell (`x`, `y`) to the program
-/// running in the terminal (`lines` rows, up is negative). The engine encodes
-/// it in whatever mouse protocol the program negotiated and the bytes ride
-/// the reply path into the PTY; when the program never enabled mouse tracking
-/// nothing is written. The view only calls this when the frame's mode hints
-/// say the mouse is tracked, but the engine re-checks, so a stale hint can't
-/// inject input — and a wheel never turns into arrow keys.
+/// A mouse-wheel gesture at viewport cell (`x`, `y`), `lines` rows (up is
+/// negative). The view always forwards the wheel; the engine owns the whole
+/// policy — scrollback paging when scrolled back, wheel reports when the
+/// program tracks the mouse, alternate-scroll arrow keys on the alt screen
+/// (mode 1007), viewport scrolling otherwise.
 #[tauri::command]
 pub fn term_wheel(
     state: State<TermState>,
@@ -568,6 +632,80 @@ pub fn term_wheel(
 /// calls this when a pane transitions from hidden (`display:none`) back to
 /// visible: dirty-only frames never resend rows the engine considers clean,
 /// so a stale canvas would otherwise stay stale until a scroll (#47).
+/// A pointer event from the terminal view (mirrors `tt_vt::MouseInput`),
+/// forwarded to the program when it enabled mouse tracking. The view only
+/// sends these while the frame's mode hints say the mouse is tracked, but
+/// the engine re-checks, so a stale hint can't inject input.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TermMouse {
+    action: TermMouseAction,
+    #[serde(default)]
+    button: Option<TermMouseButton>,
+    x: u16,
+    y: u16,
+    #[serde(default)]
+    shift: bool,
+    #[serde(default)]
+    alt: bool,
+    #[serde(default)]
+    ctrl: bool,
+    #[serde(default)]
+    any_button: bool,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TermMouseAction {
+    Press,
+    Release,
+    Motion,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TermMouseButton {
+    Left,
+    Middle,
+    Right,
+}
+
+impl From<TermMouse> for MouseInput {
+    fn from(m: TermMouse) -> Self {
+        MouseInput {
+            action: match m.action {
+                TermMouseAction::Press => MouseAction::Press,
+                TermMouseAction::Release => MouseAction::Release,
+                TermMouseAction::Motion => MouseAction::Motion,
+            },
+            button: m.button.map(|b| match b {
+                TermMouseButton::Left => MouseButton::Left,
+                TermMouseButton::Middle => MouseButton::Middle,
+                TermMouseButton::Right => MouseButton::Right,
+            }),
+            x: m.x,
+            y: m.y,
+            shift: m.shift,
+            alt: m.alt,
+            ctrl: m.ctrl,
+            any_button: m.any_button,
+        }
+    }
+}
+
+/// Forward a pointer event to the program in its negotiated mouse protocol.
+#[tauri::command]
+pub fn term_mouse(
+    state: State<TermState>,
+    term_id: String,
+    event: TermMouse,
+) -> Result<(), String> {
+    let guard = state.sessions.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::Mouse(event.into()));
+    Ok(())
+}
+
 #[tauri::command]
 pub fn term_request_full(state: State<TermState>, term_id: String) -> Result<(), String> {
     let guard = state.sessions.lock().unwrap();
@@ -693,6 +831,116 @@ pub async fn term_search(
     .map_err(|e| format!("search task failed: {e}"))?
 }
 
+/// A keystroke from the terminal view, in DOM `KeyboardEvent` terms
+/// (mirrors `tt_vt::KeyEvent`). The engine encodes it against live terminal
+/// state — kitty keyboard protocol, DECCKM, keypad mode — so the frontend
+/// never builds escape sequences.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TermKey {
+    code: String,
+    key: String,
+    action: TermKeyAction,
+    #[serde(default)]
+    shift: bool,
+    #[serde(default)]
+    alt: bool,
+    #[serde(default)]
+    ctrl: bool,
+    #[serde(default)]
+    meta: bool,
+    #[serde(default)]
+    caps_lock: bool,
+    #[serde(default)]
+    num_lock: bool,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TermKeyAction {
+    Press,
+    Repeat,
+    Release,
+}
+
+impl From<TermKey> for KeyEvent {
+    fn from(k: TermKey) -> Self {
+        KeyEvent {
+            code: k.code,
+            key: k.key,
+            action: match k.action {
+                TermKeyAction::Press => KeyAction::Press,
+                TermKeyAction::Repeat => KeyAction::Repeat,
+                TermKeyAction::Release => KeyAction::Release,
+            },
+            shift: k.shift,
+            alt: k.alt,
+            ctrl: k.ctrl,
+            meta: k.meta,
+            caps_lock: k.caps_lock,
+            num_lock: k.num_lock,
+        }
+    }
+}
+
+/// Encode a keystroke in the terminal engine and write the bytes to the
+/// shell. Control-channel send: never blocked behind queued output.
+#[tauri::command]
+pub fn term_key(state: State<TermState>, term_id: String, event: TermKey) -> Result<(), String> {
+    let guard = state.sessions.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::Key(event.into()));
+    Ok(())
+}
+
+/// Reply of [`term_paste`]: whether the engine wants user confirmation before
+/// writing anything (bracketed paste off + a newline in the text — the paste
+/// would execute in the shell immediately). The caller shows a confirm and
+/// retries with `force: true`.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasteReply {
+    needs_confirm: bool,
+}
+
+/// Paste text into the shell through the engine's paste encoder, which strips
+/// dangerous control bytes (an embedded `ESC[201~` can no longer escape the
+/// paste bracket and inject commands) and honors the negotiated bracketed
+/// paste mode — the frontend no longer encodes paste itself. The engine
+/// thread answers over a bounded channel; a dead engine yields an error
+/// rather than a hang.
+#[tauri::command]
+pub async fn term_paste(
+    app: AppHandle,
+    term_id: String,
+    text: String,
+    force: Option<bool>,
+) -> Result<PasteReply, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (reply_tx, reply_rx) = sync_channel::<tt_vt::PasteOutcome>(1);
+        {
+            let state = app.state::<TermState>();
+            let guard = state.sessions.lock().unwrap();
+            let session = guard.get(&term_id).ok_or("no shell running")?;
+            if !session.vt.send(VtInput::Paste {
+                text,
+                force: force.unwrap_or(false),
+                reply: reply_tx,
+            }) {
+                return Err("terminal engine gone".to_string());
+            }
+        }
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map(|outcome| PasteReply {
+                needs_confirm: outcome == tt_vt::PasteOutcome::NeedsConfirm,
+            })
+            .map_err(|_| "terminal engine did not answer".to_string())
+    })
+    .await
+    .map_err(|e| format!("paste task failed: {e}"))?
+}
+
 /// Scroll the viewport so the given absolute row (0 = oldest scrollback row)
 /// is visible — search prev/next navigation jumps the viewport to a match.
 #[tauri::command]
@@ -700,6 +948,22 @@ pub fn term_scroll_to(state: State<TermState>, term_id: String, row: usize) -> R
     let guard = state.sessions.lock().unwrap();
     let session = guard.get(&term_id).ok_or("no shell running")?;
     let _ = session.vt.send(VtInput::ScrollTo(row));
+    Ok(())
+}
+
+/// Push the UI theme (default colors, ANSI palette, dark/light) into a
+/// running terminal's engine — called on app theme changes so OSC 10/11 and
+/// color-scheme queries keep answering the truth. The engine forces a full
+/// frame, so the canvas repaints in the new colors without a separate nudge.
+#[tauri::command]
+pub fn term_theme(
+    state: State<TermState>,
+    term_id: String,
+    theme: TermTheme,
+) -> Result<(), String> {
+    let guard = state.sessions.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::Theme(theme.into()));
     Ok(())
 }
 
@@ -711,6 +975,11 @@ pub fn term_scroll_to(state: State<TermState>, term_id: String, row: usize) -> R
 /// (blur A then focus B) can't clear B's focus if the events arrive reordered.
 #[tauri::command]
 pub fn term_focus(state: State<TermState>, term_id: String, focused: bool) {
+    // Also tell the engine: a program that asked for focus events (mode
+    // 1004) gets CSI I / CSI O; the engine is silent otherwise.
+    if let Some(session) = state.sessions.lock().unwrap().get(&term_id) {
+        let _ = session.vt.send(VtInput::Focus(focused));
+    }
     state.set_focus(term_id, focused);
 }
 

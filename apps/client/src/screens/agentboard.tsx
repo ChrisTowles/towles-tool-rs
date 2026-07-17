@@ -267,6 +267,15 @@ export function AgentboardScreen() {
   const [titles, setTitles] = useState<Record<string, string>>({});
   const onTitle = (id: string, title: string) =>
     setTitles((m) => (m[id] === title ? m : { ...m, [id]: title }));
+  // Sessions whose program raised attention (BEL / OSC 9 notification —
+  // Claude Code asking for input) since the user last looked at them.
+  // Set by the terminal://notify listener below, cleared on select.
+  const [termAttention, setTermAttention] = useState<Record<string, true>>({});
+  // Read live by the listener without re-subscribing on selection changes.
+  const selectedRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedRef.current = selected?.sessionId ?? null;
+  });
   // The label to lead a session row/tab with: the live Claude terminal title
   // when the shell is actually running, else the backend-derived task/shell
   // name. Gating on `s.live` keeps a stopped shell from showing the `✳ <goal>`
@@ -401,6 +410,35 @@ export function AgentboardScreen() {
       const { listen } = await import("@tauri-apps/api/event");
       const sub = await listen<OpenFileRequest>("ide://open-file", (e) =>
         onOpenFileRequest.current(e.payload),
+      );
+      if (disposed) sub();
+      else unlisten = sub;
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Attention signals from terminals: a BEL or a desktop notification
+  // (OSC 9/777 — Claude Code's "needs your input"). The session badges
+  // amber until selected; a notification body also toasts, since the pane
+  // raising it is usually not the one on screen.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const sub = await listen<{ termId: string; kind: string; body?: string }>(
+        "terminal://notify",
+        (e) => {
+          const { termId, kind, body } = e.payload;
+          // The session the user is looking at doesn't need a badge.
+          if (termId === selectedRef.current && document.hasFocus()) return;
+          setTermAttention((m) => (m[termId] ? m : { ...m, [termId]: true }));
+          if (kind === "notify" && body) toast(body);
+        },
       );
       if (disposed) sub();
       else unlisten = sub;
@@ -638,6 +676,13 @@ export function AgentboardScreen() {
     cwds.current[sessionId] = folderDir;
     setSelected({ folderDir, sessionId });
     setActiveFolderDir(folderDir);
+    // Looking at it acknowledges it — drop the attention badge with the
+    // stale exit label.
+    setTermAttention((m) => {
+      if (!m[sessionId]) return m;
+      const { [sessionId]: _, ...rest } = m;
+      return rest;
+    });
     // A fresh mount replaces any dead PTY here — drop its stale exit label.
     clearExit(sessionId);
     setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
@@ -1536,6 +1581,7 @@ export function AgentboardScreen() {
                               }
                               className={cn(
                                 "flex h-full flex-col overflow-hidden rounded-lg border bg-card",
+                                termAttention[id] && "border-amber-500/70",
                                 selected?.sessionId === id && "border-violet-500/60",
                               )}
                             >

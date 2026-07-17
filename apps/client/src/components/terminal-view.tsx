@@ -9,22 +9,24 @@ import {
   OVERLINE,
   STRIKETHROUGH,
   UNDERLINE,
-  encodeKey,
-  encodePaste,
   graphemeClusters,
   isWideRun,
   rgb,
+  keyEventWire,
   scrollbackKey,
   stepMatch,
+  MODIFIER_KEYS,
   viewportMatches,
   TERM_CLEAR_COMMAND,
   type Cursor,
   type Frame,
+  type KeyEventWire,
   type Run,
   type SearchMatch,
   type TermExit,
 } from "@/lib/term-protocol";
 import { linkAt, linkLabel, type TermLink } from "@/lib/term-links";
+import { resolveTermTheme } from "@/lib/term-theme";
 import {
   rowsHaveSelection,
   selectionKindForDetail,
@@ -44,6 +46,16 @@ import {
 } from "@/lib/shortcuts";
 import { openExternalUrl } from "@/lib/open-url";
 import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -133,6 +145,18 @@ export function TerminalView({
   // URL under the click point, sampled on contextmenu (drives "Open link").
   const [copyEnabled, setCopyEnabled] = useState(false);
   const [menuLink, setMenuLink] = useState<TermLink | null>(null);
+  // A multi-line paste held back by the engine because the shell has no
+  // bracketed paste (each line would execute on landing); the confirm dialog
+  // below re-sends it with force or drops it.
+  const [pendingPaste, setPendingPaste] = useState<string | null>(null);
+  const confirmPaste = () => {
+    const text = pendingPaste;
+    setPendingPaste(null);
+    if (!text) return;
+    void import("@tauri-apps/api/core").then(({ invoke }) =>
+      invoke("term_paste", { termId, text, force: true }).catch(() => {}),
+    );
+  };
   // Copy-on-select preference, read live by the render effect's mouse handlers.
   const copyOnSelectRef = useCopyOnSelect();
   // Whether board-wide action shortcuts (jump next/prev, close/split session, …)
@@ -207,8 +231,10 @@ export function TerminalView({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Theme: resolved colors of the host (Tailwind bg-background /
-    // text-foreground) so the grid matches light/dark.
+    // Theme: seeded from the host's resolved colors (Tailwind bg-background /
+    // text-foreground) for the pre-first-frame paint; thereafter the engine's
+    // frame.colors are authoritative (the engine is seeded from the same
+    // resolved colors at term_start, and re-pushed on theme flips below).
     const cs = getComputedStyle(host);
     const theme = { bg: cs.backgroundColor || "#1e1e2e", fg: cs.color || "#cdd6f4" };
 
@@ -235,7 +261,7 @@ export function TerminalView({
       rows: Math.max(1, Math.floor(host.clientHeight / cellH)),
       lines: [] as { runs: Run[]; sel?: [number, number] }[],
       cursor: null as Cursor | null,
-      modes: { appCursorKeys: false, bracketedPaste: false, altScreen: false, mouseTracking: false },
+      modes: { altScreen: false, mouseTracking: false },
       scrolledBack: false,
       /** URL under the mouse — underlined and Ctrl/Cmd-clickable. */
       hoveredLink: null as TermLink | null,
@@ -286,7 +312,6 @@ export function TerminalView({
         }
         ctx.globalAlpha = 1;
         if (flags & (UNDERLINE | STRIKETHROUGH | OVERLINE)) {
-          ctx.strokeStyle = fg;
           ctx.lineWidth = 1;
           const line = (ly: number) => {
             ctx.beginPath();
@@ -294,7 +319,43 @@ export function TerminalView({
             ctx.lineTo(px + w, ly);
             ctx.stroke();
           };
-          if (flags & UNDERLINE) line(y * cellH + baseline + 2);
+          if (flags & UNDERLINE) {
+            // SGR 58 underline color falls back to the glyph color; the
+            // style variants (double/curly/dotted/dashed, SGR 4:x) match
+            // what nvim/helix diagnostics emit.
+            ctx.strokeStyle = run.ulc !== undefined ? rgb(run.ulc) : fg;
+            const uy = y * cellH + baseline + 2;
+            switch (run.ul) {
+              case 2: // double
+                line(uy - 1);
+                line(uy + 1);
+                break;
+              case 3: {
+                // curly: a 4px-period zigzag across the run
+                ctx.beginPath();
+                for (let i = 0; i <= w; i += 2) {
+                  const zy = uy + (i % 4 === 0 ? -1 : 1);
+                  if (i === 0) ctx.moveTo(px, zy);
+                  else ctx.lineTo(px + i, zy);
+                }
+                ctx.stroke();
+                break;
+              }
+              case 4: // dotted
+                ctx.setLineDash([1, 2]);
+                line(uy);
+                ctx.setLineDash([]);
+                break;
+              case 5: // dashed
+                ctx.setLineDash([4, 2]);
+                line(uy);
+                ctx.setLineDash([]);
+                break;
+              default:
+                line(uy);
+            }
+          }
+          ctx.strokeStyle = fg;
           if (flags & STRIKETHROUGH) line(y * cellH + cellH / 2);
           if (flags & OVERLINE) line(y * cellH + 1);
         }
@@ -339,7 +400,9 @@ export function TerminalView({
       if (!c || !c.visible || grid.scrolledBack) return;
       const px = c.x * cellW;
       const py = c.y * cellH;
-      ctx.fillStyle = theme.fg;
+      // A program may set its own cursor color (OSC 12); theme otherwise.
+      const cursorColor = c.color !== undefined ? rgb(c.color) : theme.fg;
+      ctx.fillStyle = cursorColor;
       switch (c.shape) {
         case "bar":
           ctx.fillRect(px, py, 2, cellH);
@@ -348,12 +411,14 @@ export function TerminalView({
           ctx.fillRect(px, py + cellH - 2, cellW, 2);
           break;
         case "hollow":
-          ctx.strokeStyle = theme.fg;
+          ctx.strokeStyle = cursorColor;
           ctx.strokeRect(px + 0.5, py + 0.5, cellW - 1, cellH - 1);
           break;
         default: {
           ctx.fillRect(px, py, cellW, cellH);
-          const ch = charAt(grid.lines[c.y]?.runs ?? [], c.x);
+          // Password input (the shell turned echo off for a secret): a lock
+          // glyph in the cursor cell instead of the (absent) character.
+          const ch = c.password ? "🔒" : charAt(grid.lines[c.y]?.runs ?? [], c.x);
           if (ch) {
             ctx.fillStyle = theme.bg;
             setFont(0);
@@ -423,6 +488,13 @@ export function TerminalView({
       grid.cursor = frame.cursor;
       grid.modes = frame.modes;
       grid.viewportTop = frame.viewportTop;
+      // The engine's colors are authoritative for defaults: it was seeded
+      // from this host's computed style at spawn (and re-pushed on theme
+      // flips), and a theme push forces a full frame — so tracking them here
+      // repaints theme changes with no separate nudge, and OSC 10/11 answers
+      // can never disagree with what the canvas shows.
+      theme.fg = rgb(frame.colors.fg);
+      theme.bg = rgb(frame.colors.bg);
       // The engine knows where the viewport really is (search navigation
       // scrolls it too, not just the wheel) — derive "scrolled back" from
       // the frame instead of trusting the wheel handler's optimistic flag.
@@ -499,9 +571,27 @@ export function TerminalView({
       if (disposed) return onExitEvent();
       unlisteners.push(onExitEvent);
 
-      await invoke("term_start", { termId, cols: grid.cols, rows: grid.rows, cwd });
+      await invoke("term_start", {
+        termId,
+        cols: grid.cols,
+        rows: grid.rows,
+        cwd,
+        theme: resolveTermTheme(host),
+      });
       started = true;
       if (disposed) return void invoke("term_kill", { termId }).catch(() => {});
+
+      // Re-push the theme when the app's dark/light class or color theme
+      // changes. The engine forces a full frame in the new colors, which
+      // `applyFrame` then paints — no local repaint bookkeeping needed.
+      const themeObserver = new MutationObserver(() => {
+        void invoke("term_theme", { termId, theme: resolveTermTheme(host) }).catch(() => {});
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class", "data-color-theme"],
+      });
+      unlisteners.push(() => themeObserver.disconnect());
 
       const backToLive = () => {
         if (grid.scrolledBack) {
@@ -509,15 +599,30 @@ export function TerminalView({
           scroll(null);
         }
       };
-      // Paste from the system clipboard through the same bracketed-paste path
-      // as a real paste event. Used by the context menu's Paste item.
+      // Keystrokes ride term_key into the engine, which encodes them against
+      // live terminal state (kitty protocol, DECCKM, keypad mode) — the view
+      // never builds escape sequences.
+      const sendKey = (event: KeyEventWire) =>
+        void invoke("term_key", { termId, event }).catch(() => {});
+      // Paste through the engine's encoder (term_paste): it strips bytes
+      // that could escape the paste bracket (an embedded ESC[201~ can't
+      // inject commands) and answers needsConfirm when a multi-line paste
+      // would execute on a bare shell — the dialog then retries with force.
+      const paste = (text: string) => {
+        backToLive();
+        void invoke<{ needsConfirm: boolean }>("term_paste", { termId, text })
+          .then((reply) => {
+            if (reply?.needsConfirm) setPendingPaste(text);
+          })
+          .catch(() => {});
+      };
+      // Paste from the system clipboard through the same path as a real
+      // paste event. Used by the context menu's Paste item.
       const pasteClipboard = () =>
         void navigator.clipboard
           .readText()
           .then((text) => {
-            if (!text) return;
-            backToLive();
-            write(encodePaste(text, grid.modes.bracketedPaste));
+            if (text) paste(text);
           })
           .catch(() => {});
 
@@ -573,11 +678,17 @@ export function TerminalView({
         if (scrollback) {
           e.preventDefault();
           if (grid.modes.altScreen) {
-            const base = encodeKey(
-              { key: e.key, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false },
-              grid.modes,
-            );
-            if (base !== null) write(base);
+            sendKey({
+              code: e.code,
+              key: e.key,
+              action: "press",
+              shift: false,
+              alt: false,
+              ctrl: false,
+              meta: false,
+              capsLock: false,
+              numLock: false,
+            });
             return;
           }
           const page = Math.max(1, grid.rows - 1);
@@ -601,12 +712,22 @@ export function TerminalView({
           }
           return;
         }
-        const seq = encodeKey(e, grid.modes);
-        if (seq !== null) {
+        const wire = keyEventWire(e);
+        if (wire) {
           e.preventDefault();
-          backToLive();
-          write(seq);
+          // A bare modifier press is wired (kitty REPORT_ALL wants it) but
+          // must not yank a scrolled-back viewport to the bottom.
+          if (!MODIFIER_KEYS.has(e.key)) backToLive();
+          sendKey(wire);
         }
+      };
+      // Key releases matter only under kitty REPORT_EVENTS; the engine
+      // no-ops them otherwise, so they're always safe to send. No
+      // preventDefault — a release has no browser default to suppress.
+      const onKeyUp = (e: KeyboardEvent) => {
+        if (e.isComposing) return;
+        const wire = keyEventWire(e, "release");
+        if (wire) sendKey(wire);
       };
       const onPaste = (e: ClipboardEvent) => {
         e.preventDefault();
@@ -624,22 +745,18 @@ export function TerminalView({
           return;
         }
         const text = e.clipboardData?.getData("text");
-        if (text) {
-          backToLive();
-          write(encodePaste(text, grid.modes.bracketedPaste));
-        }
+        if (text) paste(text);
       };
       // IME: composed text arrives on compositionend, not keydown.
       const onComposed = (e: CompositionEvent) => {
         if (e.data) write(e.data);
         input.value = "";
       };
-      // The wheel never synthesizes key input (no xterm alt-scroll):
-      // scrolling over a fullscreen TUI must not type ↑/↓ into it — wheeling
-      // over an agent's session used to feed it stray arrow keys. Programs
-      // that asked for mouse tracking (vim, htop, ...) get real wheel events
-      // in their negotiated protocol; the primary screen scrolls our own
-      // scrollback; anything else swallows the gesture.
+      // The engine owns the whole wheel policy (see tt-vt's Engine::wheel):
+      // scrollback paging when scrolled back, wheel reports when the program
+      // tracks the mouse, alternate-scroll arrows on the alt screen (mode
+      // 1007 — how `less`/`git log` wheel-scroll), viewport scrolling
+      // otherwise. The view just reports the gesture and its cell.
       const onWheel = (e: WheelEvent) => {
         e.preventDefault();
         const lines =
@@ -647,15 +764,10 @@ export function TerminalView({
             ? Math.round(e.deltaY)
             : Math.round(e.deltaY / cellH) || Math.sign(e.deltaY);
         if (lines === 0) return;
-        if (grid.modes.mouseTracking && !grid.scrolledBack) {
-          const rect = canvas.getBoundingClientRect();
-          const x = Math.max(0, Math.min(grid.cols - 1, Math.floor((e.clientX - rect.left) / cellW)));
-          const y = Math.max(0, Math.min(grid.rows - 1, Math.floor((e.clientY - rect.top) / cellH)));
-          void invoke("term_wheel", { termId, x, y, lines }).catch(() => {});
-        } else if (!grid.modes.altScreen) {
-          grid.scrolledBack = true;
-          scroll(lines);
-        }
+        const rect = canvas.getBoundingClientRect();
+        const x = Math.max(0, Math.min(grid.cols - 1, Math.floor((e.clientX - rect.left) / cellW)));
+        const y = Math.max(0, Math.min(grid.rows - 1, Math.floor((e.clientY - rect.top) / cellH)));
+        void invoke("term_wheel", { termId, x, y, lines }).catch(() => {});
       };
       const focusInput = () => input.focus({ preventScroll: true });
 
@@ -742,9 +854,45 @@ export function TerminalView({
       });
       let anchor: { x: number; y: number } | null = null;
       let dragged = false;
+      // Pointer events belong to the program when it negotiated mouse
+      // tracking, the view is at the live bottom, and Shift isn't held —
+      // Shift+click/drag is the local-selection escape hatch, like every
+      // terminal. Right-click always stays local (the context menu).
+      const mouseToProgram = (e: MouseEvent) =>
+        grid.modes.mouseTracking && !grid.scrolledBack && !e.shiftKey;
+      const MOUSE_BUTTONS = ["left", "middle", "right"] as const;
+      let mouseGestureToProgram = false;
+      let lastMotionCell: { x: number; y: number } | null = null;
+      const sendMouse = (
+        e: MouseEvent,
+        action: "press" | "release" | "motion",
+        cell: { x: number; y: number },
+      ) =>
+        void invoke("term_mouse", {
+          termId,
+          event: {
+            action,
+            button: action === "motion" ? undefined : MOUSE_BUTTONS[e.button],
+            x: cell.x,
+            y: cell.y,
+            shift: e.shiftKey,
+            alt: e.altKey,
+            ctrl: e.ctrlKey,
+            anyButton: e.buttons !== 0,
+          },
+        }).catch(() => {});
       const onMouseDown = (e: MouseEvent) => {
         focusInput();
-        if (e.button !== 0) return;
+        if (e.button !== 0) {
+          // Middle-click goes to a tracking program; right-click is the
+          // context menu's, always.
+          if (e.button === 1 && mouseToProgram(e)) {
+            e.preventDefault();
+            mouseGestureToProgram = true;
+            sendMouse(e, "press", cellOf(e));
+          }
+          return;
+        }
         e.preventDefault(); // keep focus on the hidden input
         const cell = cellOf(e);
         // Ctrl/Cmd+click on a link opens it (VS Code terminal convention):
@@ -758,6 +906,12 @@ export function TerminalView({
             return;
           }
         }
+        if (mouseToProgram(e)) {
+          mouseGestureToProgram = true;
+          lastMotionCell = cell;
+          sendMouse(e, "press", cell);
+          return;
+        }
         const kind = selectionKindForDetail(e.detail);
         if (kind === "word" || kind === "line") {
           void select(kind, cell);
@@ -769,6 +923,17 @@ export function TerminalView({
       };
       const onMouseMove = (e: MouseEvent) => {
         const cell = cellOf(e);
+        // Motion for the program: during a forwarded gesture, or hover
+        // motion while tracking is on (any-motion mode 1003 wants it; the
+        // engine drops what the negotiated mode doesn't report). Deduped to
+        // cell granularity.
+        if (mouseGestureToProgram || (!anchor && mouseToProgram(e))) {
+          if (lastMotionCell?.x !== cell.x || lastMotionCell?.y !== cell.y) {
+            lastMotionCell = cell;
+            sendMouse(e, "motion", cell);
+          }
+          if (mouseGestureToProgram) return;
+        }
         if (!anchor) {
           setHoveredLink(linkAt(grid.lines, grid.cols, cell.x, cell.y));
           return;
@@ -778,7 +943,12 @@ export function TerminalView({
         setHoveredLink(null);
         void select("drag", anchor, cell);
       };
-      const onMouseUp = () => {
+      const onMouseUp = (e: MouseEvent) => {
+        if (mouseGestureToProgram) {
+          mouseGestureToProgram = false;
+          sendMouse(e, "release", lastMotionCell ?? cellOf(e));
+          return;
+        }
         if (anchor && !dragged) void select("clear");
         else if (dragged) maybeCopyOnSelect("drag");
         anchor = null;
@@ -792,6 +962,7 @@ export function TerminalView({
       const onBlur = () => setFocus(false);
 
       input.addEventListener("keydown", onKeyDown);
+      input.addEventListener("keyup", onKeyUp);
       input.addEventListener("paste", onPaste);
       input.addEventListener("compositionend", onComposed);
       input.addEventListener("focus", onFocus);
@@ -803,6 +974,7 @@ export function TerminalView({
       window.addEventListener("mouseup", onMouseUp);
       disposers.push(() => {
         input.removeEventListener("keydown", onKeyDown);
+        input.removeEventListener("keyup", onKeyUp);
         input.removeEventListener("paste", onPaste);
         input.removeEventListener("compositionend", onComposed);
         input.removeEventListener("focus", onFocus);
@@ -985,6 +1157,28 @@ export function TerminalView({
           </IconBtn>
         </div>
       )}
+      {/* Confirm a multi-line paste the engine held back: the shell has no
+          bracketed paste, so every line would run the moment it lands. */}
+      <AlertDialog
+        open={pendingPaste !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingPaste(null);
+        }}
+      >
+        <AlertDialogContent onCloseAutoFocus={() => bridgeRef.current?.focusTerm()}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Paste {pendingPaste?.split("\n").length ?? 0} lines?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This shell isn't guarding pastes (no bracketed paste), so each line runs as soon
+              as it arrives — including the last one if it ends with a newline.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmPaste}>Paste</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {/* Hidden input: receives focus/keystrokes/IME composition/paste. */}
       <textarea
         ref={inputRef}
