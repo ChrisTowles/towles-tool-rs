@@ -276,11 +276,24 @@ fn git_common_dir(dir: &str) -> String {
     std::fs::canonicalize(&abs).unwrap_or(abs).to_string_lossy().into_owned()
 }
 
-/// This repo's OTHER `git worktree` checkouts (`dir` itself excluded). Empty
-/// for a plain clone (no linked worktrees) or a non-repo dir.
+/// This repo's OTHER `git worktree` checkouts (`dir` itself excluded), MINUS
+/// any that aren't a `tt slot`-managed worktree ([`tt_slots::is_managed_slot`])
+/// — a worktree Claude Code created via an unwired `WorktreeCreate` hook, or
+/// one added by hand outside the slot convention, must not auto-populate the
+/// Folder Rail unprompted. This is the only place auto-discovered worktree
+/// paths enter the engine's discovery pipeline
+/// ([`crate::engine::Engine::expand_with_worktrees`] reads nothing else), so
+/// filtering here is sufficient — no downstream code needs to know about
+/// unmanaged worktrees at all. A directory the user explicitly tracks (in
+/// `repos.json`) is unaffected: this fn only prunes the auto-discovery
+/// candidate list, never the user's own configured paths. Empty for a plain
+/// clone (no linked worktrees) or a non-repo dir.
 fn list_other_worktrees(dir: &str) -> Vec<String> {
     let out = git_out(dir, &["worktree", "list", "--porcelain"]);
-    parse_worktree_list(&out).into_iter().filter(|w| w != dir).collect()
+    parse_worktree_list(&out)
+        .into_iter()
+        .filter(|w| w != dir && tt_slots::is_managed_slot(std::path::Path::new(w)))
+        .collect()
 }
 
 /// Parse `git worktree list --porcelain` into the absolute path of each
@@ -812,6 +825,69 @@ mod tests {
         let linked_key = git_common_dir(linked.to_str().unwrap());
         assert!(!main_key.is_empty());
         assert_eq!(main_key, linked_key);
+    }
+
+    #[test]
+    fn worktree_dirs_excludes_unmanaged_worktrees() {
+        let root = tempfile::TempDir::new().unwrap();
+        let main = root.path().join("main");
+        std::fs::create_dir(&main).unwrap();
+        let run = |dir: &std::path::Path, args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&main, &["init", "--quiet", "-b", "main"]);
+        run(&main, &["config", "user.email", "test@example.com"]);
+        run(&main, &["config", "user.name", "Test"]);
+        std::fs::write(main.join("f.txt"), "1").unwrap();
+        run(&main, &["add", "f.txt"]);
+        run(&main, &["commit", "--quiet", "-m", "init"]);
+
+        // A managed slot: at `.claude/worktrees/<name>` with a `.tt-slot` marker.
+        let managed = main.join(".claude").join("worktrees").join("thing");
+        std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
+        run(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "thing",
+                managed.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(
+            managed.join(tt_slots::MARKER_FILE),
+            tt_slots::marker_contents("thing", "main", "main"),
+        )
+        .unwrap();
+
+        // An unmanaged worktree: a plain sibling dir, no marker at all —
+        // e.g. `claude --worktree` in a repo whose hooks aren't wired, or a
+        // worktree someone added by hand.
+        let unmanaged = root.path().join("scratch-ext");
+        run(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "scratch-ext",
+                unmanaged.to_str().unwrap(),
+            ],
+        );
+
+        let dirs = list_other_worktrees(main.to_str().unwrap());
+        assert_eq!(dirs, vec![managed.to_str().unwrap().to_string()]);
     }
 
     #[test]
