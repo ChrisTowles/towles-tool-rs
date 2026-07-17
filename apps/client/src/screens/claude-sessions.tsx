@@ -4,6 +4,9 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  BarChart3,
+  Boxes,
+  List,
   Loader2,
   RefreshCw,
   Search,
@@ -19,13 +22,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { abOpenSessionForCwd, requestOpenSession } from "@/lib/agentboard";
 import {
   claudeSessionsSearch,
   claudeSessionsSummary,
+  claudeSessionsTreemapHtml,
   type ClaudeSession,
   type ClaudeSessionsSummary,
   type LedgerDay,
@@ -496,15 +499,66 @@ function SessionTable({
   );
 }
 
+/** The embedded treemap/bar-chart report. Fetches only while this tab is the
+ * active one (a `days` change on another tab is picked up on the next
+ * activation); the report's rich categorical palette is its own self-contained
+ * visual system, deliberately distinct from the app's grayscale charts. The
+ * generated document is fixed-size (1200×800), so the iframe scrolls
+ * internally rather than reflowing. */
+function TreemapTab({
+  days,
+  nonce,
+  active,
+}: {
+  days: string;
+  nonce: number;
+  active: boolean;
+}) {
+  const [html, setHtml] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const fetchedKey = useRef<string | null>(null);
+
+  useEffect(() => {
+    const key = `${days}:${nonce}`;
+    if (!active || fetchedKey.current === key) return;
+    fetchedKey.current = key;
+    setLoading(true);
+    void claudeSessionsTreemapHtml(Number(days)).then((h) => {
+      setHtml(h);
+      setLoading(false);
+    });
+  }, [active, days, nonce]);
+
+  if (loading)
+    return <p className="p-4 text-sm text-muted-foreground">Building treemap…</p>;
+  if (!html)
+    return (
+      <p className="p-4 text-sm text-muted-foreground">
+        No treemap to show — no sessions in this range.
+      </p>
+    );
+  return (
+    <iframe
+      srcDoc={html}
+      sandbox="allow-scripts"
+      className="h-full w-full border-0"
+      title="Claude Code usage treemap"
+    />
+  );
+}
+
 /** Claude Sessions — where the tokens went (day × repo × model) and which
  * sessions are the outliers, with title + prompt-text search over the
  * scanned window. */
 export function ClaudeSessionsScreen() {
   const [days, setDays] = useState("30");
+  const [tab, setTab] = useState("overview");
   const [summary, setSummary] = useState<ClaudeSessionsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ClaudeSession[] | null>(null);
+  // Bumped by the Refresh button so the Treemap tab rebuilds its report too.
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   async function refresh(d: string) {
     setLoading(true);
@@ -535,9 +589,8 @@ export function ClaudeSessionsScreen() {
   const sessions = searching ? (results ?? []) : (summary?.topSessions ?? []);
 
   return (
-    <ScrollArea className="h-full">
-      <div className="flex flex-col gap-4 p-6">
-      <div className="flex items-center justify-between gap-2">
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-3">
         <h2 className="font-heading text-lg font-semibold">Claude Sessions</h2>
         <div className="flex items-center gap-2">
           <Select value={days} onValueChange={setDays}>
@@ -552,18 +605,25 @@ export function ClaudeSessionsScreen() {
               ))}
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" onClick={() => void refresh(days)}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setRefreshNonce((n) => n + 1);
+              void refresh(days);
+            }}
+          >
             <RefreshCw className="size-3.5" />
             Refresh
           </Button>
         </div>
-      </div>
+      </header>
 
       {loading && !summary ? (
-        <p className="text-sm text-muted-foreground">Scanning sessions…</p>
+        <p className="p-6 text-sm text-muted-foreground">Scanning sessions…</p>
       ) : summary && totals ? (
         <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 border-b border-border p-4 lg:grid-cols-4">
             <StatTile label="Sessions" value={String(totals.sessions)} />
             <StatTile
               label="In + Out"
@@ -574,66 +634,87 @@ export function ClaudeSessionsScreen() {
             <StatTile label="Cache write" value={formatTokens(totals.cacheCreationTokens)} />
           </div>
 
-          <Tabs defaultValue="overview" className="gap-4">
-            <TabsList className="w-fit">
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="sessions">
+          <Tabs
+            orientation="vertical"
+            value={tab}
+            onValueChange={setTab}
+            className="min-h-0 flex-1 gap-0"
+          >
+            <TabsList
+              variant="line"
+              className="h-full w-44 shrink-0 items-stretch gap-1 rounded-none border-r border-border bg-card p-2"
+            >
+              <TabsTrigger value="overview" className="justify-start gap-2 px-2 py-1.5">
+                <BarChart3 className="size-4" />
+                Overview
+              </TabsTrigger>
+              <TabsTrigger value="sessions" className="justify-start gap-2 px-2 py-1.5">
+                <List className="size-4" />
                 Sessions{searching ? " · search" : ""}
+              </TabsTrigger>
+              <TabsTrigger value="treemap" className="justify-start gap-2 px-2 py-1.5">
+                <Boxes className="size-4" />
+                Treemap
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="overview" className="flex flex-col gap-4">
-              <div className="rounded-lg border border-border bg-card p-3.5">
-                <h3 className="mb-3 text-sm font-medium text-foreground">Tokens by day</h3>
-                <DayStackChart days={summary.days} />
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <TabsContent value="overview" className="flex flex-col gap-4 p-4">
                 <div className="rounded-lg border border-border bg-card p-3.5">
-                  <h3 className="mb-3 text-sm font-medium text-foreground">By repo</h3>
-                  <RankedBarChart
-                    bars={summary.byProject.map((b) => ({ label: b.project, ...b }))}
-                  />
+                  <h3 className="mb-3 text-sm font-medium text-foreground">Tokens by day</h3>
+                  <DayStackChart days={summary.days} />
                 </div>
-                <div className="rounded-lg border border-border bg-card p-3.5">
-                  <h3 className="mb-3 text-sm font-medium text-foreground">By model</h3>
-                  <RankedBarChart bars={summary.byModel.map((b) => ({ label: b.model, ...b }))} />
-                </div>
-              </div>
-            </TabsContent>
 
-            <TabsContent value="sessions">
-              <div className="rounded-lg border border-border bg-card p-3.5">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-medium text-foreground">
-                    {searching ? "Search results" : "Top sessions"}
-                  </h3>
-                  <div className="relative w-72">
-                    <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      placeholder="Search titles & prompts…"
-                      className="h-8 pl-8 text-sm"
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="rounded-lg border border-border bg-card p-3.5">
+                    <h3 className="mb-3 text-sm font-medium text-foreground">By repo</h3>
+                    <RankedBarChart
+                      bars={summary.byProject.map((b) => ({ label: b.project, ...b }))}
                     />
                   </div>
+                  <div className="rounded-lg border border-border bg-card p-3.5">
+                    <h3 className="mb-3 text-sm font-medium text-foreground">By model</h3>
+                    <RankedBarChart bars={summary.byModel.map((b) => ({ label: b.model, ...b }))} />
+                  </div>
                 </div>
-                <SessionTable sessions={sessions} searching={searching} />
-                <p className="mt-2 text-[11px] text-muted-foreground">
-                  {searching
-                    ? "Matches session titles and what you typed, newest first."
-                    : "Ranked by input+output tokens; amber marks outliers vs the median."}{" "}
-                  Click <TerminalSquare className="inline size-3 align-[-2px]" /> to resume a
-                  session in Agentboard — adds the repo to the rail first if it isn't there yet.
-                </p>
-              </div>
-            </TabsContent>
+              </TabsContent>
+
+              <TabsContent value="sessions" className="p-4">
+                <div className="rounded-lg border border-border bg-card p-3.5">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-medium text-foreground">
+                      {searching ? "Search results" : "Top sessions"}
+                    </h3>
+                    <div className="relative w-72">
+                      <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder="Search titles & prompts…"
+                        className="h-8 pl-8 text-sm"
+                      />
+                    </div>
+                  </div>
+                  <SessionTable sessions={sessions} searching={searching} />
+                  <p className="mt-2 text-[11px] text-muted-foreground">
+                    {searching
+                      ? "Matches session titles and what you typed, newest first."
+                      : "Ranked by input+output tokens; amber marks outliers vs the median."}{" "}
+                    Click <TerminalSquare className="inline size-3 align-[-2px]" /> to resume a
+                    session in Agentboard — adds the repo to the rail first if it isn't there yet.
+                  </p>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="treemap" className="h-full">
+                <TreemapTab days={days} nonce={refreshNonce} active={tab === "treemap"} />
+              </TabsContent>
+            </div>
           </Tabs>
         </>
       ) : (
-        <p className="text-sm text-muted-foreground">Not available outside the app.</p>
+        <p className="p-6 text-sm text-muted-foreground">Not available outside the app.</p>
       )}
-      </div>
-    </ScrollArea>
+    </div>
   );
 }

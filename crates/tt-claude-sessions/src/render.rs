@@ -1,5 +1,4 @@
-//! HTML rendering from the embedded treemap template. Ports
-//! `src/commands/graph/render.ts`.
+//! HTML rendering from the embedded treemap template.
 //!
 //! The template is embedded at compile time with `include_str!`. Placeholders
 //! `{{WIDTH}}`, `{{HEIGHT}}`, `{{DATA}}`, and `{{BAR_CHART_DATA}}` are filled in a
@@ -13,7 +12,7 @@ use crate::types::{BarChartData, TreemapNode};
 const TEMPLATE: &str = include_str!("graph-template.html");
 
 /// Generate HTML from treemap data and bar-chart data using the template.
-/// Ports `generateTreemapHtml`.
+///
 pub fn generate_treemap_html(data: &TreemapNode, bar_chart_data: &BarChartData) -> String {
     let width = 1200;
     let height = 800;

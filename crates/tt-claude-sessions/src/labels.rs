@@ -1,4 +1,4 @@
-//! Session-label extraction. Ports `src/commands/graph/labels.ts`.
+//! Session-label extraction.
 //!
 //! The cleanup pipeline mirrors the TS regex chain exactly, using compiled
 //! [`regex`] patterns held in `LazyLock`s.
@@ -34,7 +34,7 @@ fn first_text_block(content: &Content) -> Option<String> {
     None
 }
 
-/// Extract a meaningful label from session entries. Ports `extractSessionLabel`.
+/// Extract a meaningful label from session entries.
 pub fn extract_session_label(entries: &[TranscriptEntry], session_id: &str) -> String {
     let mut first_user_text: Option<String> = None;
     let mut first_assistant_text: Option<String> = None;

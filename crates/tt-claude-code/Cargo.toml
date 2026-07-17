@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 # The single quarantine for the Claude Code session-transcript JSONL schema.
-# Deliberately tiny (serde only) and Tauri-free so every consumer — tt-graph
+# Deliberately tiny (serde only) and Tauri-free so every consumer — tt-claude-sessions
 # (batch/historical) and tt-agentboard (live engine) — parses the internal,
 # version-volatile format through one place. Timestamp parsing (chrono) and the
 # `claude agents --json` / procenv / fs-notify live-gathering stay with the

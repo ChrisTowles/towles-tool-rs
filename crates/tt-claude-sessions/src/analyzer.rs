@@ -1,5 +1,4 @@
-//! Per-session token analysis and project-name extraction. Ports
-//! `src/commands/graph/analyzer.ts`.
+//! Per-session token analysis and project-name extraction.
 
 use std::collections::{HashMap, HashSet};
 
@@ -29,7 +28,7 @@ pub struct SessionAnalysis {
 }
 
 /// Analyze session entries to get a token breakdown by model, plus waste
-/// metrics (repeated reads, model efficiency). Ports `analyzeSession`.
+/// metrics (repeated reads, model efficiency).
 pub fn analyze_session(entries: &[TranscriptEntry]) -> SessionAnalysis {
     let mut input_tokens = 0;
     let mut output_tokens = 0;
@@ -125,7 +124,7 @@ pub fn analyze_session(entries: &[TranscriptEntry]) -> SessionAnalysis {
 }
 
 /// Aggregate tool usage across all entries in a session, sorted by token usage
-/// descending. Ports `aggregateSessionTools`.
+/// descending.
 pub fn aggregate_session_tools(entries: &[TranscriptEntry]) -> Vec<ToolData> {
     // (name, count, input, output), keeping first-seen insertion order.
     let mut order: Vec<String> = Vec::new();
@@ -176,7 +175,7 @@ pub fn aggregate_session_tools(entries: &[TranscriptEntry]) -> Vec<ToolData> {
 }
 
 /// Get the primary model name (Opus / Sonnet / Haiku / Fable) from analysis
-/// token totals. Ports `getPrimaryModel`.
+/// token totals.
 pub fn get_primary_model(
     opus_tokens: i64,
     sonnet_tokens: i64,
@@ -194,7 +193,7 @@ pub fn get_primary_model(
     }
 }
 
-/// Get a short model name from a full model string. Ports `getModelName`.
+/// Get a short model name from a full model string.
 pub fn get_model_name(model: Option<&str>) -> String {
     let model = match model {
         Some(m) if !m.is_empty() => m,

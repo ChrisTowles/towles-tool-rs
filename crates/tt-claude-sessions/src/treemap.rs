@@ -1,4 +1,4 @@
-//! Treemap tree construction. Ports `src/commands/graph/treemap.ts`.
+//! Treemap tree construction.
 
 use std::collections::BTreeMap;
 use std::path::Path;

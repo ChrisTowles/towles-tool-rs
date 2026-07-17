@@ -2,7 +2,7 @@
 //! `runtime/server/metadata-store.ts`.
 //!
 //! Timestamps are injected (`now_ms`) rather than read from the clock, matching
-//! the `tt-graph` pattern.
+//! the `tt-claude-sessions` pattern.
 
 use std::collections::{HashMap, HashSet};
 

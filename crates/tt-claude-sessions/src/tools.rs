@@ -1,5 +1,4 @@
-//! Tool-call extraction from message content blocks. Ports
-//! `src/commands/graph/tools.ts`.
+//! Tool-call extraction from message content blocks.
 
 use serde_json::Value;
 
@@ -7,7 +6,7 @@ use crate::types::ToolData;
 use tt_claude_code::Content;
 
 /// Replace runs of control characters (ASCII 0–31) with a single space and
-/// trim. Ports `sanitizeString`.
+/// trim.
 pub fn sanitize_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_run = false;
@@ -26,7 +25,7 @@ pub fn sanitize_string(s: &str) -> String {
 }
 
 /// Truncate a string, extracting just the filename for paths. Returns `None`
-/// for `None`/empty input. Ports `truncateDetail`.
+/// for `None`/empty input.
 pub fn truncate_detail(s: Option<&str>, max_len: usize) -> Option<String> {
     let s = s.filter(|v| !v.is_empty())?;
     let sanitized = sanitize_string(s);
@@ -48,7 +47,7 @@ fn input_str<'a>(input: Option<&'a serde_json::Map<String, Value>>, key: &str) -
     input?.get(key)?.as_str()
 }
 
-/// Extract a meaningful detail string from tool input. Ports `extractToolDetail`.
+/// Extract a meaningful detail string from tool input.
 pub fn extract_tool_detail(
     tool_name: &str,
     input: Option<&serde_json::Map<String, Value>>,
@@ -65,7 +64,7 @@ pub fn extract_tool_detail(
 }
 
 /// Extract individual tool calls from message content blocks, distributing the
-/// turn's tokens proportionally across each call. Ports `extractToolData`.
+/// turn's tokens proportionally across each call.
 pub fn extract_tool_data(
     content: Option<&Content>,
     turn_input_tokens: i64,

@@ -1,5 +1,4 @@
-//! Session discovery on disk and bar-chart aggregation. Ports
-//! `src/commands/graph/sessions.ts`.
+//! Session discovery on disk and bar-chart aggregation for the treemap view.
 //!
 //! All filesystem functions take an explicit `projects_dir` so tests never read
 //! the real `~/.claude`.
@@ -12,11 +11,10 @@ use chrono::{DateTime, Local};
 
 use tt_claude_code::{session_title_file, usage_totals_file};
 
-use crate::analyzer::{analyze_session, extract_project_name};
+use crate::analyzer::extract_project_name;
 use crate::parser::calculate_cutoff_ms;
-use crate::types::{BarChartData, BarChartDay, ModelBar, ProjectBar, SessionResult};
+use crate::types::{BarChartData, BarChartDay, ProjectBar, SessionResult};
 use crate::{Error, Result};
-use tt_claude_code::parse_transcript_file;
 
 /// Modification time of a file, in ms since the Unix epoch.
 fn mtime_ms(meta: &std::fs::Metadata) -> i64 {
@@ -35,7 +33,7 @@ fn local_date(mtime_ms: i64) -> String {
 }
 
 /// Find recent sessions from the projects directory, most-recent first, limited
-/// to `limit` and (optionally) the last `days`. Ports `findRecentSessions`.
+/// to `limit` and (optionally) the last `days`.
 pub fn find_recent_sessions(
     projects_dir: &Path,
     limit: usize,
@@ -88,7 +86,7 @@ pub fn find_recent_sessions(
     Ok(sessions)
 }
 
-/// Find the file path for a specific session ID. Ports `findSessionPath`.
+/// Find the file path for a specific session ID.
 pub fn find_session_path(projects_dir: &Path, session_id: &str) -> Result<Option<PathBuf>> {
     for project_entry in std::fs::read_dir(projects_dir)? {
         let project_entry = project_entry?;
@@ -105,7 +103,7 @@ pub fn find_session_path(projects_dir: &Path, session_id: &str) -> Result<Option
 }
 
 /// The `SessionResult` metadata needed to build the file path/date for a single
-/// session ID (used by the JSON/CSV single-session path in the CLI).
+/// session ID.
 pub fn session_result_for_path(session_id: &str, path: &Path) -> Result<SessionResult> {
     let meta = std::fs::metadata(path).map_err(Error::Io)?;
     let mtime = mtime_ms(&meta);
@@ -126,7 +124,6 @@ pub fn session_result_for_path(session_id: &str, path: &Path) -> Result<SessionR
 }
 
 /// Build bar-chart data from session results, grouped by date then project.
-/// Ports `buildBarChartData`.
 pub fn build_bar_chart_data(sessions: &[SessionResult]) -> BarChartData {
     if sessions.is_empty() {
         return BarChartData { days: Vec::new() };
@@ -160,67 +157,6 @@ pub fn build_bar_chart_data(sessions: &[SessionResult]) -> BarChartData {
         .collect();
 
     BarChartData { days }
-}
-
-/// Total tokens per project across all sessions, sorted descending. Cheap: the
-/// per-session `tokens` total already comes from the lightweight discovery
-/// pass in [`find_recent_sessions`], no re-parse needed.
-pub fn build_project_totals(sessions: &[SessionResult]) -> Vec<ProjectBar> {
-    let mut order: Vec<String> = Vec::new();
-    let mut totals: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-
-    for session in sessions {
-        let project = extract_project_name(&session.project);
-        totals.entry(project.clone()).and_modify(|t| *t += session.tokens).or_insert_with(|| {
-            order.push(project);
-            session.tokens
-        });
-    }
-
-    let mut bars: Vec<ProjectBar> = order
-        .into_iter()
-        .map(|project| {
-            let total_tokens = totals[&project];
-            ProjectBar { project, total_tokens }
-        })
-        .collect();
-    bars.sort_by_key(|b| std::cmp::Reverse(b.total_tokens));
-    bars
-}
-
-/// Total tokens per model (Opus/Sonnet/Haiku/Fable) across all sessions,
-/// sorted descending. Unlike [`build_project_totals`], this re-parses every
-/// session's transcript (via [`analyze_session`]) because the per-model split
-/// isn't captured by the lightweight discovery pass — a session's total may
-/// mix models, so attributing it to a single "primary" model would misreport
-/// the split.
-pub fn build_model_totals(sessions: &[SessionResult]) -> Vec<ModelBar> {
-    let mut opus = 0i64;
-    let mut sonnet = 0i64;
-    let mut haiku = 0i64;
-    let mut fable = 0i64;
-
-    for session in sessions {
-        let entries = parse_transcript_file(&session.path);
-        let analysis = analyze_session(&entries);
-        opus += analysis.opus_tokens;
-        sonnet += analysis.sonnet_tokens;
-        haiku += analysis.haiku_tokens;
-        fable += analysis.fable_tokens;
-    }
-
-    let mut bars: Vec<ModelBar> = [
-        ("Opus", opus),
-        ("Sonnet", sonnet),
-        ("Haiku", haiku),
-        ("Fable", fable),
-    ]
-    .into_iter()
-    .filter(|(_, total_tokens)| *total_tokens > 0)
-    .map(|(model, total_tokens)| ModelBar { model: model.to_string(), total_tokens })
-    .collect();
-    bars.sort_by_key(|b| std::cmp::Reverse(b.total_tokens));
-    bars
 }
 
 #[cfg(test)]
@@ -295,88 +231,5 @@ mod tests {
         let found = find_session_path(tmp.path(), "wanted").unwrap();
         assert_eq!(found, Some(file));
         assert_eq!(find_session_path(tmp.path(), "missing").unwrap(), None);
-    }
-
-    #[test]
-    fn project_totals_sums_across_dates_and_sorts() {
-        let sessions = [
-            session("2025-06-16", "-home-code-alpha", 100, 2),
-            session("2025-06-15", "-home-code-alpha", 50, 1),
-            session("2025-06-15", "-home-code-beta", 200, 1),
-        ];
-        let bars = build_project_totals(&sessions);
-        assert_eq!(bars.len(), 2);
-        assert_eq!(bars[0].project, "beta");
-        assert_eq!(bars[0].total_tokens, 200);
-        assert_eq!(bars[1].project, "alpha");
-        assert_eq!(bars[1].total_tokens, 150);
-    }
-
-    #[test]
-    fn project_totals_empty() {
-        assert!(build_project_totals(&[]).is_empty());
-    }
-
-    fn write_session(
-        tmp: &std::path::Path,
-        name: &str,
-        model: &str,
-        input: i64,
-        output: i64,
-    ) -> SessionResult {
-        let path = tmp.join(name);
-        std::fs::write(
-            &path,
-            format!(
-                "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"model\":\"{model}\",\"usage\":{{\"input_tokens\":{input},\"output_tokens\":{output}}}}}}}\n"
-            ),
-        )
-        .unwrap();
-        SessionResult {
-            session_id: name.trim_end_matches(".jsonl").to_string(),
-            path,
-            date: "2025-06-15".to_string(),
-            tokens: input + output,
-            project: "-home-code-demo".to_string(),
-            mtime: 1,
-            title: None,
-        }
-    }
-
-    #[test]
-    fn model_totals_sums_per_model_and_sorts() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sessions = [
-            write_session(tmp.path(), "s1.jsonl", "claude-opus-4", 100, 50),
-            write_session(tmp.path(), "s2.jsonl", "claude-sonnet-4", 300, 100),
-            write_session(tmp.path(), "s3.jsonl", "claude-sonnet-4", 50, 20),
-        ];
-        let bars = build_model_totals(&sessions);
-        assert_eq!(bars.len(), 2);
-        assert_eq!(bars[0].model, "Sonnet");
-        assert_eq!(bars[0].total_tokens, 470);
-        assert_eq!(bars[1].model, "Opus");
-        assert_eq!(bars[1].total_tokens, 150);
-    }
-
-    #[test]
-    fn model_totals_empty() {
-        assert!(build_model_totals(&[]).is_empty());
-    }
-
-    #[test]
-    fn model_totals_includes_fable() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sessions = [
-            write_session(tmp.path(), "s1.jsonl", "claude-opus-4", 100, 50),
-            write_session(tmp.path(), "s2.jsonl", "claude-fable-5", 300, 100),
-            write_session(tmp.path(), "s3.jsonl", "claude-fable-5[1m]", 50, 20),
-        ];
-        let bars = build_model_totals(&sessions);
-        assert_eq!(bars.len(), 2);
-        assert_eq!(bars[0].model, "Fable");
-        assert_eq!(bars[0].total_tokens, 470);
-        assert_eq!(bars[1].model, "Opus");
-        assert_eq!(bars[1].total_tokens, 150);
     }
 }
