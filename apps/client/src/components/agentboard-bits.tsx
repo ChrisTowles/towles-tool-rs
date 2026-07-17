@@ -25,7 +25,6 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
-import { parseDiff, type DiffLine } from "@/lib/diff";
 import {
   abCreateIssue,
   abInvoke,
@@ -37,6 +36,7 @@ import {
   prMergedButFolderHasWork,
   statusColor,
   type AgentStatus,
+  type CommitStat,
   type FolderData,
   type FolderMetadata,
   type MetadataTone,
@@ -283,80 +283,69 @@ export function AheadBehind({
   );
 }
 
-/** Lines shown in the `DiffButton` hover preview before truncating — a
- * 14-commit branch's raw patch can run thousands of lines, and the hover is
- * meant as a "what changed, roughly" glance, not the full reviewer (that's
- * a click away in the diff pane). */
-const DIFF_PREVIEW_LINE_CAP = 60;
-
-function diffPreviewLineClass(kind: DiffLine["kind"]): string {
-  switch (kind) {
-    case "add":
-      return "text-emerald-600 dark:text-emerald-400";
-    case "del":
-      return "text-red-600 dark:text-red-400";
-    case "hunk":
-      return "text-sky-600 dark:text-sky-400";
-    default:
-      return "text-muted-foreground";
-  }
+/** One row of the `DiffButton` hover's per-commit breakdown: short SHA,
+ * truncated subject, and that commit's own ± tally. */
+function CommitStatRow({ commit }: { commit: CommitStat }) {
+  return (
+    <div className="flex items-center gap-2 font-mono text-[10.5px] leading-tight">
+      <span className="shrink-0 text-muted-foreground/70">{commit.sha.slice(0, 7)}</span>
+      <span className="min-w-0 flex-1 truncate text-foreground">{commit.subject}</span>
+      <span className="shrink-0 text-emerald-600 dark:text-emerald-400">
+        +{commit.linesAdded}
+      </span>
+      <span className="shrink-0 text-red-600 dark:text-red-400">−{commit.linesRemoved}</span>
+    </div>
+  );
 }
 
-/** The raw-diff preview inside `DiffButton`'s hover card: parses the same
- * unified patch the diff pane shows, truncated to `DIFF_PREVIEW_LINE_CAP`
- * lines across files so it stays a glance rather than a scroll. Fetched
- * lazily (only once the card actually opens) and cached for the folder's
- * lifetime in the parent's state. */
-function DiffHoverPreview({ text }: { text: string | null }) {
-  if (text == null) {
-    return <p className="p-1 text-xs text-muted-foreground">loading diff…</p>;
+/** The per-commit breakdown inside `DiffButton`'s hover card: every commit
+ * `comparedBase` doesn't have, oldest first, with its own ± tally, and a
+ * total row at the bottom — a many-commit branch's ± tally isn't one
+ * anonymous blob. The total is the folder's own `linesAdded`/`linesRemoved`
+ * (not a sum of the rows above) since those also cover uncommitted work,
+ * which never gets its own commit row. Fetched lazily (only once the card
+ * actually opens) and cached for the folder's lifetime in the parent's
+ * state. */
+function CommitBreakdownPreview({
+  commits,
+  linesAdded,
+  linesRemoved,
+}: {
+  commits: CommitStat[] | null;
+  linesAdded: number;
+  linesRemoved: number;
+}) {
+  if (commits == null) {
+    return <p className="p-1 text-xs text-muted-foreground">loading commits…</p>;
   }
-  if (text.trim() === "") {
-    return <p className="p-1 text-xs text-muted-foreground">no changes</p>;
-  }
-  const files = parseDiff(text);
-  const rows: Array<{ path: string; line: DiffLine } | { path: string }> = [];
-  let shown = 0;
-  outer: for (const file of files) {
-    rows.push({ path: file.path });
-    for (const line of file.lines) {
-      if (line.kind === "meta") continue;
-      if (shown >= DIFF_PREVIEW_LINE_CAP) break outer;
-      rows.push({ path: file.path, line });
-      shown++;
-    }
-  }
-  const totalLines = files.reduce((n, f) => n + f.lines.filter((l) => l.kind !== "meta").length, 0);
-  const truncated = totalLines > shown;
   return (
     <div className="max-h-80 overflow-auto">
-      <div className="font-mono text-[10.5px] leading-tight">
-        {rows.map((row, i) =>
-          "line" in row ? (
-            <div key={i} className={cn("whitespace-pre", diffPreviewLineClass(row.line.kind))}>
-              {row.line.text || " "}
-            </div>
-          ) : (
-            <div key={i} className="mt-1.5 truncate font-semibold text-foreground first:mt-0">
-              {row.path}
-            </div>
-          ),
+      <div className="flex flex-col gap-1">
+        {commits.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            no commits ahead — uncommitted changes only
+          </p>
+        ) : (
+          commits.map((c) => <CommitStatRow key={c.sha} commit={c} />)
         )}
       </div>
-      {truncated && (
-        <p className="mt-1.5 text-xs text-muted-foreground">
-          +{totalLines - shown} more lines — click to see the full diff
-        </p>
-      )}
+      <div className="mt-1.5 flex items-center gap-2 border-t border-border/70 pt-1.5 font-mono text-[10.5px] font-semibold">
+        <span className="min-w-0 flex-1 text-foreground">
+          Total{commits.length > 0 && ` — ${commits.length} commit${commits.length === 1 ? "" : "s"}`}
+        </span>
+        <span className="shrink-0 text-emerald-600 dark:text-emerald-400">+{linesAdded}</span>
+        <span className="shrink-0 text-red-600 dark:text-red-400">−{linesRemoved}</span>
+      </div>
     </div>
   );
 }
 
 /** The diff entry point — a real, always-visible button (never hidden behind
  * a hover or dropped when the tree is clean, so the feature stays findable).
- * Clean folders read a quiet `diff`; dirty ones carry the ± tally. Hovering
- * previews the raw patch (truncated) so a branch with many commits doesn't
- * force a click just to see roughly what changed. */
+ * Clean folders read a quiet `diff`; dirty ones carry the commit count next
+ * to the ± tally. Hovering previews the per-commit breakdown (each commit's
+ * own ± tally, plus a total) so a branch with many commits doesn't force a
+ * click just to see roughly what changed. */
 export function DiffButton({
   stats,
   onOpen,
@@ -376,18 +365,17 @@ export function DiffButton({
   const { dir, filesChanged, linesAdded, linesRemoved, commitsAhead, baseBranch } = stats;
   const clean = linesAdded === 0 && linesRemoved === 0;
   const base = comparedBaseLabel(stats);
-  const [diffText, setDiffText] = useState<string | null>(null);
+  const [commits, setCommits] = useState<CommitStat[] | null>(null);
 
   return (
     <HoverCard
       openDelay={250}
       onOpenChange={(open) => {
-        if (open && diffText == null) {
-          void abInvoke<string>("ab_get_diff", {
+        if (open && commits == null) {
+          void abInvoke<CommitStat[]>("ab_get_commit_stats", {
             dir,
-            mode: "main",
             baseBranch: baseBranch?.trim() || null,
-          }).then((t) => setDiffText(t ?? ""));
+          }).then((c) => setCommits(c ?? []));
         }
       }}
     >
@@ -410,6 +398,7 @@ export function DiffButton({
             <span>diff</span>
           ) : (
             <>
+              <span className="text-muted-foreground">{commitsAhead}c</span>
               <span className="text-emerald-600 dark:text-emerald-400">+{linesAdded}</span>
               <span className="text-red-600 dark:text-red-400">−{linesRemoved}</span>
             </>
@@ -423,7 +412,11 @@ export function DiffButton({
           className="w-[28rem] max-w-[calc(100vw-2rem)]"
           onClick={(e) => e.stopPropagation()}
         >
-          <DiffHoverPreview text={diffText} />
+          <CommitBreakdownPreview
+            commits={commits}
+            linesAdded={linesAdded}
+            linesRemoved={linesRemoved}
+          />
         </HoverCardContent>
       )}
     </HoverCard>

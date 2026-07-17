@@ -67,7 +67,9 @@ pub use bridge::{StatePayload, assemble_state};
 pub use collapse::{CollapsePayload, CollapseStore, default_collapse_path};
 pub use env_drift::PortDrift;
 pub use folder_meta::{FolderMeta, FolderMetaStore, default_folder_meta_path};
-pub use git_info::{DiffMode, GitInfo, GitInfoCache, compute_git_info, diff_patch};
+pub use git_info::{
+    CommitStat, DiffMode, GitInfo, GitInfoCache, commit_stats, compute_git_info, diff_patch,
+};
 pub use metadata::SessionMetadataStore;
 pub use notify::{NeedsYouEdge, NeedsYouWatch};
 pub use repos::{

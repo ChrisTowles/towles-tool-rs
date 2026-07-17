@@ -150,6 +150,17 @@ export type FolderData = {
   hasPortDrift: boolean;
 };
 
+/** One commit ahead of `comparedBase`, with its own line-count diff — not the
+ * folder's cumulative `linesAdded`/`linesRemoved`. Mirrors the Rust
+ * `CommitStat` (`crates/tt-agentboard/src/git_info.rs`), returned oldest
+ * first by `ab_get_commit_stats`. */
+export type CommitStat = {
+  sha: string;
+  subject: string;
+  linesAdded: number;
+  linesRemoved: number;
+};
+
 /** `comparedBase` with its `origin/` prefix stripped for display, e.g.
  * `"origin/main"` → `"main"`. Falls back to `"main"` before the backend has
  * computed anything yet. */

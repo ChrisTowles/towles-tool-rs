@@ -423,6 +423,76 @@ pub fn diff_patch(dir: &str, mode: DiffMode, base_branch: Option<&str>) -> Strin
     patch
 }
 
+/// One commit ahead of `compared_base`, with its own line-count diff — not
+/// the branch's cumulative total ([`GitInfo::lines_added`]/`lines_removed`
+/// for that). Powers the `DiffButton` hover's per-commit breakdown, oldest
+/// first, so a many-commit branch's ± tally isn't one anonymous blob.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CommitStat {
+    pub sha: String,
+    pub subject: String,
+    pub lines_added: i64,
+    pub lines_removed: i64,
+}
+
+/// Commits on HEAD that `compared_base` doesn't have, oldest first, each with
+/// its own `git diff --numstat` line-count diff. `base_branch` is the same
+/// per-folder override [`compute_git_info`]/[`diff_patch`] take. Empty when
+/// `dir` isn't a repo or nothing is ahead.
+pub fn commit_stats(dir: &str, base_branch: Option<&str>) -> Vec<CommitStat> {
+    if dir.is_empty() {
+        return Vec::new();
+    }
+    let compared_base = resolve_base_ref(dir, base_branch);
+    let log_out = git_out(
+        dir,
+        &[
+            "log",
+            "--reverse",
+            "--numstat",
+            "--pretty=format:\x01%H\x1f%s",
+            &format!("{compared_base}..HEAD"),
+        ],
+    );
+    parse_commit_stats(&log_out)
+}
+
+/// Pure parse of `git log --reverse --numstat --pretty=format:\x01%H\x1f%s`
+/// output: a `\x01`-prefixed header line per commit (sha/subject split on
+/// `\x1f`), followed by that commit's `--numstat` lines. Unit-tested on
+/// fixture output; the shell-out lives in [`commit_stats`].
+fn parse_commit_stats(log_out: &str) -> Vec<CommitStat> {
+    let mut stats = Vec::new();
+    let mut current: Option<CommitStat> = None;
+    for line in log_out.lines() {
+        if let Some(header) = line.strip_prefix('\x01') {
+            if let Some(c) = current.take() {
+                stats.push(c);
+            }
+            let mut parts = header.splitn(2, '\x1f');
+            let sha = parts.next().unwrap_or("").to_string();
+            let subject = parts.next().unwrap_or("").to_string();
+            current = Some(CommitStat { sha, subject, lines_added: 0, lines_removed: 0 });
+        } else if line.is_empty() {
+            continue;
+        } else if let Some(c) = current.as_mut() {
+            let mut parts = line.splitn(3, '\t');
+            let added = parts.next().unwrap_or("");
+            let removed = parts.next().unwrap_or("");
+            if added != "-" {
+                c.lines_added += added.parse::<i64>().unwrap_or(0);
+            }
+            if removed != "-" {
+                c.lines_removed += removed.parse::<i64>().unwrap_or(0);
+            }
+        }
+    }
+    if let Some(c) = current.take() {
+        stats.push(c);
+    }
+    stats
+}
+
 /// Parse `git diff --numstat` output into (added, removed, changed file set).
 /// Binary files (`-`/`-`) contribute to the file set but not line counts.
 fn parse_numstat(diff_out: &str) -> (i64, i64, HashSet<String>) {
@@ -491,6 +561,93 @@ fn parse_ahead_behind(ahead_behind: &str) -> (i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_commit_stats_splits_header_lines_from_numstat() {
+        let log = "\x01aaa111\x1ffirst commit\n10\t2\tsrc/a.rs\n5\t0\tsrc/b.rs\n\
+            \x01bbb222\x1fsecond commit\n1\t1\tsrc/a.rs\n";
+        let stats = parse_commit_stats(log);
+        assert_eq!(
+            stats,
+            vec![
+                CommitStat {
+                    sha: "aaa111".into(),
+                    subject: "first commit".into(),
+                    lines_added: 15,
+                    lines_removed: 2,
+                },
+                CommitStat {
+                    sha: "bbb222".into(),
+                    subject: "second commit".into(),
+                    lines_added: 1,
+                    lines_removed: 1,
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn parse_commit_stats_skips_binary_numstat_and_handles_empty_input() {
+        let log = "\x01ccc333\x1fbinary asset\n-\t-\tassets/logo.png\n";
+        assert_eq!(
+            parse_commit_stats(log),
+            vec![CommitStat {
+                sha: "ccc333".into(),
+                subject: "binary asset".into(),
+                lines_added: 0,
+                lines_removed: 0,
+            }],
+        );
+        assert!(parse_commit_stats("").is_empty());
+    }
+
+    #[test]
+    fn commit_stats_lists_ahead_commits_oldest_first_with_own_line_counts() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1\n").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+        run(&["update-ref", "refs/remotes/origin/main", "main"]);
+
+        run(&["checkout", "--quiet", "-b", "feature"]);
+        std::fs::write(repo.join("f.txt"), "1\n2\n").unwrap();
+        run(&["commit", "--quiet", "-am", "first"]);
+        std::fs::write(repo.join("f.txt"), "1\n2\n3\n4\n").unwrap();
+        run(&["commit", "--quiet", "-am", "second"]);
+
+        let dir = repo.to_str().unwrap();
+        let stats = commit_stats(dir, None);
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].subject, "first");
+        assert_eq!(stats[0].lines_added, 1);
+        assert_eq!(stats[0].lines_removed, 0);
+        assert_eq!(stats[1].subject, "second");
+        assert_eq!(stats[1].lines_added, 2);
+        assert_eq!(stats[1].lines_removed, 0);
+        assert_eq!(stats.iter().map(|c| c.lines_added).sum::<i64>(), 3);
+    }
+
+    #[test]
+    fn commit_stats_empty_for_non_repo_or_blank_dir() {
+        let root = tempfile::TempDir::new().unwrap();
+        assert!(commit_stats(root.path().to_str().unwrap(), None).is_empty());
+        assert!(commit_stats("", None).is_empty());
+    }
 
     #[test]
     fn merge_file_lists_sorts_dedupes_and_caps() {

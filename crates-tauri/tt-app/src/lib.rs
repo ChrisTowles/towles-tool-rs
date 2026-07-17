@@ -448,6 +448,7 @@ pub fn run() {
             agentboard::ab_clear_log,
             agentboard::ab_open_in_editor,
             agentboard::ab_get_diff,
+            agentboard::ab_get_commit_stats,
             slots::slot_base_branches,
             slots::slot_init_template,
             slots::slot_check_branch,
