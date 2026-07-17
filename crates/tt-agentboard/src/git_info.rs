@@ -54,12 +54,20 @@ pub struct GitInfo {
     /// which is exactly why it can't answer "has everything landed".
     pub commits_unlanded: i64,
     /// `git remote get-url origin`, if the checkout has an origin remote.
-    /// Display-only (repo name derivation) — NOT a Folder Rail nesting signal;
+    /// Display-only (repo name derivation) — NOT the Folder Rail nesting key;
     /// two unrelated clones can share an origin without being linked worktrees
-    /// of each other. Nesting is decided structurally by
-    /// `Engine::expand_with_worktrees`'s discovery, not by anything on this
-    /// struct — see [`crate::bridge::assemble_state`].
+    /// of each other. See [`Self::common_dir`] for that.
     pub origin_url: Option<String>,
+    /// Absolute path to `git rev-parse --git-common-dir` (canonicalized), empty
+    /// for a non-repo dir or before this folder's git info has ever been
+    /// computed. Identical across every linked `git worktree` of one repo
+    /// (main + slots) and nowhere else — this is what
+    /// [`crate::bridge::assemble_state`] groups [`crate::types::FolderData`]s
+    /// into one [`crate::types::RepoData`] by, regardless of whether each
+    /// checkout is separately tracked in `repos.json` or only discovered via
+    /// `git worktree list` — so only *actual* worktrees of one repo nest
+    /// together, never merely folders that happen to share an origin remote.
+    pub common_dir: String,
     /// Absolute paths of this repo's OTHER `git worktree` checkouts (this dir
     /// excluded), from `git worktree list`. Not part of the wire payload — the
     /// engine uses it to auto-discover worktrees that aren't in `repoPaths` yet.
@@ -208,6 +216,7 @@ pub fn compute_git_info(dir: &str, base_branch_override: Option<&str>) -> GitInf
         compute_git_info_from_outputs(&branch, &git_dir, &status_out, &diff_out, &ahead_behind);
     let origin_url = git_out(dir, &["remote", "get-url", "origin"]);
     info.origin_url = (!origin_url.is_empty()).then_some(origin_url);
+    info.common_dir = git_common_dir(dir);
     info.worktree_dirs = list_other_worktrees(dir);
     info.slot_base_branch = tt_slots::read_slot_base(std::path::Path::new(dir));
     // Only worth the extra shell-out once there's something to check —
@@ -355,10 +364,12 @@ pub fn compute_git_info_from_outputs(
         // `compute_git_info` fills this in — it needs `compared_base`, which
         // this pure parser never sees.
         commits_unlanded: 0,
-        // The pure parser has no origin/worktree-list/slot-marker/base-ref
-        // knowledge; `compute_git_info` fills all four in. Existence is
-        // decided before shelling out, so a parsed result is never "missing".
+        // The pure parser has no origin/common-dir/worktree-list/slot-marker/
+        // base-ref knowledge; `compute_git_info` fills all of these in.
+        // Existence is decided before shelling out, so a parsed result is
+        // never "missing".
         origin_url: None,
+        common_dir: String::new(),
         worktree_dirs: Vec::new(),
         dir_missing: false,
         slot_base_branch: None,
