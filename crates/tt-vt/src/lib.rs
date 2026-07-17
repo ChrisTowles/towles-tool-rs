@@ -460,6 +460,53 @@ mod tests {
     }
 
     #[test]
+    fn osc8_hyperlink_surfaces_on_its_run() {
+        let mut e = engine(40, 5);
+        // OSC 8 wraps a link label whose visible text needn't look like a
+        // URL at all (mirrors what `gh`/markdown-rendering CLIs emit).
+        e.feed(b"see \x1b]8;;https://example.com/pr/1\x1b\\here\x1b]8;;\x1b\\ for detail");
+        let frame = e.render().expect("render").expect("first frame");
+
+        assert_eq!(row_text(&frame, 0), "see here for detail");
+        let row = frame.changed.iter().find(|r| r.y == 0).unwrap();
+        let linked = row.runs.iter().find(|r| r.text == "here").expect("hyperlink run split out");
+        assert_eq!(linked.link.as_deref(), Some("https://example.com/pr/1"));
+        let plain = row.runs.iter().find(|r| r.text.starts_with("see")).unwrap();
+        assert_eq!(plain.link, None);
+    }
+
+    #[test]
+    fn soft_wrapped_row_carries_the_wrap_flag() {
+        let mut e = engine(10, 4);
+        // 13 printable chars into a 10-column grid: row 0 soft-wraps into
+        // row 1. The flag is what lets the renderer join rows for link
+        // detection instead of guessing from text that fills the last column.
+        e.feed(b"0123456789abc");
+        let frame = e.render().expect("render").expect("first frame");
+
+        assert_eq!(row_text(&frame, 0), "0123456789");
+        assert_eq!(row_text(&frame, 1), "abc");
+        let row0 = frame.changed.iter().find(|r| r.y == 0).unwrap();
+        let row1 = frame.changed.iter().find(|r| r.y == 1).unwrap();
+        assert!(row0.wrapped, "row that flows into the next is flagged");
+        assert!(!row1.wrapped, "continuation row does not itself wrap");
+    }
+
+    #[test]
+    fn hard_newline_does_not_set_the_wrap_flag() {
+        let mut e = engine(10, 4);
+        // Row 0 fills every column but ends with a real newline — exactly
+        // the case the old "text reaches the last column" heuristic got
+        // wrong by joining unrelated rows.
+        e.feed(b"0123456789\r\nnext line");
+        let frame = e.render().expect("render").expect("first frame");
+
+        assert_eq!(row_text(&frame, 0), "0123456789");
+        let row0 = frame.changed.iter().find(|r| r.y == 0).unwrap();
+        assert!(!row0.wrapped, "a full row ended by CRLF is not soft-wrapped");
+    }
+
+    #[test]
     fn render_is_incremental() {
         let mut e = engine(20, 4);
         e.feed(b"one\r\n");

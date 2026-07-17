@@ -39,6 +39,12 @@ pub struct Run {
     pub bg: Option<u32>,
     #[serde(skip_serializing_if = "is_zero")]
     pub flags: u16,
+    /// OSC 8 hyperlink URI, when the run's cells carry one. Takes priority
+    /// over the renderer's regex-based link detection since the visible
+    /// text (e.g. a markdown-style link label) may not itself look like a
+    /// URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
     /// Underline style past Single — 2 double, 3 curly, 4 dotted, 5 dashed
     /// (SGR 4:x). Absent for none/single; `flags::UNDERLINE` still answers
     /// "any underline" so the renderer keeps its one-bit fast path.
@@ -63,6 +69,12 @@ pub struct RowUpdate {
     /// Viewport row index (0 = top).
     pub y: u16,
     pub runs: Vec<Run>,
+    /// This row soft-wraps into the next: its content continues on row
+    /// `y + 1` (libghostty's per-row wrap bit). Lets the renderer join rows
+    /// for link detection with certainty instead of guessing from text that
+    /// happens to reach the last column.
+    #[serde(skip_serializing_if = "is_false")]
+    pub wrapped: bool,
     /// Row-local selected column range, inclusive, when the row intersects
     /// the active selection.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -189,6 +201,7 @@ mod tests {
             fg: Some(0x00ff00),
             bg: Some(0x000000),
             flags: flags::BOLD | flags::UNDERLINE,
+            link: Some("https://example.com".to_string()),
             ul: Some(3),
             ulc: Some(0xff0000),
         };
@@ -201,6 +214,7 @@ mod tests {
                 "fg": 0x00ff00,
                 "bg": 0x000000,
                 "flags": 9,
+                "link": "https://example.com",
                 "ul": 3,
                 "ulc": 0xff0000,
             }),
@@ -219,6 +233,7 @@ mod tests {
             fg: None,
             bg: None,
             flags: 0,
+            link: None,
             ul: None,
             ulc: None,
         };
@@ -237,6 +252,7 @@ mod tests {
             fg: None,
             bg: None,
             flags: 0,
+            link: None,
             ul: None,
             ulc: None,
         };
@@ -256,9 +272,11 @@ mod tests {
                 fg: None,
                 bg: None,
                 flags: 0,
+                link: None,
                 ul: None,
                 ulc: None,
             }],
+            wrapped: false,
             sel: Some((1, 6)),
         };
         assert_eq!(
@@ -273,8 +291,17 @@ mod tests {
 
     #[test]
     fn row_update_omits_absent_selection() {
-        let row = RowUpdate { y: 0, runs: vec![], sel: None };
+        let row = RowUpdate { y: 0, runs: vec![], wrapped: false, sel: None };
         assert_eq!(to_value(&row).unwrap(), json!({ "y": 0, "runs": [] }));
+    }
+
+    #[test]
+    fn row_update_serializes_wrap_flag_only_when_set() {
+        // `wrapped` marks a row whose content soft-wraps into the next row;
+        // the common (unwrapped) row must not pay for the key. The TS reader
+        // treats absence as false.
+        let wrapped = RowUpdate { y: 1, runs: vec![], wrapped: true, sel: None };
+        assert_eq!(to_value(&wrapped).unwrap(), json!({ "y": 1, "runs": [], "wrapped": true }));
     }
 
     #[test]
@@ -320,9 +347,11 @@ mod tests {
                     fg: Some(0xffffff),
                     bg: None,
                     flags: flags::BOLD,
+                    link: None,
                     ul: None,
                     ulc: None,
                 }],
+                wrapped: false,
                 sel: None,
             }],
             cursor: cursor(),

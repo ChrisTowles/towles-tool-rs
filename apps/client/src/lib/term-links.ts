@@ -3,14 +3,17 @@
  * canvas terminal can make URLs and file paths hoverable/clickable. Pure
  * module — no DOM.
  *
- * The grid has no explicit hyperlink info (plain-text output from CLIs), so
- * links are found by regex over reconstructed row text. A row whose text
- * reaches the last column is treated as hard-wrapped into the next row, which
- * is how long links printed by CLIs (e.g. Claude Code) span lines. Two kinds
- * are recognised: `http(s)` URLs, and file paths (absolute, or repo-relative
- * with an extension) that dominate agent output, e.g. `crates/tt-vt/src/
- * search.rs:42`. Besides the link text, `linkAt` reports the exact cells it
- * covers (one segment per row), so the renderer can underline it on hover.
+ * A cell may carry a real OSC 8 hyperlink URI (`Run.link`); when it does,
+ * `linkAt` trusts it outright — the visible text needn't look like a URL at
+ * all (e.g. `gh`/markdown-style link labels like "here"). Otherwise links are
+ * found by regex over reconstructed row text. Rows are joined across soft
+ * wraps using the engine's real per-row wrap flag (`RowUpdate.wrapped`, from
+ * libghostty), which is how long links printed by CLIs (e.g. Claude Code)
+ * span lines. Two kinds are recognised: `http(s)` URLs, and file paths
+ * (absolute, or repo-relative with an extension) that dominate agent output,
+ * e.g. `crates/tt-vt/src/search.rs:42`. Besides the link text, `linkAt`
+ * reports the exact cells it covers (one segment per row), so the renderer
+ * can underline it on hover.
  */
 
 import { isWideRun, type Run } from "@/lib/term-protocol";
@@ -82,6 +85,21 @@ export function rowText(runs: Run[], cols: number): string {
   return chars.join("");
 }
 
+/** Reconstruct a row's per-column hyperlink URI (length = `cols`), mirroring
+ * `rowText`. A run's `link` (or its absence) applies to every column it
+ * spans — the engine only merges cells sharing the same link, so a run never
+ * straddles a link boundary. */
+export function rowLinks(runs: Run[], cols: number): (string | undefined)[] {
+  const out = new Array<string | undefined>(cols).fill(undefined);
+  if (cols <= 0) return out;
+  for (const run of runs) {
+    if (!run.link) continue;
+    const end = Math.min(run.x + run.width, cols);
+    for (let x = run.x; x < end; x++) out[x] = run.link;
+  }
+  return out;
+}
+
 /** Drop sentence punctuation and unbalanced closing brackets off a match
  * (links in prose commonly end with `.` or a wrapping `)`). */
 function trimTrailing(text: string): string {
@@ -146,13 +164,12 @@ function segmentsFor(start: number, end: number, startRow: number, cols: number)
 
 /**
  * The link under viewport cell (x, y), or null. `lines` is the grid mirror's
- * row array; rows are joined into one string across soft wraps (a row is
- * considered wrapped when its text runs to the last column) before matching.
- * URLs win over paths where both could match (URL spans are masked out before
- * path detection).
+ * row array; rows the engine marked soft-wrapped (`wrapped`) are joined into
+ * one string before matching. URLs win over paths where both could match
+ * (URL spans are masked out before path detection).
  */
 export function linkAt(
-  lines: { runs: Run[] }[],
+  lines: { runs: Run[]; wrapped?: boolean }[],
   cols: number,
   x: number,
   y: number,
@@ -160,23 +177,37 @@ export function linkAt(
   if (cols <= 0 || x < 0 || y < 0 || y >= lines.length) return null;
 
   const text = (row: number) => rowText(lines[row]?.runs ?? [], cols);
-  const wrapsToNext = (t: string) => t[cols - 1] !== " ";
 
   // Find the wrapped block containing row y: walk up while the row above
   // flows into ours, then down while rows keep flowing.
   let startRow = y;
-  while (y - startRow < MAX_WRAP_ROWS && startRow > 0 && wrapsToNext(text(startRow - 1))) {
+  while (y - startRow < MAX_WRAP_ROWS && startRow > 0 && lines[startRow - 1]?.wrapped) {
     startRow--;
   }
   let endRow = y;
-  while (endRow - y < MAX_WRAP_ROWS && endRow + 1 < lines.length && wrapsToNext(text(endRow))) {
+  while (endRow - y < MAX_WRAP_ROWS && endRow + 1 < lines.length && lines[endRow]?.wrapped) {
     endRow++;
   }
 
   const rows: string[] = [];
-  for (let r = startRow; r <= endRow; r++) rows.push(text(r));
+  const linkRows: (string | undefined)[] = [];
+  for (let r = startRow; r <= endRow; r++) {
+    rows.push(text(r));
+    linkRows.push(...rowLinks(lines[r]?.runs ?? [], cols));
+  }
   const joined = rows.join("");
   const probe = (y - startRow) * cols + x;
+
+  // A real OSC 8 hyperlink is an unambiguous signal — trust it over the
+  // regex heuristics below, since the visible text may not look like a link.
+  const hyperlink = linkRows[probe];
+  if (hyperlink) {
+    let start = probe;
+    while (start > 0 && linkRows[start - 1] === hyperlink) start--;
+    let end = probe;
+    while (end < linkRows.length - 1 && linkRows[end + 1] === hyperlink) end++;
+    return { kind: "url", url: hyperlink, segments: segmentsFor(start, end, startRow, cols) };
+  }
 
   for (const m of joined.matchAll(URL_RE)) {
     const url = trimTrailing(m[0]);

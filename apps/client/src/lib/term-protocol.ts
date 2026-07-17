@@ -12,6 +12,10 @@ export interface Run {
   fg?: number;
   bg?: number;
   flags?: number;
+  /** OSC 8 hyperlink URI, when the run's cells carry one. Takes priority over
+   * regex-based link detection (see term-links.ts) since the visible text
+   * (e.g. a markdown-style link label) may not itself look like a URL. */
+  link?: string;
   /** Underline style past single — 2 double, 3 curly, 4 dotted, 5 dashed
    * (SGR 4:x). Absent = none/single; UNDERLINE still flags "any". */
   ul?: number;
@@ -22,6 +26,10 @@ export interface Run {
 export interface RowUpdate {
   y: number;
   runs: Run[];
+  /** This row soft-wraps into the next: its content continues on row `y + 1`
+   * (libghostty's per-row wrap bit; absent = false). term-links joins rows on
+   * this flag rather than guessing from text that reaches the last column. */
+  wrapped?: boolean;
   /** Row-local selected column range, inclusive. */
   sel?: [number, number];
 }
