@@ -10,6 +10,7 @@ import {
   dragCol,
   dropPane,
   fmtWaitingAge,
+  folderActionableItems,
   folderSafeToDelete,
   hydrateWins,
   isDiffPane,
@@ -785,6 +786,70 @@ describe("needingSessionsOldestFirst", () => {
       ]),
     ];
     expect(needingSessionsOldestFirst(repos).map((s) => s.id)).toEqual(["old", "fresh", "nostamp"]);
+  });
+});
+
+describe("folderActionableItems", () => {
+  it("returns nothing for a calm folder", () => {
+    expect(folderActionableItems(folder({}), undefined)).toEqual([]);
+  });
+
+  it("flags a worktree whose merged PR left nothing uncommitted or unlanded", () => {
+    const f = folder({ isWorktree: true });
+    const items = folderActionableItems(f, pr({ state: "merged", number: 9 }));
+    expect(items).toEqual([
+      expect.objectContaining({ kind: "safe-to-delete", pr: { number: 9, url: expect.any(String) } }),
+    ]);
+  });
+
+  it("does not flag a worktree whose PR is still open", () => {
+    const f = folder({ isWorktree: true });
+    expect(folderActionableItems(f, pr({ state: "open" }))).toEqual([]);
+  });
+
+  it("does not flag a merged worktree with uncommitted changes or unlanded commits", () => {
+    const dirty = folder({ isWorktree: true, dirty: true });
+    const unlanded = folder({ isWorktree: true, commitsUnlanded: 1 });
+    expect(folderActionableItems(dirty, pr({ state: "merged" }))).toEqual([]);
+    expect(folderActionableItems(unlanded, pr({ state: "merged" }))).toEqual([]);
+  });
+
+  it("does not flag a merged non-worktree checkout — that's the primary clone, not a slot", () => {
+    const f = folder({ isWorktree: false });
+    expect(folderActionableItems(f, pr({ state: "merged" }))).toEqual([]);
+  });
+
+  it("does not flag anything when there's no PR at all", () => {
+    const f = folder({ isWorktree: true });
+    expect(folderActionableItems(f, undefined)).toEqual([]);
+  });
+
+  it("flags sessions waiting on you, pluralized by count", () => {
+    expect(folderActionableItems(folder({ needs: 2 }), undefined)).toEqual([
+      expect.objectContaining({ kind: "needs-you", subtitle: "2 sessions waiting on you" }),
+    ]);
+    expect(folderActionableItems(folder({ needs: 1 }), undefined)).toEqual([
+      expect.objectContaining({ kind: "needs-you", subtitle: "1 session waiting on you" }),
+    ]);
+  });
+
+  it("flags drifted ports, listing every drift entry", () => {
+    const f = folder({
+      sessions: [session({ portDrift: [{ key: "APP_PORT", spawnedPort: 3000, currentPort: 3010 }] })],
+    });
+    expect(folderActionableItems(f, undefined)).toEqual([
+      expect.objectContaining({ kind: "port-drift", subtitle: "APP_PORT 3000 → 3010" }),
+    ]);
+  });
+
+  it("can surface all three signals at once, in a stable order", () => {
+    const f = folder({
+      isWorktree: true,
+      needs: 1,
+      sessions: [session({ portDrift: [{ key: "APP_PORT", spawnedPort: 3000, currentPort: 3010 }] })],
+    });
+    const items = folderActionableItems(f, pr({ state: "merged", number: 3 }));
+    expect(items.map((i) => i.kind)).toEqual(["safe-to-delete", "needs-you", "port-drift"]);
   });
 });
 

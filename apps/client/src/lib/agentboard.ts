@@ -550,7 +550,7 @@ export function liveSessions(folder: FolderData): SessionData[] {
  * by key + spawned/current pair (several panes spawned at different times
  * can carry the same drift, or genuinely different ones if a port rotated
  * more than once) — the detail list for the folder-header badge's tooltip. */
-export function folderPortDrift(folder: FolderData): PortDrift[] {
+export function folderPortDrift(folder: Pick<FolderData, "sessions">): PortDrift[] {
   const seen = new Map<string, PortDrift>();
   for (const s of folder.sessions) {
     for (const d of s.portDrift ?? []) {
@@ -705,6 +705,57 @@ export function prMergedButFolderHasWork(
   folder: Pick<FolderData, "dirty" | "commitsUnlanded">,
 ): boolean {
   return pr.state === "merged" && !folderSafeToDelete(folder);
+}
+
+/** A per-folder actionable signal: the checkout is safe to clean up, has
+ * sessions waiting on you, or its live panes have drifted ports. Each is
+ * already a badge somewhere in the rail (`SafeToDeleteBadge`, `NeedsBadge`,
+ * `PortDriftBadge`) — this is the same data as a flat list, for the
+ * working-context band (more room than a rail row) to spell each one out
+ * instead of a glyph. */
+export type ActionableKind = "safe-to-delete" | "needs-you" | "port-drift";
+
+export type ActionableItem = {
+  kind: ActionableKind;
+  subtitle: string;
+  /** Set only for `safe-to-delete` — the merged PR being cleaned up. */
+  pr?: Pick<PrItem, "number" | "url">;
+};
+
+/** Every actionable signal that applies to one folder — the same gates the
+ * rail's badges use (merged PR + `folderSafeToDelete`, `folder.needs > 0`,
+ * `folderPortDrift`). `pr` is the folder's already-resolved PR (see
+ * `prForFolder`), not looked up again here. */
+export function folderActionableItems(
+  folder: Pick<FolderData, "isWorktree" | "dirty" | "commitsUnlanded" | "comparedBase" | "needs" | "sessions">,
+  pr: PrItem | undefined,
+): ActionableItem[] {
+  const items: ActionableItem[] = [];
+
+  if (pr?.state === "merged" && folder.isWorktree && folderSafeToDelete(folder)) {
+    items.push({
+      kind: "safe-to-delete",
+      subtitle: `PR #${pr.number} merged, no uncommitted changes, every commit landed on ${comparedBaseLabel(folder)}`,
+      pr: { number: pr.number, url: pr.url },
+    });
+  }
+
+  if (folder.needs > 0) {
+    items.push({
+      kind: "needs-you",
+      subtitle: `${folder.needs} session${folder.needs === 1 ? "" : "s"} waiting on you`,
+    });
+  }
+
+  const drift = folderPortDrift(folder);
+  if (drift.length > 0) {
+    items.push({
+      kind: "port-drift",
+      subtitle: drift.map((d) => `${d.key} ${d.spawnedPort} → ${d.currentPort}`).join(", "),
+    });
+  }
+
+  return items;
 }
 
 /** `0:04` / `3:20` / `1:02:30` — elapsed duration since a session started. */
