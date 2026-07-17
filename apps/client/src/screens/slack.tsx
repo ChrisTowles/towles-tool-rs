@@ -71,6 +71,7 @@ export function SlackScreen() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
 
   const messages = view?.messages ?? [];
   const lastTs = messages.at(-1)?.ts ?? 0;
@@ -79,6 +80,21 @@ export function SlackScreen() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [lastTs, view?.configured]);
+
+  // The composer's textarea auto-grows with the draft (`field-sizing: content`),
+  // which shrinks the messages viewport without touching `lastTs` — re-pin
+  // whenever that height changes too, or the last message ends up short of the
+  // actual bottom (or, on shrink back down, the scroll position jumps back up
+  // as the browser clamps it to the new, larger scrollable range).
+  useEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) return;
+    const observer = new ResizeObserver(() => {
+      endRef.current?.scrollIntoView({ block: "end" });
+    });
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, [view?.configured]);
 
   async function send() {
     const text = draft.trim();
@@ -162,7 +178,7 @@ export function SlackScreen() {
             </div>
           </ScrollArea>
 
-          <div className="shrink-0 border-t border-border bg-card px-4 py-3">
+          <div ref={composerRef} className="shrink-0 border-t border-border bg-card px-4 py-3">
             <div className="mx-auto flex w-full max-w-2xl items-end gap-2">
               <Textarea
                 value={draft}
