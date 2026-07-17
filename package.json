@@ -9,6 +9,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks",
     "dev": "node scripts/dev-port.mjs",
     "run": "node scripts/run.mjs",
     "dev:drive": "node scripts/dev-drive.mjs",

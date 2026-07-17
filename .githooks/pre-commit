@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+// Auto-bumps any Claude Code plugin (packages/core, packages/app) touched by
+// this commit's staged changes — see scripts/plugin-version-bump.mjs for the
+// logic. Installed via `core.hooksPath .githooks` (root "prepare" script).
+import { runPreCommitBump } from "../scripts/plugin-version-bump.mjs";
+
+runPreCommitBump();
