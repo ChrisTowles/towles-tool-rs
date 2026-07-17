@@ -1,0 +1,55 @@
+name: Cleanup caches
+
+# ci.yml/frontend.yml populate a full copy of the Rust/npm/zig build caches
+# under each PR's own ref (refs/pull/<n>/merge). Those caches are only ever
+# useful to that PR's own runs, but nothing deletes them once the PR closes
+# — they just sit in the repo's 10GB total Actions-cache budget forever,
+# crowding out the caches that matter (main's Swatinem/rust-cache and
+# ghostty-src caches), which forces slow from-scratch rebuilds. Sweep a
+# closed PR's caches away immediately instead of waiting on GitHub's
+# eviction to get around to it.
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    # mlugg/setup-zig can only ever restore its most recently saved cache
+    # (GitHub cache restore-keys pick the newest match), so every older
+    # setup-zig-cache-v2-* entry it leaves behind on main is pure dead
+    # weight — main-branch CI never deletes its own prior saves, so this
+    # accumulates without bound unless something prunes it periodically.
+    - cron: "17 7 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  cleanup-closed-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete caches for this PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: gh cache delete --all --ref "$REF" --succeed-on-no-caches --repo "$REPO"
+
+  prune-stale-zig-caches:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Keep only the newest setup-zig cache per job on main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          for job in rust_vt rust_app; do
+            stale=$(gh cache list --repo "$REPO" --ref refs/heads/main \
+              --key "setup-zig-cache-v2-${job}-" --sort created_at --order desc \
+              --limit 100 --json id --jq '.[1:][].id')
+            for id in $stale; do
+              gh cache delete "$id" --repo "$REPO"
+            done
+          done
