@@ -107,8 +107,8 @@ export const SHORTCUTS = defineShortcuts([
     when: "more than one tab is open",
   },
   // Jump to the Nth open tab. One binding per digit so each is validated and
-  // matched through the same machinery as every other shortcut; the tab bar's
-  // tooltips surface them per-tab, so the help overlay lists just the first.
+  // matched through the same machinery as every other shortcut; the `?` help
+  // overlay is the only place they're surfaced, so it lists just the first.
   ...Array.from({ length: 9 }, (_, i) => ({
     id: `tab-${i + 1}`,
     scope: "global" as const,

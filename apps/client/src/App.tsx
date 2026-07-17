@@ -7,7 +7,6 @@ import { DmBanner } from "@/components/dm-banner";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { QuickLog } from "@/components/quick-log";
 import { StatusBar } from "@/components/status-bar";
-import { TabBar } from "@/components/tab-bar";
 import { UpdateBanner } from "@/components/update-banner";
 import { ZenIndicator } from "@/components/zen-indicator";
 import {
@@ -33,7 +32,7 @@ function Shortcuts() {
     toggleZen,
     paletteOpen,
     activeTab,
-    visited,
+    openTabs,
     openTab,
     openSettingsTab,
     closeTab,
@@ -49,17 +48,17 @@ function Shortcuts() {
         quicklog: () => window.dispatchEvent(new Event("quicklog:open")),
         "close-tab": () => closeTab(activeTab),
         "next-tab": () => {
-          const idx = visited.indexOf(activeTab);
-          if (idx !== -1) openTab(visited[(idx + 1) % visited.length]);
+          const idx = openTabs.indexOf(activeTab);
+          if (idx !== -1) openTab(openTabs[(idx + 1) % openTabs.length]);
         },
         "prev-tab": () => {
-          const idx = visited.indexOf(activeTab);
-          if (idx !== -1) openTab(visited[(idx - 1 + visited.length) % visited.length]);
+          const idx = openTabs.indexOf(activeTab);
+          if (idx !== -1) openTab(openTabs[(idx - 1 + openTabs.length) % openTabs.length]);
         },
       };
       // Register only the tab-jump bindings that map to an open tab, so an
       // unused digit falls through instead of being swallowed as a no-op.
-      visited.slice(0, 9).forEach((id, i) => {
+      openTabs.slice(0, 9).forEach((id, i) => {
         handlers[`tab-${i + 1}`] = () => openTab(id);
       });
       return handlers;
@@ -69,7 +68,7 @@ function Shortcuts() {
       toggleZen,
       paletteOpen,
       activeTab,
-      visited,
+      openTabs,
       openTab,
       openSettingsTab,
       closeTab,
@@ -86,7 +85,7 @@ function Shortcuts() {
 }
 
 function Workspace() {
-  const { visited, activeTab, sidebarCollapsed, zen, setZen, paletteOpen } = useWorkspace();
+  const { openTabs, activeTab, sidebarCollapsed, zen, setZen, paletteOpen } = useWorkspace();
 
   // Escape exits zen — but only when nothing else is claiming Escape. An open
   // dialog/palette (Radix `role="dialog"` with `data-state="open"`, plus the
@@ -132,9 +131,8 @@ function Workspace() {
           )}
           <ResizablePanel key="main">
             <div className="flex h-full flex-col">
-              {!zen && <TabBar />}
               <div className="min-h-0 flex-1">
-                {visited.map((id) => {
+                {openTabs.map((id) => {
                   const Screen = SCREEN_COMPONENTS[id];
                   const hidden = id !== activeTab;
                   // Keep visited screens mounted so their local state survives switching.

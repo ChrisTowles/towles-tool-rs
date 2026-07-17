@@ -238,8 +238,9 @@ Cargo workspace + npm workspace (`apps/client` only):
 - `apps/client` — React 19 + Vite frontend styled with Tailwind CSS v4 +
   shadcn/ui (`@/*` → `src/*` alias, components vendored into
   `src/components/ui/`, light/dark via the `.dark` class). Yaak-style app
-  shell: resizable sidebar + closable tabs, command palette (⌘K), settings
-  dialog, status bar, keyboard shortcuts (`?` opens the help overlay).
+  shell: resizable sidebar (the only nav UI — no visible tab strip; screens
+  stay mounted in the background across switches), command palette (⌘K),
+  settings dialog, status bar, keyboard shortcuts (`?` opens the help overlay).
   Screens live in `src/screens/`; the three "Focus" screens are **Cockpit**
   (default day home — next-meeting countdown + PRs + issue queue), **Board**
   (cross-repo kanban over local todos grouped by status, with

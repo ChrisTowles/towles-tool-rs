@@ -34,6 +34,7 @@ export function AppSidebar() {
                   key={id}
                   variant="ghost"
                   size="sm"
+                  aria-current={active || undefined}
                   className={cn(
                     "justify-start font-normal",
                     active && "bg-accent text-accent-foreground",

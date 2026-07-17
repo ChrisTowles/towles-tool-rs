@@ -3,7 +3,7 @@ import { SCREENS, type ScreenId } from "@/lib/screens";
 /** localStorage keys for the persisted tab state. Mirrors SIDEBAR_COLLAPSED_KEY
  * in workspace.tsx. */
 export const ACTIVE_TAB_KEY = "tt-active-tab";
-export const VISITED_TABS_KEY = "tt-visited-tabs";
+export const OPEN_TABS_KEY = "tt-open-tabs";
 
 /** The screen shown on a cold start (no valid persisted state). */
 export const COLD_START_TAB: ScreenId = "cockpit";
@@ -19,24 +19,24 @@ function isScreenId(value: unknown): value is ScreenId {
  * stale-screen-id input degrades to the cold-start default rather than
  * throwing — a removed screen id can never break boot.
  *
- * `visited` always includes `activeTab`, and both only ever contain screen ids
- * that still exist in the registry, so a closed tab (dropped from the stored
- * visited list) never resurrects on reload. */
+ * `openTabs` always includes `activeTab`, and both only ever contain screen
+ * ids that still exist in the registry, so a closed tab (dropped from the
+ * stored open-tabs list) never resurrects on reload. */
 export function loadWorkspaceTabs(
   rawActive: string | null,
-  rawVisited: string | null,
-): { visited: ScreenId[]; activeTab: ScreenId } {
-  const visited = parseVisited(rawVisited);
+  rawOpenTabs: string | null,
+): { openTabs: ScreenId[]; activeTab: ScreenId } {
+  const openTabs = parseOpenTabs(rawOpenTabs);
   const activeTab = isScreenId(rawActive) ? rawActive : COLD_START_TAB;
-  if (!visited.includes(activeTab)) visited.push(activeTab);
-  return { visited, activeTab };
+  if (!openTabs.includes(activeTab)) openTabs.push(activeTab);
+  return { openTabs, activeTab };
 }
 
-function parseVisited(rawVisited: string | null): ScreenId[] {
-  if (rawVisited === null) return [COLD_START_TAB];
+function parseOpenTabs(rawOpenTabs: string | null): ScreenId[] {
+  if (rawOpenTabs === null) return [COLD_START_TAB];
   let parsed: unknown;
   try {
-    parsed = JSON.parse(rawVisited);
+    parsed = JSON.parse(rawOpenTabs);
   } catch {
     return [COLD_START_TAB];
   }
@@ -46,6 +46,6 @@ function parseVisited(rawVisited: string | null): ScreenId[] {
   for (const id of parsed) {
     if (isScreenId(id)) seen.add(id);
   }
-  const visited = [...seen];
-  return visited.length > 0 ? visited : [COLD_START_TAB];
+  const openTabs = [...seen];
+  return openTabs.length > 0 ? openTabs : [COLD_START_TAB];
 }

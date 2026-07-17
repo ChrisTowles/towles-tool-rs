@@ -1,9 +1,30 @@
 # CLAUDE.md — apps/client
 
 React 19 + Vite frontend — see the root [`CLAUDE.md`](../../CLAUDE.md) for
-the shell overview (sidebar/tabs, command palette, Focus screens, product
+the shell overview (sidebar nav, command palette, Focus screens, product
 rules). This file covers the frontend-internal conventions that a single
 read of the code won't surface.
+
+## Three unrelated things are called "tab" in this repo
+
+- **Workspace tabs** — the open-screens bookkeeping in `useWorkspace()`
+  (`openTabs`/`activeTab`/`openTab`/`closeTab`, `src/lib/workspace.tsx`,
+  persisted via `src/lib/workspace-persistence.ts`). There's no visible tab
+  strip — the sidebar is the only nav UI — but screens still stay mounted in
+  the background when you switch away (e.g. an Agentboard terminal keeps
+  running), and `close-tab`/`next-tab`/`prev-tab`/`tab-1`…`9`
+  (`src/lib/shortcuts.tsx`) still operate on this set headlessly. This is
+  what "tab" means in most of this codebase's docs/comments.
+- **Settings' sub-tab panel** — the General/Appearance/Agentboard/etc. panes
+  inside the Settings screen, built on the vendored shadcn/Radix `Tabs`
+  primitive (`src/components/ui/tabs.tsx`), consumed only by
+  `src/screens/settings.tsx`. Unrelated to the tab bar above — it's a
+  generic tabbed-panel widget, not app-level screen navigation.
+- **IDE editor/diff tabs** — `crates/tt-ide` and `crates-tauri/tt-app/src/
+  ide.rs`'s `tabs`/`close_tab`/`closeAllDiffTabs`, part of the Claude Code
+  IDE-protocol integration (see
+  [docs/CLAUDE-CODE-IDE.md](../../docs/CLAUDE-CODE-IDE.md)). A VS
+  Code-style concept with no shared code path with either of the above.
 
 ## Adding a screen is a 4-file ritual — there's no single source of truth
 
