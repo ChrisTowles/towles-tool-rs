@@ -32,6 +32,7 @@ import {
 } from "@/lib/agentboard";
 import type { PrItem } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
+import { shortcutHint } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 
 /** The working-context band atop the main pane: *where am I working and why*.
@@ -94,7 +95,7 @@ export function WorkingContext({
           </span>
           {!missing && (
             <IconBtn
-              title="New session (⌘D)"
+              title={`New session (${shortcutHint("ab-new-session")})`}
               onClick={() => onNewSession(folder.dir)}
               className="hover:text-violet-500"
             >
@@ -103,7 +104,7 @@ export function WorkingContext({
           )}
           {!missing && (
             <IconBtn
-              title="New slot — goal, branch, base"
+              title={`New slot — goal, branch, base (${shortcutHint("ab-new-slot")})`}
               onClick={newSlot}
               className="hover:text-violet-500"
             >
