@@ -198,13 +198,32 @@ jobs:
       # Tauri v2 Linux prerequisites (see tauri.app/start/prerequisites). These
       # provide the webkit2gtk/GTK/appindicator system libs the Tauri shell links
       # against, which is why tt-app is excluded from the plain `rust` job.
-      # Cached via cache-apt-pkgs-action — plain apt-get here cost 30-90s on
-      # every single run (CI audit, 2026-07).
-      - name: Install Tauri system dependencies
-        uses: awalsh128/cache-apt-pkgs-action@v1
+      # Caching /var/cache/apt/archives (plain first-party actions/cache, same
+      # pattern several popular Tauri repos use) avoided re-downloading these
+      # every run (CI audit, 2026-07) — tried a third-party apt-caching action
+      # first, but it silently reported success while installing 0 packages
+      # after a transient mirror 404, which plain apt-get fails loudly on.
+      - name: Cache apt packages
+        uses: actions/cache@v4
         with:
-          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev build-essential curl wget file libxdo-dev libasound2-dev
-          version: 1.0
+          path: /var/cache/apt/archives/*.deb
+          key: apt-tauri-deps-${{ runner.os }}
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libasound2-dev
 
       # Same repo-root rust-toolchain.toml pin as the `rust` job.
       - name: Provision pinned Rust toolchain
