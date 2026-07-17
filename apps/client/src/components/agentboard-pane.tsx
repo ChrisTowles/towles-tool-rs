@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FolderGit2, FolderPlus, Plus } from "lucide-react";
+import { FolderGit2, FolderPlus, GitPullRequest, Plus, Trash2 } from "lucide-react";
 import {
   AheadBehind,
   ComparedBaseBadge,
@@ -18,16 +18,20 @@ import type { NewSlotRepo } from "@/components/inline-new-slot";
 import {
   fmtElapsed,
   fmtWaitingAge,
+  folderActionableItems,
   isAgent,
   isCacheExpiring,
   isCold,
   pathScope,
+  type ActionableItem,
+  type ActionableKind,
   type FolderData,
   type RepoData,
   type SessionActions,
   type SessionData,
 } from "@/lib/agentboard";
 import type { PrItem } from "@/lib/data";
+import { openExternalUrl } from "@/lib/open-url";
 import { cn } from "@/lib/utils";
 
 /** The working-context band atop the main pane: *where am I working and why*.
@@ -133,7 +137,98 @@ export function WorkingContext({
           {pr && <PrChip pr={pr} stats={folder} />}
         </div>
         <PurposeRow folder={folder} variant="band" />
+        {!missing && (
+          <ActionableCallouts
+            items={folderActionableItems(folder, pr)}
+            folderDir={folder.dir}
+            folderLabel={folder.name}
+            onDeleteWorktree={onDeleteWorktree}
+          />
+        )}
       </div>
+    </div>
+  );
+}
+
+const ACTIONABLE_META: Record<
+  ActionableKind,
+  { heading: string; glyph: string; textClass: string; borderClass: string }
+> = {
+  "safe-to-delete": {
+    heading: "Safe to delete",
+    glyph: "✓",
+    textClass: "text-emerald-600 dark:text-emerald-400",
+    borderClass: "border-emerald-500/40",
+  },
+  "needs-you": {
+    heading: "Needs you",
+    glyph: "⚑",
+    textClass: "text-amber-500",
+    borderClass: "border-amber-500/40",
+  },
+  "port-drift": {
+    heading: "Port drift",
+    glyph: "⚡",
+    textClass: "text-amber-500",
+    borderClass: "border-amber-500/40",
+  },
+};
+
+/** The working-context band's actionable section: a full-detail callout per
+ * `ActionableItem` (usually at most one or two at once), replacing the rail
+ * row's cramped badge with the room to say *why*. Only rendered for the
+ * focused checkout — the rail keeps its own badges for scanning every other
+ * folder at a glance. */
+function ActionableCallouts({
+  items,
+  folderDir,
+  folderLabel,
+  onDeleteWorktree,
+}: {
+  items: ActionableItem[];
+  folderDir: string;
+  folderLabel: string;
+  onDeleteWorktree: (dir: string, label: string) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1.5 pt-1">
+      {items.map((item) => {
+        const meta = ACTIONABLE_META[item.kind];
+        return (
+          <div
+            key={item.kind}
+            className={cn(
+              "flex items-center gap-2 rounded-md border border-l-2 bg-card px-2.5 py-1.5 text-xs",
+              meta.borderClass,
+            )}
+          >
+            <span className={cn("shrink-0 font-mono text-sm", meta.textClass)}>{meta.glyph}</span>
+            <span className={cn("shrink-0 font-medium", meta.textClass)}>{meta.heading}</span>
+            <span className="min-w-0 flex-1 truncate text-muted-foreground">{item.subtitle}</span>
+            {item.pr && (
+              <button
+                type="button"
+                onClick={() => void openExternalUrl(item.pr!.url)}
+                title={`Open PR #${item.pr.number} on GitHub`}
+                className="flex h-6 shrink-0 items-center gap-1 rounded-md border border-border/70 px-1.5 font-mono text-[10.5px] text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <GitPullRequest className="size-3" />#{item.pr.number}
+              </button>
+            )}
+            {item.kind === "safe-to-delete" && (
+              <button
+                type="button"
+                onClick={() => onDeleteWorktree(folderDir, folderLabel)}
+                title="Delete this worktree — nothing here would be lost"
+                className="flex h-6 shrink-0 items-center gap-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 px-1.5 font-mono text-[10.5px] text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
+              >
+                <Trash2 className="size-3" /> delete
+              </button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
