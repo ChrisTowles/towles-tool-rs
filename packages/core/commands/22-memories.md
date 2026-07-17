@@ -5,8 +5,8 @@ argument-hint: [optional scope]
 
 Review your own memory files for this project (the auto-memory system: read
 `MEMORY.md` in your memory directory, then each file it links to). If this repo is
-checked out in multiple parallel slots (see the `tt:parallel-slots` skill), also
-check sibling project memory directories under `~/.claude/projects/` whose path
+checked out in multiple parallel worktree slots, also check sibling project
+memory directories under `~/.claude/projects/` whose path
 matches this repo's name with a different slot suffix — facts learned in one slot
 are invisible in another, since memory is keyed by exact filesystem path, not by
 repo.

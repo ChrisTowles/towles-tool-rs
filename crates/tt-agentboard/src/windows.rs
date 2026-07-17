@@ -126,7 +126,7 @@ impl WindowsStore {
     /// distinguish "never touched" from "explicitly emptied"). Rereads the
     /// file fresh, replaces only those folders' entries, and leaves every
     /// other folder exactly as found on disk: this file is shared by every
-    /// Agentboard window (`tt:parallel-slots` runs one per checkout), so a
+    /// Agentboard window (`tt slot` runs one per checkout), so a
     /// blind whole-payload overwrite from this instance's hydrate-once,
     /// possibly-stale copy would erase another window's edits to folders we
     /// never touched. Same-folder concurrent edits are still last-write-wins;

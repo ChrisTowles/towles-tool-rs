@@ -47,7 +47,7 @@ struct SessionsConfig {
 /// Owns the folder→sessions map plus its file path. Loaded once; saved on each
 /// mutation by the caller (engine), mirroring `SessionOrder`. `save()` only
 /// ever rewrites the folders touched since the last save (see `dirty`) — this
-/// file is shared by every Agentboard window (`tt:parallel-slots` runs one per
+/// file is shared by every Agentboard window (`tt slot` runs one per
 /// checkout), so a save must never clobber another window's folders that this
 /// in-memory copy simply hasn't heard about yet.
 #[derive(Debug, Default)]

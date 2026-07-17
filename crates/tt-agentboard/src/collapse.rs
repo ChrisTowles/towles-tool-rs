@@ -79,7 +79,7 @@ impl CollapseStore {
     /// Persist the key touched by the last `set`. Rereads the file fresh and
     /// overwrites only that one key, leaving every other key exactly as found
     /// on disk — this file is shared by every Agentboard window
-    /// (`tt:parallel-slots` runs one per checkout), so a blind whole-map
+    /// (`tt slot` runs one per checkout), so a blind whole-map
     /// overwrite from this instance's hydrate-once, possibly-stale copy would
     /// silently revert another window's toggle of a row we never touched.
     /// Same-key concurrent toggles are still last-write-wins; there's no
