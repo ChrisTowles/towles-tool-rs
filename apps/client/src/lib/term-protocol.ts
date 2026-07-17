@@ -12,6 +12,11 @@ export interface Run {
   fg?: number;
   bg?: number;
   flags?: number;
+  /** Underline style past single — 2 double, 3 curly, 4 dotted, 5 dashed
+   * (SGR 4:x). Absent = none/single; UNDERLINE still flags "any". */
+  ul?: number;
+  /** SGR 58 underline color, packed 0xRRGGBB; absent = underline in fg. */
+  ulc?: number;
 }
 
 export interface RowUpdate {
@@ -29,6 +34,10 @@ export interface Cursor {
   visible: boolean;
   shape: CursorShape;
   blinking: boolean;
+  /** Cursor color a program set (OSC 12), packed 0xRRGGBB; absent = theme. */
+  color?: number;
+  /** The program signalled password input — a lock hint renders in the cell. */
+  password?: boolean;
 }
 
 /** Mode hints for input *routing* only — all encoding happens engine-side. */

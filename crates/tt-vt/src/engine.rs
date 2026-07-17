@@ -16,7 +16,7 @@ use libghostty_vt::render::{
 };
 use libghostty_vt::screen::{CellContentTag, CellWide, Screen};
 use libghostty_vt::selection::{FormatOptions, SelectLineOptions, SelectWordOptions, Selection};
-use libghostty_vt::style::Underline;
+use libghostty_vt::style::{StyleColor, Underline};
 use libghostty_vt::terminal::{
     ColorScheme, Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal,
 };
@@ -731,6 +731,8 @@ impl Engine {
                 _ => CursorShape::Block,
             },
             blinking: snap.cursor_blinking()?,
+            color: snap.cursor_color()?.map(pack_rgb),
+            password: snap.cursor_password_input()?,
         };
         let cursor_moved = self.last_cursor != Some(cursor);
 
@@ -739,6 +741,10 @@ impl Engine {
         }
         self.last_cursor = Some(cursor);
         let full = dirty == Dirty::Full || force_full;
+
+        // Read once: resolves palette-indexed underline colors (SGR 58:5:n)
+        // and feeds the frame's default colors below.
+        let palette = snap.colors()?;
 
         let mut changed = Vec::new();
         let mut row_iter = self.rows.update(&snap)?;
@@ -784,6 +790,20 @@ impl Engine {
                     }
                     let fg = cell.fg_color()?.map(pack_rgb);
                     let bg = cell.bg_color()?.map(pack_rgb);
+                    let ul = match style.underline {
+                        Underline::Double => Some(2u8),
+                        Underline::Curly => Some(3),
+                        Underline::Dotted => Some(4),
+                        Underline::Dashed => Some(5),
+                        _ => None,
+                    };
+                    let ulc = match style.underline_color {
+                        StyleColor::Rgb(c) => Some(pack_rgb(c)),
+                        StyleColor::Palette(i) => {
+                            palette.palette.get(i.0 as usize).copied().map(pack_rgb)
+                        }
+                        StyleColor::None => None,
+                    };
 
                     // A cell tagged CodepointGrapheme carries a multi-codepoint
                     // cluster (combining marks, ZWJ emoji); pull its full base +
@@ -798,7 +818,13 @@ impl Engine {
                     };
 
                     match runs.last_mut() {
-                        Some(run) if run.fg == fg && run.bg == bg && run.flags == f => {
+                        Some(run)
+                            if run.fg == fg
+                                && run.bg == bg
+                                && run.flags == f
+                                && run.ul == ul
+                                && run.ulc == ulc =>
+                        {
                             run.text.push_str(&cell_text);
                             run.width += width;
                         }
@@ -809,6 +835,8 @@ impl Engine {
                             fg,
                             bg,
                             flags: f,
+                            ul,
+                            ulc,
                         }),
                     }
                     x += width;
@@ -834,8 +862,6 @@ impl Engine {
             y += 1;
         }
         snap.set_dirty(Dirty::Clean)?;
-
-        let palette = snap.colors()?;
 
         Ok(Some(Frame {
             full,

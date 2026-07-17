@@ -342,6 +342,52 @@ mod tests {
     }
 
     #[test]
+    fn underline_styles_and_color_ride_their_run() {
+        let mut e = engine(40, 5);
+        // Curly underline (SGR 4:3) in red (SGR 58:2::255:0:0) — the shape
+        // diagnostics squiggles take in nvim/helix.
+        e.feed(b"\x1b[4:3m\x1b[58:2::255:0:0mwavy\x1b[0m plain \x1b[21mdouble");
+        let frame = e.render().expect("render").expect("frame");
+        let row = frame.changed.iter().find(|r| r.y == 0).unwrap();
+
+        let wavy = row.runs.iter().find(|r| r.text == "wavy").expect("curly run");
+        assert_ne!(wavy.flags & flags::UNDERLINE, 0, "any-underline flag still set");
+        assert_eq!(wavy.ul, Some(3), "curly is style 3");
+        assert_eq!(wavy.ulc, Some(0xff0000), "SGR 58 direct color");
+
+        let double = row.runs.iter().find(|r| r.text == "double").expect("double run");
+        assert_eq!(double.ul, Some(2));
+        assert_eq!(double.ulc, None, "no SGR 58: underline uses fg");
+
+        let plain = row.runs.iter().find(|r| r.text.contains("plain")).expect("plain run");
+        assert_eq!(plain.ul, None);
+        assert_eq!(plain.flags & flags::UNDERLINE, 0);
+    }
+
+    #[test]
+    fn single_underline_keeps_a_compact_run() {
+        let mut e = engine(40, 5);
+        e.feed(b"\x1b[4munderlined");
+        let frame = e.render().expect("render").expect("frame");
+        let row = frame.changed.iter().find(|r| r.y == 0).unwrap();
+        let run = row.runs.iter().find(|r| r.text == "underlined").expect("run");
+        assert_ne!(run.flags & flags::UNDERLINE, 0);
+        assert_eq!(run.ul, None, "single underline needs no style field");
+    }
+
+    #[test]
+    fn cursor_color_reports_the_osc_12_override() {
+        let mut e = engine(20, 4);
+        e.feed(b"x");
+        let frame = e.render().expect("render").expect("frame");
+        assert_eq!(frame.cursor.color, None, "no override: theme cursor");
+
+        e.feed(b"\x1b]12;#00ff88\x07y");
+        let frame = e.render().expect("render").expect("frame");
+        assert_eq!(frame.cursor.color, Some(0x00ff88));
+    }
+
+    #[test]
     fn key_release_is_silent_without_kitty_report_events() {
         let mut e = engine(40, 5);
         let release = KeyEvent { action: KeyAction::Release, ..key_press("KeyA", "a") };

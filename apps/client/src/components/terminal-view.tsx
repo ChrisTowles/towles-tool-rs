@@ -312,7 +312,6 @@ export function TerminalView({
         }
         ctx.globalAlpha = 1;
         if (flags & (UNDERLINE | STRIKETHROUGH | OVERLINE)) {
-          ctx.strokeStyle = fg;
           ctx.lineWidth = 1;
           const line = (ly: number) => {
             ctx.beginPath();
@@ -320,7 +319,43 @@ export function TerminalView({
             ctx.lineTo(px + w, ly);
             ctx.stroke();
           };
-          if (flags & UNDERLINE) line(y * cellH + baseline + 2);
+          if (flags & UNDERLINE) {
+            // SGR 58 underline color falls back to the glyph color; the
+            // style variants (double/curly/dotted/dashed, SGR 4:x) match
+            // what nvim/helix diagnostics emit.
+            ctx.strokeStyle = run.ulc !== undefined ? rgb(run.ulc) : fg;
+            const uy = y * cellH + baseline + 2;
+            switch (run.ul) {
+              case 2: // double
+                line(uy - 1);
+                line(uy + 1);
+                break;
+              case 3: {
+                // curly: a 4px-period zigzag across the run
+                ctx.beginPath();
+                for (let i = 0; i <= w; i += 2) {
+                  const zy = uy + (i % 4 === 0 ? -1 : 1);
+                  if (i === 0) ctx.moveTo(px, zy);
+                  else ctx.lineTo(px + i, zy);
+                }
+                ctx.stroke();
+                break;
+              }
+              case 4: // dotted
+                ctx.setLineDash([1, 2]);
+                line(uy);
+                ctx.setLineDash([]);
+                break;
+              case 5: // dashed
+                ctx.setLineDash([4, 2]);
+                line(uy);
+                ctx.setLineDash([]);
+                break;
+              default:
+                line(uy);
+            }
+          }
+          ctx.strokeStyle = fg;
           if (flags & STRIKETHROUGH) line(y * cellH + cellH / 2);
           if (flags & OVERLINE) line(y * cellH + 1);
         }
@@ -365,7 +400,9 @@ export function TerminalView({
       if (!c || !c.visible || grid.scrolledBack) return;
       const px = c.x * cellW;
       const py = c.y * cellH;
-      ctx.fillStyle = theme.fg;
+      // A program may set its own cursor color (OSC 12); theme otherwise.
+      const cursorColor = c.color !== undefined ? rgb(c.color) : theme.fg;
+      ctx.fillStyle = cursorColor;
       switch (c.shape) {
         case "bar":
           ctx.fillRect(px, py, 2, cellH);
@@ -374,12 +411,14 @@ export function TerminalView({
           ctx.fillRect(px, py + cellH - 2, cellW, 2);
           break;
         case "hollow":
-          ctx.strokeStyle = theme.fg;
+          ctx.strokeStyle = cursorColor;
           ctx.strokeRect(px + 0.5, py + 0.5, cellW - 1, cellH - 1);
           break;
         default: {
           ctx.fillRect(px, py, cellW, cellH);
-          const ch = charAt(grid.lines[c.y]?.runs ?? [], c.x);
+          // Password input (the shell turned echo off for a secret): a lock
+          // glyph in the cursor cell instead of the (absent) character.
+          const ch = c.password ? "🔒" : charAt(grid.lines[c.y]?.runs ?? [], c.x);
           if (ch) {
             ctx.fillStyle = theme.bg;
             setFont(0);
