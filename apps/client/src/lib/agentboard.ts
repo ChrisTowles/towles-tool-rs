@@ -159,11 +159,12 @@ export function comparedBaseLabel(folder: Pick<FolderData, "comparedBase">): str
   return base.startsWith("origin/") ? base.slice("origin/".length) : base;
 }
 
-/** A logical repo: one explicitly tracked folder plus any discovered `git
- * worktree` checkouts nested under it by the backend (see `RepoData` in
- * `crates/tt-agentboard/src/types.rs`). Two tracked folders never merge into
- * one row, even if they share an origin remote or are worktrees of each
- * other — tracking a folder always gets it its own row. */
+/** A logical repo: a checkout plus every other rail folder that's a `git
+ * worktree` sibling of it (same git common dir), whether that sibling is
+ * explicitly tracked or only discovered via `git worktree list` (see
+ * `RepoData` in `crates/tt-agentboard/src/types.rs`). Folders never merge
+ * into one row merely for sharing an origin remote — only an actual
+ * worktree relationship does. */
 export type RepoData = {
   key: string;
   name: string;

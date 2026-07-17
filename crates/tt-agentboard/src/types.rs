@@ -268,16 +268,17 @@ pub struct FolderData {
     pub has_port_drift: bool,
 }
 
-/// A logical repo: one explicitly tracked folder, plus any `git worktree`
-/// checkouts discovered under it (see `Engine::expand_with_worktrees`) that
-/// aren't themselves separately tracked. Two tracked folders never merge into
-/// one `RepoData`, even if they share an origin remote or are worktrees of
-/// each other — tracking a folder always gets it its own row.
+/// A logical repo: a checkout and every other folder on the rail that's a
+/// `git worktree` sibling of it (same `GitInfo::common_dir`), whether that
+/// sibling is explicitly tracked in `repos.json` or only discovered via `git
+/// worktree list` — see `crate::bridge::assemble_state`. Two folders never
+/// merge into one `RepoData` merely for sharing an origin remote; only an
+/// actual worktree relationship does.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoData {
-    /// `"path:<dir>"` of this row's own folder (the tracked root, or an
-    /// orphaned discovered child whose parent isn't in the current snapshot).
+    /// `"path:<dir>"` of whichever folder in this group `assemble_state`
+    /// happened to see first (stable across polls: entries are name-sorted).
     pub key: String,
     /// Display name: the repo segment of `owner/repo`, else the folder basename.
     pub name: String,

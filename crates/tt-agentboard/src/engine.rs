@@ -235,7 +235,7 @@ impl Engine {
     /// (desktop mode).
     pub fn scan_once(&mut self, now: i64) {
         self.reload_repos();
-        let (all_paths, _) = self.expand_with_worktrees();
+        let all_paths = self.expand_with_worktrees();
         let entries = repo_entries(&all_paths);
         self.scan_once_with_resolvers(&|dir| resolve_session_name(dir, &entries), &|_| None, now);
     }
@@ -248,28 +248,24 @@ impl Engine {
     /// Distinct from the "multiple clones" pattern (separate `repoPaths`
     /// entries, unrelated repos to git): those are unaffected here.
     ///
-    /// The second element maps each discovered (untracked) worktree dir to
-    /// the `repo_paths` entry it was found from — [`assemble_state`] nests a
-    /// folder under its parent's [`crate::types::RepoData`] row only via this
-    /// map, never by matching any computed key (origin, git-common-dir, …)
-    /// across entries. A dir explicitly listed in `repo_paths` never appears
-    /// as a key here (the dedup below), so two independently tracked repos
-    /// that happen to be worktree siblings of each other still render as two
-    /// separate rows — "explicitly tracked" always means its own row.
+    /// This only decides which dirs show up as entries at all — nesting them
+    /// into [`crate::types::RepoData`] rows is [`crate::bridge::assemble_state`]'s
+    /// job, decided from each entry's [`crate::git_info::GitInfo::common_dir`],
+    /// not from how a dir got onto this list.
     ///
     /// Cache-only: never shells to git — this only reads each tracked repo's
     /// already-cached `worktree_dirs` (from its last `compute_git_info`), so
-    /// the parent association is known the instant a worktree is discovered,
-    /// with no dependency on the *child's* own git info being warmed yet.
-    /// This method runs under the engine lock (every `ab_*` command and the
-    /// watcher-scan loop share it), and every other command is dispatched
-    /// inline on the UI thread, so shelling out to git here (as this used to
-    /// do via `get_or_refresh`) could hold the lock through git's full
-    /// subprocess chain (`compute_git_info` is ~9 sequential spawns) and
-    /// freeze the whole app, not just the caller. The host warms the cache
-    /// out of band instead (see the watcher-scan block and `ab_add_repo` in
-    /// `crates-tauri/tt-app/src/lib.rs` / `agentboard.rs`).
-    fn expand_with_worktrees(&mut self) -> (Vec<String>, HashMap<String, String>) {
+    /// a freshly discovered worktree shows up the instant its parent's cache
+    /// lists it, with no dependency on the *child's* own git info being
+    /// warmed yet. This method runs under the engine lock (every `ab_*`
+    /// command and the watcher-scan loop share it), and every other command
+    /// is dispatched inline on the UI thread, so shelling out to git here (as
+    /// this used to do via `get_or_refresh`) could hold the lock through
+    /// git's full subprocess chain (`compute_git_info` is ~9 sequential
+    /// spawns) and freeze the whole app, not just the caller. The host warms
+    /// the cache out of band instead (see the watcher-scan block and
+    /// `ab_add_repo` in `crates-tauri/tt-app/src/lib.rs` / `agentboard.rs`).
+    fn expand_with_worktrees(&mut self) -> Vec<String> {
         let base = self.repo_paths.clone();
         let cache = &self.git_cache;
         merge_worktree_dirs(&base, |dir| cache.get(dir).worktree_dirs)
@@ -283,7 +279,7 @@ impl Engine {
     /// the lock since it never shells out.
     pub fn stale_git_targets(&mut self, now: i64) -> Vec<(String, Option<String>)> {
         self.reload_repos();
-        let (all_paths, _) = self.expand_with_worktrees();
+        let all_paths = self.expand_with_worktrees();
         all_paths
             .into_iter()
             .filter(|d| !self.git_cache.is_fresh(d, now))
@@ -378,7 +374,7 @@ impl Engine {
     /// Full recompute from repos.json using a pre-collected agent snapshot.
     pub fn compute_payload_with(&mut self, snapshot: &AgentSnapshot, now: i64) -> StatePayload {
         self.reload_repos();
-        let (all_paths, parents) = self.expand_with_worktrees();
+        let all_paths = self.expand_with_worktrees();
         let mut entries = repo_entries(&all_paths);
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         // New folders get a default `shell 1` seeded once; a folder whose
@@ -392,7 +388,7 @@ impl Engine {
         if seeded {
             let _ = self.sessions.save();
         }
-        let payload = self.compute_payload_for_entries(&entries, &parents, snapshot, now);
+        let payload = self.compute_payload_for_entries(&entries, snapshot, now);
         // Drop metadata + session records for repos no longer configured.
         // Skipped when the resolved entry set is empty: every configured repo
         // vanishing in one poll is far more likely a transient glitch (torn
@@ -489,7 +485,6 @@ impl Engine {
     fn compute_payload_for_entries(
         &mut self,
         entries: &[RepoEntry],
-        parents: &HashMap<String, String>,
         snapshot: &AgentSnapshot,
         now: i64,
     ) -> StatePayload {
@@ -553,7 +548,6 @@ impl Engine {
         let mut payload = assemble_state(
             entries,
             &git_infos,
-            parents,
             &self.tracker,
             &self.metadata,
             &self.sessions,
@@ -745,28 +739,26 @@ impl Engine {
 /// Split out so the merge/dedup logic is unit-testable without a real
 /// `GitInfoCache`/git subprocess.
 ///
-/// Also records each discovered dir's parent — the specific tracked dir it
-/// was found from — in the returned map. A dir already in `repo_paths` never
-/// gets a parent entry, even if it's also a worktree of another tracked dir
-/// (dedup below): explicit tracking always wins, so
-/// [`crate::bridge::assemble_state`] never nests one independently-tracked
-/// repo under another.
+/// Only decides which dirs appear as entries at all — a dir already in
+/// `repo_paths` is never duplicated even when `worktrees_of` also reports it
+/// for another entry. Whether two dirs in the result end up nesting into one
+/// [`crate::types::RepoData`] row is decided later, structurally, by
+/// [`crate::bridge::assemble_state`] matching each entry's
+/// [`crate::git_info::GitInfo::common_dir`] — not by anything recorded here.
 fn merge_worktree_dirs(
     repo_paths: &[String],
     mut worktrees_of: impl FnMut(&str) -> Vec<String>,
-) -> (Vec<String>, HashMap<String, String>) {
+) -> Vec<String> {
     let mut seen: HashSet<String> = repo_paths.iter().cloned().collect();
     let mut all = repo_paths.to_vec();
-    let mut parents: HashMap<String, String> = HashMap::new();
     for dir in repo_paths {
         for wt in worktrees_of(dir) {
             if seen.insert(wt.clone()) {
-                parents.insert(wt.clone(), dir.clone());
                 all.push(wt);
             }
         }
     }
-    (all, parents)
+    all
 }
 
 #[cfg(test)]
@@ -774,41 +766,31 @@ mod merge_worktree_dirs_tests {
     use super::merge_worktree_dirs;
 
     #[test]
-    fn appends_discovered_worktrees_after_configured_paths_and_records_parent() {
+    fn appends_discovered_worktrees_after_configured_paths() {
         let repo_paths = vec!["/repo/main".to_string()];
-        let (all, parents) = merge_worktree_dirs(&repo_paths, |dir| {
+        let all = merge_worktree_dirs(&repo_paths, |dir| {
             assert_eq!(dir, "/repo/main");
             vec!["/repo/.claude/worktrees/feat".to_string()]
         });
         assert_eq!(all, vec!["/repo/main", "/repo/.claude/worktrees/feat"]);
-        assert_eq!(
-            parents.get("/repo/.claude/worktrees/feat").map(String::as_str),
-            Some("/repo/main")
-        );
-        // The configured root itself never gets a parent entry.
-        assert!(!parents.contains_key("/repo/main"));
     }
 
     #[test]
-    fn dedupes_a_worktree_already_configured_explicitly_and_gives_it_no_parent() {
+    fn dedupes_a_worktree_already_configured_explicitly() {
         // e.g. towles-tool-rs-slot-2 manually added even though it's also a
-        // worktree of towles-tool-rs-slot-1 — must not appear twice, and must
-        // NOT be recorded as slot-1's child: explicit tracking always wins,
-        // so it renders as its own row.
+        // worktree of towles-tool-rs-slot-1 — must not appear twice.
         let repo_paths = vec!["/repo/slot-1".to_string(), "/repo/slot-2".to_string()];
-        let (all, parents) = merge_worktree_dirs(&repo_paths, |dir| match dir {
+        let all = merge_worktree_dirs(&repo_paths, |dir| match dir {
             "/repo/slot-1" => vec!["/repo/slot-2".to_string()],
             _ => vec![],
         });
         assert_eq!(all, repo_paths);
-        assert!(parents.is_empty());
     }
 
     #[test]
-    fn no_worktrees_leaves_the_list_unchanged_and_parents_empty() {
+    fn no_worktrees_leaves_the_list_unchanged() {
         let repo_paths = vec!["/repo/plain-clone".to_string()];
-        let (all, parents) = merge_worktree_dirs(&repo_paths, |_| vec![]);
+        let all = merge_worktree_dirs(&repo_paths, |_| vec![]);
         assert_eq!(all, repo_paths);
-        assert!(parents.is_empty());
     }
 }
