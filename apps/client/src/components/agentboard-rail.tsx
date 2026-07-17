@@ -71,6 +71,7 @@ import {
   type WindowsPayload,
 } from "@/lib/agentboard";
 import type { PrItem } from "@/lib/data";
+import { shortcutHint } from "@/lib/shortcuts";
 
 /** Ambient status color for a set of sessions hidden behind a collapse:
  * red if one errored, blue if one is waiting on you, cyan while an agent is
@@ -580,7 +581,7 @@ export function RepoGroup({
           </span>
         </button>
         <IconBtn
-          title="New slot — goal, branch, base"
+          title={`New slot — goal, branch, base (${shortcutHint("ab-new-slot")})`}
           onClick={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir, key: repo.key })}
           className="hover:text-violet-500"
         >
@@ -811,12 +812,20 @@ function FolderHeader({
         {needs > 0 && <NeedsBadge n={needs} />}
         {/* No "New session"/"New slot" on a ghost — the directory is gone. */}
         {!missing && (
-          <IconBtn title="New session (⌘D)" onClick={onNewSession} className="hover:text-violet-500">
+          <IconBtn
+            title={`New session (${shortcutHint("ab-new-session")})`}
+            onClick={onNewSession}
+            className="hover:text-violet-500"
+          >
             <Plus className="size-3.5" />
           </IconBtn>
         )}
         {!missing && onNewSlot && (
-          <IconBtn title="New slot — goal, branch, base" onClick={onNewSlot} className="hover:text-violet-500">
+          <IconBtn
+            title={`New slot — goal, branch, base (${shortcutHint("ab-new-slot")})`}
+            onClick={onNewSlot}
+            className="hover:text-violet-500"
+          >
             <FolderPlus className="size-3.5" />
           </IconBtn>
         )}

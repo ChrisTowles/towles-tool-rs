@@ -726,6 +726,15 @@ export function AgentboardScreen() {
     });
   }
 
+  // ab-new-slot + the working-context band's "New slot" button both open the
+  // form for the focused folder's repo — expand a collapsed rail first since
+  // the form itself renders there, same as the rail's own new-slot buttons.
+  function newSlotForActiveRepo() {
+    if (!activeRepo) return;
+    if (railCollapsed) toggleRail();
+    toggleSlotForm({ name: activeRepo.name, dir: activeRepo.folders[0].dir, key: activeRepo.key });
+  }
+
   function closeSlotForm(key: string) {
     setOpenSlotForms((prev) => {
       if (!prev.has(key)) return prev;
@@ -1153,6 +1162,7 @@ export function AgentboardScreen() {
         "ab-new-session": () => {
           if (activeFolderDir) void newSession(activeFolderDir);
         },
+        "ab-new-slot": newSlotForActiveRepo,
         "ab-close-session": () => {
           if (selected) void closeSession(selected.sessionId);
         },
@@ -1173,7 +1183,7 @@ export function AgentboardScreen() {
       // newSession/closeSession/openDiff/openFiles/jumpToNeedsYou/splitIntoWindow are
       // stable within a render pass; the state they close over is what matters.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [activeFolderDir, selected, wins, repos, folderOf, splitCandidates],
+      [activeFolderDir, selected, wins, repos, folderOf, splitCandidates, activeRepo, railCollapsed],
     ),
     activeTab === "agentboard",
   );
@@ -1432,14 +1442,7 @@ export function AgentboardScreen() {
                   onOpenDiff={openDiff}
                   onOpenFiles={openFiles}
                   onNewSession={newSession}
-                  onNewSlot={(r) => {
-                    // The inline form still renders in the rail under the
-                    // repo's header — expand a collapsed rail first so
-                    // triggering it from the pane band doesn't open a form
-                    // nobody can see.
-                    if (railCollapsed) toggleRail();
-                    toggleSlotForm(r);
-                  }}
+                  onNewSlot={newSlotForActiveRepo}
                   onRemoveRepo={requestRemoveRepo}
                   onDeleteWorktree={requestDeleteWorktree}
                 />
