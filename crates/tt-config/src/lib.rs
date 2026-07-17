@@ -586,12 +586,13 @@ pub fn store_db_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("tt.db"))
 }
 
-/// Directory watched by the app's scheduler for an eager PR-refresh nudge
-/// (any file touched inside it triggers an immediate `prs` collect instead of
-/// waiting for the normal poll cadence). Instance-scoped like `data_dir()` so
-/// a nudge in one worktree slot only wakes that slot's own running app. Kept
-/// as its own subdirectory rather than nested directly under `data_dir()` so
-/// a directory-watch on it isn't spammed by tt.db's own WAL/SHM churn.
+/// Directory watched by the app's scheduler for an eager collector nudge: a
+/// `prs` or `issues` file touched inside it triggers an immediate collect of
+/// that target instead of waiting for the normal poll cadence. Instance-scoped
+/// like `data_dir()` so a nudge in one worktree slot only wakes that slot's
+/// own running app. Kept as its own subdirectory rather than nested directly
+/// under `data_dir()` so a directory-watch on it isn't spammed by tt.db's own
+/// WAL/SHM churn.
 pub fn nudge_dir_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("nudge"))
 }

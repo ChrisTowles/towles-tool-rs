@@ -246,7 +246,7 @@ struct RequiredPlugin {
 
 /// Claude plugins the workflows expect: `code-simplifier` (an official
 /// plugin some skills shell out to) and this repo's own `towles-tool-app`
-/// (registers the `tt` MCP server plus the `gh pr merge`/`create` nudge
+/// (registers the `tt` MCP server plus the `gh pr`/`gh issue` mutation nudge
 /// hook — see `packages/app`). `tt install` is what actually performs both
 /// installs (marketplace add included), so that's the hint for anything it
 /// covers rather than a raw `claude plugin install` incantation.

@@ -21,7 +21,7 @@ command).
 
 | Hook                            | Event                | Does…                                                                 |
 | -------------------------------- | --------------------- | ---------------------------------------------------------------------- |
-| `hooks/scripts/gh-pr-nudge.sh`  | `PostToolUse` (Bash)  | After `gh pr merge`/`gh pr create`, nudges a running `tt-app` instance to refresh its PR data immediately instead of waiting for its normal poll interval (`tt collect nudge`). |
+| `hooks/scripts/gh-pr-nudge.sh`  | `PostToolUse` (Bash)  | After a `gh pr` mutation (merge/create/close/reopen/ready) or a `gh issue` mutation (create/close/reopen), nudges a running `tt-app` instance to refresh the matching data immediately instead of waiting for its normal poll interval (`tt collect nudge prs`/`tt collect nudge issues`). |
 
 The hook is a no-op unless the session looks towles-tool-relevant — either it's
 running inside a terminal the app itself spawned (`TT_SESSION_ID`/

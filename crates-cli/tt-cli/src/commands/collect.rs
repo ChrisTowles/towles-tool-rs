@@ -16,15 +16,15 @@ use serde::Serialize;
 use tt_collect::{CalendarProvider, CollectSummary};
 use tt_store::{CollectRun, Store};
 
-use crate::cli::{CollectCommands, CollectStatusArgs};
+use crate::cli::{CollectCommands, CollectStatusArgs, NudgeTarget};
 use crate::ui;
 
 pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
     // Deliberately bypasses the store entirely: this runs inside a Claude Code
     // hook's timeout budget, so it must stay a cheap filesystem touch, not pay
     // for opening (and migrating) tt.db like every other collect subcommand.
-    if matches!(command, CollectCommands::Nudge) {
-        return run_nudge();
+    if let CollectCommands::Nudge(args) = &command {
+        return run_nudge(args.target);
     }
 
     let store = match Store::open_default() {
@@ -90,7 +90,7 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
             summaries
         }
         // Handled by the early return above; never reached here.
-        CollectCommands::Nudge | CollectCommands::Status(_) => return 0,
+        CollectCommands::Nudge(_) | CollectCommands::Status(_) => return 0,
     };
 
     print_summaries(&summaries);
@@ -103,12 +103,12 @@ fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// Touch the PR-refresh nudge file (creating its directory if needed). The
-/// app's scheduler watches this directory and, on any change, runs a `prs`
-/// collect immediately instead of waiting for its normal poll cadence — see
-/// `crates-tauri/tt-app/src/scheduler.rs`. Content is just the timestamp, for
-/// debuggability; only the file's existence/mtime is ever read.
-fn run_nudge() -> i32 {
+/// Touch one collector's nudge file (creating the nudge dir if needed). The
+/// app's scheduler watches this directory and, on a change to `target`'s file,
+/// runs that collect immediately instead of waiting for its normal poll
+/// cadence — see `crates-tauri/tt-app/src/scheduler.rs`. Content is just the
+/// timestamp, for debuggability; only the file's existence/mtime is ever read.
+fn run_nudge(target: NudgeTarget) -> i32 {
     let dir = match tt_config::nudge_dir_path() {
         Ok(dir) => dir,
         Err(e) => {
@@ -120,7 +120,7 @@ fn run_nudge() -> i32 {
         ui::error(&format!("Failed to create nudge dir: {e}"));
         return 1;
     }
-    match std::fs::write(dir.join("prs"), now_ms().to_string()) {
+    match std::fs::write(dir.join(target.file_name()), now_ms().to_string()) {
         Ok(()) => 0,
         Err(e) => {
             ui::error(&format!("Failed to write nudge file: {e}"));

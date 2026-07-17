@@ -229,12 +229,39 @@ pub enum CollectCommands {
     /// Run every collector (calendar, issues, PRs, Slack)
     All,
 
-    /// Touch the PR-refresh nudge file so a running app instance in this
-    /// checkout refreshes its PR data immediately instead of on its next poll
-    Nudge,
+    /// Touch a collector's nudge file so a running app instance in this
+    /// checkout refreshes that data immediately instead of on its next poll
+    Nudge(NudgeArgs),
 
     /// Show each collector's enabled state and last-run health (no collection)
     Status(CollectStatusArgs),
+}
+
+#[derive(Args)]
+pub struct NudgeArgs {
+    /// Which collector to eagerly refresh
+    #[arg(value_enum)]
+    pub target: NudgeTarget,
+}
+
+/// Which collector `tt collect nudge` eagerly refreshes. Mirrors the two
+/// collectors the app's scheduler nudge-dir watch polls for
+/// (`crates-tauri/tt-app/src/scheduler.rs`) — see [`NudgeTarget::file_name`]
+/// for the shared filename contract between the two.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum NudgeTarget {
+    Prs,
+    Issues,
+}
+
+impl NudgeTarget {
+    /// Filename inside the nudge dir this target touches.
+    pub fn file_name(self) -> &'static str {
+        match self {
+            NudgeTarget::Prs => "prs",
+            NudgeTarget::Issues => "issues",
+        }
+    }
 }
 
 #[derive(Args)]
