@@ -19,6 +19,26 @@ export const abInvoke = invokeCmd;
 export const abCreateIssue = (dir: string, title: string) =>
   invokeOrThrow<string>("store_create_issue", { dir, title });
 
+/** Outcome of `abSyncRepo` (mirrors the Rust `RepoSyncResult`). `started` is
+ * `false` only when a sync for this dir was already in flight — a deduped
+ * no-op the caller should ignore quietly. Otherwise `ok`/`count`/`message`
+ * summarize the combined issues+PRs collector run. */
+export type RepoSyncResult = {
+  started: boolean;
+  ok: boolean;
+  count: number;
+  message?: string | null;
+};
+
+/** Force the repo checked out at `dir` to sync its issues + PRs from GitHub
+ * right now, bypassing the collector poll cadence — the rail's "Sync now"
+ * action, for pulling in updates the poll hasn't picked up yet. Scoped to
+ * this one repo; never touches other tracked repos' cached rows. Throws on a
+ * Tauri-level failure so the caller can toast it; a collector-level failure
+ * (e.g. `gh` auth expired) comes back as `ok: false` with `message` instead. */
+export const abSyncRepo = (dir: string) =>
+  invokeOrThrow<RepoSyncResult>("store_sync_repo", { dir });
+
 export type AgentStatus =
   "idle" | "busy" | "complete" | "error" | "waiting" | "interrupted";
 

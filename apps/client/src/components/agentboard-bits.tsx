@@ -9,6 +9,7 @@ import {
   GitPullRequest,
   Loader2,
   MoreVertical,
+  RefreshCw,
   StickyNote,
   Trash2,
 } from "lucide-react";
@@ -29,6 +30,7 @@ import { toast } from "sonner";
 import {
   abCreateIssue,
   abInvoke,
+  abSyncRepo,
   comparedBaseLabel,
   ctxPct,
   isCacheExpiring,
@@ -847,6 +849,22 @@ export function RepoMenu({
     }
   }
 
+  async function syncNow() {
+    try {
+      const result = await abSyncRepo(dir);
+      // `started: false` means a sync for this dir was already in flight
+      // (e.g. another window) — quietly ignore rather than double-toast.
+      if (!result.started) return;
+      if (result.ok) {
+        toast.success("Synced with GitHub");
+      } else {
+        toast.error(result.message ?? "Sync failed");
+      }
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }
+
   async function saveNote() {
     setNoteOpen(false);
     const trimmed = noteText.trim();
@@ -902,6 +920,9 @@ export function RepoMenu({
               <StickyNote className="size-3.5" /> {purpose ? "Edit note…" : "Set note…"}
             </DropdownMenuItem>
           )}
+          <DropdownMenuItem onSelect={() => void syncNow()} className="whitespace-nowrap">
+            <RefreshCw className="size-3.5" /> Sync now
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setIssueOpen(true)} className="whitespace-nowrap">
             <CircleDot className="size-3.5" /> Create issue…
           </DropdownMenuItem>

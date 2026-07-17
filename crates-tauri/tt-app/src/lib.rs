@@ -382,6 +382,8 @@ pub fn run() {
             app.manage(store_state);
             // Overlap guard for the manual "refresh now" command.
             app.manage(store::CollectNowState::default());
+            // Per-dir overlap guard for the rail's manual "Sync now" command.
+            app.manage(store::RepoSyncState::default());
 
             // Collector scheduler: fills tt.db (PRs + issues via gh, calendar via
             // claude -p per settings.collectors) and re-emits the snapshot. The
@@ -470,6 +472,7 @@ pub fn run() {
             store::store_gh_milestones_list,
             store::store_import_issues,
             store::store_collect_now,
+            store::store_sync_repo,
             gh_actions::cockpit_assign_issue,
             gh_actions::cockpit_create_issue_branch,
             store::store_dm_dismiss,
