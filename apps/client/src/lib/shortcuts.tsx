@@ -204,6 +204,14 @@ export const SHORTCUTS = defineShortcuts([
     allowInEditable: true,
   },
   {
+    id: "ab-new-terminal-right",
+    scope: "agentboard",
+    keys: "mod+shift+o",
+    description: "Open a new terminal to the right",
+    when: "a folder is focused",
+    allowInEditable: true,
+  },
+  {
     // Handled by the focused TerminalView itself (via `matchesShortcut`), not
     // a window-level handler: only the terminal that owns the keystroke may
     // open its overlay. Ctrl+F stays with the shell; the shifted chord is ours.
