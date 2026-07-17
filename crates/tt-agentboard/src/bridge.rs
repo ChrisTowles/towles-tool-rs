@@ -18,7 +18,11 @@
 //!   `common_dir` is empty (git info not yet computed, or not a repo) always
 //!   gets its own row. The row's non-worktree checkout (`is_worktree ==
 //!   false`) always leads its group's folder list, whatever order the
-//!   group's entries otherwise arrive in.
+//!   group's entries otherwise arrive in — and also owns the row's `key`
+//!   (and `name`/`origin_url` when nothing else has named it yet), so a
+//!   worktree slot that merely sorted alphabetically ahead of the primary
+//!   never leaves the row keyed to a folder a later poll can rename or
+//!   remove.
 //! - Each folder's agent events (from the tracker, keyed by folder name) are
 //!   distributed across its sessions by the `attribute` closure — which maps an
 //!   event to the PTY `TT_SESSION_ID` it ran in. An attributed event renders
@@ -122,7 +126,24 @@ pub fn assemble_state(
                 } else {
                     // The primary checkout leads its group regardless of
                     // when it's seen (name-sort order doesn't guarantee it
-                    // arrives first).
+                    // arrives first) — and re-anchors the row's identity
+                    // (`key`, and `name`/`origin_url` when no worktree
+                    // already supplied them) to itself. Without this, a
+                    // worktree slot that merely sorted alphabetically ahead
+                    // of the primary (a branch-slug folder name can fall
+                    // anywhere in the alphabet) would leave the row keyed to
+                    // a folder that a later poll can rename or remove out
+                    // from under it — destabilizing rail position and
+                    // collapse-state persistence (both keyed on `repo.key`).
+                    repos[i].key = format!("path:{}", entry.dir);
+                    if repos[i].origin_url.is_none() {
+                        repos[i].name = git
+                            .origin_url
+                            .as_deref()
+                            .and_then(repo_name_from_origin)
+                            .unwrap_or_else(|| entry.name.clone());
+                        repos[i].origin_url = git.origin_url.clone();
+                    }
                     repos[i].folders.insert(0, folder);
                 }
                 repos[i].needs += needs;
@@ -531,6 +552,66 @@ mod tests {
         assert_eq!(payload.repos.len(), 1, "worktree siblings nest into one row by common_dir");
         let dirs: Vec<&str> = payload.repos[0].folders.iter().map(|f| f.dir.as_str()).collect();
         assert_eq!(dirs, vec!["/r/demo", "/r/demo/.claude/worktrees/apple"]);
+    }
+
+    #[test]
+    fn worktree_siblings_row_key_and_name_anchor_to_primary_not_alpha_sort() {
+        // Regression test: a repo with several worktree slots (branch-slug
+        // folder names can fall anywhere in the alphabet) must not have its
+        // row's `key`/`name` decided by whichever slot happens to sort first
+        // — that made the row's rail position and its collapse-state
+        // persistence (both keyed on `repo.key`) shuffle every time a slot
+        // with an earlier-sorting name was created or removed. No origin URL
+        // here, so `name` also has to come from the primary's own entry, not
+        // whichever slot seeded the row.
+        let tracker = AgentTracker::new();
+        let metadata = SessionMetadataStore::new();
+        let mut store = SessionStore::new(None);
+        store.ensure_default("/r/towles-tool-rs", 1);
+        store.ensure_default("/r/towles-tool-rs/.claude/worktrees/aardvark-slot", 1);
+        let mut git = HashMap::new();
+        git.insert(
+            "/r/towles-tool-rs".to_string(),
+            GitInfo {
+                common_dir: "/r/towles-tool-rs/.git".into(),
+                is_worktree: false,
+                ..Default::default()
+            },
+        );
+        git.insert(
+            "/r/towles-tool-rs/.claude/worktrees/aardvark-slot".to_string(),
+            GitInfo {
+                common_dir: "/r/towles-tool-rs/.git".into(),
+                is_worktree: true,
+                ..Default::default()
+            },
+        );
+        // Name-sorted entries (as the engine feeds them) put the slot well
+        // ahead of the primary checkout.
+        let entries = vec![
+            RepoEntry {
+                name: "aardvark-slot".into(),
+                dir: "/r/towles-tool-rs/.claude/worktrees/aardvark-slot".into(),
+            },
+            RepoEntry { name: "towles-tool-rs".into(), dir: "/r/towles-tool-rs".into() },
+        ];
+        let payload = assemble_state(
+            &entries,
+            &git,
+            &tracker,
+            &metadata,
+            &store,
+            &FolderMetaStore::default(),
+            &no_attr,
+            &HashMap::new(),
+            None,
+            "code",
+            30,
+            0,
+        );
+        assert_eq!(payload.repos.len(), 1);
+        assert_eq!(payload.repos[0].key, "path:/r/towles-tool-rs", "key anchors to the primary");
+        assert_eq!(payload.repos[0].name, "towles-tool-rs", "name anchors to the primary");
     }
 
     #[test]

@@ -538,6 +538,7 @@ export function RepoGroup({
   // easy-to-miss) repo row still shows it holds the folder you're looking
   // at (folder-rail rule: focus never stops at the child level).
   const repoActive = repo.folders.some((f) => f.dir === activeFolderDir);
+  const scopePrefix = pathScope(repo.folders[0].dir);
   return (
     <div className="border-b" data-focus-kind="repo" data-focus-id={repo.key}>
       <div
@@ -553,6 +554,11 @@ export function RepoGroup({
         >
           <Chevron collapsed={repoCollapsed} />
           <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+          {scopePrefix && (
+            <span className="shrink-0 font-mono text-sm text-muted-foreground/60">
+              {scopePrefix}
+            </span>
+          )}
           <span className="truncate text-sm font-semibold">{repo.name}</span>
           <span className="ml-auto flex items-center gap-2">
             {repoCollapsed && (
@@ -764,7 +770,7 @@ function FolderHeader({
           ) : (
             <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
           )}
-          {scopePrefix && (
+          {scope === "repo" && scopePrefix && (
             <span className="shrink-0 font-mono text-sm text-muted-foreground/60">
               {scopePrefix}
             </span>
