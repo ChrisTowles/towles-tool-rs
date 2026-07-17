@@ -9,12 +9,15 @@
 //! holds the UI's store mutex. After every batch the fresh snapshot is emitted
 //! as `store://snapshot`.
 //!
-//! A `prs` batch can also fire early, outside its normal cadence: see the
-//! nudge-dir watch in [`spawn`], which reacts to `tt collect nudge`.
+//! A `prs` or `issues` batch can also fire early, outside its normal cadence:
+//! see the nudge-dir watch in [`spawn`], which reacts to `tt collect nudge
+//! prs`/`tt collect nudge issues` by diffing each target's file mtime (see
+//! [`changed_nudge_batches`]).
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
@@ -115,6 +118,36 @@ fn now_ms() -> i64 {
     chrono::Local::now().timestamp_millis()
 }
 
+/// Last-observed mtime of each nudge-dir file, so [`changed_nudge_batches`]
+/// can tell *which* target actually changed instead of eagerly refreshing
+/// `prs` on any touch to the directory (the dir is watched non-recursively
+/// per-file-unaware — see `tt_agentboard::fs_notify::DirNotifier`). Persists
+/// across settings-reload rebuilds, like the batch guards.
+#[derive(Default)]
+struct NudgeSeen {
+    prs: Option<SystemTime>,
+    issues: Option<SystemTime>,
+}
+
+/// Given a debounced "something in the nudge dir changed" wakeup, diff each
+/// target's file mtime against what was last seen and return the batches
+/// whose file actually advanced. Pure and file-mtime-only (no store access),
+/// so it's cheap to call on every nudge and easy to unit test with a tempdir.
+fn changed_nudge_batches(dir: &Path, seen: &mut NudgeSeen) -> Vec<Batch> {
+    let mut changed = Vec::new();
+    for (file_name, batch, last) in [
+        ("prs", Batch::Prs, &mut seen.prs),
+        ("issues", Batch::Issues, &mut seen.issues),
+    ] {
+        let mtime = std::fs::metadata(dir.join(file_name)).and_then(|m| m.modified()).ok();
+        if mtime.is_some() && mtime != *last {
+            changed.push(batch);
+        }
+        *last = mtime;
+    }
+    changed
+}
+
 /// Spawn the scheduler loop. Collector cadence/enable/provider are re-read from
 /// settings whenever `reload` is signalled (the `settings_set` command fires it),
 /// so edits in the Settings screen take effect live — no relaunch needed.
@@ -131,18 +164,23 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
         // old cadence must still block a duplicate under the new one.
         let guards = BatchGuards::default();
         // Eager-refresh accelerant: an external process (the `towles-tool-app`
-        // Claude Code plugin's PostToolUse hook, via `tt collect nudge`) can
-        // touch a file in the nudge dir right after a `gh pr merge`/`gh pr
-        // create` to make the PR view update well before the next `pr_tick`.
-        // Same debounced fs-notify pattern as the agentboard journal watch in
-        // `lib.rs` — `.ok()` so a watch failure (e.g. inotify limits) just
-        // falls back to the normal poll cadence instead of breaking startup.
+        // Claude Code plugin's PostToolUse hook, via `tt collect nudge prs`/
+        // `tt collect nudge issues`) can touch a file in the nudge dir right
+        // after a `gh pr`/`gh issue` mutation to make that view update well
+        // before its next scheduled tick. Same debounced fs-notify pattern as
+        // the agentboard journal watch in `lib.rs` — `.ok()` so a watch
+        // failure (e.g. inotify limits) just falls back to the normal poll
+        // cadence instead of breaking startup. The watch itself only signals
+        // "something in the dir changed"; `changed_nudge_batches` below
+        // resolves that into which target(s) actually advanced.
+        let nudge_dir = tt_config::nudge_dir_path().ok();
         let nudge_notify = Arc::new(Notify::new());
-        let _nudge_watcher = tt_config::nudge_dir_path().ok().and_then(|dir| {
-            std::fs::create_dir_all(&dir).ok()?;
+        let _nudge_watcher = nudge_dir.as_ref().and_then(|dir| {
+            std::fs::create_dir_all(dir).ok()?;
             let n = nudge_notify.clone();
-            tt_agentboard::fs_notify::DirNotifier::watch(&dir, move || n.notify_one()).ok()
+            tt_agentboard::fs_notify::DirNotifier::watch(dir, move || n.notify_one()).ok()
         });
+        let mut nudge_seen = NudgeSeen::default();
         loop {
             // (Re)load config and rebuild the tick intervals for this cycle.
             let collectors = tt_config::load().map(|s| s.collectors).unwrap_or_default();
@@ -217,8 +255,17 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                             &guards.slack,
                         );
                     }
-                    _ = nudge_notify.notified(), if collectors.prs.enabled => {
-                        spawn_batch(&app, Batch::Prs, provider, calendar_period_ms, &guards.prs);
+                    _ = nudge_notify.notified() => {
+                        if let Some(dir) = &nudge_dir {
+                            for batch in changed_nudge_batches(dir, &mut nudge_seen) {
+                                let guard = match batch {
+                                    Batch::Prs if collectors.prs.enabled => &guards.prs,
+                                    Batch::Issues if collectors.issues.enabled => &guards.issues,
+                                    _ => continue,
+                                };
+                                spawn_batch(&app, batch, provider, calendar_period_ms, guard);
+                            }
+                        }
                     }
                     _ = notify_tick.tick() => {
                         run_notify_check(
@@ -552,6 +599,62 @@ mod tests {
         assert!(claim_in_flight(&calendar), "calendar claims its own slot");
         assert!(claim_in_flight(&prs), "prs is unaffected by calendar in-flight");
         assert!(!claim_in_flight(&calendar), "calendar still in flight");
+    }
+
+    fn batch_names(batches: &[Batch]) -> Vec<&'static str> {
+        batches
+            .iter()
+            .map(|b| match b {
+                Batch::Prs => "prs",
+                Batch::Issues => "issues",
+                Batch::Calendar => "calendar",
+                Batch::SlackDm(_) => "slack",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn changed_nudge_batches_detects_a_freshly_written_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seen = NudgeSeen::default();
+        assert!(changed_nudge_batches(dir.path(), &mut seen).is_empty(), "nothing written yet");
+
+        std::fs::write(dir.path().join("prs"), "1").unwrap();
+        assert_eq!(batch_names(&changed_nudge_batches(dir.path(), &mut seen)), vec!["prs"]);
+        // Already acknowledged: polling again with no further touch is quiet.
+        assert!(changed_nudge_batches(dir.path(), &mut seen).is_empty());
+    }
+
+    #[test]
+    fn changed_nudge_batches_tracks_each_target_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seen = NudgeSeen::default();
+        std::fs::write(dir.path().join("issues"), "1").unwrap();
+        assert_eq!(batch_names(&changed_nudge_batches(dir.path(), &mut seen)), vec!["issues"]);
+
+        std::fs::write(dir.path().join("prs"), "1").unwrap();
+        assert_eq!(
+            batch_names(&changed_nudge_batches(dir.path(), &mut seen)),
+            vec!["prs"],
+            "issues was already acknowledged in the prior poll"
+        );
+    }
+
+    #[test]
+    fn changed_nudge_batches_fires_again_on_a_later_re_touch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seen = NudgeSeen::default();
+        let path = dir.path().join("prs");
+        std::fs::write(&path, "1").unwrap();
+        changed_nudge_batches(dir.path(), &mut seen);
+
+        // A second `gh pr merge` before the app's next poll re-touches the
+        // same file; only the mtime is ever read (content is just a
+        // debugging aid), so bump it explicitly rather than relying on
+        // filesystem mtime resolution across two quick writes.
+        let file = std::fs::File::open(&path).unwrap();
+        file.set_modified(SystemTime::now() + Duration::from_secs(5)).unwrap();
+        assert_eq!(batch_names(&changed_nudge_batches(dir.path(), &mut seen)), vec!["prs"]);
     }
 
     #[test]

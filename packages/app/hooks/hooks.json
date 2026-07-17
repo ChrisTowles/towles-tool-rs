@@ -1,5 +1,5 @@
 {
-  "description": "Nudge the towles-tool app to refresh PR data right after `gh pr merge`/`gh pr create`, instead of waiting for its normal poll interval.",
+  "description": "Nudge the towles-tool app to refresh its PR/issue data right after a `gh pr`/`gh issue` mutation, instead of waiting for its normal poll interval.",
   "hooks": {
     "PostToolUse": [
       {

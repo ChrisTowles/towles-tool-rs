@@ -12,7 +12,7 @@
     {
       "name": "towles-tool-app",
       "source": "./packages/app",
-      "description": "Bridges Claude Code to the towles-tool desktop app — its MCP server (day brief, needs-you, PR/issue status, todos, journal) plus a hook that nudges the app to refresh PR data immediately after gh pr merge/create."
+      "description": "Bridges Claude Code to the towles-tool desktop app — its MCP server (day brief, needs-you, PR/issue status, todos, journal) plus a hook that nudges the app to refresh PR/issue data immediately after a gh pr/gh issue mutation."
     }
   ]
 }

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# PostToolUse(Bash): if the command just run was `gh pr merge` or `gh pr
-# create`, nudge a running towles-tool app instance to refresh its PR data
-# immediately instead of waiting for its normal poll interval (`tt collect
-# nudge` -- see crates-tauri/tt-app/src/scheduler.rs's nudge-dir watch).
+# PostToolUse(Bash): if the command just run was a `gh pr` or `gh issue`
+# mutation (merge/create/close/reopen/ready for PRs; create/close/reopen for
+# issues), nudge a running towles-tool app instance to refresh the matching
+# view immediately instead of waiting for its normal poll interval
+# (`tt collect nudge prs`/`tt collect nudge issues` -- see
+# crates-tauri/tt-app/src/scheduler.rs's nudge-dir watch).
 #
 # Fails open throughout: this plugin can be enabled globally in Claude Code,
 # so it runs for every Bash command in every project, not just towles-tool
@@ -13,11 +15,22 @@ input=$(cat)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
 [ -z "$cmd" ] && exit 0
 
-# Only an actual `gh pr merge`/`gh pr create` invocation is in scope --
-# separator- or line-start-anchored (same heuristic as the repo's own
+# Which nudge target(s) this command touches -- separator- or
+# line-start-anchored (same heuristic as the repo's own
 # .claude/hooks/guard-slot-pkill.sh) so this never fires on a bare mention of
-# the phrase inside prose, a commit message, or a code span.
-if ! printf '%s\n' "$cmd" | grep -qE '(^|[;&|(])[[:space:]]*gh[[:space:]]+pr[[:space:]]+(merge|create)([[:space:]]|$)'; then
+# the phrase inside prose, a commit message, or a code span. A chained
+# command (`gh pr create && gh issue close 5`) can match both.
+is_pr_command=0
+printf '%s\n' "$cmd" |
+  grep -qE '(^|[;&|(])[[:space:]]*gh[[:space:]]+pr[[:space:]]+(merge|create|close|reopen|ready)([[:space:]]|$)' &&
+  is_pr_command=1
+
+is_issue_command=0
+printf '%s\n' "$cmd" |
+  grep -qE '(^|[;&|(])[[:space:]]*gh[[:space:]]+issue[[:space:]]+(create|close|reopen)([[:space:]]|$)' &&
+  is_issue_command=1
+
+if [ "$is_pr_command" -ne 1 ] && [ "$is_issue_command" -ne 1 ]; then
   exit 0
 fi
 
@@ -58,5 +71,6 @@ if [ "$in_app_terminal" -ne 1 ] && [ "$in_checkout" -ne 1 ]; then
 fi
 
 command -v tt >/dev/null 2>&1 || exit 0
-(cd "$cwd" && tt collect nudge >/dev/null 2>&1)
+[ "$is_pr_command" -eq 1 ] && (cd "$cwd" && tt collect nudge prs >/dev/null 2>&1)
+[ "$is_issue_command" -eq 1 ] && (cd "$cwd" && tt collect nudge issues >/dev/null 2>&1)
 exit 0

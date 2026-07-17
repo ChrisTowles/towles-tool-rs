@@ -276,9 +276,9 @@ plugins ship today:
   app itself: registers its `tt mcp serve` MCP server (day brief, needs-you,
   PR/issue status, todos, journal) and a `PostToolUse` hook
   (`hooks/scripts/gh-pr-nudge.sh`) that nudges a running app instance to
-  refresh its PR data immediately after `gh pr merge`/`gh pr create` via
-  `tt collect nudge`, rather than waiting for the app's normal poll
-  interval — see the "nudge" mechanism note in
+  refresh its PR or issue data immediately after a `gh pr`/`gh issue`
+  mutation via `tt collect nudge prs`/`tt collect nudge issues`, rather than
+  waiting for the app's normal poll interval — see the "nudge" mechanism note in
   [`crates-tauri/tt-app/CLAUDE.md`](crates-tauri/tt-app/CLAUDE.md). Meant to
   be enabled globally (its MCP tools are useful from any project), so its
   hook fails open/no-ops outside a towles-tool-relevant session — don't
