@@ -36,7 +36,7 @@ pub use slack_socket::{
     parse_connection_url, parse_envelope,
 };
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tt_store::{EventInput, Store};
@@ -455,6 +455,78 @@ pub fn collect_manual(
     summaries
 }
 
+/// Sync one repo's issues + PRs immediately — the Agentboard rail's manual
+/// "Sync now" action, for pulling in GitHub updates the poll cadence hasn't
+/// picked up yet. Unlike [`collect_issues`]/[`collect_prs`], this never takes
+/// their full-table-replace path: even a totally clean run only touches
+/// `dir`'s own rows (via the `_for_repos` scoped write), so syncing one repo
+/// can never wipe another tracked repo's cached issues/PRs. A missing `dir`
+/// is recorded as a failure (unlike a sweep's silent skip) — this is a
+/// targeted action on a specific repo, not a passive background pass.
+///
+/// Still records the shared `issues`/`prs` `record_run` rows like the
+/// sweep-based collectors: that freshness timestamp tracks whether the
+/// collector engine itself is healthy, not per-repo coverage, so a scoped run
+/// updating it is consistent with what it already means.
+pub fn collect_repo_now(store: &Store, dir: &Path, now_ms: i64) -> Vec<CollectSummary> {
+    if !dir.is_dir() {
+        let msg = format!("repo directory not found: {}", dir.display());
+        return vec![
+            finish(store, "issues", false, 0, Some(msg.clone()), now_ms),
+            finish(store, "prs", false, 0, Some(msg), now_ms),
+        ];
+    }
+    let issues_summary = collect_repo_issues_now(store, dir, now_ms);
+    if let Err(e) = reconcile_linked_task_statuses(store, now_ms) {
+        log::warn!("reconcile_linked_task_statuses failed: {e}");
+    }
+    vec![issues_summary, collect_repo_prs_now(store, dir, now_ms)]
+}
+
+fn collect_repo_issues_now(store: &Store, dir: &Path, now_ms: i64) -> CollectSummary {
+    write_repo_issues_now(store, issues::collect_repo_issues(dir), now_ms)
+}
+
+/// Apply one repo's freshly-collected issues via the scoped
+/// [`Store::replace_issues_for_repos`] write — factored out from
+/// [`collect_repo_issues_now`] so the scoping behavior is unit-testable
+/// without shelling out to `gh`.
+fn write_repo_issues_now(
+    store: &Store,
+    result: Result<(String, Vec<tt_store::IssueInput>), String>,
+    now_ms: i64,
+) -> CollectSummary {
+    match result {
+        Ok((repo, items)) => match store.replace_issues_for_repos(&[repo], &items) {
+            Ok(count) => finish(store, "issues", true, count, None, now_ms),
+            Err(e) => finish(store, "issues", false, 0, Some(e.to_string()), now_ms),
+        },
+        Err(e) => finish(store, "issues", false, 0, Some(e), now_ms),
+    }
+}
+
+fn collect_repo_prs_now(store: &Store, dir: &Path, now_ms: i64) -> CollectSummary {
+    write_repo_prs_now(store, prs::collect_repo_prs(dir), now_ms)
+}
+
+/// Apply one repo's freshly-collected PRs via the scoped
+/// [`Store::replace_prs_for_repos`] write — factored out from
+/// [`collect_repo_prs_now`] so the scoping behavior is unit-testable without
+/// shelling out to `gh`.
+fn write_repo_prs_now(
+    store: &Store,
+    result: Result<(String, Vec<tt_store::PrInput>), String>,
+    now_ms: i64,
+) -> CollectSummary {
+    match result {
+        Ok((repo, items)) => match store.replace_prs_for_repos(&[repo], &items) {
+            Ok(count) => finish(store, "prs", true, count, None, now_ms),
+            Err(e) => finish(store, "prs", false, 0, Some(e.to_string()), now_ms),
+        },
+        Err(e) => finish(store, "prs", false, 0, Some(e), now_ms),
+    }
+}
+
 /// The tracked repo directories from the agentboard repos config, or an empty
 /// vec if the config is missing/empty.
 pub fn tracked_repo_dirs() -> Vec<PathBuf> {
@@ -841,6 +913,87 @@ mod tests {
             None => store.replace_issues(all),
             Some(repos) => store.replace_issues_for_repos(repos, all),
         }
+    }
+
+    fn pr(repo: &str, number: i64) -> tt_store::PrInput {
+        tt_store::PrInput {
+            repo: repo.to_string(),
+            number,
+            title: format!("pr {number}"),
+            branch: format!("branch-{number}"),
+            state: "open".to_string(),
+            checks: "none".to_string(),
+            review_state: String::new(),
+            url: format!("https://github.com/{repo}/pull/{number}"),
+            updated_ts: 1,
+        }
+    }
+
+    #[test]
+    fn write_repo_issues_now_only_replaces_the_synced_repo() {
+        // The bug this exists to prevent: `collect_issues` with a 1-element
+        // repo_dirs slice would see a "clean" sweep and do a full-table
+        // replace, wiping every other tracked repo's rows. The scoped write
+        // must never do that.
+        let store = Store::open_in_memory().unwrap();
+        store.replace_issues(&[issue("o/a", 1), issue("o/b", 2)]).unwrap();
+
+        let summary =
+            write_repo_issues_now(&store, Ok(("o/a".to_string(), vec![issue("o/a", 9)])), 5);
+
+        assert!(summary.ok);
+        assert_eq!(summary.count, 1);
+        let issues = store.issues().unwrap();
+        assert!(issues.iter().any(|i| i.repo == "o/a" && i.number == 9), "synced repo's fresh row");
+        assert!(issues.iter().any(|i| i.repo == "o/b" && i.number == 2), "other repo untouched");
+        assert!(!issues.iter().any(|i| i.number == 1), "synced repo's stale row is gone");
+    }
+
+    #[test]
+    fn write_repo_issues_now_records_the_error_and_keeps_existing_rows_on_failure() {
+        let store = Store::open_in_memory().unwrap();
+        store.replace_issues(&[issue("o/a", 1)]).unwrap();
+
+        let summary = write_repo_issues_now(&store, Err("gh: rate limited".to_string()), 5);
+
+        assert!(!summary.ok);
+        assert_eq!(summary.message.as_deref(), Some("gh: rate limited"));
+        assert_eq!(store.issues().unwrap().len(), 1, "existing rows survive a failed sync");
+    }
+
+    #[test]
+    fn write_repo_prs_now_only_replaces_the_synced_repo() {
+        let store = Store::open_in_memory().unwrap();
+        store.replace_prs(&[pr("o/a", 1), pr("o/b", 2)]).unwrap();
+
+        let summary = write_repo_prs_now(&store, Ok(("o/a".to_string(), vec![pr("o/a", 9)])), 5);
+
+        assert!(summary.ok);
+        assert_eq!(summary.count, 1);
+        let prs = store.prs().unwrap();
+        assert!(prs.iter().any(|p| p.repo == "o/a" && p.number == 9), "synced repo's fresh row");
+        assert!(prs.iter().any(|p| p.repo == "o/b" && p.number == 2), "other repo untouched");
+        assert!(!prs.iter().any(|p| p.number == 1), "synced repo's stale row is gone");
+    }
+
+    #[test]
+    fn collect_repo_now_records_a_failure_for_a_missing_dir_without_touching_other_rows() {
+        let store = Store::open_in_memory().unwrap();
+        store.replace_issues(&[issue("o/a", 1)]).unwrap();
+        store.replace_prs(&[pr("o/a", 1)]).unwrap();
+
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("gone");
+        let summaries = collect_repo_now(&store, &missing, 9);
+
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries.iter().all(|s| !s.ok));
+        assert!(
+            summaries.iter().all(|s| s.message.as_deref().unwrap().contains("not found")),
+            "missing dir is surfaced as a clear failure, not a silent skip"
+        );
+        assert_eq!(store.issues().unwrap().len(), 1, "no repo touched on a missing dir");
+        assert_eq!(store.prs().unwrap().len(), 1, "no repo touched on a missing dir");
     }
 
     #[test]

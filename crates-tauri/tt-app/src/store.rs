@@ -51,6 +51,26 @@ pub struct CollectNowState {
     running: Arc<AtomicBool>,
 }
 
+/// Managed state guarding against overlapping per-repo manual syncs — the
+/// Agentboard rail's "Sync now" action. Keyed by repo dir (unlike
+/// [`CollectNowState`]'s single global flag) so syncing two different repos
+/// concurrently is fine; only a double-click on the same repo's action is
+/// deduped.
+#[derive(Default)]
+pub struct RepoSyncState {
+    running: Arc<Mutex<std::collections::HashSet<String>>>,
+}
+
+/// Releases one dir from a [`RepoSyncState`]'s in-flight set when dropped, so
+/// the guard clears on every exit path — including a panic.
+struct ReleaseDirOnDrop(Arc<Mutex<std::collections::HashSet<String>>>, String);
+
+impl Drop for ReleaseDirOnDrop {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().remove(&self.1);
+    }
+}
+
 /// Sets the running flag back to `false` when dropped, so the guard releases on
 /// every exit path of the blocking worker — including a panic.
 struct ReleaseOnDrop(Arc<AtomicBool>);
@@ -629,6 +649,76 @@ fn run_collect_now_blocking(app: &AppHandle) {
     if let Ok(snapshot) = store.snapshot() {
         let _ = app.emit(SNAPSHOT_EVENT, snapshot);
     }
+}
+
+/// What a `store_sync_repo` call did. `started` is `false` when a sync for
+/// this dir was already in flight and this call was a deduped no-op — the
+/// frontend should treat that quietly, not as a result to report. Otherwise
+/// `ok`/`count`/`message` mirror the combined issues+PRs collector outcome:
+/// `ok` is `true` only when both succeeded, `count` is the combined row
+/// count written, and `message` carries the first failure's detail.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoSyncResult {
+    pub started: bool,
+    pub ok: bool,
+    pub count: usize,
+    pub message: Option<String>,
+}
+
+/// Manually sync one repo's issues + PRs right now, bypassing the poll
+/// cadence — the Agentboard rail's "Sync now" action, for pulling in GitHub
+/// updates the scheduler hasn't picked up yet. Re-emits the snapshot on
+/// completion. Overlap-guarded per dir: a sync already running for `dir`
+/// returns `started: false` without starting another; syncing a different dir
+/// concurrently is unaffected.
+///
+/// Runs on a blocking worker with its own store connection (mirroring
+/// [`store_collect_now`]) so the `gh` round-trip never holds the UI's store
+/// mutex.
+#[tauri::command]
+pub async fn store_sync_repo(
+    app: AppHandle,
+    sync: State<'_, RepoSyncState>,
+    dir: String,
+) -> Result<RepoSyncResult, String> {
+    let running = sync.running.clone();
+    {
+        let mut guard = running.lock().unwrap();
+        if !guard.insert(dir.clone()) {
+            return Ok(RepoSyncResult { started: false, ok: true, count: 0, message: None });
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _release = ReleaseDirOnDrop(running, dir.clone());
+        run_sync_repo_blocking(&app, &dir)
+    })
+    .await
+    .map_err(|e| format!("repo sync worker failed: {e}"))
+}
+
+/// Open a fresh store, sync one repo's issues + PRs, emit the resulting
+/// snapshot, and summarize the outcome for the caller.
+fn run_sync_repo_blocking(app: &AppHandle, dir: &str) -> RepoSyncResult {
+    let store = match Store::open_default() {
+        Ok(store) => store,
+        Err(e) => {
+            let msg = format!("store unavailable: {e}");
+            eprintln!("repo-sync: {msg}");
+            return RepoSyncResult { started: true, ok: false, count: 0, message: Some(msg) };
+        }
+    };
+    let summaries = tt_collect::collect_repo_now(&store, std::path::Path::new(dir), now_ms());
+    let ok = summaries.iter().all(|s| s.ok);
+    let count = summaries.iter().map(|s| s.count).sum();
+    let message = summaries.iter().find(|s| !s.ok).and_then(|s| s.message.clone());
+    if !ok {
+        eprintln!("repo-sync: sync failed for {dir}: {}", message.as_deref().unwrap_or("unknown"));
+    }
+    if let Ok(snapshot) = store.snapshot() {
+        let _ = app.emit(SNAPSHOT_EVENT, snapshot);
+    }
+    RepoSyncResult { started: true, ok, count, message }
 }
 
 /// The Slack config to feed a manual refresh, or `None` when the collector is
