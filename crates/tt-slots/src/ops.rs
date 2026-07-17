@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
@@ -25,7 +25,20 @@ pub const SETUP_ENV_KEY: &str = "TT_SLOT_SETUP";
 const LOCK_FILE: &str = "tt-slots.lock";
 const LOCK_STALE: Duration = Duration::from_secs(60);
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// The pre-flight `fetch` in [`create_slot`] is best-effort freshness, not
+/// required for correctness (a failure just falls back to local refs with a
+/// warning) — so it gets a shorter leash than [`GIT_TIMEOUT`] and fails fast
+/// on a slow/inspected network instead of blocking creation for up to 30s.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(600);
+/// Below this, a creation step's duration is unremarkable — normal git/
+/// filesystem work on a local repo. Above it, something environmental is
+/// probably adding the time (a slow or TLS-inspecting proxy, antivirus/EDR
+/// intercepting every file write, Spotlight indexing a freshly checked-out
+/// tree — all disproportionately common on a managed corporate laptop), so
+/// [`create_slot`] names the step and its duration in a warning instead of
+/// letting it pass silently.
+const SLOW_STEP: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
 pub enum OpsError {
@@ -195,11 +208,31 @@ pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
 /// prompt with nothing to answer it) must fail after `GIT_TIMEOUT`, not hang
 /// the caller (`create_slot`/`remove_slot`/`clean_slots`) forever.
 pub fn git_checkout(checkout: &Path, args: &[&str]) -> Result<tt_exec::Output> {
+    git_checkout_timeout(checkout, args, GIT_TIMEOUT)
+}
+
+/// [`git_checkout`] with an explicit timeout — for a step that's best-effort
+/// and should fail fast rather than eat the full [`GIT_TIMEOUT`] (see
+/// [`FETCH_TIMEOUT`]).
+fn git_checkout_timeout(
+    checkout: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<tt_exec::Output> {
     let checkout_s = checkout.to_string_lossy();
     let mut full: Vec<&str> = vec!["-C", checkout_s.as_ref()];
     full.extend_from_slice(args);
-    tt_exec::run_with_timeout_env("git", &full, tt_exec::GIT_NON_INTERACTIVE_ENV, GIT_TIMEOUT)
+    tt_exec::run_with_timeout_env("git", &full, tt_exec::GIT_NON_INTERACTIVE_ENV, timeout)
         .map_err(|e| OpsError::Git(e.to_string()))
+}
+
+/// Push a warning naming `label` and its duration when a creation step ran
+/// long enough that something outside normal git/filesystem work is likely
+/// the cause — see [`SLOW_STEP`].
+fn note_if_slow(warnings: &mut Vec<String>, label: &str, elapsed: Duration) {
+    if elapsed > SLOW_STEP {
+        warnings.push(format!("{label} took {:.1}s — slower than expected", elapsed.as_secs_f64()));
+    }
 }
 
 pub fn git_slot(dir: &Path, args: &[&str]) -> Result<tt_exec::Output> {
@@ -554,12 +587,17 @@ pub fn setup_command(
         let argv: Vec<String> = declared.split_whitespace().map(str::to_string).collect();
         return (!argv.is_empty()).then_some(argv);
     }
-    let by_lockfile = [
-        ("bun.lock", ["bun", "install"]),
-        ("bun.lockb", ["bun", "install"]),
-        ("pnpm-lock.yaml", ["pnpm", "install"]),
-        ("yarn.lock", ["yarn", "install"]),
-        ("package-lock.json", ["npm", "install"]),
+    // npm gets `--prefer-offline`: with a lockfile present, the exact
+    // versions are already pinned, so a cache hit needs no network
+    // revalidation — a real cut in round-trips behind a slow or
+    // TLS-inspecting proxy, with no correctness cost (an uncached package
+    // still falls back to the network).
+    let by_lockfile: [(&str, &[&str]); 5] = [
+        ("bun.lock", &["bun", "install"]),
+        ("bun.lockb", &["bun", "install"]),
+        ("pnpm-lock.yaml", &["pnpm", "install"]),
+        ("yarn.lock", &["yarn", "install"]),
+        ("package-lock.json", &["npm", "install", "--prefer-offline"]),
     ];
     for (lockfile, argv) in by_lockfile {
         if has_file(lockfile) {
@@ -632,11 +670,19 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     validate_branch_name(&opts.branch)?;
     let mut warnings = Vec::new();
     let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
-    if let Ok(out) = git_checkout(&sr.checkout, &["fetch", "--quiet", "origin"])
-        && !out.ok()
-    {
-        warnings.push("fetch failed (offline?) — using local refs".into());
+
+    let fetch_start = Instant::now();
+    match git_checkout_timeout(&sr.checkout, &["fetch", "--quiet", "origin"], FETCH_TIMEOUT) {
+        Ok(out) if out.ok() => {}
+        Ok(out) => warnings
+            .push(format!("fetch failed (offline?) — using local refs: {}", out.stderr.trim())),
+        // Includes a timed-out fetch (a stalled/inspected connection) — the
+        // old `if let Ok(..) = .. && !out.ok()` form silently dropped this
+        // case instead of warning on it.
+        Err(e) => warnings.push(format!("fetch failed — using local refs: {e}")),
     }
+    note_if_slow(&mut warnings, "fetch", fetch_start.elapsed());
+
     let base = opts.base.clone().unwrap_or_else(|| base_branch(&sr.checkout));
     fast_forward_base_if_behind(&sr, &base, &mut warnings);
     let name = layout::slot_name_from_branch(&opts.branch)
@@ -649,6 +695,7 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
         .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", sr.slots_dir().display())))?;
     let dir_s = dir.to_string_lossy().to_string();
 
+    let worktree_start = Instant::now();
     let add_result =
         git_checkout(&sr.checkout, &["worktree", "add", "-b", &opts.branch, &dir_s, &base])?;
     if !add_result.ok() {
@@ -657,6 +704,7 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
             add_result.stderr.trim()
         )));
     }
+    note_if_slow(&mut warnings, "git worktree add", worktree_start.elapsed());
 
     // From here on, any failure must remove the worktree just added above —
     // otherwise (e.g. a missing env template) it leaves a half-set-up slot
@@ -696,10 +744,13 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
             }
         }
 
-        if opts.run_setup
-            && let Some(warning) = run_setup(&dir)?
-        {
-            warnings.push(warning);
+        if opts.run_setup {
+            let setup_start = Instant::now();
+            let setup_warning = run_setup(&dir)?;
+            note_if_slow(&mut warnings, "setup", setup_start.elapsed());
+            if let Some(warning) = setup_warning {
+                warnings.push(warning);
+            }
         }
 
         Ok(CreatedSlot {
@@ -1175,7 +1226,14 @@ mod tests {
         let cmd = setup_command(&env(&[]), |f| f == "bun.lock" || f == "package-lock.json");
         assert_eq!(cmd, Some(vec!["bun".to_string(), "install".to_string()]));
         let cmd = setup_command(&env(&[]), |f| f == "package-lock.json");
-        assert_eq!(cmd, Some(vec!["npm".to_string(), "install".to_string()]));
+        assert_eq!(
+            cmd,
+            Some(vec![
+                "npm".to_string(),
+                "install".to_string(),
+                "--prefer-offline".to_string()
+            ])
+        );
     }
 
     #[test]
