@@ -10,7 +10,6 @@ import {
   STRIKETHROUGH,
   UNDERLINE,
   encodeKey,
-  encodePaste,
   graphemeClusters,
   isWideRun,
   rgb,
@@ -45,6 +44,16 @@ import {
 } from "@/lib/shortcuts";
 import { openExternalUrl } from "@/lib/open-url";
 import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -134,6 +143,18 @@ export function TerminalView({
   // URL under the click point, sampled on contextmenu (drives "Open link").
   const [copyEnabled, setCopyEnabled] = useState(false);
   const [menuLink, setMenuLink] = useState<TermLink | null>(null);
+  // A multi-line paste held back by the engine because the shell has no
+  // bracketed paste (each line would execute on landing); the confirm dialog
+  // below re-sends it with force or drops it.
+  const [pendingPaste, setPendingPaste] = useState<string | null>(null);
+  const confirmPaste = () => {
+    const text = pendingPaste;
+    setPendingPaste(null);
+    if (!text) return;
+    void import("@tauri-apps/api/core").then(({ invoke }) =>
+      invoke("term_paste", { termId, text, force: true }).catch(() => {}),
+    );
+  };
   // Copy-on-select preference, read live by the render effect's mouse handlers.
   const copyOnSelectRef = useCopyOnSelect();
   // Whether board-wide action shortcuts (jump next/prev, close/split session, …)
@@ -537,15 +558,25 @@ export function TerminalView({
           scroll(null);
         }
       };
-      // Paste from the system clipboard through the same bracketed-paste path
-      // as a real paste event. Used by the context menu's Paste item.
+      // Paste through the engine's encoder (term_paste): it strips bytes
+      // that could escape the paste bracket (an embedded ESC[201~ can't
+      // inject commands) and answers needsConfirm when a multi-line paste
+      // would execute on a bare shell — the dialog then retries with force.
+      const paste = (text: string) => {
+        backToLive();
+        void invoke<{ needsConfirm: boolean }>("term_paste", { termId, text })
+          .then((reply) => {
+            if (reply?.needsConfirm) setPendingPaste(text);
+          })
+          .catch(() => {});
+      };
+      // Paste from the system clipboard through the same path as a real
+      // paste event. Used by the context menu's Paste item.
       const pasteClipboard = () =>
         void navigator.clipboard
           .readText()
           .then((text) => {
-            if (!text) return;
-            backToLive();
-            write(encodePaste(text, grid.modes.bracketedPaste));
+            if (text) paste(text);
           })
           .catch(() => {});
 
@@ -652,10 +683,7 @@ export function TerminalView({
           return;
         }
         const text = e.clipboardData?.getData("text");
-        if (text) {
-          backToLive();
-          write(encodePaste(text, grid.modes.bracketedPaste));
-        }
+        if (text) paste(text);
       };
       // IME: composed text arrives on compositionend, not keydown.
       const onComposed = (e: CompositionEvent) => {
@@ -1013,6 +1041,28 @@ export function TerminalView({
           </IconBtn>
         </div>
       )}
+      {/* Confirm a multi-line paste the engine held back: the shell has no
+          bracketed paste, so every line would run the moment it lands. */}
+      <AlertDialog
+        open={pendingPaste !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingPaste(null);
+        }}
+      >
+        <AlertDialogContent onCloseAutoFocus={() => bridgeRef.current?.focusTerm()}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Paste {pendingPaste?.split("\n").length ?? 0} lines?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This shell isn't guarding pastes (no bracketed paste), so each line runs as soon
+              as it arrives — including the last one if it ends with a newline.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmPaste}>Paste</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {/* Hidden input: receives focus/keystrokes/IME composition/paste. */}
       <textarea
         ref={inputRef}

@@ -81,6 +81,17 @@ pub struct Theme {
     pub dark: bool,
 }
 
+/// Outcome of a paste request (see [`Engine::paste`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasteOutcome {
+    /// The text was encoded and queued for the PTY.
+    Pasted,
+    /// Nothing was written: bracketed paste is off and the text contains a
+    /// newline, so pasting would execute in the shell. The caller confirms
+    /// with the user and retries with `force`.
+    NeedsConfirm,
+}
+
 /// Cap on mouse-wheel reports emitted for one wheel gesture. Bounds the
 /// bytes a single high-delta event (a wheel fling, a coalesced touchpad
 /// swipe) can inject into the application's input stream.
@@ -172,6 +183,40 @@ impl Engine {
         self.dark.set(theme.dark);
         self.force_full = true;
         Ok(())
+    }
+
+    /// Encode pasted text for the shell and queue it on the PTY-bound output.
+    /// libghostty's encoder strips unsafe control bytes — most importantly an
+    /// embedded bracketed-paste terminator (`ESC [ 201 ~`), which would
+    /// otherwise let crafted clipboard content escape the paste bracket and
+    /// inject commands — and wraps the text in `ESC[200~`/`ESC[201~` when the
+    /// application negotiated bracketed paste (mode 2004); newlines become
+    /// CRs otherwise.
+    ///
+    /// With bracketed paste off and a newline in the text, pasting would run
+    /// commands in the shell immediately — unless `force`, nothing is written
+    /// and [`PasteOutcome::NeedsConfirm`] tells the caller to ask the user.
+    pub fn paste(&mut self, text: &str, force: bool) -> Result<PasteOutcome> {
+        let bracketed = self.term.mode(Mode::BRACKETED_PASTE)?;
+        if !bracketed && !force && !libghostty_vt::paste::is_safe(text) {
+            return Ok(PasteOutcome::NeedsConfirm);
+        }
+        // `encode` scrubs `data` in place (idempotently), so retrying after
+        // an undersized output buffer is safe.
+        let mut data = text.as_bytes().to_vec();
+        let mut buf = vec![0u8; data.len() + 32];
+        loop {
+            match libghostty_vt::paste::encode(&mut data, bracketed, &mut buf) {
+                Ok(len) => {
+                    self.pty_out.borrow_mut().extend_from_slice(&buf[..len]);
+                    return Ok(PasteOutcome::Pasted);
+                }
+                Err(libghostty_vt::error::Error::OutOfSpace { required }) => {
+                    buf.resize(required, 0)
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 
     /// Feed raw PTY output into the terminal state machine.

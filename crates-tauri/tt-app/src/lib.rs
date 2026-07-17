@@ -500,6 +500,7 @@ pub fn run() {
             terminal::term_visibility,
             terminal::term_select,
             terminal::term_copy,
+            terminal::term_paste,
             terminal::term_search,
             terminal::term_scroll_to,
             terminal::term_clear,

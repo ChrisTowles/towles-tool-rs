@@ -16,7 +16,7 @@ pub mod osc_color;
 pub mod search;
 pub mod session;
 
-pub use engine::{Engine, EngineOptions, Select, Theme, VtError};
+pub use engine::{Engine, EngineOptions, PasteOutcome, Select, Theme, VtError};
 pub use frame::{Frame, Modes};
 pub use search::SearchMatch;
 pub use session::{Event, Input, Sender, Session, SpawnError};
@@ -135,6 +135,43 @@ mod tests {
         e.feed(b"\x1b[?996n");
         let light_reply = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
         assert!(light_reply.contains("997;2"), "light scheme reports 997;2, got {light_reply:?}");
+    }
+
+    #[test]
+    fn bracketed_paste_wraps_and_defuses_the_terminator() {
+        let mut e = engine(40, 5);
+        // The program negotiates bracketed paste (mode 2004), then the user
+        // pastes text carrying an embedded bracket terminator — the classic
+        // paste-injection payload. The encoder must scrub the ESC so the
+        // payload cannot close the bracket and execute.
+        e.feed(b"\x1b[?2004h");
+        e.take_pty_output();
+        assert_eq!(e.paste("hi\x1b[201~rm -rf /\n", false).expect("paste"), PasteOutcome::Pasted);
+        let out = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        assert!(out.starts_with("\x1b[200~"), "paste opens the bracket, got {out:?}");
+        assert!(out.ends_with("\x1b[201~"), "paste closes the bracket, got {out:?}");
+        let body = &out["\x1b[200~".len()..out.len() - "\x1b[201~".len()];
+        assert!(!body.contains('\x1b'), "embedded ESC scrubbed inside the bracket: {body:?}");
+    }
+
+    #[test]
+    fn bare_shell_multiline_paste_needs_confirmation() {
+        let mut e = engine(40, 5);
+        // No bracketed paste: a newline would execute immediately, so the
+        // engine writes nothing until the caller confirms with force.
+        assert_eq!(e.paste("rm -rf /\n", false).expect("paste"), PasteOutcome::NeedsConfirm);
+        assert!(e.take_pty_output().is_empty(), "nothing reaches the shell unconfirmed");
+
+        assert_eq!(e.paste("rm -rf /\n", true).expect("paste"), PasteOutcome::Pasted);
+        let out = e.take_pty_output();
+        assert_eq!(out.as_slice(), b"rm -rf /\r", "newline becomes CR on a bare shell");
+    }
+
+    #[test]
+    fn single_line_paste_never_prompts() {
+        let mut e = engine(40, 5);
+        assert_eq!(e.paste("hello world", false).expect("paste"), PasteOutcome::Pasted);
+        assert_eq!(e.take_pty_output().as_slice(), b"hello world");
     }
 
     #[test]

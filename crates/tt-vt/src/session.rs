@@ -40,7 +40,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::engine::{Engine, EngineOptions, Select, Theme, VtError};
+use crate::engine::{Engine, EngineOptions, PasteOutcome, Select, Theme, VtError};
 use crate::frame::Frame;
 use crate::search::SearchMatch;
 
@@ -90,6 +90,15 @@ pub enum Input {
     Select(Select),
     /// Reply with the active selection's plain text on the provided channel.
     Copy(mpsc::SyncSender<Option<String>>),
+    /// Paste text into the shell through libghostty's paste encoder (strips
+    /// dangerous control bytes, honors bracketed paste). The outcome is sent
+    /// on `reply`; `NeedsConfirm` means nothing was written (see
+    /// [`Engine::paste`]).
+    Paste {
+        text: String,
+        force: bool,
+        reply: mpsc::SyncSender<PasteOutcome>,
+    },
     /// Case-insensitive scrollback search; matches (up to `limit`) are sent
     /// back on the provided channel, top to bottom.
     Search {
@@ -235,6 +244,13 @@ impl Session {
                 }
                 Input::Copy(reply) => {
                     let _ = reply.try_send(engine.copy_selection().ok().flatten());
+                }
+                // An FFI failure (allocation-only) reads as pasted-and-lost,
+                // like input dropped by a full queue — never as NeedsConfirm,
+                // which would raise a spurious dialog.
+                Input::Paste { text, force, reply } => {
+                    let _ =
+                        reply.try_send(engine.paste(&text, force).unwrap_or(PasteOutcome::Pasted));
                 }
                 Input::Search { query, limit, reply } => {
                     let _ = reply.try_send(engine.search(&query, limit).unwrap_or_default());

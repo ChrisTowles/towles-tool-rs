@@ -318,8 +318,6 @@ export function encodeKey(e: KeyEventLike, modes: Pick<Modes, "appCursorKeys">):
   return null;
 }
 
-/** Wrap pasted text per bracketed-paste mode, normalizing newlines to CR. */
-export function encodePaste(text: string, bracketed: boolean): string {
-  const normalized = text.replace(/\r\n|\n/g, "\r");
-  return bracketed ? `\x1b[200~${normalized}\x1b[201~` : normalized;
-}
+// Paste encoding lives in the Rust engine (`term_paste` → tt-vt's
+// `Engine::paste`): libghostty's encoder strips bytes that could escape the
+// paste bracket, which a frontend string-wrap cannot do safely.

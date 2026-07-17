@@ -725,6 +725,54 @@ pub async fn term_search(
     .map_err(|e| format!("search task failed: {e}"))?
 }
 
+/// Reply of [`term_paste`]: whether the engine wants user confirmation before
+/// writing anything (bracketed paste off + a newline in the text — the paste
+/// would execute in the shell immediately). The caller shows a confirm and
+/// retries with `force: true`.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasteReply {
+    needs_confirm: bool,
+}
+
+/// Paste text into the shell through the engine's paste encoder, which strips
+/// dangerous control bytes (an embedded `ESC[201~` can no longer escape the
+/// paste bracket and inject commands) and honors the negotiated bracketed
+/// paste mode — the frontend no longer encodes paste itself. The engine
+/// thread answers over a bounded channel; a dead engine yields an error
+/// rather than a hang.
+#[tauri::command]
+pub async fn term_paste(
+    app: AppHandle,
+    term_id: String,
+    text: String,
+    force: Option<bool>,
+) -> Result<PasteReply, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (reply_tx, reply_rx) = sync_channel::<tt_vt::PasteOutcome>(1);
+        {
+            let state = app.state::<TermState>();
+            let guard = state.sessions.lock().unwrap();
+            let session = guard.get(&term_id).ok_or("no shell running")?;
+            if !session.vt.send(VtInput::Paste {
+                text,
+                force: force.unwrap_or(false),
+                reply: reply_tx,
+            }) {
+                return Err("terminal engine gone".to_string());
+            }
+        }
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map(|outcome| PasteReply {
+                needs_confirm: outcome == tt_vt::PasteOutcome::NeedsConfirm,
+            })
+            .map_err(|_| "terminal engine did not answer".to_string())
+    })
+    .await
+    .map_err(|e| format!("paste task failed: {e}"))?
+}
+
 /// Scroll the viewport so the given absolute row (0 = oldest scrollback row)
 /// is visible — search prev/next navigation jumps the viewport to a match.
 #[tauri::command]
