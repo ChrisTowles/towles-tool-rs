@@ -126,8 +126,8 @@ export function WorkingContext({
           {repoDistinct && <span className="shrink-0 font-medium">{repo.name}</span>}
           <span className="min-w-0 shrink truncate font-mono text-[11px]">⎇ {folder.branch}</span>
           <ComparedBaseBadge folder={folder} />
-          <AheadBehind stats={folder} />
           {folder.isWorktree && <WorktreeBadge />}
+          <AheadBehind stats={folder} />
           <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir)} />
           <FilesButton onOpen={() => onOpenFiles(folder.dir)} />
           {pr && <PrChip pr={pr} stats={folder} />}

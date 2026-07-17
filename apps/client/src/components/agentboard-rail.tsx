@@ -835,8 +835,8 @@ function FolderHeader({
           >
             ⎇ {folder.branch}
           </span>
-          <AheadBehind stats={folder} />
           {folder.isWorktree && <WorktreeBadge />}
+          <AheadBehind stats={folder} />
           {folder.hasPortDrift && <PortDriftBadge drift={folderPortDrift(folder)} />}
           <DiffButton stats={folder} onOpen={onOpenDiff} />
           <FilesButton onOpen={onOpenFiles} />

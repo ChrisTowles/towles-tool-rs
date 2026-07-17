@@ -557,6 +557,23 @@ pub async fn ab_get_diff(dir: String, mode: String, base_branch: Option<String>)
     .unwrap_or_default()
 }
 
+/// Per-commit line-count breakdown for a folder's `DiffButton` hover, oldest
+/// commit first — see `tt_agentboard::commit_stats`. `base_branch` is the
+/// folder's base-branch override, same as [`ab_get_diff`]. Async for the same
+/// reason: a many-commit branch's `git log --numstat` is a real subprocess
+/// wait.
+#[tauri::command]
+pub async fn ab_get_commit_stats(
+    dir: String,
+    base_branch: Option<String>,
+) -> Vec<tt_agentboard::CommitStat> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tt_agentboard::commit_stats(&dir, base_branch.as_deref())
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// Open a session's repo directory in the preferred editor. Ports the TS
 /// open-in-editor (spawns `<preferredEditor> <dir>`; the TS TMUX-env stripping is
 /// desktop-irrelevant and skipped).
