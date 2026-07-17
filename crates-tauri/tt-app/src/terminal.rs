@@ -20,6 +20,7 @@
 //! resolved); the map only holds a cloneable input sender for resize/scroll.
 
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Mutex;
@@ -1011,13 +1012,15 @@ pub fn on_window_destroyed(app: &AppHandle, label: &str) {
     }
 }
 
-/// Open a file path Ctrl/⌘-clicked in a terminal in the preferred editor.
-/// Relative paths resolve against `cwd` (the clicked pane's working dir) and a
-/// leading `~` expands to home. Spawns without waiting — like `journal_open` /
+/// Open a file path Ctrl/⌘-clicked in a terminal in the preferred editor,
+/// seeking to `line` (1-based, from the link's `:line` suffix) if one was
+/// given and the editor's command is one we know a goto syntax for. Relative
+/// paths resolve against `cwd` (the clicked pane's working dir) and a leading
+/// `~` expands to home. Spawns without waiting — like `journal_open` /
 /// `ab_open_in_editor`, so a non-forking editor (vim, `code --wait`) doesn't
 /// freeze the app. Report-only: it opens an editor, never writing to the PTY.
 #[tauri::command]
-pub fn term_open_path(path: String, cwd: Option<String>) -> Result<(), String> {
+pub fn term_open_path(path: String, cwd: Option<String>, line: Option<u32>) -> Result<(), String> {
     let settings = tt_config::load().map_err(|e| format!("failed to load settings: {e}"))?;
     let editor = settings.preferred_editor.trim();
     if editor.is_empty() {
@@ -1028,10 +1031,73 @@ pub fn term_open_path(path: String, cwd: Option<String>) -> Result<(), String> {
         return Err(format!("No such file: {}", full.display()));
     }
     std::process::Command::new(editor)
-        .arg(&full)
+        .args(editor_open_args(editor, &full, line))
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Failed to launch {editor}: {e}"))
+}
+
+/// How a recognized editor's command wants "open this file at this line" on
+/// its command line — there's no universal convention.
+enum GotoStyle {
+    /// `code --goto path:line`
+    VsCodeGoto,
+    /// `subl path:line` / `zed path:line`
+    PathColonLine,
+    /// `vim +line path`
+    PlusLineFlag,
+    /// `idea --line line path`
+    LineFlag,
+}
+
+/// The goto syntax for `editor`'s command, matched by basename (case- and
+/// extension-insensitive, so `Code.exe`/`/usr/bin/code` both match `code`).
+/// `None` for anything we don't recognize.
+fn goto_style(editor: &str) -> Option<GotoStyle> {
+    let name = Path::new(editor)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(editor)
+        .to_ascii_lowercase();
+    match name.as_str() {
+        "code" | "code-insiders" | "cursor" | "codium" | "vscodium" | "windsurf" => {
+            Some(GotoStyle::VsCodeGoto)
+        }
+        "subl" | "sublime_text" | "zed" | "zeditor" | "hx" => Some(GotoStyle::PathColonLine),
+        "vim" | "nvim" | "gvim" | "mvim" | "vi" | "nano" | "emacs" | "emacsclient" => {
+            Some(GotoStyle::PlusLineFlag)
+        }
+        "idea" | "webstorm" | "pycharm" | "goland" | "rider" | "clion" | "rubymine"
+        | "phpstorm" | "studio" => Some(GotoStyle::LineFlag),
+        _ => None,
+    }
+}
+
+/// Build the args to open `path` in `editor`. Without a `line`, or for an
+/// editor command [`goto_style`] doesn't recognize, this is just the bare
+/// path — guessing a goto syntax wrong would hand an unrecognized editor a
+/// broken argument instead of the file it asked for.
+fn editor_open_args(editor: &str, path: &Path, line: Option<u32>) -> Vec<OsString> {
+    let Some(line) = line else {
+        return vec![path.as_os_str().to_owned()];
+    };
+    match goto_style(editor) {
+        Some(GotoStyle::VsCodeGoto) => {
+            vec!["--goto".into(), format!("{}:{line}", path.display()).into()]
+        }
+        Some(GotoStyle::PathColonLine) => vec![format!("{}:{line}", path.display()).into()],
+        Some(GotoStyle::PlusLineFlag) => {
+            vec![format!("+{line}").into(), path.as_os_str().to_owned()]
+        }
+        Some(GotoStyle::LineFlag) => {
+            vec![
+                "--line".into(),
+                line.to_string().into(),
+                path.as_os_str().to_owned(),
+            ]
+        }
+        None => vec![path.as_os_str().to_owned()],
+    }
 }
 
 /// Resolve a clicked path against the pane's `cwd`: absolute paths as-is, a
@@ -1104,7 +1170,11 @@ fn shell_kind_from_path(shell: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TermState, default_shell, resolve_clicked_path, shell_kind_from_path, start_dir};
+    use super::{
+        TermState, default_shell, editor_open_args, resolve_clicked_path, shell_kind_from_path,
+        start_dir,
+    };
+    use std::ffi::OsString;
     use std::path::PathBuf;
 
     /// Whether `pid` is still alive (`kill(pid, 0)` — no signal sent, just an
@@ -1268,5 +1338,110 @@ mod tests {
     fn resolve_clicked_path_relative_without_cwd_stays_relative() {
         assert_eq!(resolve_clicked_path("src/a.rs", None), PathBuf::from("src/a.rs"));
         assert_eq!(resolve_clicked_path("src/a.rs", Some("  ")), PathBuf::from("src/a.rs"));
+    }
+
+    #[test]
+    fn editor_open_args_without_line_is_just_the_path() {
+        let path = PathBuf::from("/repo/src/a.rs");
+        assert_eq!(editor_open_args("code", &path, None), vec![OsString::from(&path)]);
+    }
+
+    #[test]
+    fn editor_open_args_vscode_family_uses_goto() {
+        let path = PathBuf::from("/repo/src/a.rs");
+        for editor in [
+            "code",
+            "code-insiders",
+            "cursor",
+            "codium",
+            "vscodium",
+            "windsurf",
+        ] {
+            assert_eq!(
+                editor_open_args(editor, &path, Some(42)),
+                vec![
+                    OsString::from("--goto"),
+                    OsString::from("/repo/src/a.rs:42")
+                ],
+                "editor: {editor}",
+            );
+        }
+    }
+
+    #[test]
+    fn editor_open_args_recognizes_editor_by_basename_and_extension() {
+        let path = PathBuf::from("/repo/src/a.rs");
+        assert_eq!(
+            editor_open_args("/usr/bin/code", &path, Some(42)),
+            vec![
+                OsString::from("--goto"),
+                OsString::from("/repo/src/a.rs:42")
+            ],
+        );
+        assert_eq!(
+            editor_open_args("Code.exe", &path, Some(42)),
+            vec![
+                OsString::from("--goto"),
+                OsString::from("/repo/src/a.rs:42")
+            ],
+        );
+    }
+
+    #[test]
+    fn editor_open_args_sublime_and_zed_use_path_colon_line() {
+        let path = PathBuf::from("/repo/src/a.rs");
+        for editor in ["subl", "sublime_text", "zed", "hx"] {
+            assert_eq!(
+                editor_open_args(editor, &path, Some(7)),
+                vec![OsString::from("/repo/src/a.rs:7")],
+                "editor: {editor}",
+            );
+        }
+    }
+
+    #[test]
+    fn editor_open_args_vim_family_uses_plus_line_flag() {
+        let path = PathBuf::from("/repo/src/a.rs");
+        for editor in [
+            "vim",
+            "nvim",
+            "gvim",
+            "mvim",
+            "vi",
+            "nano",
+            "emacs",
+            "emacsclient",
+        ] {
+            assert_eq!(
+                editor_open_args(editor, &path, Some(3)),
+                vec![OsString::from("+3"), OsString::from(&path)],
+                "editor: {editor}",
+            );
+        }
+    }
+
+    #[test]
+    fn editor_open_args_jetbrains_family_uses_line_flag() {
+        let path = PathBuf::from("/repo/src/a.rs");
+        for editor in ["idea", "webstorm", "pycharm", "goland", "rider", "clion"] {
+            assert_eq!(
+                editor_open_args(editor, &path, Some(9)),
+                vec![
+                    OsString::from("--line"),
+                    OsString::from("9"),
+                    OsString::from(&path)
+                ],
+                "editor: {editor}",
+            );
+        }
+    }
+
+    #[test]
+    fn editor_open_args_unrecognized_editor_falls_back_to_bare_path() {
+        let path = PathBuf::from("/repo/src/a.rs");
+        assert_eq!(
+            editor_open_args("some-custom-editor", &path, Some(5)),
+            vec![OsString::from(&path)]
+        );
     }
 }
