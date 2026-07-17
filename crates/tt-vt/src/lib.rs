@@ -12,10 +12,11 @@
 pub mod engine;
 pub mod frame;
 pub mod osc52;
+pub mod osc_color;
 pub mod search;
 pub mod session;
 
-pub use engine::{Engine, EngineOptions, Select, VtError};
+pub use engine::{Engine, EngineOptions, Select, Theme, VtError};
 pub use frame::{Frame, Modes};
 pub use search::SearchMatch;
 pub use session::{Event, Input, Sender, Session, SpawnError};
@@ -55,6 +56,85 @@ mod tests {
             .find(|r| r.y == y)
             .map(|r| r.runs.iter().map(|run| run.text.as_str()).collect::<String>())
             .unwrap_or_default()
+    }
+
+    fn theme(dark: bool) -> Theme {
+        Theme {
+            fg: 0xcdd6f4,
+            bg: 0x112233,
+            cursor: None,
+            // ANSI 1 (red) set to a sentinel so indexed resolution is provable.
+            palette16: {
+                let mut p = [0u32; 16];
+                p[1] = 0xaa0000;
+                p
+            },
+            dark,
+        }
+    }
+
+    #[test]
+    fn theme_defaults_flow_into_frame_colors() {
+        let mut e = engine(20, 4);
+        e.set_theme(&theme(true)).expect("set theme");
+        e.feed(b"hi");
+        let frame = e.render().expect("render").expect("frame");
+        assert_eq!(frame.colors.bg, 0x112233);
+        assert_eq!(frame.colors.fg, 0xcdd6f4);
+    }
+
+    #[test]
+    fn theme_palette_resolves_indexed_colors() {
+        let mut e = engine(20, 4);
+        e.set_theme(&theme(true)).expect("set theme");
+        e.feed(b"\x1b[31mred");
+        let frame = e.render().expect("render").expect("frame");
+        let row = frame.changed.iter().find(|r| r.y == 0).unwrap();
+        let red = row.runs.iter().find(|r| r.text == "red").expect("styled run");
+        assert_eq!(red.fg, Some(0xaa0000), "SGR 31 resolves via the pushed palette");
+    }
+
+    #[test]
+    fn theme_answers_osc_background_query() {
+        let mut e = engine(20, 4);
+        e.set_theme(&theme(true)).expect("set theme");
+        e.feed(b"\x1b]11;?\x1b\\");
+        let reply = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        // xterm reply format doubles each channel byte: rgb:1111/2222/3333.
+        assert!(
+            reply.contains("rgb:1111/2222/3333"),
+            "OSC 11 answers the pushed background, got {reply:?}"
+        );
+    }
+
+    #[test]
+    fn program_color_override_wins_the_osc_query() {
+        let mut e = engine(20, 4);
+        e.set_theme(&theme(true)).expect("set theme");
+        // The program sets its own background (OSC 11 set), then queries it
+        // back — the override must win over the pushed theme, like xterm.
+        e.feed(b"\x1b]11;#445566\x07");
+        e.take_pty_output();
+        e.feed(b"\x1b]11;?\x07");
+        let reply = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        assert!(
+            reply.contains("rgb:4444/5555/6666"),
+            "override wins over the theme, got {reply:?}"
+        );
+    }
+
+    #[test]
+    fn theme_answers_color_scheme_query() {
+        let mut e = engine(20, 4);
+        e.set_theme(&theme(true)).expect("set theme");
+        e.feed(b"\x1b[?996n");
+        let dark_reply = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        assert!(dark_reply.contains("997;1"), "dark scheme reports 997;1, got {dark_reply:?}");
+
+        e.set_theme(&theme(false)).expect("set theme");
+        e.feed(b"\x1b[?996n");
+        let light_reply = String::from_utf8_lossy(&e.take_pty_output()).into_owned();
+        assert!(light_reply.contains("997;2"), "light scheme reports 997;2, got {light_reply:?}");
     }
 
     #[test]

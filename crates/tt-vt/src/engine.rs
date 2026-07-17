@@ -15,10 +15,13 @@ use libghostty_vt::render::{
 use libghostty_vt::screen::{CellContentTag, CellWide, Screen};
 use libghostty_vt::selection::{FormatOptions, SelectLineOptions, SelectWordOptions, Selection};
 use libghostty_vt::style::Underline;
-use libghostty_vt::terminal::{Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal};
+use libghostty_vt::terminal::{
+    ColorScheme, Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal,
+};
 
 use crate::frame::{flags, Colors, Cursor, CursorShape, Frame, Modes};
 use crate::osc52::Osc52Scanner;
+use crate::osc_color::{ColorQuery, OscColorScanner};
 use crate::search::{self, SearchMatch};
 
 /// A selection operation, in viewport cell coordinates.
@@ -59,6 +62,25 @@ pub struct EngineOptions {
     pub max_scrollback: usize,
 }
 
+/// UI theme pushed into the emulator so color queries answer the app's real
+/// colors instead of libghostty's stock defaults: OSC 10/11 (how programs
+/// like Claude Code detect a light vs dark background), the color-scheme DSR
+/// (`CSI ? 996 n`), and indexed-color resolution all read from this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Theme {
+    /// Default foreground, packed 0xRRGGBB.
+    pub fg: u32,
+    /// Default background, packed 0xRRGGBB.
+    pub bg: u32,
+    /// Cursor color; `None` keeps libghostty's default (invert the cell).
+    pub cursor: Option<u32>,
+    /// ANSI colors 0–15. Entries 16–255 keep the stock cube/grays, which are
+    /// theme-neutral by construction.
+    pub palette16: [u32; 16],
+    /// Whether the theme is dark — the `CSI ? 996 n` color-scheme answer.
+    pub dark: bool,
+}
+
 /// Cap on mouse-wheel reports emitted for one wheel gesture. Bounds the
 /// bytes a single high-delta event (a wheel fling, a coalesced touchpad
 /// swipe) can inject into the application's input stream.
@@ -73,10 +95,16 @@ pub struct Engine {
     /// filled synchronously during `feed` by the pty-write effect.
     pty_out: Rc<RefCell<Vec<u8>>>,
     title_changed: Rc<StdCell<bool>>,
+    /// Whether the pushed theme is dark (see [`Theme::dark`]); read by the
+    /// color-scheme query callback registered in [`Engine::new`].
+    dark: Rc<StdCell<bool>>,
     /// Watches the byte feed for OSC 52 set-clipboard sequences (libghostty-vt
     /// exposes no clipboard callback); decoded copies are drained by
     /// [`Engine::take_clipboard`].
     osc52: Osc52Scanner,
+    /// Watches the byte feed for OSC 10/11 color queries, which libghostty-vt
+    /// does not answer; [`Engine::feed`] synthesizes the replies.
+    osc_color: OscColorScanner,
     /// Force the next render to be a full frame (selection changed).
     force_full: bool,
     /// Cursor state as of the last emitted frame. libghostty-vt's dirty
@@ -97,6 +125,9 @@ impl Engine {
 
         let pty_out: Rc<RefCell<Vec<u8>>> = Rc::default();
         let title_changed: Rc<StdCell<bool>> = Rc::default();
+        // Dark until the first `set_theme` — the app's default look. The cell
+        // is shared with the color-scheme query callback below.
+        let dark: Rc<StdCell<bool>> = Rc::new(StdCell::new(true));
         term.on_pty_write({
             let pty_out = Rc::clone(&pty_out);
             move |_term, data| pty_out.borrow_mut().extend_from_slice(data)
@@ -104,6 +135,10 @@ impl Engine {
         .on_title_changed({
             let title_changed = Rc::clone(&title_changed);
             move |_term| title_changed.set(true)
+        })?
+        .on_color_scheme({
+            let dark = Rc::clone(&dark);
+            move |_term| Some(if dark.get() { ColorScheme::Dark } else { ColorScheme::Light })
         })?;
 
         Ok(Self {
@@ -113,16 +148,63 @@ impl Engine {
             cells: CellIterator::new()?,
             pty_out,
             title_changed,
+            dark,
             osc52: Osc52Scanner::new(),
+            osc_color: OscColorScanner::new(),
             force_full: false,
             last_cursor: None,
         })
+    }
+
+    /// Push the UI theme into the emulator: default fg/bg/cursor colors, the
+    /// ANSI 0–15 palette entries, and the dark/light answer for color-scheme
+    /// queries. Forces a full repaint so rows rendered under the old theme
+    /// pick up the new defaults.
+    pub fn set_theme(&mut self, theme: &Theme) -> Result<()> {
+        self.term.set_default_fg_color(Some(unpack_rgb(theme.fg)))?;
+        self.term.set_default_bg_color(Some(unpack_rgb(theme.bg)))?;
+        self.term.set_default_cursor_color(theme.cursor.map(unpack_rgb))?;
+        let mut palette = self.term.default_color_palette()?;
+        for (slot, packed) in palette.iter_mut().zip(theme.palette16) {
+            *slot = unpack_rgb(packed);
+        }
+        self.term.set_default_color_palette(Some(palette))?;
+        self.dark.set(theme.dark);
+        self.force_full = true;
+        Ok(())
     }
 
     /// Feed raw PTY output into the terminal state machine.
     pub fn feed(&mut self, bytes: &[u8]) {
         self.term.vt_write(bytes);
         self.osc52.feed(bytes);
+        self.osc_color.feed(bytes);
+        // Answer OSC 10/11 color queries libghostty leaves unanswered, from
+        // the *effective* colors — a program's own OSC set-override wins over
+        // the pushed theme, matching xterm. An unreadable color (FFI error or
+        // genuinely unset) skips the reply; the program times out like it
+        // would on a dumb terminal.
+        for (query, term) in self.osc_color.take() {
+            let color = match query {
+                ColorQuery::Foreground => self.term.fg_color(),
+                ColorQuery::Background => self.term.bg_color(),
+            };
+            if let Ok(Some(c)) = color {
+                let mut reply = format!(
+                    "\x1b]{};rgb:{:02x}{:02x}/{:02x}{:02x}/{:02x}{:02x}",
+                    query.ident(),
+                    c.r,
+                    c.r,
+                    c.g,
+                    c.g,
+                    c.b,
+                    c.b
+                )
+                .into_bytes();
+                reply.extend_from_slice(term.bytes());
+                self.pty_out.borrow_mut().extend_from_slice(&reply);
+            }
+        }
     }
 
     /// Drain any OSC 52 set-clipboard writes recognized in the byte feed since
@@ -515,6 +597,14 @@ fn grapheme_text(cell: &CellIteration) -> Result<String> {
 
 fn pack_rgb(c: libghostty_vt::style::RgbColor) -> u32 {
     (u32::from(c.r) << 16) | (u32::from(c.g) << 8) | u32::from(c.b)
+}
+
+fn unpack_rgb(packed: u32) -> libghostty_vt::style::RgbColor {
+    libghostty_vt::style::RgbColor {
+        r: ((packed >> 16) & 0xff) as u8,
+        g: ((packed >> 8) & 0xff) as u8,
+        b: (packed & 0xff) as u8,
+    }
 }
 
 #[cfg(test)]

@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sysinfo::{Pid as SysPid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tt_vt::{
@@ -278,6 +278,27 @@ struct TermExit {
     signal: Option<String>,
 }
 
+/// UI theme for a terminal engine (mirrors `tt_vt::Theme`): default colors
+/// packed 0xRRGGBB, the ANSI 0–15 palette, and whether the theme is dark.
+/// Sent at spawn (so color queries answer correctly from the first byte) and
+/// again on every app theme change via [`term_theme`].
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TermTheme {
+    fg: u32,
+    bg: u32,
+    #[serde(default)]
+    cursor: Option<u32>,
+    palette16: [u32; 16],
+    dark: bool,
+}
+
+impl From<TermTheme> for tt_vt::Theme {
+    fn from(t: TermTheme) -> Self {
+        tt_vt::Theme { fg: t.fg, bg: t.bg, cursor: t.cursor, palette16: t.palette16, dark: t.dark }
+    }
+}
+
 /// Spawn a shell in a fresh PTY sized to the xterm.js grid, rooted at `cwd`
 /// (falls back to `$HOME` when `cwd` is missing or not an existing dir).
 /// Replaces any existing terminal with the same `term_id`. Async: runs on a
@@ -289,10 +310,13 @@ pub async fn term_start(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    theme: Option<TermTheme>,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || term_start_blocking(app, term_id, cols, rows, cwd))
-        .await
-        .map_err(|e| format!("terminal spawn task failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        term_start_blocking(app, term_id, cols, rows, cwd, theme)
+    })
+    .await
+    .map_err(|e| format!("terminal spawn task failed: {e}"))?
 }
 
 fn term_start_blocking(
@@ -301,6 +325,7 @@ fn term_start_blocking(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    theme: Option<TermTheme>,
 ) -> Result<(), String> {
     let state = app.state::<TermState>();
     state.kill(&term_id);
@@ -411,6 +436,13 @@ fn term_start_blocking(
     })
     .map_err(|e| format!("failed to start terminal engine: {e}"))?;
     let vt_tx = vt.sender();
+    // Push the UI theme before the reader thread pumps the shell's first
+    // output, so an early OSC 10/11 probe (how Claude Code detects dark vs
+    // light) already answers the app's real colors — control inputs drain
+    // ahead of bytes in the engine.
+    if let Some(theme) = theme {
+        let _ = vt_tx.send(VtInput::Theme(theme.into()));
+    }
 
     state.sessions.lock().unwrap().insert(
         term_id.clone(),
@@ -700,6 +732,22 @@ pub fn term_scroll_to(state: State<TermState>, term_id: String, row: usize) -> R
     let guard = state.sessions.lock().unwrap();
     let session = guard.get(&term_id).ok_or("no shell running")?;
     let _ = session.vt.send(VtInput::ScrollTo(row));
+    Ok(())
+}
+
+/// Push the UI theme (default colors, ANSI palette, dark/light) into a
+/// running terminal's engine — called on app theme changes so OSC 10/11 and
+/// color-scheme queries keep answering the truth. The engine forces a full
+/// frame, so the canvas repaints in the new colors without a separate nudge.
+#[tauri::command]
+pub fn term_theme(
+    state: State<TermState>,
+    term_id: String,
+    theme: TermTheme,
+) -> Result<(), String> {
+    let guard = state.sessions.lock().unwrap();
+    let session = guard.get(&term_id).ok_or("no shell running")?;
+    let _ = session.vt.send(VtInput::Theme(theme.into()));
     Ok(())
 }
 

@@ -503,6 +503,7 @@ pub fn run() {
             terminal::term_search,
             terminal::term_scroll_to,
             terminal::term_clear,
+            terminal::term_theme,
             terminal::term_focus,
             terminal::term_open_path,
             terminal::term_kill,

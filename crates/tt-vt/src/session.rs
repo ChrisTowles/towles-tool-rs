@@ -40,7 +40,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::engine::{Engine, EngineOptions, Select, VtError};
+use crate::engine::{Engine, EngineOptions, Select, Theme, VtError};
 use crate::frame::Frame;
 use crate::search::SearchMatch;
 
@@ -108,6 +108,9 @@ pub enum Input {
     /// The pane was shown or hidden in the frontend — widens the render
     /// interval to [`HIDDEN_FRAME_INTERVAL`] while hidden.
     Visibility(bool),
+    /// Push the UI theme (default colors, ANSI palette, dark/light) into the
+    /// emulator so color queries answer the truth (see [`Engine::set_theme`]).
+    Theme(Theme),
 }
 
 #[derive(Debug)]
@@ -242,6 +245,11 @@ impl Session {
                 Input::RequestFull => engine.request_full(),
                 Input::ClearScrollback => engine.clear_scrollback(),
                 Input::Visibility(visible) => *hidden = !visible,
+                // A failed theme push keeps the old colors; the next theme
+                // change (or a restart) retries.
+                Input::Theme(theme) => {
+                    let _ = engine.set_theme(&theme);
+                }
             };
 
             // Start in the past so the first input renders immediately.

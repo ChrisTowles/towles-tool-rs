@@ -25,6 +25,7 @@ import {
   type TermExit,
 } from "@/lib/term-protocol";
 import { linkAt, linkLabel, type TermLink } from "@/lib/term-links";
+import { resolveTermTheme } from "@/lib/term-theme";
 import {
   rowsHaveSelection,
   selectionKindForDetail,
@@ -207,8 +208,10 @@ export function TerminalView({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Theme: resolved colors of the host (Tailwind bg-background /
-    // text-foreground) so the grid matches light/dark.
+    // Theme: seeded from the host's resolved colors (Tailwind bg-background /
+    // text-foreground) for the pre-first-frame paint; thereafter the engine's
+    // frame.colors are authoritative (the engine is seeded from the same
+    // resolved colors at term_start, and re-pushed on theme flips below).
     const cs = getComputedStyle(host);
     const theme = { bg: cs.backgroundColor || "#1e1e2e", fg: cs.color || "#cdd6f4" };
 
@@ -423,6 +426,13 @@ export function TerminalView({
       grid.cursor = frame.cursor;
       grid.modes = frame.modes;
       grid.viewportTop = frame.viewportTop;
+      // The engine's colors are authoritative for defaults: it was seeded
+      // from this host's computed style at spawn (and re-pushed on theme
+      // flips), and a theme push forces a full frame — so tracking them here
+      // repaints theme changes with no separate nudge, and OSC 10/11 answers
+      // can never disagree with what the canvas shows.
+      theme.fg = rgb(frame.colors.fg);
+      theme.bg = rgb(frame.colors.bg);
       // The engine knows where the viewport really is (search navigation
       // scrolls it too, not just the wheel) — derive "scrolled back" from
       // the frame instead of trusting the wheel handler's optimistic flag.
@@ -499,9 +509,27 @@ export function TerminalView({
       if (disposed) return onExitEvent();
       unlisteners.push(onExitEvent);
 
-      await invoke("term_start", { termId, cols: grid.cols, rows: grid.rows, cwd });
+      await invoke("term_start", {
+        termId,
+        cols: grid.cols,
+        rows: grid.rows,
+        cwd,
+        theme: resolveTermTheme(host),
+      });
       started = true;
       if (disposed) return void invoke("term_kill", { termId }).catch(() => {});
+
+      // Re-push the theme when the app's dark/light class or color theme
+      // changes. The engine forces a full frame in the new colors, which
+      // `applyFrame` then paints — no local repaint bookkeeping needed.
+      const themeObserver = new MutationObserver(() => {
+        void invoke("term_theme", { termId, theme: resolveTermTheme(host) }).catch(() => {});
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["class", "data-color-theme"],
+      });
+      unlisteners.push(() => themeObserver.disconnect());
 
       const backToLive = () => {
         if (grid.scrolledBack) {
