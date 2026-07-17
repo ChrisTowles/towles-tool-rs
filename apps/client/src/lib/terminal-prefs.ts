@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { UserSettingsSchema } from "./schemas/settings";
 import { invokeCmd, invokeOrThrow } from "./tauri";
-import type { UserSettings } from "./settings";
+import { SETTINGS_SAVED_EVENT, type UserSettings } from "./settings";
 
 /** Built-in default for `agentboard.copyOnSelect` — on, matching tt-config. */
 export const DEFAULT_COPY_ON_SELECT = true;
@@ -21,9 +21,10 @@ export function clampTerminalFontSize(px: number): number {
 
 /**
  * Track the `agentboard.copyOnSelect` preference in a ref the terminal's render
- * effect can read live without re-subscribing. Settings live in a separate OS
- * window, so a save there won't push into this window; instead we re-read on
- * window focus, which is when the user returns from the Settings window.
+ * effect can read live without re-subscribing. Re-reads on `SETTINGS_SAVED_EVENT`
+ * (fired right after a successful save — see `useUserSettings` in `settings.ts`)
+ * and on window focus (covers the JSON file being edited externally then
+ * alt-tabbing back).
  */
 export function useCopyOnSelect(): RefObject<boolean> {
   const ref = useRef(DEFAULT_COPY_ON_SELECT);
@@ -35,9 +36,11 @@ export function useCopyOnSelect(): RefObject<boolean> {
       });
     load();
     window.addEventListener("focus", load);
+    window.addEventListener(SETTINGS_SAVED_EVENT, load);
     return () => {
       alive = false;
       window.removeEventListener("focus", load);
+      window.removeEventListener(SETTINGS_SAVED_EVENT, load);
     };
   }, []);
   return ref;
@@ -47,8 +50,8 @@ export function useCopyOnSelect(): RefObject<boolean> {
  * Track the terminal font size (`agentboard.terminalFontSize`) as state so the
  * canvas render effect can key on it and re-measure the cell grid on change,
  * plus a setter that clamps, updates state, and persists back to the shared
- * settings file. Like {@link useCopyOnSelect}, we re-read on window focus so a
- * change made in the separate Settings window flows back into this window.
+ * settings file. Like {@link useCopyOnSelect}, we re-read on `SETTINGS_SAVED_EVENT`
+ * and on window focus so a change made elsewhere flows back into this hook.
  */
 export function useTerminalFontSize(): [number, (px: number) => void] {
   const [fontSize, setFontSize] = useState(DEFAULT_TERMINAL_FONT_SIZE);
@@ -63,9 +66,11 @@ export function useTerminalFontSize(): [number, (px: number) => void] {
       });
     load();
     window.addEventListener("focus", load);
+    window.addEventListener(SETTINGS_SAVED_EVENT, load);
     return () => {
       alive = false;
       window.removeEventListener("focus", load);
+      window.removeEventListener(SETTINGS_SAVED_EVENT, load);
     };
   }, []);
 
@@ -78,7 +83,9 @@ export function useTerminalFontSize(): [number, (px: number) => void] {
       if (!s) return;
       void invokeOrThrow("settings_set", {
         settings: { ...s, agentboard: { ...s.agentboard, terminalFontSize: clamped } },
-      }).catch(() => {});
+      })
+        .then(() => window.dispatchEvent(new Event(SETTINGS_SAVED_EVENT)))
+        .catch(() => {});
     });
   }, []);
 

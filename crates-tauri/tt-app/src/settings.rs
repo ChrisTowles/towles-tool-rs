@@ -1,4 +1,4 @@
-//! Tauri bridge for the shared user settings (`tt_config`). The Settings window
+//! Tauri bridge for the shared user settings (`tt_config`). The Settings screen
 //! reads the typed model with `settings_get` and writes it back with
 //! `settings_set`, which uses `tt_config::save_merge` so keys the shared
 //! TypeScript CLI owns (but this model doesn't capture) survive the round-trip.

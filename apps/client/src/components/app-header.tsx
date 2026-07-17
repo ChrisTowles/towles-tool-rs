@@ -7,7 +7,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { fmtClock, fmtCountdown, useAppSlot, useStoreSnapshot } from "@/lib/data";
 import { useNow } from "@/lib/now";
-import { openSettings } from "@/lib/open-settings";
 import { useWorkspace } from "@/lib/workspace";
 
 /**
@@ -97,7 +96,7 @@ function ClockCluster() {
 }
 
 export function AppHeader() {
-  const { sidebarCollapsed, toggleSidebar, setPaletteOpen } = useWorkspace();
+  const { sidebarCollapsed, toggleSidebar, setPaletteOpen, openSettingsTab } = useWorkspace();
 
   return (
     <header className="relative flex h-11 shrink-0 items-center gap-2 border-b px-2">
@@ -146,7 +145,7 @@ export function AppHeader() {
             variant="ghost"
             size="icon-sm"
             aria-label="Open settings"
-            onClick={() => void openSettings()}
+            onClick={() => openSettingsTab()}
           >
             <Settings />
           </Button>

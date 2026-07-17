@@ -1,5 +1,5 @@
 /**
- * Client-side filtering for the Settings window. The window is a growing list of
+ * Client-side filtering for the Settings screen. It's a growing list of
  * rows and sections; this narrows what's visible as you type. Pure and
  * host-independent so it unit-tests without React or the Tauri shell.
  */

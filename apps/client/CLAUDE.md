@@ -56,9 +56,10 @@ the build, not silently mismatches at runtime.
 component *also* checks `matchesEditableOverride` to yield the keystroke
 instead of consuming it (see `components/terminal-view.tsx`). The whole
 opt-out is further gated behind the `agentboard.shortcutsWorkInTerminal`
-setting via `useShortcutsWorkInTerminal`, which only refreshes on window
-focus (settings live in a separate OS window) — don't expect it to react
-to a setting change made while this window is focused.
+setting via `useShortcutsWorkInTerminal`, which refreshes on window focus and
+on the `tt:settings-saved` event fired right after a successful Settings save
+(`SETTINGS_SAVED_EVENT` in `lib/settings.ts`) — a save on the Settings tab
+propagates immediately, no relaunch or app-level refocus needed.
 
 ## Terminal rendering is a custom protocol, not xterm.js
 

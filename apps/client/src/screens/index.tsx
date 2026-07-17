@@ -4,13 +4,13 @@ import { AgentboardScreen } from "@/screens/agentboard";
 import { BoardScreen } from "@/screens/board";
 import { ClaudeSessionsScreen } from "@/screens/claude-sessions";
 import { CockpitScreen } from "@/screens/cockpit";
-import { ConfigScreen } from "@/screens/config";
 import { DoctorScreen } from "@/screens/doctor";
 import { GhPrsScreen } from "@/screens/gh-prs";
 import { JournalMeetingsScreen } from "@/screens/journal-meetings";
 import { JournalNotesScreen } from "@/screens/journal-notes";
 import { JournalTodayScreen } from "@/screens/journal-today";
 import { McpScreen } from "@/screens/mcp";
+import { SettingsScreen } from "@/screens/settings";
 import { SlackScreen } from "@/screens/slack";
 
 export const SCREEN_COMPONENTS: Record<ScreenId, ComponentType> = {
@@ -25,5 +25,5 @@ export const SCREEN_COMPONENTS: Record<ScreenId, ComponentType> = {
   "claude-sessions": ClaudeSessionsScreen,
   "gh-prs": GhPrsScreen,
   mcp: McpScreen,
-  config: ConfigScreen,
+  settings: SettingsScreen,
 };

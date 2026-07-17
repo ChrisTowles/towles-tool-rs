@@ -72,20 +72,6 @@ export function ThemeProvider({
     window.document.documentElement.dataset.colorTheme = colorTheme;
   }, [colorTheme]);
 
-  // Keep separate windows (e.g. the standalone Settings window) in sync: the
-  // storage event fires in every other same-origin document when the theme
-  // key changes, so a theme switch in one window updates the others live.
-  useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === storageKey && e.newValue) setTheme(e.newValue as Theme);
-      if (e.key === colorThemeStorageKey && e.newValue) {
-        setColorTheme(e.newValue as ColorTheme);
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [storageKey, colorThemeStorageKey]);
-
   const value = {
     theme,
     setTheme: (next: Theme) => {

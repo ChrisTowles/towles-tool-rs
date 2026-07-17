@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ScreenId } from "@/lib/screens";
 import { focusTargetStore, type FocusTarget } from "@/lib/focus-target";
+import { settingsTargetStore, type SettingsTarget } from "@/lib/settings-target";
 import {
   ACTIVE_TAB_KEY,
   loadWorkspaceTabs,
@@ -28,6 +29,10 @@ type WorkspaceState = {
    * request, so the destination screen scrolls that row into view and flashes
    * it. See {@link FocusTarget}. */
   openTabWithFocus: (target: FocusTarget) => void;
+  /** Open the Settings tab, optionally deep-linked onto a sub-tab and/or a
+   * prefilled filter (e.g. `{ tab: "collectors", filter: "slack" }`). See
+   * {@link SettingsTarget}. */
+  openSettingsTab: (target?: SettingsTarget) => void;
   /** Unmount a screen (remove it from `visited`). The last remaining tab can't
    * be closed — some screen must always be shown. Closing the active tab moves
    * focus to the neighbor that slides into its place. */
@@ -90,6 +95,14 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     [openTab],
   );
 
+  const openSettingsTab = useCallback(
+    (target?: SettingsTarget) => {
+      openTab("settings");
+      if (target) settingsTargetStore.set(target);
+    },
+    [openTab],
+  );
+
   const closeTab = useCallback(
     (id: ScreenId) => {
       // Never close the last tab — a screen is always shown.
@@ -126,6 +139,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       paletteOpen,
       openTab,
       openTabWithFocus,
+      openSettingsTab,
       closeTab,
       toggleSidebar,
       toggleZen,
@@ -141,6 +155,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       paletteOpen,
       openTab,
       openTabWithFocus,
+      openSettingsTab,
       closeTab,
       toggleSidebar,
       toggleZen,
