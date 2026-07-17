@@ -10,7 +10,7 @@
 //! the future Tauri layer.
 //!
 //! Time is injected: functions that read the clock in TS take an explicit
-//! `now_ms` parameter here (the same pattern as `tt-graph`), so tests stay
+//! `now_ms` parameter here (the same pattern as `tt-claude-sessions`), so tests stay
 //! deterministic and never touch a real clock.
 //!
 //! Module map (mirrors the TS split):

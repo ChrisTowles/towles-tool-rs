@@ -1,18 +1,20 @@
 //! Tauri bridge for the Claude Sessions screen: token spend by day/repo/model
-//! plus session search, computed from `tt-graph` over Claude Code session
-//! JSONL files. One scan parses each transcript once
+//! plus session search, computed from `tt-claude-sessions` over Claude Code
+//! session JSONL files. One scan parses each transcript once
 //! (`scan_sessions_detailed`) and is cached in managed state so search
-//! keystrokes never re-read the disk.
+//! keystrokes never re-read the disk. The Treemap tab's HTML report is built
+//! on demand (`claude_sessions_treemap_html`) and embedded in an iframe.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
-use tt_graph::{
-    BarChartDay, LedgerTotals, ModelBar, ProjectBar, SessionDetail, build_ledger_days,
-    build_ledger_model_totals, build_ledger_project_totals, ledger_totals, scan_sessions_detailed,
-    search_sessions,
+use tt_claude_sessions::{
+    BarChartDay, LedgerTotals, ModelBar, ProjectBar, SessionDetail, build_all_sessions_treemap,
+    build_bar_chart_data, build_ledger_days, build_ledger_model_totals,
+    build_ledger_project_totals, find_recent_sessions, generate_treemap_html, ledger_totals,
+    scan_sessions_detailed, search_sessions,
 };
 
 /// Max sessions scanned, matching the CLI's `SESSION_LIMIT`.
@@ -129,6 +131,32 @@ pub async fn claude_sessions_summary(
     })
     .await
     .map_err(|e| format!("claude sessions scan task panicked: {e}"))?
+}
+
+/// Build the interactive treemap + bar-chart HTML report for the last `days`
+/// (blocking pool — it re-parses every transcript). Returned as a full HTML
+/// document the frontend embeds via `<iframe srcDoc>`; computed only when the
+/// Treemap tab asks, so it stays uncached.
+#[tauri::command]
+pub async fn claude_sessions_treemap_html(days: f64) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let projects_dir = claude_dir().join("projects");
+        if !projects_dir.exists() {
+            return Err("No Claude projects directory found at ~/.claude/projects/".to_string());
+        }
+        let now_ms = chrono::Local::now().timestamp_millis();
+        let sessions = find_recent_sessions(&projects_dir, SESSION_LIMIT, days, now_ms)
+            .map_err(|e| format!("Failed to scan sessions: {e}"))?;
+        if sessions.is_empty() {
+            return Err("No sessions found in this range".to_string());
+        }
+        let bar_chart = build_bar_chart_data(&sessions);
+        let treemap = build_all_sessions_treemap(&sessions)
+            .map_err(|e| format!("Failed to build treemap: {e}"))?;
+        Ok(generate_treemap_html(&treemap, &bar_chart))
+    })
+    .await
+    .map_err(|e| format!("claude sessions treemap task panicked: {e}"))?
 }
 
 /// Search the cached scan's titles + prompt text; rescans only when the cache

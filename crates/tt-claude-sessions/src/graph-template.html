@@ -389,16 +389,34 @@
       const viewBarChartBtn = document.getElementById('viewBarChart');
       const legendContainer = document.getElementById('legend');
 
+      // Categorical palette (8 slots), CVD-validated for this report's dark
+      // navy surface (`node scripts/validate_palette.js` from the `dataviz`
+      // skill — the prior ad hoc set had adjacent pairs as close as ΔE 0.3,
+      // effectively invisible to color-vision-deficient readers). Treemap and
+      // bar chart are mutually exclusive views (never on screen together), so
+      // both legends can safely reuse the same 8 hues.
+      const CATEGORICAL_PALETTE = [
+        '#3987e5', // blue
+        '#008300', // green
+        '#d55181', // magenta
+        '#c98500', // amber
+        '#199e70', // teal
+        '#d95926', // orange
+        '#9085e9', // violet
+        '#e66767', // red
+      ];
+      const FALLBACK_COLOR = '#8a8a8a'; // uncommon tools/projects fold here
+
       // Tool colors for treemap legend
       const toolLegendItems = [
-        { color: '#4ade80', label: 'Read' },
-        { color: '#f87171', label: 'Write' },
-        { color: '#fb923c', label: 'Edit' },
-        { color: '#a78bfa', label: 'Bash' },
-        { color: '#38bdf8', label: 'Glob' },
-        { color: '#22d3ee', label: 'Grep' },
-        { color: '#facc15', label: 'Task' },
-        { color: '#60a5fa', label: 'MCP' },
+        { color: CATEGORICAL_PALETTE[1], label: 'Read' },
+        { color: CATEGORICAL_PALETTE[7], label: 'Write' },
+        { color: CATEGORICAL_PALETTE[5], label: 'Edit' },
+        { color: CATEGORICAL_PALETTE[6], label: 'Bash' },
+        { color: CATEGORICAL_PALETTE[0], label: 'Glob' },
+        { color: CATEGORICAL_PALETTE[4], label: 'Grep' },
+        { color: CATEGORICAL_PALETTE[3], label: 'Task' },
+        { color: CATEGORICAL_PALETTE[2], label: 'MCP' },
       ];
 
       function renderLegend(items) {
@@ -632,29 +650,27 @@
         });
       }
 
+      // Only the 8 legend tools get a dedicated categorical hue; everything
+      // else (WebFetch, WebSearch, TodoWrite, LSP, Response,
+      // AskUserQuestion, …) folds into the fallback gray rather than
+      // stretching the palette past its validated slot count — the tile's
+      // own label and the tooltip's tool table still carry the real name.
       const toolColors = {
-        Read: '#4ade80',      // green
-        Write: '#f87171',     // red
-        Edit: '#fb923c',      // orange
-        MultiEdit: '#f97316', // darker orange
-        Bash: '#a78bfa',      // purple
-        Glob: '#38bdf8',      // sky blue
-        Grep: '#22d3ee',      // cyan
-        Task: '#facc15',      // yellow
-        WebFetch: '#2dd4bf',  // teal
-        WebSearch: '#14b8a6', // darker teal
-        TodoWrite: '#e879f9', // pink
-        LSP: '#818cf8',       // indigo
-        Response: '#cbd5e1',  // light gray for text-only responses
-        AskUserQuestion: '#f472b6', // pink
-        default: '#94a3b8'    // gray
+        Read: CATEGORICAL_PALETTE[1],
+        Write: CATEGORICAL_PALETTE[7],
+        Edit: CATEGORICAL_PALETTE[5],
+        MultiEdit: CATEGORICAL_PALETTE[5],
+        Bash: CATEGORICAL_PALETTE[6],
+        Glob: CATEGORICAL_PALETTE[0],
+        Grep: CATEGORICAL_PALETTE[4],
+        Task: CATEGORICAL_PALETTE[3],
       };
 
       function getColor(toolName) {
         if (!toolName) return '#4a5568';
         // Check for MCP tools (mcp__*)
-        if (toolName.startsWith('mcp__')) return '#60a5fa'; // blue for MCP
-        return toolColors[toolName] || toolColors.default;
+        if (toolName.startsWith('mcp__')) return CATEGORICAL_PALETTE[2]; // magenta for MCP
+        return toolColors[toolName] || FALLBACK_COLOR;
       }
 
       function getRatioClass(ratio) {
@@ -900,28 +916,47 @@
       // Initialize bar chart view after defining renderBarChart below
       setTimeout(() => showBarChart(), 0);
 
-      // Project colors for bar chart (distinct colors for different projects)
-      const projectColorPalette = [
-        '#60a5fa', // blue
-        '#4ade80', // green
-        '#a78bfa', // purple
-        '#f87171', // red
-        '#fbbf24', // amber
-        '#22d3ee', // cyan
-        '#f472b6', // pink
-        '#fb923c', // orange
-        '#2dd4bf', // teal
-        '#818cf8', // indigo
-      ];
-      const projectColorMap = new Map();
-      let nextColorIndex = 0;
+      // Project colors for bar chart: the top CATEGORICAL_PALETTE.length
+      // projects by total tokens in the window each get a dedicated hue, in
+      // rank order; anything past that folds into a single "Other" bucket.
+      // (The prior version cycled the palette via modulo once projects ran
+      // out of colors, so two unrelated repos could silently share a hue —
+      // this caps cardinality instead of reusing it.)
+      let projectColorMap = new Map();
+      let rankedProjectOrder = [];
+      let hasOtherProjects = false;
+
+      function rankProjects(data) {
+        const totals = new Map();
+        for (const day of data.days) {
+          for (const proj of day.projects) {
+            totals.set(proj.project, (totals.get(proj.project) || 0) + proj.totalTokens);
+          }
+        }
+        const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => p);
+        const top = ranked.slice(0, CATEGORICAL_PALETTE.length);
+        projectColorMap = new Map(top.map((p, i) => [p, CATEGORICAL_PALETTE[i]]));
+        hasOtherProjects = ranked.length > top.length;
+        rankedProjectOrder = hasOtherProjects ? [...top, 'Other'] : top;
+      }
 
       function getProjectColor(project) {
-        if (!projectColorMap.has(project)) {
-          projectColorMap.set(project, projectColorPalette[nextColorIndex % projectColorPalette.length]);
-          nextColorIndex++;
+        return projectColorMap.get(project) || FALLBACK_COLOR;
+      }
+
+      // Merge a day's raw per-project entries into the fixed rank order,
+      // folding anything outside the top slots into "Other" so every day
+      // stacks its segments in the same order (and the same color always
+      // means the same project across the whole chart).
+      function mergedDaySegments(day) {
+        const byProject = new Map();
+        for (const proj of day.projects) {
+          const key = projectColorMap.has(proj.project) ? proj.project : 'Other';
+          byProject.set(key, (byProject.get(key) || 0) + proj.totalTokens);
         }
-        return projectColorMap.get(project);
+        return rankedProjectOrder
+          .filter((key) => byProject.has(key))
+          .map((key) => ({ project: key, totalTokens: byProject.get(key) }));
       }
 
       // Selected bar segment state
@@ -933,8 +968,6 @@
        */
       function renderBarChart(data) {
         barChartContainer.replaceChildren();
-        projectColorMap.clear();
-        nextColorIndex = 0;
 
         if (!data || !data.days || data.days.length === 0) {
           const msg = document.createElement('div');
@@ -943,6 +976,8 @@
           barChartContainer.appendChild(msg);
           return;
         }
+
+        rankProjects(data);
 
         const margin = { top: 30, right: 30, bottom: 60, left: 70 };
         const width = WIDTH - margin.left - margin.right;
@@ -1073,22 +1108,29 @@
 
         // Bar width (leave gaps between days)
         const barWidth = Math.min(xBandWidth * 0.7, 60);
+        // Surface-color gap between stacked segments, per the dataviz mark
+        // spec (never between a segment and the baseline).
+        const SEGMENT_GAP = 2;
 
         // Draw stacked bars for each day (by project)
         for (const day of data.days) {
           const x = xScale(day.date) - barWidth / 2;
-          let yOffset = 0; // Stack from bottom
+          const segments = mergedDaySegments(day);
+          let yOffset = 0; // Stack from bottom, measured in full (ungapped) heights
 
-          for (const proj of day.projects) {
-            const projHeight = yHeight(proj.totalTokens);
-            if (projHeight < 1) continue;
+          segments.forEach((proj, i) => {
+            const rawHeight = yHeight(proj.totalTokens);
+            if (rawHeight < 1) { yOffset += rawHeight; return; }
+            const gap = i === segments.length - 1 ? 0 : SEGMENT_GAP;
+            const projHeight = Math.max(0, rawHeight - gap);
 
             const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
             rect.setAttribute('class', 'bar-segment');
             rect.setAttribute('x', x);
-            rect.setAttribute('y', height - yOffset - projHeight);
+            rect.setAttribute('y', height - yOffset - rawHeight + gap);
             rect.setAttribute('width', barWidth);
             rect.setAttribute('height', projHeight);
+            rect.setAttribute('rx', 2);
             rect.setAttribute('fill', getProjectColor(proj.project));
             rect.setAttribute('data-project', proj.project);
 
@@ -1117,8 +1159,8 @@
             });
 
             g.appendChild(rect);
-            yOffset += projHeight;
-          }
+            yOffset += rawHeight;
+          });
         }
 
         // Click elsewhere to clear selection
@@ -1140,11 +1182,12 @@
         }
         stats.textContent = 'Total: ' + formatTokens(totalTokens) + ' tokens';
 
-        // Update legend with project colors
+        // Update legend with project colors (ranked order; "Other" last)
         const legendItems = [...projectColorMap.entries()].map(([project, color]) => ({
           color,
           label: project
         }));
+        if (hasOtherProjects) legendItems.push({ color: FALLBACK_COLOR, label: 'Other' });
         renderLegend(legendItems);
       }
 

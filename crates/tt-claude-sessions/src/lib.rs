@@ -1,32 +1,32 @@
-//! Token-accounting and treemap-rendering library for the towles-tool CLI.
+//! Token-accounting and treemap-rendering library backing the desktop app's
+//! Claude Sessions screen.
 //!
-//! Ports `src/commands/graph/` from the TypeScript CLI. The command parses
-//! Claude Code session JSONL files (`~/.claude/projects/**/<sessionId>.jsonl`),
-//! aggregates token usage per session/model/tool, computes waste metrics, builds
-//! a d3 treemap tree plus a per-day per-project stacked bar chart, and renders
-//! them into an embedded HTML template. It can also emit flat session rows as
-//! JSON or CSV.
+//! Parses Claude Code session JSONL files
+//! (`~/.claude/projects/**/<sessionId>.jsonl`), aggregates token usage per
+//! session/model/tool, computes waste metrics, builds a d3 treemap tree plus a
+//! per-day per-project stacked bar chart, and renders them into an embedded
+//! HTML template. The ledger path ([`ledger`]) additionally powers the
+//! screen's Overview/Sessions tabs (totals, day stacks, ranked bars, search).
 //!
 //! This crate is deliberately Tauri-free. All filesystem-touching functions take
 //! explicit paths (e.g. `projects_dir: &Path`), so tests never read the real
 //! `~/.claude`. The JSONL schema is modelled tolerantly (see [`types`]): a
 //! malformed line is skipped, not fatal.
 //!
-//! Module map (mirrors the TS split):
+//! Module map:
 //! - [`types`] — input/output data types.
-//! - [`parser`] — JSONL parsing, day filtering, quick token counts.
+//! - [`parser`] — day-cutoff computation.
 //! - [`tools`] — tool-call extraction from content blocks.
 //! - [`labels`] — session-label extraction and cleanup.
 //! - [`analyzer`] — per-session token analysis, model/project name helpers.
 //! - [`sessions`] — session discovery on disk, bar-chart aggregation.
 //! - [`treemap`] — treemap tree construction.
-//! - [`format`] — flat session-row JSON/CSV output.
 //! - [`render`] — HTML rendering from the embedded template.
+//! - [`ledger`] — single-parse session scan + summary aggregates + search.
 
 use thiserror::Error;
 
 pub mod analyzer;
-pub mod format;
 pub mod labels;
 pub mod ledger;
 pub mod parser;
@@ -36,7 +36,7 @@ pub mod tools;
 pub mod treemap;
 pub mod types;
 
-/// Errors surfaced by the graph library. JSONL parse failures are intentionally
+/// Errors surfaced by the library. JSONL parse failures are intentionally
 /// *not* errors — malformed lines are skipped — so the only fallible surface is
 /// filesystem access.
 #[derive(Debug, Error)]
@@ -47,54 +47,30 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-// Re-export the public API surface (mirrors the TS `index.ts` re-exports).
+// Re-export the public API surface.
 pub use analyzer::{
     SessionAnalysis, aggregate_session_tools, analyze_session, extract_project_name,
     get_model_name, get_primary_model,
 };
-pub use format::{SessionRow, build_session_rows, format_csv, format_json, format_markdown};
 pub use labels::extract_session_label;
 pub use ledger::{
     LedgerTotals, SearchHit, SessionDetail, build_ledger_days, build_ledger_model_totals,
     build_ledger_project_totals, ledger_totals, normalize_repo_name, scan_sessions_detailed,
     search_sessions,
 };
-pub use parser::{HasMtime, calculate_cutoff_ms, filter_by_days};
+pub use parser::calculate_cutoff_ms;
 pub use render::generate_treemap_html;
 pub use sessions::{
-    build_bar_chart_data, build_model_totals, build_project_totals, find_recent_sessions,
-    find_session_path, session_result_for_path,
+    build_bar_chart_data, find_recent_sessions, find_session_path, session_result_for_path,
 };
 pub use tools::{extract_tool_data, extract_tool_detail, sanitize_string, truncate_detail};
 pub use treemap::{build_all_sessions_treemap, build_session_treemap, build_turn_nodes};
 pub use types::{
     BarChartData, BarChartDay, ModelBar, ProjectBar, SessionResult, ToolData, TreemapNode,
 };
-// The Claude Code transcript schema + parse/title/usage projections now live in
-// the shared crate; re-export the pieces tt-graph's consumers (the CLI) use so
-// they need not depend on tt-claude-code directly.
+// The Claude Code transcript schema + parse/title/usage projections live in
+// the shared crate; re-export the pieces this crate's consumers use so they
+// need not depend on tt-claude-code directly.
 pub use tt_claude_code::{
     Content, Message, TranscriptEntry, Usage, parse_transcript, parse_transcript_file,
 };
-
-/// Valid output formats for the `graph` command. Ports `OutputFormat`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputFormat {
-    Html,
-    Json,
-    Csv,
-    Markdown,
-}
-
-impl OutputFormat {
-    /// Parse a `--format` value. Returns `None` for unrecognized formats.
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "html" => Some(OutputFormat::Html),
-            "json" => Some(OutputFormat::Json),
-            "csv" => Some(OutputFormat::Csv),
-            "md" => Some(OutputFormat::Markdown),
-            _ => None,
-        }
-    }
-}

@@ -1,17 +1,16 @@
-//! Output data types for building the treemap / bar-chart. Ports the output
-//! half of `src/commands/graph/types.ts`.
+//! Output data types for building the treemap / bar-chart.
 //!
 //! The Claude Code transcript **input** schema (`TranscriptEntry`, `Message`,
 //! `Usage`, `Content`) now lives in the shared [`tt_claude_code`] crate — the
 //! single quarantine for that internal, version-volatile format. This module
-//! keeps only tt-graph's own output types ([`TreemapNode`], [`BarChartData`],
+//! keeps only this crate's own output types ([`TreemapNode`], [`BarChartData`],
 //! etc.), which serialize with camelCase keys and omit absent optional keys to
 //! match the byte-shape the HTML template's JavaScript consumes.
 
 use serde::Serialize;
 
 /// An individual tool call with token attribution, used in tooltips and
-/// treemap children. Ports `ToolData` from `types.ts`.
+/// treemap children.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolData {
@@ -72,7 +71,7 @@ pub struct SessionResult {
     pub title: Option<String>,
 }
 
-/// A node in the d3 treemap tree. Ports `TreemapNode` from `types.ts`.
+/// A node in the d3 treemap tree.
 ///
 /// Field order and camelCase keys mirror the TS; every optional key is omitted
 /// when absent so the shape matches what the template's JS expects.

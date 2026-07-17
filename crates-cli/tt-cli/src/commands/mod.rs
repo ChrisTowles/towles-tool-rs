@@ -1,5 +1,4 @@
 pub mod agentboard;
-pub mod claude_sessions;
 pub mod claude_settings;
 pub mod collect;
 pub mod config;

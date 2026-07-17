@@ -11,7 +11,7 @@ happened 2026-07-13 (hard cutover, no `ttr` alias left behind; see
 [docs/CUTOVER.md](docs/CUTOVER.md)).
 
 > **Status:** in progress. The scaffold plus config, doctor, journal, GitHub
-> helpers, install, claude-sessions, the data-hub store/collectors, the MCP
+> helpers, install, the Claude Sessions screen, the data-hub store/collectors, the MCP
 > server, worktree slots (`tt slot`), and the Agentboard app screens (with
 > live in-app terminals) are ported. Features land one at a time — see
 > [docs/MIGRATION.md](docs/MIGRATION.md).
@@ -92,7 +92,6 @@ The CLI binary is `tt`. Run any command with `--help` for its flags.
 - `journal daily-notes|note|meeting|list|search` — filesystem notes with date-token path templates (`today` is an alias for `daily-notes`).
 - `gh branch|branch-clean|pr|pr-list|assign|sync|co` — create a branch from a GitHub issue, delete merged branches, open a PR from the current branch, list your open PRs with CI status, assign an issue to a sibling slot, rebase the checkout onto `origin/main`, or check out a PR's branch by number (`pr`/`prs` are top-level aliases for `gh pr`/`gh pr-list`).
 - `install [-o/--observability]` — apply recommended Claude Code settings and ensure required plugins.
-- `claude-sessions [-s/--session] [--days N] [-f html|json|csv] [--open/--no-open]` — Claude Code session summary across every repo; HTML treemap report to `~/.claude/reports`, or JSON/CSV to stdout.
 - `agentboard repos|sessions` — manage the watched-repo list and per-folder PTY sessions the app and collectors read (`ag` is an alias).
 - `collect calendar|issues|prs|slack|all|status|nudge` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`, and a watched Slack DM; `status` reports each collector's health; `nudge` makes a running app instance refresh its PR data immediately instead of waiting for its normal poll interval (used by the `towles-tool-app` plugin's `gh pr merge`/`create` hook).
 - `mcp serve` — stdio MCP server exposing the store, live agent sessions, and `journal_append` (register with `claude mcp add tt -- tt mcp serve`).
@@ -106,7 +105,7 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-exec` — process/command wrappers.
 - `crates/tt-journal` — journal/note logic and date-token path templating.
 - `crates/tt-git` — git/GitHub helpers (branch names, PR content, issue parsing).
-- `crates/tt-graph` — session token accounting and treemap/JSON/CSV/HTML rendering.
+- `crates/tt-claude-sessions` — session token accounting, treemap/bar-chart building, and the HTML report behind the app's Claude Sessions screen.
 - `crates/tt-doctor` — dependency/environment checks (CLI `doctor` and the app screen both consume it).
 - `crates/tt-slots` — the worktree-slot convention: `${tt:...}` env-template renderer with port-pool claims, slot naming/layout, removal guards, and the shared `ops` orchestration behind `tt slot` and the app.
 - `crates/tt-claude-code` — shared Claude Code transcript parsing (session JSONL, titles, token usage, model table).

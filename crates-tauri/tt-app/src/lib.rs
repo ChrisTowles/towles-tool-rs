@@ -487,6 +487,7 @@ pub fn run() {
             journal::journal_open,
             claude_sessions::claude_sessions_summary,
             claude_sessions::claude_sessions_search,
+            claude_sessions::claude_sessions_treemap_html,
             agentboard::ab_open_session_for_cwd,
             doctor::doctor_run,
             settings::settings_get,

@@ -5802,13 +5802,13 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tt-agentboard",
+ "tt-claude-sessions",
  "tt-collect",
  "tt-config",
  "tt-dictate",
  "tt-doctor",
  "tt-exec",
  "tt-git",
- "tt-graph",
  "tt-ide",
  "tt-journal",
  "tt-mcp",
@@ -5825,6 +5825,19 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tt-claude-sessions"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tt-claude-code",
 ]
 
 [[package]]
@@ -5849,7 +5862,6 @@ dependencies = [
  "tt-doctor",
  "tt-exec",
  "tt-git",
- "tt-graph",
  "tt-journal",
  "tt-mcp",
  "tt-slots",
@@ -5933,19 +5945,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "tt-graph"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tt-claude-code",
 ]
 
 [[package]]

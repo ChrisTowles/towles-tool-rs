@@ -1,10 +1,10 @@
 import { invokeToast } from "@/lib/tauri";
 
 /**
- * Client-side bridge to the Claude Sessions screen (the Rust `tt-graph`
- * ledger module, surfaced via `crates-tauri/tt-app/src/claude_sessions.rs`).
- * Plain request/response; the backend caches the scan so search stays
- * in-memory.
+ * Client-side bridge to the Claude Sessions screen (the Rust
+ * `tt-claude-sessions` crate, surfaced via
+ * `crates-tauri/tt-app/src/claude_sessions.rs`). Plain request/response; the
+ * backend caches the scan so search stays in-memory.
  */
 
 export type ProjectBar = {
@@ -59,3 +59,8 @@ export const claudeSessionsSummary = (days: number) =>
 
 export const claudeSessionsSearch = (days: number, query: string) =>
   invokeToast<ClaudeSession[]>("claude_sessions_search", { days, query });
+
+/** Full HTML document for the interactive treemap/bar-chart report, embedded
+ * by the Treemap tab via `<iframe srcDoc>`. */
+export const claudeSessionsTreemapHtml = (days: number) =>
+  invokeToast<string>("claude_sessions_treemap_html", { days });

@@ -6,7 +6,7 @@
 //! field optional, unknown fields ignored, content blocks kept as raw
 //! [`serde_json::Value`]) and this crate is the single place the shape is
 //! assumed, so a re-validation on a Claude Code upgrade touches one crate. Both
-//! consumers ([`tt-graph`] batch analysis and `tt-agentboard`'s live engine)
+//! consumers ([`tt-claude-sessions`] batch analysis and `tt-agentboard`'s live engine)
 //! read through these types.
 //!
 //! We evaluated the Agent SDK's `listSessions`/`getSessionMessages` as an

@@ -10,7 +10,7 @@ Rust:
 
 ```sh
 cargo run -p tt-cli -- <args>       # run the CLI (binary `tt`)
-cargo run -p tt-cli -- doctor       # e.g. doctor, config, journal, gh, install, claude-sessions
+cargo run -p tt-cli -- doctor       # e.g. doctor, config, journal, gh, install
 cargo fmt --check                   # formatting (rustfmt, 100-col)
 cargo clippy --all -- -D warnings   # lint; warnings are errors
 cargo test --all                    # unit + assert_cmd black-box tests
@@ -171,8 +171,9 @@ Cargo workspace + npm workspace (`apps/client` only):
   - `tt-journal` — journal/note filesystem logic and date-token path templating.
   - `tt-git` — GitHub/git helpers: branch-name slugging, PR content, merged-branch
     filtering, issue parsing, picker layout.
-  - `tt-graph` — session-JSONL token accounting, treemap/bar-chart building, and
-    JSON/CSV/HTML rendering.
+  - `tt-claude-sessions` — backs the app's Claude Sessions screen:
+    session-JSONL token accounting, the single-parse ledger scan/search path,
+    treemap/bar-chart building, and the embedded-HTML report render.
   - `tt-slots` — the worktree-slot convention (see the Worktree slots section):
     the `${tt:...}` env-template renderer with port-pool claims, dotenv-lite
     parse/merge, slot naming/layout, removal guards, and the shared
@@ -217,7 +218,6 @@ Cargo workspace + npm workspace (`apps/client` only):
   `config show|validate|schema|reset`, `doctor [--json --track --diff]`,
   `journal daily-notes|note|meeting|list|search` (+ `today` alias),
   `gh pr|branch|branch-clean|assign` (+ `pr` alias), `install [-o]`,
-  `claude-sessions [-s --days -f html|json|csv --open/--no-open]`,
   `agentboard repos|sessions` (+ `ag` alias),
   `collect calendar|issues|prs|slack|all`, `mcp serve`,
   `slot new|ls|rm|env|clean` (worktree slots — see the Worktree slots section).

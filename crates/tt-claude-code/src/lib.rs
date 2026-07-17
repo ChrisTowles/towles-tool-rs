@@ -12,7 +12,7 @@
 //!   so status / thread-name / tool logic reads blocks through one place.
 //!
 //! Consumers:
-//! - `tt-graph` — batch/historical treemap + token analysis.
+//! - `tt-claude-sessions` — batch/historical treemap + token analysis.
 //! - `tt-agentboard` — the live agent engine (CLI liveness + `/proc` PID +
 //!   fs-notify + tail enrichment). Those live-gathering concerns stay in
 //!   `tt-agentboard`; only the schema/parse/projection knowledge lives here.
