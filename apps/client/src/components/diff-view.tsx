@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Columns2, Folder, Rows2, X } from "lucide-react";
+import { ChevronRight, Columns2, Rows2, X } from "lucide-react";
 import {
   buildDiffTree,
   pairDiffLines,
@@ -8,6 +8,7 @@ import {
   type DiffLine,
   type DiffTreeNode,
 } from "@/lib/diff";
+import { fileIconSpec, folderIconSpec } from "@/lib/file-icons";
 import { cn } from "@/lib/utils";
 
 /**
@@ -101,6 +102,7 @@ function DiffTreeRows({
         const paddingLeft = TREE_BASE_PX + depth * TREE_INDENT_PX;
         if (node.kind === "folder") {
           const isCollapsed = collapsed.has(node.path);
+          const folder = folderIconSpec(node.name, !isCollapsed);
           return (
             <div key={node.path}>
               <button
@@ -109,12 +111,13 @@ function DiffTreeRows({
                 style={{ paddingLeft }}
                 className="flex w-full items-center gap-1.5 py-1 pr-2 text-left text-[11px] font-medium text-muted-foreground hover:bg-accent/50"
               >
-                {isCollapsed ? (
-                  <ChevronRight className="size-3 shrink-0 text-muted-foreground/70" />
-                ) : (
-                  <ChevronDown className="size-3 shrink-0 text-muted-foreground/70" />
-                )}
-                <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
+                <ChevronRight
+                  className={cn(
+                    "size-3 shrink-0 text-muted-foreground/70 transition-transform",
+                    !isCollapsed && "rotate-90",
+                  )}
+                />
+                <folder.Icon className={cn("size-3.5 shrink-0", folder.className)} />
                 <span className="truncate">{node.name}</span>
               </button>
               {!isCollapsed && (
@@ -133,6 +136,7 @@ function DiffTreeRows({
         }
 
         const file = files[node.index];
+        const icon = fileIconSpec(node.name);
         return (
           <button
             key={node.path}
@@ -140,13 +144,14 @@ function DiffTreeRows({
             onClick={() => onSelect(node.index)}
             style={{ paddingLeft }}
             className={cn(
-              "flex w-full items-center gap-2 border-l-2 border-transparent py-1.5 pr-2 text-left text-xs",
+              "flex w-full items-center gap-1.5 border-l-2 border-transparent py-1.5 pr-2 text-left text-xs",
               node.index === selected
                 ? "border-l-violet-500 bg-accent text-foreground"
                 : "text-muted-foreground hover:bg-accent/50",
             )}
           >
             <ChangeTypeLetter file={file} />
+            <icon.Icon className={cn("size-3.5 shrink-0", icon.className)} />
             <span className="min-w-0 flex-1 truncate">{node.name}</span>
             <DiffCounts additions={file.additions} deletions={file.deletions} />
           </button>
@@ -382,6 +387,7 @@ export function DiffViewer({ text, ide }: { text: string; ide?: DiffIdeBridge })
       return next;
     });
   const file = files[Math.min(selected, files.length - 1)];
+  const headerIcon = file ? fileIconSpec(file.path) : null;
 
   // Debounced push of the highlight to the folder's Claude session (VS Code
   // debounces selection_changed 300ms; match it). Clearing pushes an empty
@@ -462,6 +468,7 @@ export function DiffViewer({ text, ide }: { text: string; ide?: DiffIdeBridge })
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex shrink-0 items-center gap-2 border-b bg-card px-3 py-1.5">
           <ChangeTypeLetter file={file} />
+          {headerIcon && <headerIcon.Icon className={cn("size-3.5 shrink-0", headerIcon.className)} />}
           <span className="min-w-0 truncate font-mono text-xs text-foreground">{file.path}</span>
           {file.oldPath && (
             <span className="truncate font-mono text-[10.5px] text-muted-foreground">

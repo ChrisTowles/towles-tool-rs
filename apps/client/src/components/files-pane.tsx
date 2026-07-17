@@ -1,19 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  AtSign,
-  ChevronDown,
-  ChevronRight,
-  Columns2,
-  File,
-  Folder,
-  RefreshCw,
-  WrapText,
-} from "lucide-react";
+import { AtSign, ChevronRight, Columns2, RefreshCw, WrapText } from "lucide-react";
 import { CodeViewer, type ViewerAnchor } from "@/components/code-viewer";
 import { IconBtn } from "@/components/agentboard-bits";
 import { FilePreview, previewKindFor } from "@/components/file-preview";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { buildDiffTree, type DiffFile, type DiffTreeNode } from "@/lib/diff";
+import { fileIconSpec, folderIconSpec } from "@/lib/file-icons";
 import { ideAtMention, useIdeConnected } from "@/lib/ide";
 import { invokeCmd } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -62,6 +54,7 @@ function FileRow({
   /** Filter results show the full path (tree context is gone). */
   showPath?: boolean;
 }) {
+  const icon = fileIconSpec(name);
   return (
     <div
       style={{ paddingLeft }}
@@ -72,7 +65,7 @@ function FileRow({
           : "text-muted-foreground hover:bg-accent/50",
       )}
     >
-      <File className="size-3.5 shrink-0 text-muted-foreground/50" />
+      <icon.Icon className={cn("size-3.5 shrink-0", icon.className)} />
       <button
         type="button"
         onClick={() => onOpen(path)}
@@ -125,6 +118,7 @@ function FileTreeRows({
         const paddingLeft = TREE_BASE_PX + depth * TREE_INDENT_PX;
         if (node.kind === "folder") {
           const isCollapsed = collapsed.has(node.path);
+          const folder = folderIconSpec(node.name, !isCollapsed);
           return (
             <div key={node.path}>
               <button
@@ -133,12 +127,13 @@ function FileTreeRows({
                 style={{ paddingLeft }}
                 className="flex w-full items-center gap-1.5 py-1 pr-2 text-left text-[11px] font-medium text-muted-foreground hover:bg-accent/50"
               >
-                {isCollapsed ? (
-                  <ChevronRight className="size-3 shrink-0 text-muted-foreground/70" />
-                ) : (
-                  <ChevronDown className="size-3 shrink-0 text-muted-foreground/70" />
-                )}
-                <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
+                <ChevronRight
+                  className={cn(
+                    "size-3 shrink-0 text-muted-foreground/70 transition-transform",
+                    !isCollapsed && "rotate-90",
+                  )}
+                />
+                <folder.Icon className={cn("size-3.5 shrink-0", folder.className)} />
                 <span className="truncate">{node.name}</span>
               </button>
               {!isCollapsed && (
