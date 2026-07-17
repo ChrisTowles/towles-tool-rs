@@ -94,7 +94,7 @@ pub fn save_scan_roots(path: &Path, scan_roots: &[String]) -> std::io::Result<()
 
 /// Add `path` straight against the on-disk file: reread fresh immediately
 /// before writing, rather than trusting a caller's in-memory repo list that
-/// may have gone stale. Multiple Agentboard windows (one per `tt:parallel-slots`
+/// may have gone stale. Multiple Agentboard windows (one per `tt slot`
 /// checkout) share this one `repos.json`; without a fresh reread here, one
 /// window adding repo A while another adds repo B — both starting from the
 /// same stale snapshot — would have the second save silently drop the first's

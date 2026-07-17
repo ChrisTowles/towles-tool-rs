@@ -48,9 +48,10 @@ and note that I can name substitutions if I disagree with the top 5.
 ## Mode: build
 
 Implement the top 5 (or the 5 I named when invoking build) in parallel using
-the slot clones (tt:parallel-slots skill) with subagents — one idea per slot,
-each on its own branch off main. Do not stop to ask me anything; my only
-involvement is reviewing the finished PRs.
+worktree slots (`tt slot new -b <branch>`, see CLAUDE.md's Worktree slots
+section) with subagents — one idea per slot, each on its own branch off main.
+Do not stop to ask me anything; my only involvement is reviewing the finished
+PRs.
 
 Each agent must: follow CLAUDE.md conventions, land logic in a Tauri-free
 crates/ library with unit tests where applicable, run `cargo fmt --check`,

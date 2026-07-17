@@ -1,7 +1,7 @@
 {
   "name": "tt",
-  "description": "Commands for discovering your unknowns across the map-vs-territory workflow (trq212, 'The map is not the territory'). Numbered by phase — 0x before: /01-blindspot, /02-brainstorm, /03-interview, /04-references; 1x plan/during: /10-plan (also keeps implementation notes while building); 2x after: /20-pitch, /21-comprehend, /22-memories. Plus skills towles-tool and parallel-slots.",
-  "version": "0.0.158",
+  "description": "Commands for discovering your unknowns across the map-vs-territory workflow (trq212, 'The map is not the territory'). Numbered by phase — 0x before: /01-blindspot, /02-brainstorm, /03-interview, /04-references; 1x plan/during: /10-plan (also keeps implementation notes while building); 2x after: /20-pitch, /21-comprehend, /22-memories. Plus the towles-tool skill.",
+  "version": "0.0.159",
   "author": {
     "name": "Chris Towles"
   }

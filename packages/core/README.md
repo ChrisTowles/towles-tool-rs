@@ -41,10 +41,9 @@ generic prompt you invoke; pass an optional target as an argument.
 
 ## Skills
 
-| Skill               | Description                                                                       |
-| ------------------- | --------------------------------------------------------------------------------- |
-| `tt:towles-tool`    | `tt` CLI reference: git/gh helpers, journaling, dependency checks.                |
-| `tt:parallel-slots` | Fan out parallel Claude Code agents across slot clones of any repo, via `gh` CLI. |
+| Skill            | Description                                                        |
+| ---------------- | -------------------------------------------------------------------- |
+| `tt:towles-tool` | `tt` CLI reference: git/gh helpers, journaling, dependency checks. |
 
 ## Installation
 

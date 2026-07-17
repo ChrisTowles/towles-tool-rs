@@ -1,5 +1,5 @@
 //! Guard logic for `tt gh assign`: dispatching an open issue to a sibling
-//! slot checkout (`tt:parallel-slots`). The whole point of the feature is the
+//! slot checkout (managed via `tt slot`). The whole point of the feature is the
 //! guard — an issue must never land in a slot that is holding someone's
 //! in-progress work, so the checks hard-fail with no `--force` escape hatch.
 //!

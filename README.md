@@ -63,8 +63,7 @@ The repo doubles as a Claude Code plugin marketplace. The `tt` plugin (in
 workflow commands, numbered so they sort in workflow order — `0x` before
 implementation (`/tt:01-blindspot`, `/tt:02-brainstorm`, `/tt:03-interview`,
 `/tt:04-references`), `1x` plan/during (`/tt:10-plan`), `2x` after
-(`/tt:20-pitch`, `/tt:21-comprehend`) — plus the `towles-tool` and
-`parallel-slots` skills.
+(`/tt:20-pitch`, `/tt:21-comprehend`) — plus the `towles-tool` skill.
 
 Install it in Claude Code:
 

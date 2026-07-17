@@ -322,9 +322,9 @@ etc.). The points below are repo-specific specializations of that doc.
 - **Hard cutover, no back-compat shims** — replace, don't wrap. (No compat
   layers, no dual-name aliases — the `ttr`→`tt` rename left no `ttr` behind.)
 - **Dev tooling must not hardcode ports/paths.** Chris runs multiple worktree
-  slots of this repo concurrently (see [ATTRIBUTION.md](ATTRIBUTION.md) /
-  `tt:parallel-slots`), so a fixed port, lockfile path, or other singleton
-  resource makes copies collide. Default to dynamic allocation (e.g.
+  slots of this repo concurrently (see the Worktree slots section above), so
+  a fixed port, lockfile path, or other singleton resource makes copies
+  collide. Default to dynamic allocation (e.g.
   `scripts/dev-port.mjs` picks a deterministic port derived from the slot dir
   name) over a hardcoded value like `1420`.
 - **No planning/implementation-notes docs committed to the repo** (e.g.
