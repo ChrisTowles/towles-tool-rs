@@ -26,7 +26,6 @@ import {
 import { useTheme } from "@/components/theme-provider";
 import { requestAgentboardNav, useAgentboardState } from "@/lib/agentboard";
 import { storeAddTask, useStoreSnapshot } from "@/lib/data";
-import { openSettings } from "@/lib/open-settings";
 import { openExternalUrl } from "@/lib/open-url";
 import {
   paletteRepoEntries,
@@ -47,7 +46,8 @@ import { useWorkspace } from "@/lib/workspace";
  * platform-correct (Ctrl on Linux, ⌘ on mac) instead of hardcoded.
  */
 export function CommandPalette() {
-  const { paletteOpen, setPaletteOpen, recent, activeTab, openTab, toggleSidebar } = useWorkspace();
+  const { paletteOpen, setPaletteOpen, recent, activeTab, openTab, openSettingsTab, toggleSidebar } =
+    useWorkspace();
   const { theme, setTheme } = useTheme();
   const { repos } = useAgentboardState();
   const { snapshot } = useStoreSnapshot();
@@ -258,7 +258,7 @@ export function CommandPalette() {
             </CommandItem>
             <CommandItem
               keywords={["settings", "preferences"]}
-              onSelect={() => run(() => void openSettings())}
+              onSelect={() => run(() => openSettingsTab())}
             >
               <Settings />
               Open settings

@@ -31,7 +31,7 @@ import {
 import { MrkdwnText } from "@/components/mrkdwn-text";
 import { openExternalUrl } from "@/lib/open-url";
 import { isTauri } from "@/lib/tauri";
-import { openSettings } from "@/lib/open-settings";
+import { useWorkspace } from "@/lib/workspace";
 
 /** api.slack.com app directory — where the app is created and tokens are issued. */
 const SLACK_APPS_URL = "https://api.slack.com/apps";
@@ -55,12 +55,6 @@ const APP_MANIFEST = `{
     "event_subscriptions": { "user_events": ["message.im"] }
   }
 }`;
-
-/** Open the Settings window deep-linked to the Slack rows (Collectors tab, Slack
- * filter). */
-function openSlackSettings() {
-  void openSettings({ tab: "collectors", filter: "slack" });
-}
 
 /**
  * Messages — the in-app chat panel for the one watched Slack DM (the person the
@@ -416,6 +410,7 @@ function Step({
 /** Full setup walkthrough shown when Slack isn't configured yet: create the app
  * from a manifest, install it, copy the tokens, and open Settings to finish. */
 function SetupGuide() {
+  const { openSettingsTab } = useWorkspace();
   return (
     <ScrollArea className="min-h-0 flex-1">
       <div className="mx-auto w-full max-w-xl px-6 py-8">
@@ -467,7 +462,11 @@ function SetupGuide() {
               In Settings → Slack, paste the tokens and choose the person to watch.
             </p>
             <div className="mt-2">
-              <Button size="sm" className="gap-1.5" onClick={openSlackSettings}>
+              <Button
+                size="sm"
+                className="gap-1.5"
+                onClick={() => openSettingsTab({ tab: "collectors", filter: "slack" })}
+              >
                 <Settings className="size-3.5" /> Open Slack settings
               </Button>
             </div>
@@ -481,6 +480,7 @@ function SetupGuide() {
 /** Compact re-auth walkthrough shown when a configured token is rejected
  * (invalid_auth) — re-issue it and paste the fresh one. */
 function ReauthNotice({ onRetry }: { onRetry: () => void }) {
+  const { openSettingsTab } = useWorkspace();
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center p-6">
       <div className="max-w-md rounded-lg border border-border bg-card p-6">
@@ -505,7 +505,11 @@ function ReauthNotice({ onRetry }: { onRetry: () => void }) {
           <li>3. Paste it in Settings → Slack and Save.</li>
         </ol>
         <div className="flex gap-2">
-          <Button size="sm" className="gap-1.5" onClick={openSlackSettings}>
+          <Button
+            size="sm"
+            className="gap-1.5"
+            onClick={() => openSettingsTab({ tab: "collectors", filter: "slack" })}
+          >
             <Settings className="size-3.5" /> Open Slack settings
           </Button>
           <Button size="sm" variant="outline" onClick={onRetry}>

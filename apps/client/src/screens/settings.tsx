@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Check,
   ChevronsUpDown,
@@ -36,9 +36,12 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { COLOR_THEMES, useTheme, type ColorTheme, type Theme } from "@/components/theme-provider";
+import { CollectorFreshness } from "@/components/store-bits";
 import { abInvoke } from "@/lib/agentboard";
-import { closeCurrentWindow } from "@/lib/open-settings";
+import { storeCollectNow, useStoreSnapshot, type CollectRun } from "@/lib/data";
+import { useNow } from "@/lib/now";
 import { isEmptyQuery, matchesFilter } from "@/lib/settings-filter";
+import { settingsTargetStore } from "@/lib/settings-target";
 import { slackListUsers, type SlackUser } from "@/lib/slack";
 import { useUserSettings, type UserSettings } from "@/lib/settings";
 import { DEFAULT_TERMINAL_FONT_SIZE, clampTerminalFontSize } from "@/lib/terminal-prefs";
@@ -65,14 +68,18 @@ const SCOPE_LABELS: Record<ShortcutScope, string> = {
   board: "Board",
 };
 
-/** Toggle/select row: label + description on the left, control on the right. */
+/** Toggle/select row: label + description on the left, control on the right.
+ * `extra` renders between the description and `children` (e.g. a freshness
+ * badge ahead of a collector's enable switch). */
 function SettingRow({
   label,
   description,
+  extra,
   children,
 }: {
   label: string;
   description: string;
+  extra?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -81,16 +88,32 @@ function SettingRow({
         <div className="text-sm font-medium">{label}</div>
         <div className="text-sm text-muted-foreground">{description}</div>
       </div>
-      {children}
+      <div className="flex items-center gap-3">
+        {extra}
+        {children}
+      </div>
     </div>
   );
 }
 
-function TabHeading({ title, note }: { title: string; note: string }) {
+/** Tab heading: title + note on the left, an optional action (e.g. a
+ * "Refresh now" button) top-right. */
+function TabHeading({
+  title,
+  note,
+  action,
+}: {
+  title: string;
+  note: string;
+  action?: React.ReactNode;
+}) {
   return (
-    <div className="flex flex-col gap-1">
-      <h2 className="text-sm font-semibold">{title}</h2>
-      <p className="text-sm text-muted-foreground">{note}</p>
+    <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-semibold">{title}</h2>
+        <p className="text-sm text-muted-foreground">{note}</p>
+      </div>
+      {action}
     </div>
   );
 }
@@ -122,14 +145,16 @@ function ToggleRow({
   description,
   checked,
   onCheckedChange,
+  extra,
 }: {
   label: string;
   description: string;
   checked: boolean;
   onCheckedChange: (v: boolean) => void;
+  extra?: React.ReactNode;
 }) {
   return (
-    <SettingRow label={label} description={description}>
+    <SettingRow label={label} description={description} extra={extra}>
       <Switch checked={checked} onCheckedChange={onCheckedChange} />
     </SettingRow>
   );
@@ -605,9 +630,33 @@ function journalSections(
   ];
 }
 
+/** Small, disable-while-running "Refresh now" button — forces the
+ * issues/PRs/Slack collectors to run immediately instead of waiting for their
+ * next scheduled tick (calendar stays on its cadence — it costs tokens). */
+function RefreshNowButton() {
+  const [running, setRunning] = useState(false);
+  const refresh = async () => {
+    if (running) return;
+    setRunning(true);
+    try {
+      await storeCollectNow();
+    } finally {
+      setRunning(false);
+    }
+  };
+  return (
+    <Button variant="outline" size="sm" disabled={running} onClick={() => void refresh()}>
+      <RefreshCw className={running ? "size-3.5 animate-spin" : "size-3.5"} />
+      {running ? "Refreshing…" : "Refresh now"}
+    </Button>
+  );
+}
+
 function collectorsSections(
   settings: UserSettings,
   update: Update,
+  run: (key: string) => CollectRun | undefined,
+  now: number,
 ): FilterSection[] {
   const c = settings.collectors;
   const setCollector = <K extends keyof UserSettings["collectors"]>(
@@ -645,6 +694,7 @@ function collectorsSections(
               description="Fetches your next meeting via claude -p (costs tokens)."
               checked={c.calendar.enabled}
               onCheckedChange={(v) => setCal({ enabled: v })}
+              extra={<CollectorFreshness run={run("claude:calendar")} now={now} />}
             />
           ),
         },
@@ -757,6 +807,7 @@ function collectorsSections(
               description="Polls your PRs across repos via gh."
               checked={c.prs.enabled}
               onCheckedChange={(v) => setPrs({ enabled: v })}
+              extra={<CollectorFreshness run={run("prs")} now={now} />}
             />
           ),
         },
@@ -787,6 +838,7 @@ function collectorsSections(
               description="Feeds the cross-repo board via gh."
               checked={c.issues.enabled}
               onCheckedChange={(v) => setIssues({ enabled: v })}
+              extra={<CollectorFreshness run={run("issues")} now={now} />}
             />
           ),
         },
@@ -1185,7 +1237,7 @@ function ShortcutsList({ query }: { query: string }) {
   );
 }
 
-/** About tab: static facts, filtered so the whole window stays consistent. */
+/** About tab: static facts, filtered so the whole screen stays consistent. */
 function AboutInfo({ query, version }: { query: string; version: string }) {
   const empty = isEmptyQuery(query);
   const rows: { label: string; keywords: string[]; node: React.ReactNode }[] = [
@@ -1242,35 +1294,57 @@ function AboutInfo({ query, version }: { query: string; version: string }) {
   );
 }
 
-/** The tab + prefilled filter the window was deep-linked to (see `openSettings`),
- * read once from the URL. An unknown tab falls back to General. */
-function initialTarget(): { tab: string; filter: string } {
+/** The tab + prefilled filter this screen was deep-linked to (see
+ * `useWorkspace().openSettingsTab`), consumed once from `settingsTargetStore`.
+ * An unknown tab falls back to General. */
+function resolveTarget(target: { tab: string; filter?: string } | null): {
+  tab: string;
+  filter: string;
+} {
   const fallback = { tab: "general", filter: "" };
-  if (typeof window === "undefined") return fallback;
-  const params = new URLSearchParams(window.location.search);
-  const tab = params.get("tab") ?? "";
-  const known = TABS.some((t) => t.id === tab);
-  return { tab: known ? tab : "general", filter: params.get("filter") ?? "" };
+  if (!target) return fallback;
+  const known = TABS.some((t) => t.id === target.tab);
+  return { tab: known ? target.tab : "general", filter: target.filter ?? "" };
 }
 
-export function SettingsWindow() {
+export function SettingsScreen() {
   const { theme, setTheme, colorTheme, setColorTheme } = useTheme();
   const { settings, saveState, update, save } = useUserSettings();
+  const { snapshot } = useStoreSnapshot();
+  const now = useNow();
   const version = useAppVersion();
-  const [target] = useState(initialTarget);
-  const [tab, setTab] = useState(target.tab);
-  const [query, setQuery] = useState(target.filter);
+  // Consume the store exactly once (on mount) so the tab/filter initializers
+  // below don't race each other for the same one-shot target.
+  const [initialTarget] = useState(() => settingsTargetStore.consume());
+  const initialResolved = resolveTarget(initialTarget);
+  const [tab, setTab] = useState(initialResolved.tab);
+  const [query, setQuery] = useState(initialResolved.filter);
   const filterRef = useRef<HTMLInputElement>(null);
 
-  // Escape clears the filter first; a second Escape (empty box) closes the window.
+  // A deep link fired while this screen is already mounted (just hidden)
+  // doesn't remount it, so watch the store and re-apply a fresh target live.
+  const pendingTarget = useSyncExternalStore(
+    settingsTargetStore.subscribe,
+    settingsTargetStore.get,
+    settingsTargetStore.get,
+  );
+  useEffect(() => {
+    if (!pendingTarget) return;
+    const resolved = resolveTarget(settingsTargetStore.consume());
+    setTab(resolved.tab);
+    setQuery(resolved.filter);
+  }, [pendingTarget]);
+
+  const run = (key: string) => snapshot.runs.find((r) => r.collector === key);
+
+  // Escape clears the filter (a second, empty-box Escape has no further
+  // action here — closing this screen is a tab-bar action, not a shortcut
+  // owned by the filter input).
   const onFilterKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== "Escape") return;
+    if (isEmptyQuery(query)) return;
     e.preventDefault();
-    if (isEmptyQuery(query)) {
-      void closeCurrentWindow();
-    } else {
-      setQuery("");
-    }
+    setQuery("");
   };
 
   const collectorsPrelude = (
@@ -1281,7 +1355,7 @@ export function SettingsWindow() {
   );
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground">
+    <div className="flex h-full min-h-0 flex-col">
       <header className="flex items-center gap-3 border-b border-border bg-card px-4 py-3">
         <h1 className="font-heading text-sm font-semibold">Settings</h1>
         <div className="relative ml-auto w-56">
@@ -1338,7 +1412,7 @@ export function SettingsWindow() {
           <TabsContent value="appearance" className="flex flex-col gap-5 p-4">
             <TabHeading
               title="Appearance"
-              note="Theme applies immediately across all windows."
+              note="Theme applies immediately across the app."
             />
             <FilteredContent
               query={query}
@@ -1376,11 +1450,12 @@ export function SettingsWindow() {
             <TabHeading
               title="Collectors"
               note="Background jobs that fill the data hub. Each has an enable flag and cadence."
+              action={<RefreshNowButton />}
             />
             {settings ? (
               <FilteredContent
                 query={query}
-                sections={collectorsSections(settings, update)}
+                sections={collectorsSections(settings, update, run, now)}
                 prelude={collectorsPrelude}
               />
             ) : (
@@ -1416,13 +1491,6 @@ export function SettingsWindow() {
           disabled={!settings || saveState === "saving"}
         >
           {saveState === "saving" ? "Saving…" : "Save"}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void closeCurrentWindow()}
-        >
-          Done
         </Button>
       </footer>
     </div>

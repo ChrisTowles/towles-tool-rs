@@ -117,7 +117,7 @@ fn now_ms() -> i64 {
 
 /// Spawn the scheduler loop. Collector cadence/enable/provider are re-read from
 /// settings whenever `reload` is signalled (the `settings_set` command fires it),
-/// so edits in the Settings window take effect live — no relaunch needed.
+/// so edits in the Settings screen take effect live — no relaunch needed.
 pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
     tauri::async_runtime::spawn(async move {
         // Attention watchers persist across settings reloads: their edge state

@@ -1,13 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/capabilities/2",
   "identifier": "default",
-  "description": "Core permissions for app windows (event listen/emit, core APIs) plus spawning/closing the standalone Settings window",
-  "windows": ["main", "settings"],
+  "description": "Core permissions for the main window (event listen/emit, core APIs, notifications, opening external URLs)",
+  "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:webview:allow-create-webview-window",
-    "core:window:allow-close",
-    "core:window:allow-set-focus",
     "notification:default",
     "opener:default"
   ]

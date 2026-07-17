@@ -7,7 +7,7 @@ import {
   CalendarDays,
   MessageCircle,
   Radio,
-  Settings2,
+  Settings,
   Stethoscope,
   TerminalSquare,
   Users,
@@ -26,7 +26,7 @@ export type ScreenId =
   | "claude-sessions"
   | "gh-prs"
   | "mcp"
-  | "config";
+  | "settings";
 
 export type ScreenMeta = {
   id: ScreenId;
@@ -112,11 +112,22 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     keywords: ["mcp", "server", "calls", "tools", "json-rpc", "protocol", "incoming"],
     fullBleed: true,
   },
-  config: {
-    id: "config",
-    title: "Config",
-    icon: Settings2,
-    keywords: ["settings", "json", "collectors"],
+  settings: {
+    id: "settings",
+    title: "Settings",
+    icon: Settings,
+    keywords: [
+      "preferences",
+      "config",
+      "appearance",
+      "theme",
+      "collectors",
+      "journal",
+      "shortcuts",
+      "about",
+      "editor",
+    ],
+    fullBleed: true,
   },
 };
 
@@ -124,5 +135,5 @@ export const NAV_SECTIONS: { label: string; screens: ScreenId[] }[] = [
   { label: "Focus", screens: ["cockpit", "board", "agentboard", "slack"] },
   { label: "Journal", screens: ["journal-today", "journal-notes", "journal-meetings"] },
   { label: "Tools", screens: ["doctor", "claude-sessions", "gh-prs", "mcp"] },
-  { label: "App", screens: ["config"] },
+  { label: "App", screens: ["settings"] },
 ];

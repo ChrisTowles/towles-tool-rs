@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { UserSettingsSchema } from "./schemas/settings";
 import { invokeCmd } from "./tauri";
-import type { UserSettings } from "./settings";
+import { SETTINGS_SAVED_EVENT, type UserSettings } from "./settings";
 
 /**
  * Data-driven keyboard shortcuts (modeled on plannotator's validated registry,
@@ -273,9 +273,11 @@ export const DEFAULT_SHORTCUTS_WORK_IN_TERMINAL = true;
 /**
  * Track the `agentboard.shortcutsWorkInTerminal` preference in a ref so the
  * terminal's keydown handler and the window-level shortcut listener can read
- * it live without re-subscribing. Settings live in a separate OS window, so a
- * save there won't push into this window; instead we re-read on window focus,
- * matching {@link useCopyOnSelect} in `terminal-prefs.ts`.
+ * it live without re-subscribing. Re-reads on `SETTINGS_SAVED_EVENT` (fired
+ * right after a successful save, wherever Settings is edited — see
+ * `useUserSettings` in `settings.ts`) and on window focus (covers the JSON
+ * file being edited externally then alt-tabbing back), matching
+ * {@link useCopyOnSelect} in `terminal-prefs.ts`.
  */
 export function useShortcutsWorkInTerminal(): RefObject<boolean> {
   const ref = useRef(DEFAULT_SHORTCUTS_WORK_IN_TERMINAL);
@@ -288,9 +290,11 @@ export function useShortcutsWorkInTerminal(): RefObject<boolean> {
       });
     load();
     window.addEventListener("focus", load);
+    window.addEventListener(SETTINGS_SAVED_EVENT, load);
     return () => {
       alive = false;
       window.removeEventListener("focus", load);
+      window.removeEventListener(SETTINGS_SAVED_EVENT, load);
     };
   }, []);
   return ref;

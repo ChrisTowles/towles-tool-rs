@@ -94,6 +94,12 @@ export type UserSettings = {
 
 export type SaveState = "idle" | "saving" | "saved" | "error";
 
+/** Fired on `window` after a successful `settings_set` — lets other in-app
+ * consumers of a settings value (e.g. terminal prefs, the shortcuts registry)
+ * refresh live instead of waiting for a `"focus"` event that no longer fires
+ * when Settings is just a tab in the same window. */
+export const SETTINGS_SAVED_EVENT = "tt:settings-saved";
+
 /**
  * Load the settings once, edit a local draft, and persist it. `update` takes an
  * immutable updater so nested edits stay simple; `save` writes the whole draft
@@ -129,6 +135,7 @@ export function useUserSettings() {
     try {
       await invokeOrThrow("settings_set", { settings });
       setSaveState("saved");
+      window.dispatchEvent(new Event(SETTINGS_SAVED_EVENT));
     } catch {
       setSaveState("error");
     }

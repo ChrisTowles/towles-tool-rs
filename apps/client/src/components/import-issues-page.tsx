@@ -28,7 +28,7 @@ type ComboOption = { value: string; label: string };
 
 /** A single-select searchable dropdown shared by the repo and milestone
  * pickers below — same Popover + Command combobox shape as SlackUserPicker
- * (settings-window.tsx). */
+ * (screens/settings.tsx). */
 function ComboBox({
   value,
   options,

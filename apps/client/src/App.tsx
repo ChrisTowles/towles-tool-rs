@@ -19,7 +19,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { NowProvider } from "@/lib/now";
-import { openSettings } from "@/lib/open-settings";
 import { SCREENS } from "@/lib/screens";
 import { ShortcutHelpHost, useShortcuts, type ShortcutScope } from "@/lib/shortcuts";
 import { WorkspaceProvider, useWorkspace } from "@/lib/workspace";
@@ -28,14 +27,23 @@ import { SCREEN_COMPONENTS } from "@/screens";
 /** Global (always-active) bindings + the `?` help overlay. Screen-scoped
  * bindings live with their screens (e.g. Agentboard), gated on their tab. */
 function Shortcuts() {
-  const { setPaletteOpen, toggleSidebar, toggleZen, paletteOpen, activeTab, visited, openTab, closeTab } =
-    useWorkspace();
+  const {
+    setPaletteOpen,
+    toggleSidebar,
+    toggleZen,
+    paletteOpen,
+    activeTab,
+    visited,
+    openTab,
+    openSettingsTab,
+    closeTab,
+  } = useWorkspace();
 
   useShortcuts(
     useMemo(() => {
       const handlers: Partial<Record<string, () => void>> = {
         palette: () => setPaletteOpen(!paletteOpen),
-        settings: () => void openSettings(),
+        settings: () => openSettingsTab(),
         sidebar: toggleSidebar,
         zen: toggleZen,
         quicklog: () => window.dispatchEvent(new Event("quicklog:open")),
@@ -55,7 +63,17 @@ function Shortcuts() {
         handlers[`tab-${i + 1}`] = () => openTab(id);
       });
       return handlers;
-    }, [setPaletteOpen, toggleSidebar, toggleZen, paletteOpen, activeTab, visited, openTab, closeTab]),
+    }, [
+      setPaletteOpen,
+      toggleSidebar,
+      toggleZen,
+      paletteOpen,
+      activeTab,
+      visited,
+      openTab,
+      openSettingsTab,
+      closeTab,
+    ]),
   );
 
   const activeScopes: ShortcutScope[] =
