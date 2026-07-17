@@ -14,6 +14,7 @@ import {
   AheadBehind,
   CacheBadge,
   Chevron,
+  DeletingBadge,
   DiffButton,
   FilesButton,
   Dot,
@@ -318,6 +319,7 @@ export function RepoGroup({
   onNewSlot,
   onRemoveRepo,
   onDeleteWorktree,
+  deletingDirs,
   onRenameCommit,
   onOpenDiff,
   onOpenFiles,
@@ -354,6 +356,10 @@ export function RepoGroup({
   onRemoveRepo: (dirs: string[], label: string) => void;
   /** Delete a worktree slot from disk (guarded `slot_remove`). */
   onDeleteWorktree: (dir: string, label: string) => void;
+  /** Folder dirs whose `slot_remove` is currently in flight — that row dims
+   * and disables until it resolves (deleted → the row vanishes on the next
+   * poll; blocked/failed → the row goes interactive again). */
+  deletingDirs?: Set<string>;
   onRenameCommit: (sessionId: string, name: string) => void;
   /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: (dir: string) => void;
@@ -482,8 +488,13 @@ export function RepoGroup({
     if (quiet.has(folder.dir) && !showQuiet) {
       return <QuietRepoStub name={repo.name} count={1} onToggle={onToggleQuiet} />;
     }
+    const deleting = deletingDirs?.has(folder.dir) ?? false;
     return (
-      <div className="border-b" data-focus-kind="repo" data-focus-id={repo.key}>
+      <div
+        className={cn("border-b", deleting && "pointer-events-none opacity-50")}
+        data-focus-kind="repo"
+        data-focus-id={repo.key}
+      >
         <FolderHeader
           scope="repo"
           title={repo.name}
@@ -493,6 +504,7 @@ export function RepoGroup({
           collapsed={isCollapsed}
           now={now}
           active={activeFolderDir === folder.dir}
+          deleting={deleting}
           onToggle={() => {
             onToggle(repo.key);
             onSelectFolder(folder.dir);
@@ -597,8 +609,9 @@ export function RepoGroup({
         shownFolders.map((folder) => {
           const key = `${repo.key}::${folder.dir}`;
           const fCollapsed = collapsed[key];
+          const deleting = deletingDirs?.has(folder.dir) ?? false;
           return (
-            <div key={folder.dir}>
+            <div key={folder.dir} className={cn(deleting && "pointer-events-none opacity-50")}>
               <FolderHeader
                 scope="folder"
                 title={folder.name}
@@ -608,6 +621,7 @@ export function RepoGroup({
                 collapsed={fCollapsed}
                 now={now}
                 active={activeFolderDir === folder.dir}
+                deleting={deleting}
                 onToggle={() => {
                   onToggle(key);
                   onSelectFolder(folder.dir);
@@ -697,6 +711,7 @@ function FolderHeader({
   collapsed,
   active,
   now,
+  deleting,
   onToggle,
   onNewSession,
   onNewSlot,
@@ -717,6 +732,10 @@ function FolderHeader({
   /** Whether this folder is the one currently shown in the main pane area. */
   active: boolean;
   now: number;
+  /** This worktree's `slot_remove` is in flight — the caller already dims and
+   * disables the whole row (`pointer-events-none opacity-50`); this just adds
+   * the `DeletingBadge` label explaining why. */
+  deleting?: boolean;
   onToggle: () => void;
   onNewSession: () => void;
   /** Opens the new-slot modal — set only on a solo slot-convention repo's
@@ -842,6 +861,7 @@ function FolderHeader({
             ⎇ {folder.branch}
           </span>
           {folder.isWorktree && <WorktreeBadge />}
+          {deleting && <DeletingBadge />}
           <AheadBehind stats={folder} />
           {folder.hasPortDrift && <PortDriftBadge drift={folderPortDrift(folder)} />}
           <DiffButton stats={folder} onOpen={onOpenDiff} />
