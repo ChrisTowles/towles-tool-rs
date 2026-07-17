@@ -21,9 +21,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
+import { parseDiff, type DiffLine } from "@/lib/diff";
 import {
   abCreateIssue,
   abInvoke,
@@ -281,46 +283,150 @@ export function AheadBehind({
   );
 }
 
+/** Lines shown in the `DiffButton` hover preview before truncating — a
+ * 14-commit branch's raw patch can run thousands of lines, and the hover is
+ * meant as a "what changed, roughly" glance, not the full reviewer (that's
+ * a click away in the diff pane). */
+const DIFF_PREVIEW_LINE_CAP = 60;
+
+function diffPreviewLineClass(kind: DiffLine["kind"]): string {
+  switch (kind) {
+    case "add":
+      return "text-emerald-600 dark:text-emerald-400";
+    case "del":
+      return "text-red-600 dark:text-red-400";
+    case "hunk":
+      return "text-sky-600 dark:text-sky-400";
+    default:
+      return "text-muted-foreground";
+  }
+}
+
+/** The raw-diff preview inside `DiffButton`'s hover card: parses the same
+ * unified patch the diff pane shows, truncated to `DIFF_PREVIEW_LINE_CAP`
+ * lines across files so it stays a glance rather than a scroll. Fetched
+ * lazily (only once the card actually opens) and cached for the folder's
+ * lifetime in the parent's state. */
+function DiffHoverPreview({ text }: { text: string | null }) {
+  if (text == null) {
+    return <p className="p-1 text-xs text-muted-foreground">loading diff…</p>;
+  }
+  if (text.trim() === "") {
+    return <p className="p-1 text-xs text-muted-foreground">no changes</p>;
+  }
+  const files = parseDiff(text);
+  const rows: Array<{ path: string; line: DiffLine } | { path: string }> = [];
+  let shown = 0;
+  outer: for (const file of files) {
+    rows.push({ path: file.path });
+    for (const line of file.lines) {
+      if (line.kind === "meta") continue;
+      if (shown >= DIFF_PREVIEW_LINE_CAP) break outer;
+      rows.push({ path: file.path, line });
+      shown++;
+    }
+  }
+  const totalLines = files.reduce((n, f) => n + f.lines.filter((l) => l.kind !== "meta").length, 0);
+  const truncated = totalLines > shown;
+  return (
+    <div className="max-h-80 overflow-auto">
+      <div className="font-mono text-[10.5px] leading-tight">
+        {rows.map((row, i) =>
+          "line" in row ? (
+            <div key={i} className={cn("whitespace-pre", diffPreviewLineClass(row.line.kind))}>
+              {row.line.text || " "}
+            </div>
+          ) : (
+            <div key={i} className="mt-1.5 truncate font-semibold text-foreground first:mt-0">
+              {row.path}
+            </div>
+          ),
+        )}
+      </div>
+      {truncated && (
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          +{totalLines - shown} more lines — click to see the full diff
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** The diff entry point — a real, always-visible button (never hidden behind
  * a hover or dropped when the tree is clean, so the feature stays findable).
- * Clean folders read a quiet `diff`; dirty ones carry the ± tally. */
+ * Clean folders read a quiet `diff`; dirty ones carry the ± tally. Hovering
+ * previews the raw patch (truncated) so a branch with many commits doesn't
+ * force a click just to see roughly what changed. */
 export function DiffButton({
   stats,
   onOpen,
 }: {
   stats: Pick<
     FolderData,
-    "filesChanged" | "linesAdded" | "linesRemoved" | "commitsAhead" | "comparedBase"
+    | "dir"
+    | "filesChanged"
+    | "linesAdded"
+    | "linesRemoved"
+    | "commitsAhead"
+    | "comparedBase"
+    | "baseBranch"
   >;
   onOpen: () => void;
 }) {
-  const { filesChanged, linesAdded, linesRemoved, commitsAhead } = stats;
+  const { dir, filesChanged, linesAdded, linesRemoved, commitsAhead, baseBranch } = stats;
   const clean = linesAdded === 0 && linesRemoved === 0;
   const base = comparedBaseLabel(stats);
+  const [diffText, setDiffText] = useState<string | null>(null);
+
   return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        onOpen();
+    <HoverCard
+      openDelay={250}
+      onOpenChange={(open) => {
+        if (open && diffText == null) {
+          void abInvoke<string>("ab_get_diff", {
+            dir,
+            mode: "main",
+            baseBranch: baseBranch?.trim() || null,
+          }).then((t) => setDiffText(t ?? ""));
+        }
       }}
-      className="flex h-5 shrink-0 items-center gap-1 rounded-md border border-border/70 px-1.5 font-mono text-[10.5px] text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground"
-      title={
-        clean
-          ? `No changes vs ${base} — view diff`
-          : `${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} ahead of ${base} — view diff`
-      }
     >
-      <GitCompare className="size-3" />
-      {clean ? (
-        <span>diff</span>
-      ) : (
-        <>
-          <span className="text-emerald-600 dark:text-emerald-400">+{linesAdded}</span>
-          <span className="text-red-600 dark:text-red-400">−{linesRemoved}</span>
-        </>
+      <HoverCardTrigger asChild>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen();
+          }}
+          className="flex h-5 shrink-0 items-center gap-1 rounded-md border border-border/70 px-1.5 font-mono text-[10.5px] text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground"
+          title={
+            clean
+              ? `No changes vs ${base} — view diff`
+              : `${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} ahead of ${base} — view diff`
+          }
+        >
+          <GitCompare className="size-3" />
+          {clean ? (
+            <span>diff</span>
+          ) : (
+            <>
+              <span className="text-emerald-600 dark:text-emerald-400">+{linesAdded}</span>
+              <span className="text-red-600 dark:text-red-400">−{linesRemoved}</span>
+            </>
+          )}
+        </button>
+      </HoverCardTrigger>
+      {!clean && (
+        <HoverCardContent
+          side="bottom"
+          align="start"
+          className="w-[28rem] max-w-[calc(100vw-2rem)]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <DiffHoverPreview text={diffText} />
+        </HoverCardContent>
       )}
-    </button>
+    </HoverCard>
   );
 }
 
