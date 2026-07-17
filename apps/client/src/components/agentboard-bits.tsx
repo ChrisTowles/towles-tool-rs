@@ -7,6 +7,7 @@ import {
   FolderPlus,
   GitCompare,
   GitPullRequest,
+  Loader2,
   MoreVertical,
   StickyNote,
   Trash2,
@@ -194,6 +195,24 @@ export function WorktreeBadge() {
       title="Git worktree checkout — a linked working tree, not the primary clone"
     >
       ⬡ wt
+    </span>
+  );
+}
+
+/** Shown on a worktree checkout mid-delete (`slot_remove` in flight). The rail
+ * row itself dims and goes `pointer-events-none` around this badge (see
+ * `RepoGroup`'s `deletingDirs`/`FolderHeader`'s `deleting` prop) — this is
+ * just the label explaining *why* the row went inert, same job `GhostBadge`
+ * does for a missing directory. Red (not the neutral gray of `GhostBadge`):
+ * unlike a ghost, which is passively gone, this is an active, irreversible
+ * deletion in progress. */
+export function DeletingBadge() {
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1 rounded-md border border-red-500/40 bg-red-500/10 px-1 font-mono text-[10px] text-red-600 dark:text-red-400"
+      title="Deleting this worktree from disk…"
+    >
+      <Loader2 className="size-2.5 animate-spin" /> deleting…
     </span>
   );
 }

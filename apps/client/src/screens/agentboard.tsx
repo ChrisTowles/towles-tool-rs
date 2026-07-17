@@ -201,6 +201,9 @@ export function AgentboardScreen() {
   const [confirmRemove, setConfirmRemove] = useState<RemoveTarget | null>(null);
   // Pending worktree deletion — always confirmed (it deletes from disk).
   const [confirmDeleteWt, setConfirmDeleteWt] = useState<RemoveTarget | null>(null);
+  // Folder dirs whose worktree is mid-delete (`slot_remove` in flight) — the
+  // rail dims/disables that row for the duration, see `performDeleteWorktree`.
+  const [deletingDirs, setDeletingDirs] = useState<Set<string>>(new Set());
   // Session awaiting the "what are you working toward?" prompt before Claude
   // actually launches — see `commitStartClaude`.
   const [startClaudeTarget, setStartClaudeTarget] = useState<StartClaudeTarget | null>(null);
@@ -1006,10 +1009,15 @@ export function AgentboardScreen() {
     // records once removal actually succeeds — closing sessions here first
     // would untrack them even when removal is blocked (dirty tree, unpushed
     // commits, a foreign port), leaving the rail looking clean while the
-    // worktree stays on disk.
+    // worktree stays on disk. `deletingDirs` dims/disables the rail's row for
+    // this dir while the (possibly slow — git checks, docker cleanup) call is
+    // in flight, so it can't be clicked into or deleted twice; cleared in
+    // `finally` so a blocked/failed removal leaves the row interactive again.
+    const dir = target.dirs[0];
+    setDeletingDirs((prev) => new Set(prev).add(dir));
     try {
       const removed = await invokeOrThrow<{ name: string; messages: string[] }>("slot_remove", {
-        dir: target.dirs[0],
+        dir,
       });
       for (const id of target.sessionIds) {
         setOpen((prev) => prev.filter((x) => x !== id));
@@ -1020,6 +1028,12 @@ export function AgentboardScreen() {
       toast.success(`Deleted worktree ${removed?.name ?? target.label}`);
     } catch (e) {
       toast.error(String(e));
+    } finally {
+      setDeletingDirs((prev) => {
+        const next = new Set(prev);
+        next.delete(dir);
+        return next;
+      });
     }
   }
 
@@ -1377,6 +1391,7 @@ export function AgentboardScreen() {
                           onNewSlot={toggleSlotForm}
                           onRemoveRepo={requestRemoveRepo}
                           onDeleteWorktree={requestDeleteWorktree}
+                          deletingDirs={deletingDirs}
                           onRenameCommit={commitRename}
                           onOpenDiff={openDiff}
                           onOpenFiles={openFiles}
