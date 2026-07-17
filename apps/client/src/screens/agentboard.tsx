@@ -1107,6 +1107,9 @@ export function AgentboardScreen() {
         "ab-jump-next": () => jumpToNeedsYou("next"),
         "ab-jump-prev": () => jumpToNeedsYou("prev"),
         "ab-split-session": splitIntoWindow,
+        "ab-new-terminal-right": () => {
+          if (activeFolderDir) void newSession(activeFolderDir);
+        },
       }),
       // newSession/closeSession/openDiff/openFiles/jumpToNeedsYou/splitIntoWindow are
       // stable within a render pass; the state they close over is what matters.
@@ -1475,7 +1478,7 @@ export function AgentboardScreen() {
                       type="button"
                       onClick={() => void newSession(activeFolderDir)}
                       className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-violet-500 hover:bg-accent/50"
-                      title={`New session in the focused folder (${shortcutHint("ab-new-session")})`}
+                      title={`New session in the focused folder (${shortcutHint("ab-new-session")} or ${shortcutHint("ab-new-terminal-right")})`}
                     >
                       <Plus className="size-3" /> session
                     </button>
