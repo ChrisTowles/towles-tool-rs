@@ -317,7 +317,14 @@ etc.). The points below are repo-specific specializations of that doc.
 - **Formatting:** rustfmt, 100-column width.
 - **Frontend styling:** Tailwind + shadcn/ui only — no CSS modules, no
   hand-rolled stylesheets, no CSS-in-JS. Add components with
-  `npx shadcn@latest add <name>`, don't hand-write Radix wrappers.
+  `npx shadcn@latest add <name>`, don't hand-write Radix wrappers. The one
+  carve-out is **animation**, where there are two idioms and the choice is not
+  a preference: `tw-animate-css` classes (`data-open:animate-in …`, as the
+  vendored `components/ui/*` use) for anything that animates while mounted,
+  and the `motion` library for enter/exit of *dynamic lists* — a row removed
+  from a backend snapshot unmounts before CSS can run, and only `motion`'s
+  `AnimatePresence` can hold it on screen or `layout`-animate the rows that
+  survive it. `apps/client/src/lib/rail-motion.ts` is the canonical config.
 - **No CLI-parity requirement.** The app is the primary product; each feature
   picks its natural surface. App-only features don't need a `tt` subcommand,
   and terminal-native tools (journal, gh, doctor) don't need app screens. The

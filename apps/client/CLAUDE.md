@@ -141,6 +141,25 @@ them: there is no linter, `tsc` doesn't model the DOM, and vitest runs in a
 node environment with no renderer. `node scripts/drive.mjs console` is the
 check — see below.
 
+## Two animation idioms — the choice is mechanical, not stylistic
+
+`tw-animate-css` (imported in `index.css`) is the default: the vendored
+`components/ui/*` animate with `data-open:animate-in fade-in-0 …`, which works
+because Radix keeps a closing element mounted until its animation ends.
+
+Nothing else has that luxury. The agentboard rail renders a backend snapshot
+(`agentboard://state`), so a removed repo/slot/session is just absent from the
+next payload and React unmounts the row before any CSS can run. That case uses
+`motion`: `<AnimatePresence>` holds the departed row on screen, and `layout`
+slides the survivors into the space it frees. Config lives in
+`lib/rail-motion.ts` — spread it rather than hand-rolling per-row variants.
+
+Deliberately **not** wrapped in yaak's `<LazyMotion strict>` + `m.*`: that
+splits motion into its own chunk only when every `AnimatePresence` consumer is
+lazily imported, and screens here are static imports (`screens/index.tsx`), so
+a build puts motion in the initial chunk regardless. `main.tsx` keeps only
+`<MotionConfig reducedMotion="user">`, which is real app-wide a11y policy.
+
 ## Testing convention: logic-only
 
 Vitest tests live under `lib/` (`*.test.ts`, `npm run test` = `vitest run`)
