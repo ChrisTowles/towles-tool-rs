@@ -549,6 +549,15 @@ pub fn nudge_dir_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("nudge"))
 }
 
+/// Directory the telemetry event log streams to: `<data_dir>/telemetry`.
+/// Instance-scoped like `data_dir()`, which is the point — each worktree slot
+/// writes its own event log, so "which slot spawned these commands?" is
+/// answerable from the path alone rather than from a field every writer has to
+/// remember to stamp. Its own subdirectory so log rotation never walks tt.db.
+pub fn telemetry_dir() -> Result<PathBuf> {
+    Ok(data_dir()?.join("telemetry"))
+}
+
 /// Staging directory for images pasted into the app (today: the new-slot
 /// form). The bytes have to become a file somewhere before a path to them can
 /// go into a Claude prompt, and that somewhere is deliberately *not* the

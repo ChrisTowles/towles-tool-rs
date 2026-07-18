@@ -111,18 +111,61 @@ fn display_cmd(cmd: &str, args: &[&str]) -> String {
     if args.is_empty() { cmd.to_string() } else { format!("{cmd} {}", args.join(" ")) }
 }
 
+/// Open the telemetry span covering one subprocess.
+///
+/// Every process this crate spawns goes through here, which makes the event
+/// log a complete record of what the tool shelled out to — the question
+/// "what ran, from where, how often, and how long did it take?" is answerable
+/// without adding instrumentation at each call site. `outcome` and `exit_code`
+/// start empty and are filled in before the span closes, so a single record
+/// carries both the command and its result.
+///
+/// Field names follow OpenTelemetry's `process.*` semantic conventions.
+///
+/// Only argv is recorded, never stdin or captured output: stdin carries things
+/// like PR bodies, and stdout is unbounded. Argv for the tools this crate
+/// spawns (`gh`, `git`, `claude`) holds no credentials — tokens travel via
+/// settings and env, not flags.
+fn spawn_span(
+    cmd: &str,
+    args: &[&str],
+    dir: Option<&std::path::Path>,
+    timeout: Option<Duration>,
+) -> tracing::Span {
+    tracing::debug_span!(
+        "process.spawn",
+        "process.executable.name" = cmd,
+        "process.command_args" = args.join(" "),
+        "process.working_directory" = dir.map(|d| d.display().to_string()).unwrap_or_default(),
+        timeout_ms = timeout.map(|t| t.as_millis() as u64),
+        exit_code = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+        stdin_bytes = tracing::field::Empty,
+    )
+}
+
+/// Close out a span for a process that ran to completion.
+fn record_exit(span: &tracing::Span, exit_code: i32) {
+    span.record("exit_code", exit_code);
+    span.record("outcome", if exit_code == 0 { "ok" } else { "non_zero_exit" });
+}
+
 /// Run a command, capturing output. Does not fail on a non-zero exit code.
 pub fn run(cmd: &str, args: &[&str]) -> Result<Output> {
-    log::debug!("exec: {}", display_cmd(cmd, args));
-    let output = Command::new(cmd)
-        .args(args)
-        .output()
-        .map_err(|source| Error::Spawn { cmd: cmd.to_string(), source })?;
+    let span = spawn_span(cmd, args, None, None);
+    let _entered = span.enter();
 
+    let output = Command::new(cmd).args(args).output().map_err(|source| {
+        span.record("outcome", "spawn_failed");
+        Error::Spawn { cmd: cmd.to_string(), source }
+    })?;
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    record_exit(&span, exit_code);
     Ok(Output {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code().unwrap_or(-1),
+        exit_code,
     })
 }
 
@@ -132,26 +175,36 @@ pub fn run_with_stdin(cmd: &str, args: &[&str], stdin: &str) -> Result<Output> {
     use std::io::Write;
     use std::process::Stdio;
 
-    log::debug!("exec (stdin {} bytes): {}", stdin.len(), display_cmd(cmd, args));
+    let span = spawn_span(cmd, args, None, None);
+    span.record("stdin_bytes", stdin.len() as u64);
+    let _entered = span.enter();
+
     let mut child = Command::new(cmd)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|source| Error::Spawn { cmd: cmd.to_string(), source })?;
+        .map_err(|source| {
+            span.record("outcome", "spawn_failed");
+            Error::Spawn { cmd: cmd.to_string(), source }
+        })?;
 
     if let Some(mut handle) = child.stdin.take() {
         // A closed pipe (child exited early) is not fatal; we still collect output.
         let _ = handle.write_all(stdin.as_bytes());
     }
-    let output =
-        child.wait_with_output().map_err(|source| Error::Spawn { cmd: cmd.to_string(), source })?;
+    let output = child.wait_with_output().map_err(|source| {
+        span.record("outcome", "wait_failed");
+        Error::Spawn { cmd: cmd.to_string(), source }
+    })?;
 
+    let exit_code = output.status.code().unwrap_or(-1);
+    record_exit(&span, exit_code);
     Ok(Output {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code().unwrap_or(-1),
+        exit_code,
     })
 }
 
@@ -210,14 +263,18 @@ fn run_with_timeout_in(
     use std::process::Stdio;
     use wait_timeout::ChildExt;
 
-    log::debug!("exec (timeout {timeout:?}): {}", display_cmd(cmd, args));
+    let span = spawn_span(cmd, args, dir, Some(timeout));
+    let _entered = span.enter();
+
     let mut command = Command::new(cmd);
     command.args(args).envs(env.iter().copied()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
-    let mut child =
-        command.spawn().map_err(|source| Error::Spawn { cmd: cmd.to_string(), source })?;
+    let mut child = command.spawn().map_err(|source| {
+        span.record("outcome", "spawn_failed");
+        Error::Spawn { cmd: cmd.to_string(), source }
+    })?;
 
     fn drain(reader: Option<impl Read>) -> String {
         let mut buf = Vec::new();
@@ -232,15 +289,17 @@ fn run_with_timeout_in(
     let out_thread = std::thread::spawn(move || drain(out));
     let err_thread = std::thread::spawn(move || drain(err));
 
-    let status = child
-        .wait_timeout(timeout)
-        .map_err(|source| Error::Spawn { cmd: cmd.to_string(), source })?;
+    let status = child.wait_timeout(timeout).map_err(|source| {
+        span.record("outcome", "wait_failed");
+        Error::Spawn { cmd: cmd.to_string(), source }
+    })?;
 
     let Some(status) = status else {
         // Timed out: kill and reap so we don't leave a zombie. The drain threads
         // then observe EOF on the closed pipes and finish on their own.
         let _ = child.kill();
         let _ = child.wait();
+        span.record("outcome", "timed_out");
         return Err(Error::Timeout { cmd: display_cmd(cmd, args), timeout });
     };
 
@@ -250,7 +309,9 @@ fn run_with_timeout_in(
     let stdout = out_thread.join().unwrap_or_default();
     let stderr = err_thread.join().unwrap_or_default();
 
-    Ok(Output { stdout, stderr, exit_code: status.code().unwrap_or(-1) })
+    let exit_code = status.code().unwrap_or(-1);
+    record_exit(&span, exit_code);
+    Ok(Output { stdout, stderr, exit_code })
 }
 
 /// Run a command and fail if it exits with a non-zero status.
@@ -445,5 +506,89 @@ mod tests {
         let output = run_ok("echo", &[r#"{"count":3}"#]).unwrap();
         let value: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
         assert_eq!(value["count"], 3);
+    }
+
+    /// Run `body` with an event-log-backed subscriber installed, returning the
+    /// `process.spawn` records it produced. A local subscriber, so these tests
+    /// don't fight over the global one.
+    fn spawn_records(body: impl FnOnce()) -> Vec<serde_json::Value> {
+        use tracing_subscriber::prelude::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let layer = tt_otel::EventLogLayer::new(
+            tt_otel::EventLog::new(dir.path(), 7),
+            serde_json::Map::new(),
+        );
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), body);
+
+        let mut records = Vec::new();
+        for entry in std::fs::read_dir(dir.path()).unwrap().flatten() {
+            let text = std::fs::read_to_string(entry.path()).unwrap_or_default();
+            for line in text.lines() {
+                let record: serde_json::Value = serde_json::from_str(line).unwrap();
+                if record["name"] == "process.spawn" {
+                    records.push(record);
+                }
+            }
+        }
+        records
+    }
+
+    #[test]
+    fn every_spawned_command_reaches_the_event_log() {
+        let records = spawn_records(|| {
+            run("echo", &["hello"]).unwrap();
+        });
+
+        assert_eq!(records.len(), 1, "one record per spawn");
+        assert_eq!(records[0]["process.executable.name"], "echo");
+        assert_eq!(records[0]["process.command_args"], "hello");
+        assert_eq!(records[0]["exit_code"], 0);
+        assert_eq!(records[0]["outcome"], "ok");
+        assert!(records[0]["duration_ms"].is_u64());
+    }
+
+    #[test]
+    fn the_log_records_a_non_zero_exit() {
+        let records = spawn_records(|| {
+            run("sh", &["-c", "exit 3"]).unwrap();
+        });
+
+        assert_eq!(records[0]["exit_code"], 3);
+        assert_eq!(records[0]["outcome"], "non_zero_exit");
+    }
+
+    #[test]
+    fn the_log_records_the_working_directory_for_dir_scoped_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = spawn_records(|| {
+            run_in_dir_with_timeout("pwd", &[], dir.path(), Duration::from_secs(10)).unwrap();
+        });
+
+        // The cwd is what attributes a `gh` call to a specific checkout, which
+        // is the whole point of recording it.
+        assert_eq!(records[0]["process.working_directory"], dir.path().display().to_string());
+        assert_eq!(records[0]["timeout_ms"], 10_000);
+    }
+
+    #[test]
+    fn a_timeout_is_recorded_as_its_own_outcome() {
+        let records = spawn_records(|| {
+            let result = run_with_timeout("sleep", &["5"], Duration::from_millis(50));
+            assert!(matches!(result, Err(Error::Timeout { .. })));
+        });
+
+        assert_eq!(records[0]["outcome"], "timed_out");
+        assert!(records[0]["exit_code"].is_null(), "a killed process has no exit code");
+    }
+
+    #[test]
+    fn a_failed_spawn_is_recorded_rather_than_going_dark() {
+        let records = spawn_records(|| {
+            let result = run("tt-no-such-binary-exists", &[]);
+            assert!(matches!(result, Err(Error::Spawn { .. })));
+        });
+
+        assert_eq!(records[0]["outcome"], "spawn_failed");
     }
 }

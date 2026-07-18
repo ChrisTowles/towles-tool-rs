@@ -34,7 +34,7 @@ tt-vt = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
-env_logger = { workspace = true }
+tt-otel = { workspace = true }
 futures-util = "0.3"
 native-tls = { workspace = true }
 portable-pty = { workspace = true }

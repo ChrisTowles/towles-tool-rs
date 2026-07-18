@@ -217,6 +217,22 @@ Cargo workspace + npm workspace (`apps/client` only):
     protocol/socket split lives.
   - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`tt mcp serve`) exposing
     the store + live agent sessions + `journal_append` to claude sessions.
+  - `tt-otel` — telemetry. `tt_otel::init` installs the global `tracing`
+    subscriber for both binaries (it replaced `env_logger` — a hard cutover,
+    no second logger), fanning out to stderr (filtered by `-v`/`RUST_LOG`) and
+    to an **event log on disk**: one JSON object per line at
+    `<data_dir>/telemetry/events-<date>.jsonl`, rotated daily, 14 days kept.
+    The disk sink records at `debug` regardless of `RUST_LOG` — a quiet
+    terminal must not mean a useless log — and every record carries OTel
+    resource attributes including `tt.slot`, so a line is attributable to the
+    checkout that produced it. `TT_TELEMETRY=0` disables the disk sink.
+    **Every subprocess is logged**: `tt-exec`'s three spawn paths open a
+    `process.spawn` span (`process.executable.name`, `process.command_args`,
+    `process.working_directory`, `duration_ms`, `exit_code`, `outcome` —
+    including `timed_out` and `spawn_failed`), so what the tool shelled out to
+    is answerable with `jq` after the fact rather than needing a repro. Add
+    instrumentation with `tracing` spans, not `log::` calls; existing `log::`
+    sites still flow in via the subscriber's `tracing-log` bridge.
   - `tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and
     lockfile schema the app uses to pose as an "IDE" a Claude Code CLI session
     connects to. Transport-free by design (sockets, auth, clocks live in
