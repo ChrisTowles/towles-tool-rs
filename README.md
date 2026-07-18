@@ -29,6 +29,24 @@ and you never see the code, and an **IDE**, where you see every line. One agent
 fits in an IDE; a fleet doesn't fit in your head. Every feature here is judged
 by one question: does it reduce the mental load of running many agents at once?
 
+## Core goal: your focus is the last piece of personal data, and it's yours
+
+Every other piece of your data has already been packaged up and sold —
+purchases, location, browsing, attention on every feed. Focus is what's left:
+where your mind actually went, minute to minute, across a day of steering
+agents. This app's job is to help *you* manage that, not to let it become a
+product sold to whoever bids for it.
+
+That only works if the record is honest and stays on your machine. So every
+user-initiated action in this app — not just the subprocesses it spawns — is
+instrumented via `tracing` into the local event log (see `tt-otel` in
+[CLAUDE.md](CLAUDE.md#architecture)). The point isn't surveillance; it's the
+opposite: so *you* can later mine your own behavior — "where did my attention
+actually go, and did this app respect it or steal it?" — instead of taking
+either on faith. It never leaves your machine, and it's the reason a bug like
+"this stole my focus while I wasn't looking" is answerable from a log instead
+of a guess.
+
 ## The two surfaces
 
 **The desktop app** is the primary product — a day-focus shell for staying in

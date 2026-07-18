@@ -259,6 +259,25 @@ pub struct SlotRemoved {
 /// Long-running → off the main thread.
 #[tauri::command]
 pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemoved, String> {
+    use tracing::Instrument as _;
+
+    // A span (not a bare event) so the event log carries this command's own
+    // start/end/duration as one record — otherwise the only visible trace of
+    // a slow removal is the `git`/docker `process.spawn` spans nested inside
+    // it, with no record of the command boundary itself. Correlate against
+    // `window.focus_changed` to see whether an OS focus change landed inside
+    // this window (see the worktree-delete-focus investigation).
+    let span = tracing::info_span!("slot_remove", dir = %dir, outcome = tracing::field::Empty);
+    async move {
+        let result = slot_remove_inner(app, dir).await;
+        tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "err" });
+        result
+    }
+    .instrument(span)
+    .await
+}
+
+async fn slot_remove_inner(app: tauri::AppHandle, dir: String) -> Result<SlotRemoved, String> {
     let mut messages = Vec::new();
     {
         let ab = app.state::<crate::agentboard::Ab>();

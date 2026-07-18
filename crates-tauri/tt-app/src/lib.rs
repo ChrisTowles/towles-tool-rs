@@ -434,14 +434,22 @@ pub fn run() {
         .manage(ide::DiffRequests::default())
         .manage(resources::ResourceState::default())
         .manage(claude_sessions::ClaudeSessionsCache::default())
-        .on_window_event(|window, event| {
-            if let WindowEvent::Destroyed = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::Destroyed => {
                 terminal::on_window_destroyed(window.app_handle(), window.label());
                 // Reaching here at all means an orderly shutdown — a crash or
                 // reboot never fires this, which is exactly what the next
                 // launch reads the marker to find out.
                 resume::on_window_destroyed(window.app_handle());
             }
+            // The only record of the window's OS-level focus history — nothing
+            // else logs this. Answers "did the app steal focus, and when?"
+            // after the fact instead of needing to catch it live under a
+            // debugger (see the worktree-delete-focus investigation).
+            WindowEvent::Focused(focused) => {
+                tracing::info!(focused = *focused, window = window.label(), "window.focus_changed");
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             app_slot,

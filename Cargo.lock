@@ -5364,6 +5364,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "tracing",
  "trash",
  "tt-agentboard",
  "tt-claude-sessions",

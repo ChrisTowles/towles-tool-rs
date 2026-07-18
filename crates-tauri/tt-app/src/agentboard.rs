@@ -108,15 +108,27 @@ pub fn notify_needs_you(app: &AppHandle, edges: &[tt_agentboard::NeedsYouEdge]) 
     }
     let focused = app.get_webview_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(false);
     if focused {
+        tracing::debug!(edges = edges.len(), "notify_needs_you: skipped, window focused");
         return;
     }
     let enabled = tt_config::load()
         .map(|s| s.agentboard.notify_needs_you.unwrap_or(tt_config::DEFAULT_NOTIFY_NEEDS_YOU))
         .unwrap_or(tt_config::DEFAULT_NOTIFY_NEEDS_YOU);
     if !enabled {
+        tracing::debug!(edges = edges.len(), "notify_needs_you: skipped, setting disabled");
         return;
     }
     for edge in edges {
+        // The only record of a native notification firing — correlate against
+        // `window.focus_changed` to see whether the OS raised the window as a
+        // side effect of this (it's the notification daemon's call, not ours;
+        // see the worktree-delete-focus investigation).
+        tracing::info!(
+            repo = edge.repo,
+            session = edge.session,
+            reason = ?edge.reason,
+            "notify_needs_you: fired"
+        );
         let _ = app
             .notification()
             .builder()
