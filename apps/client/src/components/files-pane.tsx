@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AtSign, Columns2, Files as FilesIcon, RefreshCw, WrapText } from "lucide-react";
 import { CodeViewer, type ViewerAnchor } from "@/components/code-viewer";
-import { IconBtn } from "@/components/agentboard-bits";
+import { IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
 import { FilePreview, previewKindFor } from "@/components/file-preview";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ideAtMention, useIdeConnected } from "@/lib/ide";
@@ -222,16 +222,7 @@ export function FolderFilesPane({
   openRequest?: FilesOpenRequest;
 }) {
   const ideConnected = useIdeConnected(folder?.dir);
-  if (!folder) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground">
-        <span className="text-sm">folder gone</span>
-        <button type="button" onClick={onClose} className="font-mono text-xs hover:text-red-500">
-          ⊟ remove pane
-        </button>
-      </div>
-    );
-  }
+  if (!folder) return <PanePlaceholder label="folder gone" onRemove={onClose} />;
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-lg border bg-card">
       <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">

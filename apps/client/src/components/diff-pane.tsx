@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, GitCompare, Pencil, RefreshCw } from "lucide-react";
 import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
 import { MonacoMultiDiff, type ChangedFile } from "@/components/diff-monaco";
-import { IconBtn } from "@/components/agentboard-bits";
+import { IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
 import { abInvoke, type FolderData } from "@/lib/agentboard";
 import { buildDiffTree, type DiffTreeNode } from "@/lib/diff";
 import { ideReadFile, useIdeConnected } from "@/lib/ide";
@@ -220,16 +220,7 @@ export function DiffPane({
     await abInvoke("ab_set_folder_base_branch", { dir, branch: trimmed || null });
   }
 
-  if (!folder) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground">
-        <span className="text-sm">folder gone</span>
-        <button type="button" onClick={onClose} className="font-mono text-xs hover:text-red-500">
-          ⊟ remove pane
-        </button>
-      </div>
-    );
-  }
+  if (!folder) return <PanePlaceholder label="folder gone" onRemove={onClose} />;
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-lg border bg-card">

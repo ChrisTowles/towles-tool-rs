@@ -36,18 +36,17 @@ describe("exitLabel", () => {
 });
 
 describe("exitIsCrash", () => {
-  it("treats a code-0, no-signal exit as clean", () => {
+  it("stays quiet for a code-0, no-signal exit — a clean logout gets no toast", () => {
     expect(exitIsCrash(0)).toBe(false);
     expect(exitIsCrash(0, null)).toBe(false);
   });
 
-  it("treats a nonzero code or any signal as a crash", () => {
+  it("toasts a nonzero code or any signal", () => {
     expect(exitIsCrash(2)).toBe(true);
     expect(exitIsCrash(0, "Killed")).toBe(true);
     expect(exitIsCrash(1, "Segmentation fault")).toBe(true);
   });
 });
-
 
 describe("viewportMatches", () => {
   const matches = [

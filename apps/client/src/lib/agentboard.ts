@@ -287,6 +287,7 @@ export function windowOf(wins: AgWindow[], sessionId: string): AgWindow | undefi
 
 const DIFF_PANE_PREFIX = "~diff:";
 const FILES_PANE_PREFIX = "~files:";
+const EXIT_PANE_PREFIX = "~exit:";
 
 /** The (per-folder) pane id of the folder's diff pane. */
 export function diffPaneId(folderDir: string): string {
@@ -317,9 +318,35 @@ export function filesPaneDir(paneId: string): string | null {
 }
 
 /** The folder dir any sentinel pane id (diff or files) points at — null for
- * session panes. */
+ * session and exit panes. */
 export function folderPaneDir(paneId: string): string | null {
   return diffPaneDir(paneId) ?? filesPaneDir(paneId);
+}
+
+/** The pane id of a crashed session's tombstone. A shell that dies on its own
+ * swaps its session pane for this one, so the *layout* records that the slot
+ * now holds a report rather than a terminal — the alternative, leaving the
+ * session id in place and remembering "but it's dead" beside the layout, makes
+ * every reader of `panes` responsible for a distinction the id could carry. */
+export function exitPaneId(sessionId: string): string {
+  return `${EXIT_PANE_PREFIX}${sessionId}`;
+}
+
+export function isExitPane(paneId: string): boolean {
+  return paneId.startsWith(EXIT_PANE_PREFIX);
+}
+
+/** The session a tombstone reports on (null for any other pane). */
+export function exitPaneSession(paneId: string): string | null {
+  return isExitPane(paneId) ? paneId.slice(EXIT_PANE_PREFIX.length) : null;
+}
+
+/** The session a pane belongs to, live or dead — a session pane is its own id,
+ * a tombstone unwraps to the session it reports on, folder panes have none.
+ * Lets prune/validity rules treat a crashed pane as the session it still is. */
+export function paneSession(paneId: string): string | null {
+  if (folderPaneDir(paneId) !== null) return null;
+  return exitPaneSession(paneId) ?? paneId;
 }
 
 // --- Pure window-layout reducers (unit-tested; the screen wraps them in
@@ -401,6 +428,26 @@ export function dropPane(w: WindowsPayload, paneId: string): WindowsPayload {
   };
 }
 
+/** Swap one pane id for another in place — same window, same position, same
+ * column widths. This is how a session pane becomes its own tombstone when the
+ * shell crashes (and back again when the session is reopened): the slot is the
+ * same slot, only what fills it changed, so nothing about the tiling should
+ * move. Returns `w` untouched when `fromId` isn't in the layout. */
+export function replacePane(w: WindowsPayload, fromId: string, toId: string): WindowsPayload {
+  const host = w.windows.find((win) => win.panes.includes(fromId));
+  if (!host) return w;
+  const swap = (p: string) => (p === fromId ? toId : p);
+  return {
+    ...w,
+    windows: w.windows.map((win) => {
+      if (win.id !== host.id) return win;
+      // Rebuilt head-first so the non-empty tuple type survives the map.
+      const [first, ...rest] = win.panes;
+      return { ...win, panes: [swap(first), ...rest.map(swap)] };
+    }),
+  };
+}
+
 /** The folder dirs whose slice of the layout (their windows, in order, or
  * their active-window entry) differs between two payloads — exactly the
  * `touchedFolders` the backend's merge-by-folder save needs. Accepts the wire
@@ -420,14 +467,19 @@ export function changedFolderDirs(a: WireWindowsPayload, b: WireWindowsPayload):
   return [...dirs].filter((d) => sig(a, d) !== sig(b, d));
 }
 
-/** Parse a persisted layout into the live shape: sweep paneless windows
- * (residue from blobs written before empty windows became unrepresentable —
- * windows are minted lazily, so nothing of value is lost) and drop dangling
- * active-window entries. */
+/** Parse a persisted layout into the live shape. Only folder (diff/files)
+ * panes survive a restart, because only they can be rebuilt from what's on
+ * disk: a session pane's PTY died with the app and nothing restarts it, and a
+ * tombstone reports a crash from a run that's over. Both would restore as
+ * tiles with nothing behind them, so both are dropped here — the parse
+ * boundary is where "what a blob claims" becomes "what this run can show".
+ * Windows left paneless by that (and by old blobs written before empty windows
+ * became unrepresentable) are swept — windows are minted lazily, so nothing of
+ * value is lost — along with dangling active-window entries. */
 export function hydrateWins(w: WireWindowsPayload): WindowsPayload {
   const windows: AgWindow[] = [];
   for (const win of w.windows) {
-    const panes = toPanes(win.panes);
+    const panes = toPanes(win.panes.filter((p) => folderPaneDir(p) !== null));
     if (panes) windows.push({ ...win, panes });
   }
   return normalizeWins({ windows, activeWindows: w.activeWindows });
@@ -436,8 +488,8 @@ export function hydrateWins(w: WireWindowsPayload): WindowsPayload {
 /** Reconcile the persisted layout against what actually exists. The blob on
  * disk outlives its panes: sessions get removed by another app instance, a
  * repo comes off the rail with non-live session records, a crash beats the
- * debounced save — leaving ghost pane ids that hold a tile slot and render as
- * a dead dashed pane (so a fresh pane lands in spot two behind a corpse).
+ * debounced save — leaving ghost pane ids that hold a tile slot with nothing
+ * in it (so a fresh pane lands in spot two behind a blank).
  *
  * Drops windows of folders not in `validFolderDirs`, then panes that are
  * neither a known session id nor a valid folder's diff/files pane. A window emptied
@@ -456,7 +508,11 @@ export function pruneWins(
     const panes = toPanes(
       win.panes.filter((p) => {
         const dir = folderPaneDir(p);
-        return dir !== null ? validFolderDirs.has(dir) : validSessionIds.has(p);
+        if (dir !== null) return validFolderDirs.has(dir);
+        // A tombstone lives and dies with the session it reports on: once the
+        // record is gone there's nothing left to name, so it prunes like the
+        // session pane it replaced.
+        return validSessionIds.has(paneSession(p)!);
       }),
     );
     if (!panes) continue;

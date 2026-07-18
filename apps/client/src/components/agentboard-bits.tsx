@@ -973,3 +973,38 @@ export function RepoMenu({
     </>
   );
 }
+
+/** What a pane tile shows when it has no content to render: a dashed outline,
+ * one line saying what happened, and a single way out. The three cases are a
+ * folder pane whose folder is gone (diff, files) and a terminal pane whose
+ * shell crashed — that last one passes `detail` to report how it died, and
+ * `tone="alert"` to say the pane didn't mean to end up here.
+ *
+ * Removal is the only affordance on purpose: restarting is the rail's job, so
+ * a tile that offers it competes with the rail for the same decision. */
+export function PanePlaceholder({
+  label,
+  detail,
+  tone = "muted",
+  onRemove,
+}: {
+  label: string;
+  detail?: string;
+  tone?: "muted" | "alert";
+  onRemove: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground",
+        tone === "alert" && "border-amber-500/40",
+      )}
+    >
+      <span className="text-sm">{label}</span>
+      {detail && <span className="font-mono text-xs text-amber-500">{detail}</span>}
+      <button type="button" onClick={onRemove} className="font-mono text-xs hover:text-red-500">
+        ⊟ remove pane
+      </button>
+    </div>
+  );
+}
