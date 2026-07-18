@@ -2,6 +2,48 @@ import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ideReadFile } from "@/lib/ide";
+import { monacoLanguageFor } from "@/lib/markdown-code";
+import { loadMonaco } from "@/lib/monaco";
+
+/**
+ * A fenced code block, tokenized by Monaco.
+ *
+ * Uses the TextMate grammars and Dark Modern theme the editor already loads,
+ * so a snippet in the preview is colored exactly like the same code in the
+ * viewer — and it costs no extra dependency (Shiki would ship a second copy of
+ * this same stack). Renders as plain text until tokenization resolves, and
+ * stays plain if the language has no grammar.
+ *
+ * `dangerouslySetInnerHTML` is safe here specifically because Monaco's
+ * colorizer HTML-escapes the source: verified against the running app with
+ * `<script>` and `<img onerror=…>` payloads, both of which come back escaped.
+ */
+function FencedCode({ className, children }: { className?: string; children?: React.ReactNode }) {
+  const source = String(children ?? "").replace(/\n$/, "");
+  const language = monacoLanguageFor(className);
+  const [html, setHtml] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!language) return;
+    let disposed = false;
+    void (async () => {
+      try {
+        const monaco = await loadMonaco();
+        const colored = await monaco.editor.colorize(source, language, { tabSize: 2 });
+        if (!disposed) setHtml(colored);
+      } catch {
+        // No grammar, or the editor chunk failed to load — the plain text
+        // below is a perfectly good fallback.
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, [source, language]);
+
+  if (!language || html == null) return <code className={className}>{source}</code>;
+  return <code className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+}
 
 /** Extensions the file viewer knows how to render a live preview for. */
 export type PreviewKind = "markdown" | "html";
@@ -65,7 +107,9 @@ export function FilePreview({ dir, path, kind }: { dir: string; path: string; ki
   return (
     <div className="h-full min-w-0 flex-1 overflow-y-auto px-4 py-3">
       <div className="prose prose-sm dark:prose-invert max-w-none">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: FencedCode }}>
+          {content}
+        </ReactMarkdown>
       </div>
     </div>
   );

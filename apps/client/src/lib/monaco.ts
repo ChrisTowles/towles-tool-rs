@@ -73,8 +73,11 @@ async function start(): Promise<typeof import("monaco-editor")> {
     // (or themes) as a built-in VS Code extension — side-effect imports.
     // (themeDefaults is awaited below: setTheme races its registration.)
   ]);
-  const [themeDefaults] = await Promise.all([
+  const [themeDefaults, setiIcons] = await Promise.all([
     import("@codingame/monaco-vscode-theme-defaults-default-extension"),
+    // VS Code's own file-icon theme — the Explorer's per-filetype icons come
+    // from here rather than a hand-rolled extension→glyph map.
+    import("@codingame/monaco-vscode-theme-seti-default-extension"),
     import("@codingame/monaco-vscode-rust-default-extension"),
     import("@codingame/monaco-vscode-typescript-basics-default-extension"),
     import("@codingame/monaco-vscode-javascript-default-extension"),
@@ -108,6 +111,7 @@ async function start(): Promise<typeof import("monaco-editor")> {
   await configuration.initUserConfiguration(
     JSON.stringify({
       "workbench.colorTheme": "Default Dark Modern",
+      "workbench.iconTheme": "vs-seti",
       "editor.stickyScroll.enabled": true,
       "editor.bracketPairColorization.enabled": true,
       "editor.guides.bracketPairs": "active",
@@ -172,7 +176,10 @@ async function start(): Promise<typeof import("monaco-editor")> {
   // After initialize, so these land on top of the workbench contributions
   // they shadow (CommandsRegistry keeps the newest handler for an id).
   for (const id of PRUNED_COMMANDS) monaco.editor.registerCommand(id, () => {});
-  await themeDefaults.whenReady();
+  // Both themes register asynchronously and the configured ids above race
+  // that registration — await them or the editor falls back to the default
+  // theme and the Explorer to no icons.
+  await Promise.all([themeDefaults.whenReady(), setiIcons.whenReady()]);
   // Quick-open (and anything else workbench-y) resolves picked files
   // through the editor opener — route them to the app's own viewer.
   monaco.editor.registerEditorOpener({
