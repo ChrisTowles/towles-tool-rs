@@ -190,7 +190,13 @@ export function MonacoMultiDiff({
                 // Resolve the file outside the debounce so the chip tracks the
                 // selection immediately; only bridge traffic is debounced.
                 const path = diffWorkPath(dir, modified.getModel()?.uri);
-                if (!path) return;
+                if (!path) {
+                  // Nothing here is mentionable, so drop the chip rather than
+                  // leaving it naming — and `@ send`-ing — whichever file was
+                  // selected before.
+                  setSelection(null);
+                  return;
+                }
                 const next = mentionRangeFrom(e.selection);
                 mentionRef.current = sendFromThisEditor;
                 setSelection((prev) => {

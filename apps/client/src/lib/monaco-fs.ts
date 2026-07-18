@@ -46,14 +46,39 @@ function notFound(): FileSystemProviderError {
   return FileSystemProviderError.create("file not found", FileSystemProviderErrorCode.FileNotFound);
 }
 
+/**
+ * Bytes → the string `ide_write_file` takes, refusing anything that isn't
+ * valid UTF-8.
+ *
+ * A non-fatal decode maps every undecodable byte to U+FFFD, so writing a PNG
+ * back through here would replace it with mojibake and report success. Since
+ * the command's parameter is a Rust `String` there is no lossless path, and
+ * `ide_read_file` already refuses to read a file containing NUL — failing
+ * loudly on the write keeps the pair symmetric instead of corrupting a file
+ * the bridge should never have touched.
+ */
+function decodeText(content: Uint8Array, filePath: string): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(content);
+  } catch {
+    throw FileSystemProviderError.create(
+      `${filePath} is not valid UTF-8 — the editor bridge only writes text files`,
+      FileSystemProviderErrorCode.Unknown,
+    );
+  }
+}
+
 class TauriFileSystemProvider
   extends Disposable
   implements IFileSystemProviderWithFileReadWriteCapability
 {
+  // No `Readonly` bit — it is not decorative here. `OverlayFileSystemProvider`
+  // skips any delegate carrying it in `writeToDelegates`, so every mutation
+  // below (writeFile / mkdir / delete / rename) would be passed over and the
+  // overlay would throw "Not allowed"; its `stat` also stamps
+  // `FilePermission.Readonly` onto every file it returns.
   capabilities =
-    FileSystemProviderCapabilities.FileReadWrite |
-    FileSystemProviderCapabilities.PathCaseSensitive |
-    FileSystemProviderCapabilities.Readonly;
+    FileSystemProviderCapabilities.FileReadWrite | FileSystemProviderCapabilities.PathCaseSensitive;
   onDidChangeCapabilities = Event.None;
   private readonly _onDidChangeFile = this._register(new Emitter<readonly IFileChange[]>());
   onDidChangeFile = this._onDidChangeFile.event;
@@ -66,13 +91,20 @@ class TauriFileSystemProvider
     this._onDidChangeFile.fire(changes);
   }
 
-  async stat(resource: URI): Promise<IStat> {
-    let s: FsStat;
+  /** Stat without turning a miss into a throw — `writeFile` has to tell
+   * "missing" from "present" to honor its options, and an exception is the
+   * wrong shape for a question. */
+  private async statOrNull(filePath: string): Promise<FsStat | null> {
     try {
-      s = await invokeOrThrow<FsStat>("ide_stat", { dir: "/", filePath: resource.path.slice(1) });
+      return await invokeOrThrow<FsStat>("ide_stat", { dir: "/", filePath });
     } catch {
-      throw notFound();
+      return null;
     }
+  }
+
+  async stat(resource: URI): Promise<IStat> {
+    const s = await this.statOrNull(resource.path.slice(1));
+    if (s == null) throw notFound();
     return {
       type: s.isDir ? FileType.Directory : FileType.File,
       ctime: s.mtimeMs,
@@ -110,12 +142,29 @@ class TauriFileSystemProvider
    * The workbench's own save path (an Explorer "New File", say). The code
    * viewer does NOT come through here — it saves via `ide_write_file`, whose
    * mtime token refuses to clobber a file an agent edited underneath it.
+   *
+   * `create`/`overwrite` are enforced here rather than trusted to the caller:
+   * `IFileService.create` happens to validate first today, but the provider
+   * contract is what the next caller will rely on, and getting it wrong means
+   * silently truncating a file nobody asked to replace.
    */
   async writeFile(resource: URI, content: Uint8Array, opts: IFileWriteOptions): Promise<void> {
+    const filePath = resource.path.slice(1);
+    const text = decodeText(content, filePath);
+    if (!opts.create || !opts.overwrite) {
+      const existing = await this.statOrNull(filePath);
+      if (existing != null && !opts.overwrite) {
+        throw FileSystemProviderError.create(
+          `${filePath} already exists`,
+          FileSystemProviderErrorCode.FileExists,
+        );
+      }
+      if (existing == null && !opts.create) throw notFound();
+    }
     await this.run("ide_write_file", {
       dir: "/",
-      filePath: resource.path.slice(1),
-      content: new TextDecoder().decode(content),
+      filePath,
+      content: text,
       expectedMtimeMs: null,
     });
     this.changed({
