@@ -1,0 +1,126 @@
+/**
+ * LSP bridge (spike): rust-analyzer runs app-side (`lsp_start` spawns it per
+ * workspace, `crates-tauri/tt-app/src/lsp.rs`), and monaco-languageclient in
+ * the webview speaks to it over Tauri IPC — `lsp_send` down, `lsp://msg`
+ * events up. No WebSocket, no port claims. One server at a time, following
+ * the active workspace (`syncLspWorkspace`, called by setMonacoWorkspace);
+ * a folder without Cargo.toml just stops the previous server.
+ */
+
+import { AbstractMessageReader, AbstractMessageWriter } from "vscode-jsonrpc";
+import type { DataCallback, Disposable, Message } from "vscode-jsonrpc";
+import { invokeCmd, invokeOrThrow, isTauri } from "@/lib/tauri";
+import { loadMonaco } from "@/lib/monaco";
+
+class TauriMessageReader extends AbstractMessageReader {
+  private unlisten: (() => void) | null = null;
+  private callback: DataCallback | null = null;
+  /** Messages that arrived before the client attached its callback. */
+  private buffered: Message[] = [];
+  constructor(private readonly serverId: number) {
+    super();
+  }
+  /** Attach the Tauri event listeners. Await this BEFORE starting the
+   * language client — otherwise the server's `initialize` response can race
+   * the listener registration and get dropped. */
+  async attach(): Promise<void> {
+    const { listen } = await import("@tauri-apps/api/event");
+    const msg = await listen<{ id: number; message: string }>("lsp://msg", (e) => {
+      if (e.payload.id !== this.serverId) return;
+      const parsed = JSON.parse(e.payload.message) as Message;
+      if (this.callback) this.callback(parsed);
+      else this.buffered.push(parsed);
+    });
+    const exit = await listen<{ id: number }>("lsp://exit", (e) => {
+      if (e.payload.id === this.serverId) this.fireClose();
+    });
+    this.unlisten = () => {
+      msg();
+      exit();
+    };
+  }
+  listen(callback: DataCallback): Disposable {
+    this.callback = callback;
+    for (const m of this.buffered.splice(0)) callback(m);
+    return { dispose: () => this.dispose() };
+  }
+  override dispose(): void {
+    super.dispose();
+    this.callback = null;
+    this.unlisten?.();
+    this.unlisten = null;
+  }
+}
+
+class TauriMessageWriter extends AbstractMessageWriter {
+  constructor(private readonly serverId: number) {
+    super();
+  }
+  async write(msg: Message): Promise<void> {
+    await invokeOrThrow("lsp_send", { id: this.serverId, message: JSON.stringify(msg) });
+  }
+  end(): void {}
+}
+
+let current: { dir: string; stop: () => void } | null = null;
+// A fresh page means every server the previous page started is an orphan —
+// reap them before the first start. (Module scope = runs once per page.)
+let switching: Promise<void> = isTauri()
+  ? invokeCmd("lsp_stop_all", {}).then(() => {})
+  : Promise.resolve();
+
+/** Point the (single) rust-analyzer at this workspace: stop the previous
+ * server, start one if the folder is a Rust workspace. Serialized — rapid
+ * workspace switches can't interleave. */
+export function syncLspWorkspace(dir: string): void {
+  if (!isTauri()) return;
+  switching = switching.then(async () => {
+    if (current?.dir === dir) return;
+    current?.stop();
+    current = null;
+    const isRust = await invokeCmd<unknown>("ide_stat", { dir, filePath: "Cargo.toml" });
+    if (isRust == null) return;
+    try {
+      current = { dir, stop: await startRustAnalyzer(dir) };
+    } catch (e) {
+      const err = e as { message?: string; stack?: string };
+      console.warn(
+        `rust-analyzer bridge failed to start: ${err?.message ?? String(e)}\n${err?.stack ?? ""}`,
+      );
+    }
+  });
+}
+
+async function startRustAnalyzer(dir: string): Promise<() => void> {
+  const monaco = await loadMonaco();
+  const id = await invokeOrThrow<number>("lsp_start", { dir });
+  const reader = new TauriMessageReader(id);
+  await reader.attach();
+  const { MonacoLanguageClient } = await import("monaco-languageclient");
+  const client = new MonacoLanguageClient({
+    name: "rust-analyzer",
+    clientOptions: {
+      documentSelector: [{ language: "rust", scheme: "file" }],
+      workspaceFolder: {
+        // monaco.Uri IS vscode's URI class in this stack.
+        uri: monaco.Uri.file(dir) as never,
+        name: dir.split("/").pop() ?? dir,
+        index: 0,
+      },
+    },
+    messageTransports: {
+      reader,
+      writer: new TauriMessageWriter(id),
+    },
+  });
+  try {
+    await client.start();
+  } catch (e) {
+    void invokeCmd("lsp_stop", { id });
+    throw e;
+  }
+  return () => {
+    void client.dispose().catch(() => {});
+    void invokeCmd("lsp_stop", { id });
+  };
+}
