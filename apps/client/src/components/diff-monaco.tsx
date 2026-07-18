@@ -142,7 +142,7 @@ export function MonacoMultiDiff({
           let debounce: ReturnType<typeof setTimeout> | undefined;
           disposables.push({ dispose: () => clearTimeout(debounce) });
           disposables.push(
-            modified.onDidChangeCursorSelection((e) => {
+            modified.onDidChangeCursorSelection((e: import("monaco-editor").editor.ICursorSelectionChangedEvent) => {
               clearTimeout(debounce);
               debounce = setTimeout(() => {
                 const uri = modified.getModel()?.uri;
