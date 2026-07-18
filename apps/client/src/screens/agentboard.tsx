@@ -675,8 +675,20 @@ export function AgentboardScreen() {
     ackFolder(folderDir);
   }
 
-  function selectSession(folderDir: string, sessionId: string) {
+  // Spawn a session's PTY and place its pane in its own folder's window,
+  // without touching `selected`/`activeFolderDir` — for sessions created in
+  // the background (e.g. a new slot) that shouldn't steal focus from
+  // whatever the user is currently looking at.
+  function mountSession(folderDir: string, sessionId: string) {
     cwds.current[sessionId] = folderDir;
+    // A fresh mount replaces any dead PTY here — drop its stale exit label.
+    clearExit(sessionId);
+    setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
+    addPaneToActive(folderDir, sessionId);
+  }
+
+  function selectSession(folderDir: string, sessionId: string) {
+    mountSession(folderDir, sessionId);
     setSelected({ folderDir, sessionId });
     setActiveFolderDir(folderDir);
     // Looking at it acknowledges it — drop the attention badge with the
@@ -686,10 +698,6 @@ export function AgentboardScreen() {
       const { [sessionId]: _, ...rest } = m;
       return rest;
     });
-    // A fresh mount replaces any dead PTY here — drop its stale exit label.
-    clearExit(sessionId);
-    setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
-    addPaneToActive(folderDir, sessionId);
     ackFolder(folderDir);
   }
 
@@ -836,8 +844,10 @@ export function AgentboardScreen() {
     }
   }
 
-  // A slot the inline form just created: track it in the rail, open its
-  // first session, and start Claude on the goal in that session's PTY.
+  // A slot the inline form just created: track it in the rail, mount its
+  // first session in the background, and start Claude on the goal in that
+  // session's PTY — without switching the user's current view over to it.
+  // They can jump to it via the rail whenever they're ready.
   async function slotCreated(created: SlotCreated, goal: string, options: ClaudeLaunchOptions) {
     toast(`created ${created.name}${created.branch ? ` on ${created.branch}` : ""}`);
     await abInvoke("ab_add_repo", { path: created.dir });
@@ -851,7 +861,7 @@ export function AgentboardScreen() {
       rec = await abInvoke<SessionData>("ab_add_session", { dir: created.dir, name: null });
     }
     if (!rec) return;
-    selectSession(created.dir, rec.id);
+    mountSession(created.dir, rec.id);
     if (goal) {
       // Selecting mounts the TerminalView, which spawns the PTY; wait for its
       // first real output (a proxy for "the shell is actually reading input")
