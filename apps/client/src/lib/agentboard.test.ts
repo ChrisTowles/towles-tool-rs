@@ -9,11 +9,14 @@ import {
   diffPaneId,
   dragCol,
   dropPane,
+  exitPaneId,
+  exitPaneSession,
   fmtWaitingAge,
   folderActionableItems,
   folderSafeToDelete,
   hydrateWins,
   isDiffPane,
+  isExitPane,
   isFilesPane,
   filesPaneDir,
   filesPaneId,
@@ -23,12 +26,14 @@ import {
   needingSessionsOldestFirst,
   normalizeWins,
   paneRects,
+  paneSession,
   snapCol,
   pathScope,
   placePane,
   prForFolder,
   prMergedButFolderHasWork,
   pruneWins,
+  replacePane,
   QUIET_GRACE_MS,
   sessionNeeds,
   waitForFirstFrame,
@@ -422,6 +427,73 @@ describe("pruneWins", () => {
     const [s, f] = valid(["s1"], ["/f"]);
     expect(pruneWins(w, s, f)).toBe(w);
   });
+
+  it("keeps a tombstone while its session record lives", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", [exitPaneId("s1")])],
+      activeWindows: { "/f": "w1" },
+    };
+    const [s, f] = valid(["s1"], ["/f"]);
+    expect(pruneWins(w, s, f)).toBe(w);
+  });
+
+  it("prunes a tombstone once its session is gone — nothing left to name", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", [exitPaneId("s1"), "s2"])],
+      activeWindows: { "/f": "w1" },
+    };
+    const [s, f] = valid(["s2"], ["/f"]);
+    expect(pruneWins(w, s, f).windows[0].panes).toEqual(["s2"]);
+  });
+});
+
+describe("exit pane ids", () => {
+  it("round-trips the session and never collides with the other pane kinds", () => {
+    const id = exitPaneId("s00deadbeef00cafe");
+    expect(isExitPane(id)).toBe(true);
+    expect(exitPaneSession(id)).toBe("s00deadbeef00cafe");
+    expect(isExitPane("s00deadbeef00cafe")).toBe(false);
+    expect(isExitPane(diffPaneId("/f"))).toBe(false);
+    // A tombstone is not a folder pane — folderPaneDir must not claim it.
+    expect(folderPaneDir(id)).toBeNull();
+    expect(exitPaneSession("s00deadbeef00cafe")).toBeNull();
+  });
+
+  it("paneSession names the session behind a live pane and a dead one alike", () => {
+    expect(paneSession("s1")).toBe("s1");
+    expect(paneSession(exitPaneId("s1"))).toBe("s1");
+    expect(paneSession(diffPaneId("/f"))).toBeNull();
+    expect(paneSession(filesPaneId("/f"))).toBeNull();
+  });
+});
+
+describe("replacePane", () => {
+  it("swaps in place, holding position and column widths", () => {
+    const w: WindowsPayload = {
+      windows: [{ ...win("w1", "/f", ["s1", "s2", "s3"]), cols: [200, 400, 400] }],
+      activeWindows: { "/f": "w1" },
+    };
+    const next = replacePane(w, "s2", exitPaneId("s2"));
+    expect(next.windows[0].panes).toEqual(["s1", exitPaneId("s2"), "s3"]);
+    expect(next.windows[0].cols).toEqual([200, 400, 400]);
+  });
+
+  it("round-trips: a reclaimed tombstone lands back in its own slot", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", ["s1", "s2"])],
+      activeWindows: { "/f": "w1" },
+    };
+    const dead = replacePane(w, "s2", exitPaneId("s2"));
+    expect(replacePane(dead, exitPaneId("s2"), "s2")).toEqual(w);
+  });
+
+  it("leaves the payload untouched when the pane isn't in the layout", () => {
+    const w: WindowsPayload = {
+      windows: [win("w1", "/f", ["s1"])],
+      activeWindows: { "/f": "w1" },
+    };
+    expect(replacePane(w, "s9", exitPaneId("s9"))).toBe(w);
+  });
 });
 
 describe("hydrateWins", () => {
@@ -434,17 +506,41 @@ describe("hydrateWins", () => {
 
   it("sweeps legacy paneless windows and their active entries", () => {
     const w: WireWindowsPayload = {
-      windows: [wireWin("w1", "/f", ["s1"]), wireWin("w2", "/f", []), wireWin("w3", "/g", [])],
+      windows: [
+        wireWin("w1", "/f", ["~diff:/f"]),
+        wireWin("w2", "/f", []),
+        wireWin("w3", "/g", []),
+      ],
       activeWindows: { "/f": "w2", "/g": "w3" },
     };
     const next = hydrateWins(w);
-    expect(next.windows).toEqual([win("w1", "/f", ["s1"])]);
+    expect(next.windows).toEqual([win("w1", "/f", ["~diff:/f"])]);
     expect(next.activeWindows).toEqual({});
   });
 
-  it("keeps a fully valid layout intact, cols included", () => {
+  it("drops tombstones too — they report a crash from a run that's over", () => {
     const w: WireWindowsPayload = {
-      windows: [{ ...wireWin("w1", "/f", ["s1", "s2"]), cols: [333, 667] }],
+      windows: [wireWin("w1", "/f", [exitPaneId("s1"), "~diff:/f"]), wireWin("w2", "/g", [exitPaneId("s2")])],
+      activeWindows: { "/f": "w1", "/g": "w2" },
+    };
+    const next = hydrateWins(w);
+    expect(next.windows).toEqual([win("w1", "/f", ["~diff:/f"])]);
+    expect(next.activeWindows).toEqual({ "/f": "w1" });
+  });
+
+  it("drops session panes — their PTYs died with the last run", () => {
+    const w: WireWindowsPayload = {
+      windows: [wireWin("w1", "/f", ["s1", "~diff:/f"]), wireWin("w2", "/g", ["s2"])],
+      activeWindows: { "/f": "w1", "/g": "w2" },
+    };
+    const next = hydrateWins(w);
+    expect(next.windows).toEqual([win("w1", "/f", ["~diff:/f"])]);
+    expect(next.activeWindows).toEqual({ "/f": "w1" });
+  });
+
+  it("keeps a folder-pane layout intact, cols included", () => {
+    const w: WireWindowsPayload = {
+      windows: [{ ...wireWin("w1", "/f", ["~diff:/f", "~files:/f"]), cols: [333, 667] }],
       activeWindows: { "/f": "w1" },
     };
     expect(hydrateWins(w)).toEqual(w);

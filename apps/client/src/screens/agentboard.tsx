@@ -12,7 +12,7 @@ import {
   Plus,
   TerminalSquare,
 } from "lucide-react";
-import { fmtMins } from "@/components/agentboard-bits";
+import { fmtMins, PanePlaceholder } from "@/components/agentboard-bits";
 import { ColdCacheOverlay, PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffPane } from "@/components/diff-pane";
@@ -68,10 +68,12 @@ import {
   dragCol,
   filesPaneDir,
   filesPaneId,
-  folderPaneDir,
   dropPane,
+  exitPaneId,
+  exitPaneSession,
   hydrateWins,
   isAgent,
+  isExitPane,
   isCacheExpiring,
   isDiffPane,
   isFilesPane,
@@ -82,6 +84,7 @@ import {
   onOpenSessionRequest,
   paneRects,
   placePane,
+  replacePane,
   prForFolder,
   pruneWins,
   sessionLabel,
@@ -109,7 +112,7 @@ import {
   type WindowsPayload,
   windowColor,
 } from "@/lib/agentboard";
-import { deadPaneAction, exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
+import { exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
 import { invokeOrThrow, isTauri } from "@/lib/tauri";
 import type { OpenFileRequest } from "@/lib/ide";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
@@ -219,10 +222,21 @@ export function AgentboardScreen() {
   // Session ids whose PTY is mounted (kept alive for scrollback), + their cwd.
   const [open, setOpen] = useState<string[]>([]);
   const cwds = useRef<Record<string, string>>({});
-  // How a dead session's shell exited (code + signal), by session id. Set when
-  // a shell exits on its own so the dead pane reports "exited" vs "exited ·
-  // code 137"; cleared when the session is restarted or its pane removed.
-  const [exitInfo, setExitInfo] = useState<Record<string, TermExit>>({});
+  // How a *crashed* session's shell died ("exited · Killed"), by session id.
+  // Only crashes land here — a clean logout takes its pane with it (see
+  // `handleExit`). Entries are never invalidated: what's on screen is decided
+  // by the render filter (a tombstone needs a pane that still exists and no
+  // live terminal over the top), so a stale entry for a dismissed or reopened
+  // session is inert, and there's no invalidation scheme to keep correct.
+  const [exitLabels, setExitLabels] = useState<Record<string, string>>({});
+  // Sessions whose shell we're killing on purpose. `slot_remove` kills a
+  // folder's PTYs in Rust *before* the frontend unmounts their panes, so those
+  // deaths arrive as signal exits at a still-listening TerminalView — which is
+  // a crash by every test `handleExit` can apply, except that we asked for it.
+  // Ids land here just before the kill and are consumed by the exit they
+  // predict. (The `term_kill` on TerminalView unmount needs no entry: cleanup
+  // unlistens first, so that exit is never delivered.)
+  const expectedKills = useRef<Set<string>>(new Set());
   // Folder-rail collapse/expand state (issue #52): hydrated once from
   // `ab_get_state`, then this local copy is the live truth — same pattern as
   // `wins` below, except each toggle saves incrementally (one key at a time)
@@ -495,7 +509,7 @@ export function AgentboardScreen() {
   // and folders vanish out from under the persisted blob (closed by another
   // slot's app instance, a repo removed with non-live session records, a
   // crash before the debounced save), leaving ghost pane ids that hold a tile
-  // slot and render as a dead dashed pane. Locally-mounted terminals (`open`)
+  // slot with nothing to render in it. Locally-mounted terminals (`open`)
   // count as valid even before the backend's state event catches up, so a
   // just-created session's pane never loses the race to this prune — and so
   // do their folders (via the cwd recorded at mount): a just-created slot's
@@ -569,8 +583,15 @@ export function AgentboardScreen() {
 
   // Add a pane (session or diff) to its own folder's focused window — the
   // placement rules live in the pure `placePane` reducer (lib/agentboard.ts).
+  // A session reclaims its own tombstone first: the crashed pane is that
+  // session's slot, so reopening fills it in place instead of `placePane`
+  // appending a second pane beside the corpse.
   function addPaneToActive(folderDir: string, paneId: string) {
-    updateWins([folderDir], (w) => placePane(w, folderDir, paneId, () => `w${Date.now()}`));
+    updateWins([folderDir], (w) =>
+      placePane(replacePane(w, exitPaneId(paneId), paneId), folderDir, paneId, () =>
+        `w${Date.now()}`,
+      ),
+    );
   }
 
   function removePane(paneId: string) {
@@ -578,7 +599,21 @@ export function AgentboardScreen() {
     // so we know which single folder to mark touched.
     const folderDir = wins?.windows.find((win) => win.panes.includes(paneId))?.folderDir;
     updateWins(folderDir ? [folderDir] : [], (w) => dropPane(w, paneId));
-    clearExit(paneId);
+  }
+
+  /** Remove whichever pane a session currently occupies — its terminal, or the
+   * tombstone that replaced it when the shell crashed. Every session-keyed
+   * entry point (rail ungroup, pane header, close, worktree delete) goes
+   * through here, so none of them has to know which of the two it's looking
+   * at. */
+  function removeSessionPane(sessionId: string) {
+    const ids = [sessionId, exitPaneId(sessionId)];
+    const folderDir = wins?.windows.find((win) =>
+      ids.some((id) => win.panes.includes(id)),
+    )?.folderDir;
+    updateWins(folderDir ? [folderDir] : [], (w) =>
+      ids.reduce((acc, id) => dropPane(acc, id), w),
+    );
   }
 
   // "+ window": a window can't exist without panes, so minting one means
@@ -645,23 +680,31 @@ export function AgentboardScreen() {
     }));
   }
 
-  /** Forget a session's recorded exit status (on restart or pane removal). */
-  function clearExit(sessionId: string) {
-    setExitInfo((m) => {
-      if (!(sessionId in m)) return m;
-      const next = { ...m };
-      delete next[sessionId];
-      return next;
-    });
-  }
-
-  /** A shell exited on its own. Unmount its terminal (the PTY is gone) but keep
-   * the pane so the dead session stays on screen, reporting how it exited with
-   * the same restart/remove controls a never-started pane offers. Status
-   * reporting only — no auto-restart. */
+  /** A shell exited on its own. Either way its terminal unmounts (the PTY is
+   * gone); how it died decides whether the pane goes with it.
+   *
+   * A clean logout is expected — you typed `exit`, and the pane disappearing
+   * *is* the feedback; the window retiles around the loss. A crash is the
+   * opposite: nothing would otherwise tell you it happened, so the pane stays
+   * as a tombstone reporting how it died, until you dismiss it or reopen the
+   * session over the top. A toast fires alongside, since the pane only speaks
+   * to whoever is looking at that folder's window. No auto-restart. */
   function handleExit(sessionId: string, exit: TermExit) {
-    setExitInfo((m) => ({ ...m, [sessionId]: exit }));
     setOpen((prev) => prev.filter((id) => id !== sessionId));
+    const expected = expectedKills.current.delete(sessionId);
+    if (expected || !exitIsCrash(exit.code, exit.signal)) {
+      removePane(sessionId);
+      return;
+    }
+    const label = exitLabel(exit.code, exit.signal);
+    const s = sessionById.get(sessionId);
+    toast.error(`${s ? labelFor(s) : "shell"} ${label}`);
+    setExitLabels((m) => ({ ...m, [sessionId]: label }));
+    // The slot keeps its place in the tiling; only its occupant changes.
+    const folderDir = wins?.windows.find((win) => win.panes.includes(sessionId))?.folderDir;
+    updateWins(folderDir ? [folderDir] : [], (w) =>
+      replacePane(w, sessionId, exitPaneId(sessionId)),
+    );
   }
 
   // Switch the main area to a folder without selecting one of its sessions
@@ -681,8 +724,6 @@ export function AgentboardScreen() {
   // whatever the user is currently looking at.
   function mountSession(folderDir: string, sessionId: string) {
     cwds.current[sessionId] = folderDir;
-    // A fresh mount replaces any dead PTY here — drop its stale exit label.
-    clearExit(sessionId);
     setOpen((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
     addPaneToActive(folderDir, sessionId);
   }
@@ -691,8 +732,7 @@ export function AgentboardScreen() {
     mountSession(folderDir, sessionId);
     setSelected({ folderDir, sessionId });
     setActiveFolderDir(folderDir);
-    // Looking at it acknowledges it — drop the attention badge with the
-    // stale exit label.
+    // Looking at it acknowledges it — drop the attention badge.
     setTermAttention((m) => {
       if (!m[sessionId]) return m;
       const { [sessionId]: _, ...rest } = m;
@@ -1034,6 +1074,9 @@ export function AgentboardScreen() {
     // `finally` so a blocked/failed removal leaves the row interactive again.
     const dir = target.dirs[0];
     setDeletingDirs((prev) => new Set(prev).add(dir));
+    // Claim these deaths before asking for them — the kill happens in Rust
+    // while the panes are still mounted, so the exits come back as crashes.
+    for (const id of target.sessionIds) expectedKills.current.add(id);
     try {
       const removed = await invokeOrThrow<{ name: string; messages: string[] }>("slot_remove", {
         dir,
@@ -1041,7 +1084,7 @@ export function AgentboardScreen() {
       for (const id of target.sessionIds) {
         setOpen((prev) => prev.filter((x) => x !== id));
         setSelected((cur) => (cur?.sessionId === id ? null : cur));
-        removePane(id);
+        removeSessionPane(id);
       }
       for (const message of removed?.messages ?? []) toast(message);
       toast.success(`Deleted worktree ${removed?.name ?? target.label}`);
@@ -1105,7 +1148,7 @@ export function AgentboardScreen() {
     await abInvoke("ab_close_session", { id: sessionId });
     setOpen((prev) => prev.filter((id) => id !== sessionId));
     setSelected((cur) => (cur?.sessionId === sessionId ? null : cur));
-    removePane(sessionId);
+    removeSessionPane(sessionId);
   }
 
   async function commitRename(sessionId: string, name: string) {
@@ -1150,7 +1193,7 @@ export function AgentboardScreen() {
     },
     close: (sessionId) => void closeSession(sessionId),
     renameStart: setRenaming,
-    ungroup: removePane,
+    ungroup: removeSessionPane,
     focusWindow: (windowId) => {
       const win = wins?.windows.find((w) => w.id === windowId);
       if (!win) return;
@@ -1671,91 +1714,27 @@ export function AgentboardScreen() {
                           </div>
                         );
                       })}
-                      {/* Panes restored from disk but not started this run. */}
-                      {panes
-                        .filter((id) => !open.includes(id) && folderPaneDir(id) == null)
-                        .map((id) => {
-                          const r = rectFor(id);
-                          const s = sessionById.get(id);
-                          const dir = folderOf.get(id)?.dir;
-                          const exit = exitInfo[id];
-                          const action = deadPaneAction({
-                            hasSession: !!s,
-                            hasDir: !!dir,
-                            exited: !!exit,
-                          });
-                          // Restart the shell in place: same term id + cwd. `start`
-                          // remounts the TerminalView, whose effect re-invokes
-                          // `term_start`; Rust kills and replaces the old id. When
-                          // the pane is focused, Enter is the keyboard path to it.
-                          const restart = () => {
-                            if (s && dir) actions.start(dir, s);
-                          };
-                          return (
-                            <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
-                              <div
-                                tabIndex={action.canRestart ? 0 : undefined}
-                                onKeyDown={(e) => {
-                                  if (action.canRestart && e.key === "Enter") {
-                                    e.preventDefault();
-                                    restart();
-                                  }
-                                }}
-                                className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground outline-none focus-visible:border-violet-500/60 focus-visible:ring-1 focus-visible:ring-violet-500/60"
-                              >
-                                <span className="text-sm">{s ? labelFor(s) : "session"}</span>
-                                {exit && (
-                                  <span
-                                    className={cn(
-                                      "font-mono text-xs",
-                                      exitIsCrash(exit.code, exit.signal)
-                                        ? "text-amber-500"
-                                        : "text-muted-foreground/70",
-                                    )}
-                                  >
-                                    {exitLabel(exit.code, exit.signal)}
-                                  </span>
-                                )}
-                                {s && dir ? (
-                                  <div className="flex items-center gap-3 font-mono text-xs">
-                                    <button
-                                      type="button"
-                                      onClick={restart}
-                                      className="flex items-center gap-1 hover:text-green-500"
-                                    >
-                                      ▶ {action.label}
-                                      <kbd className="rounded border border-muted-foreground/30 px-1 text-[10px] leading-tight text-muted-foreground/70">
-                                        Enter
-                                      </kbd>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => actions.startClaude(dir, s)}
-                                      className="text-violet-500 hover:text-violet-400"
-                                    >
-                                      ✦ Claude
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => actions.ungroup(id)}
-                                      className="hover:text-red-500"
-                                    >
-                                      ⊟ remove
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => actions.ungroup(id)}
-                                    className="font-mono text-xs hover:text-red-500"
-                                  >
-                                    session gone — ⊟ remove pane
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
+                      {/* Tombstones: a shell that died on its own, holding the
+                          slot it died in. The pane id says which kind this is,
+                          so this pass can't overlap the terminal pass above —
+                          a session is either its own id or its `~exit:` one,
+                          never both. Dismissal is the only affordance;
+                          reopening from the rail reclaims the slot. */}
+                      {panes.filter(isExitPane).map((id) => {
+                        const r = rectFor(id);
+                        const sessionId = exitPaneSession(id) ?? "";
+                        const s = sessionById.get(sessionId);
+                        return (
+                          <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
+                            <PanePlaceholder
+                              label={s ? labelFor(s) : "shell"}
+                              detail={exitLabels[sessionId]}
+                              tone="alert"
+                              onRemove={() => removePane(id)}
+                            />
+                          </div>
+                        );
+                      })}
                       {/* Column dividers: drag to resize (snaps to thirds and
                           fifths), double-click for equal columns. Row layout
                           (≤3) has one per boundary; the ≥4 grid shares one

@@ -83,8 +83,7 @@ export interface TermExit {
   signal?: string | null;
 }
 
-/** Human label for a dead shell's exit status — status reporting only, so the
- * rail can tell a clean logout from a crash: "exited" for a code-0 logout,
+/** Human label for a dead shell's exit status: "exited" for a code-0 logout,
  * "exited · Killed" when a signal ended it, "exited · code 2" otherwise. */
 export function exitLabel(code: number, signal?: string | null): string {
   if (signal) return `exited · ${signal}`;
@@ -93,34 +92,11 @@ export function exitLabel(code: number, signal?: string | null): string {
 }
 
 /** Whether a shell's exit looks like a crash (nonzero code or a signal) rather
- * than a clean logout — lets the rail tint the crash label without re-deriving
- * the rule. */
+ * than a clean logout. A crashing pane vanishes like any other, so this is what
+ * decides whether its death is worth a toast — a clean logout is expected and
+ * says nothing; a crash is the one exit you'd otherwise never learn about. */
 export function exitIsCrash(code: number, signal?: string | null): boolean {
   return code !== 0 || signal != null;
-}
-
-/** The primary action a dead terminal pane offers. A pane whose shell exited
- * restarts it in place — same term id + cwd, Rust's `term_start` kills and
- * replaces the id — while a pane restored from disk that never ran this session
- * starts one for the first time. Both need the session record and its folder
- * dir to spawn a PTY, so `canRestart` gates the Enter/click affordance. */
-export interface DeadPaneAction {
-  /** Whether Enter / the primary button can (re)start a shell here. */
-  canRestart: boolean;
-  /** Primary-action label: "Restart shell" once a shell has exited in this
-   * pane, "Start shell" for one never started this run. */
-  label: string;
-}
-
-export function deadPaneAction(opts: {
-  hasSession: boolean;
-  hasDir: boolean;
-  exited: boolean;
-}): DeadPaneAction {
-  return {
-    canRestart: opts.hasSession && opts.hasDir,
-    label: opts.exited ? "Restart shell" : "Start shell",
-  };
 }
 
 /** Tauri IPC command that drops a terminal's scrollback while leaving the
