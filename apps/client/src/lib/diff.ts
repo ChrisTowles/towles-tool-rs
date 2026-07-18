@@ -1,174 +1,12 @@
 /**
- * Unified-diff parsing for the Agentboard diff viewer: split `git diff` output
- * into per-file sections with change-type + line counts, so the dialog can
- * render a plannotator-style file rail next to the patch.
+ * File-tree grouping for path lists (the Files pane's rail). The unified-diff
+ * parser that used to live here died with the hand-rolled diff renderer — the
+ * diff pane now uses the VS Code diff editor over full file contents.
  */
 
-export type DiffLineKind = "add" | "del" | "hunk" | "meta" | "ctx";
-
-export type DiffLine = {
-  kind: DiffLineKind;
-  text: string;
-  /** 1-based line number in the pre-change file (del + ctx lines). */
-  oldLine?: number;
-  /** 1-based line number in the post-change file (add + ctx lines). The IDE
-   * selection bridge keys highlights on this — it's the line Claude Code can
-   * find in the working tree. */
-  newLine?: number;
-};
-
-export type DiffFileStatus = "modified" | "added" | "deleted" | "renamed";
-
-export type DiffFile = {
-  /** New path (post-change); the old path for pure deletions. */
-  path: string;
-  /** Pre-rename path, set only for renames. */
-  oldPath?: string;
-  status: DiffFileStatus;
-  additions: number;
-  deletions: number;
-  /** Hunk headers + body lines (the `diff --git`/index/±±± preamble is meta). */
-  lines: DiffLine[];
-};
-
-/** Strip git's `a/` / `b/` prefix from a diff header path. */
-function stripPrefix(p: string): string {
-  return p.replace(/^[ab]\//, "");
-}
-
-/** Both paths off a `diff --git a/<old> b/<new>` line. Paths with spaces are
- * split on the ` b/` boundary (quoted paths keep their quotes stripped). */
-function headerPaths(line: string): { oldPath: string; newPath: string } {
-  const body = line.slice("diff --git ".length).replace(/"/g, "");
-  const idx = body.lastIndexOf(" b/");
-  if (idx < 0) return { oldPath: body, newPath: body };
-  return {
-    oldPath: stripPrefix(body.slice(0, idx)),
-    newPath: stripPrefix(body.slice(idx + 1)),
-  };
-}
-
-/** Parse a full unified diff into per-file sections. Tolerant of anything it
- * doesn't recognize (unrecognized preamble lines become `meta`). */
-/** `@@ -a[,b] +c[,d] @@` → the two range starts. */
-const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
-
-export function parseDiff(text: string): DiffFile[] {
-  const files: DiffFile[] = [];
-  let cur: DiffFile | null = null;
-  let inBody = false;
-  // Running 1-based line counters within the current hunk.
-  let oldNo = 0;
-  let newNo = 0;
-
-  for (const line of text.split("\n")) {
-    if (line.startsWith("diff --git ")) {
-      const { oldPath, newPath } = headerPaths(line);
-      cur = {
-        path: newPath,
-        status: "modified",
-        additions: 0,
-        deletions: 0,
-        lines: [{ kind: "meta", text: line }],
-      };
-      if (oldPath !== newPath) {
-        cur.status = "renamed";
-        cur.oldPath = oldPath;
-      }
-      files.push(cur);
-      inBody = false;
-      continue;
-    }
-    if (!cur) continue;
-
-    if (!inBody) {
-      if (line.startsWith("new file mode")) cur.status = "added";
-      else if (line.startsWith("deleted file mode")) cur.status = "deleted";
-      else if (line.startsWith("rename from")) {
-        cur.status = "renamed";
-        cur.oldPath = line.slice("rename from ".length);
-      }
-      if (line.startsWith("@@")) {
-        inBody = true;
-        const starts = HUNK_HEADER.exec(line);
-        oldNo = starts ? Number(starts[1]) : 0;
-        newNo = starts ? Number(starts[2]) : 0;
-        cur.lines.push({ kind: "hunk", text: line });
-      } else {
-        cur.lines.push({ kind: "meta", text: line });
-      }
-      continue;
-    }
-
-    if (line.startsWith("@@")) {
-      const starts = HUNK_HEADER.exec(line);
-      oldNo = starts ? Number(starts[1]) : 0;
-      newNo = starts ? Number(starts[2]) : 0;
-      cur.lines.push({ kind: "hunk", text: line });
-    } else if (line.startsWith("+")) {
-      cur.additions += 1;
-      cur.lines.push({ kind: "add", text: line, newLine: newNo++ });
-    } else if (line.startsWith("-")) {
-      cur.deletions += 1;
-      cur.lines.push({ kind: "del", text: line, oldLine: oldNo++ });
-    } else if (line.startsWith("\\")) {
-      // "\ No newline at end of file" — annotates the previous line, counts
-      // toward neither side.
-      cur.lines.push({ kind: "ctx", text: line });
-    } else {
-      cur.lines.push({ kind: "ctx", text: line, oldLine: oldNo++, newLine: newNo++ });
-    }
-  }
-
-  return files;
-}
-
-/** One row of a side-by-side rendering: either a left/right pair (a del and
- * an add lined up together, blanks where one side has no counterpart) or a
- * `full` line (hunk header, meta, or unchanged context) that spans both
- * columns. */
-export type SplitDiffRow =
-  | { full: DiffLine }
-  | { left: DiffLine | null; right: DiffLine | null };
-
-/** Pair up a file's flat line list into split-view rows: consecutive `del`
- * runs line up against the following `add` run positionally (GitHub's split
- * diff behavior), padding the shorter side with blanks. Anything else (ctx,
- * hunk, meta) flushes the pending pair and spans full width. */
-export function pairDiffLines(lines: DiffLine[]): SplitDiffRow[] {
-  const rows: SplitDiffRow[] = [];
-  let dels: DiffLine[] = [];
-  let adds: DiffLine[] = [];
-
-  const flush = () => {
-    const count = Math.max(dels.length, adds.length);
-    for (let i = 0; i < count; i++) {
-      rows.push({ left: dels[i] ?? null, right: adds[i] ?? null });
-    }
-    dels = [];
-    adds = [];
-  };
-
-  for (const line of lines) {
-    if (line.kind === "del") {
-      dels.push(line);
-      continue;
-    }
-    if (line.kind === "add") {
-      adds.push(line);
-      continue;
-    }
-    flush();
-    rows.push({ full: line });
-  }
-  flush();
-
-  return rows;
-}
-
-/** A row in the file rail's tree rendering: a directory (with its children)
- * or a leaf file. `index` is the file's position in the flat `DiffFile[]`
- * the tree was built from, so selection state stays keyed by that array. */
+/** A row in a file rail's tree rendering: a directory (with its children) or
+ * a leaf file. `index` is the file's position in the flat path list the tree
+ * was built from, so selection state stays keyed by that array. */
 export type DiffTreeNode =
   | { kind: "folder"; name: string; path: string; children: DiffTreeNode[] }
   | { kind: "file"; name: string; path: string; index: number };
@@ -196,13 +34,13 @@ function collapseSingleChildChain(name: string, path: string, children: DiffTree
   return { kind: "folder", name: mergedName, path: mergedPath, children: mergedChildren };
 }
 
-/** Group a flat file list into a directory tree for the file rail: folders
+/** Group a flat path list into a directory tree for a file rail: folders
  * sort before files, both alphabetically within their level. */
-export function buildDiffTree(files: DiffFile[]): DiffTreeNode[] {
+export function buildDiffTree(paths: string[]): DiffTreeNode[] {
   const root: BuildingFolder = { name: "", path: "", folders: new Map(), files: [] };
 
-  files.forEach((file, index) => {
-    const segments = file.path.split("/");
+  paths.forEach((filePath, index) => {
+    const segments = filePath.split("/");
     let node = root;
     for (let i = 0; i < segments.length - 1; i++) {
       const seg = segments[i];
@@ -215,7 +53,7 @@ export function buildDiffTree(files: DiffFile[]): DiffTreeNode[] {
       node = child;
     }
     const name = segments[segments.length - 1];
-    node.files.push({ kind: "file", name, path: file.path, index });
+    node.files.push({ kind: "file", name, path: filePath, index });
   });
 
   function finalize(node: BuildingFolder): DiffTreeNode[] {
