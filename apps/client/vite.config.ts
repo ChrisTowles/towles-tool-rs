@@ -29,7 +29,7 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
-    dedupe: ["monaco-editor", ...monacoVscodeDeps],
+    dedupe: ["monaco-editor", "vscode", ...monacoVscodeDeps],
   },
   // monaco-vscode-api relies on `new URL(..., import.meta.url)` inside deps
   // (broken by Vite's dep pre-bundling without this plugin) and ships some
@@ -40,6 +40,9 @@ export default defineConfig({
       "@codingame/monaco-vscode-api/extensions",
       "@codingame/monaco-vscode-api/monaco",
       "monaco-editor",
+      "monaco-languageclient",
+      "vscode-languageclient/browser",
+      "vscode-jsonrpc",
       "vscode-textmate",
       "vscode-oniguruma",
     ],

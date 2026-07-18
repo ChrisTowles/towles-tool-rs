@@ -15,6 +15,7 @@ mod instance_lock;
 mod journal;
 #[cfg(target_os = "linux")]
 mod linux_desktop;
+mod lsp;
 mod mcp;
 mod resources;
 mod scheduler;
@@ -409,6 +410,7 @@ pub fn run() {
             Ok(())
         })
         .manage(terminal::TermState::default())
+        .manage(lsp::Lsp::default())
         .manage(ide::DiffRequests::default())
         .manage(resources::ResourceState::default())
         .manage(claude_sessions::ClaudeSessionsCache::default())
@@ -526,6 +528,10 @@ pub fn run() {
             ide::ide_read_file,
             ide::ide_stat,
             ide::ide_read_dir,
+            lsp::lsp_start,
+            lsp::lsp_send,
+            lsp::lsp_stop,
+            lsp::lsp_stop_all,
             ide::ide_write_file,
             ide::ide_diff_resolve,
             diagnostics::ide_diagnostics_refresh,
