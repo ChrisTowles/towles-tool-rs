@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(frame.pwd.as_deref(), Some("file://host/home/ctowles/code"));
         let next = e.render().expect("render");
         assert!(
-            next.map_or(true, |f| f.pwd.is_none()),
+            next.is_none_or(|f| f.pwd.is_none()),
             "pwd ships only on the frame where it changed"
         );
     }
