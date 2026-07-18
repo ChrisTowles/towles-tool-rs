@@ -57,14 +57,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # crates/tt-dictate links cpal for audio capture, which on Linux builds
-      # on top of alsa-sys (ALSA) and needs the alsa dev headers + pkg-config
-      # file at build time.
-      - name: Install ALSA dev headers (cpal/alsa-sys)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev
-
       # The Rust version + components are pinned by rust-toolchain.toml at the
       # repo root. rustup honors that file for every cargo/rustc invocation, so
       # we provision it explicitly here (installs the channel + rustfmt/clippy)
@@ -222,8 +214,7 @@ jobs:
             curl \
             wget \
             file \
-            libxdo-dev \
-            libasound2-dev
+            libxdo-dev
 
       # Same repo-root rust-toolchain.toml pin as the `rust` job.
       - name: Provision pinned Rust toolchain

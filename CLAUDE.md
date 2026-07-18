@@ -205,10 +205,6 @@ Cargo workspace + npm workspace (`apps/client` only):
     terminals. Needs zig 0.15.x on PATH to build; see
     [`crates/tt-vt/CLAUDE.md`](crates/tt-vt/CLAUDE.md) for the Debug-mode
     parser perf trap and other gotchas.
-  - `tt-dictate` — streaming dictation engine (sherpa-onnx ASR over `cpal` mic
-    capture, ported from the standalone `scribed` daemon). See
-    [`crates/tt-dictate/CLAUDE.md`](crates/tt-dictate/CLAUDE.md) for the `asr`
-    feature gate and threading model.
   - `tt-agentboard` — agentboard watchers/engine: repo list, session tracking,
     needs-you synthesis (consumed by the app shell).
   - `tt-claude-code` — Claude Code transcript/session parsing models.

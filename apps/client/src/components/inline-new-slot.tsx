@@ -6,8 +6,8 @@
 // without awaiting it here) and a `PendingSlotRow` tracks the in-flight
 // create until it resolves, so switching to other repos/sessions while a
 // slot is being created just works.
-import { AlertTriangle, Mic, RefreshCw, Sparkles, Square, Undo2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, RefreshCw, Sparkles, Undo2 } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -35,7 +35,6 @@ import {
   DEFAULT_CLAUDE_MODEL,
   fmtElapsed,
 } from "@/lib/agentboard";
-import { useDictationForElement } from "@/lib/dictation";
 import { BaseBranchesSchema } from "@/lib/schemas/slots";
 import { invokeOrThrow } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -147,8 +146,6 @@ export function InlineNewSlot({
   const [error, setError] = useState<string | null>(null);
   const [branchCheck, setBranchCheck] = useState<BranchCheck | null>(null);
   const [suggesting, setSuggesting] = useState(false);
-  const goalRef = useRef<HTMLTextAreaElement>(null);
-  const dictation = useDictationForElement(goalRef);
   // What the goal/branch fields held right before the last accepted
   // suggestion overwrote them — lets "Undo" put them back exactly.
   const [preSuggest, setPreSuggest] = useState<{ goal: string; branchEdit: string | null } | null>(
@@ -202,7 +199,6 @@ export function InlineNewSlot({
   }, [repo.dir, branch]);
 
   function cancel() {
-    dictation.stop();
     onCancel();
   }
 
@@ -249,7 +245,6 @@ export function InlineNewSlot({
       setError(branchProblem);
       return;
     }
-    dictation.stop();
     onSubmit({ goal: goal.trim(), branch, base, options: { model, effort } });
   }
 
@@ -258,45 +253,21 @@ export function InlineNewSlot({
       <span className="text-[11px] font-medium text-muted-foreground">
         ⬢ New slot — {repo.name}
       </span>
-      <div className="relative">
-        <Textarea
-          ref={goalRef}
-          autoFocus
-          value={goal}
-          onChange={(e) => setGoal(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              submit();
-            }
-            if (e.key === "Escape") cancel();
-          }}
-          placeholder="what should get built in this slot?"
-          rows={2}
-          className="pr-8 text-xs"
-        />
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="absolute top-1 right-1 size-6"
-          disabled={dictation.phase === "loadingModel" || dictation.phase === "stopping"}
-          title={dictation.recording ? "Stop dictation" : "Dictate into this field"}
-          onClick={() => (dictation.recording ? dictation.stop() : dictation.start())}
-        >
-          {dictation.recording ? (
-            <Square className="size-3 fill-current text-red-500" />
-          ) : (
-            <Mic className="size-3" />
-          )}
-        </Button>
-      </div>
-      {dictation.error && <p className="text-[11px] text-red-500">{dictation.error}</p>}
-      {dictation.silentCapture && (
-        <p className="text-[11px] text-amber-600 dark:text-amber-400">
-          Recording, but hearing nothing — check the mic&apos;s input volume and device.
-        </p>
-      )}
+      <Textarea
+        autoFocus
+        value={goal}
+        onChange={(e) => setGoal(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            submit();
+          }
+          if (e.key === "Escape") cancel();
+        }}
+        placeholder="what should get built in this slot?"
+        rows={2}
+        className="text-xs"
+      />
       <div className="flex items-center justify-end gap-2">
         {preSuggest && (
           <Button variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-[10.5px]" onClick={undoSuggest}>
