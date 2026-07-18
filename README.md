@@ -1,6 +1,8 @@
 # Towles Tool (Rust)
 
-A Rust rewrite of [`towles-tool`](https://github.com/ChrisTowles/towles-tool):
+A Rust rewrite of the original `towles-tool`, now archived and renamed to
+[`towles-tool-tmux`](https://github.com/ChrisTowles/towles-tool-tmux) — its
+AgentBoard is kept there as a tmux-based reference example. This repo is
 a [Tauri 2](https://v2.tauri.app/) desktop app paired with the `tt` CLI. The repository
 is built from the [Yaak](https://github.com/mountain-loop/yaak) golden template —
 a Cargo workspace with Tauri-free shared crates, a `clap` CLI, and a React + Vite
