@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import type { Result } from "better-result";
 import type { PrItem } from "./data";
+import type { IpcError } from "./errors";
 import { OpenedSessionSchema } from "./schemas/agentboard";
-import { invokeCmd, invokeOrThrow } from "./tauri";
+import { invoke } from "./tauri";
 
 /**
  * Client-side view of the agentboard bridge (`crates-tauri/tt-app/src/agentboard.rs`).
@@ -10,14 +12,11 @@ import { invokeCmd, invokeOrThrow } from "./tauri";
  * Only the fields the screen renders are typed; the payload carries more.
  */
 
-/** Invoke an `ab_*` Tauri command (thin alias over the shared invoker). */
-export const abInvoke = invokeCmd;
-
 /** Create a GitHub issue directly for the repo checked out at `dir` (`gh`
- * infers the repo from the folder's git remote). Returns the new issue's URL;
- * throws on failure so the caller can surface it (e.g. via toast). */
+ * infers the repo from the folder's git remote). Resolves the new issue's URL,
+ * or the failure for the caller to surface (e.g. via toast). */
 export const abCreateIssue = (dir: string, title: string) =>
-  invokeOrThrow<string>("store_create_issue", { dir, title });
+  invoke<string>("store_create_issue", { dir, title });
 
 /** Outcome of `abSyncRepo` (mirrors the Rust `RepoSyncResult`). `started` is
  * `false` only when a sync for this dir was already in flight — a deduped
@@ -33,11 +32,10 @@ export type RepoSyncResult = {
 /** Force the repo checked out at `dir` to sync its issues + PRs from GitHub
  * right now, bypassing the collector poll cadence — the rail's "Sync now"
  * action, for pulling in updates the poll hasn't picked up yet. Scoped to
- * this one repo; never touches other tracked repos' cached rows. Throws on a
- * Tauri-level failure so the caller can toast it; a collector-level failure
+ * this one repo; never touches other tracked repos' cached rows. A Tauri-level
+ * failure is the `Err` side, for the caller to toast; a collector-level failure
  * (e.g. `gh` auth expired) comes back as `ok: false` with `message` instead. */
-export const abSyncRepo = (dir: string) =>
-  invokeOrThrow<RepoSyncResult>("store_sync_repo", { dir });
+export const abSyncRepo = (dir: string) => invoke<RepoSyncResult>("store_sync_repo", { dir });
 
 export type AgentStatus = "idle" | "busy" | "complete" | "error" | "waiting" | "interrupted";
 
@@ -501,12 +499,15 @@ export function changedFolderDirs(a: WireWindowsPayload, b: WireWindowsPayload):
     ...Object.keys(a.activeWindows),
     ...Object.keys(b.activeWindows),
   ]);
-  const sig = (p: WireWindowsPayload, dir: string) =>
-    JSON.stringify([
-      p.windows.filter((win) => win.folderDir === dir),
-      p.activeWindows[dir] ?? null,
-    ]);
-  return [...dirs].filter((d) => sig(a, d) !== sig(b, d));
+  return [...dirs].filter((d) => folderSignature(a, d) !== folderSignature(b, d));
+}
+
+/** One folder's slice of a layout, as a comparable string. */
+function folderSignature(p: WireWindowsPayload, dir: string): string {
+  return JSON.stringify([
+    p.windows.filter((win) => win.folderDir === dir),
+    p.activeWindows[dir] ?? null,
+  ]);
 }
 
 /** Parse a persisted layout into the live shape. Only folder (diff/files)
@@ -1009,7 +1010,6 @@ export function useAgentboardState(): StatePayload {
         return;
       }
 
-      const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
 
       // Every payload is stamped with its compute time (`ts`) — never let an
@@ -1030,12 +1030,8 @@ export function useAgentboardState(): StatePayload {
       }
       unlisten = sub;
 
-      try {
-        const initial = await invoke<StatePayload>("ab_get_state");
-        if (!disposed) accept(initial);
-      } catch {
-        // Bridge not ready — stay on EMPTY.
-      }
+      const initial = await invoke<StatePayload>("ab_get_state");
+      if (initial.isOk() && !disposed) accept(initial.value);
     })();
 
     return () => {
@@ -1081,26 +1077,23 @@ export function statusColor(status: AgentStatus): string {
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Write raw bytes into a session's PTY. False when the PTY isn't running. */
-export async function termWrite(termId: string, data: string): Promise<boolean> {
-  if (!("__TAURI_INTERNALS__" in window)) return false;
-  const { invoke } = await import("@tauri-apps/api/core");
-  try {
-    await invoke("term_write", { termId, data });
-    return true;
-  } catch {
-    return false;
-  }
-}
+/** Write raw bytes into a session's PTY. Fails when the PTY isn't running. */
+export const termWrite = (termId: string, data: string) =>
+  invoke<void>("term_write", { termId, data });
 
 /** Write, retrying while the PTY spawns (a just-mounted terminal takes a beat
- * before `term_start` registers it). Gives up after ~3s. */
-export async function termWriteRetry(termId: string, data: string): Promise<boolean> {
-  for (let i = 0; i < 20; i++) {
-    if (await termWrite(termId, data)) return true;
+ * before `term_start` registers it). Gives up after ~3s, resolving the last
+ * attempt's failure. */
+export async function termWriteRetry(
+  termId: string,
+  data: string,
+): Promise<Result<void, IpcError>> {
+  let last = await termWrite(termId, data);
+  for (let i = 1; i < 20 && last.isErr(); i++) {
     await sleep(150);
+    last = await termWrite(termId, data);
   }
-  return false;
+  return last;
 }
 
 /** Wait for `termId`'s first `terminal://frame` (the shell's first output —
@@ -1216,12 +1209,11 @@ export async function imagesFromDataTransfer(data: DataTransfer | null): Promise
  * A WebKitGTK paste event carries no image data at all — on Linux, Ctrl+V of
  * a screenshot fires `paste` with empty `clipboardData`, so there is nothing
  * in the DOM event to read. `read_clipboard_image` goes to the OS clipboard
- * directly; `null` means it holds no image, which is a normal outcome. */
+ * directly; `null` means it holds no image, which is a normal outcome — as does
+ * a failed read, since there's nothing to attach either way. */
 export async function clipboardImageFromHost(): Promise<PastedImage | null> {
-  const image = await invokeCmd<{ mime: string; dataBase64: string } | null>(
-    "read_clipboard_image",
-    {},
-  );
+  const result = await invoke<{ mime: string; dataBase64: string } | null>("read_clipboard_image");
+  const image = result.unwrapOr(null);
   if (!image) return null;
   return {
     id: `clipboard-${image.dataBase64.length}`,
@@ -1290,9 +1282,9 @@ export type OpenedSession = { folderDir: string; sessionId: string };
 
 /** Resolve a Claude Code session's real `cwd` to an Agentboard repo (adding
  * it to the rail first if it isn't already registered) and open a new
- * session there. Throws on failure so the caller can surface it. */
+ * session there. The failure stays in the `Result` for the caller to surface. */
 export const abOpenSessionForCwd = (cwd: string) =>
-  invokeOrThrow<OpenedSession>("ab_open_session_for_cwd", { cwd }, OpenedSessionSchema);
+  invoke<OpenedSession>("ab_open_session_for_cwd", { cwd }, { schema: OpenedSessionSchema });
 
 /** A cross-screen handoff: "select this folder/session in Agentboard, then
  * type a resume command into it." Agentboard may not be mounted yet when the
@@ -1354,9 +1346,7 @@ export type ResumeCandidate = {
  * and only answers once per launch, so this is safe to call unconditionally on
  * startup and it will not re-prompt on a webview reload.
  */
-export async function resumeCandidates(): Promise<ResumeCandidate[]> {
-  return (await invokeCmd<ResumeCandidate[]>("ab_resume_candidates")) ?? [];
-}
+export const resumeCandidates = () => invoke<ResumeCandidate[]>("ab_resume_candidates");
 
 /**
  * A read-only "reveal this folder/session in Agentboard" handoff — the command

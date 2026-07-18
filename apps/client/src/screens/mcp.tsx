@@ -7,7 +7,8 @@ import { Empty, Panel } from "@/components/store-bits";
 import { cn } from "@/lib/utils";
 import { fmtAge, useStoreSnapshot, type McpCall } from "@/lib/data";
 import { useNow } from "@/lib/now";
-import { invokeCmd } from "@/lib/tauri";
+import { errorMessage } from "@/lib/errors";
+import { invoke } from "@/lib/tauri";
 import { McpToolDocsSchema, type McpToolDoc } from "@/lib/schemas/mcp";
 
 /**
@@ -89,7 +90,9 @@ function useMcpToolDocs(): McpToolDoc[] | null {
   const [tools, setTools] = useState<McpToolDoc[] | null>(null);
 
   useEffect(() => {
-    void invokeCmd<McpToolDoc[]>("mcp_tool_docs", {}, McpToolDocsSchema).then(setTools);
+    void invoke<McpToolDoc[]>("mcp_tool_docs", {}, { schema: McpToolDocsSchema }).then((docs) =>
+      setTools(docs.unwrapOr(null)),
+    );
   }, []);
 
   return tools;
@@ -201,7 +204,7 @@ function SetupStep({
       await navigator.clipboard.writeText(command);
       toast.success("Copied");
     } catch (e) {
-      toast.error(String(e));
+      toast.error(errorMessage(e));
     }
   }
 

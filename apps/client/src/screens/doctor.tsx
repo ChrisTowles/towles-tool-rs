@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DoctorReportSchema } from "@/lib/schemas/doctor";
-import { invokeCmd } from "@/lib/tauri";
+import { invoke } from "@/lib/tauri";
 import { useAsyncRefresh } from "@/lib/use-async-refresh";
 import { Empty, Panel } from "@/components/store-bits";
 
@@ -51,7 +51,8 @@ export function DoctorScreen() {
 
   const refresh = useAsyncRefresh(async () => {
     setRunning(true);
-    setReport(await invokeCmd<DoctorReport>("doctor_run", {}, DoctorReportSchema));
+    const run = await invoke<DoctorReport>("doctor_run", {}, { schema: DoctorReportSchema });
+    setReport(run.unwrapOr(null));
     setRunning(false);
   }, []);
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { UserSettingsSchema } from "./schemas/settings";
-import { invokeCmd, invokeOrThrow } from "./tauri";
+import { invoke } from "./tauri";
 
 /**
  * Client-side view of the shared user settings (`crates/tt-config`), read/written
@@ -101,6 +101,28 @@ export type SaveState = "idle" | "saving" | "saved" | "error";
 export const SETTINGS_SAVED_EVENT = "tt:settings-saved";
 
 /**
+ * Read the shared settings file, validated against {@link UserSettingsSchema}.
+ * `null` in browser dev or when the read fails — every consumer here falls back
+ * to a built-in default rather than surfacing the failure, so the distinction
+ * isn't worth propagating. Shared by the settings screen, terminal prefs, and
+ * the shortcuts registry, which all read the same file on the same triggers.
+ */
+export async function loadUserSettings(): Promise<UserSettings | null> {
+  const result = await invoke<UserSettings>("settings_get", {}, { schema: UserSettingsSchema });
+  return result.unwrapOr(null);
+}
+
+/**
+ * Persist the whole settings object and notify in-app listeners. Callers pass
+ * the full object (not a patch) so the TS CLI's unknown keys survive the save.
+ */
+export async function saveUserSettings(settings: UserSettings): Promise<boolean> {
+  const saved = await invoke("settings_set", { settings });
+  if (saved.isOk()) window.dispatchEvent(new Event(SETTINGS_SAVED_EVENT));
+  return saved.isOk();
+}
+
+/**
  * Load the settings once, edit a local draft, and persist it. `update` takes an
  * immutable updater so nested edits stay simple; `save` writes the whole draft
  * (the backend merge preserves unknown keys). `settings` is `null` until loaded
@@ -113,7 +135,7 @@ export function useUserSettings() {
 
   useEffect(() => {
     let alive = true;
-    void invokeCmd<UserSettings>("settings_get", {}, UserSettingsSchema).then((s) => {
+    void loadUserSettings().then((s) => {
       if (alive) {
         setSettings(s);
         setLoaded(true);
@@ -132,13 +154,7 @@ export function useUserSettings() {
   const save = useCallback(async () => {
     if (!settings) return;
     setSaveState("saving");
-    try {
-      await invokeOrThrow("settings_set", { settings });
-      setSaveState("saved");
-      window.dispatchEvent(new Event(SETTINGS_SAVED_EVENT));
-    } catch {
-      setSaveState("error");
-    }
+    setSaveState((await saveUserSettings(settings)) ? "saved" : "error");
   }, [settings]);
 
   return { settings, loaded, saveState, update, save };

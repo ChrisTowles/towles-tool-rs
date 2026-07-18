@@ -3,11 +3,12 @@
 // `node --test scripts/` (built-in runner, no extra deps).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 
+import { DevPortInvalid, DevPortUnset, EnvFileUnreadable } from "./errors.mjs";
 import {
   loadEnvFiles,
   resolveDevPort,
@@ -19,7 +20,12 @@ import {
 
 // Run `fn` with `process.env` restored afterwards, so env-reading functions
 // (resolveDevPort/resolveWebdriverPort) don't leak state between tests.
+/**
+ * @param {string[]} keys
+ * @param {() => void} fn
+ */
 function withCleanEnv(keys, fn) {
+  /** @type {Record<string, string | undefined>} */
   const saved = {};
   for (const key of keys) saved[key] = process.env[key];
   for (const key of keys) delete process.env[key];
@@ -34,6 +40,7 @@ function withCleanEnv(keys, fn) {
 }
 
 // Make a throwaway repo root, optionally seeding its `.env.local`.
+/** @param {string} [envLocal] */
 function makeRepoRoot(envLocal) {
   const root = mkdtempSync(join(tmpdir(), "slot-port-test-"));
   if (envLocal !== undefined) writeFileSync(join(root, ".env.local"), envLocal);
@@ -49,11 +56,13 @@ test("slotEnvName maps any other checkout to primary", () => {
   assert.equal(slotEnvName("/home/x/code/blog/.claude/other/feat-thing"), "primary");
 });
 
-test("resolveDevPort is null with no TT_DEV_PORT anywhere (no derived fallback)", () => {
+test("resolveDevPort errs DevPortUnset with no TT_DEV_PORT anywhere (no derived fallback)", () => {
   withCleanEnv(["TT_DEV_PORT"], () => {
     const root = makeRepoRoot();
     try {
-      assert.equal(resolveDevPort(root), null);
+      const resolved = resolveDevPort(root);
+      assert.ok(resolved.isErr());
+      assert.ok(DevPortUnset.is(resolved.error));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -65,7 +74,7 @@ test("resolveDevPort: shell TT_DEV_PORT wins", () => {
     const root = makeRepoRoot();
     try {
       process.env.TT_DEV_PORT = "5555";
-      assert.equal(resolveDevPort(root), 5555);
+      assert.equal(resolveDevPort(root).unwrap(), 5555);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -76,7 +85,7 @@ test("resolveDevPort: .env.local pins the port when the shell env is unset", () 
   withCleanEnv(["TT_DEV_PORT"], () => {
     const root = makeRepoRoot("TT_DEV_PORT=4321\n");
     try {
-      assert.equal(resolveDevPort(root), 4321);
+      assert.equal(resolveDevPort(root).unwrap(), 4321);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -88,20 +97,25 @@ test("resolveDevPort: shell env wins over .env.local", () => {
     const root = makeRepoRoot("TT_DEV_PORT=4321\n");
     try {
       process.env.TT_DEV_PORT = "6000";
-      assert.equal(resolveDevPort(root), 6000);
+      assert.equal(resolveDevPort(root).unwrap(), 6000);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 });
 
-test("resolveDevPort returns null for an invalid TT_DEV_PORT", () => {
+// The two no-port cases are separate errors because `requireDevPort` recovers
+// from one (render the slot's .env) and not the other.
+test("resolveDevPort errs DevPortInvalid for an unusable TT_DEV_PORT", () => {
   for (const bad of ["0", "-1", "70000", "abc", "12.5"]) {
     withCleanEnv(["TT_DEV_PORT"], () => {
       const root = makeRepoRoot();
       try {
         process.env.TT_DEV_PORT = bad;
-        assert.equal(resolveDevPort(root), null, `${bad} should be invalid`);
+        const resolved = resolveDevPort(root);
+        assert.ok(resolved.isErr(), `${bad} should be invalid`);
+        assert.ok(DevPortInvalid.is(resolved.error), `${bad} should be DevPortInvalid`);
+        assert.equal(resolved.error.value, bad);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -109,12 +123,14 @@ test("resolveDevPort returns null for an invalid TT_DEV_PORT", () => {
   }
 });
 
-test("resolveDevPort treats an empty TT_DEV_PORT as unset", () => {
+test("resolveDevPort treats an empty TT_DEV_PORT as unset, not invalid", () => {
   withCleanEnv(["TT_DEV_PORT"], () => {
     const root = makeRepoRoot();
     try {
       process.env.TT_DEV_PORT = "";
-      assert.equal(resolveDevPort(root), null);
+      const resolved = resolveDevPort(root);
+      assert.ok(resolved.isErr());
+      assert.ok(DevPortUnset.is(resolved.error));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -152,8 +168,30 @@ test("loadEnvFiles is a no-op when .env.local is missing", () => {
   withCleanEnv(["TT_ABSENT"], () => {
     const root = makeRepoRoot();
     try {
-      assert.doesNotThrow(() => loadEnvFiles(root));
+      assert.ok(loadEnvFiles(root).isOk(), "an absent file is not a failure");
       assert.equal(process.env.TT_ABSENT, undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// A directory where `.env.local` should be is the portable way to make the
+// read fail with something other than ENOENT.
+test("loadEnvFiles errs EnvFileUnreadable when a file exists but can't be read", () => {
+  withCleanEnv(["TT_DEV_PORT"], () => {
+    const root = makeRepoRoot();
+    mkdirSync(join(root, ".env.local"));
+    try {
+      const loaded = loadEnvFiles(root);
+      assert.ok(loaded.isErr());
+      assert.ok(EnvFileUnreadable.is(loaded.error));
+      assert.equal(loaded.error.path, join(root, ".env.local"));
+
+      // …and resolveDevPort surfaces it instead of reporting "no port set".
+      const resolved = resolveDevPort(root);
+      assert.ok(resolved.isErr());
+      assert.ok(EnvFileUnreadable.is(resolved.error));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -180,7 +218,7 @@ test("resolveDevPort: rendered .env pins the port when .env.local is absent", ()
     const root = makeRepoRoot();
     writeFileSync(join(root, ".env"), "TT_DEV_PORT=1505\n");
     try {
-      assert.equal(resolveDevPort(root), 1505);
+      assert.equal(resolveDevPort(root).unwrap(), 1505);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -192,7 +230,7 @@ test("resolveDevPort: .env.local pin beats the rendered .env claim", () => {
     const root = makeRepoRoot("TT_DEV_PORT=4321\n");
     writeFileSync(join(root, ".env"), "TT_DEV_PORT=1505\n");
     try {
-      assert.equal(resolveDevPort(root), 4321);
+      assert.equal(resolveDevPort(root).unwrap(), 4321);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -221,8 +259,11 @@ async function findEphemeralFreePort() {
     const server = createServer();
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        return reject(new Error("expected a TCP address"));
+      }
+      server.close(() => resolve(address.port));
     });
   });
 }

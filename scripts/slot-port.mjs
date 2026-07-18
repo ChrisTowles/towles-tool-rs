@@ -13,6 +13,25 @@ import { basename, dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:net";
+import { Result } from "better-result";
+import { DevPortInvalid, DevPortUnset, EnvFileUnreadable, SlotEnvRenderFailed } from "./errors.mjs";
+
+/**
+ * Read an env file's contents, distinguishing "not there" (`null` — the normal
+ * case for a checkout with no `.env.local`) from "there but unreadable", which
+ * is a real misconfiguration a caller should not silently skip past.
+ *
+ * @param {string} path
+ * @returns {Result<string | null, EnvFileUnreadable>}
+ */
+function readEnvFile(path) {
+  try {
+    return Result.ok(readFileSync(path, "utf8"));
+  } catch (e) {
+    if (/** @type {NodeJS.ErrnoException} */ (e)?.code === "ENOENT") return Result.ok(null);
+    return Result.err(new EnvFileUnreadable({ path, cause: e }));
+  }
+}
 
 /**
  * Load `.env.local` then `.env` (at `repoRoot`) into `process.env` so per-slot
@@ -20,21 +39,23 @@ import { createServer } from "node:net";
  * Precedence: real env vars > `.env.local` (manual pin) > `.env` (rendered by
  * `tt slot new`/`env` with the slot's port claims) — standard dotenv
  * layering, so a hand pin always beats the tool-rendered claim. Missing files
- * are a no-op.
+ * are a no-op; an unreadable one is an {@link EnvFileUnreadable}.
+ *
+ * @param {string} repoRoot
+ * @returns {Result<void, EnvFileUnreadable>}
  */
 export function loadEnvFiles(repoRoot) {
   for (const file of [".env.local", ".env"]) {
-    let raw;
-    try {
-      raw = readFileSync(join(repoRoot, file), "utf8");
-    } catch {
-      continue;
-    }
+    const read = readEnvFile(join(repoRoot, file));
+    if (read.isErr()) return Result.err(read.error);
+    const raw = read.value;
+    if (raw === null) continue;
     for (const line of raw.split("\n")) {
       const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
       if (!match) continue;
       const key = match[1];
       let value = match[2];
+      if (key === undefined || value === undefined) continue;
       if (
         (value.startsWith('"') && value.endsWith('"')) ||
         (value.startsWith("'") && value.endsWith("'"))
@@ -44,26 +65,39 @@ export function loadEnvFiles(repoRoot) {
       if (!(key in process.env)) process.env[key] = value;
     }
   }
+  return Result.ok(undefined);
 }
 
 /**
  * Resolve the dev-server port after loading the env files: `TT_DEV_PORT`
  * from shell env, `.env.local`, or the rendered `.env` (that precedence).
- * Returns `null` when it's unset or invalid — use `requireDevPort` in
- * launchers to turn that into a render-or-die.
+ *
+ * The two ways to have no port are separate errors because callers act on
+ * them differently: {@link DevPortUnset} is what a fresh checkout looks like
+ * and `requireDevPort` recovers from it by rendering the slot's `.env`, while
+ * {@link DevPortInvalid} is a typo only the user can fix.
+ *
+ * @param {string} repoRoot
+ * @returns {Result<number, DevPortUnset | DevPortInvalid | EnvFileUnreadable>}
  */
 export function resolveDevPort(repoRoot) {
-  loadEnvFiles(repoRoot);
+  const loaded = loadEnvFiles(repoRoot);
+  if (loaded.isErr()) return Result.err(loaded.error);
   const override = process.env.TT_DEV_PORT;
-  if (override === undefined || override === "") return null;
+  if (override === undefined || override === "") return Result.err(new DevPortUnset());
   const port = Number(override);
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
-  return port;
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    return Result.err(new DevPortInvalid({ value: override }));
+  }
+  return Result.ok(port);
 }
 
 /**
  * The `tt slot env` name for this checkout: the slot's dir name when it sits
  * at `<main>/.claude/worktrees/<name>`, else `primary` (the main checkout).
+ *
+ * @param {string} repoRoot
+ * @returns {string}
  */
 export function slotEnvName(repoRoot) {
   const worktrees = dirname(repoRoot);
@@ -74,39 +108,64 @@ export function slotEnvName(repoRoot) {
 }
 
 /**
+ * Run `tt slot env <name>` in `repoRoot` to claim this checkout's ports and
+ * render its `.env`.
+ *
+ * @param {string} repoRoot
+ * @param {string} name
+ * @returns {Result<void, SlotEnvRenderFailed>}
+ */
+function renderSlotEnv(repoRoot, name) {
+  return Result.try({
+    try: () => {
+      execFileSync("tt", ["slot", "env", name], { cwd: repoRoot, stdio: "inherit" });
+    },
+    catch: (e) => new SlotEnvRenderFailed({ name, cause: e }),
+  });
+}
+
+/**
  * Resolve the dev port or die trying. Invalid `TT_DEV_PORT` → error + exit.
  * Unset with `render: true` (launchers: dev/dev:drive) → run
  * `tt slot env <this checkout>` to claim ports, then re-resolve; unset
  * otherwise (or when the render fails) → exit with instructions. The
  * returned port is always an explicit claim or pin, so `killPort` on it is
  * safe — it can only be this checkout's own orphaned session.
+ *
+ * @param {string} repoRoot
+ * @param {{ tag?: string; render?: boolean }} [opts]
+ * @returns {number}
  */
 export function requireDevPort(repoRoot, { tag = "slot-port", render = false } = {}) {
-  let port = resolveDevPort(repoRoot);
-  if (port === null && process.env.TT_DEV_PORT) {
-    console.error(
-      `[${tag}] TT_DEV_PORT=${process.env.TT_DEV_PORT} is not a valid port (1-65535)`,
-    );
-    process.exit(1);
-  }
   const name = slotEnvName(repoRoot);
-  if (port === null && render) {
-    console.log(`[${tag}] no TT_DEV_PORT yet — rendering .env via \`tt slot env ${name}\``);
-    try {
-      execFileSync("tt", ["slot", "env", name], { cwd: repoRoot, stdio: "inherit" });
-    } catch {
-      // `tt` missing or render failed — fall through to the instructions below.
+
+  /** @param {ReturnType<typeof resolveDevPort>} resolved */
+  const die = (resolved) => {
+    if (resolved.isErr() && !DevPortUnset.is(resolved.error)) {
+      console.error(`[${tag}] ${resolved.error.message}`);
+      process.exit(1);
     }
-    port = resolveDevPort(repoRoot);
-  }
-  if (port === null) {
     console.error(
       `[${tag}] no TT_DEV_PORT for this checkout — run \`tt slot env ${name}\` to claim ports, ` +
         `or pin TT_DEV_PORT in .env.local`,
     );
     process.exit(1);
-  }
-  return port;
+  };
+
+  let resolved = resolveDevPort(repoRoot);
+  if (resolved.isOk()) return resolved.value;
+  if (!DevPortUnset.is(resolved.error)) return die(resolved);
+
+  if (!render) return die(resolved);
+
+  console.log(`[${tag}] no TT_DEV_PORT yet — rendering .env via \`tt slot env ${name}\``);
+  const rendered = renderSlotEnv(repoRoot, name);
+  // `tt` missing or the render failed — say so, then fall through to the
+  // instructions below rather than exiting on a recoverable step.
+  if (rendered.isErr()) console.error(`[${tag}] ${rendered.error.message}`);
+
+  resolved = resolveDevPort(repoRoot);
+  return resolved.isOk() ? resolved.value : die(resolved);
 }
 
 /**
@@ -114,6 +173,9 @@ export function requireDevPort(repoRoot, { tag = "slot-port", render = false } =
  * `TT_E2E_WEBDRIVER_PORT` (shell env or an env file) wins, otherwise
  * `devPort + 3000`. Shared so `dev:drive`/`drive`/`e2e` and `wdio.conf.ts`
  * agree on one convention instead of each hardcoding the offset.
+ *
+ * @param {number} devPort
+ * @returns {number}
  */
 export function resolveWebdriverPort(devPort) {
   return Number(process.env.TT_E2E_WEBDRIVER_PORT) || devPort + 3000;
@@ -122,11 +184,18 @@ export function resolveWebdriverPort(devPort) {
 // A port is free only if BOTH loopback stacks are bindable: another slot may
 // hold it on IPv6 (::1) while IPv4 (127.0.0.1) looks open. Only EADDRINUSE
 // counts as "taken"; other errors (e.g. no IPv6) don't.
+/**
+ * @param {number} port
+ * @returns {Promise<boolean>}
+ */
 export function isPortFree(port) {
+  /** @param {string} host @returns {Promise<boolean>} */
   const tryHost = (host) =>
     new Promise((resolve) => {
       const server = createServer();
-      server.once("error", (err) => resolve(err.code !== "EADDRINUSE"));
+      server.once("error", (err) =>
+        resolve(/** @type {NodeJS.ErrnoException} */ (err).code !== "EADDRINUSE"),
+      );
       server.once("listening", () => server.close(() => resolve(true)));
       server.listen(port, host);
     });
@@ -135,6 +204,10 @@ export function isPortFree(port) {
   );
 }
 
+/**
+ * @param {number} port
+ * @returns {string[]}
+ */
 function listeningPids(port) {
   try {
     const out = execFileSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], {
@@ -143,10 +216,17 @@ function listeningPids(port) {
     });
     return [...new Set(out.split("\n").map((s) => s.trim()).filter(Boolean))];
   } catch {
-    return []; // lsof missing, or exits 1 when nothing matches
+    // Not an error worth reporting: lsof exits 1 when nothing matches, which
+    // is the expected answer on a free port, and an lsof-less platform has no
+    // pids to offer either. Both mean "nothing to kill".
+    return [];
   }
 }
 
+/**
+ * @param {string} pid
+ * @returns {string | null}
+ */
 function pgidOf(pid) {
   try {
     return execFileSync("ps", ["-o", "pgid=", "-p", pid], {
@@ -158,6 +238,12 @@ function pgidOf(pid) {
   }
 }
 
+/**
+ * @param {number} port
+ * @param {number} timeoutMs
+ * @param {number} pollMs
+ * @returns {Promise<boolean>}
+ */
 async function waitUntilFree(port, timeoutMs, pollMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -180,13 +266,17 @@ async function waitUntilFree(port, timeoutMs, pollMs) {
  * port, since whatever's listening there may be another slot's legitimate
  * dev server. No-op on Windows (no lsof/ps/POSIX process groups) and when
  * nothing is listening.
+ *
+ * @param {number} port
+ * @returns {Promise<void>}
  */
 export async function killPort(port) {
   if (process.platform === "win32") return;
   const pids = listeningPids(port);
   if (!pids.length) return;
 
-  const pgids = new Set(pids.map(pgidOf).filter(Boolean));
+  /** @type {Set<string>} */
+  const pgids = new Set(pids.map(pgidOf).filter((pgid) => pgid !== null));
   if (!pgids.size) return;
 
   console.log(
@@ -229,6 +319,10 @@ export async function killPort(port) {
  * by itself to the same effect — but the group id is the one thing that's
  * always reliable, even if the wrapper itself is already gone (see
  * e2e/README.md's "stopping a stray dev session").
+ *
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {import("node:child_process").ChildProcess}
  */
 export function spawnTauriDev(args, env) {
   const posix = process.platform !== "win32";
@@ -243,6 +337,7 @@ export function spawnTauriDev(args, env) {
   });
 
   if (posix) {
+    /** @param {NodeJS.Signals} signal */
     const forward = (signal) => {
       if (!child.pid) return;
       try {
@@ -251,7 +346,9 @@ export function spawnTauriDev(args, env) {
         // Already gone.
       }
     };
-    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    /** @type {NodeJS.Signals[]} */
+    const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+    for (const signal of signals) {
       process.on(signal, () => forward(signal));
     }
   }

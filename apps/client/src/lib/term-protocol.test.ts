@@ -163,9 +163,9 @@ describe("graphemeClusters", () => {
   });
 });
 
-describe("isWideRun", () => {
-  const run = (text: string, width: number): Run => ({ x: 0, width, text });
+const run = (text: string, width: number): Run => ({ x: 0, width, text });
 
+describe("isWideRun", () => {
   it("counts grapheme clusters, not codepoints, against the column width", () => {
     // A combining-mark cell has more codepoints than columns but is not wide.
     expect(isWideRun(run("e\u{301}", 1))).toBe(false);

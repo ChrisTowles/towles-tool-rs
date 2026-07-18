@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { ExternalLink, Plus, Search } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NotInTauri, type IpcError } from "@/lib/errors";
 import {
   journalCreate,
   journalList,
@@ -13,6 +15,19 @@ import {
 import { useAsyncRefresh } from "@/lib/use-async-refresh";
 
 const SEARCH_DEBOUNCE_MS = 250;
+
+/** Surface a failed journal command. Silent outside the Tauri shell, where the
+ * list simply renders empty. */
+function reportJournalError(error: IpcError) {
+  if (!NotInTauri.is(error)) toast.error(error.message);
+}
+
+/** Hand an entry to the user's preferred editor, surfacing a failure (an
+ * unconfigured or missing editor is the common one). */
+async function openInEditor(relativePath: string) {
+  const opened = await journalOpen(relativePath);
+  if (opened.isErr()) reportJournalError(opened.error);
+}
 
 type SearchGroup = { relativePath: string; matches: SearchMatch[] };
 
@@ -57,7 +72,13 @@ export function JournalEntryList({
 
   const refresh = useAsyncRefresh(async () => {
     setLoading(true);
-    setEntries((await journalList({ ty })) ?? []);
+    (await journalList({ ty })).match({
+      ok: setEntries,
+      err: (e) => {
+        setEntries([]);
+        reportJournalError(e);
+      },
+    });
     setLoading(false);
   }, [ty]);
 
@@ -73,7 +94,13 @@ export function JournalEntryList({
     const handle = setTimeout(() => {
       void journalSearch({ query: trimmed, ty }).then((matches) => {
         if (cancelled) return;
-        setSearchGroups(groupByFile(matches ?? []));
+        matches.match({
+          ok: (found) => setSearchGroups(groupByFile(found)),
+          err: (e) => {
+            setSearchGroups([]);
+            reportJournalError(e);
+          },
+        });
         setSearching(false);
       });
     }, SEARCH_DEBOUNCE_MS);
@@ -87,11 +114,13 @@ export function JournalEntryList({
     const entryTitle = draft.trim();
     if (!entryTitle) return;
     setDraft("");
-    const path = await journalCreate(ty, entryTitle);
-    if (path) {
-      void refresh();
-      void journalOpen(path);
-    }
+    (await journalCreate(ty, entryTitle)).match({
+      ok: (path) => {
+        void refresh();
+        void openInEditor(path);
+      },
+      err: reportJournalError,
+    });
   }
 
   return (
@@ -140,7 +169,7 @@ export function JournalEntryList({
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => void journalOpen(g.relativePath)}
+                    onClick={() => void openInEditor(g.relativePath)}
                   >
                     <ExternalLink className="size-3.5" />
                   </Button>
@@ -172,7 +201,7 @@ export function JournalEntryList({
                   {e.date ?? "-"} · {e.sizeLabel}
                 </p>
               </div>
-              <Button variant="ghost" size="sm" onClick={() => void journalOpen(e.relativePath)}>
+              <Button variant="ghost" size="sm" onClick={() => void openInEditor(e.relativePath)}>
                 <ExternalLink className="size-3.5" />
               </Button>
             </div>

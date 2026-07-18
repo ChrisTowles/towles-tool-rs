@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import type { Result } from "better-result";
 import { SlackDmViewSchema, SlackFileDataSchema } from "./schemas/slack";
-import { invokeOrThrow, isTauri } from "./tauri";
+import { errorMessage, type IpcError } from "./errors";
+import { invoke, isTauri } from "./tauri";
 
 /**
  * Client-side view of the watched Slack DM conversation, served on demand by
@@ -150,15 +152,15 @@ export function useSlackDm(): {
       setLoading(false);
       return;
     }
-    try {
-      const next = await invokeOrThrow<SlackDmView>("slack_dm_history", {}, SlackDmViewSchema);
-      setView(next);
-      setError(null);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
+    const loaded = await invoke<SlackDmView>("slack_dm_history", {}, { schema: SlackDmViewSchema });
+    loaded.match({
+      ok: (next) => {
+        setView(next);
+        setError(null);
+      },
+      err: (e) => setError(errorMessage(e)),
+    });
+    setLoading(false);
   }, []);
 
   const refresh = useCallback(() => {
@@ -191,23 +193,22 @@ export function useSlackDm(): {
 }
 
 /**
- * Send `text` to the watched DM as me. Resolves on success; rejects with the
- * Slack error string on failure (see {@link isScopeError}). The command
- * refreshes the store snapshot on its side, which nudges {@link useSlackDm} to
- * refetch the thread.
+ * Send `text` to the watched DM as me. The `Err` carries the Slack error string
+ * in its message (see {@link isScopeError}). The command refreshes the store
+ * snapshot on its side, which nudges {@link useSlackDm} to refetch the thread.
  */
-export async function slackDmSend(text: string): Promise<void> {
-  await invokeOrThrow<void>("slack_dm_send", { text });
+export function slackDmSend(text: string): Promise<Result<void, IpcError>> {
+  return invoke<void>("slack_dm_send", { text });
 }
 
 /**
  * Fetch a Slack file's bytes (base64) with the token's bearer header — the
  * webview can't load `url_private` directly. Pass a {@link DmFile}'s `thumbUrl`
- * (images) or `urlPrivate`. Rejects with a scope error (see
+ * (images) or `urlPrivate`. Fails with a scope error (see
  * {@link isFileScopeError}) when the token lacks `files:read`.
  */
-export async function slackDmFile(url: string): Promise<SlackFileData> {
-  return invokeOrThrow<SlackFileData>("slack_dm_file", { url }, SlackFileDataSchema);
+export function slackDmFile(url: string): Promise<Result<SlackFileData, IpcError>> {
+  return invoke<SlackFileData>("slack_dm_file", { url }, { schema: SlackFileDataSchema });
 }
 
 /** A workspace member for the Settings watch-user picker (mirrors `SlackUser`). */
@@ -218,10 +219,10 @@ export type SlackUser = {
 
 /**
  * List human workspace members (`users.list`, `users:read` scope) for the
- * watch-user picker. Returns [] when the token is blank so the picker can
- * degrade to a plain text input. Only meaningful in the Tauri shell.
+ * watch-user picker. Resolves an empty list when the token is blank, so the
+ * picker can degrade to a plain text input. Only meaningful in the Tauri shell
+ * — outside it the call fails with `NotInTauri`.
  */
-export async function slackListUsers(): Promise<SlackUser[]> {
-  if (!isTauri()) return [];
-  return invokeOrThrow<SlackUser[]>("slack_list_users");
+export function slackListUsers(): Promise<Result<SlackUser[], IpcError>> {
+  return invoke<SlackUser[]>("slack_list_users");
 }

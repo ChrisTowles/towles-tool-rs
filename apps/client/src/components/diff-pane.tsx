@@ -4,11 +4,12 @@ import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
 import { MonacoMultiDiff, type ChangedFile } from "@/components/diff-monaco";
 import { ClaudeBadge, IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
 import { Checkbox } from "@/components/ui/checkbox";
-import { abInvoke, type FolderData } from "@/lib/agentboard";
+import type { FolderData } from "@/lib/agentboard";
 import { buildDiffTree, type DiffTreeNode } from "@/lib/diff";
 import { ideReadFile, useIdeConnected } from "@/lib/ide";
-import { invokeOk, isTauri } from "@/lib/tauri";
+import { invoke, isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 /** Which baseline the pane diffs against (mirrors `DiffMode` in tt-agentboard). */
 type DiffMode = "main" | "uncommitted";
@@ -174,14 +175,11 @@ export function DiffPane({
         if (e.payload.dir !== dir) return;
         const raw = e.payload.oldFilePath;
         const rel = raw.startsWith(`${dir}/`) ? raw.slice(dir.length + 1) : raw;
-        void ideReadFile(dir, rel)
-          .then((read) => {
-            setReviews((prev) => [...prev, { ...e.payload, originalContent: read?.content ?? "" }]);
-          })
-          .catch(() => {
-            // Unreadable old file (new file, binary) — review against empty.
-            setReviews((prev) => [...prev, { ...e.payload, originalContent: "" }]);
-          });
+        void ideReadFile(dir, rel).then((read) => {
+          // An unreadable old file (new file, binary) reviews against empty.
+          const originalContent = read.map((f) => f.content).unwrapOr("");
+          setReviews((prev) => [...prev, { ...e.payload, originalContent }]);
+        });
       });
       const closed = await listen<{ dir: string; tabName: string | null }>(
         "ide://close-diff",
@@ -222,8 +220,8 @@ export function DiffPane({
   const fetchDiff = useCallback(async () => {
     if (!dir) return;
     setRefreshing(true);
-    const list = await abInvoke<ChangedFile[]>("ab_get_diff_files", { dir, mode, baseBranch });
-    setFiles(list ?? []);
+    const list = await invoke<ChangedFile[]>("ab_get_diff_files", { dir, mode, baseBranch });
+    setFiles(list.unwrapOr([]));
     setRefreshing(false);
   }, [dir, mode, baseBranch]);
 
@@ -240,7 +238,13 @@ export function DiffPane({
     if (!dir) return;
     const trimmed = value.trim();
     if (trimmed === (baseBranch ?? "")) return;
-    await abInvoke("ab_set_folder_base_branch", { dir, branch: trimmed || null });
+    const stored = await invoke<void>("ab_set_folder_base_branch", {
+      dir,
+      branch: trimmed || null,
+    });
+    // Silence here reads as success while the pane keeps diffing the old base —
+    // the wrong diff is worse than no diff, so surface it.
+    if (stored.isErr()) toast.error(`Couldn't set base branch — ${stored.error.message}`);
   }
 
   // Shared by the tree rail's checkbox and the Monaco header's checkbox —
@@ -254,11 +258,13 @@ export function DiffPane({
   const toggleStage = useCallback(
     async (path: string, staged: boolean) => {
       if (!dir) return false;
-      const ok = await invokeOk(staged ? "ab_stage_file" : "ab_unstage_file", { dir, path });
-      if (ok) {
-        setFiles((prev) => prev && prev.map((f) => (f.path === path ? { ...f, staged } : f)));
+      const done = await invoke(staged ? "ab_stage_file" : "ab_unstage_file", { dir, path });
+      if (done.isErr()) {
+        toast.error(`Couldn't ${staged ? "stage" : "unstage"} ${path} — ${done.error.message}`);
+        return false;
       }
-      return ok;
+      setFiles((prev) => prev && prev.map((f) => (f.path === path ? { ...f, staged } : f)));
+      return true;
     },
     [dir],
   );

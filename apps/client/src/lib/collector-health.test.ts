@@ -139,14 +139,14 @@ describe("dataRefreshedAt", () => {
   });
 });
 
-describe("worstCollectorState", () => {
-  const h = (state: CollectorState): CollectorHealth => ({
-    key: "prs",
-    label: "Pull requests",
-    state,
-    run: undefined,
-  });
+const h = (state: CollectorState): CollectorHealth => ({
+  key: "prs",
+  label: "Pull requests",
+  state,
+  run: undefined,
+});
 
+describe("worstCollectorState", () => {
   it("is fresh for an empty list (nothing to judge)", () => {
     expect(worstCollectorState([])).toBe("fresh");
   });

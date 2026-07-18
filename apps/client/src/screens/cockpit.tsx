@@ -45,7 +45,8 @@ import { cockpitRepos, filterByRepo } from "@/lib/cockpit-filter";
 import { dataRefreshedAt } from "@/lib/collector-health";
 import { useAgentboardState } from "@/lib/agentboard";
 import { useNow, useNowInterval } from "@/lib/now";
-import { invokeOrThrow } from "@/lib/tauri";
+import { NotInTauri, errorMessage } from "@/lib/errors";
+import { invoke } from "@/lib/tauri";
 import { openExternalUrl } from "@/lib/open-url";
 import { Empty, IssueRow, Panel, PrRow, prNeedsYou, prRank } from "@/components/store-bits";
 
@@ -101,9 +102,11 @@ export function CockpitScreen() {
   async function refresh() {
     refreshBaseline.current = refreshedAt;
     setRefreshing(true);
-    // `false` = overlap (a run was already in flight) or browser dev — nothing
-    // new to wait on, so drop straight back to idle.
-    if (!(await storeCollectNow())) setRefreshing(false);
+    const started = await storeCollectNow();
+    if (started.isErr() && !NotInTauri.is(started.error)) toast.error(started.error.message);
+    // `false` = overlap (a run was already in flight), a failure, or browser dev
+    // — nothing new to wait on, so drop straight back to idle.
+    if (!started.unwrapOr(false)) setRefreshing(false);
   }
 
   // Candidate slot checkouts for an issue: the folders of every tracked repo
@@ -340,6 +343,25 @@ export function CockpitScreen() {
   );
 }
 
+/** Run an issue-dispatch command, reporting either side to the user — the Rust
+ * command re-runs its own guards, so its message is the authoritative result. */
+async function runIssueCommand(cmd: string, args: Record<string, unknown>) {
+  (await invoke<string>(cmd, args)).match({
+    ok: (msg) => toast.success(msg),
+    err: (e) => toast.error(e.message),
+  });
+}
+
+/** Copy text to the clipboard, naming what was copied in the confirmation. */
+async function copyToClipboard(text: string, what: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast.success(`Copied ${what}`);
+  } catch (e) {
+    toast.error(errorMessage(e));
+  }
+}
+
 /**
  * Per-issue action menu for the Cockpit issue queue: open the issue in the
  * browser, or dispatch it into a tracked slot checkout (assign via
@@ -348,15 +370,6 @@ export function CockpitScreen() {
  * command re-runs the clean-tree guard and reports success/failure via toast.
  */
 function IssueActions({ issue, slots }: { issue: IssueItem; slots: SlotTarget[] }) {
-  async function run(cmd: string, args: Record<string, unknown>) {
-    try {
-      const msg = await invokeOrThrow<string>(cmd, args);
-      toast.success(msg);
-    } catch (e) {
-      toast.error(String(e));
-    }
-  }
-
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -380,7 +393,7 @@ function IssueActions({ issue, slots }: { issue: IssueItem; slots: SlotTarget[] 
           label="Assign to slot"
           slots={slots}
           onPick={(slot) =>
-            void run("cockpit_assign_issue", {
+            void runIssueCommand("cockpit_assign_issue", {
               repo: issue.repo,
               number: issue.number,
               slotDir: slot.dir,
@@ -392,7 +405,7 @@ function IssueActions({ issue, slots }: { issue: IssueItem; slots: SlotTarget[] 
           label="Create branch"
           slots={slots}
           onPick={(slot) =>
-            void run("cockpit_create_issue_branch", {
+            void runIssueCommand("cockpit_create_issue_branch", {
               repo: issue.repo,
               number: issue.number,
               title: issue.title,
@@ -412,15 +425,6 @@ function IssueActions({ issue, slots }: { issue: IssueItem; slots: SlotTarget[] 
  * here, never re-rendered or acted on (that happens on GitHub).
  */
 function PrActions({ pr }: { pr: PrItem }) {
-  async function copy(text: string, what: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast.success(`Copied ${what}`);
-    } catch (e) {
-      toast.error(String(e));
-    }
-  }
-
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -443,11 +447,11 @@ function PrActions({ pr }: { pr: PrItem }) {
           Open checks
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => void copy(pr.branch, "branch name")}>
+        <DropdownMenuItem onSelect={() => void copyToClipboard(pr.branch, "branch name")}>
           <GitBranch className="size-4" />
           Copy branch name
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => void copy(pr.url, "PR URL")}>
+        <DropdownMenuItem onSelect={() => void copyToClipboard(pr.url, "PR URL")}>
           <LinkIcon className="size-4" />
           Copy PR URL
         </DropdownMenuItem>

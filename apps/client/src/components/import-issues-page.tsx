@@ -126,9 +126,10 @@ export function ImportIssuesPage({
   // reset between opens).
   useEffect(() => {
     let alive = true;
-    void storeGhTrackedRepos()
-      .then((list) => alive && setRepos(list))
-      .catch(() => alive && setReposFailed(true));
+    void storeGhTrackedRepos().then((result) => {
+      if (!alive) return;
+      result.match({ ok: setRepos, err: () => setReposFailed(true) });
+    });
     return () => {
       alive = false;
     };
@@ -143,9 +144,9 @@ export function ImportIssuesPage({
     setMilestones(null);
     setSelectedMilestone("");
     let alive = true;
-    void storeGhMilestonesList(selectedDir)
-      .then((list) => alive && setMilestones(list))
-      .catch(() => alive && setMilestones([]));
+    void storeGhMilestonesList(selectedDir).then((result) => {
+      if (alive) setMilestones(result.unwrapOr([]));
+    });
     return () => {
       alive = false;
     };
@@ -160,9 +161,12 @@ export function ImportIssuesPage({
     setIssues(null);
     setIssuesFailed(false);
     let alive = true;
-    void storeGhIssuesList(selectedDir, assignedToMe, selectedMilestone || undefined)
-      .then((list) => alive && setIssues(list))
-      .catch(() => alive && setIssuesFailed(true));
+    void storeGhIssuesList(selectedDir, assignedToMe, selectedMilestone || undefined).then(
+      (result) => {
+        if (!alive) return;
+        result.match({ ok: setIssues, err: () => setIssuesFailed(true) });
+      },
+    );
     return () => {
       alive = false;
     };
@@ -175,15 +179,15 @@ export function ImportIssuesPage({
       .map((i) => ({ repo: i.repo, number: i.number, title: i.title, url: i.url }));
     if (items.length === 0) return;
     setImporting(true);
-    try {
-      const count = await storeImportIssues(items);
-      toast.success(`Imported ${count} issue${count === 1 ? "" : "s"}`);
-      onClose();
-    } catch (e) {
-      toast.error(String(e));
-    } finally {
-      setImporting(false);
-    }
+    const imported = await storeImportIssues(items);
+    setImporting(false);
+    imported.match({
+      ok: (count) => {
+        toast.success(`Imported ${count} issue${count === 1 ? "" : "s"}`);
+        onClose();
+      },
+      err: (e) => toast.error(e.message),
+    });
   }
 
   const repoOptions: ComboOption[] = (repos ?? []).map((r) => ({ value: r.dir, label: r.name }));

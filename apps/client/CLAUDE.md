@@ -46,18 +46,47 @@ rather than unmounting, so a screen's local state (e.g. terminal buffers)
 survives tab switches. `closeTab` (`src/lib/workspace.tsx`) is the only
 unmount path, and it refuses to close the last tab.
 
-## `invoke*` wrappers have different failure semantics — pick deliberately
+## IPC failures are values — the call site picks the UX
 
-`src/lib/tauri.ts` exports four, and using the wrong one silently changes
-UX:
+`src/lib/tauri.ts` exports one `invoke`, returning
+`Result<T, IpcError>` ([better-result](https://better-result.dev)). It
+**never throws and never rejects**: no Tauri host, a rejected command, a Zod
+schema mismatch, and a timeout all come back as typed `Err`s
+(`src/lib/errors.ts` — `NotInTauri`, `IpcFailed`, `SchemaMismatch`,
+`IpcTimeout`).
 
-- `invokeCmd` — degrades to `null` (optional Zod validation).
-- `invokeOrThrow` — propagates the error (optional timeout).
-- `invokeToast` — degrades to `null` + shows an error toast.
-- `invokeOk` — returns `boolean`, toasts on both browser-dev *and* failure.
+That is deliberate. There used to be four wrappers, each hardcoding one
+failure UX, and picking the wrong one silently changed behavior — the two
+that degraded to `null`/`false` made a real backend error indistinguishable
+from "not wired in browser". Now each call site states its own intent:
 
-Using `invokeOk` for a read, for example, hides a real error as "not wired
-in browser."
+```ts
+const repos = (await invoke<Repo[]>("list_repos")).unwrapOr([]);      // degrade
+if ((await storeDeleteTask(id)).isErr()) revertOptimisticDelete();     // branch
+result.match({ ok: setView, err: (e) => {                             // report
+  if (!NotInTauri.is(e)) toast.error(e.message);                      // …but not in browser dev
+} });
+```
+
+Three rules that follow from this:
+
+- **Browser dev is `NotInTauri`, not a failure.** Test for it with
+  `NotInTauri.is(e)` — never `e._tag === "…"`, which oxlint rejects.
+- **Fire-and-forget is safe by construction.** An ignored `Result` can't
+  produce an unhandled rejection, so `void invoke(…)` needs no `.catch`.
+  The hot PTY-write path in `components/terminal-view.tsx` relies on this.
+  A `.catch` on an `invoke` is dead code.
+- **Use `errorMessage(e)` (`src/lib/errors.ts`), not `String(e)`**, for
+  display. Tauri rejects with a bare string, which `String()` renders as
+  `"[object Object]"`.
+
+Two boundaries deliberately keep a *throwing* contract because a foreign
+interface demands it: `lib/monaco-fs.ts` (monaco's `IFileSystemProvider`
+expects thrown `FileSystemProviderError`s) and `lib/lsp.ts` (vscode-jsonrpc
+requires a rejecting `write`). Translate `Err` → throw at those edges only.
+
+`.claude/hooks/guard-better-result.sh` flags drift back to the old shapes
+on every edit.
 
 ## Mock-data fallback is colocated per-module, not a single file
 
@@ -104,9 +133,10 @@ Anything that writes to a PTY must therefore `selectSession(folderDir, id)`
 first and then `await waitForFirstFrame(id)`. `termWriteRetry` alone is not
 enough — it only covers the few hundred ms before `term_start` registers the
 id, not the case where the pane was never mounted at all. **A write to an
-unmounted pane resolves `false` silently**, which surfaces as an action that
-appeared to work and did nothing (worse when an optimistic overlay then
-reports a state change that never happened).
+unmounted pane resolves `Err`** (`term_write` is `Result<(), String>` in
+Rust), and an unchecked one surfaces as an action that appeared to work and
+did nothing — worse when an optimistic overlay then reports a state change
+that never happened. Check it: `if ((await termWrite(id, data)).isErr())`.
 
 This is why every lifecycle action in `SessionActions` takes `folderDir`,
 including `stopClaude`/`compactClaude` — their triggers (rail kebab, cache

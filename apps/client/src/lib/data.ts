@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { invokeOk, invokeOrThrow, invokeToast, isTauri } from "./tauri";
+import type { Result } from "better-result";
+import type { IpcError } from "./errors";
+import { invoke, isTauri } from "./tauri";
 
 /**
  * Client-side view of the personal-HQ store (the Rust `tt-store` crate, surfaced
@@ -350,7 +352,6 @@ export function useStoreSnapshot(): { snapshot: StoreSnapshot; live: boolean } {
 
     void (async () => {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const { listen } = await import("@tauri-apps/api/event");
 
         const sub = await listen<StoreSnapshot>("store://snapshot", (e) => {
@@ -363,14 +364,15 @@ export function useStoreSnapshot(): { snapshot: StoreSnapshot; live: boolean } {
           return;
         }
         unlisten = sub;
-
-        const initial = await invoke<StoreSnapshot>("store_snapshot");
-        if (!disposed && !eventArrived) {
-          setSnapshot(initial);
-          setLive(true);
-        }
       } catch {
-        // Not under Tauri / store not ready — stay on the empty snapshot.
+        // Event bridge not ready — stay on the empty snapshot.
+        return;
+      }
+
+      const initial = await invoke<StoreSnapshot>("store_snapshot");
+      if (initial.isOk() && !disposed && !eventArrived) {
+        setSnapshot(initial.value);
+        setLive(true);
       }
     })();
 
@@ -469,13 +471,8 @@ export function useAppSlot(): string | null {
     if (!isTauri()) return;
     let active = true;
     void (async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const s = await invoke<string>("app_slot");
-        if (active) setSlot(s);
-      } catch {
-        /* leave null — badge stays hidden */
-      }
+      const s = await invoke<string>("app_slot");
+      if (active) setSlot(s.unwrapOr(null));
     })();
     return () => {
       active = false;
@@ -484,42 +481,47 @@ export function useAppSlot(): string | null {
   return slot;
 }
 
+/** Create a todo in Backlog. */
 export const storeAddTask = (text: string, dueTs?: number, repo?: string) =>
-  invokeOk("store_add_task", { text, dueTs, repo });
+  invoke<void>("store_add_task", { text, dueTs, repo });
 
+/** Move a todo to another kanban column (appended at the end of it). */
 export const storeSetTaskStatus = (id: number, status: TaskStatus) =>
-  invokeOk("store_set_task_status", { id, status });
+  invoke<void>("store_set_task_status", { id, status });
 
 /** Move a todo to `status` at slot `index` within that column (drag-to-reorder). */
 export const storeSetTaskPosition = (id: number, status: TaskStatus, index: number) =>
-  invokeOk("store_set_task_position", { id, status, index });
+  invoke<void>("store_set_task_position", { id, status, index });
 
+/** Overwrite a todo's editable fields. */
 export const storeUpdateTask = (id: number, text: string, notes?: string, dueTs?: number) =>
-  invokeOk("store_update_task", { id, text, notes, dueTs });
+  invoke<void>("store_update_task", { id, text, notes, dueTs });
 
-export const storeDeleteTask = (id: number) => invokeOk("store_delete_task", { id });
+/** Delete a todo outright. */
+export const storeDeleteTask = (id: number) => invoke<void>("store_delete_task", { id });
 
 /** Sweep Done todos older than the backend's retention window (default 7 days). */
-export const storeClearDone = () => invokeOk("store_clear_done");
+export const storeClearDone = () => invoke<void>("store_clear_done");
 
+/** Open a GitHub issue in `repo` for an existing todo and link the two. */
 export const storePromoteTaskToIssue = (id: number, repo: string) =>
-  invokeOk("store_promote_task_to_issue", { id, repo });
+  invoke<void>("store_promote_task_to_issue", { id, repo });
 
 /** One Agentboard-tracked repo, resolved to its GitHub `owner/name`. */
 export type GhRepoOption = { dir: string; name: string };
 
 /** Tracked repos resolved to their GitHub identity, for the "Import from
- * GitHub" dialog's repo picker. Throws (rather than degrading to `null`) so
- * the dialog can show a real error state instead of an empty list. */
-export const storeGhTrackedRepos = () => invokeOrThrow<GhRepoOption[]>("store_gh_tracked_repos");
+ * GitHub" dialog's repo picker. The failure stays in the `Result` (rather than
+ * degrading to an empty list) so the dialog can show a real error state. */
+export const storeGhTrackedRepos = () => invoke<GhRepoOption[]>("store_gh_tracked_repos");
 
 /** Open issues in `dir`'s repo, for the import dialog's issue picker. */
 export const storeGhIssuesList = (dir: string, assignedToMe: boolean, milestone?: string) =>
-  invokeOrThrow<IssueItem[]>("store_gh_issues_list", { dir, assignedToMe, milestone });
+  invoke<IssueItem[]>("store_gh_issues_list", { dir, assignedToMe, milestone });
 
 /** Open milestone titles in `dir`'s repo, for the import dialog's filter. */
 export const storeGhMilestonesList = (dir: string) =>
-  invokeOrThrow<string[]>("store_gh_milestones_list", { dir });
+  invoke<string[]>("store_gh_milestones_list", { dir });
 
 /** One issue selected in the import dialog. */
 export type ImportIssueInput = { repo: string; number: number; title: string; url: string };
@@ -528,21 +530,26 @@ export type ImportIssueInput = { repo: string; number: number; title: string; ur
  * Resolves to how many todos were created (issues already linked are
  * skipped). */
 export const storeImportIssues = (items: ImportIssueInput[]) =>
-  invokeOrThrow<number>("store_import_issues", { items });
+  invoke<number>("store_import_issues", { items });
 
+/** Mark a watched Slack DM handled up to `ts`, clearing its banner. */
 export const storeDmDismiss = (channel: string, ts: number) =>
-  invokeOk("store_dm_dismiss", { channel, ts });
+  invoke<void>("store_dm_dismiss", { channel, ts });
 
-export const journalLog = (text: string) => invokeOk("journal_log", { text });
+/** Append a line to today's journal note. */
+export const journalLog = (text: string) => invoke<void>("journal_log", { text });
 
 /**
  * Force the issues, PRs, and (when configured) Slack collectors to run right
  * now, bypassing the scheduler cadence — calendar is intentionally excluded
- * (it spends claude tokens). Resolves `true` when this call kicked off a
- * refresh, `false` when one was already in flight (overlap-guarded no-op) or in
- * browser dev. The store snapshot re-emits from Rust when the run finishes.
+ * (it spends claude tokens). The store snapshot re-emits from Rust when the run
+ * finishes.
+ *
+ * The `boolean` is a domain answer, not a success flag: `true` when this call
+ * kicked off a refresh, `false` when one was already in flight (an
+ * overlap-guarded no-op). A failed or unavailable command is the `Err` side.
  */
-export async function storeCollectNow(): Promise<boolean> {
-  const result = await invokeToast<{ started: boolean }>("store_collect_now");
-  return result?.started ?? false;
+export async function storeCollectNow(): Promise<Result<boolean, IpcError>> {
+  const result = await invoke<{ started: boolean }>("store_collect_now");
+  return result.map((r) => r.started);
 }

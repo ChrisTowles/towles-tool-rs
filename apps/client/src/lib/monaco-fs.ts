@@ -37,7 +37,8 @@ import {
 import { Emitter, Event } from "@codingame/monaco-vscode-api/vscode/vs/base/common/event";
 import type { URI } from "@codingame/monaco-vscode-api/vscode/vs/base/common/uri";
 import { Disposable } from "@codingame/monaco-vscode-api/vscode/vs/base/common/lifecycle";
-import { invokeOrThrow } from "@/lib/tauri";
+import { invoke } from "@/lib/tauri";
+import { errorMessage } from "@/lib/errors";
 
 type FsStat = { isDir: boolean; size: number; mtimeMs: number };
 type FsDirEntry = { name: string; isDir: boolean };
@@ -95,11 +96,8 @@ class TauriFileSystemProvider
    * "missing" from "present" to honor its options, and an exception is the
    * wrong shape for a question. */
   private async statOrNull(filePath: string): Promise<FsStat | null> {
-    try {
-      return await invokeOrThrow<FsStat>("ide_stat", { dir: "/", filePath });
-    } catch {
-      return null;
-    }
+    const stat = await invoke<FsStat>("ide_stat", { dir: "/", filePath });
+    return stat.unwrapOr(null);
   }
 
   async stat(resource: URI): Promise<IStat> {
@@ -114,28 +112,21 @@ class TauriFileSystemProvider
   }
 
   async readdir(resource: URI): Promise<[string, FileType][]> {
-    let entries: FsDirEntry[];
-    try {
-      entries = await invokeOrThrow<FsDirEntry[]>("ide_read_dir", {
-        dir: "/",
-        filePath: resource.path.slice(1),
-      });
-    } catch {
-      throw notFound();
-    }
-    return entries.map((e) => [e.name, e.isDir ? FileType.Directory : FileType.File]);
+    const entries = await invoke<FsDirEntry[]>("ide_read_dir", {
+      dir: "/",
+      filePath: resource.path.slice(1),
+    });
+    if (entries.isErr()) throw notFound();
+    return entries.value.map((e) => [e.name, e.isDir ? FileType.Directory : FileType.File]);
   }
 
   async readFile(resource: URI): Promise<Uint8Array> {
-    try {
-      const read = await invokeOrThrow<{ content: string }>("ide_read_file", {
-        dir: "/",
-        filePath: resource.path.slice(1),
-      });
-      return new TextEncoder().encode(read.content);
-    } catch {
-      throw notFound();
-    }
+    const read = await invoke<{ content: string }>("ide_read_file", {
+      dir: "/",
+      filePath: resource.path.slice(1),
+    });
+    if (read.isErr()) throw notFound();
+    return new TextEncoder().encode(read.value.content);
   }
 
   /**
@@ -227,10 +218,9 @@ class TauriFileSystemProvider
    * "already exists" or a permission problem has to reach the user rather
    * than collapsing into a generic failure. */
   private async run(cmd: string, args: Record<string, unknown>): Promise<void> {
-    try {
-      await invokeOrThrow(cmd, args);
-    } catch (e) {
-      const message = String(e);
+    const ran = await invoke(cmd, args);
+    if (ran.isErr()) {
+      const message = errorMessage(ran.error);
       throw FileSystemProviderError.create(message, errorCodeFor(message));
     }
   }

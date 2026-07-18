@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ideReadFile } from "@/lib/ide";
+import { NotInTauri } from "@/lib/errors";
 import { monacoLanguageFor } from "@/lib/markdown-code";
 import { loadedMonaco } from "@/lib/monaco";
 
@@ -113,19 +114,12 @@ export function FilePreview({ dir, path, kind }: { dir: string; path: string; ki
     setContent(null);
     setError(null);
     void (async () => {
-      let read: Awaited<ReturnType<typeof ideReadFile>>;
-      try {
-        read = await ideReadFile(dir, path);
-      } catch (e) {
-        if (!disposed) setError(String(e));
-        return;
-      }
+      const read = await ideReadFile(dir, path);
       if (disposed) return;
-      if (read == null) {
-        setError("not available in browser dev");
-        return;
-      }
-      setContent(read.content);
+      read.match({
+        ok: (file) => setContent(file.content),
+        err: (e) => setError(NotInTauri.is(e) ? "not available in browser dev" : e.message),
+      });
     })();
     return () => {
       disposed = true;

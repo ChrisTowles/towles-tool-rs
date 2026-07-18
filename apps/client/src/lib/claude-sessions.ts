@@ -1,4 +1,4 @@
-import { invokeToast } from "@/lib/tauri";
+import { invoke } from "@/lib/tauri";
 
 /**
  * Client-side bridge to the Claude Sessions screen (the Rust
@@ -54,11 +54,13 @@ export type ClaudeSessionsSummary = {
   topSessions: ClaudeSession[];
 };
 
+/** Rolled-up token totals for the last `days` days of transcripts. */
 export const claudeSessionsSummary = (days: number) =>
-  invokeToast<ClaudeSessionsSummary>("claude_sessions_summary", { days });
+  invoke<ClaudeSessionsSummary>("claude_sessions_summary", { days });
 
+/** Sessions in the window whose prompt text matches `query`. */
 export const claudeSessionsSearch = (days: number, query: string) =>
-  invokeToast<ClaudeSession[]>("claude_sessions_search", { days, query });
+  invoke<ClaudeSession[]>("claude_sessions_search", { days, query });
 
 export type InsightKind = "tokenOutlier" | "rereadLoop" | "cacheChurn" | "marathon";
 
@@ -74,7 +76,7 @@ export type ClaudeSessionInsight = {
 
 /** Ranked waste/habit findings for the window (rides the cached scan). */
 export const claudeSessionsInsights = (days: number) =>
-  invokeToast<ClaudeSessionInsight[]>("claude_sessions_insights", { days });
+  invoke<ClaudeSessionInsight[]>("claude_sessions_insights", { days });
 
 export type ToolTotal = {
   name: string;
@@ -102,4 +104,4 @@ export type SessionBreakdown = {
 
 /** One session's turn/tool drill-down (parses that session on demand). */
 export const claudeSessionsBreakdown = (sessionId: string) =>
-  invokeToast<SessionBreakdown>("claude_sessions_breakdown", { sessionId });
+  invoke<SessionBreakdown>("claude_sessions_breakdown", { sessionId });

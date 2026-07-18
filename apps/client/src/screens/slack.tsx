@@ -100,26 +100,27 @@ export function SlackScreen() {
     const text = draft.trim();
     if (!text || sending) return;
     setSending(true);
-    try {
-      await slackDmSend(text);
-      setDraft("");
-      refresh();
-    } catch (e) {
-      const message = String(e);
-      if (isAuthError(message)) {
-        toast.error(
-          "Slack rejected the send: your token is no longer valid. Re-issue it in Settings → Slack.",
-        );
-      } else if (isScopeError(message)) {
-        toast.error(
-          "Slack rejected the send: your token can't post messages. Re-authorize it with the chat:write scope, then try again.",
-        );
-      } else {
-        toast.error(message);
-      }
-    } finally {
-      setSending(false);
-    }
+    const sent = await slackDmSend(text);
+    sent.match({
+      ok: () => {
+        setDraft("");
+        refresh();
+      },
+      err: (e) => {
+        if (isAuthError(e.message)) {
+          toast.error(
+            "Slack rejected the send: your token is no longer valid. Re-issue it in Settings → Slack.",
+          );
+        } else if (isScopeError(e.message)) {
+          toast.error(
+            "Slack rejected the send: your token can't post messages. Re-authorize it with the chat:write scope, then try again.",
+          );
+        } else {
+          toast.error(e.message);
+        }
+      },
+    });
+    setSending(false);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -283,19 +284,18 @@ function ImageAttachment({ file }: { file: DmFile }) {
     let alive = true;
     setSrc(null);
     setError(null);
-    void (async () => {
-      try {
-        const url = fileSrcUrl(file);
-        if (!isTauri()) {
-          if (alive) setSrc(url);
-          return;
-        }
-        const { mimetype, dataBase64 } = await slackDmFile(url);
-        if (alive) setSrc(`data:${mimetype};base64,${dataBase64}`);
-      } catch (e) {
-        if (alive) setError(String(e));
-      }
-    })();
+    const url = fileSrcUrl(file);
+    if (!isTauri()) {
+      setSrc(url);
+      return;
+    }
+    void slackDmFile(url).then((fetched) => {
+      if (!alive) return;
+      fetched.match({
+        ok: ({ mimetype, dataBase64 }) => setSrc(`data:${mimetype};base64,${dataBase64}`),
+        err: (e) => setError(e.message),
+      });
+    });
     return () => {
       alive = false;
     };

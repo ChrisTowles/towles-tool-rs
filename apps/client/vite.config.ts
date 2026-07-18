@@ -14,13 +14,27 @@ const monacoVscodeDeps = Object.keys(pkg.dependencies).filter((d) =>
   d.startsWith("@codingame/monaco-vscode-"),
 );
 
-// `dev-port.mjs` normally pins TT_DEV_PORT before launching us. If vite is run
-// directly, resolve the same per-checkout claim from the repo root's rendered
-// `.env`/`.env.local`; a checkout with no claim at all gets 1420 (bare-vite
-// mock dev only — every tt-managed checkout has a claim, so this never
-// collides across slots in practice).
+// `dev-port.mjs` normally pins TT_DEV_PORT before launching us. Run directly
+// (bare-vite mock dev), resolve the same per-checkout claim from the repo
+// root's rendered `.env`/`.env.local`.
+//
+// There is deliberately no fallback port. Any value picked outside the claim
+// system is drawn from the same 1420-1619 pool the claims come from, so it
+// collides with whichever sibling checkout claimed it — 1420 in particular is
+// the pool's first port, and therefore almost always already held. Failing
+// here with the fix is better than binding a port that isn't ours.
+const repoRoot = path.resolve(__dirname, "../..");
 const devPort =
-  Number(process.env.TT_DEV_PORT) || resolveDevPort(path.resolve(__dirname, "../..")) || 1420;
+  Number(process.env.TT_DEV_PORT) ||
+  resolveDevPort(repoRoot).unwrapOr(undefined) ||
+  fatalNoDevPort();
+
+function fatalNoDevPort(): never {
+  throw new Error(
+    "no TT_DEV_PORT for this checkout — run `tt slot env <name>` to claim ports, " +
+      "or pin TT_DEV_PORT in .env.local",
+  );
+}
 
 // https://vitejs.dev/config/
 export default defineConfig({

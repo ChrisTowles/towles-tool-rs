@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { ExternalLink, Pencil, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { journalLog } from "@/lib/data";
+import { NotInTauri, type IpcError } from "@/lib/errors";
 import {
   JOURNAL_STALE_ERROR,
   journalGetToday,
@@ -11,6 +13,19 @@ import {
   journalSave,
   type TodayNote,
 } from "@/lib/journal";
+
+/** Surface a failed journal command. Silent outside the Tauri shell, where the
+ * screen already renders its "not available" state. */
+function reportJournalError(error: IpcError) {
+  if (!NotInTauri.is(error)) toast.error(error.message);
+}
+
+/** Hand an entry to the user's preferred editor, surfacing a failure (an
+ * unconfigured or missing editor is the common one). */
+async function openInEditor(relativePath: string) {
+  const opened = await journalOpen(relativePath);
+  if (opened.isErr()) reportJournalError(opened.error);
+}
 
 /** Today — today's daily note, read from, appended to, and edited in-app. */
 export function JournalTodayScreen() {
@@ -29,7 +44,13 @@ export function JournalTodayScreen() {
 
   async function refresh() {
     setLoading(true);
-    setNote(await journalGetToday());
+    (await journalGetToday()).match({
+      ok: setNote,
+      err: (e) => {
+        setNote(null);
+        reportJournalError(e);
+      },
+    });
     setLoading(false);
   }
 
@@ -41,7 +62,10 @@ export function JournalTodayScreen() {
     const line = draft.trim();
     if (!line) return;
     setDraft("");
-    if (await journalLog(line)) void refresh();
+    (await journalLog(line)).match({
+      ok: () => void refresh(),
+      err: (e) => (NotInTauri.is(e) ? toast.info("not wired in browser") : toast.error(e.message)),
+    });
   }
 
   function startEditing() {
@@ -64,31 +88,35 @@ export function JournalTodayScreen() {
     setSaving(true);
     setSaveError(null);
     setStaleConflict(false);
-    try {
-      await journalSave(note.relativePath, note.content, editDraft);
-      // Reflect the saved bytes locally, then leave edit mode.
-      setNote({ ...note, content: editDraft });
-      setEditing(false);
-      setEditDraft("");
-    } catch (e) {
-      const message = String(e);
-      if (message.includes(JOURNAL_STALE_ERROR)) {
-        setStaleConflict(true);
-        setSaveError("This note changed on disk since you opened it. Reload to see the latest.");
-      } else {
-        setSaveError(message);
-      }
-    } finally {
-      setSaving(false);
-    }
+    const saved = await journalSave(note.relativePath, note.content, editDraft);
+    saved.match({
+      ok: () => {
+        // Reflect the saved bytes locally, then leave edit mode.
+        setNote({ ...note, content: editDraft });
+        setEditing(false);
+        setEditDraft("");
+      },
+      err: (e) => {
+        if (e.message.includes(JOURNAL_STALE_ERROR)) {
+          setStaleConflict(true);
+          setSaveError("This note changed on disk since you opened it. Reload to see the latest.");
+        } else {
+          setSaveError(e.message);
+        }
+      },
+    });
+    setSaving(false);
   }
 
   /** Pull the latest bytes from disk into the editor, discarding local edits. */
   async function reloadLatest() {
     const latest = await journalGetToday();
-    if (!latest) return;
-    setNote(latest);
-    setEditDraft(latest.content);
+    if (latest.isErr()) {
+      reportJournalError(latest.error);
+      return;
+    }
+    setNote(latest.value);
+    setEditDraft(latest.value.content);
     setSaveError(null);
     setStaleConflict(false);
   }
@@ -129,7 +157,7 @@ export function JournalTodayScreen() {
                 variant="outline"
                 size="sm"
                 disabled={!note}
-                onClick={() => note && void journalOpen(note.relativePath)}
+                onClick={() => note && void openInEditor(note.relativePath)}
               >
                 <ExternalLink className="size-3.5" />
                 Open in editor

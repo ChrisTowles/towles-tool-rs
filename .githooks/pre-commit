@@ -6,6 +6,10 @@
 import { execFileSync } from "node:child_process";
 import { runPreCommitBump } from "../scripts/plugin-version-bump.mjs";
 
-runPreCommitBump();
+const bumped = runPreCommitBump();
+if (bumped.isErr()) {
+  console.error(`plugin-version-bump: ${bumped.error.message}`);
+  process.exit(1);
+}
 
 execFileSync("claude", ["plugin", "validate", "."], { stdio: "inherit" });

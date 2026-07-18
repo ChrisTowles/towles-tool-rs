@@ -50,8 +50,15 @@ import {
   type LedgerDay,
   type SessionBreakdown,
 } from "@/lib/claude-sessions";
+import { NotInTauri, type IpcError } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/lib/workspace";
+
+/** Surface a failed sessions read. Silent outside the Tauri shell, where every
+ * command fails identically and the screen already says so. */
+function reportSessionsError(error: IpcError) {
+  if (!NotInTauri.is(error)) toast.error(error.message);
+}
 
 const DAY_OPTIONS = [
   { label: "Last 7 days", value: "7" },
@@ -406,20 +413,20 @@ function useOpenInAgentboard() {
       return;
     }
     setOpeningId(s.sessionId);
-    try {
-      const opened = await abOpenSessionForCwd(s.cwd);
-      openTab("agentboard");
-      requestOpenSession({
-        folderDir: opened.folderDir,
-        sessionId: opened.sessionId,
-        resumeId: s.sessionId,
-        label: s.title ?? s.sessionId.slice(0, 8),
-      });
-    } catch (e) {
-      toast.error(String(e));
-    } finally {
-      setOpeningId(null);
-    }
+    const opened = await abOpenSessionForCwd(s.cwd);
+    opened.match({
+      ok: (o) => {
+        openTab("agentboard");
+        requestOpenSession({
+          folderDir: o.folderDir,
+          sessionId: o.sessionId,
+          resumeId: s.sessionId,
+          label: s.title ?? s.sessionId.slice(0, 8),
+        });
+      },
+      err: (e) => toast.error(e.message),
+    });
+    setOpeningId(null);
   }
 
   return { openingId, open };
@@ -490,8 +497,8 @@ function BreakdownDialog({
     if (!sessionId) return;
     setData(null);
     setLoading(true);
-    void claudeSessionsBreakdown(sessionId).then((b) => {
-      setData(b);
+    void claudeSessionsBreakdown(sessionId).then((r) => {
+      r.match({ ok: setData, err: reportSessionsError });
       setLoading(false);
     });
   }, [sessionId]);
@@ -755,7 +762,13 @@ function InsightsTab({ days, nonce, active }: { days: string; nonce: number; act
     fetchedKey.current = key;
     setLoading(true);
     void claudeSessionsInsights(Number(days)).then((r) => {
-      setInsights(r);
+      r.match({
+        ok: setInsights,
+        err: (e) => {
+          setInsights(null);
+          reportSessionsError(e);
+        },
+      });
       setLoading(false);
     });
   }, [active, days, nonce]);
@@ -842,7 +855,13 @@ export function ClaudeSessionsScreen() {
 
   async function refresh(d: string) {
     setLoading(true);
-    setSummary(await claudeSessionsSummary(Number(d)));
+    (await claudeSessionsSummary(Number(d))).match({
+      ok: setSummary,
+      err: (e) => {
+        setSummary(null);
+        reportSessionsError(e);
+      },
+    });
     setLoading(false);
   }
 
@@ -859,7 +878,15 @@ export function ClaudeSessionsScreen() {
       return;
     }
     const t = setTimeout(() => {
-      void claudeSessionsSearch(Number(days), q).then((r) => setResults(r ?? []));
+      void claudeSessionsSearch(Number(days), q).then((r) =>
+        r.match({
+          ok: setResults,
+          err: (e) => {
+            setResults([]);
+            reportSessionsError(e);
+          },
+        }),
+      );
     }, 250);
     return () => clearTimeout(t);
   }, [query, days]);
