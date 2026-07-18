@@ -205,7 +205,7 @@ pub async fn slot_write_pasted_images(
     branch: String,
     images: Vec<PastedImage>,
 ) -> Result<Vec<String>, String> {
-    let base = tt_config::pasted_images_dir().map_err(|e| e.to_string())?;
+    let base = tt_config::pasted_images_dir();
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)

@@ -563,12 +563,17 @@ pub fn telemetry_dir() -> Result<PathBuf> {
 /// go into a Claude prompt, and that somewhere is deliberately *not* the
 /// repo — Claude Code reads an absolute path outside its workspace without
 /// prompting, so there's nothing to gain by putting user content inside a
-/// checkout and a `.gitignore` to maintain if we do. This mirrors Claude
-/// Code's own `~/.claude/image-cache/<session>/` convention. Instance-scoped
-/// like `data_dir()`, and its own subdirectory so pruning stale pastes never
-/// walks tt.db.
-pub fn pasted_images_dir() -> Result<PathBuf> {
-    Ok(data_dir()?.join("pasted-images"))
+/// checkout and a `.gitignore` to maintain if we do.
+///
+/// Deliberately the OS temp dir (`/tmp` on Linux), not `data_dir()`: a pasted
+/// screenshot is throwaway staging, not state worth keeping across a reboot,
+/// and `data_dir()`'s per-checkout `slots/<scope>` nesting exists to isolate
+/// state a checkout *owns* (tt.db, sessions) — a paste doesn't need that,
+/// and every extra layer is a directory the caller's age-based prune has to
+/// walk. The OS already reclaims `/tmp` on its own schedule; that prune is a
+/// backstop, not the primary cleanup.
+pub fn pasted_images_dir() -> PathBuf {
+    std::env::temp_dir().join(TOOL_NAME).join("pasted-images")
 }
 
 /// Agentboard *instance* persistence directory (sessions.json, windows.json,
