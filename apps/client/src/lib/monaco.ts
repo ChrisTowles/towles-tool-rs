@@ -18,6 +18,7 @@ export function loadMonaco(): Promise<typeof import("monaco-editor")> {
     const [
       monaco,
       api,
+      ,
       configuration,
       languages,
       textmate,
@@ -35,6 +36,10 @@ export function loadMonaco(): Promise<typeof import("monaco-editor")> {
     ] = await Promise.all([
       import("monaco-editor"),
       import("@codingame/monaco-vscode-api"),
+      // Local extension host — the LSP bridge's monaco-languageclient runs
+      // as a local extension against the vscode API (must load before
+      // initialize).
+      import("vscode/localExtensionHost"),
       import("@codingame/monaco-vscode-configuration-service-override"),
       import("@codingame/monaco-vscode-languages-service-override"),
       import("@codingame/monaco-vscode-textmate-service-override"),
@@ -162,6 +167,9 @@ export async function setMonacoWorkspace(dir: string): Promise<void> {
     "@codingame/monaco-vscode-configuration-service-override"
   );
   await reinitializeWorkspace({ id: dir, uri: monaco.Uri.file(dir) });
+  // The LSP bridge follows the workspace (rust-analyzer per Rust checkout).
+  const { syncLspWorkspace } = await import("@/lib/lsp");
+  syncLspWorkspace(dir);
 }
 
 type OpenFileHandler = (absolutePath: string) => void;
