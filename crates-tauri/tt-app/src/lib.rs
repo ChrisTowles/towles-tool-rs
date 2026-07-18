@@ -476,6 +476,8 @@ pub fn run() {
             agentboard::ab_open_in_editor,
             agentboard::ab_get_diff,
             agentboard::ab_get_diff_files,
+            agentboard::ab_stage_file,
+            agentboard::ab_unstage_file,
             agentboard::ab_get_base_file,
             agentboard::ab_get_commit_stats,
             slots::slot_base_branches,

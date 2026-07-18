@@ -17,12 +17,19 @@ export type ChangedFile = {
   oldPath: string | null;
   /** Git name-status letter (M/A/D/R/C/T), or "?" for untracked. */
   status: string;
+  /** Current index state (`git status --porcelain`'s X column) — independent
+   * of `status`, which is against the diff baseline, not HEAD. */
+  staged: boolean;
   linesAdded: number;
   linesRemoved: number;
 };
 
 type Widget =
   import("@codingame/monaco-vscode-api/vscode/vs/editor/browser/widget/multiDiffEditor/multiDiffEditorWidget").MultiDiffEditorWidget;
+type ViewModel =
+  import("@codingame/monaco-vscode-api/vscode/vs/editor/browser/widget/multiDiffEditor/multiDiffEditorViewModel").MultiDiffEditorViewModel;
+type DocItem =
+  import("@codingame/monaco-vscode-api/vscode/vs/editor/browser/widget/multiDiffEditor/multiDiffEditorViewModel").DocumentDiffItemViewModel;
 type TextModel = import("monaco-editor").editor.ITextModel;
 
 /**
@@ -44,6 +51,7 @@ export function MonacoMultiDiff({
   refreshKey,
   connected = false,
   registerReveal,
+  onToggleStage,
 }: {
   dir: string;
   files: ChangedFile[];
@@ -56,6 +64,9 @@ export function MonacoMultiDiff({
    * teardown) — the diff pane's tree rail calls it to scroll a file's diff
    * into view. */
   registerReveal?: (reveal: ((path: string) => void) | null) => void;
+  /** Stage (`true`) or unstage (`false`) a file; resolves to whether it
+   * happened, so a checkbox that already flipped optimistically can revert. */
+  onToggleStage?: (path: string, staged: boolean) => Promise<boolean>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -65,11 +76,50 @@ export function MonacoMultiDiff({
   const [selection, setSelection] = useState<{ path: string; range: MentionRange } | null>(null);
   const mentionRef = useRef<() => void>(() => {});
   const widgetRef = useRef<Widget | null>(null);
+  const viewModelRef = useRef<ViewModel | null>(null);
+  // Populated once the widget's diffs resolve; keyed by the same relative
+  // path used everywhere else (`ChangedFile.path`). Lets the staged-sync
+  // effect below collapse/expand and check/uncheck a specific file without
+  // rebuilding the whole widget.
+  const itemsByPathRef = useRef<Map<string, DocItem> | null>(null);
+  const checkboxesByPathRef = useRef<Map<string, HTMLInputElement>>(new Map());
   const modelsRef = useRef<Map<string, { original?: TextModel; modified?: TextModel }>>(new Map());
+  // "Latest ref" for the imperative header checkboxes' change handler, which
+  // closes over this once at widget-construction time and would otherwise see
+  // a stale callback across parent re-renders that don't rebuild the widget.
+  const onToggleStageRef = useRef(onToggleStage);
+  onToggleStageRef.current = onToggleStage;
+  // "Latest ref" for the header checkboxes' `setUri`, which can fire on
+  // virtualized-row reuse well after the widget-construction effect's own
+  // `files` closure has gone stale.
+  const filesRef = useRef(files);
+  filesRef.current = files;
+
+  // Collapse/expand each file's diff to match its staged flag and keep its
+  // header checkbox's `.checked` in sync — shared by the post-construction
+  // initial sync and the staged-toggle effect below, since both need exactly
+  // this same per-file walk over the (viewModel item, checkbox) pair.
+  const applyStagedState = (currentFiles: ChangedFile[]) => {
+    const viewModel = viewModelRef.current;
+    const itemsByPath = itemsByPathRef.current;
+    if (!viewModel || !itemsByPath) return;
+    for (const f of currentFiles) {
+      const item = itemsByPath.get(f.path);
+      if (item) {
+        if (f.staged) viewModel.collapse(item);
+        else viewModel.expand(item);
+      }
+      const checkbox = checkboxesByPathRef.current.get(f.path);
+      if (checkbox) checkbox.checked = f.staged;
+    }
+  };
 
   // The widget rebuilds only when the file *set* changes, not on every
   // content refresh — filesKey is stable across refetches of the same set.
   const filesKey = files.map((f) => `${f.status}:${f.path}`).join("\n");
+  // Collapse/expand + checkbox sync fire independently of a widget rebuild —
+  // staging a file doesn't change its status/path, so filesKey stays put.
+  const stagedKey = files.map((f) => `${f.path}:${f.staged}`).join("\n");
 
   useEffect(() => {
     let disposed = false;
@@ -118,12 +168,55 @@ export function MonacoMultiDiff({
           containerRef.current,
           {
             headerClickToCollapse: true,
-            createResourceLabel: (element: HTMLElement) => ({
-              setUri(uri: { path: string } | undefined) {
-                element.textContent = uri ? uri.path.replace(`${dir}/`, "") : "";
-              },
-              dispose() {},
-            }),
+            createResourceLabel: (element: HTMLElement) => {
+              // Called twice per file: once for the primary (current-path)
+              // label, once for the secondary (old-path, renames only) one.
+              // VS Code marks the primary one with its own "modified" class
+              // — only that one gets a stage checkbox, or a renamed file
+              // would show two.
+              if (!element.classList.contains("modified")) {
+                return {
+                  setUri(uri: { path: string } | undefined) {
+                    element.textContent = uri ? uri.path.replace(`${dir}/`, "") : "";
+                  },
+                  dispose() {},
+                };
+              }
+              const checkbox = document.createElement("input");
+              checkbox.type = "checkbox";
+              checkbox.className = "mr-1.5 size-3 shrink-0 cursor-pointer accent-emerald-500";
+              checkbox.title = "stage / unstage this file";
+              // The header itself toggles collapse on click; stop that from
+              // also firing when the click lands on the checkbox.
+              checkbox.addEventListener("click", (e) => e.stopPropagation());
+              const text = document.createElement("span");
+              element.replaceChildren(checkbox, text);
+              let path: string | null = null;
+              checkbox.addEventListener("change", () => {
+                if (!path) return;
+                const staged = checkbox.checked;
+                void onToggleStageRef.current?.(path, staged).then((ok) => {
+                  if (!ok) checkbox.checked = !staged;
+                });
+              });
+              return {
+                setUri(uri: { path: string } | undefined) {
+                  if (path) checkboxesByPathRef.current.delete(path);
+                  path = uri ? uri.path.replace(`${dir}/`, "") : null;
+                  text.textContent = path ?? "";
+                  checkbox.style.visibility = path ? "visible" : "hidden";
+                  if (path) {
+                    checkboxesByPathRef.current.set(path, checkbox);
+                    checkbox.checked = filesRef.current.find((f) => f.path === path)?.staged ?? false;
+                  }
+                },
+                dispose() {
+                  if (path && checkboxesByPathRef.current.get(path) === checkbox) {
+                    checkboxesByPathRef.current.delete(path);
+                  }
+                },
+              };
+            },
           },
         );
         widgetRef.current = widget;
@@ -137,6 +230,21 @@ export function MonacoMultiDiff({
         });
         disposables.push(viewModel);
         widget.setViewModel(viewModel);
+        viewModelRef.current = viewModel;
+
+        // Per-file diff computation is async; apply the initial staged state
+        // (collapse + checkbox sync) once resolved, without blocking the
+        // rest of setup (registerReveal, selection wiring, the loading flag).
+        void viewModel.waitForDiffOr1s().then(() => {
+          if (disposed) return;
+          const itemsByPath = new Map<string, DocItem>();
+          for (const item of viewModel.items.get()) {
+            const p = (item.modifiedUri ?? item.originalUri)?.path.replace(`${dir}/`, "");
+            if (p) itemsByPath.set(p, item);
+          }
+          itemsByPathRef.current = itemsByPath;
+          applyStagedState(files);
+        });
 
         // The widget needs explicit layout; track the pane's size.
         const layout = () => {
@@ -256,6 +364,9 @@ export function MonacoMultiDiff({
     return () => {
       disposed = true;
       widgetRef.current = null;
+      viewModelRef.current = null;
+      itemsByPathRef.current = null;
+      checkboxesByPathRef.current = new Map();
       for (const d of disposables.toReversed()) d.dispose();
       for (const entry of modelsRef.current.values()) {
         entry.original?.dispose();
@@ -266,12 +377,23 @@ export function MonacoMultiDiff({
       setSelection(null);
       if (streamedPath != null) ideClearSelection(dir, streamedPath);
     };
-    // filesKey stands in for `files`; refreshKey is the in-place path below.
-    // registerReveal is deliberately excluded too: it's an unmemoized callback
-    // prop from the parent, so listing it would rebuild this expensive widget
-    // on every parent render instead of only on a real file-set/branch change.
+    // filesKey stands in for `files`; refreshKey/stagedKey are the in-place
+    // paths below. registerReveal is deliberately excluded too: it's an
+    // unmemoized callback prop from the parent, so listing it would rebuild
+    // this expensive widget on every parent render instead of only on a real
+    // file-set/branch change.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [dir, filesKey, mode, baseBranch]);
+
+  // A file's staged status flipped without the file *set* changing (staging
+  // doesn't change its path or status letter) — collapse/expand its diff and
+  // sync its header checkbox in place, without rebuilding the widget.
+  useEffect(() => {
+    applyStagedState(files);
+    // files is read fresh each render via closure, same as the refreshKey
+    // effect above — stagedKey is only the trigger.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [stagedKey]);
 
   // Working tree changed under the pane — refresh contents in place so the
   // scroll position and collapse states survive.

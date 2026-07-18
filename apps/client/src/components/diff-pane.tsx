@@ -3,10 +3,11 @@ import { ChevronRight, GitCompare, Pencil, RefreshCw } from "lucide-react";
 import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
 import { MonacoMultiDiff, type ChangedFile } from "@/components/diff-monaco";
 import { ClaudeBadge, IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
+import { Checkbox } from "@/components/ui/checkbox";
 import { abInvoke, type FolderData } from "@/lib/agentboard";
 import { buildDiffTree, type DiffTreeNode } from "@/lib/diff";
 import { ideReadFile, useIdeConnected } from "@/lib/ide";
-import { isTauri } from "@/lib/tauri";
+import { invokeOk, isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
 /** Which baseline the pane diffs against (mirrors `DiffMode` in tt-agentboard). */
@@ -24,7 +25,16 @@ const STATUS_COLORS: Record<string, string> = {
 
 /** Compact navigation tree beside the multi-diff: same compact-folders
  * grouping as the Files pane; clicking a file scrolls its diff into view. */
-function DiffTreeRail({ files, onJump }: { files: ChangedFile[]; onJump: (path: string) => void }) {
+function DiffTreeRail({
+  files,
+  onJump,
+  onToggleStage,
+}: {
+  files: ChangedFile[];
+  onJump: (path: string) => void;
+  /** Stage (`true`) or unstage (`false`) a file. */
+  onToggleStage: (path: string, staged: boolean) => void;
+}) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const tree = useMemo(() => buildDiffTree(files.map((f) => f.path)), [files]);
   const byPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files]);
@@ -61,24 +71,43 @@ function DiffTreeRail({ files, onJump }: { files: ChangedFile[]; onJump: (path: 
       const file = byPath.get(node.path);
       return (
         <li key={node.path}>
-          <button
-            type="button"
-            onClick={() => onJump(node.path)}
-            title={file?.oldPath ? `${file.oldPath} → ${node.path}` : node.path}
+          <div
             style={{ paddingLeft: paddingLeft + 14 }}
-            className="flex w-full items-center gap-1.5 py-0.5 text-left font-mono text-[11px] text-muted-foreground hover:text-foreground"
+            className="flex w-full items-center gap-1.5 py-0.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
           >
-            <span className={cn("shrink-0", STATUS_COLORS[file?.status ?? ""] ?? "")}>
-              {file?.status ?? ""}
-            </span>
-            <span className="min-w-0 flex-1 truncate">{node.name}</span>
-            {file && (file.linesAdded > 0 || file.linesRemoved > 0) && (
-              <span className="shrink-0 pr-1 text-[10px]">
-                <span className="text-emerald-500">+{file.linesAdded}</span>{" "}
-                <span className="text-red-500">−{file.linesRemoved}</span>
+            {/* `<label htmlFor>`, not nested in the button below: Radix's
+             * Checkbox renders a button and buttons can't nest. See
+             * apps/client/CLAUDE.md. */}
+            <label
+              htmlFor={`stage-${node.path}`}
+              onClick={(e) => e.stopPropagation()}
+              className="flex shrink-0 items-center"
+              title="stage / unstage this file"
+            >
+              <Checkbox
+                id={`stage-${node.path}`}
+                checked={file?.staged ?? false}
+                onCheckedChange={(checked) => onToggleStage(node.path, checked === true)}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => onJump(node.path)}
+              title={file?.oldPath ? `${file.oldPath} → ${node.path}` : node.path}
+              className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+            >
+              <span className={cn("shrink-0", STATUS_COLORS[file?.status ?? ""] ?? "")}>
+                {file?.status ?? ""}
               </span>
-            )}
-          </button>
+              <span className="min-w-0 flex-1 truncate">{node.name}</span>
+              {file && (file.linesAdded > 0 || file.linesRemoved > 0) && (
+                <span className="shrink-0 pr-1 text-[10px]">
+                  <span className="text-emerald-500">+{file.linesAdded}</span>{" "}
+                  <span className="text-red-500">−{file.linesRemoved}</span>
+                </span>
+              )}
+            </button>
+          </div>
         </li>
       );
     });
@@ -214,6 +243,26 @@ export function DiffPane({
     await abInvoke("ab_set_folder_base_branch", { dir, branch: trimmed || null });
   }
 
+  // Shared by the tree rail's checkbox and the Monaco header's checkbox —
+  // stages/unstages via `git add` / `git restore --staged`. A successful
+  // mutation means the index now matches the requested `staged` value, so
+  // patch just that file's flag locally rather than re-running the
+  // name-status/numstat/status trio behind a full `fetchDiff()` — staging
+  // doesn't change a file's diff-baseline status or line counts anyway (in
+  // "uncommitted" mode it's already `git diff HEAD`, staged + unstaged
+  // combined).
+  const toggleStage = useCallback(
+    async (path: string, staged: boolean) => {
+      if (!dir) return false;
+      const ok = await invokeOk(staged ? "ab_stage_file" : "ab_unstage_file", { dir, path });
+      if (ok) {
+        setFiles((prev) => prev && prev.map((f) => (f.path === path ? { ...f, staged } : f)));
+      }
+      return ok;
+    },
+    [dir],
+  );
+
   if (!folder) return <PanePlaceholder label="folder gone" onRemove={onClose} />;
 
   return (
@@ -296,7 +345,11 @@ export function DiffPane({
           <p className="p-2 text-sm text-muted-foreground">No changes.</p>
         ) : (
           <>
-            <DiffTreeRail files={files} onJump={(path) => revealRef.current?.(path)} />
+            <DiffTreeRail
+              files={files}
+              onJump={(path) => revealRef.current?.(path)}
+              onToggleStage={(path, staged) => void toggleStage(path, staged)}
+            />
             <div className="min-w-0 flex-1">
               <MonacoMultiDiff
                 dir={dir!}
@@ -306,6 +359,7 @@ export function DiffPane({
                 refreshKey={statsKey}
                 connected={ideConnected}
                 registerReveal={registerReveal}
+                onToggleStage={toggleStage}
               />
             </div>
           </>
