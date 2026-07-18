@@ -39,7 +39,7 @@ import {
   imagesFromDataTransfer,
   isPasteableImage,
 } from "@/lib/agentboard";
-import { BaseBranchesSchema } from "@/lib/schemas/slots";
+import { BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
 import { invokeOrThrow } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
@@ -97,8 +97,9 @@ export type PendingSlot = {
   options: ClaudeLaunchOptions;
   /** Carried on the pending row, not just consumed at submit, so a retry
    * after a failed create re-attaches the same images — the form is long
-   * gone by then and the user would otherwise have to re-paste. */
-  images: PastedImage[];
+   * gone by then and the user would otherwise have to re-paste. Paths, not
+   * bytes: the files were staged when pasted and outlive the form. */
+  imagePaths: string[];
   startedAt: number;
   status: "creating" | "error";
   error?: string;
@@ -142,11 +143,22 @@ export function InlineNewSlot({
     branch: string;
     base: string;
     options: ClaudeLaunchOptions;
-    images: PastedImage[];
+    /** Absolute paths of the already-staged images (see `imagePaths`), not
+     * the bytes — they were written to disk when pasted. */
+    imagePaths: string[];
   }) => void;
 }) {
   const [goal, setGoal] = useState("");
   const [images, setImages] = useState<PastedImage[]>([]);
+  // Attached images are written to disk as soon as they're pasted, not at
+  // submit: "Suggest name + goal" needs real paths to hand `claude -p` (a
+  // screenshot is often the entire brief), and staging once means create and
+  // suggest reference the same files instead of writing two copies.
+  const [imagePaths, setImagePaths] = useState<string[]>([]);
+  const [staging, setStaging] = useState(false);
+  // Stable per-form staging directory. The branch can't key it — it's still
+  // being edited while images are pasted.
+  const [draftScope] = useState(() => `draft-${Date.now()}`);
   const [branchEdit, setBranchEdit] = useState<string | null>(null);
   const [base, setBase] = useState("");
   const [model, setModel] = useState<ClaudeModel>(DEFAULT_CLAUDE_MODEL);
@@ -221,13 +233,16 @@ export function InlineNewSlot({
   // fields stay editable (or "Undo" puts back exactly what was there) —
   // that's the confirmation step, not a separate accept/reject panel.
   async function suggest() {
-    if (suggesting || !goal.trim()) return;
+    // An attached screenshot is a complete brief on its own ("make it look
+    // like this"), so images alone are enough to ask — not just typed text.
+    if (suggesting || (!goal.trim() && !imagePaths.length)) return;
     setSuggesting(true);
     setError(null);
     try {
       const suggestion = await invokeOrThrow<SlotSuggestion>("slot_suggest", {
         dir: repo.dir,
         goal,
+        imagePaths,
       });
       setPreSuggest({ goal, branchEdit });
       setGoal(suggestion.goal);
@@ -255,19 +270,50 @@ export function InlineNewSlot({
   // that populate it, and the host-clipboard read below), so adding is
   // idempotent on the bytes — identical content is the double-path, not a
   // user asking for two copies of one screenshot.
-  function addImages(incoming: PastedImage[]) {
+  async function addImages(incoming: PastedImage[]) {
     if (!incoming.length) return;
-    setImages((prev) => {
-      const seen = new Set(prev.map((i) => i.dataBase64));
-      const fresh = incoming.filter((i) => !seen.has(i.dataBase64));
-      return fresh.length ? [...prev, ...fresh] : prev;
-    });
+    const seen = new Set(images.map((i) => i.dataBase64));
+    const fresh = incoming.filter((i) => !seen.has(i.dataBase64));
+    if (!fresh.length) return;
+    const next = [...images, ...fresh];
+    setImages(next);
     setError(null);
+    await stageImages(next);
+  }
+
+  /** Write `list` to the staging dir and remember the paths. Failing here is
+   * worth surfacing immediately — the image is visibly attached, so silently
+   * having no file behind it would only show up later as a prompt pointing at
+   * nothing. */
+  async function stageImages(list: PastedImage[]) {
+    if (!list.length) {
+      setImagePaths([]);
+      return;
+    }
+    setStaging(true);
+    try {
+      const paths = await invokeOrThrow<string[]>(
+        "slot_write_pasted_images",
+        {
+          repo: repo.name,
+          branch: draftScope,
+          images: list.map(({ mime, dataBase64 }) => ({ mime, dataBase64 })),
+        },
+        PastedImagePathsSchema,
+      );
+      setImagePaths(paths);
+    } catch (e) {
+      setImages([]);
+      setImagePaths([]);
+      setError(`Couldn't attach that image: ${e}`);
+    } finally {
+      setStaging(false);
+    }
   }
 
   async function pasteImages(data: DataTransfer | null) {
     try {
-      addImages(await imagesFromDataTransfer(data));
+      await addImages(await imagesFromDataTransfer(data));
     } catch (e) {
       setError(String(e));
     }
@@ -285,7 +331,7 @@ export function InlineNewSlot({
     try {
       const image = await clipboardImageFromHost();
       if (!image) return false;
-      addImages([image]);
+      await addImages([image]);
       return true;
     } catch (e) {
       setError(String(e));
@@ -294,7 +340,11 @@ export function InlineNewSlot({
   }
 
   function removeImage(id: string) {
-    setImages((prev) => prev.filter((img) => img.id !== id));
+    const next = images.filter((img) => img.id !== id);
+    setImages(next);
+    // Restage so the staged set matches what's shown — otherwise a removed
+    // image would still be on disk and still land in the prompt.
+    void stageImages(next);
   }
 
   function submit() {
@@ -306,7 +356,7 @@ export function InlineNewSlot({
       setError(branchProblem);
       return;
     }
-    onSubmit({ goal: goal.trim(), branch, base, options: { model, effort }, images });
+    onSubmit({ goal: goal.trim(), branch, base, options: { model, effort }, imagePaths });
   }
 
   return (
@@ -417,7 +467,7 @@ export function InlineNewSlot({
           variant="outline"
           size="sm"
           className="h-6 gap-1 px-1.5 text-[10.5px]"
-          disabled={suggesting || !goal.trim()}
+          disabled={suggesting || staging || (!goal.trim() && !imagePaths.length)}
           onClick={() => void suggest()}
         >
           <Sparkles className="size-3" />
@@ -542,13 +592,13 @@ export function PendingSlotRow({
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
           ⎇ {pending.branch}
         </span>
-        {pending.images.length > 0 && (
+        {pending.imagePaths.length > 0 && (
           <span
-            title={`${pending.images.length} pasted image${pending.images.length === 1 ? "" : "s"} — attached to this slot's first prompt, and kept for a retry`}
+            title={`${pending.imagePaths.length} pasted image${pending.imagePaths.length === 1 ? "" : "s"} — attached to this slot's first prompt, and kept for a retry`}
             className="flex shrink-0 items-center gap-0.5 font-mono text-[10.5px] text-muted-foreground/70"
           >
             <Paperclip className="size-2.5" />
-            {pending.images.length}
+            {pending.imagePaths.length}
           </span>
         )}
         <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70">

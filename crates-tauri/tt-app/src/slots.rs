@@ -93,12 +93,18 @@ pub struct SlotSuggestion {
 /// result — nothing here writes anything or is called automatically.
 /// Long-running (a cold `claude` CLI) → off the main thread.
 #[tauri::command]
-pub async fn slot_suggest(dir: String, goal: String) -> Result<SlotSuggestion, String> {
-    tauri::async_runtime::spawn_blocking(move || tt_slots::suggest(&PathBuf::from(dir), &goal))
-        .await
-        .map_err(|e| format!("slot task failed: {e}"))?
-        .map(|s| SlotSuggestion { branch: s.branch, goal: s.goal })
-        .map_err(|e| e.to_string())
+pub async fn slot_suggest(
+    dir: String,
+    goal: String,
+    image_paths: Vec<String>,
+) -> Result<SlotSuggestion, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tt_slots::suggest(&PathBuf::from(dir), &goal, &image_paths)
+    })
+    .await
+    .map_err(|e| format!("slot task failed: {e}"))?
+    .map(|s| SlotSuggestion { branch: s.branch, goal: s.goal })
+    .map_err(|e| e.to_string())
 }
 
 /// Create the slot for `branch` off `base` (empty base = the primary's
