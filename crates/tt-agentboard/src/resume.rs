@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn a_pane_with_a_live_transcript_is_offered_with_its_title() {
-        let records = vec![("/r/a".to_string(), rec("pane1", "shell 1", Some("c1")))];
+        let records = [("/r/a".to_string(), rec("pane1", "shell 1", Some("c1")))];
         let d = disk(&[("/r/a", "c1", Some("fix the parser"), 9_000)]);
 
         let got = select(&records, 10_000, &d);
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn a_pane_that_never_ran_claude_is_not_offered() {
-        let records = vec![("/r/a".to_string(), rec("pane1", "shell 1", None))];
+        let records = [("/r/a".to_string(), rec("pane1", "shell 1", None))];
         assert!(select(&records, 10_000, &disk(&[])).is_empty());
     }
 
@@ -324,13 +324,13 @@ mod tests {
     fn a_pane_whose_transcript_is_gone_is_not_offered() {
         // `claude --resume` on a deleted transcript fails, so offering it would
         // be a broken button.
-        let records = vec![("/r/a".to_string(), rec("pane1", "shell 1", Some("c1")))];
+        let records = [("/r/a".to_string(), rec("pane1", "shell 1", Some("c1")))];
         assert!(select(&records, 10_000, &disk(&[])).is_empty());
     }
 
     #[test]
     fn transcripts_outside_the_window_are_not_offered() {
-        let records = vec![
+        let records = [
             ("/r/a".to_string(), rec("stale", "shell 1", Some("c-old"))),
             ("/r/a".to_string(), rec("future", "shell 2", Some("c-new"))),
         ];
@@ -346,7 +346,7 @@ mod tests {
         // The crash estimate is the last heartbeat, so the session being
         // written when the app died has an mtime after it. Rejecting that as
         // "touched after the crash" would gut the feature.
-        let records = vec![("/r/a".to_string(), rec("pane1", "shell 1", Some("c1")))];
+        let records = [("/r/a".to_string(), rec("pane1", "shell 1", Some("c1")))];
         let d = disk(&[("/r/a", "c1", None, 10_000 + HEARTBEAT_INTERVAL_MS)]);
         assert_eq!(select(&records, 10_000, &d).len(), 1);
     }
@@ -356,7 +356,7 @@ mod tests {
         // The whole point of the two-phase split: a stale record must not cost
         // a transcript parse.
         use std::cell::Cell;
-        let records = vec![("/r/a".to_string(), rec("stale", "shell 1", Some("c-old")))];
+        let records = [("/r/a".to_string(), rec("stale", "shell 1", Some("c-old")))];
         let d = disk(&[("/r/a", "c-old", Some("ancient"), 0)]);
         let titles_read = Cell::new(0);
         let got = select_candidates(
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn candidates_come_back_newest_first() {
-        let records = vec![
+        let records = [
             ("/r/a".to_string(), rec("old", "shell 1", Some("c1"))),
             ("/r/b".to_string(), rec("new", "shell 2", Some("c2"))),
             ("/r/c".to_string(), rec("mid", "shell 3", Some("c3"))),
