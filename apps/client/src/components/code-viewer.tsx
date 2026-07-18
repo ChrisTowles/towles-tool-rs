@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { loadMonaco, monacoTheme } from "@/lib/monaco";
+import { loadMonaco } from "@/lib/monaco";
 import {
   ideClearSelection,
   ideReadFile,
@@ -86,7 +86,6 @@ export function CodeViewer({
       editor = monaco.editor.create(containerRef.current, {
         model,
         automaticLayout: true,
-        theme: monacoTheme(),
         minimap: { enabled: false },
         fontSize: 12,
         lineNumbersMinChars: 4,
