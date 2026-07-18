@@ -4,7 +4,7 @@ import { CodeViewer, type ViewerAnchor } from "@/components/code-viewer";
 import { IconBtn } from "@/components/agentboard-bits";
 import { FilePreview, previewKindFor } from "@/components/file-preview";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
-import { buildDiffTree, type DiffFile, type DiffTreeNode } from "@/lib/diff";
+import { buildDiffTree, type DiffTreeNode } from "@/lib/diff";
 import { fileIconSpec, folderIconSpec } from "@/lib/file-icons";
 import { ideAtMention, useIdeConnected } from "@/lib/ide";
 import { invokeCmd } from "@/lib/tauri";
@@ -22,11 +22,6 @@ import { Files as FilesIcon } from "lucide-react";
  * the viewer toolbar); Markdown/HTML files get a second toggle that opens a
  * resizable split preview alongside the editor.
  */
-
-/** Wrap plain paths in the shape `buildDiffTree` groups on. */
-function stubFiles(paths: string[]): DiffFile[] {
-  return paths.map((path) => ({ path, status: "modified", additions: 0, deletions: 0, lines: [] }));
-}
 
 const TREE_INDENT_PX = 14;
 const TREE_BASE_PX = 8;
@@ -214,7 +209,7 @@ export function FilesPane({
     void fetchFiles();
   }, [fetchFiles]);
 
-  const tree = useMemo(() => buildDiffTree(stubFiles(files ?? [])), [files]);
+  const tree = useMemo(() => buildDiffTree(files ?? []), [files]);
   const needle = filter.trim().toLowerCase();
   const matches = useMemo(
     () =>
