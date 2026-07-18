@@ -29,6 +29,12 @@
           }
         ]
       }
+    ],
+    "WorktreeCreate": [
+      { "hooks": [{ "type": "command", "command": "tt slot hook-create" }] }
+    ],
+    "WorktreeRemove": [
+      { "hooks": [{ "type": "command", "command": "tt slot hook-remove" }] }
     ]
   }
 }
