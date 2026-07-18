@@ -159,6 +159,64 @@ export function Chevron({ collapsed }: { collapsed: boolean }) {
   );
 }
 
+/** Violet is the "a Claude session is live here" color across the app — the
+ * pane headers, the selection chip, and the in-editor hint all use it, so it
+ * reads as one signal rather than three unrelated decorations. */
+export function ClaudeBadge({
+  title = "A Claude Code session in this folder is connected — highlighted lines become its selection context",
+  className,
+  children = "✦ claude",
+}: {
+  title?: string;
+  className?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <span
+      title={title}
+      className={cn(
+        "flex shrink-0 items-center gap-1 rounded-md border border-violet-500/50 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500",
+        className,
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** rust-analyzer bridge state, shown only when there is something to say (a
+ * non-Rust checkout renders nothing). This is the bridge's only observable
+ * surface — it started as a spike whose failures went to console.warn. */
+export function LspBadge({
+  state,
+  detail,
+}: {
+  state: "starting" | "ready" | "failed";
+  detail?: string;
+}) {
+  const look = {
+    ready: "border-emerald-500/50 bg-emerald-500/10 text-emerald-500",
+    failed: "border-red-500/50 bg-red-500/10 text-red-500",
+    starting: "border-muted-foreground/40 bg-muted text-muted-foreground",
+  }[state];
+  const title = {
+    ready: "rust-analyzer is connected — hovers and completions are live",
+    failed: `rust-analyzer failed to start: ${detail ?? "unknown error"}`,
+    starting: "rust-analyzer is starting…",
+  }[state];
+  return (
+    <span
+      title={title}
+      className={cn(
+        "shrink-0 rounded-md border px-1.5 font-mono text-[10.5px] whitespace-nowrap",
+        look,
+      )}
+    >
+      rust-analyzer {state === "starting" ? "…" : state}
+    </span>
+  );
+}
+
 export function NeedsBadge({ n, className }: { n: number; className?: string }) {
   return (
     <span

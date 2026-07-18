@@ -2,11 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import { loadMonaco } from "@/lib/monaco";
 import {
   ideClearSelection,
+  ideMention,
   ideReadFile,
   ideSetOpenFile,
   ideSetSelection,
   ideWriteFile,
 } from "@/lib/ide";
+import { IdeSelectionOverlay } from "@/components/ide-selection-chip";
+import {
+  mentionRangeFrom,
+  sameMentionRange,
+  streamRangeFrom,
+  type MentionRange,
+} from "@/lib/ide-selection";
 
 /**
  * Monaco editor for one repo file (the Files tab's right pane). Two bridges:
@@ -29,6 +37,7 @@ export function CodeViewer({
   path,
   anchor,
   wordWrap = true,
+  connected = false,
   onDirtyChange,
 }: {
   dir: string;
@@ -37,11 +46,14 @@ export function CodeViewer({
   anchor?: ViewerAnchor & { nonce?: number };
   /** Soft-wrap long lines instead of horizontal scrolling. Defaults on. */
   wordWrap?: boolean;
+  /** A Claude session is live in this folder — enables the @-send gesture. */
+  connected?: boolean;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selection, setSelection] = useState<MentionRange | null>(null);
   const editorRef = useRef<import("monaco-editor").editor.IStandaloneCodeEditor | null>(null);
   const savedVersionRef = useRef(0);
   const mtimeRef = useRef<number | null>(null);
@@ -51,14 +63,26 @@ export function CodeViewer({
   const wordWrapRef = useRef(wordWrap);
   wordWrapRef.current = wordWrap;
 
+  /** Explicit @-mention of whatever is selected right now — read live from the
+   * editor, never from the debounced chip state, so the gesture can't fire
+   * against a stale range. */
+  const mention = async () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    await ideMention(dir, path, mentionRangeFrom(editor.getSelection()));
+  };
+
   useEffect(() => {
     let disposed = false;
     let editor: import("monaco-editor").editor.IStandaloneCodeEditor | undefined;
     let model: import("monaco-editor").editor.ITextModel | undefined;
     let debounce: ReturnType<typeof setTimeout> | undefined;
+    /** Whether a selection is currently parked in the session's context. */
+    let streamed = false;
 
     setError(null);
     setLoading(true);
+    setSelection(null);
     dirtyRef.current = false;
     void (async () => {
       let read: Awaited<ReturnType<typeof ideReadFile>>;
@@ -122,23 +146,33 @@ export function CodeViewer({
       };
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => void save());
 
+      editor.addCommand(
+        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyA,
+        () => void mention(),
+      );
+
       editor.onDidChangeCursorSelection((e) => {
+        // The chip tracks the selection immediately — only the bridge traffic
+        // is debounced.
+        const next = mentionRangeFrom(e.selection);
+        setSelection((prev) => (sameMentionRange(prev, next) ? prev : next));
         clearTimeout(debounce);
         debounce = setTimeout(() => {
           const sel = e.selection;
           if (sel.isEmpty()) {
             ideClearSelection(dir, path);
+            streamed = false;
             return;
           }
-          // Monaco positions are 1-based lines/columns; the bridge takes
-          // 1-based lines + 0-based character columns.
+          const range = streamRangeFrom(sel);
+          streamed = true;
           ideSetSelection(
             dir,
             path,
-            sel.startLineNumber,
-            sel.endLineNumber,
-            sel.startColumn - 1,
-            sel.endColumn - 1,
+            range.startLine,
+            range.endLine,
+            range.startChar,
+            range.endChar,
           );
         }, 300);
       });
@@ -150,6 +184,10 @@ export function CodeViewer({
       editorRef.current = null;
       editor?.dispose();
       model?.dispose();
+      // Closing a file with text selected must not leave that range as the
+      // folder's ambient context — getLatestSelection would keep serving it
+      // into the next prompt.
+      if (streamed) ideClearSelection(dir, path);
       ideSetOpenFile(dir, null);
     };
   }, [dir, path]);
@@ -208,6 +246,12 @@ export function CodeViewer({
     <div className="relative h-full w-full">
       {loading && <p className="absolute p-3 text-sm text-muted-foreground">Loading…</p>}
       <div ref={containerRef} className="h-full w-full" />
+      <IdeSelectionOverlay
+        selection={selection}
+        connected={connected}
+        loading={loading}
+        onSend={() => void mention()}
+      />
     </div>
   );
 }

@@ -1,10 +1,10 @@
 # Claude Code IDE integration
 
 Towles Tool acts as an **IDE** for Claude Code sessions running in its embedded
-terminals: highlighting lines in a diff pane feeds that file + line range to the
-`claude` session in the same folder as selection context, exactly like
-highlighting code in VS Code does. This documents the wire protocol (reverse
-engineered) and how the app implements it.
+terminals: selecting lines in the file viewer or the diff pane feeds that file +
+line range to the `claude` session in the same folder as selection context,
+exactly like highlighting code in VS Code does. This documents the wire protocol
+(reverse engineered) and how the app implements it.
 
 > Protocol verified against the VS Code extension `anthropic.claude-code`
 > 2.1.207 and Claude Code CLI 2.1.208 (2026-07). It is a private protocol —
@@ -118,7 +118,7 @@ in `tools/list` are simply never called — the CLI degrades gracefully (e.g. no
 ## Towles Tool's implementation
 
 ```
-apps/client DiffPane gutter selection
+apps/client Monaco selection (Files viewer + diff pane)
         │  ide_set_selection / ide_at_mention (Tauri command, routed by folder dir)
         ▼
 crates-tauri/tt-app/src/ide.rs      one IdeServer per embedded terminal:
@@ -143,13 +143,22 @@ crates/tt-ide                       Tauri-free protocol core: lockfile schema,
   teardown all drop the `IdeServer` handle, whose `Drop` removes the lockfile.
   Startup sweeps `~/.claude/ide` for lockfiles left by dead towles-tool
   processes.
-- **Selection flow.** The diff pane's gutter selection calls
+- **Selection flow.** Monaco's `onDidChangeCursorSelection` — in
+  `components/code-viewer.tsx` (the Files viewer) and
+  `components/diff-monaco.tsx` (the modified side of each diff) — calls
   `ide_set_selection` (debounced client-side, mirroring VS Code's 300 ms) with
-  the folder dir, file path and **1-based** new-file line range; the command
-  resolves absolute paths, converts to 0-based at the boundary, caches the
-  selection per server (serving `getCurrentSelection`/`getLatestSelection`),
-  and pushes `selection_changed` to every connected session rooted in that
-  folder. "Send to Claude" fires `ide_at_mention` the same way.
+  the folder dir, file path, **1-based** line range and **0-based** character
+  columns; the command resolves absolute paths, converts lines to 0-based at
+  the boundary, caches the selection per server (serving
+  `getCurrentSelection`/`getLatestSelection`), and pushes `selection_changed`
+  to every connected session rooted in that folder. Closing a file clears the
+  cached selection, so a stale range can't ride the next prompt.
+- **Explicit @-mention.** Two gestures fire `ide_at_mention`: the selection
+  chip's `@ send` button (or `⌘⇧A`) sends the highlighted range as
+  `@file#L12-40`, and the Files pane header's `@` button sends the whole file
+  with no range. The conversions live in `lib/ide-selection.ts` — notably the
+  rule that an empty selection means *whole file*, and that a selection ending
+  in column 1 of the following line doesn't count that line.
 - **Advertised tools**: `getCurrentSelection`, `getLatestSelection`,
   `getWorkspaceFolders`, `getOpenEditors`, `getDiagnostics` (real cargo/tsc
   results via the app's DiagHub — see `crates-tauri/tt-app/src/diagnostics.rs`),
@@ -164,14 +173,26 @@ crates/tt-ide                       Tauri-free protocol core: lockfile schema,
   `executeCode` (notebooks), `saveDocument` (the viewer autosurfaces dirty
   state instead).
 - **Status surface.** Connect/disconnect emits `ide://status`
-  (`{termId, connected}`); the diff pane shows a "Claude connected" badge so
-  you know a highlight is actually going somewhere.
+  (`{termId, connected}`); the Files and diff panes both show a "✦ claude"
+  badge, and the selection chip reads "live to claude", so you know a highlight
+  is actually going somewhere.
 
 ### Future work
 
-- Full LSP (rust-analyzer / typescript-language-server bridged to Monaco via
-  monaco-languageclient) — deliberately deferred: it costs real memory per
-  slot, and the cargo/tsc diagnostics above may already cover the need.
-  Revisit as a per-folder opt-in if they prove insufficient.
+- **LSP is no longer deferred — it shipped, and is on probation.**
+  `apps/client/src/lib/lsp.ts` + `crates-tauri/tt-app/src/lsp.rs` bridge
+  rust-analyzer to Monaco over Tauri IPC (`lsp_send` down, `lsp://msg` up), one
+  server following the active workspace. It started as an unobservable spike —
+  failures went to `console.warn`, so nobody could tell whether it had ever
+  served a hover — and now reports `starting`/`ready`/`failed` through a chip
+  in the Files pane header. Keep or cut it on that evidence.
+
+  Two costs to weigh when deciding. `vscode/localExtensionHost` registers an
+  initialize-time participant, so it **cannot** be made lazy: every editor
+  mount pays for the extension host even in checkouts with no `Cargo.toml`.
+  And `monaco-languageclient` is a caret-pinned prerelease.
+- Diagnostics still come only from the compiler-shellout hub
+  (`crates-tauri/tt-app/src/diagnostics.rs`); rust-analyzer's markers land in
+  Monaco but never reach `getDiagnostics`. Wiring them through is unclaimed.
 - `saveDocument` (needs nothing new — the blocking-tool machinery from
   `openDiff` can drive a save request into the viewer).

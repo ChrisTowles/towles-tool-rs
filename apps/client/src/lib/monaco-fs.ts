@@ -5,6 +5,15 @@
  * search, editor model resolution) see the real disk. Read-only by design —
  * writes go through CodeViewer's mtime-guarded `ide_write_file` path, never
  * through the provider.
+ *
+ * `@codingame/monaco-vscode-files-service-override` is imported here but is
+ * deliberately NOT a direct dependency in package.json, and it looks like an
+ * oversight every time someone reads it. Declaring it adds it to
+ * `monacoVscodeDeps`, which feeds `optimizeDeps.include` in vite.config.ts —
+ * and pre-bundling it as its own entry yields a *second* copy of the files
+ * service. The overlay below then registers on one instance while the search
+ * service walks the other, and quick-open silently reports "No matching
+ * results" for every query. Leave it transitive so there's exactly one copy.
  */
 
 import {

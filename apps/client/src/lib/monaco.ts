@@ -9,169 +9,180 @@
  *
  * The editor renders one theme (Default Dark Modern) regardless of the app's
  * light/dark mode.
+ *
+ * Two guards keep the workbench half of this stack from taking the window
+ * down: `PRUNED_COMMANDS` is shadowed with no-ops below (the commands that
+ * would open a native dialog or write through the read-only file provider),
+ * and `lib/monaco-dialogs` replaces the standalone dialog service, whose
+ * `confirm` is a literal blocking `window.confirm()`. See `lib/monaco-prune.ts`.
  */
+
+import { PRUNED_COMMANDS, staleCommands } from "@/lib/monaco-prune";
 
 let loading: Promise<typeof import("monaco-editor")> | null = null;
 
 export function loadMonaco(): Promise<typeof import("monaco-editor")> {
-  loading ??= (async () => {
-    const [
-      monaco,
-      api,
-      ,
-      configuration,
-      languages,
-      textmate,
-      theme,
-      model,
-      quickaccess,
-      views,
-      explorer,
-      search,
-      tauriFs,
-      editorWorker,
-      textmateWorker,
-      tsWorker,
-      jsonWorker,
-      cssWorker,
-      htmlWorker,
-    ] = await Promise.all([
-      import("monaco-editor"),
-      import("@codingame/monaco-vscode-api"),
-      // Local extension host — the LSP bridge's monaco-languageclient runs
-      // as a local extension against the vscode API (must load before
-      // initialize).
-      import("vscode/localExtensionHost"),
-      import("@codingame/monaco-vscode-configuration-service-override"),
-      import("@codingame/monaco-vscode-languages-service-override"),
-      import("@codingame/monaco-vscode-textmate-service-override"),
-      import("@codingame/monaco-vscode-theme-service-override"),
-      import("@codingame/monaco-vscode-model-service-override"),
-      import("@codingame/monaco-vscode-quickaccess-service-override"),
-      import("@codingame/monaco-vscode-views-service-override"),
-      import("@codingame/monaco-vscode-explorer-service-override"),
-      import("@codingame/monaco-vscode-search-service-override"),
-      import("@/lib/monaco-fs"),
-      import("monaco-editor/esm/vs/editor/editor.worker?worker"),
-      import("@codingame/monaco-vscode-textmate-service-override/worker?worker"),
-      import("@codingame/monaco-vscode-standalone-typescript-language-features/worker?worker"),
-      import("@codingame/monaco-vscode-standalone-json-language-features/worker?worker"),
-      import("@codingame/monaco-vscode-standalone-css-language-features/worker?worker"),
-      import("@codingame/monaco-vscode-standalone-html-language-features/worker?worker"),
-      // Importing a default-extension package registers its TextMate grammars
-      // (or themes) as a built-in VS Code extension — side-effect imports.
-      // (themeDefaults is awaited below: setTheme races its registration.)
-    ]);
-    const [themeDefaults] = await Promise.all([
-      import("@codingame/monaco-vscode-theme-defaults-default-extension"),
-      import("@codingame/monaco-vscode-rust-default-extension"),
-      import("@codingame/monaco-vscode-typescript-basics-default-extension"),
-      import("@codingame/monaco-vscode-javascript-default-extension"),
-      import("@codingame/monaco-vscode-json-default-extension"),
-      import("@codingame/monaco-vscode-css-default-extension"),
-      import("@codingame/monaco-vscode-html-default-extension"),
-      import("@codingame/monaco-vscode-markdown-basics-default-extension"),
-      import("@codingame/monaco-vscode-yaml-default-extension"),
-      import("@codingame/monaco-vscode-shellscript-default-extension"),
-      import("@codingame/monaco-vscode-python-default-extension"),
-      import("@codingame/monaco-vscode-log-default-extension"),
-      import("@codingame/monaco-vscode-diff-default-extension"),
-      // Standalone language features: monaco's classic worker-based smarts
-      // (completions/hovers/diagnostics for ts/js/json/css/html), rebuilt for
-      // the vscode-api stack — no extension host needed.
-      import("@codingame/monaco-vscode-standalone-typescript-language-features"),
-      import("@codingame/monaco-vscode-standalone-json-language-features"),
-      import("@codingame/monaco-vscode-standalone-css-language-features"),
-      import("@codingame/monaco-vscode-standalone-html-language-features"),
-    ]);
-    self.MonacoEnvironment = {
-      getWorker(_workerId: string, label: string): Worker {
-        switch (label) {
-          case "TextMateWorker":
-            return new textmateWorker.default();
-          case "typescript":
-          case "javascript":
-            return new tsWorker.default();
-          case "json":
-            return new jsonWorker.default();
-          case "css":
-          case "scss":
-          case "less":
-            return new cssWorker.default();
-          case "html":
-          case "handlebars":
-          case "razor":
-            return new htmlWorker.default();
-          default:
-            return new editorWorker.default();
-        }
-      },
-    };
-    // Through user config, seeded before the services start — `setTheme`
-    // races the theme service's own async startup restore and loses.
-    await configuration.initUserConfiguration(
-      JSON.stringify({
-        "workbench.colorTheme": "Default Dark Modern",
-        "editor.stickyScroll.enabled": true,
-        "editor.bracketPairColorization.enabled": true,
-        "editor.guides.bracketPairs": "active",
-        // Quick-open walks the workspace through the Tauri fs bridge — keep
-        // it out of the build/dependency trees.
-        "search.exclude": {
-          "**/node_modules": true,
-          "**/target": true,
-          "**/dist": true,
-          "**/.git": true,
-        },
-        // Keep the Explorer focused on source — build trees stay reachable
-        // via a terminal, not the tree.
-        "files.exclude": {
-          "**/.git": true,
-          "**/node_modules": true,
-          "**/target": true,
-        },
-      }),
-    );
-    await api.initialize({
-      ...configuration.default(),
-      ...languages.default(),
-      ...textmate.default(),
-      ...theme.default(),
-      // Resolves file: URIs into models through the file service (the Tauri
-      // fs bridge) — quick-open's Enter path needs this.
-      ...model.default(),
-      ...quickaccess.default({
-        // The app has no VS Code keybindings UI; always use the real picker.
-        isKeybindingConfigurationVisible: () => false,
-        shouldUseGlobalPicker: () => true,
-      }),
-      // Workbench views (the Files pane hosts the real Explorer via
-      // attachExplorer). Spread after quickaccess so the workbench's own
-      // quick-input wiring wins where they overlap. No editor part is ever
-      // attached — the fallback routes Explorer opens to the app's viewer.
-      ...views.default(async (modelRef) => {
-        const uri = modelRef.object.textEditorModel.uri;
-        modelRef.dispose();
-        if (uri.scheme === "file" && openHandler != null) openHandler(uri.path);
-        return undefined;
-      }),
-      ...explorer.default(),
-      ...search.default(),
-    });
-    tauriFs.registerTauriFileSystem();
-    await themeDefaults.whenReady();
-    // Quick-open (and anything else workbench-y) resolves picked files
-    // through the editor opener — route them to the app's own viewer.
-    monaco.editor.registerEditorOpener({
-      openCodeEditor(_source, resource) {
-        if (resource.scheme !== "file" || openHandler == null) return false;
-        openHandler(resource.path);
-        return true;
-      },
-    });
-    return monaco;
-  })();
+  // The catch clears the cache: without it one failed bootstrap poisons
+  // every editor, diff and quick-open for the life of the window.
+  loading ??= start().catch((e: unknown) => {
+    loading = null;
+    throw e;
+  });
   return loading;
+}
+
+async function start(): Promise<typeof import("monaco-editor")> {
+  const [
+    monaco,
+    api,
+    ,
+    configuration,
+    languages,
+    textmate,
+    theme,
+    model,
+    quickaccess,
+    views,
+    explorer,
+    search,
+    tauriFs,
+    dialogs,
+    editorWorker,
+    textmateWorker,
+  ] = await Promise.all([
+    import("monaco-editor"),
+    import("@codingame/monaco-vscode-api"),
+    // Local extension host — the LSP bridge's monaco-languageclient runs
+    // as a local extension against the vscode API (must load before
+    // initialize).
+    import("vscode/localExtensionHost"),
+    import("@codingame/monaco-vscode-configuration-service-override"),
+    import("@codingame/monaco-vscode-languages-service-override"),
+    import("@codingame/monaco-vscode-textmate-service-override"),
+    import("@codingame/monaco-vscode-theme-service-override"),
+    import("@codingame/monaco-vscode-model-service-override"),
+    import("@codingame/monaco-vscode-quickaccess-service-override"),
+    import("@codingame/monaco-vscode-views-service-override"),
+    import("@codingame/monaco-vscode-explorer-service-override"),
+    import("@codingame/monaco-vscode-search-service-override"),
+    import("@/lib/monaco-fs"),
+    import("@/lib/monaco-dialogs"),
+    import("monaco-editor/esm/vs/editor/editor.worker?worker"),
+    import("@codingame/monaco-vscode-textmate-service-override/worker?worker"),
+    // Importing a default-extension package registers its TextMate grammars
+    // (or themes) as a built-in VS Code extension — side-effect imports.
+    // (themeDefaults is awaited below: setTheme races its registration.)
+  ]);
+  const [themeDefaults] = await Promise.all([
+    import("@codingame/monaco-vscode-theme-defaults-default-extension"),
+    import("@codingame/monaco-vscode-rust-default-extension"),
+    import("@codingame/monaco-vscode-typescript-basics-default-extension"),
+    import("@codingame/monaco-vscode-javascript-default-extension"),
+    import("@codingame/monaco-vscode-json-default-extension"),
+    import("@codingame/monaco-vscode-css-default-extension"),
+    import("@codingame/monaco-vscode-html-default-extension"),
+    import("@codingame/monaco-vscode-markdown-basics-default-extension"),
+    import("@codingame/monaco-vscode-yaml-default-extension"),
+    import("@codingame/monaco-vscode-shellscript-default-extension"),
+    import("@codingame/monaco-vscode-python-default-extension"),
+    import("@codingame/monaco-vscode-log-default-extension"),
+    import("@codingame/monaco-vscode-diff-default-extension"),
+    // No standalone language features: this pane is a file *browser*, and
+    // their TS worker has no tsconfig, no node_modules resolution and no
+    // project graph, so every real source file lit up with bogus "cannot
+    // find module" errors. They were also the only formatting providers in
+    // the app, which is what made Format Document work for a handful of
+    // languages and prompt-then-hang for the rest.
+  ]);
+  self.MonacoEnvironment = {
+    getWorker(_workerId: string, label: string): Worker {
+      // Highlighting runs in the TextMate worker; everything else (diff
+      // computation, model ops) is the plain editor worker.
+      return label === "TextMateWorker"
+        ? new textmateWorker.default()
+        : new editorWorker.default();
+    },
+  };
+  // Through user config, seeded before the services start — `setTheme`
+  // races the theme service's own async startup restore and loses.
+  await configuration.initUserConfiguration(
+    JSON.stringify({
+      "workbench.colorTheme": "Default Dark Modern",
+      "editor.stickyScroll.enabled": true,
+      "editor.bracketPairColorization.enabled": true,
+      "editor.guides.bracketPairs": "active",
+      // Quick-open walks the workspace through the Tauri fs bridge — keep
+      // it out of the build/dependency trees.
+      "search.exclude": {
+        "**/node_modules": true,
+        "**/target": true,
+        "**/dist": true,
+        "**/.git": true,
+      },
+      // Keep the Explorer focused on source — build trees stay reachable
+      // via a terminal, not the tree.
+      "files.exclude": {
+        "**/.git": true,
+        "**/node_modules": true,
+        "**/target": true,
+      },
+    }),
+  );
+  await api.initialize({
+    ...configuration.default(),
+    ...languages.default(),
+    ...textmate.default(),
+    ...theme.default(),
+    // Resolves file: URIs into models through the file service (the Tauri
+    // fs bridge) — quick-open's Enter path needs this.
+    ...model.default(),
+    ...quickaccess.default({
+      // The app has no VS Code keybindings UI; always use the real picker.
+      isKeybindingConfigurationVisible: () => false,
+      shouldUseGlobalPicker: () => true,
+    }),
+    // Workbench views (the Files pane hosts the real Explorer via
+    // attachExplorer). Spread after quickaccess so the workbench's own
+    // quick-input wiring wins where they overlap. No editor part is ever
+    // attached — the fallback routes Explorer opens to the app's viewer.
+    ...views.default(async (modelRef) => {
+      const uri = modelRef.object.textEditorModel.uri;
+      modelRef.dispose();
+      if (uri.scheme === "file" && openHandler != null) openHandler(uri.path);
+      return undefined;
+    }),
+    ...explorer.default(),
+    ...search.default(),
+    // Last: nothing above may reinstate the standalone dialog service,
+    // whose confirm() is a blocking native window.confirm().
+    ...dialogs.default(),
+  });
+  tauriFs.registerTauriFileSystem();
+  // Checked before shadowing — afterwards every id exists by construction,
+  // so a rename would look healthy while the real handler stayed live.
+  const { CommandsRegistry } = await import(
+    "@codingame/monaco-vscode-api/vscode/vs/platform/commands/common/commands"
+  );
+  const stale = staleCommands(CommandsRegistry.getCommands().keys());
+  if (stale.length > 0) {
+    console.error(
+      `[monaco] shadowed commands are gone upstream (renamed?), so they are live again: ${stale.join(", ")}`,
+    );
+  }
+  // After initialize, so these land on top of the workbench contributions
+  // they shadow (CommandsRegistry keeps the newest handler for an id).
+  for (const id of PRUNED_COMMANDS) monaco.editor.registerCommand(id, () => {});
+  await themeDefaults.whenReady();
+  // Quick-open (and anything else workbench-y) resolves picked files
+  // through the editor opener — route them to the app's own viewer.
+  monaco.editor.registerEditorOpener({
+    openCodeEditor(_source, resource) {
+      if (resource.scheme !== "file" || openHandler == null) return false;
+      openHandler(resource.path);
+      return true;
+    },
+  });
+  return monaco;
 }
 
 let workspaceDir: string | null = null;
@@ -217,12 +228,17 @@ export async function attachExplorer(container: HTMLElement): Promise<() => void
   return mine;
 }
 
-/** Run a VS Code command by id (e.g. the Explorer's refresh action). */
+/** Run a VS Code command by id (e.g. the Explorer's refresh action). Command
+ * failures are the command's problem, not the caller's — log and move on. */
 export async function runMonacoCommand(id: string): Promise<void> {
-  await loadMonaco();
-  const api = await import("@codingame/monaco-vscode-api");
-  const commands = await api.getService(api.ICommandService);
-  await commands.executeCommand(id);
+  try {
+    await loadMonaco();
+    const api = await import("@codingame/monaco-vscode-api");
+    const commands = await api.getService(api.ICommandService);
+    await commands.executeCommand(id);
+  } catch (e) {
+    console.error(`[monaco] command ${id} failed`, e);
+  }
 }
 
 type OpenFileHandler = (absolutePath: string) => void;
