@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { UserSettingsSchema } from "./schemas/settings";
-import { invokeCmd, invokeOrThrow } from "./tauri";
-import { SETTINGS_SAVED_EVENT, type UserSettings } from "./settings";
+import { SETTINGS_SAVED_EVENT, loadUserSettings, saveUserSettings } from "./settings";
 
 /** Built-in default for `agentboard.copyOnSelect` — on, matching tt-config. */
 export const DEFAULT_COPY_ON_SELECT = true;
@@ -31,7 +29,7 @@ export function useCopyOnSelect(): RefObject<boolean> {
   useEffect(() => {
     let alive = true;
     const load = () =>
-      void invokeCmd<UserSettings>("settings_get", {}, UserSettingsSchema).then((s) => {
+      void loadUserSettings().then((s) => {
         if (alive && s) ref.current = s.agentboard?.copyOnSelect ?? DEFAULT_COPY_ON_SELECT;
       });
     load();
@@ -58,7 +56,7 @@ export function useTerminalFontSize(): [number, (px: number) => void] {
   useEffect(() => {
     let alive = true;
     const load = () =>
-      void invokeCmd<UserSettings>("settings_get", {}, UserSettingsSchema).then((s) => {
+      void loadUserSettings().then((s) => {
         if (alive && s)
           setFontSize(
             clampTerminalFontSize(s.agentboard?.terminalFontSize ?? DEFAULT_TERMINAL_FONT_SIZE),
@@ -79,13 +77,14 @@ export function useTerminalFontSize(): [number, (px: number) => void] {
   const persist = useCallback((px: number) => {
     const clamped = clampTerminalFontSize(px);
     setFontSize(clamped);
-    void invokeCmd<UserSettings>("settings_get", {}, UserSettingsSchema).then((s) => {
+    void loadUserSettings().then((s) => {
       if (!s) return;
-      void invokeOrThrow("settings_set", {
-        settings: { ...s, agentboard: { ...s.agentboard, terminalFontSize: clamped } },
-      })
-        .then(() => window.dispatchEvent(new Event(SETTINGS_SAVED_EVENT)))
-        .catch(() => {});
+      // Best-effort: a failed zoom persist leaves the on-screen size correct
+      // for this session, so there's nothing actionable to tell the user.
+      void saveUserSettings({
+        ...s,
+        agentboard: { ...s.agentboard, terminalFontSize: clamped },
+      });
     });
   }, []);
 

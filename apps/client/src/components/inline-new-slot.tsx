@@ -40,8 +40,9 @@ import {
   isPasteableImage,
   nextDraftScopeId,
 } from "@/lib/agentboard";
+import { errorMessage } from "@/lib/errors";
 import { BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
-import { invokeOrThrow } from "@/lib/tauri";
+import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
 const MODEL_OPTIONS: { value: ClaudeModel; label: string }[] = [
@@ -181,13 +182,20 @@ export function InlineNewSlot({
     // so this mainly guards a fast close-then-reopen of the same repo's form
     // against a stale fetch's `.then` landing after a fresh one already has.
     let cancelled = false;
-    invokeOrThrow<string[]>("slot_base_branches", { root: repo.dir }, BaseBranchesSchema)
-      .then((list) => {
-        if (cancelled) return;
-        setBranches(list);
-        setBase(list[0] ?? "main");
-      })
-      .catch((e) => !cancelled && setError(String(e)));
+    void invoke<string[]>(
+      "slot_base_branches",
+      { root: repo.dir },
+      { schema: BaseBranchesSchema },
+    ).then((result) => {
+      if (cancelled) return;
+      result.match({
+        ok: (list) => {
+          setBranches(list);
+          setBase(list[0] ?? "main");
+        },
+        err: (e) => setError(e.message),
+      });
+    });
     return () => {
       cancelled = true;
     };
@@ -207,9 +215,9 @@ export function InlineNewSlot({
     }
     let cancelled = false;
     const timer = setTimeout(() => {
-      invokeOrThrow<BranchCheck>("slot_check_branch", { root: repo.dir, branch })
-        .then((check) => !cancelled && setBranchCheck(check))
-        .catch(() => !cancelled && setBranchCheck(null));
+      void invoke<BranchCheck>("slot_check_branch", { root: repo.dir, branch }).then((check) => {
+        if (!cancelled) setBranchCheck(check.unwrapOr(null));
+      });
     }, 300);
     return () => {
       cancelled = true;
@@ -236,20 +244,20 @@ export function InlineNewSlot({
     if (suggesting || (!goal.trim() && !imagePaths.length)) return;
     setSuggesting(true);
     setError(null);
-    try {
-      const suggestion = await invokeOrThrow<SlotSuggestion>("slot_suggest", {
-        dir: repo.dir,
-        goal,
-        imagePaths,
-      });
-      setPreSuggest({ goal, branchEdit });
-      setGoal(suggestion.goal);
-      setBranchEdit(suggestion.branch);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSuggesting(false);
-    }
+    const suggestion = await invoke<SlotSuggestion>("slot_suggest", {
+      dir: repo.dir,
+      goal,
+      imagePaths,
+    });
+    suggestion.match({
+      ok: (s) => {
+        setPreSuggest({ goal, branchEdit });
+        setGoal(s.goal);
+        setBranchEdit(s.branch);
+      },
+      err: (e) => setError(e.message),
+    });
+    setSuggesting(false);
   }
 
   function undoSuggest() {
@@ -289,31 +297,31 @@ export function InlineNewSlot({
       return;
     }
     setStaging(true);
-    try {
-      const paths = await invokeOrThrow<string[]>(
-        "slot_write_pasted_images",
-        {
-          repo: repo.name,
-          branch: draftScope,
-          images: list.map(({ mime, dataBase64 }) => ({ mime, dataBase64 })),
-        },
-        PastedImagePathsSchema,
-      );
-      setImagePaths(paths);
-    } catch (e) {
-      setImages([]);
-      setImagePaths([]);
-      setError(`Couldn't attach that image: ${e}`);
-    } finally {
-      setStaging(false);
-    }
+    const staged = await invoke<string[]>(
+      "slot_write_pasted_images",
+      {
+        repo: repo.name,
+        branch: draftScope,
+        images: list.map(({ mime, dataBase64 }) => ({ mime, dataBase64 })),
+      },
+      { schema: PastedImagePathsSchema },
+    );
+    staged.match({
+      ok: setImagePaths,
+      err: (e) => {
+        setImages([]);
+        setImagePaths([]);
+        setError(`Couldn't attach that image: ${e.message}`);
+      },
+    });
+    setStaging(false);
   }
 
   async function pasteImages(data: DataTransfer | null) {
     try {
       await addImages(await imagesFromDataTransfer(data));
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     }
   }
 
@@ -326,15 +334,10 @@ export function InlineNewSlot({
   // platforms and silently do nothing on this one. `keydown` always fires,
   // and the host clipboard is the same source the user actually copied to.
   async function pasteFromHostClipboard(): Promise<boolean> {
-    try {
-      const image = await clipboardImageFromHost();
-      if (!image) return false;
-      await addImages([image]);
-      return true;
-    } catch (e) {
-      setError(String(e));
-      return false;
-    }
+    const image = await clipboardImageFromHost();
+    if (!image) return false;
+    await addImages([image]);
+    return true;
   }
 
   function removeImage(id: string) {

@@ -1,131 +1,102 @@
 import type { ZodType } from "zod";
-import { toast } from "sonner";
+import { Result } from "better-result";
+import { IpcFailed, IpcTimeout, NotInTauri, SchemaMismatch } from "@/lib/errors";
+import type { IpcError } from "@/lib/errors";
 
 /** True when running inside the Tauri shell (vs. plain-Vite browser dev). */
 export const isTauri = () => "__TAURI_INTERNALS__" in window;
 
-/**
- * Invoke a Tauri command from the frontend. Returns `null` in plain-Vite
- * browser dev (no Tauri host) or if the command throws, so callers can degrade
- * gracefully instead of crashing the UI.
- *
- * An optional Zod `schema` validates the response at this boundary (#38) — a
- * shape mismatch is logged and treated the same as any other failure (`null`),
- * matching this function's existing "never throws" contract. Most call sites
- * still omit it; adoption is intentionally staged to the highest-risk
- * boundaries (shared on-disk settings, external API payloads) rather than a
- * full sweep in one pass.
- */
-export async function invokeCmd<T>(
-  cmd: string,
-  args: Record<string, unknown> = {},
-  schema?: ZodType<T>,
-): Promise<T | null> {
-  if (!isTauri()) return null;
-  const { invoke } = await import("@tauri-apps/api/core");
-  try {
-    const result = await invoke<T>(cmd, args);
-    if (!schema) return result;
-    const parsed = schema.safeParse(result);
-    if (!parsed.success) {
-      console.error(`invokeCmd(${cmd}): response failed schema validation`, parsed.error.issues);
-      return null;
-    }
-    return parsed.data;
-  } catch {
-    return null;
-  }
-}
+/** Per-call knobs. Both are off by default. */
+export type InvokeOptions<T> = {
+  /**
+   * Validates the response at this boundary. A mismatch is a
+   * {@link SchemaMismatch} error, not a thrown exception — backend/frontend
+   * contract drift is an expected failure, not a defect.
+   */
+  schema?: ZodType<T>;
+  /**
+   * Fails the call with {@link IpcTimeout} once elapsed, so a command whose
+   * backend work never resolves can't leave an "in progress" UI state stuck
+   * forever. This only abandons *this* promise — the backend command keeps
+   * running to completion regardless, since Tauri commands aren't cancelable.
+   */
+  timeoutMs?: number;
+};
 
 /**
- * Invoke a Tauri command, letting errors propagate so the caller can tell
- * success from failure (unlike {@link invokeCmd}, which flattens both to
- * `null`). Rejects if not running under Tauri.
+ * Invoke a Tauri command. Never throws and never rejects: every failure —
+ * no Tauri host, a rejected command, a schema mismatch, a timeout — comes back
+ * as a typed `Err` in the {@link IpcError} union.
  *
- * An optional Zod `schema` validates the response (#38); a mismatch throws,
- * matching this function's existing "let errors propagate" contract.
+ * Because failure is a value, each call site picks its own failure UX rather
+ * than inheriting one from the function it happened to call. The three shapes
+ * in use here:
  *
- * An optional `timeoutMs` rejects the returned promise once it elapses, so a
- * command whose backend work never resolves (a stalled subprocess, a stuck
- * IPC round trip) can't leave a caller's "in progress" UI state stuck
- * forever. This only abandons *this* promise — the backend command keeps
- * running to completion regardless, since Tauri commands aren't cancelable.
+ * ```ts
+ * // Degrade quietly to a fallback.
+ * const repos = (await invoke<Repo[]>("list_repos")).unwrapOr([]);
+ *
+ * // Surface real failures, but stay silent in plain-Vite browser dev.
+ * (await invoke<View>("load_view")).match({
+ *   ok: setView,
+ *   err: (e) => { if (!NotInTauri.is(e)) toast.error(e.message); },
+ * });
+ *
+ * // Branch on the outcome.
+ * if ((await invoke("store_delete_task", { id })).isErr()) revertOptimisticDelete();
+ * ```
+ *
+ * Fire-and-forget is safe by construction: an ignored `Result` can't produce an
+ * unhandled rejection, so the hot PTY-write path needs no `.catch`.
  */
-export async function invokeOrThrow<T>(
+export async function invoke<T>(
   cmd: string,
   args: Record<string, unknown> = {},
-  schema?: ZodType<T>,
-  timeoutMs?: number,
-): Promise<T> {
-  if (!isTauri()) {
-    throw new Error("not running under Tauri");
-  }
-  const { invoke } = await import("@tauri-apps/api/core");
-  const invocation = invoke<T>(cmd, args);
-  const result = await (timeoutMs ? withTimeout(invocation, timeoutMs, cmd) : invocation);
-  if (!schema) return result;
-  const parsed = schema.safeParse(result);
-  if (!parsed.success) {
-    throw new Error(
-      `invokeOrThrow(${cmd}): response failed schema validation: ${parsed.error.message}`,
-    );
-  }
-  return parsed.data;
-}
+  options: InvokeOptions<T> = {},
+): Promise<Result<T, IpcError>> {
+  if (!isTauri()) return Result.err(new NotInTauri({ command: cmd }));
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    promise.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
-    );
+  const { schema, timeoutMs } = options;
+  const core = await import("@tauri-apps/api/core");
+
+  // The command is invoked inside the thunk, not before it, so each attempt is
+  // a fresh call — re-awaiting one already-settled promise would make any
+  // future `retry` config a silent no-op.
+  const settled = await Result.tryPromise({
+    try: () => {
+      const call = core.invoke<T>(cmd, args);
+      return timeoutMs === undefined ? call : withTimeout(call, timeoutMs, cmd);
+    },
+    catch: (cause): IpcError =>
+      IpcTimeout.is(cause) ? cause : new IpcFailed({ command: cmd, cause }),
+  });
+
+  return settled.andThen((value) => {
+    if (!schema) return Result.ok<T, IpcError>(value);
+    const parsed = schema.safeParse(value);
+    return parsed.success
+      ? Result.ok<T, IpcError>(parsed.data)
+      : Result.err<T, IpcError>(new SchemaMismatch({ command: cmd, issues: parsed.error.issues }));
   });
 }
 
 /**
- * Read-style command wrapper for optional data: `null` in browser dev (silently)
- * or on failure (after surfacing the error as a toast). Shared by the journal
- * and claude-sessions bridges, which return real payloads or nothing.
+ * Rejects with {@link IpcTimeout} once `ms` elapses. Rejecting (rather than
+ * resolving an `Err`) keeps this composable with `Result.tryPromise` above,
+ * which classifies it back into the error union.
  */
-export async function invokeToast<T>(
-  cmd: string,
-  args: Record<string, unknown> = {},
-): Promise<T | null> {
-  if (!isTauri()) return null;
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return await invoke<T>(cmd, args);
-  } catch (e) {
-    toast.error(String(e));
-    return null;
-  }
-}
-
-/**
- * Write-style command wrapper: `true` on success, `false` in browser dev (with
- * an info toast) or on failure (after an error toast). Distinct from
- * {@link invokeToast} because a void Tauri command resolves to `null`, so a
- * `T | null` result can't tell success from failure — callers that revert an
- * optimistic update need the boolean.
- */
-export async function invokeOk(cmd: string, args: Record<string, unknown> = {}): Promise<boolean> {
-  if (!isTauri()) {
-    toast.info("not wired in browser");
-    return false;
-  }
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke(cmd, args);
-    return true;
-  } catch (e) {
-    toast.error(String(e));
-    return false;
-  }
+function withTimeout<T>(promise: Promise<T>, ms: number, command: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new IpcTimeout({ command, timeoutMs: ms })), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }

@@ -59,7 +59,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { SlotCreatedSchema } from "@/lib/schemas/slots";
 import { cn } from "@/lib/utils";
 import {
-  abInvoke,
   changedFolderDirs,
   ClaudeLaunchOptions,
   claudeCommand,
@@ -121,7 +120,7 @@ import {
   windowColor,
 } from "@/lib/agentboard";
 import { exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
-import { invokeOrThrow, isTauri } from "@/lib/tauri";
+import { invoke, isTauri } from "@/lib/tauri";
 import type { OpenFileRequest } from "@/lib/ide";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
@@ -167,6 +166,33 @@ const RAIL_COLLAPSE_KEY = "__rail__";
 const closeOnFalse = (fn: () => void) => (isOpen: boolean) => {
   if (!isOpen) fn();
 };
+
+/** Repos discoverable under the configured scan roots. Empty when the scan
+ * fails — the rail's "add repo" list is a suggestion, not a source of truth. */
+async function fetchCandidates(): Promise<RepoCandidate[]> {
+  return (await invoke<RepoCandidate[]>("ab_discover_repos")).unwrapOr([]);
+}
+
+/** Untrack every repo whose directory is gone from disk, reporting the count.
+ * The Rust side re-probes at call time, so a directory restored since the last
+ * poll survives. */
+async function cleanupMissing() {
+  const removed = await invoke<string[]>("ab_untrack_missing", {});
+  if (removed.isErr()) {
+    toast.error(`Couldn't clean up — ${removed.error.message}`);
+    return;
+  }
+  const n = removed.value.length;
+  toast(n > 0 ? `Untracked ${n} missing repo${n === 1 ? "" : "s"}.` : "Nothing to clean up.");
+}
+
+/** A pane's grid rect as absolute-positioning percentages. */
+const paneStyle = (r: PaneRect) => ({
+  left: `${r.left}%`,
+  top: `${r.top}%`,
+  width: `${r.width}%`,
+  height: `${r.height}%`,
+});
 
 export function AgentboardScreen() {
   const state = useAgentboardState();
@@ -271,7 +297,7 @@ export function AgentboardScreen() {
   function toggleCollapsed(key: string) {
     setCollapsed((c) => {
       const next = !c[key];
-      void abInvoke("ab_save_collapsed", { key, collapsed: next });
+      void invoke("ab_save_collapsed", { key, collapsed: next });
       return { ...c, [key]: next };
     });
   }
@@ -509,7 +535,7 @@ export function AgentboardScreen() {
     saveTimer.current = setTimeout(() => {
       const touchedFolders = [...dirtyWinFolders.current];
       dirtyWinFolders.current = new Set();
-      void abInvoke("ab_save_windows", { payload: next, touchedFolders });
+      void invoke("ab_save_windows", { payload: next, touchedFolders });
     }, 400);
   }
 
@@ -633,18 +659,22 @@ export function AgentboardScreen() {
   // giving it content — spawn a fresh session and open the new window around
   // it in one move.
   async function newWindow(folderDir: string) {
-    const rec = await abInvoke<SessionData>("ab_add_session", { dir: folderDir, name: null });
-    if (!rec) return;
+    const added = await invoke<SessionData>("ab_add_session", { dir: folderDir, name: null });
+    if (added.isErr()) return;
+    const sessionId = added.value.id;
     const id = nextWindowId();
     updateWins([folderDir], (cur) => {
       const count = cur.windows.filter((w) => w.folderDir === folderDir).length;
       return {
-        windows: [...cur.windows, { id, name: `window ${count + 1}`, folderDir, panes: [rec.id] }],
+        windows: [
+          ...cur.windows,
+          { id, name: `window ${count + 1}`, folderDir, panes: [sessionId] },
+        ],
         activeWindows: { ...cur.activeWindows, [folderDir]: id },
       };
     });
     // Mount + focus the session; `placePane` sees it already hosted here.
-    selectSession(folderDir, rec.id);
+    selectSession(folderDir, sessionId);
   }
 
   // --- Column resize: drag the divider between two side-by-side panes. Live
@@ -780,7 +810,7 @@ export function AgentboardScreen() {
   // `unseen` flags (`sessionCatchesEye`'s pulse) via the backend tracker.
   function ackFolder(folderDir: string) {
     const name = folderNameByDir.get(folderDir);
-    if (name) void abInvoke("ab_mark_seen", { name });
+    if (name) void invoke("ab_mark_seen", { name });
   }
 
   // ab-jump-next/ab-jump-prev (see lib/shortcuts.tsx): board-wide, wraps
@@ -831,13 +861,13 @@ export function AgentboardScreen() {
   // itself — `slot_create`'s warning already says so. Give it a one-click
   // retry rather than making the user remember to re-run it from a terminal.
   async function retrySetup(dir: string) {
-    try {
-      const warning = await invokeOrThrow<string | null>("slot_run_setup", { dir });
-      if (warning) toast(warning, { action: retryAction(dir) });
-      else toast("setup succeeded");
-    } catch (e) {
-      toast(String(e));
-    }
+    (await invoke<string | null>("slot_run_setup", { dir })).match({
+      ok: (warning) => {
+        if (warning) toast(warning, { action: retryAction(dir) });
+        else toast("setup succeeded");
+      },
+      err: (e) => toast(e.message),
+    });
   }
 
   function retryAction(dir: string) {
@@ -878,33 +908,34 @@ export function AgentboardScreen() {
         status: "creating",
       },
     ]);
-    try {
-      const imagePaths = input.imagePaths;
-      const created = await invokeOrThrow<SlotCreated>(
-        "slot_create",
-        { root: repo.dir, branch: input.branch, base: input.base },
-        SlotCreatedSchema,
-        12 * 60_000,
-      );
-      for (const warning of created.warnings) {
-        toast(
-          warning,
-          warning.startsWith("setup `") ? { action: retryAction(created.dir) } : undefined,
-        );
-      }
-      setPendingSlots((prev) => prev.filter((p) => p.id !== id));
-
-      // An image with no typed goal is still a valid ask — give the rail
-      // something to show rather than an unlabeled session.
-      const label =
-        input.goal ||
-        (imagePaths.length ? `attached ${imagePaths.length === 1 ? "image" : "images"}` : "");
-      await slotCreated(created, promptWithImages(input.goal, imagePaths), input.options, label);
-    } catch (e) {
+    const imagePaths = input.imagePaths;
+    const result = await invoke<SlotCreated>(
+      "slot_create",
+      { root: repo.dir, branch: input.branch, base: input.base },
+      { schema: SlotCreatedSchema, timeoutMs: 12 * 60_000 },
+    );
+    if (result.isErr()) {
+      const error = result.error.message;
       setPendingSlots((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, status: "error" as const, error: String(e) } : p)),
+        prev.map((p) => (p.id === id ? { ...p, status: "error" as const, error } : p)),
+      );
+      return;
+    }
+    const created = result.value;
+    for (const warning of created.warnings) {
+      toast(
+        warning,
+        warning.startsWith("setup `") ? { action: retryAction(created.dir) } : undefined,
       );
     }
+    setPendingSlots((prev) => prev.filter((p) => p.id !== id));
+
+    // An image with no typed goal is still a valid ask — give the rail
+    // something to show rather than an unlabeled session.
+    const label =
+      input.goal ||
+      (imagePaths.length ? `attached ${imagePaths.length === 1 ? "image" : "images"}` : "");
+    await slotCreated(created, promptWithImages(input.goal, imagePaths), input.options, label);
   }
 
   function retryPendingSlot(id: string) {
@@ -933,21 +964,22 @@ export function AgentboardScreen() {
   async function createTemplateAndRetryPending(id: string) {
     const p = pendingSlots.find((x) => x.id === id);
     if (!p) return;
-    try {
-      await invokeOrThrow("slot_init_template", { root: p.repoDir });
-      void createSlot(
-        { name: p.repoName, dir: p.repoDir, key: p.repoKey },
-        {
-          goal: p.goal,
-          branch: p.branch,
-          base: p.base,
-          options: p.options,
-          imagePaths: p.imagePaths,
-        },
-      );
-    } catch (e) {
-      setPendingSlots((prev) => prev.map((x) => (x.id === id ? { ...x, error: String(e) } : x)));
+    const init = await invoke("slot_init_template", { root: p.repoDir });
+    if (init.isErr()) {
+      const error = init.error.message;
+      setPendingSlots((prev) => prev.map((x) => (x.id === id ? { ...x, error } : x)));
+      return;
     }
+    void createSlot(
+      { name: p.repoName, dir: p.repoDir, key: p.repoKey },
+      {
+        goal: p.goal,
+        branch: p.branch,
+        base: p.base,
+        options: p.options,
+        imagePaths: p.imagePaths,
+      },
+    );
   }
 
   // A slot the inline form just created: track it in the rail, mount its
@@ -963,17 +995,20 @@ export function AgentboardScreen() {
     label?: string,
   ) {
     toast(`created ${created.name}${created.branch ? ` on ${created.branch}` : ""}`);
-    await abInvoke("ab_add_repo", { path: created.dir });
+    await invoke("ab_add_repo", { path: created.dir });
     // A freshly tracked folder already gets a default not-started session —
     // reuse it rather than adding a second one, which would open as a
     // surprise split pane beside the empty default.
-    const fresh = await abInvoke<StatePayload>("ab_get_state", {});
-    const folder = fresh?.repos.flatMap((r) => r.folders).find((f) => f.dir === created.dir);
+    const fresh = await invoke<StatePayload>("ab_get_state", {});
+    const folder = fresh.isOk()
+      ? fresh.value.repos.flatMap((r) => r.folders).find((f) => f.dir === created.dir)
+      : undefined;
     let rec = folder?.sessions[0] ?? null;
     if (!rec) {
-      rec = await abInvoke<SessionData>("ab_add_session", { dir: created.dir, name: null });
+      const added = await invoke<SessionData>("ab_add_session", { dir: created.dir, name: null });
+      if (added.isErr()) return;
+      rec = added.value;
     }
-    if (!rec) return;
     mountSession(created.dir, rec.id);
     if (prompt) {
       // `launchClaudeIn` waits for the PTY's first frame itself — a proxy for
@@ -990,8 +1025,9 @@ export function AgentboardScreen() {
   }
 
   async function newSession(folderDir: string, launchClaude = false) {
-    const rec = await abInvoke<SessionData>("ab_add_session", { dir: folderDir, name: null });
-    if (!rec) return;
+    const added = await invoke<SessionData>("ab_add_session", { dir: folderDir, name: null });
+    if (added.isErr()) return;
+    const rec = added.value;
     selectSession(folderDir, rec.id);
     if (launchClaude) {
       setStartClaudeTarget({ folderDir, sessionId: rec.id, sessionName: rec.name, restart: false });
@@ -1016,7 +1052,7 @@ export function AgentboardScreen() {
     setOverlay(sessionId, "busy");
     const verb = restart ? "starting over — fresh Claude session" : "starting Claude";
     toast(shown ? `✦ ${verb} in ${sessionName}: ${shown}` : `✦ ${verb} in ${sessionName}`);
-    if (shown) void abInvoke("ab_set_session_purpose", { id: sessionId, text: shown });
+    if (shown) void invoke("ab_set_session_purpose", { id: sessionId, text: shown });
     await withLiveSession(
       sessionId,
       async () => {
@@ -1095,21 +1131,23 @@ export function AgentboardScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function fetchCandidates(): Promise<RepoCandidate[]> {
-    return (await abInvoke<RepoCandidate[]>("ab_discover_repos")) ?? [];
-  }
-
   async function refreshCandidates() {
     setCandidates(await fetchCandidates());
   }
 
   // Add a repo to the rail; backend re-emits state so it appears. Mirrors
-  // `tt agentboard repos add <path>`.
-  async function addRepoPath(dir: string) {
+  // `tt agentboard repos add <path>`. Reports whether the repo is actually
+  // tracked now, so callers don't announce a add that didn't happen.
+  async function addRepoPath(dir: string): Promise<boolean> {
     const path = dir.trim();
-    if (!path) return;
-    await abInvoke("ab_add_repo", { path });
+    if (!path) return false;
+    const added = await invoke("ab_add_repo", { path });
+    if (added.isErr()) {
+      toast.error(`Couldn't track ${path} — ${added.error.message}`);
+      return false;
+    }
     await refreshCandidates();
+    return true;
   }
 
   // Commit the manual Track-repo dialog: an absolute path only (no discovery).
@@ -1124,18 +1162,12 @@ export function AgentboardScreen() {
     }
     setTrackRepoOpen(false);
     setTrackRepoPath("");
-    await addRepoPath(path);
-    toast(`Tracking ${path}`);
+    if (await addRepoPath(path)) toast(`Tracking ${path}`);
   }
 
   // Sweep every "missing" ghost in one click. The Rust side re-probes the
   // disk at call time, so a directory restored since the last poll survives;
   // no sessions to kill — a missing dir has no live PTY.
-  async function cleanupMissing() {
-    const removed = await abInvoke<string[]>("ab_untrack_missing", {});
-    const n = removed?.length ?? 0;
-    toast(n > 0 ? `Untracked ${n} missing repo${n === 1 ? "" : "s"}.` : "Nothing to clean up.");
-  }
 
   // Actually remove: kill any live sessions first (killing a PTY is
   // client-mediated — see `closeSession`/`TerminalView`'s unmount effect),
@@ -1145,7 +1177,7 @@ export function AgentboardScreen() {
   // changes the collision-disambiguated names of whatever's left.
   async function performRemove(target: RemoveTarget) {
     for (const id of target.sessionIds) await closeSession(id);
-    for (const dir of target.dirs) await abInvoke("ab_remove_repo", { dir });
+    for (const dir of target.dirs) await invoke("ab_remove_repo", { dir });
     await refreshCandidates();
   }
 
@@ -1175,26 +1207,24 @@ export function AgentboardScreen() {
     // Claim these deaths before asking for them — the kill happens in Rust
     // while the panes are still mounted, so the exits come back as crashes.
     for (const id of target.sessionIds) expectedKills.current.add(id);
-    try {
-      const removed = await invokeOrThrow<{ name: string; messages: string[] }>("slot_remove", {
-        dir,
-      });
-      for (const id of target.sessionIds) {
-        setOpen((prev) => prev.filter((x) => x !== id));
-        setSelected((cur) => (cur?.sessionId === id ? null : cur));
-        removeSessionPane(id);
-      }
-      for (const message of removed?.messages ?? []) toast(message);
-      toast.success(`Deleted worktree ${removed?.name ?? target.label}`);
-    } catch (e) {
-      toast.error(String(e));
-    } finally {
-      setDeletingDirs((prev) => {
-        const next = new Set(prev);
-        next.delete(dir);
-        return next;
-      });
-    }
+    const removed = await invoke<{ name: string; messages: string[] }>("slot_remove", { dir });
+    removed.match({
+      ok: (slot) => {
+        for (const id of target.sessionIds) {
+          setOpen((prev) => prev.filter((x) => x !== id));
+          setSelected((cur) => (cur?.sessionId === id ? null : cur));
+          removeSessionPane(id);
+        }
+        for (const message of slot.messages) toast(message);
+        toast.success(`Deleted worktree ${slot.name || target.label}`);
+      },
+      err: (e) => toast.error(e.message),
+    });
+    setDeletingDirs((prev) => {
+      const next = new Set(prev);
+      next.delete(dir);
+      return next;
+    });
   }
 
   // Remove a repo (or, for a multi-checkout repo, all its checkouts) from
@@ -1243,7 +1273,7 @@ export function AgentboardScreen() {
   }, [addRepoOpen]);
 
   async function closeSession(sessionId: string) {
-    await abInvoke("ab_close_session", { id: sessionId });
+    await invoke("ab_close_session", { id: sessionId });
     setOpen((prev) => prev.filter((id) => id !== sessionId));
     setSelected((cur) => (cur?.sessionId === sessionId ? null : cur));
     removeSessionPane(sessionId);
@@ -1252,7 +1282,7 @@ export function AgentboardScreen() {
   async function commitRename(sessionId: string, name: string) {
     setRenaming(null);
     const trimmed = name.trim();
-    if (trimmed) await abInvoke("ab_rename_session", { id: sessionId, name: trimmed });
+    if (trimmed) await invoke("ab_rename_session", { id: sessionId, name: trimmed });
   }
 
   // Optimistic lifecycle overlays (sessionId → forced status until ts). The
@@ -1745,12 +1775,6 @@ export function AgentboardScreen() {
                     const i = panes.indexOf(id);
                     return i < 0 ? undefined : rects[i];
                   };
-                  const paneStyle = (r: PaneRect) => ({
-                    left: `${r.left}%`,
-                    top: `${r.top}%`,
-                    width: `${r.width}%`,
-                    height: `${r.height}%`,
-                  });
                   return (
                     <>
                       {open.map((id) => {

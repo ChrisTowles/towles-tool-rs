@@ -7,7 +7,9 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { invokeCmd, invokeOk, isTauri } from "@/lib/tauri";
+import type { Result } from "better-result";
+import { invoke, isTauri } from "@/lib/tauri";
+import { errorMessage, type IpcError } from "@/lib/errors";
 import { formatMentionRef, type MentionRange } from "@/lib/ide-selection";
 
 /** One terminal's IDE pairing state (mirrors `IdeStatus` in ide.rs). */
@@ -31,9 +33,9 @@ export function useIdeConnected(dir: string | undefined): boolean {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void (async () => {
-      const initial = await invokeCmd<IdeStatus[]>("ide_status");
+      const initial = await invoke<IdeStatus[]>("ide_status");
       if (disposed) return;
-      if (initial) setStatuses(Object.fromEntries(initial.map((s) => [s.termId, s])));
+      if (initial.isOk()) setStatuses(Object.fromEntries(initial.value.map((s) => [s.termId, s])));
       if (!isTauri()) return;
       const { listen } = await import("@tauri-apps/api/event");
       const sub = await listen<IdeStatus>(STATUS_EVENT, (e) => {
@@ -56,7 +58,8 @@ export function useIdeConnected(dir: string | undefined): boolean {
 
 /** Push a highlight (1-based inclusive lines; optional 0-based character
  * columns from the code viewer) as the ambient selection of every Claude
- * session rooted at `dir`. Fire-and-forget. */
+ * session rooted at `dir`. Safe to ignore the result — this is ambient context,
+ * not an action the user is waiting on. */
 export function ideSetSelection(
   dir: string,
   filePath: string,
@@ -64,8 +67,8 @@ export function ideSetSelection(
   endLine: number,
   startChar?: number,
   endChar?: number,
-) {
-  void invokeCmd("ide_set_selection", {
+): Promise<Result<void, IpcError>> {
+  return invoke<void>("ide_set_selection", {
     dir,
     filePath,
     startLine,
@@ -78,41 +81,32 @@ export function ideSetSelection(
 /** Tell the folder's sessions which file the code viewer has open
  * (null = closed) and whether it has unsaved edits — surfaces in Claude's
  * getOpenEditors / checkDocumentDirty. */
-export function ideSetOpenFile(dir: string, filePath: string | null, dirty = false) {
-  void invokeCmd("ide_set_open_file", { dir, filePath, dirty });
+export function ideSetOpenFile(
+  dir: string,
+  filePath: string | null,
+  dirty = false,
+): Promise<Result<void, IpcError>> {
+  return invoke<void>("ide_set_open_file", { dir, filePath, dirty });
 }
 
 /** A viewer file read: content + the mtime token the save path checks. */
 export type FileRead = { content: string; mtimeMs: number };
 
-/** Read a repo file for the code viewer (size-capped, text-only). Returns
- * null in browser dev; throws with a readable message on binary/huge files. */
-export function ideReadFile(dir: string, filePath: string): Promise<FileRead | null> {
-  return invokeCmd<FileRead>("ide_read_file", { dir, filePath });
+/** Read a repo file for the code viewer (size-capped, text-only). Fails with a
+ * readable message on binary/huge files, and with `NotInTauri` in browser dev. */
+export function ideReadFile(dir: string, filePath: string): Promise<Result<FileRead, IpcError>> {
+  return invoke<FileRead>("ide_read_file", { dir, filePath });
 }
 
 /** Save the viewer's buffer (atomic; refuses when the file changed on disk
- * since `expectedMtimeMs`). Resolves the new mtime token, or null after an
- * error toast. */
-export async function ideWriteFile(
+ * since `expectedMtimeMs`). Resolves the new mtime token. */
+export function ideWriteFile(
   dir: string,
   filePath: string,
   content: string,
   expectedMtimeMs: number | null,
-): Promise<number | null> {
-  const { toast } = await import("sonner");
-  try {
-    const { invokeOrThrow } = await import("@/lib/tauri");
-    return await invokeOrThrow<number>("ide_write_file", {
-      dir,
-      filePath,
-      content,
-      expectedMtimeMs,
-    });
-  } catch (e) {
-    toast.error(String(e));
-    return null;
-  }
+): Promise<Result<number, IpcError>> {
+  return invoke<number>("ide_write_file", { dir, filePath, content, expectedMtimeMs });
 }
 
 /** Payload of the `ide://open-file` event (Claude called the openFile tool). */
@@ -125,20 +119,20 @@ export type OpenFileRequest = {
 };
 
 /** The highlight was dismissed — clear the sessions' selection context. */
-export function ideClearSelection(dir: string, filePath: string) {
-  void invokeCmd("ide_clear_selection", { dir, filePath });
+export function ideClearSelection(dir: string, filePath: string): Promise<Result<void, IpcError>> {
+  return invoke<void>("ide_clear_selection", { dir, filePath });
 }
 
 /** Explicit "send to Claude" (@-mention). Omit the lines for a whole-file
- * mention (the Files tab). Resolves false — after an error toast — when no
- * Claude session is connected in that folder. */
+ * mention (the Files tab). Fails when no Claude session is connected in that
+ * folder. */
 export function ideAtMention(
   dir: string,
   filePath: string,
   startLine?: number,
   endLine?: number,
-): Promise<boolean> {
-  return invokeOk("ide_at_mention", {
+): Promise<Result<void, IpcError>> {
+  return invoke<void>("ide_at_mention", {
     dir,
     filePath,
     startLine: startLine ?? null,
@@ -147,18 +141,19 @@ export function ideAtMention(
 }
 
 /**
- * `ideAtMention` plus the success toast, so every gesture that mentions a file
- * reports itself the same way. `invokeOk` already owns the failure toast, so
- * this is the whole user-facing contract in one place — a null range means the
- * whole file.
+ * `ideAtMention` plus its toasts, so every gesture that mentions a file reports
+ * itself the same way — this is the whole user-facing contract in one place. A
+ * null range means the whole file.
  */
 export async function ideMention(
   dir: string,
   filePath: string,
   range: MentionRange | null,
 ): Promise<void> {
-  const ok = await ideAtMention(dir, filePath, range?.startLine, range?.endLine);
-  if (!ok) return;
+  const sent = await ideAtMention(dir, filePath, range?.startLine, range?.endLine);
   const { toast } = await import("sonner");
-  toast.success(`${formatMentionRef(filePath, range)} sent to claude`);
+  sent.match({
+    ok: () => toast.success(`${formatMentionRef(filePath, range)} sent to claude`),
+    err: (e) => toast.error(errorMessage(e)),
+  });
 }

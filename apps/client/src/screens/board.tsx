@@ -67,7 +67,34 @@ import { useFocusTarget } from "@/lib/focus-target";
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
 import { useShortcuts } from "@/lib/shortcuts";
+import { toast } from "sonner";
+import type { Result } from "better-result";
+import type { IpcError } from "@/lib/errors";
 import { useWorkspace } from "@/lib/workspace";
+
+/**
+ * Fire a board mutation and report a failure. Every card action here paints an
+ * optimistic overlay first, so a dropped write would otherwise look like it
+ * worked right up until the next snapshot quietly reverted it.
+ */
+async function commit(mutation: Promise<Result<void, IpcError>>, what: string): Promise<void> {
+  const done = await mutation;
+  if (done.isErr()) toast.error(`Couldn't ${what} — ${done.error.message}`);
+}
+
+let lastDraftId = 0;
+
+/**
+ * A placeholder id for an optimistically-added todo, before the backend
+ * assigns the real one. Negative so it can't collide with a real row id, and
+ * monotonic rather than `-Date.now()` because two todos added in the same
+ * millisecond would otherwise share an id — which surfaces as a duplicate
+ * React key and one card silently overwriting the other.
+ */
+function nextDraftTaskId(): number {
+  lastDraftId += 1;
+  return -lastDraftId;
+}
 
 /** Optimistic edits (text/notes/due) applied over a snapshot todo until it
  * re-arrives. */
@@ -231,7 +258,7 @@ export function BoardScreen() {
       delete next[id];
       return next;
     });
-    void storeSetTaskStatus(id, status);
+    void commit(storeSetTaskStatus(id, status), "move that todo");
   }
 
   // Reorder `id` into `status` just before `beforeId` ("end" = append). Computes
@@ -260,11 +287,11 @@ export function BoardScreen() {
       delete nextOv[id];
       return nextOv;
     });
-    void storeSetTaskPosition(id, status, insertAt);
+    void commit(storeSetTaskPosition(id, status, insertAt), "reorder that todo");
   }
 
   function promote(id: number, repo: string) {
-    void storePromoteTaskToIssue(id, repo);
+    void commit(storePromoteTaskToIssue(id, repo), "promote that todo to an issue");
   }
 
   // Rename and due-date edits both re-send the todo's other free-form fields
@@ -275,14 +302,14 @@ export function BoardScreen() {
     const current = merged.find((t) => t.id === id);
     if (!current || !trimmed || trimmed === current.text) return;
     setEditOverrides((prev) => ({ ...prev, [id]: { ...prev[id], text: trimmed } }));
-    void storeUpdateTask(id, trimmed, current.notes, current.dueTs);
+    void commit(storeUpdateTask(id, trimmed, current.notes, current.dueTs), "rename that todo");
   }
 
   function setDue(id: number, dueTs: number | undefined) {
     const current = merged.find((t) => t.id === id);
     if (!current) return;
     setEditOverrides((prev) => ({ ...prev, [id]: { ...prev[id], dueTs } }));
-    void storeUpdateTask(id, current.text, current.notes, dueTs);
+    void commit(storeUpdateTask(id, current.text, current.notes, dueTs), "set that due date");
   }
 
   function setNotes(id: number, notes: string) {
@@ -291,16 +318,16 @@ export function BoardScreen() {
     // Empty/whitespace-only notes clear the field back to unset.
     const value = notes.trim() === "" ? undefined : notes;
     setEditOverrides((prev) => ({ ...prev, [id]: { ...prev[id], notes: value } }));
-    void storeUpdateTask(id, current.text, value, current.dueTs);
+    void commit(storeUpdateTask(id, current.text, value, current.dueTs), "save those notes");
   }
 
   function remove(id: number) {
     setDeletedIds((prev) => new Set(prev).add(id));
-    void storeDeleteTask(id);
+    void commit(storeDeleteTask(id), "delete that todo");
   }
 
   function clearDone() {
-    void storeClearDone();
+    void commit(storeClearDone(), "clear the Done column");
   }
 
   // Live preview of the quick-add tokens (`@today`/`@tomorrow`/`@YYYY-MM-DD` due
@@ -313,7 +340,7 @@ export function BoardScreen() {
     if (!text) return;
     setAddedTasks((prev) => [
       {
-        id: -Date.now(),
+        id: nextDraftTaskId(),
         text,
         status: "backlog",
         position: -1,
@@ -324,7 +351,7 @@ export function BoardScreen() {
       ...prev,
     ]);
     setDraft("");
-    void storeAddTask(text, dueTs, repo);
+    void commit(storeAddTask(text, dueTs, repo), "add that todo");
   }
 
   if (importOpen) {

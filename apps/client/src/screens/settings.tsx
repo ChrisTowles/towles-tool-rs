@@ -13,6 +13,7 @@ import {
   Search,
   SlidersHorizontal,
 } from "lucide-react";
+import { toast } from "sonner";
 import {
   Select,
   SelectContent,
@@ -37,11 +38,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { COLOR_THEMES, useTheme, type ColorTheme, type Theme } from "@/components/theme-provider";
 import { CollectorFreshness } from "@/components/store-bits";
-import { abInvoke } from "@/lib/agentboard";
+import { invoke } from "@/lib/tauri";
 import { storeCollectNow, useStoreSnapshot, type CollectRun } from "@/lib/data";
 import { useNow } from "@/lib/now";
 import { isEmptyQuery, matchesFilter } from "@/lib/settings-filter";
 import { settingsTargetStore, type SettingsTarget } from "@/lib/settings-target";
+import { NotInTauri } from "@/lib/errors";
 import { slackListUsers, type SlackUser } from "@/lib/slack";
 import { useUserSettings, type UserSettings } from "@/lib/settings";
 import { DEFAULT_TERMINAL_FONT_SIZE, clampTerminalFontSize } from "@/lib/terminal-prefs";
@@ -301,9 +303,10 @@ function SlackUserPicker({
 
   useEffect(() => {
     let alive = true;
-    void slackListUsers()
-      .then((list) => alive && setUsers(list))
-      .catch(() => alive && setFailed(true));
+    void slackListUsers().then((listed) => {
+      if (!alive) return;
+      listed.match({ ok: setUsers, err: () => setFailed(true) });
+    });
     return () => {
       alive = false;
     };
@@ -619,11 +622,9 @@ function RefreshNowButton() {
   const refresh = async () => {
     if (running) return;
     setRunning(true);
-    try {
-      await storeCollectNow();
-    } finally {
-      setRunning(false);
-    }
+    const started = await storeCollectNow();
+    if (started.isErr() && !NotInTauri.is(started.error)) toast.error(started.error.message);
+    setRunning(false);
   };
   return (
     <Button variant="outline" size="sm" disabled={running} onClick={() => void refresh()}>
@@ -1113,7 +1114,7 @@ function AgentboardSettings() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    void abInvoke<string[]>("ab_get_scan_roots").then((r) => setRoots((r ?? []).join("\n")));
+    void invoke<string[]>("ab_get_scan_roots").then((r) => setRoots(r.unwrapOr([]).join("\n")));
   }, []);
 
   const save = async () => {
@@ -1121,7 +1122,11 @@ function AgentboardSettings() {
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
-    await abInvoke("ab_set_scan_roots", { roots: list });
+    const stored = await invoke("ab_set_scan_roots", { roots: list });
+    if (stored.isErr()) {
+      toast.error(`Couldn't save scan roots — ${stored.error.message}`);
+      return;
+    }
     setRoots(list.join("\n"));
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1500);

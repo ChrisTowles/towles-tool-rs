@@ -29,7 +29,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { toast } from "sonner";
 import {
   abCreateIssue,
-  abInvoke,
   abSyncRepo,
   comparedBaseLabel,
   ctxPct,
@@ -48,6 +47,7 @@ import {
 } from "@/lib/agentboard";
 import type { PrItem } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
+import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
 /**
@@ -453,10 +453,10 @@ export function DiffButton({
       openDelay={250}
       onOpenChange={(open) => {
         if (open && commits == null) {
-          void abInvoke<CommitStat[]>("ab_get_commit_stats", {
+          void invoke<CommitStat[]>("ab_get_commit_stats", {
             dir,
             baseBranch: baseBranch?.trim() || null,
-          }).then((c) => setCommits(c ?? []));
+          }).then((c) => setCommits(c.unwrapOr([])));
         }
       }}
     >
@@ -797,7 +797,13 @@ export function PurposeRow({
     setEditing(false);
     const trimmed = text.trim();
     if (trimmed === purpose) return;
-    await abInvoke("ab_set_folder_purpose", { dir: folder.dir, text: trimmed || null });
+    const stored = await invoke("ab_set_folder_purpose", {
+      dir: folder.dir,
+      text: trimmed || null,
+    });
+    // The rail re-renders from the backend snapshot, so a dropped write silently
+    // reverts to the old text — say so rather than letting it look like a typo.
+    if (stored.isErr()) toast.error(`Couldn't save purpose — ${stored.error.message}`);
   }
 
   if (editing) {
@@ -898,37 +904,34 @@ export function RepoMenu({
     if (!title) return;
     setIssueOpen(false);
     setIssueTitle("");
-    try {
-      const url = await abCreateIssue(dir, title);
-      toast.success("Issue created", {
-        action: { label: "Open", onClick: () => void openExternalUrl(url) },
-      });
-    } catch (e) {
-      toast.error(String(e));
-    }
+    (await abCreateIssue(dir, title)).match({
+      ok: (url) =>
+        toast.success("Issue created", {
+          action: { label: "Open", onClick: () => void openExternalUrl(url) },
+        }),
+      err: (e) => toast.error(e.message),
+    });
   }
 
   async function syncNow() {
-    try {
-      const result = await abSyncRepo(dir);
-      // `started: false` means a sync for this dir was already in flight
-      // (e.g. another window) — quietly ignore rather than double-toast.
-      if (!result.started) return;
-      if (result.ok) {
-        toast.success("Synced with GitHub");
-      } else {
-        toast.error(result.message ?? "Sync failed");
-      }
-    } catch (e) {
-      toast.error(String(e));
-    }
+    (await abSyncRepo(dir)).match({
+      ok: (result) => {
+        // `started: false` means a sync for this dir was already in flight
+        // (e.g. another window) — quietly ignore rather than double-toast.
+        if (!result.started) return;
+        if (result.ok) toast.success("Synced with GitHub");
+        else toast.error(result.message ?? "Sync failed");
+      },
+      err: (e) => toast.error(e.message),
+    });
   }
 
   async function saveNote() {
     setNoteOpen(false);
     const trimmed = noteText.trim();
     if (trimmed === purpose) return;
-    await abInvoke("ab_set_folder_purpose", { dir, text: trimmed || null });
+    const stored = await invoke("ab_set_folder_purpose", { dir, text: trimmed || null });
+    if (stored.isErr()) toast.error(`Couldn't save note — ${stored.error.message}`);
   }
 
   return (

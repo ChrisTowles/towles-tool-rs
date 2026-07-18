@@ -46,9 +46,9 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
+import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import {
-  abInvoke,
   agentRollup,
   claudeTitleName,
   comparedBaseLabel,
@@ -296,7 +296,7 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
               onValueChange={([v]) => setDraft(v)}
               onValueCommit={([v]) => {
                 setDraft(null);
-                void abInvoke("ab_set_compact_percent", { percent: v });
+                void invoke("ab_set_compact_percent", { percent: v });
               }}
             />
             <div className="text-[11px] text-muted-foreground/70">

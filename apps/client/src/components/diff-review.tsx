@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, X } from "lucide-react";
+import { toast } from "sonner";
 import { loadMonaco } from "@/lib/monaco";
-import { invokeOk } from "@/lib/tauri";
+import { invoke } from "@/lib/tauri";
+import { errorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 
 /** Payload of the `ide://open-diff` event (Claude called the openDiff tool). */
@@ -69,11 +71,12 @@ export function DiffReview({
   }, [review.requestId, review.newFileContents, originalContent]);
 
   const resolve = async (accepted: boolean) => {
-    await invokeOk("ide_diff_resolve", {
+    const resolved = await invoke<void>("ide_diff_resolve", {
       requestId: review.requestId,
       accepted,
       finalContents: accepted ? (modifiedRef.current?.getValue() ?? review.newFileContents) : null,
     });
+    if (resolved.isErr()) toast.error(errorMessage(resolved.error));
     onDone();
   };
 

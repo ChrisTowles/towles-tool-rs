@@ -20,7 +20,8 @@
 import { useSyncExternalStore } from "react";
 import { AbstractMessageReader, AbstractMessageWriter } from "vscode-jsonrpc";
 import type { DataCallback, Disposable, Message } from "vscode-jsonrpc";
-import { invokeCmd, invokeOrThrow, isTauri } from "@/lib/tauri";
+import { invoke, isTauri } from "@/lib/tauri";
+import { errorMessage } from "@/lib/errors";
 import { loadMonaco } from "@/lib/monaco";
 
 class TauriMessageReader extends AbstractMessageReader {
@@ -67,8 +68,12 @@ class TauriMessageWriter extends AbstractMessageWriter {
   constructor(private readonly serverId: number) {
     super();
   }
+  /** `MessageWriter` is vscode-jsonrpc's contract: a failed write must reject
+   * so the language client tears the connection down instead of waiting on a
+   * response that will never arrive. */
   async write(msg: Message): Promise<void> {
-    await invokeOrThrow("lsp_send", { id: this.serverId, message: JSON.stringify(msg) });
+    const sent = await invoke("lsp_send", { id: this.serverId, message: JSON.stringify(msg) });
+    if (sent.isErr()) throw new Error(errorMessage(sent.error));
   }
   end(): void {}
 }
@@ -117,9 +122,7 @@ export function useLspStatus(dir: string | undefined): LspStatus {
 let current: { dir: string; stop: () => void } | null = null;
 // A fresh page means every server the previous page started is an orphan —
 // reap them before the first start. (Module scope = runs once per page.)
-let switching: Promise<void> = isTauri()
-  ? invokeCmd("lsp_stop_all", {}).then(() => {})
-  : Promise.resolve();
+let switching: Promise<void> = invoke("lsp_stop_all").then(() => {});
 
 /** Point the (single) rust-analyzer at this workspace: stop the previous
  * server, start one if the folder is a Rust workspace. Serialized — rapid
@@ -131,8 +134,8 @@ export function syncLspWorkspace(dir: string): void {
       if (current?.dir === dir) return;
       current?.stop();
       current = null;
-      const isRust = await invokeCmd<unknown>("ide_stat", { dir, filePath: "Cargo.toml" });
-      if (isRust == null) {
+      const isRust = await invoke("ide_stat", { dir, filePath: "Cargo.toml" });
+      if (isRust.isErr()) {
         setStatus({ state: "off", dir });
         return;
       }
@@ -141,10 +144,10 @@ export function syncLspWorkspace(dir: string): void {
         current = { dir, stop: await startRustAnalyzer(dir) };
         setStatus({ state: "ready", dir });
       } catch (e) {
-        const err = e as { message?: string; stack?: string };
-        const detail = err?.message ?? String(e);
+        const detail = errorMessage(e);
+        const stack = e instanceof Error ? (e.stack ?? "") : "";
         setStatus({ state: "failed", dir, detail });
-        console.warn(`rust-analyzer bridge failed to start: ${detail}\n${err?.stack ?? ""}`);
+        console.warn(`rust-analyzer bridge failed to start: ${detail}\n${stack}`);
       }
       // The chain is the serialization mechanism, so it must never settle
       // rejected: one throw outside the try above (a `stop()` that blew up, say)
@@ -152,14 +155,16 @@ export function syncLspWorkspace(dir: string): void {
       // and silently skipped for the life of the window.
     })
     .catch((e: unknown) => {
-      setStatus({ state: "failed", dir, detail: String(e) });
+      setStatus({ state: "failed", dir, detail: errorMessage(e) });
       console.warn("rust-analyzer workspace switch failed", e);
     });
 }
 
 async function startRustAnalyzer(dir: string): Promise<() => void> {
   const monaco = await loadMonaco();
-  const id = await invokeOrThrow<number>("lsp_start", { dir });
+  const started = await invoke<number>("lsp_start", { dir });
+  if (started.isErr()) throw new Error(errorMessage(started.error));
+  const id = started.value;
   const reader = new TauriMessageReader(id);
   await reader.attach();
   const { MonacoLanguageClient } = await import("monaco-languageclient");
@@ -182,11 +187,11 @@ async function startRustAnalyzer(dir: string): Promise<() => void> {
   try {
     await client.start();
   } catch (e) {
-    void invokeCmd("lsp_stop", { id });
+    void invoke("lsp_stop", { id });
     throw e;
   }
   return () => {
     void client.dispose().catch(() => {});
-    void invokeCmd("lsp_stop", { id });
+    void invoke("lsp_stop", { id });
   };
 }

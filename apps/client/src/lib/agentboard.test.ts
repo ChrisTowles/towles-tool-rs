@@ -382,10 +382,10 @@ describe("dropPane", () => {
   });
 });
 
-describe("pruneWins", () => {
-  const valid = (sessions: string[], folders: string[]) =>
-    [new Set(sessions), new Set(folders)] as const;
+const valid = (sessions: string[], folders: string[]) =>
+  [new Set(sessions), new Set(folders)] as const;
 
+describe("pruneWins", () => {
   it("drops ghost session panes so survivors tile from the first slot", () => {
     const w: WindowsPayload = {
       windows: [win("w1", "/f", ["ghost", "s1"])],
@@ -526,14 +526,14 @@ describe("replacePane", () => {
   });
 });
 
-describe("hydrateWins", () => {
-  const wireWin = (id: string, folderDir: string, panes: string[]) => ({
-    id,
-    name: id,
-    folderDir,
-    panes,
-  });
+const wireWin = (id: string, folderDir: string, panes: string[]) => ({
+  id,
+  name: id,
+  folderDir,
+  panes,
+});
 
+describe("hydrateWins", () => {
   it("sweeps legacy paneless windows and their active entries", () => {
     const w: WireWindowsPayload = {
       windows: [

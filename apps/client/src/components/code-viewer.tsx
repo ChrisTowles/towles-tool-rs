@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { loadMonaco } from "@/lib/monaco";
 import {
   ideClearSelection,
@@ -7,7 +8,9 @@ import {
   ideSetOpenFile,
   ideSetSelection,
   ideWriteFile,
+  type FileRead,
 } from "@/lib/ide";
+import { NotInTauri, errorMessage } from "@/lib/errors";
 import { IdeSelectionOverlay } from "@/components/ide-selection-chip";
 import {
   mentionRangeFrom,
@@ -87,23 +90,25 @@ export function CodeViewer({
     setSelection(null);
     dirtyRef.current = false;
     void (async () => {
-      let read: Awaited<ReturnType<typeof ideReadFile>>;
+      let read: FileRead;
       try {
         const [, r] = await Promise.all([loadMonaco(), ideReadFile(dir, path)]);
-        read = r;
+        if (r.isErr()) {
+          if (!disposed) {
+            setError(NotInTauri.is(r.error) ? "not available in browser dev" : r.error.message);
+            setLoading(false);
+          }
+          return;
+        }
+        read = r.value;
       } catch (e) {
         if (!disposed) {
-          setError(String(e));
+          setError(errorMessage(e));
           setLoading(false);
         }
         return;
       }
       if (disposed || !containerRef.current) return;
-      if (read == null) {
-        setError("not available in browser dev");
-        setLoading(false);
-        return;
-      }
       const monaco = await loadMonaco();
       const uri = monaco.Uri.file(`${dir}/${path}`);
       monaco.editor.getModel(uri)?.dispose();
@@ -140,9 +145,15 @@ export function CodeViewer({
       const save = async () => {
         if (!model) return;
         const versionAtSave = model.getAlternativeVersionId();
-        const newMtime = await ideWriteFile(dir, path, model.getValue(), mtimeRef.current);
-        if (newMtime == null || !model || model.isDisposed()) return;
-        mtimeRef.current = newMtime;
+        const written = await ideWriteFile(dir, path, model.getValue(), mtimeRef.current);
+        if (written.isErr()) {
+          // A refused save leaves the buffer dirty and the file untouched — the
+          // one failure here the user must never have to infer.
+          toast.error(`Couldn't save ${path} — ${written.error.message}`);
+          return;
+        }
+        if (!model || model.isDisposed()) return;
+        mtimeRef.current = written.value;
         savedVersionRef.current = versionAtSave;
         setDirty(model.getAlternativeVersionId() !== versionAtSave);
       };

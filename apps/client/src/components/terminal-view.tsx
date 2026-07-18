@@ -45,6 +45,7 @@ import {
   useShortcutsWorkInTerminal,
 } from "@/lib/shortcuts";
 import { openExternalUrl } from "@/lib/open-url";
+import { invoke } from "@/lib/tauri";
 import { Input } from "@/components/ui/input";
 import {
   AlertDialog,
@@ -153,9 +154,7 @@ export function TerminalView({
     const text = pendingPaste;
     setPendingPaste(null);
     if (!text) return;
-    void import("@tauri-apps/api/core").then(({ invoke }) =>
-      invoke("term_paste", { termId, text, force: true }).catch(() => {}),
-    );
+    void invoke("term_paste", { termId, text, force: true });
   };
   // Copy-on-select preference, read live by the render effect's mouse handlers.
   const copyOnSelectRef = useCopyOnSelect();
@@ -176,7 +175,7 @@ export function TerminalView({
   const runSearch = useCallback(async (q: string) => {
     const bridge = bridgeRef.current;
     if (!bridge) return;
-    const matches = q ? await bridge.search(q).catch(() => [] as SearchMatch[]) : [];
+    const matches = q ? await bridge.search(q) : [];
     const current = matches.length - 1; // start at the most recent match
     searchRef.current = { matches, current };
     setMatchCount(matches.length);
@@ -547,17 +546,15 @@ export function TerminalView({
         return;
       }
 
-      const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
 
-      const write = (data: string) => void invoke("term_write", { termId, data }).catch(() => {});
-      const scroll = (delta: number | null) =>
-        void invoke("term_scroll", { termId, delta }).catch(() => {});
+      const write = (data: string) => void invoke("term_write", { termId, data });
+      const scroll = (delta: number | null) => void invoke("term_scroll", { termId, delta });
       // Copy the engine's active selection to the system clipboard. Shared by
       // the Ctrl/⌘+Shift+C chord, the context menu, and copy-on-select. The
       // clipboard write happens in Rust — the webview's navigator.clipboard
       // is unreliable in WebKitGTK and silently broke copy-on-select.
-      const copySelection = () => void invoke("term_copy", { termId }).catch(() => {});
+      const copySelection = () => void invoke("term_copy", { termId });
 
       const onFrame = await listen<{ termId: string; frame: Frame }>("terminal://frame", (e) => {
         if (e.payload.termId === termId) applyFrame(e.payload.frame);
@@ -571,21 +568,29 @@ export function TerminalView({
       if (disposed) return onExitEvent();
       unlisteners.push(onExitEvent);
 
-      await invoke("term_start", {
+      const spawn = await invoke("term_start", {
         termId,
         cols: grid.cols,
         rows: grid.rows,
         cwd,
         theme: resolveTermTheme(host),
       });
+      // A shell that never spawned leaves a canvas that looks merely idle, so
+      // say so on it — there is no other surface for this pane's failure.
+      if (spawn.isErr()) {
+        ctx.fillStyle = theme.fg;
+        setFont(0);
+        ctx.fillText(`could not start shell: ${spawn.error.message}`, 8, baseline + 8);
+        return;
+      }
       started = true;
-      if (disposed) return void invoke("term_kill", { termId }).catch(() => {});
+      if (disposed) return void invoke("term_kill", { termId });
 
       // Re-push the theme when the app's dark/light class or color theme
       // changes. The engine forces a full frame in the new colors, which
       // `applyFrame` then paints — no local repaint bookkeeping needed.
       const themeObserver = new MutationObserver(() => {
-        void invoke("term_theme", { termId, theme: resolveTermTheme(host) }).catch(() => {});
+        void invoke("term_theme", { termId, theme: resolveTermTheme(host) });
       });
       themeObserver.observe(document.documentElement, {
         attributes: true,
@@ -602,19 +607,16 @@ export function TerminalView({
       // Keystrokes ride term_key into the engine, which encodes them against
       // live terminal state (kitty protocol, DECCKM, keypad mode) — the view
       // never builds escape sequences.
-      const sendKey = (event: KeyEventWire) =>
-        void invoke("term_key", { termId, event }).catch(() => {});
+      const sendKey = (event: KeyEventWire) => void invoke("term_key", { termId, event });
       // Paste through the engine's encoder (term_paste): it strips bytes
       // that could escape the paste bracket (an embedded ESC[201~ can't
       // inject commands) and answers needsConfirm when a multi-line paste
       // would execute on a bare shell — the dialog then retries with force.
       const paste = (text: string) => {
         backToLive();
-        void invoke<{ needsConfirm: boolean }>("term_paste", { termId, text })
-          .then((reply) => {
-            if (reply?.needsConfirm) setPendingPaste(text);
-          })
-          .catch(() => {});
+        void invoke<{ needsConfirm: boolean }>("term_paste", { termId, text }).then((reply) => {
+          if (reply.unwrapOr(null)?.needsConfirm) setPendingPaste(text);
+        });
       };
       // Paste from the system clipboard through the same path as a real
       // paste event. Used by the context menu's Paste item.
@@ -767,27 +769,28 @@ export function TerminalView({
         const rect = canvas.getBoundingClientRect();
         const x = Math.max(0, Math.min(grid.cols - 1, Math.floor((e.clientX - rect.left) / cellW)));
         const y = Math.max(0, Math.min(grid.rows - 1, Math.floor((e.clientY - rect.top) / cellH)));
-        void invoke("term_wheel", { termId, x, y, lines }).catch(() => {});
+        void invoke("term_wheel", { termId, x, y, lines });
       };
       const focusInput = () => input.focus({ preventScroll: true });
 
       // Hand the overlay its IPC + paint hooks now that the shell is up.
       bridgeRef.current = {
-        search: (q) => invoke<SearchMatch[]>("term_search", { termId, query: q }),
-        scrollTo: (row) => void invoke("term_scroll_to", { termId, row }).catch(() => {}),
+        search: (q) =>
+          invoke<SearchMatch[]>("term_search", { termId, query: q }).then((r) => r.unwrapOr([])),
+        scrollTo: (row) => void invoke("term_scroll_to", { termId, row }),
         repaint: paintAll,
         focusTerm: focusInput,
         copy: copySelection,
         paste: pasteClipboard,
         selectAll: () => void select("all"),
         hasSelection: () => rowsHaveSelection(grid.lines),
-        clearScrollback: () => void invoke(TERM_CLEAR_COMMAND, { termId }).catch(() => {}),
+        clearScrollback: () => void invoke(TERM_CLEAR_COMMAND, { termId }),
         // Open a clicked file path in the editor, seeking to its `:line` if
         // it had one. Relative paths resolve against this pane's `cwd` (the
         // backend joins them). Report-only — this opens an editor, it never
         // writes to the PTY.
         openPath: (link) =>
-          void invoke("term_open_path", { path: link.path, cwd, line: link.line }).catch(() => {}),
+          void invoke("term_open_path", { path: link.path, cwd, line: link.line }),
         linkAtPoint: (offsetX, offsetY) => {
           const x = Math.max(0, Math.min(grid.cols - 1, Math.floor(offsetX / cellW)));
           const y = Math.max(0, Math.min(grid.rows - 1, Math.floor(offsetY / cellH)));
@@ -814,7 +817,7 @@ export function TerminalView({
             rows,
             cellWidth: Math.round(cellW),
             cellHeight: cellH,
-          }).catch(() => {});
+          });
         },
       };
       // If the persisted size loaded after this effect measured with the
@@ -840,7 +843,7 @@ export function TerminalView({
           ay: a?.y,
           bx: b?.x,
           by: b?.y,
-        }).catch(() => {});
+        });
         return lastSelect;
       };
       // Copy a just-made selection to the clipboard when copy-on-select is on.
@@ -881,7 +884,7 @@ export function TerminalView({
             ctrl: e.ctrlKey,
             anyButton: e.buttons !== 0,
           },
-        }).catch(() => {});
+        });
       const onMouseDown = (e: MouseEvent) => {
         focusInput();
         if (e.button !== 0) {
@@ -957,8 +960,7 @@ export function TerminalView({
       const onMouseLeave = () => setHoveredLink(null);
       // Report focus so the backend can gate OSC 52 clipboard writes to the
       // focused terminal — a background pane must not hijack the clipboard.
-      const setFocus = (focused: boolean) =>
-        void invoke("term_focus", { termId, focused }).catch(() => {});
+      const setFocus = (focused: boolean) => void invoke("term_focus", { termId, focused });
       const onFocus = () => setFocus(true);
       const onBlur = () => setFocus(false);
 
@@ -1002,9 +1004,7 @@ export function TerminalView({
         // frame cap for a canvas nothing is painting (a backgrounded pane
         // streaming output would otherwise burn a full core).
         wasHidden = true;
-        void import("@tauri-apps/api/core").then(({ invoke }) =>
-          invoke("term_visibility", { termId, visible: false }).catch(() => {}),
-        );
+        void invoke("term_visibility", { termId, visible: false });
         return;
       }
       const cols = Math.max(2, Math.floor(host.clientWidth / cellW));
@@ -1014,15 +1014,13 @@ export function TerminalView({
       if (cols !== grid.cols || rows !== grid.rows) {
         grid.cols = cols;
         grid.rows = rows;
-        void import("@tauri-apps/api/core").then(({ invoke }) =>
-          invoke("term_resize", {
-            termId,
-            cols,
-            rows,
-            cellWidth: Math.round(cellW),
-            cellHeight: cellH,
-          }).catch(() => {}),
-        );
+        void invoke("term_resize", {
+          termId,
+          cols,
+          rows,
+          cellWidth: Math.round(cellW),
+          cellHeight: cellH,
+        });
       }
       if (wasHidden) {
         // Re-shown: resume the interactive frame rate and ask for one full
@@ -1030,10 +1028,8 @@ export function TerminalView({
         // engine never resends rows it considers clean, so a gap would
         // otherwise persist until a scroll.
         wasHidden = false;
-        void import("@tauri-apps/api/core").then(({ invoke }) => {
-          void invoke("term_visibility", { termId, visible: true }).catch(() => {});
-          void invoke("term_request_full", { termId }).catch(() => {});
-        });
+        void invoke("term_visibility", { termId, visible: true });
+        void invoke("term_request_full", { termId });
       }
     });
     observer.observe(host);
@@ -1045,11 +1041,7 @@ export function TerminalView({
       observer.disconnect();
       for (const dispose of disposers) dispose();
       for (const unlisten of unlisteners) unlisten();
-      if (started) {
-        void import("@tauri-apps/api/core").then(({ invoke }) =>
-          invoke("term_kill", { termId }).catch(() => {}),
-        );
-      }
+      if (started) void invoke("term_kill", { termId });
     };
     // termId/cwd identify the shell; changing them means a different terminal.
   }, [termId, cwd, copyOnSelectRef, shortcutsWorkInTerminalRef]);

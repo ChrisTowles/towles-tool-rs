@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Stethoscope } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { invokeCmd, isTauri } from "@/lib/tauri";
+import { invoke, isTauri } from "@/lib/tauri";
 import { collectorHealth, type CollectorHealth, type CollectorState } from "@/lib/collector-health";
 import { fmtAge, useStoreSnapshot } from "@/lib/data";
 import { useNow } from "@/lib/now";
@@ -30,8 +30,8 @@ function useResourceUsage(): ResourceUsage | null {
     if (!isTauri()) return;
     let cancelled = false;
     const tick = async () => {
-      const u = await invokeCmd<ResourceUsage>("app_resource_usage");
-      if (!cancelled && u) setUsage(u);
+      const u = await invoke<ResourceUsage>("app_resource_usage");
+      if (!cancelled && u.isOk()) setUsage(u.value);
     };
     tick();
     const id = window.setInterval(tick, USAGE_POLL_MS);

@@ -360,6 +360,20 @@ etc.). The points below are repo-specific specializations of that doc.
   serde, etc.): see [`.claude/rules/rust.md`](.claude/rules/rust.md) — it
   auto-loads for any `.rs` file under `crates/`, `crates-cli/`, or
   `crates-tauri/`, so don't restate it here.
+- **TypeScript errors are values**, the same as Rust's `Result` — via
+  [better-result](https://better-result.dev). Expected failures belong in the
+  return type, not in a `throw`, a rejected promise, or a `null` sentinel that
+  conflates "absent" with "broken". `apps/client/src/lib/tauri.ts` is the model:
+  one `invoke` returning `Result<T, IpcError>` that never throws, with tagged
+  errors in `src/lib/errors.ts` (`TaggedError`, matched via `SomeError.is(e)`).
+  See [`apps/client/CLAUDE.md`](apps/client/CLAUDE.md) for the call-site
+  patterns. Reserve `throw` for unrecoverable defects (the shortcuts registry's
+  module-eval validation) and for foreign interfaces that require it (monaco's
+  `IFileSystemProvider`, vscode-jsonrpc) — translate at those boundaries.
+  The `scripts/*.mjs` follow the same rule and are typechecked via
+  `scripts/tsconfig.json` (`checkJs`), but keep `process.exit(N)` at the
+  top-level CLI boundary — a non-zero exit code is the correct terminal
+  behavior there, and `Result` is for the seams beneath it.
 - **Frontend styling:** Tailwind + shadcn/ui only — no CSS modules, no
   hand-rolled stylesheets, no CSS-in-JS. Add components with
   `npx shadcn@latest add <name>`, don't hand-write Radix wrappers. The one

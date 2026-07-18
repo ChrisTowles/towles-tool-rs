@@ -10,6 +10,7 @@
 /// <reference types="@wdio/mocha-framework" />
 
 import { Key } from "webdriverio";
+import { expectString } from "../ipc.js";
 
 // The app binds the palette to ⌘K on macOS, Ctrl+K everywhere else (mirrors the
 // frontend's IS_MAC). The suite runs on Linux/WebKitGTK, but keep it portable.
@@ -60,17 +61,17 @@ describe("Command palette navigation", () => {
   before(async () => {
     const root = await browser.$("#root");
     await root.waitForExist({ timeout: 15000 });
-    await browser.waitUntil(async () => (await root.$$("*")).length > 0, {
+    await browser.waitUntil(async () => (await root.$$("*").length) > 0, {
       timeout: 15000,
       timeoutMsg: "#root never got children",
     });
   });
 
   it("shows the slot badge from the real app_slot command", async () => {
-    const slot = await browser.tauri.execute(({ core }) =>
-      core.invoke<string>("app_slot"),
+    const slot = expectString(
+      await browser.tauri.execute(({ core }) => core.invoke("app_slot")),
+      "app_slot",
     );
-    expect(typeof slot).toBe("string");
     expect(slot.length).toBeGreaterThan(0);
     // The header badge carries the full slot as its title attribute.
     const badge = await browser.$(`[title="${slot}"]`);

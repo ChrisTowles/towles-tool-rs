@@ -40,7 +40,7 @@ export function ResumePicker() {
 
   useEffect(() => {
     void (async () => {
-      const found = await resumeCandidates();
+      const found = (await resumeCandidates()).unwrapOr([]);
       if (found.length === 0) return;
       setCandidates(found);
       setChosen(new Set(found.map((c) => c.paneId)));

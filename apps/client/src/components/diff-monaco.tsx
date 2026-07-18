@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { loadMonaco } from "@/lib/monaco";
-import { abInvoke } from "@/lib/agentboard";
+import { invoke } from "@/lib/tauri";
+import { errorMessage } from "@/lib/errors";
 import { ideClearSelection, ideMention, ideReadFile, ideSetSelection } from "@/lib/ide";
 import { IdeSelectionOverlay } from "@/components/ide-selection-chip";
 import {
@@ -355,7 +356,7 @@ export function MonacoMultiDiff({
         setLoading(false);
       } catch (e) {
         if (!disposed) {
-          setError(String(e));
+          setError(errorMessage(e));
           setLoading(false);
         }
       }
@@ -461,17 +462,17 @@ async function fetchSides(
   const added = file.status === "A" || file.status === "?";
   const [original, read] = await Promise.all([
     added
-      ? Promise.resolve(null)
-      : abInvoke<string | null>("ab_get_base_file", {
+      ? null
+      : invoke<string | null>("ab_get_base_file", {
           dir,
           mode,
           baseBranch,
           path: file.oldPath ?? file.path,
-        }),
-    file.status === "D" ? Promise.resolve(null) : ideReadFile(dir, file.path).catch(() => null),
+        }).then((r) => r.unwrapOr(null)),
+    file.status === "D" ? null : ideReadFile(dir, file.path),
   ]);
   return {
     original: added ? undefined : (original ?? ""),
-    modified: file.status === "D" ? undefined : (read?.content ?? ""),
+    modified: file.status === "D" ? undefined : (read?.map((f) => f.content).unwrapOr("") ?? ""),
   };
 }

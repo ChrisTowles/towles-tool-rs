@@ -3,8 +3,16 @@ import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { journalLog, storeAddTask } from "@/lib/data";
+import { NotInTauri, type IpcError } from "@/lib/errors";
 import { formatLogLine, parseQuickLog } from "@/lib/quick-log-format";
 import { useWorkspace } from "@/lib/workspace";
+
+/** Surface a failed capture. Browser dev gets the "not wired" note rather than
+ * an error, since nothing is actually broken there. */
+function reportCaptureError(error: IpcError) {
+  if (NotInTauri.is(error)) toast.info("not wired in browser");
+  else toast.error(error.message);
+}
 
 /**
  * ⌘J quick log: one line straight into today's journal note, or — with a leading
@@ -30,17 +38,27 @@ export function QuickLog() {
     if (!parsed.body) return;
     if (routesToTodo) {
       // Same add-task path the Board uses — a plain todo in the backlog column.
-      void storeAddTask(parsed.body).then((ok) => {
-        if (ok) toast.success("Added to Board");
-      });
+      void storeAddTask(parsed.body).then((added) =>
+        added.match({
+          ok: () => {
+            toast.success("Added to Board");
+          },
+          err: reportCaptureError,
+        }),
+      );
     } else {
       // Reconstruct a timeline bullet — `- HH:MM [context] text` — stamped with the current
       // screen so scattered captures read back as a log. Matches `tt journal jot`'s format
       // so app and CLI entries interleave in the same daily note.
       const line = formatLogLine(parsed.body, { now: new Date(), context: activeTab });
-      void journalLog(line).then((ok) => {
-        if (ok) toast.success("Logged");
-      });
+      void journalLog(line).then((logged) =>
+        logged.match({
+          ok: () => {
+            toast.success("Logged");
+          },
+          err: reportCaptureError,
+        }),
+      );
     }
     setText("");
     setOpen(false);

@@ -8,6 +8,8 @@
 /// <reference types="@wdio/globals/types" />
 /// <reference types="@wdio/mocha-framework" />
 
+import { expectArray, expectObject, expectString } from "../ipc.js";
+
 type UserSettings = {
   preferredEditor: string;
   journalSettings: { baseFolder: string };
@@ -19,33 +21,34 @@ describe("Towles Tool desktop shell", () => {
     const root = await browser.$("#root");
     await root.waitForExist({ timeout: 15000 });
     // The app mounted something, not an empty shell.
-    await browser.waitUntil(async () => (await root.$$("*")).length > 0, {
+    await browser.waitUntil(async () => (await root.$$("*").length) > 0, {
       timeout: 15000,
       timeoutMsg: "#root never got children",
     });
   });
 
   it("answers a real Rust command (app_slot)", async () => {
-    const slot = await browser.tauri.execute(({ core }) =>
-      core.invoke<string>("app_slot"),
+    const slot = expectString(
+      await browser.tauri.execute(({ core }) => core.invoke("app_slot")),
+      "app_slot",
     );
-    expect(typeof slot).toBe("string");
     expect(slot.length).toBeGreaterThan(0);
   });
 
   it("reads real settings over settings_get IPC", async () => {
-    const settings = await browser.tauri.execute(({ core }) =>
-      core.invoke<UserSettings>("settings_get"),
+    const settings = expectObject<UserSettings>(
+      await browser.tauri.execute(({ core }) => core.invoke("settings_get")),
+      "settings_get",
     );
-    expect(settings).toBeDefined();
     expect(typeof settings.preferredEditor).toBe("string");
     expect(settings.journalSettings).toBeDefined();
     expect(settings.collectors.calendar).toBeDefined();
   });
 
   it("discovers repos over ab_discover_repos IPC (returns an array)", async () => {
-    const candidates = await browser.tauri.execute(({ core }) =>
-      core.invoke<Array<{ name: string; dir: string }>>("ab_discover_repos"),
+    const candidates = expectArray(
+      await browser.tauri.execute(({ core }) => core.invoke("ab_discover_repos")),
+      "ab_discover_repos",
     );
     expect(Array.isArray(candidates)).toBe(true);
   });

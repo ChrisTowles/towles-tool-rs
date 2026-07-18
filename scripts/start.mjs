@@ -8,6 +8,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { SpawnFailed } from "./errors.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -19,6 +20,12 @@ const build = spawnSync(
   ["build", "--no-bundle"],
   { stdio: "inherit", cwd: repoRoot, shell: process.platform === "win32" },
 );
+// A build that ran and failed already printed why; one that never launched
+// (no `tauri` on PATH) would otherwise exit 1 with nothing on screen.
+if (build.error) {
+  console.error(`[start] ${new SpawnFailed({ command: "tauri", cause: build.error }).message}`);
+  process.exit(1);
+}
 if (build.status !== 0) process.exit(build.status ?? 1);
 
 const binName = process.platform === "win32" ? "tt-app.exe" : "tt-app";

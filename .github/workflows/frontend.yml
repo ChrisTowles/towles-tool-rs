@@ -38,6 +38,11 @@ jobs:
         working-directory: .
 
       # Dev-tooling scripts (per-slot port derivation) — run from the repo root.
+      # `.mjs` sources, typechecked via JSDoc + checkJs (scripts/tsconfig.json).
+      - name: typecheck scripts
+        run: npm run typecheck:scripts
+        working-directory: .
+
       - name: test scripts
         run: npm run test:scripts
         working-directory: .
