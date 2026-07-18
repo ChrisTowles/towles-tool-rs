@@ -7,6 +7,7 @@ import { DmBanner } from "@/components/dm-banner";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { QuickLog } from "@/components/quick-log";
 import { StatusBar } from "@/components/status-bar";
+import { ResumePicker } from "@/components/resume-picker";
 import { UpdateBanner } from "@/components/update-banner";
 import { ZenIndicator } from "@/components/zen-indicator";
 import {
@@ -166,6 +167,7 @@ function Workspace() {
       <Shortcuts />
       <CommandPalette />
       <QuickLog />
+      <ResumePicker />
       <Toaster />
     </div>
   );

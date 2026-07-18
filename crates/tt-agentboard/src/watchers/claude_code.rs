@@ -97,6 +97,26 @@ pub fn extract_thread_name(entry: &TranscriptEntry) -> Option<String> {
     Some(text.chars().take(80).collect())
 }
 
+/// Locate `<projects>/<encoded cwd>/<session id>.jsonl`. The naive `/`→`-`
+/// encoding guess covers most paths; dirs whose names contain dots/underscores
+/// (also encoded to `-` by Claude) fall back to probing every project dir for
+/// the session file.
+pub fn find_journal(projects_dir: &Path, cwd: &str, session_id: &str) -> Option<PathBuf> {
+    let file = format!("{session_id}{JSONL_SUFFIX}");
+    let guess = projects_dir.join(cwd.replace('/', "-")).join(&file);
+    if guess.exists() {
+        return Some(guess);
+    }
+    let entries = std::fs::read_dir(projects_dir).ok()?;
+    for entry in entries.flatten() {
+        let candidate = entry.path().join(&file);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Derive `(thread_name, status)` for a live agent detected outside the CLI
 /// snapshot (via `procenv::scan_session_agents`) by reading its transcript.
 /// Bounded reads keep large transcripts cheap: the thread name lives near the
@@ -504,24 +524,9 @@ impl ClaudeCodeAgentWatcher {
         )
     }
 
-    /// Locate `<projects>/<encoded cwd>/<session id>.jsonl`. The naive
-    /// `/`→`-` encoding guess covers most paths; dirs whose names contain
-    /// dots/underscores (also encoded to `-` by Claude) fall back to probing
-    /// every project dir for the session file.
+    /// Locate this watcher's journal for `cwd`/`session_id`.
     fn find_journal(&self, cwd: &str, session_id: &str) -> Option<PathBuf> {
-        let file = format!("{session_id}{JSONL_SUFFIX}");
-        let guess = self.projects_dir.join(cwd.replace('/', "-")).join(&file);
-        if guess.exists() {
-            return Some(guess);
-        }
-        let entries = std::fs::read_dir(&self.projects_dir).ok()?;
-        for entry in entries.flatten() {
-            let candidate = entry.path().join(&file);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-        None
+        find_journal(&self.projects_dir, cwd, session_id)
     }
 
     /// Incrementally read the session's journal tail into its state.

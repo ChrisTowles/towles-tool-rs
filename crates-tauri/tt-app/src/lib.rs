@@ -17,6 +17,7 @@ mod linux_desktop;
 mod lsp;
 mod mcp;
 mod resources;
+mod resume;
 mod scheduler;
 mod settings;
 mod slack;
@@ -404,10 +405,15 @@ pub fn run() {
             // without cleanup, so Claude Code never dials a dead server.
             ide::sweep_stale_lockfiles();
 
+            // Keep the run marker fresh so a crash's estimated time stays
+            // close to the real one (see `resume`).
+            resume::spawn_heartbeat(app.handle().clone());
+
             // Kick an initial scan so the first snapshot has data.
             scan.notify_one();
             Ok(())
         })
+        .manage(resume::ResumeState::begin())
         .manage(terminal::TermState::default())
         .manage(lsp::Lsp::default())
         .manage(ide::DiffRequests::default())
@@ -416,6 +422,10 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::Destroyed = event {
                 terminal::on_window_destroyed(window.app_handle(), window.label());
+                // Reaching here at all means an orderly shutdown — a crash or
+                // reboot never fires this, which is exactly what the next
+                // launch reads the marker to find out.
+                resume::on_window_destroyed(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -434,6 +444,7 @@ pub fn run() {
             agentboard::ab_get_scan_roots,
             agentboard::ab_set_scan_roots,
             agentboard::ab_add_session,
+            resume::ab_resume_candidates,
             agentboard::ab_rename_session,
             agentboard::ab_close_session,
             agentboard::ab_refresh,

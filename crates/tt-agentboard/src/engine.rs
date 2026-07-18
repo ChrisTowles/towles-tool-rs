@@ -497,8 +497,17 @@ impl Engine {
         // Agents with no injected id (e.g. non-Claude kinds without a pid
         // source) stay unmapped and fall back to their folder's default
         // session in `assemble_state`.
+        // The same join, persisted: `thread_sessions` is in-memory and dies
+        // with the process, so a crash would take the pane→agent pairing with
+        // it and the next launch would have nothing to offer resuming
+        // (see [`crate::resume`]).
+        let mut link_changed = false;
         for (tid, sid) in &snapshot.tt_session_by_thread {
             self.thread_sessions.insert(tid.clone(), sid.clone());
+            link_changed |= self.sessions.note_agent(sid, tid);
+        }
+        if link_changed && let Err(e) = self.sessions.save() {
+            log::warn!("failed to persist agent session links: {e}");
         }
         let mut pinned: HashMap<String, Vec<String>> = HashMap::new();
         let mut tracked_threads: HashSet<String> = HashSet::new();
@@ -694,6 +703,19 @@ impl Engine {
     /// actually succeeded (see [`Self::close_folder`]).
     pub fn session_ids_for(&self, dir: &str) -> Vec<String> {
         self.sessions.sessions_for(dir).iter().map(|r| r.id.clone()).collect()
+    }
+
+    /// Every persisted session record with its folder dir, cloned.
+    ///
+    /// Exists so a caller can take this snapshot under the engine lock and then
+    /// do slow work (the resume picker's transcript scan) with the lock
+    /// released — holding it across disk I/O would block every `ab_*` command
+    /// and the state poll behind it.
+    pub fn session_records(&self) -> Vec<(String, SessionRecord)> {
+        self.sessions
+            .iter()
+            .flat_map(|(dir, list)| list.iter().map(move |rec| (dir.to_string(), rec.clone())))
+            .collect()
     }
 
     /// Tear a folder's live rail state down immediately, ahead of its

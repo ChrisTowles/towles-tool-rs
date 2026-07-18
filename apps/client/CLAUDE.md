@@ -92,6 +92,55 @@ encoder (`encodeKey`) and grapheme-cluster-aware wide-char handling
 Rust frame struct (`crates/tt-vt`) and this file's types in lockstep — see
 [`crates/tt-vt/CLAUDE.md`](../../crates/tt-vt/CLAUDE.md) for the Rust side.
 
+## A pane has no PTY until it is rendered
+
+`term_start` runs from `TerminalView`'s mount effect, and `screens/
+agentboard.tsx` renders only the **active folder's active window** panes.
+So a session can exist in the rail, and even be reported as agent-running
+(the watcher reads Claude's on-disk state, not the PTY), while its pane has
+never mounted and no shell exists.
+
+Anything that writes to a PTY must therefore `selectSession(folderDir, id)`
+first and then `await waitForFirstFrame(id)`. `termWriteRetry` alone is not
+enough — it only covers the few hundred ms before `term_start` registers the
+id, not the case where the pane was never mounted at all. **A write to an
+unmounted pane resolves `false` silently**, which surfaces as an action that
+appeared to work and did nothing (worse when an optimistic overlay then
+reports a state change that never happened).
+
+This is why every lifecycle action in `SessionActions` takes `folderDir`,
+including `stopClaude`/`compactClaude` — their triggers (rail kebab, cache
+badge) render for *every* folder, not just the active one.
+
+Restoring several sessions at once must additionally drain **serially** —
+select a folder, await its first frame, write, then move to the next — because
+only one folder is active at a time. See the open-session drain effect in
+`screens/agentboard.tsx`; firing the requests concurrently leaves every folder
+but the last with a placed-but-never-started pane.
+
+## Clickable rows can't be `<button>`s
+
+Radix's `Checkbox`, `Switch`, `RadioGroupItem` and `*Trigger` primitives render
+real `<button>`s, and a `<button>` may not contain interactive descendants.
+The established patterns here:
+
+- **Checkbox row** → `<label htmlFor>` wrapping the `Checkbox`; the label makes
+  the whole row a click target natively, with no extra handler
+  (`components/resume-picker.tsx`).
+- **Inline rename input** → swap the element rather than nesting one: render
+  *either* the input *or* the chip button, never an input inside the button
+  (the window tab strip in `screens/agentboard.tsx`).
+- **Row with trailing actions** → keep the action buttons as *siblings* in a
+  flex row, with only the identity cluster inside the button
+  (`components/agentboard-rail.tsx`'s folder header).
+- A `stopPropagation` on a child of a clickable parent is a smell that the
+  nesting is wrong.
+
+React reports these only at **runtime**, and nothing else in this repo can see
+them: there is no linter, `tsc` doesn't model the DOM, and vitest runs in a
+node environment with no renderer. `node scripts/drive.mjs console` is the
+check — see below.
+
 ## Testing convention: logic-only
 
 Vitest tests live under `lib/` (`*.test.ts`, `npm run test` = `vitest run`)
@@ -102,3 +151,13 @@ specifically so it's unit-testable without a DOM (e.g.
 testable). Verify actual UI/IPC behavior by driving the real shell
 (`npm run e2e` / `npm run dev:drive` — see the root CLAUDE.md's Commands
 section), not by adding component tests.
+
+**A green test run says nothing about whether the page rendered.** Because
+there are no component tests, the only signal for a runtime React complaint is
+the page's own console, which the app buffers under `VITE_WDIO`
+(`lib/wdio-console.ts`). Every `scripts/drive.mjs` verb prints a `⚠ N console
+error(s)` summary when the buffer is non-empty, and `drive.mjs console` dumps
+it (exiting non-zero on real errors, so it can gate a script). If you changed
+UI and never looked at that output, the change is unverified — an invalid-DOM
+warning otherwise reaches only the `dev:drive` terminal, which is a different
+process from `drive.mjs`.

@@ -36,8 +36,12 @@ the mock dev server:
   it normally); `node scripts/drive.mjs <verb>` drives *that same* window:
   `status`, `invoke <cmd> [json]` (real IPC), `eval "<js>"`, `shot <name>` (→
   `e2e/screenshots/<name>.png`, which you can `Read`), `click "<css>"`,
-  `type "<css>" <text>`, `url <path>`. This is the way to visually/behaviorally
-  debug a change and see the result. It's a plain-`fetch` client talking to the
+  `type "<css>" <text>`, `url <path>`, `console [--clear]`. This is the way to
+  visually/behaviorally debug a change and see the result. **A screenshot that
+  looks right is not proof the render was clean** — React reports invalid
+  markup as a runtime console error that nothing else here can see (no linter,
+  no component tests), so every verb prints a `⚠ N console error(s)` summary
+  and `console` dumps the detail. It's a plain-`fetch` client talking to the
   app's in-process WebDriver server — no WebdriverIO.
 - **Regression suite** — `npm run e2e` runs WebdriverIO specs that spawn a fresh
   window, run, and exit (CI pass/fail). Specs in `e2e/specs/*.e2e.ts` are

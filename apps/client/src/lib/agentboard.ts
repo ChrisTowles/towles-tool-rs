@@ -352,6 +352,38 @@ export function paneSession(paneId: string): string | null {
 // --- Pure window-layout reducers (unit-tested; the screen wraps them in
 // `updateWins` for persistence) ---
 
+/** Last id handed out, so a same-millisecond mint can't repeat one. */
+let lastWindowSeq = 0;
+
+/**
+ * Mint a window id. Every mint site must use this rather than `Date.now()`
+ * directly: window ids key `activeWindows`, so two windows sharing one id make
+ * both their folders resolve to the same window and only one folder's panes
+ * ever mount.
+ *
+ * A bare millisecond timestamp is not unique enough — restoring several panes
+ * across folders after a crash mints them all in one tick (see the resume
+ * picker). Keeping the counter monotonic preserves the newest-last ordering
+ * the timestamp gave us, while guaranteeing distinctness.
+ */
+export function nextWindowId(): string {
+  const now = Date.now();
+  lastWindowSeq = now > lastWindowSeq ? now : lastWindowSeq + 1;
+  return `w${lastWindowSeq}`;
+}
+
+let openFileNonce = 0;
+
+/**
+ * Monotonic re-trigger token for the code viewer's "open this file at this
+ * anchor" effect. Same reasoning as {@link nextWindowId}: a `Date.now()` nonce
+ * repeats when two opens land in one millisecond, and a repeated nonce reads
+ * as "nothing changed", so the second open never scrolls.
+ */
+export function nextOpenFileNonce(): number {
+  return ++openFileNonce;
+}
+
 /** Place a pane in its folder's focused window, creating a "primary" window if
  * the folder has none. A pane already hosted somewhere isn't moved — its
  * window becomes the folder's active one instead, so clicking a rail row
@@ -1254,7 +1286,7 @@ export const abOpenSessionForCwd = (cwd: string) =>
  * request is made (e.g. the Claude Sessions screen is the active tab), so
  * this can't be a plain function call — it's a one-shot mailbox: `requestOpenSession`
  * either delivers immediately (a listener is already mounted) or stashes the
- * request for Agentboard's mount effect to consume via `consumePendingOpenSession`. */
+ * request for Agentboard's mount effect to consume via `consumePendingOpenSessions`. */
 export type PendingOpenSession = {
   folderDir: string;
   sessionId: string;
@@ -1262,7 +1294,10 @@ export type PendingOpenSession = {
   label: string;
 };
 
-let pendingOpenSession: PendingOpenSession | null = null;
+/** A queue, not a single slot: the crash-resume picker hands off every ticked
+ * pane at once, at boot, when Agentboard is typically not mounted yet — so all
+ * of them stash and keeping only the last would resume one session out of N. */
+let pendingOpenSessions: PendingOpenSession[] = [];
 const openSessionListeners = new Set<(req: PendingOpenSession) => void>();
 
 export function requestOpenSession(req: PendingOpenSession) {
@@ -1270,18 +1305,44 @@ export function requestOpenSession(req: PendingOpenSession) {
     for (const l of openSessionListeners) l(req);
     return;
   }
-  pendingOpenSession = req;
+  pendingOpenSessions.push(req);
 }
 
-export function consumePendingOpenSession(): PendingOpenSession | null {
-  const req = pendingOpenSession;
-  pendingOpenSession = null;
-  return req;
+export function consumePendingOpenSessions(): PendingOpenSession[] {
+  const reqs = pendingOpenSessions;
+  pendingOpenSessions = [];
+  return reqs;
 }
 
 export function onOpenSessionRequest(cb: (req: PendingOpenSession) => void): () => void {
   openSessionListeners.add(cb);
   return () => openSessionListeners.delete(cb);
+}
+
+/**
+ * One pane the app was running Claude in when it last died. Mirrors the Rust
+ * `ResumeCandidate` payload (`tt_agentboard::resume`).
+ */
+export type ResumeCandidate = {
+  folderDir: string;
+  /** tt's PTY session id — the pane to restore into. */
+  paneId: string;
+  paneName: string;
+  /** The thread id to hand to `claude --resume`. */
+  claudeSessionId: string;
+  title: string | null;
+  /** Transcript mtime: when this session was last worked on. */
+  lastActiveMs: number;
+};
+
+/**
+ * Panes to offer resuming after an unexpected exit. Empty unless the previous
+ * run actually crashed — the backend returns nothing after a clean shutdown,
+ * and only answers once per launch, so this is safe to call unconditionally on
+ * startup and it will not re-prompt on a webview reload.
+ */
+export async function resumeCandidates(): Promise<ResumeCandidate[]> {
+  return (await invokeCmd<ResumeCandidate[]>("ab_resume_candidates")) ?? [];
 }
 
 /**
