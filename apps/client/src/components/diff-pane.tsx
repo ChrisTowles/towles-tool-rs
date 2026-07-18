@@ -1,15 +1,96 @@
-import { useCallback, useEffect, useState } from "react";
-import { GitCompare, Pencil, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronRight, GitCompare, Pencil, RefreshCw } from "lucide-react";
 import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
 import { MonacoMultiDiff, type ChangedFile } from "@/components/diff-monaco";
 import { IconBtn } from "@/components/agentboard-bits";
 import { abInvoke, type FolderData } from "@/lib/agentboard";
+import { buildDiffTree, type DiffTreeNode } from "@/lib/diff";
 import { ideReadFile, useIdeConnected } from "@/lib/ide";
 import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
 /** Which baseline the pane diffs against (mirrors `DiffMode` in tt-agentboard). */
 type DiffMode = "main" | "uncommitted";
+
+/** Git name-status letter → folder-rail-ish color in the tree rail. */
+const STATUS_COLORS: Record<string, string> = {
+  A: "text-emerald-500",
+  "?": "text-emerald-500",
+  D: "text-red-500",
+  R: "text-sky-500",
+  C: "text-sky-500",
+  M: "text-amber-500",
+};
+
+/** Compact navigation tree beside the multi-diff: same compact-folders
+ * grouping as the Files pane; clicking a file scrolls its diff into view. */
+function DiffTreeRail({
+  files,
+  onJump,
+}: {
+  files: ChangedFile[];
+  onJump: (path: string) => void;
+}) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const tree = useMemo(() => buildDiffTree(files.map((f) => f.path)), [files]);
+  const byPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files]);
+
+  const renderNodes = (nodes: DiffTreeNode[], depth: number) =>
+    nodes.map((node) => {
+      const paddingLeft = 4 + depth * 12;
+      if (node.kind === "folder") {
+        const isCollapsed = collapsed.has(node.path);
+        return (
+          <li key={node.path}>
+            <button
+              type="button"
+              onClick={() =>
+                setCollapsed((prev) => {
+                  const next = new Set(prev);
+                  if (isCollapsed) next.delete(node.path);
+                  else next.add(node.path);
+                  return next;
+                })
+              }
+              style={{ paddingLeft }}
+              className="flex w-full items-center gap-1 py-0.5 text-left font-mono text-[11px] text-muted-foreground hover:text-foreground"
+            >
+              <ChevronRight
+                className={cn("size-3 shrink-0 transition-transform", !isCollapsed && "rotate-90")}
+              />
+              <span className="truncate">{node.name}</span>
+            </button>
+            {!isCollapsed && <ul>{renderNodes(node.children, depth + 1)}</ul>}
+          </li>
+        );
+      }
+      const file = byPath.get(node.path);
+      return (
+        <li key={node.path}>
+          <button
+            type="button"
+            onClick={() => onJump(node.path)}
+            title={file?.oldPath ? `${file.oldPath} → ${node.path}` : node.path}
+            style={{ paddingLeft: paddingLeft + 14 }}
+            className="flex w-full items-center gap-1.5 py-0.5 text-left font-mono text-[11px] text-muted-foreground hover:text-foreground"
+          >
+            <span className={cn("shrink-0", STATUS_COLORS[file?.status ?? ""] ?? "")}>
+              {file?.status ?? ""}
+            </span>
+            <span className="min-w-0 flex-1 truncate">{node.name}</span>
+            {file && (file.linesAdded > 0 || file.linesRemoved > 0) && (
+              <span className="shrink-0 pr-1 text-[10px]">
+                <span className="text-emerald-500">+{file.linesAdded}</span>{" "}
+                <span className="text-red-500">−{file.linesRemoved}</span>
+              </span>
+            )}
+          </button>
+        </li>
+      );
+    });
+
+  return <ul className="w-56 shrink-0 overflow-y-auto border-r pr-1">{renderNodes(tree, 0)}</ul>;
+}
 
 const UNCOMMITTED_MODE = {
   key: "uncommitted" as const,
@@ -47,6 +128,10 @@ export function DiffPane({
   const [mode, setMode] = useState<DiffMode>("main");
   const [files, setFiles] = useState<ChangedFile[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const revealRef = useRef<((path: string) => void) | null>(null);
+  const registerReveal = useCallback((fn: ((path: string) => void) | null) => {
+    revealRef.current = fn;
+  }, []);
   const [editingBase, setEditingBase] = useState(false);
   // Claude's pending openDiff reviews for this folder (shown one at a time,
   // oldest first). Each carries the on-disk "before" for the DiffEditor.
@@ -224,13 +309,19 @@ export function DiffPane({
         ) : files.length === 0 ? (
           <p className="p-2 text-sm text-muted-foreground">No changes.</p>
         ) : (
-          <MonacoMultiDiff
-            dir={dir!}
-            files={files}
-            mode={mode}
-            baseBranch={baseBranch}
-            refreshKey={statsKey}
-          />
+          <>
+            <DiffTreeRail files={files} onJump={(path) => revealRef.current?.(path)} />
+            <div className="min-w-0 flex-1">
+              <MonacoMultiDiff
+                dir={dir!}
+                files={files}
+                mode={mode}
+                baseBranch={baseBranch}
+                refreshKey={statsKey}
+                registerReveal={registerReveal}
+              />
+            </div>
+          </>
         )}
         {reviews[0] && (
           <DiffReview
