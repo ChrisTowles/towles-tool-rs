@@ -786,6 +786,59 @@ pub async fn ide_write_file(
     .map_err(|e| format!("write task failed: {e}"))?
 }
 
+/// Minimal stat for the editor's filesystem-provider bridge (monaco-fs.ts).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsStat {
+    pub is_dir: bool,
+    pub size: u64,
+    pub mtime_ms: i64,
+}
+
+/// Stat one path for the VS Code filesystem provider. Same confinement rule
+/// as [`ide_read_file`].
+#[tauri::command]
+pub async fn ide_stat(dir: String, file_path: String) -> Result<FsStat, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let abs = confined(Path::new(&dir), &file_path)?;
+        let meta = std::fs::metadata(&abs).map_err(|e| format!("cannot stat {file_path}: {e}"))?;
+        Ok(FsStat { is_dir: meta.is_dir(), size: meta.len(), mtime_ms: mtime_ms(&meta) })
+    })
+    .await
+    .map_err(|e| format!("stat task failed: {e}"))?
+}
+
+/// One directory entry for the VS Code filesystem provider.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsDirEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// List one directory for the VS Code filesystem provider. `.git` is elided —
+/// nothing in the editor stack should ever walk into it.
+#[tauri::command]
+pub async fn ide_read_dir(dir: String, file_path: String) -> Result<Vec<FsDirEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let abs = confined(Path::new(&dir), &file_path)?;
+        let entries =
+            std::fs::read_dir(&abs).map_err(|e| format!("cannot read {file_path}: {e}"))?;
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == ".git" {
+                continue;
+            }
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            out.push(FsDirEntry { name, is_dir });
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("readdir task failed: {e}"))?
+}
+
 /// Every file in the folder's checkout (tracked + untracked-but-not-ignored),
 /// for the diff pane's Files tab — so any file, changed or not, can be
 /// @-mentioned to the folder's Claude session. Async: git subprocesses.
