@@ -1,168 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AtSign, ChevronRight, Columns2, RefreshCw, WrapText } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AtSign, Columns2, Files as FilesIcon, RefreshCw, WrapText } from "lucide-react";
 import { CodeViewer, type ViewerAnchor } from "@/components/code-viewer";
 import { IconBtn } from "@/components/agentboard-bits";
 import { FilePreview, previewKindFor } from "@/components/file-preview";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
-import { buildDiffTree, type DiffTreeNode } from "@/lib/diff";
-import { fileIconSpec, folderIconSpec } from "@/lib/file-icons";
 import { ideAtMention, useIdeConnected } from "@/lib/ide";
-import { setMonacoOpenHandler, setMonacoWorkspace } from "@/lib/monaco";
-import { invokeCmd } from "@/lib/tauri";
+import {
+  attachExplorer,
+  runMonacoCommand,
+  setMonacoOpenHandler,
+  setMonacoWorkspace,
+} from "@/lib/monaco";
 import { cn } from "@/lib/utils";
 import type { FolderData } from "@/lib/agentboard";
-import { Files as FilesIcon } from "lucide-react";
 
 /**
- * The files pane: every file in the checkout (tracked +
- * untracked-not-ignored, via `ide_list_files`), not just what changed. A
- * VS-Code-shaped split: file tree + filter on the left, a Monaco viewer on
- * the right. Clicking a file opens it; selecting text in the viewer streams
- * to the folder's Claude session as selection context, and the per-file @
- * button sends a whole-file mention. Long lines wrap by default (toggle in
- * the viewer toolbar); Markdown/HTML files get a second toggle that opens a
+ * The files pane: VS Code's real Explorer view on the left (the workbench
+ * sidebar part, hosted via `attachExplorer` — the checkout is the workspace
+ * folder), a Monaco viewer on the right. Clicking a file in the Explorer
+ * routes through the views override's open fallback into the viewer;
+ * selecting text streams to the folder's Claude session, and the header @
+ * button mentions the open file. Long lines wrap by default (toggle in the
+ * viewer toolbar); Markdown/HTML files get a second toggle that opens a
  * resizable split preview alongside the editor.
  */
-
-const TREE_INDENT_PX = 14;
-const TREE_BASE_PX = 8;
-/** Filtered matches shown at most — typing narrows further. */
-const FILTER_RESULT_CAP = 200;
-
-/** One file row: opens in the viewer on click; @ mentions it to Claude. */
-function FileRow({
-  name,
-  path,
-  paddingLeft,
-  connected,
-  active,
-  onOpen,
-  onMention,
-  showPath,
-}: {
-  name: string;
-  path: string;
-  paddingLeft: number;
-  connected: boolean;
-  active: boolean;
-  onOpen: (path: string) => void;
-  onMention: (path: string) => void;
-  /** Filter results show the full path (tree context is gone). */
-  showPath?: boolean;
-}) {
-  const icon = fileIconSpec(name);
-  return (
-    <div
-      style={{ paddingLeft }}
-      className={cn(
-        "group flex w-full items-center gap-1.5 border-l-2 border-transparent py-1 pr-2 text-left text-xs",
-        active
-          ? "border-l-violet-500 bg-accent text-foreground"
-          : "text-muted-foreground hover:bg-accent/50",
-      )}
-    >
-      <icon.Icon className={cn("size-3.5 shrink-0", icon.className)} />
-      <button
-        type="button"
-        onClick={() => onOpen(path)}
-        className="min-w-0 flex-1 truncate text-left"
-        title={path}
-      >
-        {showPath ? path : name}
-      </button>
-      <button
-        type="button"
-        title={
-          connected
-            ? `Mention ${path} to the Claude session in this folder`
-            : "Run `claude` in this folder's terminal first"
-        }
-        onClick={() => onMention(path)}
-        className={cn(
-          "flex shrink-0 items-center gap-0.5 rounded-sm px-1 py-0.5 font-mono text-[10.5px] opacity-0 transition-opacity group-hover:opacity-100",
-          connected ? "text-violet-500 hover:bg-accent" : "text-muted-foreground/50",
-        )}
-      >
-        <AtSign className="size-3" /> claude
-      </button>
-    </div>
-  );
-}
-
-function FileTreeRows({
-  nodes,
-  depth,
-  collapsed,
-  onToggleFolder,
-  connected,
-  open,
-  onOpen,
-  onMention,
-}: {
-  nodes: DiffTreeNode[];
-  depth: number;
-  collapsed: Set<string>;
-  onToggleFolder: (path: string) => void;
-  connected: boolean;
-  open: string | null;
-  onOpen: (path: string) => void;
-  onMention: (path: string) => void;
-}) {
-  return (
-    <>
-      {nodes.map((node) => {
-        const paddingLeft = TREE_BASE_PX + depth * TREE_INDENT_PX;
-        if (node.kind === "folder") {
-          const isCollapsed = collapsed.has(node.path);
-          const folder = folderIconSpec(node.name, !isCollapsed);
-          return (
-            <div key={node.path}>
-              <button
-                type="button"
-                onClick={() => onToggleFolder(node.path)}
-                style={{ paddingLeft }}
-                className="flex w-full items-center gap-1.5 py-1 pr-2 text-left text-[11px] font-medium text-muted-foreground hover:bg-accent/50"
-              >
-                <ChevronRight
-                  className={cn(
-                    "size-3 shrink-0 text-muted-foreground/70 transition-transform",
-                    !isCollapsed && "rotate-90",
-                  )}
-                />
-                <folder.Icon className={cn("size-3.5 shrink-0", folder.className)} />
-                <span className="truncate">{node.name}</span>
-              </button>
-              {!isCollapsed && (
-                <FileTreeRows
-                  nodes={node.children}
-                  depth={depth + 1}
-                  collapsed={collapsed}
-                  onToggleFolder={onToggleFolder}
-                  connected={connected}
-                  open={open}
-                  onOpen={onOpen}
-                  onMention={onMention}
-                />
-              )}
-            </div>
-          );
-        }
-        return (
-          <FileRow
-            key={node.path}
-            name={node.name}
-            path={node.path}
-            paddingLeft={paddingLeft}
-            connected={connected}
-            active={open === node.path}
-            onOpen={onOpen}
-            onMention={onMention}
-          />
-        );
-      })}
-    </>
-  );
-}
 
 /** Claude called openFile — focus this file (new nonce per request). */
 export type FilesOpenRequest = { path: string; anchor: ViewerAnchor; nonce: number };
@@ -176,14 +37,11 @@ export function FilesPane({
   connected: boolean;
   openRequest?: FilesOpenRequest;
 }) {
-  const [files, setFiles] = useState<string[] | null>(null);
-  const [filter, setFilter] = useState("");
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [open, setOpen] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [wordWrap, setWordWrap] = useState(true);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const explorerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (openRequest) setOpen(openRequest.path);
@@ -197,104 +55,57 @@ export function FilesPane({
 
   const previewKind = open ? previewKindFor(open) : null;
 
-  const fetchFiles = useCallback(async () => {
-    setRefreshing(true);
-    const list = await invokeCmd<string[]>("ide_list_files", { dir });
-    setFiles(list ?? []);
-    setRefreshing(false);
-  }, [dir]);
-
   useEffect(() => {
     setOpen(null);
     setDirty(false);
-    void fetchFiles();
-  }, [fetchFiles]);
+  }, [dir]);
 
-  // This pane is the VS Code workspace: quick-open (Ctrl+P in the editor)
-  // searches this folder, and picked files open here. Keyed on `open` too —
-  // panes stay mounted forever, so mount order says nothing about which pane
-  // the user is in; the one they last opened a file in wins.
+  // This pane is the VS Code workspace: the Explorer sidebar renders into
+  // this pane's container, quick-open (Ctrl+P in the editor) searches this
+  // folder, and picked/clicked files open here. Keyed on `open` too — panes
+  // stay mounted forever, so mount order says nothing about which pane the
+  // user is in; the one they last opened a file in wins (workspace, sidebar,
+  // and open-handler all steal together).
   useEffect(() => {
+    let disposed = false;
+    let detach: (() => void) | null = null;
     void setMonacoWorkspace(dir);
+    if (explorerRef.current) {
+      void attachExplorer(explorerRef.current).then((d) => {
+        if (disposed) d();
+        else detach = d;
+      });
+    }
     setMonacoOpenHandler((absolutePath) => {
       if (absolutePath.startsWith(`${dir}/`)) setOpen(absolutePath.slice(dir.length + 1));
     });
-    return () => setMonacoOpenHandler(null);
+    return () => {
+      disposed = true;
+      detach?.();
+      setMonacoOpenHandler(null);
+    };
   }, [dir, open]);
 
-  const tree = useMemo(() => buildDiffTree(files ?? []), [files]);
-  const needle = filter.trim().toLowerCase();
-  const matches = useMemo(
-    () =>
-      needle
-        ? (files ?? []).filter((f) => f.toLowerCase().includes(needle)).slice(0, FILTER_RESULT_CAP)
-        : null,
-    [files, needle],
-  );
-
   const mention = (path: string) => void ideAtMention(dir, path);
-
-  const toggleFolder = (path: string) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden rounded-lg border">
       <div className="flex w-64 shrink-0 flex-col border-r bg-card">
         <div className="flex shrink-0 items-center gap-1.5 border-b bg-card px-2 py-1.5">
-          <input
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="filter files…"
-            className="min-w-0 flex-1 rounded-sm border border-input bg-background px-1.5 py-0.5 font-mono text-[11px] outline-none"
-          />
-          <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">
-            {files == null ? "…" : matches ? matches.length : files.length}
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+            explorer
           </span>
           <IconBtn
-            title="refresh file list"
-            onClick={() => void fetchFiles()}
+            title="refresh the explorer"
+            onClick={() => void runMonacoCommand("workbench.files.action.refreshFilesExplorer")}
             className="hover:text-sky-500"
           >
-            <RefreshCw className={refreshing ? "size-3 animate-spin" : "size-3"} />
+            <RefreshCw className="size-3" />
           </IconBtn>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {files == null ? (
-            <p className="p-3 text-sm text-muted-foreground">Loading…</p>
-          ) : matches ? (
-            matches.map((path) => (
-              <FileRow
-                key={path}
-                name={path}
-                path={path}
-                paddingLeft={TREE_BASE_PX}
-                connected={connected}
-                active={open === path}
-                onOpen={setOpen}
-                onMention={mention}
-                showPath
-              />
-            ))
-          ) : (
-            <FileTreeRows
-              nodes={tree}
-              depth={0}
-              collapsed={collapsed}
-              onToggleFolder={toggleFolder}
-              connected={connected}
-              open={open}
-              onOpen={setOpen}
-              onMention={mention}
-            />
-          )}
-        </div>
+        <div ref={explorerRef} className="min-h-0 flex-1 overflow-hidden" />
         <div className="shrink-0 border-t bg-card px-2 py-1 text-[10.5px] text-muted-foreground">
-          <span className="font-mono text-violet-500">@</span> mentions a file to Claude
+          <span className="font-mono text-violet-500">@</span> mentions the open file to Claude
           {connected ? "" : " — no session connected yet"}
         </div>
       </div>
