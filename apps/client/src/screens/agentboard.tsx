@@ -50,7 +50,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { PastedImagePathsSchema, SlotCreatedSchema } from "@/lib/schemas/slots";
+import { SlotCreatedSchema } from "@/lib/schemas/slots";
 import { cn } from "@/lib/utils";
 import {
   abInvoke,
@@ -98,7 +98,6 @@ import {
   type FolderData,
   type Overlay,
   type PaneRect,
-  type PastedImage,
   type PendingOpenSession,
   type RemoveTarget,
   type RepoCandidate,
@@ -783,7 +782,9 @@ export function AgentboardScreen() {
       branch: string;
       base: string;
       options: ClaudeLaunchOptions;
-      images: PastedImage[];
+      /** Already on disk — the form stages images when they're pasted, so
+       * "Suggest name + goal" can hand `claude -p` real paths too. */
+      imagePaths: string[];
     },
   ) {
     const id = `${repo.key}::${input.branch}`;
@@ -798,28 +799,13 @@ export function AgentboardScreen() {
         branch: input.branch,
         base: input.base,
         options: input.options,
-        images: input.images,
+        imagePaths: input.imagePaths,
         startedAt: Date.now(),
         status: "creating",
       },
     ]);
     try {
-      // Stage pasted images *first*. They go to an app dir, not the slot, so
-      // this doesn't need the worktree to exist — and doing it up front means
-      // a failure here leaves nothing created, so the pending row's Retry is
-      // still the right (and only) recovery path.
-      const imagePaths = input.images.length
-        ? await invokeOrThrow<string[]>(
-            "slot_write_pasted_images",
-            {
-              repo: repo.name,
-              branch: input.branch,
-              images: input.images.map(({ mime, dataBase64 }) => ({ mime, dataBase64 })),
-            },
-            PastedImagePathsSchema,
-          )
-        : [];
-
+      const imagePaths = input.imagePaths;
       const created = await invokeOrThrow<SlotCreated>(
         "slot_create",
         { root: repo.dir, branch: input.branch, base: input.base },
@@ -849,7 +835,7 @@ export function AgentboardScreen() {
     if (!p) return;
     void createSlot(
       { name: p.repoName, dir: p.repoDir, key: p.repoKey },
-      { goal: p.goal, branch: p.branch, base: p.base, options: p.options, images: p.images },
+      { goal: p.goal, branch: p.branch, base: p.base, options: p.options, imagePaths: p.imagePaths },
     );
   }
 
@@ -868,7 +854,7 @@ export function AgentboardScreen() {
       await invokeOrThrow("slot_init_template", { root: p.repoDir });
       void createSlot(
         { name: p.repoName, dir: p.repoDir, key: p.repoKey },
-        { goal: p.goal, branch: p.branch, base: p.base, options: p.options, images: p.images },
+        { goal: p.goal, branch: p.branch, base: p.base, options: p.options, imagePaths: p.imagePaths },
       );
     } catch (e) {
       setPendingSlots((prev) => prev.map((x) => (x.id === id ? { ...x, error: String(e) } : x)));
