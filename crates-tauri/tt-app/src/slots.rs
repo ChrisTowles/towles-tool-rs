@@ -3,6 +3,7 @@
 //! over `tt_slots::ops`, which is shared with the `tt slot` CLI — the app
 //! never reimplements slot logic.
 
+use base64::Engine as _;
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::Manager;
@@ -135,6 +136,49 @@ pub async fn slot_create(
         base: created.base,
         warnings: created.warnings,
     })
+}
+
+/// The system clipboard's image, as a base64 PNG the webview can preview and
+/// hand back to `slot_write_pasted_images`. `Ok(None)` = the clipboard holds
+/// no image (text, or nothing) — an ordinary outcome, not an error.
+///
+/// This exists because **the DOM can't see an image paste on Linux**: a
+/// Ctrl+V there doesn't reach the webview's `paste` event at all (the same
+/// behavior `terminal-view.tsx` documents, where Ctrl+V arrives as a plain
+/// `keydown` that `encodeKey` turns into `\x16`). So the form drives image
+/// attachment off `keydown` and reads the clipboard here instead — the same
+/// native-clipboard workaround `term_copy_selection` uses for writes.
+///
+/// **Must not run on the main thread** — `read_image()` warns that the
+/// underlying Linux clipboard libraries can deadlock the whole app there
+/// (and on Linux, sync Tauri commands dispatch inline on the GTK thread).
+#[tauri::command]
+pub async fn read_clipboard_image(app: tauri::AppHandle) -> Result<Option<PastedImage>, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        // An empty/non-image clipboard surfaces as an error from the plugin;
+        // that's the common case here, so it maps to `None` rather than
+        // bubbling up as a failure the user has to read.
+        let Ok(image) = app.clipboard().read_image() else {
+            return Ok(None);
+        };
+        let rgba = image.rgba();
+        let png =
+            pasted::rgba_to_png(image.width(), image.height(), rgba).map_err(|e| e.to_string())?;
+        if png.len() > pasted::MAX_IMAGE_BYTES {
+            return Err(format!(
+                "clipboard image is {} bytes, over the {}-byte limit",
+                png.len(),
+                pasted::MAX_IMAGE_BYTES
+            ));
+        }
+        Ok(Some(PastedImage {
+            mime: "image/png".to_string(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(&png),
+        }))
+    })
+    .await
+    .map_err(|e| format!("clipboard task failed: {e}"))?
 }
 
 /// Stage the images pasted into the new-slot form as files, returning their

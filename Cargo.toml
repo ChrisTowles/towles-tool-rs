@@ -36,6 +36,10 @@ inquire = "0.7.5"
 # requires zig 0.15.x on PATH (dotfiles functions/18-zig.sh installs it).
 libghostty-vt = "0.2.0"
 notify = "6.1.1"
+# Encodes the raw RGBA the system clipboard hands back into a real PNG — see
+# `tt_slots::pasted::rgba_to_png`. Already in the tree via the clipboard
+# plugin's image support, so this pins no new transitive weight.
+png = "0.17"
 portable-pty = "0.9.0"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 log = "0.4.29"

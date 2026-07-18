@@ -1111,6 +1111,28 @@ export async function imagesFromDataTransfer(data: DataTransfer | null): Promise
   return Promise.all(files.map((file, i) => readImageFile(file, i)));
 }
 
+/** Ask Rust for the system clipboard's image, for the case where the paste
+ * event gave us nothing.
+ *
+ * A WebKitGTK paste event carries no image data at all — on Linux, Ctrl+V of
+ * a screenshot fires `paste` with empty `clipboardData`, so there is nothing
+ * in the DOM event to read. `read_clipboard_image` goes to the OS clipboard
+ * directly; `null` means it holds no image, which is a normal outcome. */
+export async function clipboardImageFromHost(): Promise<PastedImage | null> {
+  const image = await invokeCmd<{ mime: string; dataBase64: string } | null>(
+    "read_clipboard_image",
+    {},
+  );
+  if (!image) return null;
+  return {
+    id: `clipboard-${image.dataBase64.length}`,
+    name: "clipboard image",
+    mime: image.mime,
+    dataBase64: image.dataBase64,
+    previewUrl: `data:${image.mime};base64,${image.dataBase64}`,
+  };
+}
+
 async function readImageFile(file: File, index: number): Promise<PastedImage> {
   const previewUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
