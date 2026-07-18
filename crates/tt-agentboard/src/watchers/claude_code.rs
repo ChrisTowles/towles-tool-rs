@@ -13,9 +13,13 @@
 //! 1. list live agents from the CLI;
 //! 2. resolve each to a session — `resolve_session_by_pid` first (the tmux
 //!    server walks the pid's ancestry to a pane), then the cwd;
-//! 3. status: `busy`/`waiting` pass straight through (the vocabulary now
-//!    follows the CLI); `idle` takes the journal's view when it is
-//!    complete/waiting (preserving the unseen-✓ flow), else stays idle;
+//! 3. status: `busy`/`waiting` pass through the CLI's own report *unless* the
+//!    journal already recorded the turn's real end (a final assistant
+//!    message with no tool calls) and nothing new has landed for a while —
+//!    that combination means the CLI's own status bookkeeping is stale, not
+//!    that the agent is still working (`refine_busy`); `idle` takes the
+//!    journal's view when it is complete/waiting (preserving the unseen-✓
+//!    flow), else stays idle (`refine_idle`);
 //! 4. enrich from the journal tail (offset at the last newline boundary —
 //!    adopted fix #1 — with shrink-reset);
 //! 5. sessions that disappeared from the CLI get one final journal read and a
@@ -345,6 +349,35 @@ pub fn refine_idle(journal_status: AgentStatus) -> AgentStatus {
     }
 }
 
+/// How long a CLI-reported `busy`/`waiting` is trusted after the journal
+/// itself already recorded the turn's end, before it's treated as stale
+/// bookkeeping rather than genuine activity. Generous enough that normal
+/// lag between "assistant finished" and "CLI's own status file catches up"
+/// never flips the dot, but short enough that a session stuck this way for
+/// tens of minutes (the reported bug) self-heals promptly.
+const STALE_BUSY_JOURNAL_MS: i64 = 60_000;
+
+/// Cross-check a CLI-reported `busy`/`waiting` against the journal before
+/// trusting it verbatim — the `busy`-side counterpart to `refine_idle`. The
+/// CLI (`claude agents --all --json`) is normally authoritative for
+/// liveness/status, but nothing re-derives its status once the process is
+/// still listed: if its own bookkeeping fails to flip back after a turn
+/// genuinely ends, the board would otherwise show that agent as "working"
+/// forever. A session whose journal still shows an in-flight tool call or an
+/// open question is untouched here — only a journal that already recorded a
+/// plain, no-tool-call final response, with nothing appended since, counts.
+pub fn refine_busy(
+    cli_status: AgentStatus,
+    journal_status: AgentStatus,
+    journal_silence_ms: i64,
+) -> AgentStatus {
+    if journal_status == AgentStatus::Complete && journal_silence_ms > STALE_BUSY_JOURNAL_MS {
+        AgentStatus::Complete
+    } else {
+        cli_status
+    }
+}
+
 /// Terminal status when a session disappears from the CLI list: `complete` if
 /// its journal finished, `interrupted` if it still looked mid-run.
 pub fn exit_status(journal_status: AgentStatus) -> AgentStatus {
@@ -362,6 +395,10 @@ struct SessionState {
     emitted_status: Option<AgentStatus>,
     /// The journal's own status derivation (feeds `refine_idle`/`exit_status`).
     journal_status: AgentStatus,
+    /// `now_ms` of the last scan that actually consumed new journal bytes
+    /// (feeds `refine_busy`'s staleness check). `0` until the journal is
+    /// first read.
+    journal_updated_at: i64,
     /// Next read offset = last-newline byte boundary (adopted fix #1).
     file_offset: u64,
     /// `(dev, ino)` of the journal the offset belongs to. A same-path
@@ -395,6 +432,7 @@ impl Default for SessionState {
         Self {
             emitted_status: None,
             journal_status: AgentStatus::Idle,
+            journal_updated_at: 0,
             file_offset: 0,
             file_id: None,
             head: Vec::new(),
@@ -552,6 +590,7 @@ impl ClaudeCodeAgentWatcher {
             state.head = fresh[..consumed.min(HEAD_PROBE_LEN)].to_vec();
         }
         state.file_offset += consumed as u64;
+        state.journal_updated_at = now_ms;
 
         for entry in &parsed {
             if state.thread_name.is_none()
@@ -634,7 +673,11 @@ impl AgentWatcher for ClaudeCodeAgentWatcher {
 
             let status = match agent.agent_status() {
                 Some(AgentStatus::Idle) | None => refine_idle(state.journal_status),
-                Some(s) => s,
+                Some(other) => refine_busy(
+                    other,
+                    state.journal_status,
+                    now_ms.saturating_sub(state.journal_updated_at),
+                ),
             };
 
             // Emit gate: status change, or a details change (sub-agent set,
@@ -826,6 +869,48 @@ mod tests {
         assert_eq!(by_thread["sid-done"], AgentStatus::Complete);
         assert_eq!(by_thread["sid-mid"], AgentStatus::Idle);
         assert_eq!(by_thread["sid-perm"], AgentStatus::Waiting);
+    }
+
+    #[test]
+    fn stuck_busy_from_stale_cli_status_self_heals_to_complete() {
+        // Reproduces the reported bug: the CLI's own `claude agents --all
+        // --json` keeps reporting `busy` long after the transcript recorded
+        // the turn's real end (a final assistant message with no tool
+        // calls) — the board must not pulse "Working…" forever.
+        let mut f = fixture();
+        write_journal(&f.projects, "/home/u/p", "sid-stuck", &[USER_LINE, DONE_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(9, "/home/u/p", "sid-stuck", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/p".into(), "p".into()));
+
+        // Fresh discovery: the journal is already Complete, but a brief lag
+        // in the CLI's own status catching up must not immediately flip it —
+        // avoids flapping the dot for genuine, short-lived staleness.
+        f.watcher.scan(&mut ctx, 1_000);
+        assert_eq!(ctx.events.last().unwrap().status, AgentStatus::Busy);
+
+        // Nothing new lands in the journal, and the CLI still insists it's
+        // busy well past the staleness window — that combination means the
+        // CLI's bookkeeping is stuck, not that the agent is still working.
+        f.watcher.scan(&mut ctx, 1_000 + STALE_BUSY_JOURNAL_MS + 1);
+        assert_eq!(ctx.events.last().unwrap().status, AgentStatus::Complete);
+    }
+
+    #[test]
+    fn busy_with_in_flight_tool_call_never_goes_stale() {
+        // A session can legitimately run a long tool (e.g. a multi-minute
+        // build) with no new journal writes in between — the journal still
+        // shows Busy (the last entry is a tool_use), so the staleness check
+        // must never kick in regardless of elapsed time.
+        let mut f = fixture();
+        write_journal(&f.projects, "/home/u/p", "sid-running", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(9, "/home/u/p", "sid-running", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/p".into(), "p".into()));
+
+        f.watcher.scan(&mut ctx, 1_000);
+        f.watcher.scan(&mut ctx, 1_000 + STALE_BUSY_JOURNAL_MS * 10);
+        assert_eq!(ctx.events.last().unwrap().status, AgentStatus::Busy);
     }
 
     #[test]
