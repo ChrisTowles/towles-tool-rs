@@ -97,7 +97,7 @@ export function buildAttentionFeed(
     });
   }
 
-  return items.sort(
+  return items.toSorted(
     (a, b) => a.tier - b.tier || b.sortTs - a.sortTs || a.id.localeCompare(b.id),
   );
 }

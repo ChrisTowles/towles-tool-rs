@@ -79,7 +79,7 @@ function pushInline(nodes: MrkdwnNode[], text: string): void {
   for (const node of parseInline(text)) nodes.push(node);
 }
 
-const MARKERS: Record<string, "strong" | "em" | "del"> = { "*": "strong", "_": "em", "~": "del" };
+const MARKERS: Record<string, "strong" | "em" | "del"> = { "*": "strong", _: "em", "~": "del" };
 
 function parseInline(text: string): MrkdwnNode[] {
   const nodes: MrkdwnNode[] = [];

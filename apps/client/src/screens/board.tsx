@@ -146,7 +146,7 @@ export function BoardScreen() {
     for (const p of snapshot.prs) set.add(p.repo);
     for (const i of snapshot.issues) set.add(i.repo);
     for (const t of snapshot.tasks) if (t.repo) set.add(t.repo);
-    return [...set].sort();
+    return [...set].toSorted();
   }, [snapshot.prs, snapshot.issues, snapshot.tasks]);
 
   // `owner/repo#123` for every todo already linked to a GitHub issue — the
@@ -243,7 +243,12 @@ export function BoardScreen() {
     if (beforeId === id) return;
     const col = columns[status].filter((t) => t.id !== id);
     const insertAt =
-      beforeId === "end" ? col.length : Math.max(0, col.findIndex((t) => t.id === beforeId));
+      beforeId === "end"
+        ? col.length
+        : Math.max(
+            0,
+            col.findIndex((t) => t.id === beforeId),
+          );
     const prev = col[insertAt - 1] ?? null;
     const next = col[insertAt] ?? null;
     const position = reorderedPosition(prev ? prev.position : null, next ? next.position : null);
@@ -375,9 +380,7 @@ export function BoardScreen() {
                     {fmtDay(parsedDraft.dueTs)}
                   </span>
                 )}
-                {parsedDraft.repo && (
-                  <span className="font-mono">#{parsedDraft.repo}</span>
-                )}
+                {parsedDraft.repo && <span className="font-mono">#{parsedDraft.repo}</span>}
               </div>
             )}
           </div>
@@ -411,90 +414,90 @@ export function BoardScreen() {
       ) : (
         <ScrollArea className="min-h-0 flex-1">
           <div ref={focusRef} className="grid min-w-[900px] grid-cols-5 gap-3 p-3">
-          {TASK_STATUSES.map((status) => (
-            <div
-              key={status}
-              onDragOver={(e) => {
-                if (!isTaskDrag(e.dataTransfer.types)) return;
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
-                // Over the column's empty tail (cards handle their own hover and
-                // stop propagation), so the card would land at the end.
-                setDropSlot({ status, beforeId: "end" });
-              }}
-              onDragLeave={(e) => {
-                // Ignore moves between children of the same column.
-                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-                setDropSlot((cur) => (cur?.status === status ? null : cur));
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                setDropSlot(null);
-                const payload = decodeTaskDrag(e.dataTransfer.getData(TASK_DRAG_TYPE));
-                if (payload) reorder(payload.id, status, "end");
-              }}
-              className={cn(
-                "flex flex-col rounded-lg border bg-muted/30",
-                dropSlot?.status === status &&
-                  "border-violet-500/60 bg-violet-500/5 dark:bg-violet-500/10",
-              )}
-            >
-              <div className="flex items-center justify-between px-2.5 py-2">
-                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  {TASK_STATUS_LABEL[status]}
-                </span>
-                <span className="flex items-center gap-1">
-                  {status === "done" && columns.done.length > 0 && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-5 px-1.5 text-[10px] uppercase tracking-wide text-muted-foreground"
-                      title="Remove done todos completed over 7 days ago"
-                      onClick={clearDone}
-                    >
-                      Clear done
-                    </Button>
-                  )}
-                  {overdue[status] > 0 && (
-                    <span
-                      title={`${overdue[status]} overdue`}
-                      className="rounded-full border border-transparent bg-red-500/15 px-1.5 font-mono text-[10px] text-red-600 dark:text-red-400"
-                    >
-                      {overdue[status]} late
-                    </span>
-                  )}
-                  <span className="rounded-full bg-background px-1.5 font-mono text-[10px] text-muted-foreground">
-                    {columns[status].length}
+            {TASK_STATUSES.map((status) => (
+              <div
+                key={status}
+                onDragOver={(e) => {
+                  if (!isTaskDrag(e.dataTransfer.types)) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  // Over the column's empty tail (cards handle their own hover and
+                  // stop propagation), so the card would land at the end.
+                  setDropSlot({ status, beforeId: "end" });
+                }}
+                onDragLeave={(e) => {
+                  // Ignore moves between children of the same column.
+                  if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                  setDropSlot((cur) => (cur?.status === status ? null : cur));
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDropSlot(null);
+                  const payload = decodeTaskDrag(e.dataTransfer.getData(TASK_DRAG_TYPE));
+                  if (payload) reorder(payload.id, status, "end");
+                }}
+                className={cn(
+                  "flex flex-col rounded-lg border bg-muted/30",
+                  dropSlot?.status === status &&
+                    "border-violet-500/60 bg-violet-500/5 dark:bg-violet-500/10",
+                )}
+              >
+                <div className="flex items-center justify-between px-2.5 py-2">
+                  <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {TASK_STATUS_LABEL[status]}
                   </span>
-                </span>
+                  <span className="flex items-center gap-1">
+                    {status === "done" && columns.done.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-5 px-1.5 text-[10px] uppercase tracking-wide text-muted-foreground"
+                        title="Remove done todos completed over 7 days ago"
+                        onClick={clearDone}
+                      >
+                        Clear done
+                      </Button>
+                    )}
+                    {overdue[status] > 0 && (
+                      <span
+                        title={`${overdue[status]} overdue`}
+                        className="rounded-full border border-transparent bg-red-500/15 px-1.5 font-mono text-[10px] text-red-600 dark:text-red-400"
+                      >
+                        {overdue[status]} late
+                      </span>
+                    )}
+                    <span className="rounded-full bg-background px-1.5 font-mono text-[10px] text-muted-foreground">
+                      {columns[status].length}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex flex-col gap-2 p-2 pt-0">
+                  {columns[status].map((task, i) => (
+                    <Fragment key={task.id}>
+                      <DropLine
+                        active={dropSlot?.status === status && dropSlot.beforeId === task.id}
+                      />
+                      <Card
+                        task={task}
+                        now={now}
+                        repos={repos}
+                        nextId={columns[status][i + 1]?.id ?? null}
+                        onMove={move}
+                        onReorderHover={setDropSlot}
+                        onReorder={reorder}
+                        onPromote={promote}
+                        onRename={rename}
+                        onSetDue={setDue}
+                        onSetNotes={setNotes}
+                        onDelete={remove}
+                        onDragEnd={() => setDropSlot(null)}
+                      />
+                    </Fragment>
+                  ))}
+                  <DropLine active={dropSlot?.status === status && dropSlot.beforeId === "end"} />
+                </div>
               </div>
-              <div className="flex flex-col gap-2 p-2 pt-0">
-                {columns[status].map((task, i) => (
-                  <Fragment key={task.id}>
-                    <DropLine
-                      active={dropSlot?.status === status && dropSlot.beforeId === task.id}
-                    />
-                    <Card
-                      task={task}
-                      now={now}
-                      repos={repos}
-                      nextId={columns[status][i + 1]?.id ?? null}
-                      onMove={move}
-                      onReorderHover={setDropSlot}
-                      onReorder={reorder}
-                      onPromote={promote}
-                      onRename={rename}
-                      onSetDue={setDue}
-                      onSetNotes={setNotes}
-                      onDelete={remove}
-                      onDragEnd={() => setDropSlot(null)}
-                    />
-                  </Fragment>
-                ))}
-                <DropLine active={dropSlot?.status === status && dropSlot.beforeId === "end"} />
-              </div>
-            </div>
-          ))}
+            ))}
           </div>
         </ScrollArea>
       )}
@@ -629,10 +632,8 @@ function Card({
       className={cn(
         "group rounded-md border border-l-2 bg-background p-2.5 text-sm shadow-sm",
         "cursor-grab active:cursor-grabbing",
-        due === "overdue" &&
-          "border-l-red-500 bg-red-500/[0.03] dark:bg-red-500/[0.07]",
-        due === "today" &&
-          "border-l-amber-500 bg-amber-500/[0.03] dark:bg-amber-500/[0.07]",
+        due === "overdue" && "border-l-red-500 bg-red-500/[0.03] dark:bg-red-500/[0.07]",
+        due === "today" && "border-l-amber-500 bg-amber-500/[0.03] dark:bg-amber-500/[0.07]",
         task.status === "done" && "opacity-60",
         dragging && "opacity-40",
       )}
@@ -744,10 +745,7 @@ function Card({
               <DropdownMenuItem disabled>No repos to file in</DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
-            <DropdownMenuItem
-              variant="destructive"
-              onSelect={() => setConfirmingDelete(true)}
-            >
+            <DropdownMenuItem variant="destructive" onSelect={() => setConfirmingDelete(true)}>
               Delete
             </DropdownMenuItem>
           </DropdownMenuContent>

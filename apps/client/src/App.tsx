@@ -10,11 +10,7 @@ import { StatusBar } from "@/components/status-bar";
 import { ResumePicker } from "@/components/resume-picker";
 import { UpdateBanner } from "@/components/update-banner";
 import { ZenIndicator } from "@/components/zen-indicator";
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";

@@ -20,8 +20,8 @@ export function UpdateBanner() {
     <div className="flex shrink-0 items-center gap-2.5 border-b border-l-2 border-l-sky-500 bg-sky-500/5 px-3 py-1.5 text-xs">
       <Sparkles className="size-4 shrink-0 text-sky-500" />
       <span className="text-foreground">
-        Towles Tool <span className="font-medium">{update.latestVersion}</span> is available — you're
-        on {update.currentVersion}
+        Towles Tool <span className="font-medium">{update.latestVersion}</span> is available —
+        you're on {update.currentVersion}
       </span>
 
       <div className="flex-1" />

@@ -74,7 +74,9 @@ describe("buildAttentionFeed", () => {
   it("ignores a merged PR even with a stale failing/review-requested state", () => {
     const feed = buildAttentionFeed(
       snapshot({
-        prs: [pr({ number: 9, state: "merged", checks: "failing", reviewState: "review_requested" })],
+        prs: [
+          pr({ number: 9, state: "merged", checks: "failing", reviewState: "review_requested" }),
+        ],
       }),
       NO_AGENTS,
     );
@@ -133,7 +135,10 @@ describe("buildAttentionFeed", () => {
   });
 
   it("points a waiting-agent row at the repo on agentboard", () => {
-    const feed = buildAttentionFeed(EMPTY_SNAPSHOT, agents([repo({ key: "octo/gizmos", needs: 1 })]));
+    const feed = buildAttentionFeed(
+      EMPTY_SNAPSHOT,
+      agents([repo({ key: "octo/gizmos", needs: 1 })]),
+    );
     expect(feed[0].target).toEqual({ screen: "agentboard", kind: "repo", id: "octo/gizmos" });
     expect(feed[0].subtitle).toBe("1 session waiting");
   });

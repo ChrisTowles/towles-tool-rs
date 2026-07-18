@@ -37,7 +37,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { InlineNewSlot, PendingSlotRow, type NewSlotRepo, type PendingSlot } from "@/components/inline-new-slot";
+import {
+  InlineNewSlot,
+  PendingSlotRow,
+  type NewSlotRepo,
+  type PendingSlot,
+} from "@/components/inline-new-slot";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
@@ -207,8 +212,8 @@ export function RailIconStrip({
             </button>
           </TooltipTrigger>
           <TooltipContent side="right">
-            {attentionCount} attention item{attentionCount === 1 ? "" : "s"} (failing PRs,
-            imminent meeting) — expand to see
+            {attentionCount} attention item{attentionCount === 1 ? "" : "s"} (failing PRs, imminent
+            meeting) — expand to see
           </TooltipContent>
         </Tooltip>
       )}
@@ -251,7 +256,10 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
           {r.waiting > 0 && <DotCount status="waiting" n={r.waiting} />}
           {r.error > 0 && <DotCount status="error" n={r.error} />}
           {r.expiring > 0 && (
-            <span className="text-amber-500" title="warm prompt caches about to expire — nudge them">
+            <span
+              className="text-amber-500"
+              title="warm prompt caches about to expire — nudge them"
+            >
               ◔{r.expiring}
             </span>
           )}
@@ -292,8 +300,8 @@ export function RollupChip({ state, now }: { state: StatePayload; now: number })
               }}
             />
             <div className="text-[11px] text-muted-foreground/70">
-              Past this threshold, a session whose prompt cache expired shows the ❄ compact
-              nudge. Stored in the shared towles-tool settings file.
+              Past this threshold, a session whose prompt cache expired shows the ❄ compact nudge.
+              Stored in the shared towles-tool settings file.
             </div>
           </div>
         </PopoverContent>
@@ -596,9 +604,7 @@ export function RepoGroup({
           )}
           <span className="truncate text-sm font-semibold">{repo.name}</span>
           <span className="ml-auto flex items-center gap-2">
-            {repoCollapsed && (
-              <CollapsedLive sessions={repo.folders.flatMap((f) => f.sessions)} />
-            )}
+            {repoCollapsed && <CollapsedLive sessions={repo.folders.flatMap((f) => f.sessions)} />}
             {repo.needs > 0 && <NeedsBadge n={repo.needs} />}
           </span>
         </button>
@@ -1067,8 +1073,7 @@ function SessionRow({
           onClick={(e) => e.stopPropagation()}
           onBlur={(e) => onRenameCommit(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter")
-              onRenameCommit((e.target as HTMLInputElement).value);
+            if (e.key === "Enter") onRenameCommit((e.target as HTMLInputElement).value);
             if (e.key === "Escape") onRenameCommit(session.name);
           }}
           className="min-w-0 flex-1 rounded-sm border border-input bg-background px-1 text-sm outline-none"
@@ -1131,7 +1136,12 @@ function SessionRow({
           </span>
           {(active || hovered) && (
             <span className="absolute inset-y-0 right-2 z-10 flex items-center gap-1 bg-accent pl-1.5">
-              <RowControls session={eff} folderDir={folderDir} grouped={!!grouped} actions={actions} />
+              <RowControls
+                session={eff}
+                folderDir={folderDir}
+                grouped={!!grouped}
+                actions={actions}
+              />
             </span>
           )}
         </>

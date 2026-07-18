@@ -66,7 +66,9 @@ export async function invokeOrThrow<T>(
   if (!schema) return result;
   const parsed = schema.safeParse(result);
   if (!parsed.success) {
-    throw new Error(`invokeOrThrow(${cmd}): response failed schema validation: ${parsed.error.message}`);
+    throw new Error(
+      `invokeOrThrow(${cmd}): response failed schema validation: ${parsed.error.message}`,
+    );
   }
   return parsed.data;
 }
@@ -113,10 +115,7 @@ export async function invokeToast<T>(
  * `T | null` result can't tell success from failure — callers that revert an
  * optimistic update need the boolean.
  */
-export async function invokeOk(
-  cmd: string,
-  args: Record<string, unknown> = {},
-): Promise<boolean> {
+export async function invokeOk(cmd: string, args: Record<string, unknown> = {}): Promise<boolean> {
   if (!isTauri()) {
     toast.info("not wired in browser");
     return false;

@@ -44,9 +44,7 @@ describe("matchesFilter", () => {
   });
 
   it("trims the query before comparing", () => {
-    expect(matchesFilter("  refresh  ", "Refresh every", ["cadence"])).toBe(
-      true,
-    );
+    expect(matchesFilter("  refresh  ", "Refresh every", ["cadence"])).toBe(true);
   });
 
   it("ignores keyword casing", () => {

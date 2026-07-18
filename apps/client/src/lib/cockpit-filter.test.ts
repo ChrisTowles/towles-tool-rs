@@ -5,11 +5,7 @@ describe("cockpitRepos", () => {
   it("collects the distinct repos across PRs and issues, sorted", () => {
     const prs = [{ repo: "octo/gizmos" }, { repo: "octo/widgets" }];
     const issues = [{ repo: "octo/widgets" }, { repo: "acme/api" }];
-    expect(cockpitRepos(prs, issues)).toEqual([
-      "acme/api",
-      "octo/gizmos",
-      "octo/widgets",
-    ]);
+    expect(cockpitRepos(prs, issues)).toEqual(["acme/api", "octo/gizmos", "octo/widgets"]);
   });
 
   it("is empty when nothing is collected", () => {
@@ -29,9 +25,7 @@ describe("filterByRepo", () => {
   });
 
   it("narrows to only items in the selected repo", () => {
-    expect(filterByRepo(prs, "octo/widgets").map((p) => p.number)).toEqual([
-      1, 3,
-    ]);
+    expect(filterByRepo(prs, "octo/widgets").map((p) => p.number)).toEqual([1, 3]);
     expect(filterByRepo(prs, "octo/gizmos").map((p) => p.number)).toEqual([2]);
   });
 

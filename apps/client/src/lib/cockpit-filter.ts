@@ -18,7 +18,7 @@ export function cockpitRepos(
   const set = new Set<string>();
   for (const p of prs) set.add(p.repo);
   for (const i of issues) set.add(i.repo);
-  return [...set].sort();
+  return [...set].toSorted();
 }
 
 /**

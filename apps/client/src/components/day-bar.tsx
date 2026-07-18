@@ -7,20 +7,12 @@ import {
   MessageCircleHeart,
   type LucideIcon,
 } from "lucide-react";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useAgentboardState } from "@/lib/agentboard";
 import { buildAttentionFeed, type AttentionItem, type AttentionKind } from "@/lib/attention-feed";
-import {
-  alwaysOnHealth,
-  worstCollectorState,
-  type CollectorState,
-} from "@/lib/collector-health";
+import { alwaysOnHealth, worstCollectorState, type CollectorState } from "@/lib/collector-health";
 import { fmtAge, useStoreSnapshot } from "@/lib/data";
 import { pickTopTask } from "@/lib/day-top-task";
 import { useNow } from "@/lib/now";
@@ -81,9 +73,7 @@ export function DayBar() {
       ) : (
         <Popover open={feedOpen} onOpenChange={setFeedOpen}>
           <PopoverTrigger asChild>
-            <button
-              className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 font-medium text-foreground hover:bg-accent/50 data-[state=open]:bg-accent/50"
-            >
+            <button className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 font-medium text-foreground hover:bg-accent/50 data-[state=open]:bg-accent/50">
               <CircleAlert className="size-3.5 text-amber-500" />
               {needsYou} need you
             </button>
@@ -94,7 +84,12 @@ export function DayBar() {
             </div>
             <div className="flex max-h-80 flex-col overflow-y-auto">
               {feed.map((item) => (
-                <AttentionRow key={item.id} item={item} now={now} onNavigate={() => navigate(item)} />
+                <AttentionRow
+                  key={item.id}
+                  item={item}
+                  now={now}
+                  onNavigate={() => navigate(item)}
+                />
               ))}
             </div>
           </PopoverContent>

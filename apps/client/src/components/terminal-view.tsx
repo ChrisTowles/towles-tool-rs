@@ -787,9 +787,7 @@ export function TerminalView({
         // backend joins them). Report-only — this opens an editor, it never
         // writes to the PTY.
         openPath: (link) =>
-          void invoke("term_open_path", { path: link.path, cwd, line: link.line }).catch(
-            () => {},
-          ),
+          void invoke("term_open_path", { path: link.path, cwd, line: link.line }).catch(() => {}),
         linkAtPoint: (offsetX, offsetY) => {
           const x = Math.max(0, Math.min(grid.cols - 1, Math.floor(offsetX / cellW)));
           const y = Math.max(0, Math.min(grid.rows - 1, Math.floor(offsetY / cellH)));
@@ -1054,7 +1052,7 @@ export function TerminalView({
       }
     };
     // termId/cwd identify the shell; changing them means a different terminal.
-  }, [termId, cwd]);
+  }, [termId, cwd, copyOnSelectRef, shortcutsWorkInTerminalRef]);
 
   return (
     <div ref={hostRef} className="relative size-full overflow-hidden bg-background p-1">
@@ -1101,16 +1099,11 @@ export function TerminalView({
               <ContextMenuSeparator />
             </>
           )}
-          <ContextMenuItem
-            disabled={!copyEnabled}
-            onSelect={() => bridgeRef.current?.copy()}
-          >
+          <ContextMenuItem disabled={!copyEnabled} onSelect={() => bridgeRef.current?.copy()}>
             Copy
             <ContextMenuShortcut>{IS_MAC ? "⇧⌘C" : "Ctrl+Shift+C"}</ContextMenuShortcut>
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => bridgeRef.current?.paste()}>
-            Paste
-          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => bridgeRef.current?.paste()}>Paste</ContextMenuItem>
           <ContextMenuItem onSelect={() => bridgeRef.current?.selectAll()}>
             Select all
           </ContextMenuItem>
@@ -1170,10 +1163,12 @@ export function TerminalView({
       >
         <AlertDialogContent onCloseAutoFocus={() => bridgeRef.current?.focusTerm()}>
           <AlertDialogHeader>
-            <AlertDialogTitle>Paste {pendingPaste?.split("\n").length ?? 0} lines?</AlertDialogTitle>
+            <AlertDialogTitle>
+              Paste {pendingPaste?.split("\n").length ?? 0} lines?
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This shell isn't guarding pastes (no bracketed paste), so each line runs as soon
-              as it arrives — including the last one if it ends with a newline.
+              This shell isn't guarding pastes (no bracketed paste), so each line runs as soon as it
+              arrives — including the last one if it ends with a newline.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

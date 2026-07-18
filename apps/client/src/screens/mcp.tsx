@@ -252,9 +252,7 @@ function CallRow({ call, now }: { call: McpCall; now: number }) {
         <span
           className={cn("size-2 shrink-0 rounded-full", call.ok ? "bg-green-500" : "bg-red-500")}
         />
-        <span className="font-mono text-xs text-foreground">
-          {call.tool ?? call.method}
-        </span>
+        <span className="font-mono text-xs text-foreground">{call.tool ?? call.method}</span>
         {call.tool && (
           <span className="font-mono text-[11px] text-muted-foreground/60">{call.method}</span>
         )}

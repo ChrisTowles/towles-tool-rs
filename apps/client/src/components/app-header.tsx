@@ -15,7 +15,10 @@ import { useWorkspace } from "@/lib/workspace";
  * the same accent.
  */
 const SLOT_COLORS = [
-  { badge: "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300", dot: "bg-blue-500" },
+  {
+    badge: "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300",
+    dot: "bg-blue-500",
+  },
   {
     badge: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
     dot: "bg-emerald-500",
@@ -28,8 +31,14 @@ const SLOT_COLORS = [
     badge: "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300",
     dot: "bg-violet-500",
   },
-  { badge: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300", dot: "bg-rose-500" },
-  { badge: "border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300", dot: "bg-cyan-500" },
+  {
+    badge: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+    dot: "bg-rose-500",
+  },
+  {
+    badge: "border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+    dot: "bg-cyan-500",
+  },
 ];
 
 function slotColor(slot: string) {
@@ -69,7 +78,7 @@ function ClockCluster() {
 
   const nextEvent = snapshot.events
     .filter((e) => e.startTs > now)
-    .sort((a, b) => a.startTs - b.startTs)[0];
+    .toSorted((a, b) => a.startTs - b.startTs)[0];
   const eventSoon = nextEvent && nextEvent.startTs - now < 15 * 60_000;
 
   return (

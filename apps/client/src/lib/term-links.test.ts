@@ -277,9 +277,7 @@ describe("linkAt (paths)", () => {
 describe("linkLabel", () => {
   it("renders a URL as-is and a path with its line", () => {
     expect(linkLabel({ kind: "url", url: "https://x.dev", segments: [] })).toBe("https://x.dev");
-    expect(linkLabel({ kind: "path", path: "src/a.rs", line: 7, segments: [] })).toBe(
-      "src/a.rs:7",
-    );
+    expect(linkLabel({ kind: "path", path: "src/a.rs", line: 7, segments: [] })).toBe("src/a.rs:7");
     expect(linkLabel({ kind: "path", path: "src/a.rs", line: null, segments: [] })).toBe(
       "src/a.rs",
     );

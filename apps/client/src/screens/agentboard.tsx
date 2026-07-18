@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   CalendarClock,
   Eye,
@@ -154,6 +160,13 @@ import { toast } from "sonner";
  * to icons" — rides the same `ab_save_collapsed` store as the per-row keys
  * (`repo:<name>` / `<repoKey>::<dir>`), which it can never collide with. */
 const RAIL_COLLAPSE_KEY = "__rail__";
+
+/** `onOpenChange` for a dialog whose only close-side effect is clearing
+ * whatever state made it open — Radix fires `false` on outside-click, Esc,
+ * and the built-in close button alike, so this covers all three at once. */
+const closeOnFalse = (fn: () => void) => (isOpen: boolean) => {
+  if (!isOpen) fn();
+};
 
 export function AgentboardScreen() {
   const state = useAgentboardState();
@@ -347,8 +360,7 @@ export function AgentboardScreen() {
   // Index every session by id → its folder / its data, for cwd + pane chrome.
   const folderOf = useMemo(() => {
     const m = new Map<string, FolderData>();
-    for (const r of repos)
-      for (const f of r.folders) for (const s of f.sessions) m.set(s.id, f);
+    for (const r of repos) for (const f of r.folders) for (const s of f.sessions) m.set(s.id, f);
     return m;
   }, [repos]);
   // Folder dir → the backend's tracker name for it, so selecting into a
@@ -549,8 +561,9 @@ export function AgentboardScreen() {
     [wins, activeFolderDir],
   );
   const activeWin =
-    windowsForFolder.find((w) => w.id === (activeFolderDir && wins?.activeWindows[activeFolderDir])) ??
-    windowsForFolder[0];
+    windowsForFolder.find(
+      (w) => w.id === (activeFolderDir && wins?.activeWindows[activeFolderDir]),
+    ) ?? windowsForFolder[0];
 
   // The active folder's sessions not currently a pane in *any* of its
   // windows — what ab-split-session (⌘⇧S) has to choose from. Deliberately
@@ -628,10 +641,7 @@ export function AgentboardScreen() {
     updateWins([folderDir], (cur) => {
       const count = cur.windows.filter((w) => w.folderDir === folderDir).length;
       return {
-        windows: [
-          ...cur.windows,
-          { id, name: `window ${count + 1}`, folderDir, panes: [rec.id] },
-        ],
+        windows: [...cur.windows, { id, name: `window ${count + 1}`, folderDir, panes: [rec.id] }],
         activeWindows: { ...cur.activeWindows, [folderDir]: id },
       };
     });
@@ -879,7 +889,10 @@ export function AgentboardScreen() {
         12 * 60_000,
       );
       for (const warning of created.warnings) {
-        toast(warning, warning.startsWith("setup `") ? { action: retryAction(created.dir) } : undefined);
+        toast(
+          warning,
+          warning.startsWith("setup `") ? { action: retryAction(created.dir) } : undefined,
+        );
       }
       setPendingSlots((prev) => prev.filter((p) => p.id !== id));
 
@@ -1229,8 +1242,7 @@ export function AgentboardScreen() {
   async function commitRename(sessionId: string, name: string) {
     setRenaming(null);
     const trimmed = name.trim();
-    if (trimmed)
-      await abInvoke("ab_rename_session", { id: sessionId, name: trimmed });
+    if (trimmed) await abInvoke("ab_rename_session", { id: sessionId, name: trimmed });
   }
 
   // Optimistic lifecycle overlays (sessionId → forced status until ts). The
@@ -1311,7 +1323,16 @@ export function AgentboardScreen() {
       // newSession/closeSession/openDiff/openFiles/jumpToNeedsYou/splitIntoWindow are
       // stable within a render pass; the state they close over is what matters.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [activeFolderDir, selected, wins, repos, folderOf, splitCandidates, activeRepo, railCollapsed],
+      [
+        activeFolderDir,
+        selected,
+        wins,
+        repos,
+        folderOf,
+        splitCandidates,
+        activeRepo,
+        railCollapsed,
+      ],
     ),
     activeTab === "agentboard",
   );
@@ -1339,7 +1360,7 @@ export function AgentboardScreen() {
     }
     const soon = snapshot.events
       .filter((e) => e.startTs > now && e.startTs - now <= 30 * 60_000)
-      .sort((a, b) => a.startTs - b.startTs)[0];
+      .toSorted((a, b) => a.startTs - b.startTs)[0];
     if (soon) {
       items.push({
         key: `event:${soon.id}`,
@@ -1462,9 +1483,7 @@ export function AgentboardScreen() {
                             <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
                           )}
                           <span className="min-w-0 flex-1">
-                            <span className="block truncate text-xs font-medium">
-                              {a.title}
-                            </span>
+                            <span className="block truncate text-xs font-medium">{a.title}</span>
                             <span className="block truncate text-[11px] text-muted-foreground">
                               {a.sub}
                             </span>
@@ -1481,9 +1500,7 @@ export function AgentboardScreen() {
                       {repos.length === 0 && (
                         <div className="flex flex-col items-center gap-3 px-3 py-10 text-center">
                           <FolderGit2 className="size-8 text-muted-foreground" />
-                          <p className="text-sm text-muted-foreground">
-                            No repos on the rail yet.
-                          </p>
+                          <p className="text-sm text-muted-foreground">No repos on the rail yet.</p>
                           <div className="flex items-center gap-2">
                             <Button
                               size="sm"
@@ -1777,7 +1794,11 @@ export function AgentboardScreen() {
                         const r = rectFor(id);
                         const dir = diffPaneDir(id) ?? "";
                         return (
-                          <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
+                          <div
+                            key={id}
+                            style={r ? paneStyle(r) : undefined}
+                            className="absolute p-1.5"
+                          >
                             <DiffPane
                               folder={folderByDir.get(dir)}
                               onClose={() => removePane(id)}
@@ -1790,7 +1811,11 @@ export function AgentboardScreen() {
                         const r = rectFor(id);
                         const dir = filesPaneDir(id) ?? "";
                         return (
-                          <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
+                          <div
+                            key={id}
+                            style={r ? paneStyle(r) : undefined}
+                            className="absolute p-1.5"
+                          >
                             <FolderFilesPane
                               folder={folderByDir.get(dir)}
                               openRequest={filesOpenRequests[dir]}
@@ -1826,21 +1851,22 @@ export function AgentboardScreen() {
                           column boundary across rows. */}
                       {activeWin &&
                         panes.length >= 2 &&
-                        (panes.length <= 3 ? rects.slice(1).map((r) => r.left) : [rects[1].left]).map(
-                          (x, i) => (
-                            <div
-                              key={`divider-${i}`}
-                              role="separator"
-                              aria-orientation="vertical"
-                              aria-label="resize panes"
-                              title="Drag to resize (snaps to thirds and fifths) — double-click for equal columns"
-                              onPointerDown={(e) => startColDrag(e, activeWin, i)}
-                              onDoubleClick={() => resetCols(activeWin)}
-                              className="absolute top-0 z-10 h-full w-2 -translate-x-1/2 cursor-col-resize transition-colors hover:bg-violet-500/40 active:bg-violet-500/60"
-                              style={{ left: `${x}%` }}
-                            />
-                          ),
-                        )}
+                        (panes.length <= 3
+                          ? rects.slice(1).map((r) => r.left)
+                          : [rects[1].left]
+                        ).map((x, i) => (
+                          <div
+                            key={`divider-${i}`}
+                            role="separator"
+                            aria-orientation="vertical"
+                            aria-label="resize panes"
+                            title="Drag to resize (snaps to thirds and fifths) — double-click for equal columns"
+                            onPointerDown={(e) => startColDrag(e, activeWin, i)}
+                            onDoubleClick={() => resetCols(activeWin)}
+                            className="absolute top-0 z-10 h-full w-2 -translate-x-1/2 cursor-col-resize transition-colors hover:bg-violet-500/40 active:bg-violet-500/60"
+                            style={{ left: `${x}%` }}
+                          />
+                        ))}
                       {panes.length === 0 && (
                         <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
                           <TerminalSquare className="size-10" />
@@ -1888,11 +1914,7 @@ export function AgentboardScreen() {
                     value={`${c.name} ${c.dir}`}
                     onSelect={() => void toggleRepo(c)}
                   >
-                    <Checkbox
-                      checked={c.active}
-                      tabIndex={-1}
-                      className="pointer-events-none"
-                    />
+                    <Checkbox checked={c.active} tabIndex={-1} className="pointer-events-none" />
                     <span className="flex-1 truncate">{c.name}</span>
                     <span className="truncate font-mono text-[11px] text-muted-foreground">
                       {c.dir}
@@ -1901,21 +1923,17 @@ export function AgentboardScreen() {
                 ))}
               </CommandGroup>
             )}
-            {repoQuery.startsWith("/") &&
-              !candidates.some((c) => c.dir === repoQuery) && (
-                <CommandGroup heading="Path">
-                  <CommandItem
-                    value={repoQuery}
-                    onSelect={() => void addRepoPath(repoQuery)}
-                  >
-                    <FolderPlus className="size-3.5 shrink-0 text-violet-500" />
-                    <span>Add path</span>
-                    <span className="truncate font-mono text-[11px] text-muted-foreground">
-                      {repoQuery}
-                    </span>
-                  </CommandItem>
-                </CommandGroup>
-              )}
+            {repoQuery.startsWith("/") && !candidates.some((c) => c.dir === repoQuery) && (
+              <CommandGroup heading="Path">
+                <CommandItem value={repoQuery} onSelect={() => void addRepoPath(repoQuery)}>
+                  <FolderPlus className="size-3.5 shrink-0 text-violet-500" />
+                  <span>Add path</span>
+                  <span className="truncate font-mono text-[11px] text-muted-foreground">
+                    {repoQuery}
+                  </span>
+                </CommandItem>
+              </CommandGroup>
+            )}
           </CommandList>
         </Command>
       </CommandDialog>
@@ -1956,9 +1974,7 @@ export function AgentboardScreen() {
 
       <AlertDialog
         open={confirmRemove != null}
-        onOpenChange={(open) => {
-          if (!open) setConfirmRemove(null);
-        }}
+        onOpenChange={closeOnFalse(() => setConfirmRemove(null))}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1966,8 +1982,7 @@ export function AgentboardScreen() {
             <AlertDialogDescription>
               {confirmRemove?.sessionIds.length}{" "}
               {confirmRemove?.sessionIds.length === 1 ? "session is" : "sessions are"} still
-              running. Removing will stop{" "}
-              {confirmRemove?.sessionIds.length === 1 ? "it" : "them"}.
+              running. Removing will stop {confirmRemove?.sessionIds.length === 1 ? "it" : "them"}.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1986,9 +2001,7 @@ export function AgentboardScreen() {
 
       <AlertDialog
         open={confirmDeleteWt != null}
-        onOpenChange={(open) => {
-          if (!open) setConfirmDeleteWt(null);
-        }}
+        onOpenChange={closeOnFalse(() => setConfirmDeleteWt(null))}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -2020,15 +2033,12 @@ export function AgentboardScreen() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <Dialog
-        open={startClaudeTarget != null}
-        onOpenChange={(open) => {
-          if (!open) commitStartClaude();
-        }}
-      >
+      <Dialog open={startClaudeTarget != null} onOpenChange={closeOnFalse(commitStartClaude)}>
         <DialogContent showCloseButton={false}>
           <DialogHeader>
-            <DialogTitle>✦ Start Claude{startClaudeTarget ? ` in ${startClaudeTarget.sessionName}` : ""}</DialogTitle>
+            <DialogTitle>
+              ✦ Start Claude{startClaudeTarget ? ` in ${startClaudeTarget.sessionName}` : ""}
+            </DialogTitle>
           </DialogHeader>
           <Input
             autoFocus
@@ -2047,17 +2057,17 @@ export function AgentboardScreen() {
 
       <Dialog
         open={trackRepoOpen}
-        onOpenChange={(open) => {
-          setTrackRepoOpen(open);
-          if (!open) setTrackRepoPath("");
+        onOpenChange={(isOpen) => {
+          setTrackRepoOpen(isOpen);
+          if (!isOpen) setTrackRepoPath("");
         }}
       >
         <DialogContent showCloseButton={false}>
           <DialogHeader>
             <DialogTitle>Track a repo</DialogTitle>
             <DialogDescription>
-              Type the absolute path to a git checkout to add it to the rail. Manual
-              entry only — nothing is scanned or suggested.
+              Type the absolute path to a git checkout to add it to the rail. Manual entry only —
+              nothing is scanned or suggested.
             </DialogDescription>
           </DialogHeader>
           <Input
@@ -2076,7 +2086,6 @@ export function AgentboardScreen() {
           />
         </DialogContent>
       </Dialog>
-
     </div>
   );
 }

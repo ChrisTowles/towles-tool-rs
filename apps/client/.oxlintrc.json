@@ -1,0 +1,36 @@
+{
+  "$schema": "../../node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "react", "vitest"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "unicorn/consistent-function-scoping": "warn"
+  },
+  "settings": {
+    "react": {
+      "version": "19.2.0"
+    }
+  },
+  "env": {
+    "builtin": true,
+    "browser": true
+  },
+  "ignorePatterns": ["src/components/ui/**"],
+  "overrides": [
+    {
+      "files": ["src/lib/monaco-fs.ts"],
+      "rules": {
+        "eslint/no-underscore-dangle": "off"
+      }
+    },
+    {
+      "files": ["src/lib/focus-target.ts", "src/lib/settings-target.ts"],
+      "rules": {
+        "unicorn/no-useless-spread": "off"
+      }
+    }
+  ]
+}

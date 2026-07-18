@@ -177,10 +177,7 @@ export function isWideRun(run: Run): boolean {
 
 /** The subset of `KeyboardEvent` the key encoders read — lets callers pass a
  * synthetic event (e.g. the alt-screen path forwarding an unshifted key). */
-type KeyEventLike = Pick<
-  KeyboardEvent,
-  "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey"
->;
+type KeyEventLike = Pick<KeyboardEvent, "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey">;
 
 export type ScrollbackAction = "page-up" | "page-down" | "top" | "bottom";
 

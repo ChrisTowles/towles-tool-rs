@@ -42,7 +42,7 @@ describe("FocusTargetStore", () => {
 
   it("notifies subscribers on set, consume, and clear — but not on a no-op", () => {
     const store = new FocusTargetStore();
-    const fn = vi.fn();
+    const fn = vi.fn<() => void>();
     const unsub = store.subscribe(fn);
 
     store.set(prTarget); // 1

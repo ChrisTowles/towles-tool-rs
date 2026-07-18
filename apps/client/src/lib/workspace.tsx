@@ -2,11 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { ScreenId } from "@/lib/screens";
 import { focusTargetStore, type FocusTarget } from "@/lib/focus-target";
 import { settingsTargetStore, type SettingsTarget } from "@/lib/settings-target";
-import {
-  ACTIVE_TAB_KEY,
-  loadWorkspaceTabs,
-  OPEN_TABS_KEY,
-} from "@/lib/workspace-persistence";
+import { ACTIVE_TAB_KEY, loadWorkspaceTabs, OPEN_TABS_KEY } from "@/lib/workspace-persistence";
 
 type WorkspaceState = {
   openTabs: ScreenId[];

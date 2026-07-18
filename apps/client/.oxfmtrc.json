@@ -1,0 +1,3 @@
+{
+  "ignorePatterns": ["**/*.md", "tsconfig*.json", "src/components/ui/**"]
+}

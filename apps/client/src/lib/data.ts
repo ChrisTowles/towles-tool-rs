@@ -22,13 +22,7 @@ export type CalEvent = {
 };
 
 /** Kanban columns a todo can live in, in board order. */
-export const TASK_STATUSES = [
-  "backlog",
-  "next",
-  "doing",
-  "review",
-  "done",
-] as const;
+export const TASK_STATUSES = ["backlog", "next", "doing", "review", "done"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 /** Human labels for each kanban column. */
@@ -445,7 +439,7 @@ export function eventIsLive(e: CalEvent, now: number): boolean {
 export function currentOrNextEvent(events: CalEvent[], now: number): CalEvent | undefined {
   return events
     .filter((e) => (e.endTs !== undefined ? now < e.endTs : e.startTs >= now))
-    .sort((a, b) => a.startTs - b.startTs)[0];
+    .toSorted((a, b) => a.startTs - b.startTs)[0];
 }
 
 /** Whole minutes from `now` until `ts` (negative when `ts` is in the past). */
@@ -500,12 +494,8 @@ export const storeSetTaskStatus = (id: number, status: TaskStatus) =>
 export const storeSetTaskPosition = (id: number, status: TaskStatus, index: number) =>
   invokeOk("store_set_task_position", { id, status, index });
 
-export const storeUpdateTask = (
-  id: number,
-  text: string,
-  notes?: string,
-  dueTs?: number,
-) => invokeOk("store_update_task", { id, text, notes, dueTs });
+export const storeUpdateTask = (id: number, text: string, notes?: string, dueTs?: number) =>
+  invokeOk("store_update_task", { id, text, notes, dueTs });
 
 export const storeDeleteTask = (id: number) => invokeOk("store_delete_task", { id });
 
@@ -521,8 +511,7 @@ export type GhRepoOption = { dir: string; name: string };
 /** Tracked repos resolved to their GitHub identity, for the "Import from
  * GitHub" dialog's repo picker. Throws (rather than degrading to `null`) so
  * the dialog can show a real error state instead of an empty list. */
-export const storeGhTrackedRepos = () =>
-  invokeOrThrow<GhRepoOption[]>("store_gh_tracked_repos");
+export const storeGhTrackedRepos = () => invokeOrThrow<GhRepoOption[]>("store_gh_tracked_repos");
 
 /** Open issues in `dir`'s repo, for the import dialog's issue picker. */
 export const storeGhIssuesList = (dir: string, assignedToMe: boolean, milestone?: string) =>

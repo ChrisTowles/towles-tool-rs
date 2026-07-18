@@ -163,8 +163,9 @@ function useEChart(render: (chart: echarts.ECharts) => void, deps: unknown[]) {
 function stackSeries(days: LedgerDay[]): { repos: string[]; rows: Map<string, number[]> } {
   const totals = new Map<string, number>();
   for (const day of days)
-    for (const p of day.projects) totals.set(p.project, (totals.get(p.project) ?? 0) + p.totalTokens);
-  const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => p);
+    for (const p of day.projects)
+      totals.set(p.project, (totals.get(p.project) ?? 0) + p.totalTokens);
+  const ranked = [...totals.entries()].toSorted((a, b) => b[1] - a[1]).map(([p]) => p);
   const top = ranked.slice(0, MAX_STACKED_REPOS);
   const hasOther = ranked.length > top.length;
   const repos = hasOther ? [...top, "Other"] : top;
@@ -372,10 +373,7 @@ function SortableTh({
       onClick={() => onSort(sortKey)}
     >
       <span
-        className={cn(
-          "inline-flex items-center gap-1",
-          align === "right" && "flex-row-reverse",
-        )}
+        className={cn("inline-flex items-center gap-1", align === "right" && "flex-row-reverse")}
       >
         {children}
         {active ? (
@@ -501,7 +499,7 @@ function BreakdownDialog({
   const topTools = data?.tools.slice(0, 10) ?? [];
   const maxTool = Math.max(1, ...topTools.map((t) => t.inputTokens + t.outputTokens));
   const topTurns = [...(data?.turns ?? [])]
-    .sort((a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens))
+    .toSorted((a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens))
     .slice(0, 10);
   const maxTurn = Math.max(1, ...topTurns.map((t) => t.inputTokens + t.outputTokens));
 
@@ -596,26 +594,20 @@ function BreakdownDialog({
   );
 }
 
-function SessionTable({
-  sessions,
-  searching,
-}: {
-  sessions: ClaudeSession[];
-  searching: boolean;
-}) {
+function SessionTable({ sessions, searching }: { sessions: ClaudeSession[]; searching: boolean }) {
   const [sort, setSort] = useState<{ key: SessionSortKey; dir: SortDir } | null>(null);
   const [breakdownFor, setBreakdownFor] = useState<ClaudeSession | null>(null);
   const { openingId, open } = useOpenInAgentboard();
 
   const medianBillable = useMemo(() => {
-    const sorted = sessions.map((s) => s.inputTokens + s.outputTokens).sort((a, b) => a - b);
+    const sorted = sessions.map((s) => s.inputTokens + s.outputTokens).toSorted((a, b) => a - b);
     return sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
   }, [sessions]);
 
   const rows = useMemo(() => {
     if (!sort) return sessions;
     const { key, dir } = sort;
-    return [...sessions].sort((a, b) => {
+    return [...sessions].toSorted((a, b) => {
       const av = sessionSortValue(a, key);
       const bv = sessionSortValue(b, key);
       const cmp = av < bv ? -1 : av > bv ? 1 : 0;
@@ -642,13 +634,28 @@ function SessionTable({
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border text-left text-[10.5px] uppercase tracking-wider text-muted-foreground">
-            <SortableTh sortKey="title" active={sort?.key === "title"} dir={sort?.dir ?? "asc"} onSort={toggleSort}>
+            <SortableTh
+              sortKey="title"
+              active={sort?.key === "title"}
+              dir={sort?.dir ?? "asc"}
+              onSort={toggleSort}
+            >
               Session
             </SortableTh>
-            <SortableTh sortKey="project" active={sort?.key === "project"} dir={sort?.dir ?? "asc"} onSort={toggleSort}>
+            <SortableTh
+              sortKey="project"
+              active={sort?.key === "project"}
+              dir={sort?.dir ?? "asc"}
+              onSort={toggleSort}
+            >
               Repo
             </SortableTh>
-            <SortableTh sortKey="date" active={sort?.key === "date"} dir={sort?.dir ?? "desc"} onSort={toggleSort}>
+            <SortableTh
+              sortKey="date"
+              active={sort?.key === "date"}
+              dir={sort?.dir ?? "desc"}
+              onSort={toggleSort}
+            >
               Date
             </SortableTh>
             <SortableTh
@@ -694,7 +701,9 @@ function SessionTable({
               >
                 <td className="max-w-[340px] py-1.5 pr-3">
                   <div className="truncate text-foreground">
-                    {s.title ?? <span className="font-mono text-xs">{s.sessionId.slice(0, 8)}</span>}
+                    {s.title ?? (
+                      <span className="font-mono text-xs">{s.sessionId.slice(0, 8)}</span>
+                    )}
                   </div>
                   {s.snippet && (
                     <div className="truncate text-[11px] text-muted-foreground">{s.snippet}</div>
@@ -733,15 +742,7 @@ function SessionTable({
  * session, one number, and why it matters, with the same resume-in-Agentboard
  * action as the table. Fetches only while this tab is the active one (a
  * `days` change on another tab is picked up on the next activation). */
-function InsightsTab({
-  days,
-  nonce,
-  active,
-}: {
-  days: string;
-  nonce: number;
-  active: boolean;
-}) {
+function InsightsTab({ days, nonce, active }: { days: string; nonce: number; active: boolean }) {
   const [insights, setInsights] = useState<ClaudeSessionInsight[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [breakdownFor, setBreakdownFor] = useState<ClaudeSession | null>(null);
@@ -812,11 +813,7 @@ function InsightsTab({
                 {insight.detail}
               </span>
             </span>
-            <OpenInAgentboardButton
-              session={s}
-              opening={openingId === s.sessionId}
-              onOpen={open}
-            />
+            <OpenInAgentboardButton session={s} opening={openingId === s.sessionId} onOpen={open} />
           </div>
         );
       })}

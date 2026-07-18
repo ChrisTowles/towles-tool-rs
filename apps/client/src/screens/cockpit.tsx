@@ -16,11 +16,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -51,14 +47,7 @@ import { useAgentboardState } from "@/lib/agentboard";
 import { useNow, useNowInterval } from "@/lib/now";
 import { invokeOrThrow } from "@/lib/tauri";
 import { openExternalUrl } from "@/lib/open-url";
-import {
-  Empty,
-  IssueRow,
-  Panel,
-  PrRow,
-  prNeedsYou,
-  prRank,
-} from "@/components/store-bits";
+import { Empty, IssueRow, Panel, PrRow, prNeedsYou, prRank } from "@/components/store-bits";
 
 /** A checkout the app already tracks (agentboard folder) that a Cockpit issue
  * can be dispatched into — its repo `origin` matches the issue's repo. */
@@ -70,10 +59,7 @@ type SlotTarget = { dir: string; branch: string; name: string };
  * `owner/name` — the Rust guard (`validate_slot_for_repo`) re-checks
  * authoritatively before any dispatch, so this only needs to filter the menu.
  */
-function repoMatches(
-  originUrl: string | null | undefined,
-  repo: string,
-): boolean {
+function repoMatches(originUrl: string | null | undefined, repo: string): boolean {
   if (!originUrl) return false;
   const norm = originUrl
     .toLowerCase()
@@ -103,8 +89,7 @@ export function CockpitScreen() {
     if (!refreshing) return;
     const landed =
       refreshedAt !== undefined &&
-      (refreshBaseline.current === undefined ||
-        refreshedAt > refreshBaseline.current);
+      (refreshBaseline.current === undefined || refreshedAt > refreshBaseline.current);
     if (landed) {
       setRefreshing(false);
       return;
@@ -127,29 +112,20 @@ export function CockpitScreen() {
   const slotsFor = (repo: string): SlotTarget[] =>
     agentState.repos
       .filter((r) => repoMatches(r.originUrl, repo))
-      .flatMap((r) =>
-        r.folders.map((f) => ({ dir: f.dir, branch: f.branch, name: f.name })),
-      );
+      .flatMap((r) => r.folders.map((f) => ({ dir: f.dir, branch: f.branch, name: f.name })));
 
   const nextEvent = currentOrNextEvent(snapshot.events, now);
   const meetingLive = nextEvent ? eventIsLive(nextEvent, now) : false;
-  const msUntilStart =
-    nextEvent && !meetingLive ? nextEvent.startTs - now : Infinity;
-  const soon = nextEvent
-    ? !meetingLive && nextEvent.startTs - now < 15 * 60_000
-    : false;
+  const msUntilStart = nextEvent && !meetingLive ? nextEvent.startTs - now : Infinity;
+  const soon = nextEvent ? !meetingLive && nextEvent.startTs - now < 15 * 60_000 : false;
   // In the final approach the countdown shows m:ss — sharpen the shared clock to
   // 1s so it actually ticks second-by-second, then drop back once we pass it.
-  useNowInterval(
-    msUntilStart > 0 && msUntilStart < COUNTDOWN_SECONDS_THRESHOLD
-      ? 1000
-      : undefined,
-  );
+  useNowInterval(msUntilStart > 0 && msUntilStart < COUNTDOWN_SECONDS_THRESHOLD ? 1000 : undefined);
   // Highlight amber while a meeting is live or imminent.
   const highlight = meetingLive || soon;
   const later = snapshot.events
     .filter((e) => e.startTs > now && e.id !== nextEvent?.id)
-    .sort((a, b) => a.startTs - b.startTs);
+    .toSorted((a, b) => a.startTs - b.startTs);
   // Show a few of the day's remaining meetings inline; the rest hide behind a
   // "+N more" toggle so a busy day never floods the strip (still not a calendar
   // — just the later-today list).
@@ -167,8 +143,7 @@ export function CockpitScreen() {
   // turn purple), but Cockpit's PR queue is open work — exclude them.
   const openPrs = useMemo(() => snapshot.prs.filter((p) => p.state === "open"), [snapshot.prs]);
   const repoList = cockpitRepos(openPrs, snapshot.issues);
-  const activeRepo =
-    repoFilter !== null && repoList.includes(repoFilter) ? repoFilter : null;
+  const activeRepo = repoFilter !== null && repoList.includes(repoFilter) ? repoFilter : null;
   const visiblePrs = filterByRepo(openPrs, activeRepo);
   const visibleIssues = filterByRepo(snapshot.issues, activeRepo);
 
@@ -181,10 +156,7 @@ export function CockpitScreen() {
       <div className="flex shrink-0 flex-wrap items-center gap-x-8 gap-y-2 border-b px-5 py-4">
         <div className="flex items-center gap-3">
           <CalendarClock
-            className={cn(
-              "size-5",
-              highlight ? "text-amber-500" : "text-muted-foreground",
-            )}
+            className={cn("size-5", highlight ? "text-amber-500" : "text-muted-foreground")}
           />
           {nextEvent ? (
             <div className="flex items-center gap-3">
@@ -214,8 +186,7 @@ export function CockpitScreen() {
                       "bg-amber-500 text-white hover:bg-amber-500/90 dark:bg-amber-500 dark:text-white",
                   )}
                   onClick={() => {
-                    if (nextEvent.joinUrl)
-                      void openExternalUrl(nextEvent.joinUrl);
+                    if (nextEvent.joinUrl) void openExternalUrl(nextEvent.joinUrl);
                   }}
                 >
                   <Video />
@@ -224,9 +195,7 @@ export function CockpitScreen() {
               ) : null}
             </div>
           ) : (
-            <span className="text-sm text-muted-foreground">
-              No more meetings today.
-            </span>
+            <span className="text-sm text-muted-foreground">No more meetings today.</span>
           )}
         </div>
 
@@ -268,9 +237,7 @@ export function CockpitScreen() {
                 className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-muted-foreground hover:bg-accent/50 disabled:pointer-events-none disabled:opacity-60"
                 aria-label="Refresh PRs and issues"
               >
-                <RefreshCw
-                  className={cn("size-3.5", refreshing && "animate-spin")}
-                />
+                <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
                 <span className="tabular-nums">
                   {refreshing
                     ? "Refreshing…"
@@ -280,9 +247,7 @@ export function CockpitScreen() {
                 </span>
               </button>
             </TooltipTrigger>
-            <TooltipContent>
-              Refresh pull requests and issues now
-            </TooltipContent>
+            <TooltipContent>Refresh pull requests and issues now</TooltipContent>
           </Tooltip>
           <Gauge
             n={needsYouPrs.length}
@@ -308,9 +273,7 @@ export function CockpitScreen() {
               key={repo}
               label={repo}
               active={activeRepo === repo}
-              onClick={() =>
-                setRepoFilter((cur) => (cur === repo ? null : repo))
-              }
+              onClick={() => setRepoFilter((cur) => (cur === repo ? null : repo))}
             />
           ))}
         </div>
@@ -319,8 +282,8 @@ export function CockpitScreen() {
       {!live && (
         <div className="flex shrink-0 items-center gap-2 border-b bg-amber-500/10 px-5 py-1.5 text-xs text-amber-700 dark:text-amber-400">
           <CircleAlert className="size-3.5 shrink-0" />
-          Not connected to the store — open this window in the Towles Tool app
-          to see live PRs, issues, and events.
+          Not connected to the store — open this window in the Towles Tool app to see live PRs,
+          issues, and events.
         </div>
       )}
 
@@ -333,15 +296,11 @@ export function CockpitScreen() {
             icon={<GitPullRequest className="size-4" />}
           >
             {visiblePrs.length === 0 ? (
-              <Empty>
-                {live ? "No open PRs across your repos." : "Not connected yet."}
-              </Empty>
+              <Empty>{live ? "No open PRs across your repos." : "Not connected yet."}</Empty>
             ) : (
               visiblePrs
                 .slice()
-                .sort(
-                  (a, b) => prRank(b) - prRank(a) || b.updatedTs - a.updatedTs,
-                )
+                .toSorted((a, b) => prRank(b) - prRank(a) || b.updatedTs - a.updatedTs)
                 .map((pr) => (
                   <PrRow
                     key={`${pr.repo}#${pr.number}`}
@@ -360,24 +319,17 @@ export function CockpitScreen() {
             icon={<CircleDot className="size-4" />}
           >
             {visibleIssues.length === 0 ? (
-              <Empty>
-                {live ? "No issues assigned to you." : "Not connected yet."}
-              </Empty>
+              <Empty>{live ? "No issues assigned to you." : "Not connected yet."}</Empty>
             ) : (
               visibleIssues
                 .slice()
-                .sort((a, b) => b.updatedTs - a.updatedTs)
+                .toSorted((a, b) => b.updatedTs - a.updatedTs)
                 .map((issue) => (
                   <IssueRow
                     key={`${issue.repo}#${issue.number}`}
                     issue={issue}
                     now={now}
-                    actions={
-                      <IssueActions
-                        issue={issue}
-                        slots={slotsFor(issue.repo)}
-                      />
-                    }
+                    actions={<IssueActions issue={issue} slots={slotsFor(issue.repo)} />}
                   />
                 ))
             )}
@@ -395,13 +347,7 @@ export function CockpitScreen() {
  * slot submenus list the checkouts whose repo matches the issue; the Rust
  * command re-runs the clean-tree guard and reports success/failure via toast.
  */
-function IssueActions({
-  issue,
-  slots,
-}: {
-  issue: IssueItem;
-  slots: SlotTarget[];
-}) {
+function IssueActions({ issue, slots }: { issue: IssueItem; slots: SlotTarget[] }) {
   async function run(cmd: string, args: Record<string, unknown>) {
     try {
       const msg = await invokeOrThrow<string>(cmd, args);
@@ -492,9 +438,7 @@ function PrActions({ pr }: { pr: PrItem }) {
           <ExternalLink className="size-4" />
           Open in browser
         </DropdownMenuItem>
-        <DropdownMenuItem
-          onSelect={() => void openExternalUrl(`${pr.url}/checks`)}
-        >
+        <DropdownMenuItem onSelect={() => void openExternalUrl(`${pr.url}/checks`)}>
           <ListChecks className="size-4" />
           Open checks
         </DropdownMenuItem>
@@ -533,9 +477,7 @@ function SlotSubmenu({
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="w-64">
         {slots.length === 0 ? (
-          <DropdownMenuItem disabled>
-            No matching slot checkout
-          </DropdownMenuItem>
+          <DropdownMenuItem disabled>No matching slot checkout</DropdownMenuItem>
         ) : (
           slots.map((slot) => (
             <DropdownMenuItem key={slot.dir} onSelect={() => onPick(slot)}>
@@ -581,15 +523,7 @@ function RepoChip({
   );
 }
 
-function Gauge({
-  n,
-  label,
-  tone,
-}: {
-  n: number;
-  label: string;
-  tone: "warn" | "muted";
-}) {
+function Gauge({ n, label, tone }: { n: number; label: string; tone: "warn" | "muted" }) {
   return (
     <div className="flex flex-col items-center">
       <span
@@ -600,9 +534,7 @@ function Gauge({
       >
         {n}
       </span>
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-        {label}
-      </span>
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
     </div>
   );
 }

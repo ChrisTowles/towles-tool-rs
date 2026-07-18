@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { rowsHaveSelection, selectionKindForDetail, shouldCopyOnSelect } from "./terminal-selection";
+import {
+  rowsHaveSelection,
+  selectionKindForDetail,
+  shouldCopyOnSelect,
+} from "./terminal-selection";
 
 describe("selectionKindForDetail", () => {
   it("maps a double-click to a word selection", () => {

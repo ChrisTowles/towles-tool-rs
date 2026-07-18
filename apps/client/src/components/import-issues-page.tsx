@@ -202,8 +202,8 @@ export function ImportIssuesPage({
         <div className="min-w-0">
           <h2 className="text-sm font-medium">Import from GitHub</h2>
           <p className="truncate text-xs text-muted-foreground">
-            Pick a repo and select which open issues to add to Backlog — their status stays
-            synced with GitHub once imported.
+            Pick a repo and select which open issues to add to Backlog — their status stays synced
+            with GitHub once imported.
           </p>
         </div>
       </div>
