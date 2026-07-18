@@ -155,6 +155,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-src
+          # apps/client's vite build (beforeBuildCommand) bundles the heavy
+          # monaco-vscode-api tree — 6000+ modules — and hits V8's default
+          # ~2GB old-space ceiling on macos-latest before finishing, crashing
+          # with "JavaScript heap out of memory" (first surfaced on the
+          # v0.1.0 release: frontend.yml's CI build only ever runs on
+          # ubuntu-latest, so this path was never exercised on macOS before).
+          NODE_OPTIONS: "--max-old-space-size=4096"
         with:
           # tauri.conf.json lives with the Tauri crate, not at repo root (this
           # is a Yaak-style monorepo — see CLAUDE.md). tauri-action has no
