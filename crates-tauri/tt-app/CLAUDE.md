@@ -124,7 +124,7 @@ follows is a cross-cutting rule that spans multiple files.
 - **Linux app-id / desktop-entry self-registration** (`linux_desktop.rs`):
   `tauri build`'s packaging step normally writes a `.desktop` file + themed
   icon so GNOME/COSMIC can show the right entry/icon in the launcher/search
-  — but the daily-driver flow (`npm run run`) runs `tauri build --no-bundle`
+  — but the daily-driver flow (`npm start`) runs `tauri build --no-bundle`
   and execs the raw binary, skipping packaging entirely.
   `linux_desktop::ensure_installed` (called from `.setup()`) self-registers
   both into `~/.local/share/{applications,icons}` on every startup instead,

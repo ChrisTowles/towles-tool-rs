@@ -21,7 +21,7 @@ Desktop app / frontend:
 ```sh
 npm install                         # installs apps/client (npm workspaces)
 npm run dev                         # tauri dev — app + Vite frontend (debug build; noticeably laggy)
-npm run run                         # release build (`tauri build --no-bundle`) + run the binary — for daily driving
+npm start                           # release build (`tauri build --no-bundle`) + run the binary — for daily driving
 npm run dev:drive                   # like dev, but the window is automatable (live-drive)
 npm run drive -- <verb>             # drive the dev:drive window (status|invoke|shot|click|…)
 npm run e2e                         # regression suite vs the real shell (see below)
@@ -56,7 +56,7 @@ webdriver = the `TT_E2E_WEBDRIVER_PORT` claim, falling back to `+3000`); `dev:dr
 both at once in one slot. Full docs + Linux gotchas: [e2e/README.md](e2e/README.md).
 
 **After finishing a task that touches the app, leave it running for Chris to
-check.** Once the change builds/lints/tests clean, launch `npm run run`
+check.** Once the change builds/lints/tests clean, launch `npm start`
 (release build, the daily-driving binary) as a background task — Bash with
 `run_in_background: true`, not a foregrounded blocking call — as the last
 step before ending the turn. This is a courtesy handoff so the real running

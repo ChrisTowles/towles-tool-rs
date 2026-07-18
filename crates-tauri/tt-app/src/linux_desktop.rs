@@ -2,7 +2,7 @@
 //! as its own entry in the GNOME/COSMIC app launcher/search, with the right
 //! icon and an `Exec` pointing at that slot's own binary. `tauri build`
 //! normally writes both as part of its Linux packaging step (deb/rpm/
-//! AppImage), but the daily-driver flow (`npm run run`) runs `tauri build
+//! AppImage), but the daily-driver flow (`npm start`) runs `tauri build
 //! --no-bundle` and execs the raw binary — packaging never happens, so
 //! nothing installs them. Idempotent: only touches disk when the content
 //! actually differs, so every slot's binary can call this on startup without
