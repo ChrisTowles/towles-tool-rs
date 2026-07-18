@@ -32,7 +32,12 @@ fn main() {
     }
 }
 
-/// Configure `env_logger` from the `-v` count. `RUST_LOG` still overrides when set.
+/// Install telemetry, mapping the `-v` count onto the stderr level. `RUST_LOG`
+/// still overrides when set. The `-v` count only affects what reaches the
+/// terminal — the on-disk event log always records at debug (see `tt_otel`).
+///
+/// A failure here is ignored: telemetry must never stop the CLI from running
+/// its command.
 fn init_logging(verbose: u8) {
     let default_level = match verbose {
         0 => "warn",
@@ -40,6 +45,5 @@ fn init_logging(verbose: u8) {
         2 => "debug",
         _ => "trace",
     };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_level))
-        .init();
+    let _ = tt_otel::init("tt", default_level);
 }

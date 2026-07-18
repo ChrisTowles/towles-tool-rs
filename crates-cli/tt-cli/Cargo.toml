@@ -23,7 +23,7 @@ chrono = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }
 dirs = { workspace = true }
-env_logger = { workspace = true }
+tt-otel = { workspace = true }
 inquire = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }

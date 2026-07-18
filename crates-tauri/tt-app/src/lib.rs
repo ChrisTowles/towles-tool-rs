@@ -92,9 +92,11 @@ fn app_identifier(base: &str) -> String {
 }
 
 pub fn run() {
-    // `log::*` calls are dropped without a logger installed; errors always
-    // print, more with RUST_LOG.
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
+    // Errors always print to stderr, more with RUST_LOG. Independently, every
+    // span/event streams to this slot's on-disk event log at debug — the app
+    // runs unattended for hours, so its telemetry has to already be captured
+    // when a question comes up. A failure here must never block startup.
+    let _ = tt_otel::init("tt-app", "error");
 
     // WebKitGTK's DMABUF renderer glitches on the NVIDIA proprietary driver:
     // small damage regions (e.g. a terminal cursor blink) flash as

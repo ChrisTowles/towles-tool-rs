@@ -13,6 +13,7 @@ members = [
   "crates/tt-ide",
   "crates/tt-journal",
   "crates/tt-mcp",
+  "crates/tt-otel",
   "crates/tt-slots",
   "crates/tt-store",
   "crates/tt-update",
@@ -55,6 +56,11 @@ tauri-plugin-notification = "2"
 tauri-plugin-opener = "2.5.0"
 thiserror = "2.0.17"
 tokio = "1.48.0"
+# Instrumentation. `tracing` is the API every crate calls; the subscriber's
+# `tracing-log` feature captures the `log::` macros still in the tree, so
+# nothing goes dark while seams are converted to spans incrementally.
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "tracing-log"] }
 ratatui = "0.29.0"
 ureq = { version = "2.12.1", default-features = false, features = ["json", "gzip", "native-tls"] }
 native-tls = "0.2.14"
@@ -72,6 +78,7 @@ tt-claude-sessions = { path = "crates/tt-claude-sessions" }
 tt-ide = { path = "crates/tt-ide" }
 tt-journal = { path = "crates/tt-journal" }
 tt-mcp = { path = "crates/tt-mcp" }
+tt-otel = { path = "crates/tt-otel" }
 tt-slots = { path = "crates/tt-slots" }
 tt-store = { path = "crates/tt-store" }
 tt-update = { path = "crates/tt-update" }
