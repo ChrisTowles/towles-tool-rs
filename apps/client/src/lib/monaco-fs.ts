@@ -52,16 +52,18 @@ class TauriFileSystemProvider
 {
   capabilities =
     FileSystemProviderCapabilities.FileReadWrite |
-    FileSystemProviderCapabilities.PathCaseSensitive;
+    FileSystemProviderCapabilities.PathCaseSensitive |
+    FileSystemProviderCapabilities.Readonly;
   onDidChangeCapabilities = Event.None;
   private readonly _onDidChangeFile = this._register(new Emitter<readonly IFileChange[]>());
   onDidChangeFile = this._onDidChangeFile.event;
 
   /** Nothing watches the disk, so the Explorer only learns about changes this
    * provider made itself — enough to keep the tree honest after its own
-   * New File / Rename / Delete, which is what it renders. */
-  private changed(type: FileChangeType, resource: URI): void {
-    this._onDidChangeFile.fire([{ type, resource }]);
+   * New File / Rename / Delete, which is what it renders. Variadic so a
+   * rename reports its two halves in one pass. */
+  private changed(...changes: IFileChange[]): void {
+    this._onDidChangeFile.fire(changes);
   }
 
   async stat(resource: URI): Promise<IStat> {
@@ -110,14 +112,16 @@ class TauriFileSystemProvider
    * mtime token refuses to clobber a file an agent edited underneath it.
    */
   async writeFile(resource: URI, content: Uint8Array, opts: IFileWriteOptions): Promise<void> {
-    const existed = opts.overwrite;
     await this.run("ide_write_file", {
       dir: "/",
       filePath: resource.path.slice(1),
       content: new TextDecoder().decode(content),
       expectedMtimeMs: null,
     });
-    this.changed(existed ? FileChangeType.UPDATED : FileChangeType.ADDED, resource);
+    this.changed({
+      type: opts.overwrite ? FileChangeType.UPDATED : FileChangeType.ADDED,
+      resource,
+    });
   }
 
   watch() {
@@ -129,18 +133,23 @@ class TauriFileSystemProvider
       dir: "/",
       filePath: resource.path.slice(1),
     });
-    this.changed(FileChangeType.ADDED, resource);
+    this.changed({ type: FileChangeType.ADDED, resource });
   }
 
   /**
-   * Always trashes, ignoring `opts.useTrash`. That flag is never true here:
-   * `registerFileSystemOverlay` puts this behind `OverlayFileSystemProvider`,
-   * which hardcodes its own capabilities (FileReadWrite | PathCaseSensitive |
-   * FileReadStream | FileAppend) and drops the `Trash` bit this provider
-   * advertises, so the file service believes trashing is unsupported and asks
-   * for a permanent delete every time. A checkout is full of untracked files
-   * git cannot bring back, so we keep the recoverable behavior and correct the
-   * confirmation copy instead — see `deleteCopyForTrash` in `monaco-dialogs`.
+   * Always trashes, ignoring `opts.useTrash` — that flag is never true here.
+   * `OverlayFileSystemProvider` hardcodes its own capabilities and drops the
+   * `Trash` bit, so the file service asks for a permanent delete every time.
+   *
+   * Registering directly with `registerCustomProvider` DOES surface the
+   * capability (verified: `hasCapability(uri, Trash)` becomes true, and
+   * shift-delete then differs from Delete) — but it also breaks quick-open,
+   * which silently returns "No matching results" for every query. The overlay
+   * additionally advertises `FileReadStream | FileAppend`, which this provider
+   * doesn't implement and so can't claim, and the workspace search provider
+   * needs them. Ctrl+P is worth more than shift-delete, so: keep the overlay,
+   * always trash (a checkout is full of untracked files git can't bring back),
+   * and correct the confirmation copy in `deleteCopyForTrash`.
    */
   async delete(resource: URI, opts: IFileDeleteOptions): Promise<void> {
     await this.run("ide_delete", {
@@ -149,7 +158,7 @@ class TauriFileSystemProvider
       recursive: opts.recursive,
       useTrash: true,
     });
-    this.changed(FileChangeType.DELETED, resource);
+    this.changed({ type: FileChangeType.DELETED, resource });
   }
 
   async rename(from: URI, to: URI, opts: IFileOverwriteOptions): Promise<void> {
@@ -159,10 +168,10 @@ class TauriFileSystemProvider
       toPath: to.path.slice(1),
       overwrite: opts.overwrite,
     });
-    this._onDidChangeFile.fire([
+    this.changed(
       { type: FileChangeType.DELETED, resource: from },
       { type: FileChangeType.ADDED, resource: to },
-    ]);
+    );
   }
 
   /** Surface the Rust error text — these are user-initiated actions, so
@@ -173,20 +182,33 @@ class TauriFileSystemProvider
       await invokeOrThrow(cmd, args);
     } catch (e) {
       const message = String(e);
-      throw FileSystemProviderError.create(
-        message,
-        message.includes("already exists")
-          ? FileSystemProviderErrorCode.FileExists
-          : message.includes("escapes the folder")
-            ? FileSystemProviderErrorCode.NoPermissions
-            : FileSystemProviderErrorCode.Unknown,
-      );
+      throw FileSystemProviderError.create(message, errorCodeFor(message));
     }
   }
 }
 
+/**
+ * The code matters, not just the text: VS Code offers an overwrite prompt on
+ * `FileExists` and gives up on `Unknown`. These substrings are the contract
+ * with `ide.rs` — they're pinned there by `ERR_ALREADY_EXISTS` /
+ * `ERR_ESCAPES_FOLDER` and a Rust test, so a reworded message fails loudly
+ * instead of silently downgrading to `Unknown`.
+ */
+const ERROR_CODES: readonly (readonly [string, FileSystemProviderErrorCode])[] = [
+  ["already exists", FileSystemProviderErrorCode.FileExists],
+  ["escapes the folder", FileSystemProviderErrorCode.NoPermissions],
+];
+
+function errorCodeFor(message: string): FileSystemProviderErrorCode {
+  return (
+    ERROR_CODES.find(([needle]) => message.includes(needle))?.[1] ??
+    FileSystemProviderErrorCode.Unknown
+  );
+}
+
 /** Overlay the Tauri-backed provider onto `file://`. Call once, after the
- * services initialize. */
+ * services initialize. See `delete` above for why this is an overlay rather
+ * than a direct `registerCustomProvider`. */
 export function registerTauriFileSystem(): void {
   registerFileSystemOverlay(1, new TauriFileSystemProvider());
 }

@@ -726,10 +726,17 @@ fn mtime_ms(meta: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
+/// Substrings the editor bridge matches on to pick a
+/// `FileSystemProviderErrorCode` (see `errorCodeFor` in `lib/monaco-fs.ts`).
+/// VS Code behaves differently per code — `FileExists` offers an overwrite
+/// prompt — so rewording these changes the UI. Pinned by a test below.
+pub const ERR_ESCAPES_FOLDER: &str = "path escapes the folder";
+pub const ERR_ALREADY_EXISTS: &str = "already exists";
+
 /// Guard against `..` escapes — viewer paths must stay inside the folder.
 fn confined(dir: &Path, file_path: &str) -> Result<PathBuf, String> {
     if Path::new(file_path).components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-        return Err(format!("path escapes the folder: {file_path}"));
+        return Err(format!("{ERR_ESCAPES_FOLDER}: {file_path}"));
     }
     Ok(dir.join(file_path))
 }
@@ -893,7 +900,7 @@ pub async fn ide_rename(
         let from = confined(root, &from_path)?;
         let to = confined(root, &to_path)?;
         if to.exists() && !overwrite {
-            return Err(format!("{to_path} already exists"));
+            return Err(format!("{to_path} {ERR_ALREADY_EXISTS}"));
         }
         if let Some(parent) = to.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {to_path}: {e}"))?;
@@ -916,4 +923,39 @@ pub async fn ide_list_files(dir: String) -> Vec<String> {
     })
     .await
     .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod fs_command_tests {
+    use super::*;
+
+    #[test]
+    fn confined_rejects_parent_traversal() {
+        let err = confined(Path::new("/w"), "../etc/passwd").unwrap_err();
+        assert!(err.contains(ERR_ESCAPES_FOLDER), "{err}");
+    }
+
+    #[test]
+    fn confined_rejects_traversal_in_the_middle_of_a_path() {
+        assert!(confined(Path::new("/w"), "src/../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn confined_joins_a_plain_relative_path() {
+        assert_eq!(confined(Path::new("/w"), "src/main.rs").unwrap(), Path::new("/w/src/main.rs"));
+    }
+
+    /// The editor bridge picks a `FileSystemProviderErrorCode` by matching
+    /// these substrings (`errorCodeFor` in `apps/client/src/lib/monaco-fs.ts`).
+    /// Rewording them silently downgrades the code to `Unknown`, which changes
+    /// what VS Code offers the user — so assert the produced messages contain
+    /// what the frontend looks for.
+    #[test]
+    fn error_messages_carry_the_substrings_the_frontend_matches() {
+        let escape = confined(Path::new("/w"), "../x").unwrap_err();
+        assert!(escape.contains(ERR_ESCAPES_FOLDER), "{escape}");
+
+        let exists = format!("{} {ERR_ALREADY_EXISTS}", "dest.txt");
+        assert!(exists.contains(ERR_ALREADY_EXISTS), "{exists}");
+    }
 }

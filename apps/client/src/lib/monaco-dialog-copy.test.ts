@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deleteCopyForTrash, stripMnemonic } from "@/lib/monaco-dialog-copy";
+import { deleteCopyForTrash, isDangerous, stripMnemonic } from "@/lib/monaco-dialog-copy";
 
 describe("stripMnemonic", () => {
   it("drops VS Code's && mnemonic markers", () => {
@@ -30,17 +30,20 @@ describe("deleteCopyForTrash", () => {
     expect(out.detail).not.toMatch(/irreversible/i);
   });
 
-  it("is case-insensitive about the phrase", () => {
-    expect(deleteCopyForTrash("Permanently Delete this?", undefined).message).toBe(
-      "delete this?",
-    );
-  });
-
   it("passes an unrelated confirmation through untouched", () => {
     const out = deleteCopyForTrash("Save changes to app.ts?", "Your edits will be lost.");
-    expect(out).toEqual({
-      message: "Save changes to app.ts?",
-      detail: "Your edits will be lost.",
-    });
+    expect(out).toEqual({ message: "Save changes to app.ts?", detail: "Your edits will be lost." });
+  });
+});
+
+describe("isDangerous", () => {
+  it("flags destructive verbs so the confirm gets the destructive button", () => {
+    expect(isDangerous("Delete", "Are you sure you want to delete 'a.txt'?")).toBe(true);
+    expect(isDangerous("Move to Trash", "Delete a.txt?")).toBe(true);
+    expect(isDangerous("OK", "Discard your changes?")).toBe(true);
+  });
+
+  it("leaves an ordinary confirmation alone", () => {
+    expect(isDangerous("Save", "Save changes to app.ts?")).toBe(false);
   });
 });

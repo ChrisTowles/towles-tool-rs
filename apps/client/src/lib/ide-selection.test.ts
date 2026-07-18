@@ -103,7 +103,9 @@ describe("sameMentionRange", () => {
   });
 
   it("distinguishes different ranges", () => {
-    expect(sameMentionRange({ startLine: 1, endLine: 2 }, { startLine: 1, endLine: 3 })).toBe(false);
+    expect(sameMentionRange({ startLine: 1, endLine: 2 }, { startLine: 1, endLine: 3 })).toBe(
+      false,
+    );
   });
 });
 
@@ -115,11 +117,15 @@ describe("diffWorkPath", () => {
   });
 
   it("rejects the base side of the diff", () => {
-    expect(diffWorkPath("/w/repo", { scheme: "tt-diff-base", path: "/w/repo/src/app.ts" })).toBeNull();
+    expect(
+      diffWorkPath("/w/repo", { scheme: "tt-diff-base", path: "/w/repo/src/app.ts" }),
+    ).toBeNull();
   });
 
   it("rejects a file outside the folder", () => {
-    expect(diffWorkPath("/w/repo", { scheme: "tt-diff-work", path: "/other/src/app.ts" })).toBeNull();
+    expect(
+      diffWorkPath("/w/repo", { scheme: "tt-diff-work", path: "/other/src/app.ts" }),
+    ).toBeNull();
   });
 
   // "/w/repo-2/x" must not read as "repo" + "-2/x".

@@ -47,8 +47,7 @@ export function streamRangeFrom(sel: MonacoSelectionLike): StreamRange {
  */
 export function mentionRangeFrom(sel: MonacoSelectionLike | null | undefined): MentionRange | null {
   if (!sel) return null;
-  const empty =
-    sel.startLineNumber === sel.endLineNumber && sel.startColumn === sel.endColumn;
+  const empty = sel.startLineNumber === sel.endLineNumber && sel.startColumn === sel.endColumn;
   if (empty) return null;
   const startLine = Math.min(sel.startLineNumber, sel.endLineNumber);
   let endLine = Math.max(sel.startLineNumber, sel.endLineNumber);

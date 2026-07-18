@@ -185,38 +185,40 @@ export function MonacoMultiDiff({
           );
 
           disposables.push(
-            modified.onDidChangeCursorSelection((e: import("monaco-editor").editor.ICursorSelectionChangedEvent) => {
-              // Resolve the file outside the debounce so the chip tracks the
-              // selection immediately; only bridge traffic is debounced.
-              const path = diffWorkPath(dir, modified.getModel()?.uri);
-              if (!path) return;
-              const next = mentionRangeFrom(e.selection);
-              mentionRef.current = sendFromThisEditor;
-              setSelection((prev) => {
-                if (!next) return null;
-                if (prev?.path === path && sameMentionRange(prev.range, next)) return prev;
-                return { path, range: next };
-              });
-              clearTimeout(debounce);
-              debounce = setTimeout(() => {
-                const sel = e.selection;
-                if (sel.isEmpty()) {
-                  ideClearSelection(dir, path);
-                  if (streamedPath === path) streamedPath = null;
-                  return;
-                }
-                streamedPath = path;
-                const range = streamRangeFrom(sel);
-                ideSetSelection(
-                  dir,
-                  path,
-                  range.startLine,
-                  range.endLine,
-                  range.startChar,
-                  range.endChar,
-                );
-              }, 300);
-            }),
+            modified.onDidChangeCursorSelection(
+              (e: import("monaco-editor").editor.ICursorSelectionChangedEvent) => {
+                // Resolve the file outside the debounce so the chip tracks the
+                // selection immediately; only bridge traffic is debounced.
+                const path = diffWorkPath(dir, modified.getModel()?.uri);
+                if (!path) return;
+                const next = mentionRangeFrom(e.selection);
+                mentionRef.current = sendFromThisEditor;
+                setSelection((prev) => {
+                  if (!next) return null;
+                  if (prev?.path === path && sameMentionRange(prev.range, next)) return prev;
+                  return { path, range: next };
+                });
+                clearTimeout(debounce);
+                debounce = setTimeout(() => {
+                  const sel = e.selection;
+                  if (sel.isEmpty()) {
+                    ideClearSelection(dir, path);
+                    if (streamedPath === path) streamedPath = null;
+                    return;
+                  }
+                  streamedPath = path;
+                  const range = streamRangeFrom(sel);
+                  ideSetSelection(
+                    dir,
+                    path,
+                    range.startLine,
+                    range.endLine,
+                    range.startChar,
+                    range.endChar,
+                  );
+                }, 300);
+              },
+            ),
           );
         };
         disposables.push(widget.onDidChangeActiveControl(wire));

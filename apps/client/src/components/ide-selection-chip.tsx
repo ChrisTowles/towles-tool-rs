@@ -29,7 +29,10 @@ export function IdeSelectionChip({
     <div className="absolute right-3 bottom-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-md border border-border bg-card px-2 py-1 whitespace-nowrap shadow-md">
       <span className="font-mono text-xs text-violet-500">✦</span>
       {label && (
-        <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground" title={label}>
+        <span
+          className="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
+          title={label}
+        >
           {label}
         </span>
       )}
@@ -97,12 +100,7 @@ export function IdeSelectionOverlay({
   if (loading) return null;
   if (selection) {
     return (
-      <IdeSelectionChip
-        range={selection}
-        label={label}
-        connected={connected}
-        onSend={onSend}
-      />
+      <IdeSelectionChip range={selection} label={label} connected={connected} onSend={onSend} />
     );
   }
   return connected ? <IdeConnectedHint /> : null;

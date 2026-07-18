@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { loadMonaco } from "@/lib/monaco";
 import {
   ideClearSelection,
@@ -66,11 +66,13 @@ export function CodeViewer({
   /** Explicit @-mention of whatever is selected right now — read live from the
    * editor, never from the debounced chip state, so the gesture can't fire
    * against a stale range. */
-  const mention = async () => {
+  const mention = useCallback(async () => {
     const editor = editorRef.current;
     if (!editor) return;
     await ideMention(dir, path, mentionRangeFrom(editor.getSelection()));
-  };
+    // Stable across renders so listing it in the editor effect below doesn't
+    // tear down and rebuild Monaco on every render.
+  }, [dir, path]);
 
   useEffect(() => {
     let disposed = false;
@@ -190,7 +192,7 @@ export function CodeViewer({
       if (streamed) ideClearSelection(dir, path);
       ideSetOpenFile(dir, null);
     };
-  }, [dir, path]);
+  }, [dir, path, mention]);
 
   useEffect(() => {
     editorRef.current?.updateOptions({ wordWrap: wordWrap ? "on" : "off" });

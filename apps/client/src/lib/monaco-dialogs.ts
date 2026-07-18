@@ -26,25 +26,25 @@ class AppDialogService {
   readonly onDidShowDialog = Event.None;
 
   async confirm(confirmation: { message?: string; detail?: string; primaryButton?: string }) {
-    const copy = deleteCopyForTrash(
+    const { message, detail } = deleteCopyForTrash(
       confirmation?.message ?? "Are you sure?",
       confirmation?.detail,
     );
     const primary = stripMnemonic(confirmation?.primaryButton ?? "OK");
     const confirmed = await dialogStore.ask({
-      message: copy.message,
-      detail: copy.detail,
+      message,
+      detail,
       primary,
-      danger: isDangerous(primary, copy.message),
+      danger: isDangerous(primary, message),
     });
     return { confirmed, checkboxChecked: false };
   }
 
   /**
-   * A prompt is a confirm plus a set of buttons; VS Code runs the chosen
-   * button's `run()` to produce the result. We offer only the first
-   * (primary) button, so this is "do it / cancel" — enough for the
-   * confirmations the workbench actually raises here.
+   * A prompt is a confirm plus a set of buttons, where VS Code runs the
+   * chosen button's `run()` to produce the result. Only the first (primary)
+   * button is offered, so this is "do it / cancel" — enough for what the
+   * workbench raises here, and it keeps one ask-protocol.
    */
   async prompt(prompt: {
     message?: string;
@@ -53,30 +53,33 @@ class AppDialogService {
     cancelButton?: unknown;
   }) {
     const first = prompt?.buttons?.[0];
-    const message = prompt?.message ?? "Are you sure?";
-    const primary = stripMnemonic(first?.label ?? "OK");
-    const confirmed = await dialogStore.ask({
-      message,
+    const { confirmed } = await this.confirm({
+      message: prompt?.message,
       detail: prompt?.detail,
-      primary,
-      danger: isDangerous(primary, message),
+      primaryButton: first?.label,
     });
-    if (!confirmed) return { result: undefined };
-    return { result: await first?.run?.({ checkboxChecked: false }) };
+    return { result: confirmed ? await first?.run?.({ checkboxChecked: false }) : undefined };
   }
 
-  // Notifications, not questions — the workbench has nowhere to render them
-  // here, so they go to the console rather than interrupting.
+  // Not questions — these report an outcome. They reach the user as toasts
+  // because this is the workbench's only channel for them: a failed Explorer
+  // rename or delete surfaces here, and console-only meant the user saw a
+  // silent no-op after confirming.
   async info(message: string, detail?: string) {
-    console.info("[monaco]", message, detail ?? "");
+    await this.notify("info", message, detail);
   }
 
   async warn(message: string, detail?: string) {
-    console.warn("[monaco]", message, detail ?? "");
+    await this.notify("warning", message, detail);
   }
 
   async error(message: string, detail?: string) {
-    console.error("[monaco]", message, detail ?? "");
+    await this.notify("error", message, detail);
+  }
+
+  private async notify(level: "info" | "warning" | "error", message: string, detail?: string) {
+    const { toast } = await import("sonner");
+    toast[level](detail ? `${message} — ${detail}` : message);
   }
 
   /** Text input (e.g. a rename prompt outside the tree's inline editor) has
