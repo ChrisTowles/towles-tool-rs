@@ -125,8 +125,8 @@ export function FilesPane({
         </div>
         <div ref={explorerRef} className="min-h-0 flex-1 overflow-hidden" />
         <div className="shrink-0 border-t bg-card px-2 py-1 text-[10.5px] text-muted-foreground">
-          <span className="font-mono text-violet-500">@</span> mentions the open file — select
-          lines and ⌘⇧A to mention a range
+          <span className="font-mono text-violet-500">@</span> mentions the open file — select lines
+          and ⌘⇧A to mention a range
           {connected ? "" : " — no session connected yet"}
         </div>
       </div>

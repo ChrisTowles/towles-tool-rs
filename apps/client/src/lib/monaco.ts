@@ -21,6 +21,16 @@ import { PRUNED_COMMANDS, staleCommands } from "@/lib/monaco-prune";
 
 let loading: Promise<typeof import("monaco-editor")> | null = null;
 
+/**
+ * The editor API only if some other consumer has already booted it — for
+ * callers that want to decorate with Monaco but must not pay for its
+ * multi-megabyte bootstrap on their own account (the Markdown preview's
+ * syntax highlighting). Null until then, and never triggers a load.
+ */
+export function loadedMonaco(): Promise<typeof import("monaco-editor")> | null {
+  return loading;
+}
+
 export function loadMonaco(): Promise<typeof import("monaco-editor")> {
   // The catch clears the cache: without it one failed bootstrap poisons
   // every editor, diff and quick-open for the life of the window.
@@ -101,9 +111,7 @@ async function start(): Promise<typeof import("monaco-editor")> {
     getWorker(_workerId: string, label: string): Worker {
       // Highlighting runs in the TextMate worker; everything else (diff
       // computation, model ops) is the plain editor worker.
-      return label === "TextMateWorker"
-        ? new textmateWorker.default()
-        : new editorWorker.default();
+      return label === "TextMateWorker" ? new textmateWorker.default() : new editorWorker.default();
     },
   };
   // Through user config, seeded before the services start — `setTheme`
@@ -164,9 +172,8 @@ async function start(): Promise<typeof import("monaco-editor")> {
   tauriFs.registerTauriFileSystem();
   // Checked before shadowing — afterwards every id exists by construction,
   // so a rename would look healthy while the real handler stayed live.
-  const { CommandsRegistry } = await import(
-    "@codingame/monaco-vscode-api/vscode/vs/platform/commands/common/commands"
-  );
+  const { CommandsRegistry } =
+    await import("@codingame/monaco-vscode-api/vscode/vs/platform/commands/common/commands");
   const stale = staleCommands(CommandsRegistry.getCommands().keys());
   if (stale.length > 0) {
     console.error(

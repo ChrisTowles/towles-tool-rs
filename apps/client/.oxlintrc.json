@@ -27,7 +27,12 @@
       }
     },
     {
-      "files": ["src/lib/focus-target.ts", "src/lib/settings-target.ts"],
+      "files": [
+        "src/lib/focus-target.ts",
+        "src/lib/settings-target.ts",
+        "src/lib/monaco-dialog-store.ts",
+        "src/lib/lsp.ts"
+      ],
       "rules": {
         "unicorn/no-useless-spread": "off"
       }

@@ -1,6 +1,6 @@
 /**
- * Text adjustments for the confirmations the VS Code layer raises. Kept apart
- * from `monaco-dialogs.ts` because that module pulls in the whole
+ * Presentation helpers for the confirmations the VS Code layer raises. Kept
+ * apart from `monaco-dialogs.ts` because that module pulls in the whole
  * `@codingame/monaco-vscode-api` graph (CSS and all), which a logic-only
  * vitest run can't load — this file stays importable by tests.
  */
@@ -16,8 +16,9 @@ export function stripMnemonic(label: string): string {
  * The file service thinks trashing is unsupported — `OverlayFileSystemProvider`
  * drops the `Trash` capability our provider advertises — so VS Code asks to
  * "permanently delete" and warns the action is irreversible. Our provider
- * trashes anyway (untracked files are unrecoverable otherwise), which would
- * make that wording a lie. Rewrite it to match what actually happens.
+ * trashes anyway (see `monaco-fs.ts`'s `delete`, and note that registering
+ * directly to fix this at the source breaks quick-open), which would make that
+ * wording a lie. Rewrite it to match what actually happens.
  *
  * Narrow on purpose: an unrelated confirmation passes through untouched.
  */
