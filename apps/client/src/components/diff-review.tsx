@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, X } from "lucide-react";
-import { loadMonaco, monacoTheme } from "@/lib/monaco";
+import { loadMonaco } from "@/lib/monaco";
 import { invokeOk } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
@@ -49,7 +49,6 @@ export function DiffReview({
       modifiedRef.current = modified;
       editor = monaco.editor.createDiffEditor(containerRef.current, {
         automaticLayout: true,
-        theme: monacoTheme(),
         readOnly: false,
         originalEditable: false,
         renderSideBySide: true,
