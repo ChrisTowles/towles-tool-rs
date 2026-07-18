@@ -733,9 +733,29 @@ fn mtime_ms(meta: &std::fs::Metadata) -> i64 {
 pub const ERR_ESCAPES_FOLDER: &str = "path escapes the folder";
 pub const ERR_ALREADY_EXISTS: &str = "already exists";
 
-/// Guard against `..` escapes — viewer paths must stay inside the folder.
+/// The "that name is taken" error, spelled once so `ide_rename` and
+/// `ide_create_dir` can't drift apart — the frontend matches on the substring
+/// to pick `FileExists`, and only one of them drifting would be invisible.
+fn already_exists(file_path: &str) -> String {
+    format!("{file_path} {ERR_ALREADY_EXISTS}")
+}
+
+/// Guard against escapes — viewer paths must stay inside the folder.
+///
+/// Two ways out, and both have to be closed for the join to be safe. `..`
+/// walks up; an *absolute* path is worse, because `Path::join` silently
+/// discards the base and returns the argument whole, so `confined("/w/repo",
+/// "/etc/passwd")` would hand back `/etc/passwd`. That was survivable while
+/// these commands only read; `ide_delete` and `ide_rename` mutate.
+///
+/// With both rejected the join can't escape lexically, which is the right
+/// depth here: `to`/`from` for a rename may not exist yet, so canonicalizing
+/// isn't an option.
 fn confined(dir: &Path, file_path: &str) -> Result<PathBuf, String> {
-    if Path::new(file_path).components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    let rel = Path::new(file_path);
+    let escapes =
+        rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir));
+    if escapes {
         return Err(format!("{ERR_ESCAPES_FOLDER}: {file_path}"));
     }
     Ok(dir.join(file_path))
@@ -847,10 +867,19 @@ pub async fn ide_read_dir(dir: String, file_path: String) -> Result<Vec<FsDirEnt
 }
 
 /// Create a directory (and any missing parents) for "New Folder".
+///
+/// Refuses a name that is already taken rather than letting `create_dir_all`
+/// report success for a directory it didn't create — the frontend turns
+/// [`ERR_ALREADY_EXISTS`] into `FileExists`, and VS Code's `mkdirp` swallows
+/// exactly that code when it races another creator, so being strict here is
+/// free. `symlink_metadata` so a dangling symlink still counts as taken.
 #[tauri::command]
 pub async fn ide_create_dir(dir: String, file_path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let abs = confined(Path::new(&dir), &file_path)?;
+        if std::fs::symlink_metadata(&abs).is_ok() {
+            return Err(already_exists(&file_path));
+        }
         std::fs::create_dir_all(&abs).map_err(|e| format!("cannot create {file_path}: {e}"))
     })
     .await
@@ -900,7 +929,7 @@ pub async fn ide_rename(
         let from = confined(root, &from_path)?;
         let to = confined(root, &to_path)?;
         if to.exists() && !overwrite {
-            return Err(format!("{to_path} {ERR_ALREADY_EXISTS}"));
+            return Err(already_exists(&to_path));
         }
         if let Some(parent) = to.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {to_path}: {e}"))?;
@@ -940,6 +969,19 @@ mod fs_command_tests {
         assert!(confined(Path::new("/w"), "src/../../etc/passwd").is_err());
     }
 
+    /// `Path::join` throws the base away when the argument is absolute, so
+    /// without this check `confined` hands back a path outside the folder and
+    /// `ide_delete` would happily trash it.
+    #[test]
+    fn confined_rejects_an_absolute_path() {
+        let err = confined(Path::new("/w"), "/etc/passwd").unwrap_err();
+        assert!(err.contains(ERR_ESCAPES_FOLDER), "{err}");
+        assert_ne!(
+            confined(Path::new("/w"), "/etc/passwd").ok(),
+            Some(PathBuf::from("/etc/passwd"))
+        );
+    }
+
     #[test]
     fn confined_joins_a_plain_relative_path() {
         assert_eq!(confined(Path::new("/w"), "src/main.rs").unwrap(), Path::new("/w/src/main.rs"));
@@ -955,7 +997,8 @@ mod fs_command_tests {
         let escape = confined(Path::new("/w"), "../x").unwrap_err();
         assert!(escape.contains(ERR_ESCAPES_FOLDER), "{escape}");
 
-        let exists = format!("{} {ERR_ALREADY_EXISTS}", "dest.txt");
+        let exists = already_exists("dest.txt");
         assert!(exists.contains(ERR_ALREADY_EXISTS), "{exists}");
+        assert!(exists.starts_with("dest.txt"), "{exists}");
     }
 }

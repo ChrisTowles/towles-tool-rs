@@ -101,25 +101,17 @@ const subscribeLspStatus = (fn: () => void): (() => void) => {
   };
 };
 
-/** Cached per dir so a non-matching folder returns a stable reference — a
- * fresh literal each render would make this unusable in a dependency array. */
-const offStatuses = new Map<string, LspStatus>();
-function offFor(dir: string | undefined): LspStatus {
-  if (dir == null) return OFF_NO_DIR;
-  let off = offStatuses.get(dir);
-  if (!off) {
-    off = { state: "off", dir };
-    offStatuses.set(dir, off);
-  }
-  return off;
-}
-const OFF_NO_DIR: LspStatus = { state: "off", dir: null };
+/** One shared object for every folder the server isn't following, so the hook
+ * returns a stable reference without a per-dir cache to grow unbounded. `dir`
+ * is null because it carries no information in this state — the folder that
+ * asked already knows which one it is. */
+const OFF: LspStatus = { state: "off", dir: null };
 
 /** Bridge status for one folder — `off` unless this folder is the one the
  * single shared server currently follows. */
 export function useLspStatus(dir: string | undefined): LspStatus {
   const s = useSyncExternalStore(subscribeLspStatus, lspStatus);
-  return dir != null && s.dir === dir ? s : offFor(dir);
+  return dir != null && s.dir === dir ? s : OFF;
 }
 
 let current: { dir: string; stop: () => void } | null = null;
@@ -134,26 +126,35 @@ let switching: Promise<void> = isTauri()
  * workspace switches can't interleave. */
 export function syncLspWorkspace(dir: string): void {
   if (!isTauri()) return;
-  switching = switching.then(async () => {
-    if (current?.dir === dir) return;
-    current?.stop();
-    current = null;
-    const isRust = await invokeCmd<unknown>("ide_stat", { dir, filePath: "Cargo.toml" });
-    if (isRust == null) {
-      setStatus({ state: "off", dir });
-      return;
-    }
-    setStatus({ state: "starting", dir });
-    try {
-      current = { dir, stop: await startRustAnalyzer(dir) };
-      setStatus({ state: "ready", dir });
-    } catch (e) {
-      const err = e as { message?: string; stack?: string };
-      const detail = err?.message ?? String(e);
-      setStatus({ state: "failed", dir, detail });
-      console.warn(`rust-analyzer bridge failed to start: ${detail}\n${err?.stack ?? ""}`);
-    }
-  });
+  switching = switching
+    .then(async () => {
+      if (current?.dir === dir) return;
+      current?.stop();
+      current = null;
+      const isRust = await invokeCmd<unknown>("ide_stat", { dir, filePath: "Cargo.toml" });
+      if (isRust == null) {
+        setStatus({ state: "off", dir });
+        return;
+      }
+      setStatus({ state: "starting", dir });
+      try {
+        current = { dir, stop: await startRustAnalyzer(dir) };
+        setStatus({ state: "ready", dir });
+      } catch (e) {
+        const err = e as { message?: string; stack?: string };
+        const detail = err?.message ?? String(e);
+        setStatus({ state: "failed", dir, detail });
+        console.warn(`rust-analyzer bridge failed to start: ${detail}\n${err?.stack ?? ""}`);
+      }
+      // The chain is the serialization mechanism, so it must never settle
+      // rejected: one throw outside the try above (a `stop()` that blew up, say)
+      // would leave every later workspace switch chained onto a rejected promise
+      // and silently skipped for the life of the window.
+    })
+    .catch((e: unknown) => {
+      setStatus({ state: "failed", dir, detail: String(e) });
+      console.warn("rust-analyzer workspace switch failed", e);
+    });
 }
 
 async function startRustAnalyzer(dir: string): Promise<() => void> {
