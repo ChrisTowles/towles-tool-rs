@@ -28,6 +28,10 @@ export function loadMonaco(): Promise<typeof import("monaco-editor")> {
       tauriFs,
       editorWorker,
       textmateWorker,
+      tsWorker,
+      jsonWorker,
+      cssWorker,
+      htmlWorker,
     ] = await Promise.all([
       import("monaco-editor"),
       import("@codingame/monaco-vscode-api"),
@@ -41,6 +45,10 @@ export function loadMonaco(): Promise<typeof import("monaco-editor")> {
       import("@/lib/monaco-fs"),
       import("monaco-editor/esm/vs/editor/editor.worker?worker"),
       import("@codingame/monaco-vscode-textmate-service-override/worker?worker"),
+      import("@codingame/monaco-vscode-standalone-typescript-language-features/worker?worker"),
+      import("@codingame/monaco-vscode-standalone-json-language-features/worker?worker"),
+      import("@codingame/monaco-vscode-standalone-css-language-features/worker?worker"),
+      import("@codingame/monaco-vscode-standalone-html-language-features/worker?worker"),
       // Importing a default-extension package registers its TextMate grammars
       // (or themes) as a built-in VS Code extension — side-effect imports.
       // (themeDefaults is awaited below: setTheme races its registration.)
@@ -57,12 +65,37 @@ export function loadMonaco(): Promise<typeof import("monaco-editor")> {
       import("@codingame/monaco-vscode-yaml-default-extension"),
       import("@codingame/monaco-vscode-shellscript-default-extension"),
       import("@codingame/monaco-vscode-python-default-extension"),
+      import("@codingame/monaco-vscode-log-default-extension"),
+      import("@codingame/monaco-vscode-diff-default-extension"),
+      // Standalone language features: monaco's classic worker-based smarts
+      // (completions/hovers/diagnostics for ts/js/json/css/html), rebuilt for
+      // the vscode-api stack — no extension host needed.
+      import("@codingame/monaco-vscode-standalone-typescript-language-features"),
+      import("@codingame/monaco-vscode-standalone-json-language-features"),
+      import("@codingame/monaco-vscode-standalone-css-language-features"),
+      import("@codingame/monaco-vscode-standalone-html-language-features"),
     ]);
     self.MonacoEnvironment = {
       getWorker(_workerId: string, label: string): Worker {
-        return label === "TextMateWorker"
-          ? new textmateWorker.default()
-          : new editorWorker.default();
+        switch (label) {
+          case "TextMateWorker":
+            return new textmateWorker.default();
+          case "typescript":
+          case "javascript":
+            return new tsWorker.default();
+          case "json":
+            return new jsonWorker.default();
+          case "css":
+          case "scss":
+          case "less":
+            return new cssWorker.default();
+          case "html":
+          case "handlebars":
+          case "razor":
+            return new htmlWorker.default();
+          default:
+            return new editorWorker.default();
+        }
       },
     };
     // Through user config, seeded before the services start — `setTheme`
@@ -70,6 +103,9 @@ export function loadMonaco(): Promise<typeof import("monaco-editor")> {
     await configuration.initUserConfiguration(
       JSON.stringify({
         "workbench.colorTheme": "Default Dark Modern",
+        "editor.stickyScroll.enabled": true,
+        "editor.bracketPairColorization.enabled": true,
+        "editor.guides.bracketPairs": "active",
         // Quick-open walks the workspace through the Tauri fs bridge — keep
         // it out of the build/dependency trees.
         "search.exclude": {
