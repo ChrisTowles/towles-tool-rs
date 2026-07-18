@@ -25,6 +25,8 @@ export function loadMonaco(): Promise<typeof import("monaco-editor")> {
       theme,
       model,
       quickaccess,
+      views,
+      explorer,
       search,
       tauriFs,
       editorWorker,
@@ -46,6 +48,8 @@ export function loadMonaco(): Promise<typeof import("monaco-editor")> {
       import("@codingame/monaco-vscode-theme-service-override"),
       import("@codingame/monaco-vscode-model-service-override"),
       import("@codingame/monaco-vscode-quickaccess-service-override"),
+      import("@codingame/monaco-vscode-views-service-override"),
+      import("@codingame/monaco-vscode-explorer-service-override"),
       import("@codingame/monaco-vscode-search-service-override"),
       import("@/lib/monaco-fs"),
       import("monaco-editor/esm/vs/editor/editor.worker?worker"),
@@ -119,6 +123,13 @@ export function loadMonaco(): Promise<typeof import("monaco-editor")> {
           "**/dist": true,
           "**/.git": true,
         },
+        // Keep the Explorer focused on source — build trees stay reachable
+        // via a terminal, not the tree.
+        "files.exclude": {
+          "**/.git": true,
+          "**/node_modules": true,
+          "**/target": true,
+        },
       }),
     );
     await api.initialize({
@@ -134,6 +145,17 @@ export function loadMonaco(): Promise<typeof import("monaco-editor")> {
         isKeybindingConfigurationVisible: () => false,
         shouldUseGlobalPicker: () => true,
       }),
+      // Workbench views (the Files pane hosts the real Explorer via
+      // attachExplorer). Spread after quickaccess so the workbench's own
+      // quick-input wiring wins where they overlap. No editor part is ever
+      // attached — the fallback routes Explorer opens to the app's viewer.
+      ...views.default(async (modelRef) => {
+        const uri = modelRef.object.textEditorModel.uri;
+        modelRef.dispose();
+        if (uri.scheme === "file" && openHandler != null) openHandler(uri.path);
+        return undefined;
+      }),
+      ...explorer.default(),
       ...search.default(),
     });
     tauriFs.registerTauriFileSystem();
@@ -170,6 +192,38 @@ export async function setMonacoWorkspace(dir: string): Promise<void> {
   // The LSP bridge follows the workspace (rust-analyzer per Rust checkout).
   const { syncLspWorkspace } = await import("@/lib/lsp");
   syncLspWorkspace(dir);
+}
+
+let detachSidebar: (() => void) | null = null;
+
+/**
+ * Host the VS Code Explorer (the workbench sidebar part) inside `container`.
+ * The sidebar is a singleton — the pane that attached last owns it, and a
+ * newer attach silently steals it (same last-wins semantics as the
+ * workspace). Returns a detach that no-ops if someone else took over.
+ */
+export async function attachExplorer(container: HTMLElement): Promise<() => void> {
+  await loadMonaco();
+  const [views, layout] = await Promise.all([
+    import("@codingame/monaco-vscode-views-service-override"),
+    import("@codingame/monaco-vscode-api/vscode/vs/workbench/services/layout/browser/layoutService"),
+  ]);
+  detachSidebar?.();
+  const attached = views.attachPart(layout.Parts.SIDEBAR_PART, container);
+  const mine = () => {
+    attached.dispose();
+    if (detachSidebar === mine) detachSidebar = null;
+  };
+  detachSidebar = mine;
+  return mine;
+}
+
+/** Run a VS Code command by id (e.g. the Explorer's refresh action). */
+export async function runMonacoCommand(id: string): Promise<void> {
+  await loadMonaco();
+  const api = await import("@codingame/monaco-vscode-api");
+  const commands = await api.getService(api.ICommandService);
+  await commands.executeCommand(id);
 }
 
 type OpenFileHandler = (absolutePath: string) => void;
