@@ -8,11 +8,10 @@
 //! opening prompt is the attachment.
 //!
 //! **These files live outside the repo**, under a `tt_config`-resolved
-//! staging dir, mirroring Claude Code's own
-//! `~/.claude/image-cache/<session>/` convention. Putting them *inside* the
-//! new slot was tried first, on the assumption that Claude Code would prompt
-//! for an out-of-workspace read — it doesn't (verified: a `claude -p` run in
-//! one repo read an image under `/tmp` in default permission mode without
+//! staging dir in the OS temp dir. Putting them *inside* the new slot was
+//! tried first, on the assumption that Claude Code would prompt for an
+//! out-of-workspace read — it doesn't (verified: a `claude -p` run in one
+//! repo read an image under `/tmp` in default permission mode without
 //! prompting). So the in-repo version bought nothing and cost a `.gitignore`
 //! to keep the slot's `git status` clean.
 //!
