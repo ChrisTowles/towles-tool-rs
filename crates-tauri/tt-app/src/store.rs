@@ -18,6 +18,13 @@ use tt_store::{Snapshot, Store};
 /// Tauri event carrying the full store snapshot (initial mount + after every write).
 pub const SNAPSHOT_EVENT: &str = "store://snapshot";
 
+/// Hard cap per `gh` issue mutation (create/close/reopen). These run through
+/// `tt_exec` rather than a bare `Command` for two reasons: an unbounded spawn
+/// could wedge the caller forever on a stalled network, and `tt_exec` is the
+/// single seam where every subprocess is recorded to the telemetry event log —
+/// a `gh` call made outside it is invisible there.
+const GH_MUTATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Managed Tauri state: the SQLite store, `None` when it could not be opened.
 pub struct StoreState {
     store: Arc<Mutex<Option<Store>>>,
@@ -224,15 +231,14 @@ fn reopen_gh_issue(repo: &str, number: i64) -> Result<(), String> {
 }
 
 fn run_gh_issue_state_change(repo: &str, number: i64, verb: &str) -> Result<(), String> {
-    let output = std::process::Command::new("gh")
-        .args(["issue", verb, "--repo", repo, &number.to_string()])
-        .output()
-        .map_err(|e| format!("failed to spawn gh: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "gh issue {verb} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+    let output = tt_exec::run_with_timeout(
+        "gh",
+        &["issue", verb, "--repo", repo, &number.to_string()],
+        GH_MUTATION_TIMEOUT,
+    )
+    .map_err(|e| format!("failed to run gh: {e}"))?;
+    if !output.ok() {
+        return Err(format!("gh issue {verb} failed: {}", output.stderr.trim()));
     }
     Ok(())
 }
@@ -507,11 +513,13 @@ pub async fn store_create_issue(dir: String, title: String) -> Result<String, St
         return Err("issue title is required".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let output = std::process::Command::new("gh")
-            .args(["issue", "create", "--title", &title, "--body", ""])
-            .current_dir(&dir)
-            .output()
-            .map_err(|e| format!("failed to spawn gh in {dir}: {e}"))?;
+        let output = tt_exec::run_in_dir_with_timeout(
+            "gh",
+            &["issue", "create", "--title", &title, "--body", ""],
+            std::path::Path::new(&dir),
+            GH_MUTATION_TIMEOUT,
+        )
+        .map_err(|e| format!("failed to run gh in {dir}: {e}"))?;
         let (_, url) = parse_gh_issue_create_output(&output)?;
         Ok(url)
     })
@@ -521,12 +529,14 @@ pub async fn store_create_issue(dir: String, title: String) -> Result<String, St
 
 /// Run `gh issue create` and return the new issue's `(number, url)`.
 fn create_gh_issue(repo: &str, title: &str, body: &str) -> Result<(i64, String), String> {
-    let output = std::process::Command::new("gh")
-        .args([
+    let output = tt_exec::run_with_timeout(
+        "gh",
+        &[
             "issue", "create", "--repo", repo, "--title", title, "--body", body,
-        ])
-        .output()
-        .map_err(|e| format!("failed to spawn gh: {e}"))?;
+        ],
+        GH_MUTATION_TIMEOUT,
+    )
+    .map_err(|e| format!("failed to run gh: {e}"))?;
     parse_gh_issue_create_output(&output)
 }
 
@@ -550,14 +560,11 @@ fn render_promoted_issue_body(notes: Option<&str>, due_ts: Option<i64>) -> Strin
 
 /// Parse a `gh issue create` invocation's output into `(number, url)`. `gh`
 /// prints the new issue URL on stdout; the trailing path segment is its number.
-fn parse_gh_issue_create_output(output: &std::process::Output) -> Result<(i64, String), String> {
-    if !output.status.success() {
-        return Err(format!(
-            "gh issue create failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+fn parse_gh_issue_create_output(output: &tt_exec::Output) -> Result<(i64, String), String> {
+    if !output.ok() {
+        return Err(format!("gh issue create failed: {}", output.stderr.trim()));
     }
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let url = output.stdout.trim().to_string();
     let number = url
         .rsplit('/')
         .next()
