@@ -497,9 +497,7 @@ export function RepoGroup({
             </AnimatePresence>
           </div>
         ))}
-        <AnimatePresence initial={false}>
-          {loose.map((s) => sessionRow(folder, s))}
-        </AnimatePresence>
+        <AnimatePresence initial={false}>{loose.map((s) => sessionRow(folder, s))}</AnimatePresence>
       </>
     );
   };
@@ -552,11 +550,7 @@ export function RepoGroup({
           />
         )}
         {pendingRows}
-        {!isCollapsed && (
-          <div className="pb-2">
-            {sessionRows(folder)}
-          </div>
-        )}
+        {!isCollapsed && <div className="pb-2">{sessionRows(folder)}</div>}
         {quiet.size > 0 && showQuiet && (
           <QuietToggleRow count={quiet.size} revealed onToggle={onToggleQuiet} />
         )}
@@ -671,9 +665,7 @@ export function RepoGroup({
                   onNewSession={() => onNewSession(folder.dir)}
                   onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
                   onDeleteWorktree={
-                    folder.isWorktree
-                      ? () => onDeleteWorktree(folder.dir, folder.name)
-                      : undefined
+                    folder.isWorktree ? () => onDeleteWorktree(folder.dir, folder.name) : undefined
                   }
                   onOpenDiff={() => onOpenDiff(folder.dir)}
                   onOpenFiles={() => onOpenFiles(folder.dir)}
@@ -681,11 +673,7 @@ export function RepoGroup({
                 {/* Note is a folder label — shown under the header even when the
                     folder is collapsed (renders nothing when unset). */}
                 <PurposeRow folder={folder} />
-                {!fCollapsed && (
-                  <div className="pb-1">
-                    {sessionRows(folder)}
-                  </div>
-                )}
+                {!fCollapsed && <div className="pb-1">{sessionRows(folder)}</div>}
               </motion.div>
             );
           })}
