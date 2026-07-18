@@ -839,6 +839,72 @@ pub async fn ide_read_dir(dir: String, file_path: String) -> Result<Vec<FsDirEnt
     .map_err(|e| format!("readdir task failed: {e}"))?
 }
 
+/// Create a directory (and any missing parents) for "New Folder".
+#[tauri::command]
+pub async fn ide_create_dir(dir: String, file_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let abs = confined(Path::new(&dir), &file_path)?;
+        std::fs::create_dir_all(&abs).map_err(|e| format!("cannot create {file_path}: {e}"))
+    })
+    .await
+    .map_err(|e| format!("mkdir task failed: {e}"))?
+}
+
+/// Delete a path for the Explorer. Defaults to the OS trash: a checkout is
+/// full of untracked files (.env, scratch notes, build output) that git cannot
+/// bring back, so a stray Delete must stay recoverable. `use_trash: false` is
+/// the permanent path (VS Code's shift-delete).
+#[tauri::command]
+pub async fn ide_delete(
+    dir: String,
+    file_path: String,
+    recursive: bool,
+    use_trash: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let abs = confined(Path::new(&dir), &file_path)?;
+        if use_trash {
+            return trash::delete(&abs).map_err(|e| format!("cannot trash {file_path}: {e}"));
+        }
+        let meta =
+            std::fs::symlink_metadata(&abs).map_err(|e| format!("cannot stat {file_path}: {e}"))?;
+        if meta.is_dir() {
+            if recursive { std::fs::remove_dir_all(&abs) } else { std::fs::remove_dir(&abs) }
+        } else {
+            std::fs::remove_file(&abs)
+        }
+        .map_err(|e| format!("cannot delete {file_path}: {e}"))
+    })
+    .await
+    .map_err(|e| format!("delete task failed: {e}"))?
+}
+
+/// Move/rename within the folder. Both ends are confined, so a rename can
+/// never be used to write outside the checkout.
+#[tauri::command]
+pub async fn ide_rename(
+    dir: String,
+    from_path: String,
+    to_path: String,
+    overwrite: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&dir);
+        let from = confined(root, &from_path)?;
+        let to = confined(root, &to_path)?;
+        if to.exists() && !overwrite {
+            return Err(format!("{to_path} already exists"));
+        }
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {to_path}: {e}"))?;
+        }
+        std::fs::rename(&from, &to)
+            .map_err(|e| format!("cannot rename {from_path} to {to_path}: {e}"))
+    })
+    .await
+    .map_err(|e| format!("rename task failed: {e}"))?
+}
+
 /// Every file in the folder's checkout (tracked + untracked-but-not-ignored),
 /// for the diff pane's Files tab — so any file, changed or not, can be
 /// @-mentioned to the folder's Claude session. Async: git subprocesses.
