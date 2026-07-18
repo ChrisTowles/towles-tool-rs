@@ -2,8 +2,8 @@
 //!
 //! Thin boundary over `tt_mcp::serve`: the library owns the JSON-RPC loop and
 //! tools; this just picks the store path and returns the exit code. Logging
-//! goes to stderr (stdout is the protocol channel), via the env_logger that
-//! `main` installs.
+//! goes to stderr (stdout is the protocol channel), via the `tt_otel`
+//! subscriber that `main` installs.
 
 use crate::cli::McpCommands;
 

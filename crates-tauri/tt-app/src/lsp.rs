@@ -58,6 +58,7 @@ pub fn lsp_start(app: AppHandle, state: State<Lsp>, dir: String) -> Result<u32, 
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("not a directory: {dir}"));
     }
+    tt_exec::record_detached_spawn("rust-analyzer", &[], "lsp");
     let mut child = Command::new("rust-analyzer")
         .current_dir(&dir)
         .stdin(Stdio::piped())

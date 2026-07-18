@@ -55,16 +55,20 @@ impl EventLog {
     /// tests can assert on it.
     pub fn append(&mut self, record: &serde_json::Value, now: DateTime<Utc>) -> bool {
         let date = now.format("%Y-%m-%d").to_string();
+        // Serialize before touching the filesystem: the cheap fallible step
+        // should not leave behind a created file and a prune sweep for a
+        // record that never gets written.
+        let Ok(line) = serde_json::to_string(record) else {
+            return false;
+        };
         if self.open.as_ref().is_none_or(|open| open.date != date) {
             if !self.rotate_to(&date) {
                 return false;
             }
             self.prune();
         }
+        // Always `Some` after a successful rotate; the borrow checker can't see it.
         let Some(open) = self.open.as_mut() else {
-            return false;
-        };
-        let Ok(line) = serde_json::to_string(record) else {
             return false;
         };
         writeln!(open.writer, "{line}").is_ok() && open.writer.flush().is_ok()

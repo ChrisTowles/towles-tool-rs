@@ -628,6 +628,7 @@ pub fn ab_open_in_editor(state: State<Ab>, name: String) -> Result<(), String> {
     if editor.trim().is_empty() {
         return Err("No preferred editor configured".into());
     }
+    tt_exec::record_detached_spawn(&editor, &[&dir], "editor");
     std::process::Command::new(&editor)
         .arg(&dir)
         .spawn()

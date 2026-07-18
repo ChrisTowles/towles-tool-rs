@@ -82,15 +82,20 @@ impl EventLogLayer {
     }
 
     /// Start a record with the fields every line carries.
+    ///
+    /// `now` is read once by the caller and threaded through to [`Self::write`]
+    /// as well, so a record's `ts` and the file it rotates into can never
+    /// disagree across a midnight boundary.
     fn base(
         &self,
         kind: &str,
         level: &tracing::Level,
         target: &str,
         name: &str,
+        now: DateTime<Utc>,
     ) -> Map<String, Value> {
         let mut record = self.resource.clone();
-        record.insert("ts".into(), Value::from((self.now)().to_rfc3339()));
+        record.insert("ts".into(), Value::from(now.to_rfc3339()));
         record.insert("kind".into(), Value::from(kind));
         record.insert("level".into(), Value::from(level.as_str()));
         record.insert("target".into(), Value::from(target));
@@ -100,12 +105,12 @@ impl EventLogLayer {
 
     /// Write a record, ignoring a poisoned lock rather than panicking inside
     /// the instrumentation of whatever poisoned it.
-    fn write(&self, record: Map<String, Value>) {
+    fn write(&self, record: Map<String, Value>, now: DateTime<Utc>) {
         let mut log: MutexGuard<EventLog> = match self.log.lock() {
             Ok(log) => log,
             Err(poisoned) => poisoned.into_inner(),
         };
-        log.append(&Value::Object(record), (self.now)());
+        log.append(&Value::Object(record), now);
     }
 }
 
@@ -130,12 +135,13 @@ where
     }
 
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let now = (self.now)();
         let meta = event.metadata();
-        let mut record = self.base("event", meta.level(), meta.target(), meta.name());
+        let mut record = self.base("event", meta.level(), meta.target(), meta.name(), now);
         let mut visitor = JsonVisitor::default();
         event.record(&mut visitor);
         record.extend(visitor.0);
-        self.write(record);
+        self.write(record, now);
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
@@ -143,11 +149,12 @@ where
         let Some(state) = span.extensions_mut().remove::<SpanState>() else {
             return;
         };
+        let now = (self.now)();
         let meta = span.metadata();
-        let mut record = self.base("span", meta.level(), meta.target(), meta.name());
+        let mut record = self.base("span", meta.level(), meta.target(), meta.name(), now);
         record.insert("duration_ms".into(), Value::from(state.opened.elapsed().as_millis() as u64));
         record.extend(state.fields);
-        self.write(record);
+        self.write(record, now);
     }
 }
 
