@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // Auto-bumps any Claude Code plugin (packages/core, packages/app) touched by
 // this commit's staged changes — see scripts/plugin-version-bump.mjs for the
-// logic. Installed via `core.hooksPath .githooks` (root "prepare" script).
+// logic — then validates the marketplace + both plugin manifests structurally
+// well-formed. Installed via `core.hooksPath .githooks` (root "prepare" script).
+import { execFileSync } from "node:child_process";
 import { runPreCommitBump } from "../scripts/plugin-version-bump.mjs";
 
 runPreCommitBump();
+
+execFileSync("claude", ["plugin", "validate", "."], { stdio: "inherit" });
