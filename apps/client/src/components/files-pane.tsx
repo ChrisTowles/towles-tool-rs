@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { AtSign, Columns2, Files as FilesIcon, RefreshCw, WrapText } from "lucide-react";
 import { CodeViewer, type ViewerAnchor } from "@/components/code-viewer";
-import { IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
+import { ClaudeBadge, IconBtn, LspBadge, PanePlaceholder } from "@/components/agentboard-bits";
 import { FilePreview, previewKindFor } from "@/components/file-preview";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
-import { ideAtMention, useIdeConnected } from "@/lib/ide";
+import { ideMention, useIdeConnected } from "@/lib/ide";
+import { useLspStatus } from "@/lib/lsp";
 import {
   attachExplorer,
   runMonacoCommand,
@@ -19,14 +20,23 @@ import type { FolderData } from "@/lib/agentboard";
  * sidebar part, hosted via `attachExplorer` — the checkout is the workspace
  * folder), a Monaco viewer on the right. Clicking a file in the Explorer
  * routes through the views override's open fallback into the viewer;
- * selecting text streams to the folder's Claude session, and the header @
- * button mentions the open file. Long lines wrap by default (toggle in the
+ * selecting text streams to the folder's Claude session, and two gestures
+ * mention explicitly: the header @ button sends the whole file, while the
+ * viewer's selection chip (or ⌘⇧A) sends just the highlighted lines. Long
+ * lines wrap by default (toggle in the
  * viewer toolbar); Markdown/HTML files get a second toggle that opens a
  * resizable split preview alongside the editor.
  */
 
 /** Claude called openFile — focus this file (new nonce per request). */
 export type FilesOpenRequest = { path: string; anchor: ViewerAnchor; nonce: number };
+
+/** Silent unless the bridge has something to say (a non-Rust checkout). */
+function LspChip({ dir }: { dir: string }) {
+  const { state, detail } = useLspStatus(dir);
+  if (state === "off") return null;
+  return <LspBadge state={state} detail={detail} />;
+}
 
 export function FilesPane({
   dir,
@@ -69,12 +79,18 @@ export function FilesPane({
   useEffect(() => {
     let disposed = false;
     let detach: (() => void) | null = null;
-    void setMonacoWorkspace(dir);
+    setMonacoWorkspace(dir).catch((e: unknown) => {
+      console.error("[files] failed to set the VS Code workspace", e);
+    });
     if (explorerRef.current) {
-      void attachExplorer(explorerRef.current).then((d) => {
-        if (disposed) d();
-        else detach = d;
-      });
+      attachExplorer(explorerRef.current)
+        .then((d) => {
+          if (disposed) d();
+          else detach = d;
+        })
+        .catch((e: unknown) => {
+          console.error("[files] failed to attach the Explorer", e);
+        });
     }
     setMonacoOpenHandler((absolutePath) => {
       if (absolutePath.startsWith(`${dir}/`)) setOpen(absolutePath.slice(dir.length + 1));
@@ -86,7 +102,10 @@ export function FilesPane({
     };
   }, [dir, open]);
 
-  const mention = (path: string) => void ideAtMention(dir, path);
+  // Whole-file mention. A range mention is the viewer's own gesture (select
+  // lines, then the chip's @ send or ⌘⇧A) — it needs the live selection, which
+  // only the editor has.
+  const mention = (path: string) => void ideMention(dir, path, null);
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden rounded-lg border">
@@ -95,6 +114,7 @@ export function FilesPane({
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
             explorer
           </span>
+          <LspChip dir={dir} />
           <IconBtn
             title="refresh the explorer"
             onClick={() => void runMonacoCommand("workbench.files.action.refreshFilesExplorer")}
@@ -105,7 +125,8 @@ export function FilesPane({
         </div>
         <div ref={explorerRef} className="min-h-0 flex-1 overflow-hidden" />
         <div className="shrink-0 border-t bg-card px-2 py-1 text-[10.5px] text-muted-foreground">
-          <span className="font-mono text-violet-500">@</span> mentions the open file to Claude
+          <span className="font-mono text-violet-500">@</span> mentions the open file — select
+          lines and ⌘⇧A to mention a range
           {connected ? "" : " — no session connected yet"}
         </div>
       </div>
@@ -149,7 +170,7 @@ export function FilesPane({
                 type="button"
                 title={
                   connected
-                    ? "Mention this file to the Claude session (select text to share a range instead)"
+                    ? "Mention this whole file to the Claude session — select lines and press ⌘⇧A to mention just those"
                     : "Run `claude` in this folder's terminal first"
                 }
                 onClick={() => mention(open)}
@@ -169,6 +190,7 @@ export function FilesPane({
                       dir={dir}
                       path={open}
                       wordWrap={wordWrap}
+                      connected={connected}
                       anchor={
                         openRequest && openRequest.path === open
                           ? { ...openRequest.anchor, nonce: openRequest.nonce }
@@ -187,6 +209,7 @@ export function FilesPane({
                   dir={dir}
                   path={open}
                   wordWrap={wordWrap}
+                  connected={connected}
                   anchor={
                     openRequest && openRequest.path === open
                       ? { ...openRequest.anchor, nonce: openRequest.nonce }
@@ -232,14 +255,7 @@ export function FolderFilesPane({
       <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
         <FilesIcon className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate font-mono text-xs text-foreground">{folder.name}</span>
-        {ideConnected && (
-          <span
-            title="A Claude Code session in this folder is connected — highlighted lines become its selection context"
-            className="flex shrink-0 items-center gap-1 rounded-md border border-violet-500/50 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500"
-          >
-            ✦ claude
-          </span>
-        )}
+        {ideConnected && <ClaudeBadge />}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <IconBtn
             title="remove pane (files stay a click away on the folder)"

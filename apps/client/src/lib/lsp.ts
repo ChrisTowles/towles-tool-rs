@@ -1,12 +1,23 @@
 /**
- * LSP bridge (spike): rust-analyzer runs app-side (`lsp_start` spawns it per
+ * LSP bridge: rust-analyzer runs app-side (`lsp_start` spawns it per
  * workspace, `crates-tauri/tt-app/src/lsp.rs`), and monaco-languageclient in
  * the webview speaks to it over Tauri IPC — `lsp_send` down, `lsp://msg`
  * events up. No WebSocket, no port claims. One server at a time, following
  * the active workspace (`syncLspWorkspace`, called by setMonacoWorkspace);
  * a folder without Cargo.toml just stops the previous server.
+ *
+ * Status is reported (`subscribeLspStatus`) rather than swallowed: this
+ * started as a spike whose failures went to console.warn, which meant nobody
+ * could tell whether it had ever served a single hover. The Files pane shows
+ * the state so the keep-or-cut call can be made on evidence.
+ *
+ * Note the extension host this depends on is NOT lazy — `vscode/
+ * localExtensionHost` registers an initialize-time participant, so it has to
+ * be imported before `api.initialize` whether or not a Rust checkout is ever
+ * opened. That cost is paid by every editor mount; see `lib/monaco.ts`.
  */
 
+import { useSyncExternalStore } from "react";
 import { AbstractMessageReader, AbstractMessageWriter } from "vscode-jsonrpc";
 import type { DataCallback, Disposable, Message } from "vscode-jsonrpc";
 import { invokeCmd, invokeOrThrow, isTauri } from "@/lib/tauri";
@@ -62,6 +73,55 @@ class TauriMessageWriter extends AbstractMessageWriter {
   end(): void {}
 }
 
+/**
+ * What the bridge is doing for the active workspace.
+ * - `off` — not a Rust checkout (or not running under Tauri): nothing to do.
+ * - `starting` — rust-analyzer is spawning / the client is handshaking.
+ * - `ready` — the language client started; hovers and completions are live.
+ * - `failed` — spawn or handshake failed (usually no rust-analyzer on PATH).
+ */
+export type LspState = "off" | "starting" | "ready" | "failed";
+export type LspStatus = { state: LspState; dir: string | null; detail?: string };
+
+let status: LspStatus = { state: "off", dir: null };
+const listeners = new Set<() => void>();
+
+function setStatus(next: LspStatus): void {
+  status = next;
+  for (const fn of [...listeners]) fn();
+}
+
+/** Snapshot for `useSyncExternalStore` — stable reference until it changes. */
+const lspStatus = (): LspStatus => status;
+
+const subscribeLspStatus = (fn: () => void): (() => void) => {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+};
+
+/** Cached per dir so a non-matching folder returns a stable reference — a
+ * fresh literal each render would make this unusable in a dependency array. */
+const offStatuses = new Map<string, LspStatus>();
+function offFor(dir: string | undefined): LspStatus {
+  if (dir == null) return OFF_NO_DIR;
+  let off = offStatuses.get(dir);
+  if (!off) {
+    off = { state: "off", dir };
+    offStatuses.set(dir, off);
+  }
+  return off;
+}
+const OFF_NO_DIR: LspStatus = { state: "off", dir: null };
+
+/** Bridge status for one folder — `off` unless this folder is the one the
+ * single shared server currently follows. */
+export function useLspStatus(dir: string | undefined): LspStatus {
+  const s = useSyncExternalStore(subscribeLspStatus, lspStatus);
+  return dir != null && s.dir === dir ? s : offFor(dir);
+}
+
 let current: { dir: string; stop: () => void } | null = null;
 // A fresh page means every server the previous page started is an orphan —
 // reap them before the first start. (Module scope = runs once per page.)
@@ -79,14 +139,19 @@ export function syncLspWorkspace(dir: string): void {
     current?.stop();
     current = null;
     const isRust = await invokeCmd<unknown>("ide_stat", { dir, filePath: "Cargo.toml" });
-    if (isRust == null) return;
+    if (isRust == null) {
+      setStatus({ state: "off", dir });
+      return;
+    }
+    setStatus({ state: "starting", dir });
     try {
       current = { dir, stop: await startRustAnalyzer(dir) };
+      setStatus({ state: "ready", dir });
     } catch (e) {
       const err = e as { message?: string; stack?: string };
-      console.warn(
-        `rust-analyzer bridge failed to start: ${err?.message ?? String(e)}\n${err?.stack ?? ""}`,
-      );
+      const detail = err?.message ?? String(e);
+      setStatus({ state: "failed", dir, detail });
+      console.warn(`rust-analyzer bridge failed to start: ${detail}\n${err?.stack ?? ""}`);
     }
   });
 }

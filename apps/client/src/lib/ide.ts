@@ -1,13 +1,14 @@
 /**
  * Frontend half of the Claude Code IDE bridge (see docs/CLAUDE-CODE-IDE.md):
- * every embedded terminal hosts an IDE server in Rust; highlighting lines in
- * a folder's diff pane routes to the `claude` running in that folder's
- * terminal as selection context. This module wraps the `ide_*` commands and
- * the `ide://status` connect/disconnect event.
+ * every embedded terminal hosts an IDE server in Rust; selecting lines in a
+ * folder's file viewer or diff pane routes to the `claude` running in that
+ * folder's terminal as selection context. This module wraps the `ide_*`
+ * commands and the `ide://status` connect/disconnect event.
  */
 
 import { useEffect, useMemo, useState } from "react";
 import { invokeCmd, invokeOk, isTauri } from "@/lib/tauri";
+import { formatMentionRef, type MentionRange } from "@/lib/ide-selection";
 
 /** One terminal's IDE pairing state (mirrors `IdeStatus` in ide.rs). */
 export type IdeStatus = {
@@ -143,4 +144,21 @@ export function ideAtMention(
     startLine: startLine ?? null,
     endLine: endLine ?? null,
   });
+}
+
+/**
+ * `ideAtMention` plus the success toast, so every gesture that mentions a file
+ * reports itself the same way. `invokeOk` already owns the failure toast, so
+ * this is the whole user-facing contract in one place — a null range means the
+ * whole file.
+ */
+export async function ideMention(
+  dir: string,
+  filePath: string,
+  range: MentionRange | null,
+): Promise<void> {
+  const ok = await ideAtMention(dir, filePath, range?.startLine, range?.endLine);
+  if (!ok) return;
+  const { toast } = await import("sonner");
+  toast.success(`${formatMentionRef(filePath, range)} sent to claude`);
 }

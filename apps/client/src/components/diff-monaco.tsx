@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { loadMonaco } from "@/lib/monaco";
 import { abInvoke } from "@/lib/agentboard";
-import { ideClearSelection, ideReadFile, ideSetSelection } from "@/lib/ide";
+import { ideClearSelection, ideMention, ideReadFile, ideSetSelection } from "@/lib/ide";
+import { IdeSelectionOverlay } from "@/components/ide-selection-chip";
+import {
+  diffWorkPath,
+  mentionRangeFrom,
+  sameMentionRange,
+  streamRangeFrom,
+  type MentionRange,
+} from "@/lib/ide-selection";
 
 /** One changed file from `ab_get_diff_files` (tt_agentboard::DiffFile). */
 export type ChangedFile = {
@@ -23,7 +31,8 @@ type TextModel = import("monaco-editor").editor.ITextModel;
  * VS Code uses for "view changes". Original sides come from the diff
  * baseline (`ab_get_base_file`), modified sides from the working tree —
  * read-only; edits belong in the Files tab. Selections on any modified side
- * stream to the folder's Claude session (same contract as CodeViewer).
+ * stream to the folder's Claude session, and the selection chip (or ⌘⇧A)
+ * mentions those lines explicitly — same contract as CodeViewer.
  * `refreshKey` refetches contents in place when the working tree measurably
  * changes; the set of files changing rebuilds the widget.
  */
@@ -33,6 +42,7 @@ export function MonacoMultiDiff({
   mode,
   baseBranch,
   refreshKey,
+  connected = false,
   registerReveal,
 }: {
   dir: string;
@@ -40,6 +50,8 @@ export function MonacoMultiDiff({
   mode: string;
   baseBranch: string | null;
   refreshKey: string;
+  /** A Claude session is live in this folder — enables the @-send gesture. */
+  connected?: boolean;
   /** Receives a jump-to-file function once the widget is up (null on
    * teardown) — the diff pane's tree rail calls it to scroll a file's diff
    * into view. */
@@ -48,6 +60,10 @@ export function MonacoMultiDiff({
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  /** Which file's lines are highlighted — the multi-diff stacks many files,
+   * so the chip has to name one. */
+  const [selection, setSelection] = useState<{ path: string; range: MentionRange } | null>(null);
+  const mentionRef = useRef<() => void>(() => {});
   const widgetRef = useRef<Widget | null>(null);
   const modelsRef = useRef<Map<string, { original?: TextModel; modified?: TextModel }>>(new Map());
 
@@ -144,32 +160,63 @@ export function MonacoMultiDiff({
           const modified = control.getModifiedEditor();
           let debounce: ReturnType<typeof setTimeout> | undefined;
           disposables.push({ dispose: () => clearTimeout(debounce) });
+
+          // Explicit @-mention of whatever is selected in this editor. Reads
+          // the selection live, so the keystroke can't fire against a stale
+          // range. Stable for this editor's lifetime — the ref below just
+          // tracks which editor the chip is currently speaking for.
+          const mention = async () => {
+            const path = diffWorkPath(dir, modified.getModel()?.uri);
+            if (!path) return;
+            await ideMention(dir, path, mentionRangeFrom(modified.getSelection()));
+          };
+          const sendFromThisEditor = () => void mention();
+          // Same ⌘⇧A chord as the file viewer. These are plain ICodeEditors
+          // inside the multi-diff, not standalone ones, so there's no
+          // addCommand — match the chord on the key event instead.
           disposables.push(
-            modified.onDidChangeCursorSelection(
-              (e: import("monaco-editor").editor.ICursorSelectionChangedEvent) => {
-                clearTimeout(debounce);
-                debounce = setTimeout(() => {
-                  const uri = modified.getModel()?.uri;
-                  if (uri?.scheme !== "tt-diff-work" || !uri.path.startsWith(`${dir}/`)) return;
-                  const path = uri.path.slice(dir.length + 1);
-                  const sel = e.selection;
-                  if (sel.isEmpty()) {
-                    ideClearSelection(dir, path);
-                    if (streamedPath === path) streamedPath = null;
-                    return;
-                  }
-                  streamedPath = path;
-                  ideSetSelection(
-                    dir,
-                    path,
-                    sel.startLineNumber,
-                    sel.endLineNumber,
-                    sel.startColumn - 1,
-                    sel.endColumn - 1,
-                  );
-                }, 300);
-              },
-            ),
+            modified.onKeyDown((e: import("monaco-editor").IKeyboardEvent) => {
+              if (e.keyCode !== monaco.KeyCode.KeyA || !e.shiftKey) return;
+              if (!(e.ctrlKey || e.metaKey)) return;
+              e.preventDefault();
+              e.stopPropagation();
+              void mention();
+            }),
+          );
+
+          disposables.push(
+            modified.onDidChangeCursorSelection((e: import("monaco-editor").editor.ICursorSelectionChangedEvent) => {
+              // Resolve the file outside the debounce so the chip tracks the
+              // selection immediately; only bridge traffic is debounced.
+              const path = diffWorkPath(dir, modified.getModel()?.uri);
+              if (!path) return;
+              const next = mentionRangeFrom(e.selection);
+              mentionRef.current = sendFromThisEditor;
+              setSelection((prev) => {
+                if (!next) return null;
+                if (prev?.path === path && sameMentionRange(prev.range, next)) return prev;
+                return { path, range: next };
+              });
+              clearTimeout(debounce);
+              debounce = setTimeout(() => {
+                const sel = e.selection;
+                if (sel.isEmpty()) {
+                  ideClearSelection(dir, path);
+                  if (streamedPath === path) streamedPath = null;
+                  return;
+                }
+                streamedPath = path;
+                const range = streamRangeFrom(sel);
+                ideSetSelection(
+                  dir,
+                  path,
+                  range.startLine,
+                  range.endLine,
+                  range.startChar,
+                  range.endChar,
+                );
+              }, 300);
+            }),
           );
         };
         disposables.push(widget.onDidChangeActiveControl(wire));
@@ -207,6 +254,8 @@ export function MonacoMultiDiff({
         entry.modified?.dispose();
       }
       modelsRef.current = new Map();
+      mentionRef.current = () => {};
+      setSelection(null);
       if (streamedPath != null) ideClearSelection(dir, streamedPath);
     };
     // filesKey stands in for `files`; refreshKey is the in-place path below.
@@ -260,6 +309,13 @@ export function MonacoMultiDiff({
     <div className="relative h-full w-full">
       {loading && <p className="absolute p-3 text-sm text-muted-foreground">Loading…</p>}
       <div ref={containerRef} className="h-full w-full" />
+      <IdeSelectionOverlay
+        selection={selection?.range ?? null}
+        label={selection?.path}
+        connected={connected}
+        loading={loading}
+        onSend={() => mentionRef.current()}
+      />
     </div>
   );
 }

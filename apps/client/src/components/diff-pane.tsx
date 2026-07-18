@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, GitCompare, Pencil, RefreshCw } from "lucide-react";
 import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
 import { MonacoMultiDiff, type ChangedFile } from "@/components/diff-monaco";
-import { IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
+import { ClaudeBadge, IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
 import { abInvoke, type FolderData } from "@/lib/agentboard";
 import { buildDiffTree, type DiffTreeNode } from "@/lib/diff";
 import { ideReadFile, useIdeConnected } from "@/lib/ide";
@@ -221,14 +221,7 @@ export function DiffPane({
       <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
         <GitCompare className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate font-mono text-xs text-foreground">{folder.name}</span>
-        {ideConnected && (
-          <span
-            title="A Claude Code session in this folder is connected — highlighted lines become its selection context"
-            className="flex shrink-0 items-center gap-1 rounded-md border border-violet-500/50 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500"
-          >
-            ✦ claude
-          </span>
-        )}
+        {ideConnected && <ClaudeBadge />}
         {editingBase ? (
           <input
             autoFocus
@@ -311,6 +304,7 @@ export function DiffPane({
                 mode={mode}
                 baseBranch={baseBranch}
                 refreshKey={statsKey}
+                connected={ideConnected}
                 registerReveal={registerReveal}
               />
             </div>
