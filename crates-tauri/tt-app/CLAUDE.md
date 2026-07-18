@@ -107,6 +107,14 @@ follows is a cross-cutting rule that spans multiple files.
 
 ## Misc
 
+- **`TT_NO_FOCUS_STEAL` skips OS focus-steal on launch** (`lib.rs`'s `run`,
+  right after the identifier patch): when set, it flips every window
+  config's `focus` to `false` before `context` reaches the builder.
+  `scripts/dev-drive.mjs` and `scripts/e2e.mjs` set it, since both are
+  test/verification launches, never the user actually sitting down to use
+  the app. Deliberately a runtime env var, not `#[cfg(feature = "wdio")]` —
+  that feature means "wdio plugins are compiled in," a different concern
+  that only happens to correlate with these two scripts today.
 - **OSC 52 clipboard writes are gated on terminal focus** (`terminal.rs`) —
   a background agent pane can't hijack the system clipboard.
 - The `WEBKIT_DISABLE_DMABUF_RENDERER` env var (`lib.rs`, Linux-only) works
