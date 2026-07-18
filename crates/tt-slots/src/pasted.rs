@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::layout::slot_name_from_branch;
@@ -41,11 +41,14 @@ pub const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 /// so nothing has to run on a timer.
 pub const MAX_AGE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
-/// One image off the clipboard, as the webview hands it over: the MIME type
-/// the browser reported plus standard base64 (the webview has bytes, Tauri's
-/// JSON IPC does not — a `Vec<u8>` here would cross as a megabyte-long array
-/// of JSON numbers).
-#[derive(Debug, Clone, Deserialize)]
+/// One image on its way to a slot's prompt: the MIME type plus standard
+/// base64 (Tauri's JSON IPC has no bytes type — a `Vec<u8>` here would cross
+/// as a megabyte-long array of JSON numbers).
+///
+/// Crosses in both directions: inbound from the webview for a paste the
+/// browser *did* decode, and outbound from `read_clipboard_image` for the
+/// Linux case where it didn't.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PastedImage {
     pub mime: String,
@@ -60,6 +63,8 @@ pub enum PastedError {
     BadBase64(String),
     #[error("pasted image is {got} bytes, over the {MAX_IMAGE_BYTES}-byte limit")]
     TooLarge { got: usize },
+    #[error("couldn't encode the clipboard image: {0}")]
+    BadImage(String),
     #[error("writing {path}: {source}")]
     Write {
         path: String,
@@ -84,6 +89,42 @@ fn extension_for(mime: &str) -> Result<&'static str> {
         "image/webp" => Ok("webp"),
         _ => Err(PastedError::UnsupportedMime(mime.to_string())),
     }
+}
+
+/// Encode raw RGBA pixels as a PNG.
+///
+/// The system clipboard hands back undecoded RGBA (that's what
+/// `arboard`/`tauri-plugin-clipboard-manager` return), but a file only counts
+/// as an attachment if Claude's Read tool can decode it, and the webview
+/// needs something it can show in an `<img>` for the thumbnail. Both want a
+/// real image format, so the bytes get encoded once, here, on the way out of
+/// the clipboard.
+///
+/// This exists because a Ctrl+V image paste on Linux never reaches the
+/// webview's `paste` event, so the clipboard has to be read natively — see
+/// `read_clipboard_image` in the app's `slots.rs`.
+pub fn rgba_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(4))
+        .ok_or_else(|| PastedError::BadImage(format!("{width}x{height} overflows")))?;
+    if expected == 0 {
+        return Err(PastedError::BadImage("clipboard image is empty".to_string()));
+    }
+    if rgba.len() != expected {
+        return Err(PastedError::BadImage(format!(
+            "{width}x{height} needs {expected} RGBA bytes, got {}",
+            rgba.len()
+        )));
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|e| PastedError::BadImage(e.to_string()))?;
+    writer.write_image_data(rgba).map_err(|e| PastedError::BadImage(e.to_string()))?;
+    drop(writer);
+    Ok(out)
 }
 
 /// One staging directory per pending slot: `<repo>-<branch-slug>`. Reuses
@@ -313,6 +354,39 @@ mod tests {
     fn pruning_an_empty_base_is_not_an_error() {
         let tmp = tempfile::tempdir().unwrap();
         assert_eq!(prune(&tmp.path().join("never-created"), 0).unwrap(), 0);
+    }
+
+    #[test]
+    fn rgba_encodes_to_a_png_that_decodes_back_to_the_same_pixels() {
+        // 2x1: opaque red, opaque blue.
+        let rgba = vec![255, 0, 0, 255, 0, 0, 255, 255];
+        let encoded = rgba_to_png(2, 1, &rgba).unwrap();
+
+        assert_eq!(&encoded[..8], b"\x89PNG\r\n\x1a\n", "not a PNG signature");
+        let decoder = png::Decoder::new(encoded.as_slice());
+        let mut reader = decoder.read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        assert_eq!((info.width, info.height), (2, 1));
+        assert_eq!(&buf[..info.buffer_size()], &rgba[..]);
+    }
+
+    #[test]
+    fn rgba_length_must_match_the_dimensions() {
+        // A truncated clipboard buffer would otherwise encode as a corrupt
+        // PNG that only fails later, when Claude tries to read it.
+        let err = rgba_to_png(2, 2, &[0; 8]).unwrap_err();
+        assert!(matches!(err, PastedError::BadImage(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn empty_clipboard_image_is_rejected() {
+        assert!(matches!(rgba_to_png(0, 0, &[]), Err(PastedError::BadImage(_))));
+    }
+
+    #[test]
+    fn absurd_dimensions_dont_overflow() {
+        assert!(matches!(rgba_to_png(u32::MAX, u32::MAX, &[0; 4]), Err(PastedError::BadImage(_))));
     }
 
     #[test]

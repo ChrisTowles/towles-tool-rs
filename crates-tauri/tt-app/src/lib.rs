@@ -460,6 +460,7 @@ pub fn run() {
             slots::slot_run_setup,
             slots::slot_suggest,
             slots::slot_write_pasted_images,
+            slots::read_clipboard_image,
             store::store_snapshot,
             store::store_add_task,
             store::store_set_task_status,

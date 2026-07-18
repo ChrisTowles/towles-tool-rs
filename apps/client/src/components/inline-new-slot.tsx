@@ -6,7 +6,7 @@
 // without awaiting it here) and a `PendingSlotRow` tracks the in-flight
 // create until it resolves, so switching to other repos/sessions while a
 // slot is being created just works.
-import { AlertTriangle, Paperclip, RefreshCw, Sparkles, Undo2, X } from "lucide-react";
+import { AlertTriangle, ImagePlus, Paperclip, RefreshCw, Sparkles, Undo2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,7 @@ import {
   DEFAULT_CLAUDE_EFFORT,
   DEFAULT_CLAUDE_MODEL,
   PastedImage,
+  clipboardImageFromHost,
   fmtElapsed,
   imagesFromDataTransfer,
   isPasteableImage,
@@ -250,15 +251,45 @@ export function InlineNewSlot({
   // directly. The bytes are held here until submit, then staged as files
   // outside the repo (`tt_slots::pasted`) whose paths go into Claude's
   // opening prompt.
+  // Two paths can attach the same image (the DOM paste event on platforms
+  // that populate it, and the host-clipboard read below), so adding is
+  // idempotent on the bytes — identical content is the double-path, not a
+  // user asking for two copies of one screenshot.
+  function addImages(incoming: PastedImage[]) {
+    if (!incoming.length) return;
+    setImages((prev) => {
+      const seen = new Set(prev.map((i) => i.dataBase64));
+      const fresh = incoming.filter((i) => !seen.has(i.dataBase64));
+      return fresh.length ? [...prev, ...fresh] : prev;
+    });
+    setError(null);
+  }
+
   async function pasteImages(data: DataTransfer | null) {
     try {
-      const pasted = await imagesFromDataTransfer(data);
-      if (pasted.length) {
-        setImages((prev) => [...prev, ...pasted]);
-        setError(null);
-      }
+      addImages(await imagesFromDataTransfer(data));
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  // Read the image off the OS clipboard through Rust.
+  //
+  // This is the *primary* path, not a fallback, because the DOM can't be
+  // relied on here: WebKitGTK delivers an image paste with empty
+  // `clipboardData`, and a Ctrl+V there may not fire a `paste` event at all.
+  // Hanging image paste off that event would make the feature work on some
+  // platforms and silently do nothing on this one. `keydown` always fires,
+  // and the host clipboard is the same source the user actually copied to.
+  async function pasteFromHostClipboard(): Promise<boolean> {
+    try {
+      const image = await clipboardImageFromHost();
+      if (!image) return false;
+      addImages([image]);
+      return true;
+    } catch (e) {
+      setError(String(e));
+      return false;
     }
   }
 
@@ -288,21 +319,32 @@ export function InlineNewSlot({
         value={goal}
         onChange={(e) => setGoal(e.target.value)}
         onPaste={(e) => {
-          // Only intercept an image paste — a text paste falls through to the
-          // textarea's own handling untouched.
-          const images = Array.from(e.clipboardData?.items ?? []).filter(
+          const items = Array.from(e.clipboardData?.items ?? []);
+          const images = items.filter(
             (it) => it.kind === "file" && it.type.startsWith("image/"),
           );
-          if (!images.length) return;
-          e.preventDefault();
-          // An image type we can't write (SVG, say) would otherwise vanish
-          // silently — the paste is already swallowed by the preventDefault
-          // above, so say why rather than looking like nothing happened.
-          if (!images.some((it) => isPasteableImage(it.type))) {
-            setError(`Can't attach ${images[0].type} — paste a PNG, JPEG, GIF, or WebP.`);
+          if (images.length) {
+            e.preventDefault();
+            // An image type we can't write (SVG, say) would otherwise vanish
+            // silently — the paste is already swallowed by the preventDefault
+            // above, so say why rather than looking like nothing happened.
+            if (!images.some((it) => isPasteableImage(it.type))) {
+              setError(`Can't attach ${images[0].type} — paste a PNG, JPEG, GIF, or WebP.`);
+              return;
+            }
+            void pasteImages(e.clipboardData);
             return;
           }
-          void pasteImages(e.clipboardData);
+          // Text paste: leave it to the textarea. Checked via getData rather
+          // than `items` because that's the accessor WebKitGTK actually
+          // populates (same reason terminal-view.tsx uses it).
+          if (e.clipboardData?.getData("text")) return;
+          // Nothing in the event at all. On WebKitGTK that's exactly what an
+          // image paste looks like (Ctrl+V of a screenshot fires `paste` with
+          // empty clipboardData), so ask the OS clipboard via Rust before
+          // concluding there's nothing to attach.
+          e.preventDefault();
+          void pasteFromHostClipboard();
         }}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
@@ -316,6 +358,13 @@ export function InlineNewSlot({
             submit();
           }
           if (e.key === "Escape") cancel();
+          // Ctrl/Cmd+V: check the OS clipboard for an image. Deliberately
+          // does NOT preventDefault — a text paste must still land in the
+          // textarea natively, and a clipboard holding an image has no text
+          // to insert anyway, so both cases do the right thing.
+          if (e.key.toLowerCase() === "v" && (e.metaKey || e.ctrlKey)) {
+            void pasteFromHostClipboard();
+          }
         }}
         placeholder="what should get built in this slot? (paste a screenshot to attach it)"
         rows={2}
@@ -344,6 +393,20 @@ export function InlineNewSlot({
         </div>
       )}
       <div className="flex items-center justify-end gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="mr-auto h-6 gap-1 px-1.5 text-[10.5px]"
+          title="Attach the image currently on your clipboard"
+          onClick={() => {
+            void pasteFromHostClipboard().then((found) => {
+              if (!found) setError("No image on the clipboard — copy one first.");
+            });
+          }}
+        >
+          <ImagePlus className="size-3" />
+          Attach image
+        </Button>
         {preSuggest && (
           <Button variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-[10.5px]" onClick={undoSuggest}>
             <Undo2 className="size-3" />
