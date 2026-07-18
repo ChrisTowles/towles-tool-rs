@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { GitCompare, Pencil, RefreshCw } from "lucide-react";
 import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
-import { MonacoFileDiff, type ChangedFile } from "@/components/diff-monaco";
+import { MonacoMultiDiff, type ChangedFile } from "@/components/diff-monaco";
 import { IconBtn } from "@/components/agentboard-bits";
 import { abInvoke, type FolderData } from "@/lib/agentboard";
 import { ideReadFile, useIdeConnected } from "@/lib/ide";
@@ -10,16 +10,6 @@ import { cn } from "@/lib/utils";
 
 /** Which baseline the pane diffs against (mirrors `DiffMode` in tt-agentboard). */
 type DiffMode = "main" | "uncommitted";
-
-/** Git name-status letter → folder-rail-ish color in the file list. */
-const STATUS_COLORS: Record<string, string> = {
-  A: "text-emerald-500",
-  "?": "text-emerald-500",
-  D: "text-red-500",
-  R: "text-sky-500",
-  C: "text-sky-500",
-  M: "text-amber-500",
-};
 
 const UNCOMMITTED_MODE = {
   key: "uncommitted" as const,
@@ -56,7 +46,6 @@ export function DiffPane({
   const effectiveBase = baseBranch ?? slotBaseBranch;
   const [mode, setMode] = useState<DiffMode>("main");
   const [files, setFiles] = useState<ChangedFile[] | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [editingBase, setEditingBase] = useState(false);
   // Claude's pending openDiff reviews for this folder (shown one at a time,
@@ -127,9 +116,6 @@ export function DiffPane({
     setRefreshing(true);
     const list = await abInvoke<ChangedFile[]>("ab_get_diff_files", { dir, mode, baseBranch });
     setFiles(list ?? []);
-    setSelected((prev) =>
-      prev != null && (list ?? []).some((f) => f.path === prev) ? prev : (list?.[0]?.path ?? null),
-    );
     setRefreshing(false);
   }, [dir, mode, baseBranch]);
 
@@ -140,8 +126,6 @@ export function DiffPane({
   useEffect(() => {
     void fetchDiff();
   }, [fetchDiff, statsKey]);
-
-  const selectedFile = files?.find((f) => f.path === selected) ?? null;
 
   async function commitBaseBranch(value: string) {
     setEditingBase(false);
@@ -240,52 +224,13 @@ export function DiffPane({
         ) : files.length === 0 ? (
           <p className="p-2 text-sm text-muted-foreground">No changes.</p>
         ) : (
-          <>
-            <ul className="w-52 shrink-0 overflow-y-auto border-r pr-1">
-              {files.map((f) => (
-                <li key={f.path}>
-                  <button
-                    type="button"
-                    onClick={() => setSelected(f.path)}
-                    title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
-                    className={cn(
-                      "flex w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left font-mono text-[11px]",
-                      selected === f.path
-                        ? "bg-accent text-foreground"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    <span className={cn("shrink-0", STATUS_COLORS[f.status] ?? "text-muted-foreground")}>
-                      {f.status}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate" dir="rtl">
-                      &lrm;{f.path}
-                    </span>
-                    {(f.linesAdded > 0 || f.linesRemoved > 0) && (
-                      <span className="shrink-0 text-[10px]">
-                        <span className="text-emerald-500">+{f.linesAdded}</span>{" "}
-                        <span className="text-red-500">−{f.linesRemoved}</span>
-                      </span>
-                    )}
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <div className="min-w-0 flex-1">
-              {selectedFile ? (
-                <MonacoFileDiff
-                  key={`${dir}:${selectedFile.path}:${mode}`}
-                  dir={dir!}
-                  file={selectedFile}
-                  mode={mode}
-                  baseBranch={baseBranch}
-                  refreshKey={statsKey}
-                />
-              ) : (
-                <p className="p-2 text-sm text-muted-foreground">Select a file.</p>
-              )}
-            </div>
-          </>
+          <MonacoMultiDiff
+            dir={dir!}
+            files={files}
+            mode={mode}
+            baseBranch={baseBranch}
+            refreshKey={statsKey}
+          />
         )}
         {reviews[0] && (
           <DiffReview
