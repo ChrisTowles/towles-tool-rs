@@ -60,8 +60,7 @@ const URL_RE = /https?:\/\/[^\s"'`<>]+/g;
  * then keeps only candidates anchored by a `/` or a `:line`, so prose like
  * `example.com` or a bare `1.2.3` version is rejected.
  */
-const PATH_RE =
-  /(?:\/|\.\.?\/|~\/)?(?:[\w.@~+-]+\/)*[\w.@~+-]+\.[A-Za-z0-9]+(?::\d+(?::\d+)?)?/g;
+const PATH_RE = /(?:\/|\.\.?\/|~\/)?(?:[\w.@~+-]+\/)*[\w.@~+-]+\.[A-Za-z0-9]+(?::\d+(?::\d+)?)?/g;
 /** Punctuation that ends sentences around a link, not the link itself. */
 const TRAILING = new Set([".", ",", ";", ":", "!", "?"]);
 const CLOSERS: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
@@ -72,6 +71,9 @@ const MAX_WRAP_ROWS = 4;
  * indices equal terminal columns. Wide characters fill their trailing column
  * with a space. */
 export function rowText(runs: Run[], cols: number): string {
+  // Runs once per row per frame — `new Array().fill()` allocates once;
+  // `Array.from({length}).fill()` would visit every index twice.
+  // oxlint-disable-next-line unicorn/no-new-array
   const chars = new Array<string>(cols).fill(" ");
   for (const run of runs) {
     const wide = isWideRun(run);
@@ -90,6 +92,8 @@ export function rowText(runs: Run[], cols: number): string {
  * spans — the engine only merges cells sharing the same link, so a run never
  * straddles a link boundary. */
 export function rowLinks(runs: Run[], cols: number): (string | undefined)[] {
+  // See rowText above: same per-row hot path, same reason to avoid Array.from.
+  // oxlint-disable-next-line unicorn/no-new-array
   const out = new Array<string | undefined>(cols).fill(undefined);
   if (cols <= 0) return out;
   for (const run of runs) {

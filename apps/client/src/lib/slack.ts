@@ -69,7 +69,12 @@ export function isScopeError(message: string): boolean {
 
 /** Slack error codes that mean the token itself is bad — revoked, expired, or
  * for a deactivated account — so the fix is to re-issue and paste a fresh one. */
-const AUTH_ERROR_CODES = ["invalid_auth", "token_revoked", "account_inactive", "not_authed"] as const;
+const AUTH_ERROR_CODES = [
+  "invalid_auth",
+  "token_revoked",
+  "account_inactive",
+  "not_authed",
+] as const;
 
 /** True when a fetch/send failure is a dead-token problem (as opposed to a
  * missing scope), so the UI can prompt a re-auth walkthrough. */

@@ -237,8 +237,9 @@ export function PortDriftBadge({ drift }: { drift: PortDrift[] }) {
       <TooltipContent side="bottom" align="start">
         <div className="flex flex-col gap-0.5 font-mono text-[11px]">
           <span className="text-muted-foreground">
-            {drift.length === 1 ? "A pane" : "Panes"} started before {drift.length === 1 ? "this" : "these"}{" "}
-            port{drift.length === 1 ? "" : "s"} last changed — restart to pick up the current .env:
+            {drift.length === 1 ? "A pane" : "Panes"} started before{" "}
+            {drift.length === 1 ? "this" : "these"} port{drift.length === 1 ? "" : "s"} last changed
+            — restart to pick up the current .env:
           </span>
           {drift.map((d) => (
             <span key={`${d.key}:${d.spawnedPort}:${d.currentPort}`}>
@@ -299,7 +300,9 @@ export function AheadBehind({
         <span className="text-emerald-600 dark:text-emerald-400">↑{commitsAhead}</span>
       )}
       {commitsAhead > 0 && commitsBehind > 0 && " "}
-      {commitsBehind > 0 && <span className="text-amber-600 dark:text-amber-400">↓{commitsBehind}</span>}
+      {commitsBehind > 0 && (
+        <span className="text-amber-600 dark:text-amber-400">↓{commitsBehind}</span>
+      )}
     </span>
   );
 }
@@ -311,9 +314,7 @@ function CommitStatRow({ commit }: { commit: CommitStat }) {
     <div className="flex items-center gap-2 font-mono text-[10.5px] leading-tight">
       <span className="shrink-0 text-muted-foreground/70">{commit.sha.slice(0, 7)}</span>
       <span className="min-w-0 flex-1 truncate text-foreground">{commit.subject}</span>
-      <span className="shrink-0 text-emerald-600 dark:text-emerald-400">
-        +{commit.linesAdded}
-      </span>
+      <span className="shrink-0 text-emerald-600 dark:text-emerald-400">+{commit.linesAdded}</span>
       <span className="shrink-0 text-red-600 dark:text-red-400">−{commit.linesRemoved}</span>
     </div>
   );
@@ -352,7 +353,8 @@ function CommitBreakdownPreview({
       </div>
       <div className="mt-1.5 flex items-center gap-2 border-t border-border/70 pt-1.5 font-mono text-[10.5px] font-semibold">
         <span className="min-w-0 flex-1 text-foreground">
-          Total{commits.length > 0 && ` — ${commits.length} commit${commits.length === 1 ? "" : "s"}`}
+          Total
+          {commits.length > 0 && ` — ${commits.length} commit${commits.length === 1 ? "" : "s"}`}
         </span>
         <span className="shrink-0 text-emerald-600 dark:text-emerald-400">+{linesAdded}</span>
         <span className="shrink-0 text-red-600 dark:text-red-400">−{linesRemoved}</span>
@@ -502,18 +504,17 @@ export function PrChip({
   const merged = pr.state === "merged";
   const hasLocalWork = prMergedButFolderHasWork(pr, stats);
   const base = comparedBaseLabel(stats);
-  const tone =
-    hasLocalWork
-      ? "border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
-      : merged
-        ? "border-purple-500/50 bg-purple-500/10 text-purple-600 hover:bg-purple-500/20 dark:text-purple-400"
-        : pr.checks === "failing"
-          ? "border-red-500/50 bg-red-500/10 text-red-600 hover:bg-red-500/20 dark:text-red-400"
-          : pr.checks === "passing"
-            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
-            : pr.checks === "pending"
-              ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-600 hover:bg-yellow-500/20 dark:text-yellow-400"
-              : "border-border/70 text-muted-foreground hover:bg-accent hover:text-foreground";
+  const tone = hasLocalWork
+    ? "border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
+    : merged
+      ? "border-purple-500/50 bg-purple-500/10 text-purple-600 hover:bg-purple-500/20 dark:text-purple-400"
+      : pr.checks === "failing"
+        ? "border-red-500/50 bg-red-500/10 text-red-600 hover:bg-red-500/20 dark:text-red-400"
+        : pr.checks === "passing"
+          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
+          : pr.checks === "pending"
+            ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-600 hover:bg-yellow-500/20 dark:text-yellow-400"
+            : "border-border/70 text-muted-foreground hover:bg-accent hover:text-foreground";
   return (
     <button
       type="button"
@@ -572,8 +573,8 @@ export function SafeToDeleteBadge({
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" align="start">
-        No uncommitted changes, and every commit has landed on {base}. Nothing here would be
-        lost — click to delete this worktree.
+        No uncommitted changes, and every commit has landed on {base}. Nothing here would be lost —
+        click to delete this worktree.
       </TooltipContent>
     </Tooltip>
   );

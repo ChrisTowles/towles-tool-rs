@@ -190,13 +190,7 @@ export function IssueRow({
  * the last run succeeded, red with the error when it failed, muted "never"
  * before the first run.
  */
-export function CollectorFreshness({
-  run,
-  now,
-}: {
-  run: CollectRun | undefined;
-  now: number;
-}) {
+export function CollectorFreshness({ run, now }: { run: CollectRun | undefined; now: number }) {
   if (!run) {
     return <span className="font-mono text-[11px] text-muted-foreground/60">never ran</span>;
   }

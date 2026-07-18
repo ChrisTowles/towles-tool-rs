@@ -82,7 +82,10 @@ export function DiffReview({
       <div className="flex shrink-0 items-center gap-2 border-b bg-card px-3 py-1.5">
         <span className="font-mono text-xs text-violet-500">✦</span>
         <span className="text-xs font-medium text-foreground">claude proposes an edit</span>
-        <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground" title={review.newFilePath}>
+        <span
+          className="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
+          title={review.newFilePath}
+        >
           {review.tabName || review.newFilePath}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-1.5">

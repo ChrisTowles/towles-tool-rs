@@ -21,7 +21,11 @@ type BuildingFolder = {
 /** Directory chains with only one child directory and no files of their own
  * collapse into a single row (`src/components` instead of `src` > `components`),
  * matching VS Code / GitHub's "compact folders" tree rendering. */
-function collapseSingleChildChain(name: string, path: string, children: DiffTreeNode[]): DiffTreeNode {
+function collapseSingleChildChain(
+  name: string,
+  path: string,
+  children: DiffTreeNode[],
+): DiffTreeNode {
   let mergedName = name;
   let mergedPath = path;
   let mergedChildren = children;
@@ -58,9 +62,9 @@ export function buildDiffTree(paths: string[]): DiffTreeNode[] {
 
   function finalize(node: BuildingFolder): DiffTreeNode[] {
     const folderNodes = Array.from(node.folders.values())
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .toSorted((a, b) => a.name.localeCompare(b.name))
       .map((f) => collapseSingleChildChain(f.name, f.path, finalize(f)));
-    const fileNodes = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
+    const fileNodes = [...node.files].toSorted((a, b) => a.name.localeCompare(b.name));
     return [...folderNodes, ...fileNodes];
   }
 

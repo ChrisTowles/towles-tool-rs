@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import {
   CircleAlert,
   CircleCheck,
@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { DoctorReportSchema } from "@/lib/schemas/doctor";
 import { invokeCmd } from "@/lib/tauri";
+import { useAsyncRefresh } from "@/lib/use-async-refresh";
 import { Empty, Panel } from "@/components/store-bits";
 
 /**
@@ -48,15 +49,11 @@ export function DoctorScreen() {
   const [report, setReport] = useState<DoctorReport | null>(null);
   const [running, setRunning] = useState(true);
 
-  const refresh = useCallback(async () => {
+  const refresh = useAsyncRefresh(async () => {
     setRunning(true);
     setReport(await invokeCmd<DoctorReport>("doctor_run", {}, DoctorReportSchema));
     setRunning(false);
   }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
 
   const allOk =
     report !== null &&

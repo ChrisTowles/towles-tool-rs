@@ -24,9 +24,9 @@ describe("matchesTaskFilter", () => {
   });
 
   it("matches against the repo tag, not just the text", () => {
-    expect(
-      matchesTaskFilter({ text: "Fix the bug", repo: "towles-tool-rs" }, "tool-rs"),
-    ).toBe(true);
+    expect(matchesTaskFilter({ text: "Fix the bug", repo: "towles-tool-rs" }, "tool-rs")).toBe(
+      true,
+    );
     expect(matchesTaskFilter({ text: "Fix the bug" }, "tool-rs")).toBe(false);
   });
 

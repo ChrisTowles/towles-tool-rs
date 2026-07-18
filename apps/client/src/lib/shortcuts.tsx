@@ -74,9 +74,7 @@ function parseKeys(keys: string): KeySpec {
   return spec;
 }
 
-function defineShortcuts(
-  defs: Omit<Shortcut, "spec">[],
-): Record<string, Shortcut> {
+function defineShortcuts(defs: Omit<Shortcut, "spec">[]): Record<string, Shortcut> {
   const out: Record<string, Shortcut> = {};
   for (const d of defs) {
     if (out[d.id]) throw new Error(`Duplicate shortcut id "${d.id}"`);
@@ -231,8 +229,7 @@ export const SHORTCUTS = defineShortcuts([
 ]);
 
 /** True on macOS — chooses ⌘ vs Ctrl for the modifier key across the app. */
-export const IS_MAC =
-  typeof navigator !== "undefined" && /mac/i.test(navigator.platform ?? "");
+export const IS_MAC = typeof navigator !== "undefined" && /mac/i.test(navigator.platform ?? "");
 
 /** Per-platform keycap tokens for a shortcut id: ["⌘","⇧","W"] on mac,
  * ["Ctrl","Shift","W"] elsewhere. Feed to <Kbd> or join for a title. */
@@ -312,12 +309,7 @@ function matches(spec: KeySpec, e: KeyboardEvent): boolean {
   // `?` arrives as key "?" with shiftKey set — compare shift only for
   // modifier-style specs, where shift is a deliberate chord component.
   const shiftOk = spec.mod ? e.shiftKey === spec.shift : true;
-  return (
-    mod === spec.mod &&
-    shiftOk &&
-    e.altKey === spec.alt &&
-    e.key.toLowerCase() === spec.key
-  );
+  return mod === spec.mod && shiftOk && e.altKey === spec.alt && e.key.toLowerCase() === spec.key;
 }
 
 /** True when the event originated somewhere that owns its own keystrokes: an
@@ -338,10 +330,7 @@ function isEditableTarget(e: KeyboardEvent): boolean {
  * whole set (scope activation — e.g. Agentboard passes `activeTab ===
  * "agentboard"` because its screen stays mounted while hidden).
  */
-export function useShortcuts(
-  handlers: Partial<Record<string, () => void>>,
-  enabled = true,
-): void {
+export function useShortcuts(handlers: Partial<Record<string, () => void>>, enabled = true): void {
   const workInTerminalRef = useShortcutsWorkInTerminal();
   useEffect(() => {
     if (!enabled) return;
@@ -360,7 +349,7 @@ export function useShortcuts(
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handlers, enabled]);
+  }, [handlers, enabled, workInTerminalRef]);
 }
 
 const SCOPE_TITLES: Record<ShortcutScope, string> = {
@@ -419,9 +408,7 @@ export function ShortcutHelp({
                       </KbdGroup>
                       <span className="min-w-0 flex-1">
                         {s.description}
-                        {s.when && (
-                          <span className="text-muted-foreground"> — {s.when}</span>
-                        )}
+                        {s.when && <span className="text-muted-foreground"> — {s.when}</span>}
                       </span>
                     </div>
                   ))}

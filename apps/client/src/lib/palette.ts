@@ -118,7 +118,7 @@ export function palettePrEntries(prs: PrItem[]): PalettePrEntry[] {
   return prs
     .filter((p) => p.state === "open")
     .slice()
-    .sort((a, b) => b.updatedTs - a.updatedTs)
+    .toSorted((a, b) => b.updatedTs - a.updatedTs)
     .map((p) => ({
       key: `${p.repo}#${p.number}`,
       url: p.url,
@@ -136,7 +136,7 @@ export function paletteIssueEntries(issues: IssueItem[]): PaletteIssueEntry[] {
   return issues
     .filter((i) => i.state === "open")
     .slice()
-    .sort((a, b) => b.updatedTs - a.updatedTs)
+    .toSorted((a, b) => b.updatedTs - a.updatedTs)
     .map((i) => ({
       key: `${i.repo}#${i.number}`,
       url: i.url,

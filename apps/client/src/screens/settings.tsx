@@ -432,9 +432,7 @@ function FilteredContent({
       section,
       rows: empty
         ? section.rows
-        : section.rows.filter((row) =>
-            matchesFilter(query, row.label, rowKeywords(section, row)),
-          ),
+        : section.rows.filter((row) => matchesFilter(query, row.label, rowKeywords(section, row))),
     }))
     .filter((entry) => entry.rows.length > 0);
 
@@ -445,9 +443,7 @@ function FilteredContent({
       {empty && prelude}
       {visible.map(({ section, rows }, i) => (
         <section key={section.heading ?? i} className="flex flex-col gap-4">
-          {section.heading && (
-            <h3 className="text-sm font-semibold">{section.heading}</h3>
-          )}
+          {section.heading && <h3 className="text-sm font-semibold">{section.heading}</h3>}
           {rows.map((row) => (
             <Fragment key={row.label}>{row.node}</Fragment>
           ))}
@@ -457,10 +453,7 @@ function FilteredContent({
   );
 }
 
-function generalSections(
-  settings: UserSettings,
-  update: Update,
-): FilterSection[] {
+function generalSections(settings: UserSettings, update: Update): FilterSection[] {
   return [
     {
       rows: [
@@ -474,9 +467,7 @@ function generalSections(
             >
               <Input
                 value={settings.preferredEditor}
-                onChange={(e) =>
-                  update((s) => ({ ...s, preferredEditor: e.target.value }))
-                }
+                onChange={(e) => update((s) => ({ ...s, preferredEditor: e.target.value }))}
                 placeholder="code"
                 className="max-w-xs font-mono text-xs"
                 spellCheck={false}
@@ -502,10 +493,7 @@ function appearanceSections(
           label: "Theme",
           keywords: ["appearance", "color", "light", "dark", "system"],
           node: (
-            <SettingRow
-              label="Theme"
-              description="Light, dark, or follow the system."
-            >
+            <SettingRow label="Theme" description="Light, dark, or follow the system.">
               <Select value={theme} onValueChange={(v) => setTheme(v as Theme)}>
                 <SelectTrigger className="w-32">
                   <SelectValue />
@@ -533,10 +521,7 @@ function appearanceSections(
             "one dark",
           ],
           node: (
-            <SettingRow
-              label="Color theme"
-              description="Palette used in dark mode."
-            >
+            <SettingRow label="Color theme" description="Palette used in dark mode.">
               <Select value={colorTheme} onValueChange={(v) => setColorTheme(v as ColorTheme)}>
                 <SelectTrigger className="w-40">
                   <SelectValue />
@@ -563,10 +548,7 @@ function appearanceSections(
   ];
 }
 
-function journalSections(
-  settings: UserSettings,
-  update: Update,
-): FilterSection[] {
+function journalSections(settings: UserSettings, update: Update): FilterSection[] {
   const j = settings.journalSettings;
   const setJournal = (patch: Partial<UserSettings["journalSettings"]>) =>
     update((s) => ({
@@ -595,12 +577,11 @@ function journalSections(
   return [
     {
       rows: [
-        field(
-          "baseFolder",
-          "Base folder",
-          "Root directory all journal files are written under.",
-          ["folder", "directory", "root"],
-        ),
+        field("baseFolder", "Base folder", "Root directory all journal files are written under.", [
+          "folder",
+          "directory",
+          "root",
+        ]),
         field(
           "dailyPathTemplate",
           "Daily-note path",
@@ -674,8 +655,7 @@ function collectorsSections(
     setCollector("calendar", patch);
   const setCalQuiet = (patch: Partial<UserSettings["collectors"]["calendar"]["quietHours"]>) =>
     setCal({ quietHours: { ...c.calendar.quietHours, ...patch } });
-  const setPrs = (patch: Partial<UserSettings["collectors"]["prs"]>) =>
-    setCollector("prs", patch);
+  const setPrs = (patch: Partial<UserSettings["collectors"]["prs"]>) => setCollector("prs", patch);
   const setIssues = (patch: Partial<UserSettings["collectors"]["issues"]>) =>
     setCollector("issues", patch);
   const setSlack = (patch: Partial<UserSettings["collectors"]["slack"]>) =>
@@ -702,14 +682,8 @@ function collectorsSections(
           label: "Provider",
           keywords: ["google", "outlook", "mcp"],
           node: (
-            <SettingRow
-              label="Provider"
-              description="Which calendar MCP to drive."
-            >
-              <Select
-                value={c.calendar.provider}
-                onValueChange={(v) => setCal({ provider: v })}
-              >
+            <SettingRow label="Provider" description="Which calendar MCP to drive.">
+              <Select value={c.calendar.provider} onValueChange={(v) => setCal({ provider: v })}>
                 <SelectTrigger className="w-32">
                   <SelectValue />
                 </SelectTrigger>
@@ -782,10 +756,7 @@ function collectorsSections(
           label: "Active days",
           keywords: ["quiet hours", "weekdays", "days", "monday", "weekend"],
           node: (
-            <FieldRow
-              label="Active days"
-              description="Weekdays the collector may run."
-            >
+            <FieldRow label="Active days" description="Weekdays the collector may run.">
               <WeekdayChips
                 value={c.calendar.quietHours.weekdays}
                 onChange={(days) => setCalQuiet({ weekdays: days })}
@@ -956,10 +927,7 @@ function collectorsSections(
   ];
 }
 
-function agentboardSections(
-  settings: UserSettings | null,
-  update: Update,
-): FilterSection[] {
+function agentboardSections(settings: UserSettings | null, update: Update): FilterSection[] {
   const rows: FilterRow[] = [
     {
       label: "Scan roots",
@@ -1062,7 +1030,9 @@ function agentboardSections(
             label="Compaction recommendation"
             description="Flag a session for compaction once its context usage exceeds this percentage."
             unit="%"
-            value={settings.agentboard?.compactRecommendPercent ?? DEFAULT_COMPACT_RECOMMEND_PERCENT}
+            value={
+              settings.agentboard?.compactRecommendPercent ?? DEFAULT_COMPACT_RECOMMEND_PERCENT
+            }
             onValue={(n) =>
               update((s) => ({
                 ...s,
@@ -1143,9 +1113,7 @@ function AgentboardSettings() {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    void abInvoke<string[]>("ab_get_scan_roots").then((r) =>
-      setRoots((r ?? []).join("\n")),
-    );
+    void abInvoke<string[]>("ab_get_scan_roots").then((r) => setRoots((r ?? []).join("\n")));
   }, []);
 
   const save = async () => {
@@ -1168,11 +1136,9 @@ function AgentboardSettings() {
       <div>
         <div className="text-sm font-medium">Scan roots</div>
         <p className="text-sm text-muted-foreground">
-          One directory per line. The{" "}
-          <span className="font-mono">Add repo</span> picker scans these for git
-          repos. Leave empty to use <span className="font-mono">~/code</span>. A
-          leading <span className="font-mono">~</span> expands to your home
-          directory.
+          One directory per line. The <span className="font-mono">Add repo</span> picker scans these
+          for git repos. Leave empty to use <span className="font-mono">~/code</span>. A leading{" "}
+          <span className="font-mono">~</span> expands to your home directory.
         </p>
       </div>
       <Textarea
@@ -1217,9 +1183,7 @@ function ShortcutsList({ query }: { query: string }) {
         >
           <span className="text-sm text-muted-foreground">
             {s.description}
-            {s.when && (
-              <span className="text-muted-foreground/70"> — {s.when}</span>
-            )}
+            {s.when && <span className="text-muted-foreground/70"> — {s.when}</span>}
             {s.scope !== "global" && (
               <span className="ml-2 text-xs text-muted-foreground/70">
                 ({SCOPE_LABELS[s.scope]})
@@ -1272,9 +1236,7 @@ function AboutInfo({ query, version }: { query: string; version: string }) {
       ),
     },
   ];
-  const visible = empty
-    ? rows
-    : rows.filter((r) => matchesFilter(query, r.label, r.keywords));
+  const visible = empty ? rows : rows.filter((r) => matchesFilter(query, r.label, r.keywords));
   if (visible.length === 0) return <NoMatches query={query} />;
   return (
     <>
@@ -1285,9 +1247,9 @@ function AboutInfo({ query, version }: { query: string; version: string }) {
       </div>
       {empty && (
         <p className="text-sm text-muted-foreground">
-          Shared with the TypeScript CLI. The General, Journal, and Collectors
-          tabs read and write it directly; unknown keys the CLI owns are
-          preserved on save. Theme and Agentboard scan roots persist separately.
+          Shared with the TypeScript CLI. The General, Journal, and Collectors tabs read and write
+          it directly; unknown keys the CLI owns are preserved on save. Theme and Agentboard scan
+          roots persist separately.
         </p>
       )}
     </>
@@ -1349,8 +1311,7 @@ export function SettingsScreen() {
 
   const collectorsPrelude = (
     <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-      Changes take effect as soon as you Save — the scheduler re-reads its
-      cadence live.
+      Changes take effect as soon as you Save — the scheduler re-reads its cadence live.
     </div>
   );
 
@@ -1385,11 +1346,7 @@ export function SettingsScreen() {
           className="h-full w-44 shrink-0 items-stretch gap-1 rounded-none border-r border-border bg-card p-2"
         >
           {TABS.map((t) => (
-            <TabsTrigger
-              key={t.id}
-              value={t.id}
-              className="justify-start gap-2 px-2 py-1.5"
-            >
+            <TabsTrigger key={t.id} value={t.id} className="justify-start gap-2 px-2 py-1.5">
               <t.icon className="size-4" />
               {t.label}
             </TabsTrigger>
@@ -1400,20 +1357,14 @@ export function SettingsScreen() {
           <TabsContent value="general" className="flex flex-col gap-5 p-4">
             <TabHeading title="General" note="Editor used to open repos." />
             {settings ? (
-              <FilteredContent
-                query={query}
-                sections={generalSections(settings, update)}
-              />
+              <FilteredContent query={query} sections={generalSections(settings, update)} />
             ) : (
               <SettingsLoading />
             )}
           </TabsContent>
 
           <TabsContent value="appearance" className="flex flex-col gap-5 p-4">
-            <TabHeading
-              title="Appearance"
-              note="Theme applies immediately across the app."
-            />
+            <TabHeading title="Appearance" note="Theme applies immediately across the app." />
             <FilteredContent
               query={query}
               sections={appearanceSections(theme, setTheme, colorTheme, setColorTheme)}
@@ -1421,14 +1372,8 @@ export function SettingsScreen() {
           </TabsContent>
 
           <TabsContent value="agentboard" className="flex flex-col gap-5 p-4">
-            <TabHeading
-              title="Agentboard"
-              note="Repo discovery and needs-you notifications."
-            />
-            <FilteredContent
-              query={query}
-              sections={agentboardSections(settings, update)}
-            />
+            <TabHeading title="Agentboard" note="Repo discovery and needs-you notifications." />
+            <FilteredContent query={query} sections={agentboardSections(settings, update)} />
           </TabsContent>
 
           <TabsContent value="journal" className="flex flex-col gap-5 p-4">
@@ -1437,10 +1382,7 @@ export function SettingsScreen() {
               note="Where notes live and how their file paths are templated."
             />
             {settings ? (
-              <FilteredContent
-                query={query}
-                sections={journalSections(settings, update)}
-              />
+              <FilteredContent query={query} sections={journalSections(settings, update)} />
             ) : (
               <SettingsLoading />
             )}
@@ -1479,12 +1421,8 @@ export function SettingsScreen() {
       </Tabs>
 
       <footer className="flex items-center justify-end gap-3 border-t border-border bg-card px-4 py-3">
-        {saveState === "saved" && (
-          <span className="text-xs text-muted-foreground">Saved.</span>
-        )}
-        {saveState === "error" && (
-          <span className="text-xs text-destructive">Save failed.</span>
-        )}
+        {saveState === "saved" && <span className="text-xs text-muted-foreground">Saved.</span>}
+        {saveState === "error" && <span className="text-xs text-destructive">Save failed.</span>}
         <Button
           size="sm"
           onClick={() => void save()}

@@ -185,9 +185,8 @@ export async function setMonacoWorkspace(dir: string): Promise<void> {
   const monaco = await loadMonaco();
   if (workspaceDir === dir) return;
   workspaceDir = dir;
-  const { reinitializeWorkspace } = await import(
-    "@codingame/monaco-vscode-configuration-service-override"
-  );
+  const { reinitializeWorkspace } =
+    await import("@codingame/monaco-vscode-configuration-service-override");
   await reinitializeWorkspace({ id: dir, uri: monaco.Uri.file(dir) });
   // The LSP bridge follows the workspace (rust-analyzer per Rust checkout).
   const { syncLspWorkspace } = await import("@/lib/lsp");

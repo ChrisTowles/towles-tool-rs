@@ -10,6 +10,7 @@ import {
   type JournalEntry,
   type SearchMatch,
 } from "@/lib/journal";
+import { useAsyncRefresh } from "@/lib/use-async-refresh";
 
 const SEARCH_DEBOUNCE_MS = 250;
 
@@ -54,14 +55,10 @@ export function JournalEntryList({
   const [searchGroups, setSearchGroups] = useState<SearchGroup[] | null>(null);
   const [searching, setSearching] = useState(false);
 
-  async function refresh() {
+  const refresh = useAsyncRefresh(async () => {
     setLoading(true);
     setEntries((await journalList({ ty })) ?? []);
     setLoading(false);
-  }
-
-  useEffect(() => {
-    void refresh();
   }, [ty]);
 
   useEffect(() => {
@@ -140,7 +137,11 @@ export function JournalEntryList({
               >
                 <div className="flex items-center justify-between gap-2">
                   <p className="truncate text-sm text-foreground">{g.relativePath}</p>
-                  <Button variant="ghost" size="sm" onClick={() => void journalOpen(g.relativePath)}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void journalOpen(g.relativePath)}
+                  >
                     <ExternalLink className="size-3.5" />
                   </Button>
                 </div>

@@ -24,13 +24,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 /** Compact navigation tree beside the multi-diff: same compact-folders
  * grouping as the Files pane; clicking a file scrolls its diff into view. */
-function DiffTreeRail({
-  files,
-  onJump,
-}: {
-  files: ChangedFile[];
-  onJump: (path: string) => void;
-}) {
+function DiffTreeRail({ files, onJump }: { files: ChangedFile[]; onJump: (path: string) => void }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const tree = useMemo(() => buildDiffTree(files.map((f) => f.path)), [files]);
   const byPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files]);
@@ -286,10 +280,18 @@ export function DiffPane({
           </IconBtn>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          <IconBtn title="refresh diff" onClick={() => void fetchDiff()} className="hover:text-sky-500">
+          <IconBtn
+            title="refresh diff"
+            onClick={() => void fetchDiff()}
+            className="hover:text-sky-500"
+          >
             <RefreshCw className={refreshing ? "size-3 animate-spin" : "size-3"} />
           </IconBtn>
-          <IconBtn title="remove pane (diff stays a click away on the folder)" onClick={onClose} className="hover:text-red-500">
+          <IconBtn
+            title="remove pane (diff stays a click away on the folder)"
+            onClick={onClose}
+            className="hover:text-red-500"
+          >
             ⊟
           </IconBtn>
         </span>

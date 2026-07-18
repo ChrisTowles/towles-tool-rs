@@ -115,11 +115,7 @@ export const BRANCH_SLUG_SOURCE_CHARS = 50;
  * prefix, from just the first `BRANCH_SLUG_SOURCE_CHARS` of the goal. The
  * branch field stays editable — this is just the default. */
 export function goalToBranch(goal: string): string {
-  let slug = goal
-    .slice(0, BRANCH_SLUG_SOURCE_CHARS)
-    .toLowerCase()
-    .trim()
-    .replaceAll(" ", "-");
+  let slug = goal.slice(0, BRANCH_SLUG_SOURCE_CHARS).toLowerCase().trim().replaceAll(" ", "-");
   slug = slug.replace(/[^0-9a-z_-]/g, "-");
   slug = slug.replace(/-+/g, "-");
   slug = slug.replace(/-+$/, "");
@@ -174,7 +170,7 @@ export function InlineNewSlot({
     null,
   );
 
-  const sortedBranches = [...branches].sort((a, b) => a.localeCompare(b));
+  const sortedBranches = [...branches].toSorted((a, b) => a.localeCompare(b));
 
   const branch = branchEdit ?? goalToBranch(goal);
 
@@ -225,7 +221,8 @@ export function InlineNewSlot({
   }
 
   const branchProblem =
-    branchCheck?.error ?? (branchCheck?.taken ? `a slot named "${branchCheck.name}" already exists` : null);
+    branchCheck?.error ??
+    (branchCheck?.taken ? `a slot named "${branchCheck.name}" already exists` : null);
 
   // Manual only — never runs on a timer or keystroke. Asks claude -p (cwd =
   // the repo, so it has real repo context) to propose a better branch name
@@ -458,7 +455,12 @@ export function InlineNewSlot({
           Attach image
         </Button>
         {preSuggest && (
-          <Button variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-[10.5px]" onClick={undoSuggest}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 gap-1 px-1.5 text-[10.5px]"
+            onClick={undoSuggest}
+          >
             <Undo2 className="size-3" />
             Undo
           </Button>

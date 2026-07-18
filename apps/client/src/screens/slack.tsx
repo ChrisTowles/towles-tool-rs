@@ -401,15 +401,7 @@ function ExternalLinkText({ url, children }: { url: string; children: React.Reac
 }
 
 /** One numbered step in the setup guide. */
-function Step({
-  n,
-  title,
-  children,
-}: {
-  n: number;
-  title: string;
-  children: React.ReactNode;
-}) {
+function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
   return (
     <li className="flex gap-3">
       <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-violet-500/15 text-xs font-semibold text-violet-600 dark:text-violet-300">
@@ -435,8 +427,8 @@ function SetupGuide() {
           <h2 className="text-base font-semibold text-foreground">Connect a Slack DM</h2>
         </div>
         <p className="mb-5 text-[13px] leading-relaxed text-muted-foreground">
-          Watch one direct message (e.g. your partner) and reply without leaving the app. A
-          one-time Slack setup:
+          Watch one direct message (e.g. your partner) and reply without leaving the app. A one-time
+          Slack setup:
         </p>
         <ol className="flex flex-col gap-4">
           <Step n={1} title="Create a Slack app from the manifest">
@@ -469,8 +461,8 @@ function SetupGuide() {
                 Basic Information → App-Level Tokens
               </span>
               , generate a token with the <span className="font-mono">connections:write</span> scope
-              (<span className="font-mono">xapp-…</span>). Without it, messages arrive on a 60-second
-              poll instead of instantly.
+              (<span className="font-mono">xapp-…</span>). Without it, messages arrive on a
+              60-second poll instead of instantly.
             </p>
           </Step>
           <Step n={5} title="Paste both tokens and pick who to watch">
@@ -505,8 +497,8 @@ function ReauthNotice({ onRetry }: { onRetry: () => void }) {
           <h2 className="text-sm font-semibold text-foreground">Your Slack token expired</h2>
         </div>
         <p className="mb-3 text-[13px] leading-relaxed text-muted-foreground">
-          Slack rejected the token (<span className="font-mono">invalid_auth</span>). Re-issue it and
-          paste the fresh one:
+          Slack rejected the token (<span className="font-mono">invalid_auth</span>). Re-issue it
+          and paste the fresh one:
         </p>
         <ol className="mb-4 flex flex-col gap-1.5 text-[13px] text-muted-foreground">
           <li>
@@ -554,9 +546,7 @@ function FetchError({ error, onRetry }: { error: string; onRetry: () => void }) 
           {scope ? "Token needs more access" : "Couldn't load the conversation"}
         </h2>
         <p className="mb-4 text-[13px] leading-relaxed break-words text-muted-foreground">
-          {scope
-            ? "Re-authorize your Slack token with the chat:write scope, then retry."
-            : error}
+          {scope ? "Re-authorize your Slack token with the chat:write scope, then retry." : error}
         </p>
         <Button size="sm" variant="outline" onClick={onRetry}>
           Retry

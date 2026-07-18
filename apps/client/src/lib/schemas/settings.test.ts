@@ -48,6 +48,6 @@ describe("UserSettingsSchema", () => {
 
   it("rejects a payload missing a required field", () => {
     const { preferredEditor: _preferredEditor, ...missing } = valid;
-    expect(() => UserSettingsSchema.parse(missing)).toThrow();
+    expect(() => UserSettingsSchema.parse(missing)).toThrow("preferredEditor");
   });
 });

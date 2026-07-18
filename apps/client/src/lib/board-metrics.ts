@@ -29,10 +29,7 @@ export function dueState(dueTs: number | null | undefined, now: number): DueStat
 export function countByStatus(
   tasks: readonly Pick<TaskItem, "status">[],
 ): Record<TaskStatus, number> {
-  const counts = Object.fromEntries(TASK_STATUSES.map((s) => [s, 0])) as Record<
-    TaskStatus,
-    number
-  >;
+  const counts = Object.fromEntries(TASK_STATUSES.map((s) => [s, 0])) as Record<TaskStatus, number>;
   for (const t of tasks) counts[t.status] += 1;
   return counts;
 }
@@ -43,10 +40,7 @@ export function overdueByStatus(
   tasks: readonly Pick<TaskItem, "status" | "dueTs">[],
   now: number,
 ): Record<TaskStatus, number> {
-  const counts = Object.fromEntries(TASK_STATUSES.map((s) => [s, 0])) as Record<
-    TaskStatus,
-    number
-  >;
+  const counts = Object.fromEntries(TASK_STATUSES.map((s) => [s, 0])) as Record<TaskStatus, number>;
   for (const t of tasks) {
     if (t.status !== "done" && dueState(t.dueTs, now) === "overdue") counts[t.status] += 1;
   }

@@ -92,24 +92,15 @@ class TauriFileSystemProvider
   }
 
   async mkdir(): Promise<void> {
-    throw FileSystemProviderError.create(
-      "read-only",
-      FileSystemProviderErrorCode.NoPermissions,
-    );
+    throw FileSystemProviderError.create("read-only", FileSystemProviderErrorCode.NoPermissions);
   }
 
   async delete(): Promise<void> {
-    throw FileSystemProviderError.create(
-      "read-only",
-      FileSystemProviderErrorCode.NoPermissions,
-    );
+    throw FileSystemProviderError.create("read-only", FileSystemProviderErrorCode.NoPermissions);
   }
 
   async rename(): Promise<void> {
-    throw FileSystemProviderError.create(
-      "read-only",
-      FileSystemProviderErrorCode.NoPermissions,
-    );
+    throw FileSystemProviderError.create("read-only", FileSystemProviderErrorCode.NoPermissions);
   }
 }
 

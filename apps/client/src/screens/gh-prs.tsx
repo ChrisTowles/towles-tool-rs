@@ -29,10 +29,10 @@ export function GhPrsScreen() {
   const openPrs = snapshot.prs.filter((p) => p.state === "open");
   const needsYou = openPrs
     .filter(prNeedsYou)
-    .sort((a, b) => prRank(b) - prRank(a) || b.updatedTs - a.updatedTs);
+    .toSorted((a, b) => prRank(b) - prRank(a) || b.updatedTs - a.updatedTs);
   const rest = openPrs
     .filter((p) => !prNeedsYou(p))
-    .sort((a, b) => a.repo.localeCompare(b.repo) || b.updatedTs - a.updatedTs);
+    .toSorted((a, b) => a.repo.localeCompare(b.repo) || b.updatedTs - a.updatedTs);
   const byRepo = groupByRepo(rest);
   const prsRun = snapshot.runs.find((r) => r.collector === "prs");
 

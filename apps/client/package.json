@@ -1,14 +1,18 @@
 {
   "name": "@towles-tool/client",
-  "private": true,
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint . --fix",
+    "format": "oxfmt .",
+    "format:check": "oxfmt . --check"
   },
   "dependencies": {
     "@codingame/monaco-vscode-api": "~35.0.1",
@@ -71,6 +75,8 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.4",
+    "oxfmt": "^0.59.0",
+    "oxlint": "^1.74.0",
     "tailwindcss": "^4.3.2",
     "typescript": "^5.9.3",
     "vite": "^7.1.9",

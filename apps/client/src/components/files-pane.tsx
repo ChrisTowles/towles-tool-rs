@@ -126,7 +126,11 @@ export function FilesPane({
                 editable · ⌘S saves
               </span>
               <IconBtn
-                title={wordWrap ? "Wrapping long lines — click to scroll instead" : "Scrolling long lines — click to wrap instead"}
+                title={
+                  wordWrap
+                    ? "Wrapping long lines — click to scroll instead"
+                    : "Scrolling long lines — click to wrap instead"
+                }
                 onClick={() => setWordWrap((w) => !w)}
                 className={cn("ml-auto", wordWrap && "text-violet-500")}
               >
@@ -237,7 +241,11 @@ export function FolderFilesPane({
           </span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          <IconBtn title="remove pane (files stay a click away on the folder)" onClick={onClose} className="hover:text-red-500">
+          <IconBtn
+            title="remove pane (files stay a click away on the folder)"
+            onClick={onClose}
+            className="hover:text-red-500"
+          >
             ⊟
           </IconBtn>
         </span>

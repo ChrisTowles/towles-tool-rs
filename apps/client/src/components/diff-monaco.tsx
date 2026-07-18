@@ -13,7 +13,8 @@ export type ChangedFile = {
   linesRemoved: number;
 };
 
-type Widget = import("@codingame/monaco-vscode-api/vscode/vs/editor/browser/widget/multiDiffEditor/multiDiffEditorWidget").MultiDiffEditorWidget;
+type Widget =
+  import("@codingame/monaco-vscode-api/vscode/vs/editor/browser/widget/multiDiffEditor/multiDiffEditorWidget").MultiDiffEditorWidget;
 type TextModel = import("monaco-editor").editor.ITextModel;
 
 /**
@@ -66,9 +67,7 @@ export function MonacoMultiDiff({
         const [monaco, api, widgetMod, eventMod, utilsMod, domMod] = await Promise.all([
           loadMonaco(),
           import("@codingame/monaco-vscode-api"),
-          import(
-            "@codingame/monaco-vscode-api/vscode/vs/editor/browser/widget/multiDiffEditor/multiDiffEditorWidget"
-          ),
+          import("@codingame/monaco-vscode-api/vscode/vs/editor/browser/widget/multiDiffEditor/multiDiffEditorWidget"),
           import("@codingame/monaco-vscode-api/vscode/vs/base/common/event"),
           import("@codingame/monaco-vscode-api/vscode/vs/editor/browser/widget/diffEditor/utils"),
           import("@codingame/monaco-vscode-api/vscode/vs/base/browser/dom"),
@@ -98,15 +97,19 @@ export function MonacoMultiDiff({
         });
         modelsRef.current = models;
 
-        const widget = api.createInstanceSync(widgetMod.MultiDiffEditorWidget, containerRef.current, {
-          headerClickToCollapse: true,
-          createResourceLabel: (element: HTMLElement) => ({
-            setUri(uri: { path: string } | undefined) {
-              element.textContent = uri ? uri.path.replace(`${dir}/`, "") : "";
-            },
-            dispose() {},
-          }),
-        });
+        const widget = api.createInstanceSync(
+          widgetMod.MultiDiffEditorWidget,
+          containerRef.current,
+          {
+            headerClickToCollapse: true,
+            createResourceLabel: (element: HTMLElement) => ({
+              setUri(uri: { path: string } | undefined) {
+                element.textContent = uri ? uri.path.replace(`${dir}/`, "") : "";
+              },
+              dispose() {},
+            }),
+          },
+        );
         widgetRef.current = widget;
         disposables.push(widget);
 
@@ -142,29 +145,31 @@ export function MonacoMultiDiff({
           let debounce: ReturnType<typeof setTimeout> | undefined;
           disposables.push({ dispose: () => clearTimeout(debounce) });
           disposables.push(
-            modified.onDidChangeCursorSelection((e: import("monaco-editor").editor.ICursorSelectionChangedEvent) => {
-              clearTimeout(debounce);
-              debounce = setTimeout(() => {
-                const uri = modified.getModel()?.uri;
-                if (uri?.scheme !== "tt-diff-work" || !uri.path.startsWith(`${dir}/`)) return;
-                const path = uri.path.slice(dir.length + 1);
-                const sel = e.selection;
-                if (sel.isEmpty()) {
-                  ideClearSelection(dir, path);
-                  if (streamedPath === path) streamedPath = null;
-                  return;
-                }
-                streamedPath = path;
-                ideSetSelection(
-                  dir,
-                  path,
-                  sel.startLineNumber,
-                  sel.endLineNumber,
-                  sel.startColumn - 1,
-                  sel.endColumn - 1,
-                );
-              }, 300);
-            }),
+            modified.onDidChangeCursorSelection(
+              (e: import("monaco-editor").editor.ICursorSelectionChangedEvent) => {
+                clearTimeout(debounce);
+                debounce = setTimeout(() => {
+                  const uri = modified.getModel()?.uri;
+                  if (uri?.scheme !== "tt-diff-work" || !uri.path.startsWith(`${dir}/`)) return;
+                  const path = uri.path.slice(dir.length + 1);
+                  const sel = e.selection;
+                  if (sel.isEmpty()) {
+                    ideClearSelection(dir, path);
+                    if (streamedPath === path) streamedPath = null;
+                    return;
+                  }
+                  streamedPath = path;
+                  ideSetSelection(
+                    dir,
+                    path,
+                    sel.startLineNumber,
+                    sel.endLineNumber,
+                    sel.startColumn - 1,
+                    sel.endColumn - 1,
+                  );
+                }, 300);
+              },
+            ),
           );
         };
         disposables.push(widget.onDidChangeActiveControl(wire));
@@ -196,7 +201,7 @@ export function MonacoMultiDiff({
     return () => {
       disposed = true;
       widgetRef.current = null;
-      for (const d of disposables.reverse()) d.dispose();
+      for (const d of disposables.toReversed()) d.dispose();
       for (const entry of modelsRef.current.values()) {
         entry.original?.dispose();
         entry.modified?.dispose();
@@ -205,6 +210,10 @@ export function MonacoMultiDiff({
       if (streamedPath != null) ideClearSelection(dir, streamedPath);
     };
     // filesKey stands in for `files`; refreshKey is the in-place path below.
+    // registerReveal is deliberately excluded too: it's an unmemoized callback
+    // prop from the parent, so listing it would rebuild this expensive widget
+    // on every parent render instead of only on a real file-set/branch change.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [dir, filesKey, mode, baseBranch]);
 
   // Working tree changed under the pane — refresh contents in place so the
@@ -219,10 +228,18 @@ export function MonacoMultiDiff({
         try {
           const sides = await fetchSides(dir, f, mode, baseBranch);
           if (models !== modelsRef.current) return;
-          if (entry.original && sides.original != null && entry.original.getValue() !== sides.original) {
+          if (
+            entry.original &&
+            sides.original != null &&
+            entry.original.getValue() !== sides.original
+          ) {
             entry.original.setValue(sides.original);
           }
-          if (entry.modified && sides.modified != null && entry.modified.getValue() !== sides.modified) {
+          if (
+            entry.modified &&
+            sides.modified != null &&
+            entry.modified.getValue() !== sides.modified
+          ) {
             entry.modified.setValue(sides.modified);
           }
         } catch {
@@ -231,6 +248,9 @@ export function MonacoMultiDiff({
         }
       }
     })();
+    // dir/mode/baseBranch/files are read from the closure at call time, not
+    // reactive triggers — this effect intentionally fires only on refreshKey.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   if (error) {

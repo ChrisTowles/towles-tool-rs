@@ -34,9 +34,7 @@ describe("formatLogLine", () => {
   });
 
   it("omits the bracket when context is whitespace only", () => {
-    expect(formatLogLine("blank ctx", { now: at(8, 0), context: "   " })).toBe(
-      "- 08:00 blank ctx",
-    );
+    expect(formatLogLine("blank ctx", { now: at(8, 0), context: "   " })).toBe("- 08:00 blank ctx");
   });
 
   it("trims the log body", () => {

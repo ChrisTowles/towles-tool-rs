@@ -34,9 +34,7 @@ export class ErrorBoundary extends Component<Props, State> {
       return (
         <div className="flex h-full items-center justify-center p-6">
           <div className="w-full max-w-md rounded-lg border bg-card p-4 text-card-foreground">
-            <div className="text-sm font-medium text-destructive">
-              This screen crashed{label}
-            </div>
+            <div className="text-sm font-medium text-destructive">This screen crashed{label}</div>
             <p className="mt-1 text-sm text-muted-foreground">
               The rest of the app is still running. Reset to reopen it.
             </p>

@@ -359,25 +359,43 @@ export function PaneHeader({
       )}
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {session.live && (
-          <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70" title="running for">
+          <span
+            className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70"
+            title="running for"
+          >
             {fmtElapsed(now - session.createdAt)}
           </span>
         )}
         {waitingAge && (
-          <span className="shrink-0 font-mono text-[10.5px] text-amber-500/80" title="how long this has been needing you">
+          <span
+            className="shrink-0 font-mono text-[10.5px] text-amber-500/80"
+            title="how long this has been needing you"
+          >
             {waitingAge}
           </span>
         )}
         <PaneCacheInfo session={session} now={now} />
         {agent && (
-          <IconBtn title="stop Claude (shell survives)" onClick={() => actions.stopClaude(session)} className="hover:text-red-500">
+          <IconBtn
+            title="stop Claude (shell survives)"
+            onClick={() => actions.stopClaude(session)}
+            className="hover:text-red-500"
+          >
             ■
           </IconBtn>
         )}
-        <IconBtn title="remove pane (session stays in the rail)" onClick={onUngroup} className="hover:text-sky-500">
+        <IconBtn
+          title="remove pane (session stays in the rail)"
+          onClick={onUngroup}
+          className="hover:text-sky-500"
+        >
           ⊟
         </IconBtn>
-        <IconBtn title="kill session (PTY + record)" onClick={() => actions.close(session.id)} className="hover:text-red-500">
+        <IconBtn
+          title="kill session (PTY + record)"
+          onClick={() => actions.close(session.id)}
+          className="hover:text-red-500"
+        >
           ✕
         </IconBtn>
       </span>

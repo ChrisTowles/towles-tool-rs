@@ -39,8 +39,7 @@ export type RepoSyncResult = {
 export const abSyncRepo = (dir: string) =>
   invokeOrThrow<RepoSyncResult>("store_sync_repo", { dir });
 
-export type AgentStatus =
-  "idle" | "busy" | "complete" | "error" | "waiting" | "interrupted";
+export type AgentStatus = "idle" | "busy" | "complete" | "error" | "waiting" | "interrupted";
 
 /** Per-agent live details from the transcript tail (tokens, cache, model).
  * Mirrors the Rust `AgentEventDetails`; only the fields the UI renders. */
@@ -442,9 +441,7 @@ export function dropPane(w: WindowsPayload, paneId: string): WindowsPayload {
   if (!host) return w;
   const remaining = toPanes(host.panes.filter((p) => p !== paneId));
   if (!remaining) {
-    const sibling = w.windows.find(
-      (win) => win.folderDir === host.folderDir && win.id !== host.id,
-    );
+    const sibling = w.windows.find((win) => win.folderDir === host.folderDir && win.id !== host.id);
     const activeWindows = { ...w.activeWindows };
     if (activeWindows[host.folderDir] === host.id) {
       if (sibling) activeWindows[host.folderDir] = sibling.id;
@@ -454,9 +451,7 @@ export function dropPane(w: WindowsPayload, paneId: string): WindowsPayload {
   }
   return {
     ...w,
-    windows: w.windows.map((win) =>
-      win.id === host.id ? { ...win, panes: remaining } : win,
-    ),
+    windows: w.windows.map((win) => (win.id === host.id ? { ...win, panes: remaining } : win)),
   };
 }
 
@@ -610,12 +605,16 @@ export function fmtWaitingAge(sinceMs: number | null | undefined, now: number): 
  * is stable, so equal ages keep repo→folder→session render order. */
 export function needingSessionsOldestFirst(repos: RepoData[]): SessionData[] {
   const needing: SessionData[] = [];
-  for (const r of repos) for (const f of r.folders) for (const s of f.sessions) {
-    if (sessionNeeds(s)) needing.push(s);
-  }
+  for (const r of repos)
+    for (const f of r.folders)
+      for (const s of f.sessions) {
+        if (sessionNeeds(s)) needing.push(s);
+      }
   return needing
     .map((s, i) => ({ s, i }))
-    .sort((a, b) => (a.s.needsSinceMs ?? Infinity) - (b.s.needsSinceMs ?? Infinity) || a.i - b.i)
+    .toSorted(
+      (a, b) => (a.s.needsSinceMs ?? Infinity) - (b.s.needsSinceMs ?? Infinity) || a.i - b.i,
+    )
     .map(({ s }) => s);
 }
 
@@ -633,9 +632,7 @@ export function cycleNeedsYou(
   const all: SessionData[] = [];
   for (const r of repos) for (const f of r.folders) for (const s of f.sessions) all.push(s);
 
-  const targetIndexes = all
-    .map((s, i) => (sessionCatchesEye(s) ? i : -1))
-    .filter((i) => i !== -1);
+  const targetIndexes = all.map((s, i) => (sessionCatchesEye(s) ? i : -1)).filter((i) => i !== -1);
   if (targetIndexes.length === 0) return null;
 
   const fromIndex = fromSessionId ? all.findIndex((s) => s.id === fromSessionId) : -1;
@@ -643,7 +640,7 @@ export function cycleNeedsYou(
   const chosen =
     direction === "next"
       ? (targetIndexes.find((i) => i > fromIndex) ?? targetIndexes[0])
-      : ([...targetIndexes].reverse().find((i) => i < fromIndex) ??
+      : ([...targetIndexes].toReversed().find((i) => i < fromIndex) ??
         targetIndexes[targetIndexes.length - 1]);
 
   return all[chosen];
@@ -781,9 +778,7 @@ export function prForFolder(
 ): PrItem | undefined {
   if (!branch) return undefined;
   const origin = originUrl?.toLowerCase();
-  return prs.find(
-    (p) => p.branch === branch && (!origin || origin.includes(p.repo.toLowerCase())),
-  );
+  return prs.find((p) => p.branch === branch && (!origin || origin.includes(p.repo.toLowerCase())));
 }
 
 /** True when a folder is provably safe to delete: no uncommitted changes
@@ -797,9 +792,7 @@ export function prForFolder(
  * deletes its branch, so an unmerged-but-pushed branch is still "safe" by
  * its math). This is the stricter "nothing left to do here" signal — the
  * guard remains the last line of defense either way. */
-export function folderSafeToDelete(
-  folder: Pick<FolderData, "dirty" | "commitsUnlanded">,
-): boolean {
+export function folderSafeToDelete(folder: Pick<FolderData, "dirty" | "commitsUnlanded">): boolean {
   return !folder.dirty && folder.commitsUnlanded === 0;
 }
 
@@ -835,7 +828,10 @@ export type ActionableItem = {
  * `folderPortDrift`). `pr` is the folder's already-resolved PR (see
  * `prForFolder`), not looked up again here. */
 export function folderActionableItems(
-  folder: Pick<FolderData, "isWorktree" | "dirty" | "commitsUnlanded" | "comparedBase" | "needs" | "sessions">,
+  folder: Pick<
+    FolderData,
+    "isWorktree" | "dirty" | "commitsUnlanded" | "comparedBase" | "needs" | "sessions"
+  >,
   pr: PrItem | undefined,
 ): ActionableItem[] {
   const items: ActionableItem[] = [];

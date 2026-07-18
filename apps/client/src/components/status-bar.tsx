@@ -2,11 +2,7 @@ import { useEffect, useState } from "react";
 import { Stethoscope } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { invokeCmd, isTauri } from "@/lib/tauri";
-import {
-  collectorHealth,
-  type CollectorHealth,
-  type CollectorState,
-} from "@/lib/collector-health";
+import { collectorHealth, type CollectorHealth, type CollectorState } from "@/lib/collector-health";
 import { fmtAge, useStoreSnapshot } from "@/lib/data";
 import { useNow } from "@/lib/now";
 import { cn } from "@/lib/utils";
@@ -125,21 +121,11 @@ export function StatusBar() {
       <div className="flex items-center gap-3">
         <CollectorHealthCluster />
         {usage && (
-          <span
-            className="tabular-nums"
-            title="towles-tool process CPU / memory"
-          >
-            {usage.cpuPercent.toFixed(0)}% CPU ·{" "}
-            {formatMemory(usage.memoryBytes)}
+          <span className="tabular-nums" title="towles-tool process CPU / memory">
+            {usage.cpuPercent.toFixed(0)}% CPU · {formatMemory(usage.memoryBytes)}
           </span>
         )}
-        <span
-          className={
-            isTauri()
-              ? undefined
-              : "font-medium text-amber-600 dark:text-amber-500"
-          }
-        >
+        <span className={isTauri() ? undefined : "font-medium text-amber-600 dark:text-amber-500"}>
           {isTauri() ? "Tauri shell" : "browser"}
         </span>
         <span>{version}</span>

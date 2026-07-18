@@ -188,15 +188,13 @@ describe("prMergedButFolderHasWork", () => {
   });
 
   it("is true for a merged PR with a dirty working tree", () => {
-    expect(
-      prMergedButFolderHasWork(pr({ state: "merged" }), folder({ dirty: true })),
-    ).toBe(true);
+    expect(prMergedButFolderHasWork(pr({ state: "merged" }), folder({ dirty: true }))).toBe(true);
   });
 
   it("is true for a merged PR with commits that haven't landed on comparedBase yet", () => {
-    expect(
-      prMergedButFolderHasWork(pr({ state: "merged" }), folder({ commitsUnlanded: 1 })),
-    ).toBe(true);
+    expect(prMergedButFolderHasWork(pr({ state: "merged" }), folder({ commitsUnlanded: 1 }))).toBe(
+      true,
+    );
   });
 
   it("is false for a merged, rebase/squash-merged branch — commitsAhead alone isn't unlanded work", () => {
@@ -247,9 +245,9 @@ describe("sessionNeeds", () => {
   });
 
   it("counts an unseen finished turn (it's your move), but not a seen one", () => {
-    expect(
-      sessionNeeds(session({ live: true, unseen: true, agentState: agent("complete") })),
-    ).toBe(true);
+    expect(sessionNeeds(session({ live: true, unseen: true, agentState: agent("complete") }))).toBe(
+      true,
+    );
     expect(
       sessionNeeds(session({ live: true, unseen: true, agentState: agent("interrupted") })),
     ).toBe(true);
@@ -630,7 +628,7 @@ describe("paneRects", () => {
     ]);
     const five = paneRects(5);
     // 5 panes → 3 rows; the lone last pane spans the full width.
-    expect(five[4]).toEqual({ left: 0, top: (200 / 3), width: 100, height: 100 / 3 });
+    expect(five[4]).toEqual({ left: 0, top: 200 / 3, width: 100, height: 100 / 3 });
   });
 
   it("returns nothing for zero panes", () => {
@@ -746,9 +744,9 @@ describe("isFolderQuiet", () => {
   });
 
   it("is not quiet with a session that catches the eye (unseen/waiting/errored)", () => {
-    expect(
-      isFolderQuiet(folder({ sessions: [session({ live: true, unseen: true })] }), NOW),
-    ).toBe(false);
+    expect(isFolderQuiet(folder({ sessions: [session({ live: true, unseen: true })] }), NOW)).toBe(
+      false,
+    );
     expect(
       isFolderQuiet(
         folder({ sessions: [session({ live: true, agentState: agent("waiting") })] }),
@@ -926,7 +924,10 @@ describe("folderActionableItems", () => {
     const f = folder({ isWorktree: true });
     const items = folderActionableItems(f, pr({ state: "merged", number: 9 }));
     expect(items).toEqual([
-      expect.objectContaining({ kind: "safe-to-delete", pr: { number: 9, url: expect.any(String) } }),
+      expect.objectContaining({
+        kind: "safe-to-delete",
+        pr: { number: 9, url: expect.any(String) },
+      }),
     ]);
   });
 
@@ -963,7 +964,9 @@ describe("folderActionableItems", () => {
 
   it("flags drifted ports, listing every drift entry", () => {
     const f = folder({
-      sessions: [session({ portDrift: [{ key: "APP_PORT", spawnedPort: 3000, currentPort: 3010 }] })],
+      sessions: [
+        session({ portDrift: [{ key: "APP_PORT", spawnedPort: 3000, currentPort: 3010 }] }),
+      ],
     });
     expect(folderActionableItems(f, undefined)).toEqual([
       expect.objectContaining({ kind: "port-drift", subtitle: "APP_PORT 3000 → 3010" }),
@@ -974,7 +977,9 @@ describe("folderActionableItems", () => {
     const f = folder({
       isWorktree: true,
       needs: 1,
-      sessions: [session({ portDrift: [{ key: "APP_PORT", spawnedPort: 3000, currentPort: 3010 }] })],
+      sessions: [
+        session({ portDrift: [{ key: "APP_PORT", spawnedPort: 3000, currentPort: 3010 }] }),
+      ],
     });
     const items = folderActionableItems(f, pr({ state: "merged", number: 3 }));
     expect(items.map((i) => i.kind)).toEqual(["safe-to-delete", "needs-you", "port-drift"]);
@@ -1019,8 +1024,7 @@ describe("cache expiry warning", () => {
 
 describe("agentRollup expiring count", () => {
   const now = 1_000_000_000;
-  const repoOf = (sessions: SessionData[]): RepoData =>
-    repo("r", [{ ...folder({}), sessions }]);
+  const repoOf = (sessions: SessionData[]): RepoData => repo("r", [{ ...folder({}), sessions }]);
 
   it("counts running agents whose warm cache is inside the warn window", () => {
     const expiring = session({

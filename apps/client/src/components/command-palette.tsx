@@ -46,8 +46,15 @@ import { useWorkspace } from "@/lib/workspace";
  * platform-correct (Ctrl on Linux, ⌘ on mac) instead of hardcoded.
  */
 export function CommandPalette() {
-  const { paletteOpen, setPaletteOpen, recent, activeTab, openTab, openSettingsTab, toggleSidebar } =
-    useWorkspace();
+  const {
+    paletteOpen,
+    setPaletteOpen,
+    recent,
+    activeTab,
+    openTab,
+    openSettingsTab,
+    toggleSidebar,
+  } = useWorkspace();
   const { theme, setTheme } = useTheme();
   const { repos } = useAgentboardState();
   const { snapshot } = useStoreSnapshot();
