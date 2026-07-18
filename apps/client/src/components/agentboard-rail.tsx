@@ -72,6 +72,8 @@ import {
 } from "@/lib/agentboard";
 import type { PrItem } from "@/lib/data";
 import { shortcutHint } from "@/lib/shortcuts";
+import { railRowMotion } from "@/lib/rail-motion";
+import { AnimatePresence, motion } from "motion/react";
 
 /** Ambient status color for a set of sessions hidden behind a collapse:
  * red if one errored, blue if one is waiting on you, cyan while an agent is
@@ -405,21 +407,22 @@ export function RepoGroup({
   ));
 
   const sessionRow = (folder: FolderData, s: SessionData) => (
-    <SessionRow
-      key={s.id}
-      session={s}
-      folderDir={folder.dir}
-      now={now}
-      compactPct={compactPct}
-      title={titles[s.id]}
-      active={selectedSessionId === s.id}
-      renaming={renaming === s.id}
-      overlay={overlays[s.id]}
-      wins={wins}
-      actions={actions}
-      onSelect={() => onSelect(folder.dir, s.id)}
-      onRenameCommit={(name) => onRenameCommit(s.id, name)}
-    />
+    <motion.div key={s.id} {...railRowMotion}>
+      <SessionRow
+        session={s}
+        folderDir={folder.dir}
+        now={now}
+        compactPct={compactPct}
+        title={titles[s.id]}
+        active={selectedSessionId === s.id}
+        renaming={renaming === s.id}
+        overlay={overlays[s.id]}
+        wins={wins}
+        actions={actions}
+        onSelect={() => onSelect(folder.dir, s.id)}
+        onRenameCommit={(name) => onRenameCommit(s.id, name)}
+      />
+    </motion.div>
   );
 
   // Sessions render grouped by the window (pane group) they belong to: a
@@ -428,6 +431,12 @@ export function RepoGroup({
   // sessions in no window ("loose" shells) list on their own below. Grouping
   // is purely visual — the ⊟/click mechanics that move panes in and out of
   // windows are unchanged.
+  //
+  // One AnimatePresence per window group plus one for the loose rows: a
+  // group's exiting row has to stay inside its own spine while it collapses.
+  // Closing a window's *last* pane unmounts the group wrapper outright, so
+  // that row does not animate — a spine with nothing left to attach to is not
+  // worth keeping on screen for an extra frame.
   const sessionRows = (folder: FolderData) => {
     if (folder.sessions.length === 0) {
       return (
@@ -475,10 +484,14 @@ export function RepoGroup({
                 onFocus={() => actions.focusWindow(win.id)}
               />
             )}
-            {sessions.map((s) => sessionRow(folder, s))}
+            <AnimatePresence initial={false}>
+              {sessions.map((s) => sessionRow(folder, s))}
+            </AnimatePresence>
           </div>
         ))}
-        {loose.map((s) => sessionRow(folder, s))}
+        <AnimatePresence initial={false}>
+          {loose.map((s) => sessionRow(folder, s))}
+        </AnimatePresence>
       </>
     );
   };
@@ -531,7 +544,11 @@ export function RepoGroup({
           />
         )}
         {pendingRows}
-        {!isCollapsed && <div className="pb-2">{sessionRows(folder)}</div>}
+        {!isCollapsed && (
+          <div className="pb-2">
+            {sessionRows(folder)}
+          </div>
+        )}
         {quiet.size > 0 && showQuiet && (
           <QuietToggleRow count={quiet.size} revealed onToggle={onToggleQuiet} />
         )}
@@ -557,8 +574,12 @@ export function RepoGroup({
     <div className="border-b" data-focus-kind="repo" data-focus-id={repo.key}>
       <div
         className={cn(
-          "sticky top-0 z-10 flex w-full items-center gap-2 border-b border-l-2 border-border border-l-transparent bg-card px-3 py-2 hover:bg-accent/50",
-          repoActive && "border-l-violet-500 bg-accent/60",
+          // Every background on this row must be fully opaque. It is sticky, so
+          // folder and session rows scroll *underneath* it — a translucent tint
+          // (bg-accent/60 for active, /50 for hover) lets their text show
+          // through the stuck header and reads as a rendering glitch.
+          "sticky top-0 z-10 flex w-full items-center gap-2 border-b border-l-2 border-border border-l-transparent bg-card px-3 py-2 hover:bg-accent",
+          repoActive && "border-l-violet-500 bg-accent",
         )}
       >
         <button
@@ -607,44 +628,63 @@ export function RepoGroup({
         />
       )}
       {pendingRows}
-      {!repoCollapsed &&
-        shownFolders.map((folder) => {
-          const key = `${repo.key}::${folder.dir}`;
-          const fCollapsed = collapsed[key];
-          const deleting = deletingDirs?.has(folder.dir) ?? false;
-          return (
-            <div key={folder.dir} className={cn(deleting && "pointer-events-none opacity-50")}>
-              <FolderHeader
-                scope="folder"
-                title={folder.name}
-                folder={folder}
-                needs={folder.needs}
-                pr={prForFolder(prs, repo.originUrl, folder.branch)}
-                collapsed={fCollapsed}
-                now={now}
-                active={activeFolderDir === folder.dir}
-                deleting={deleting}
-                onToggle={() => {
-                  onToggle(key);
-                  onSelectFolder(folder.dir);
-                }}
-                onNewSession={() => onNewSession(folder.dir)}
-                onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
-                onDeleteWorktree={
-                  folder.isWorktree
-                    ? () => onDeleteWorktree(folder.dir, folder.name)
-                    : undefined
-                }
-                onOpenDiff={() => onOpenDiff(folder.dir)}
-                onOpenFiles={() => onOpenFiles(folder.dir)}
-              />
-              {/* Note is a folder label — shown under the header even when the
-                  folder is collapsed (renders nothing when unset). */}
-              <PurposeRow folder={folder} />
-              {!fCollapsed && <div className="pb-1">{sessionRows(folder)}</div>}
-            </div>
-          );
-        })}
+      {/* The collapse test stays *outside* AnimatePresence: inside it,
+          collapsing a repo would read as every folder being deleted at once
+          and play a full exit on each. Unmounting the boundary itself
+          collapses instantly, matching how session rows already behave. */}
+      {!repoCollapsed && (
+        <AnimatePresence initial={false}>
+          {shownFolders.map((folder) => {
+            const key = `${repo.key}::${folder.dir}`;
+            const fCollapsed = collapsed[key];
+            const deleting = deletingDirs?.has(folder.dir) ?? false;
+            return (
+              <motion.div
+                key={folder.dir}
+                {...railRowMotion}
+                // The dim goes through `animate`, not an opacity-50 class:
+                // this element is animated, so motion writes an inline
+                // opacity that a class could never win against.
+                animate={{ opacity: deleting ? 0.5 : 1, x: 0 }}
+                className={cn(deleting && "pointer-events-none")}
+              >
+                <FolderHeader
+                  scope="folder"
+                  title={folder.name}
+                  folder={folder}
+                  needs={folder.needs}
+                  pr={prForFolder(prs, repo.originUrl, folder.branch)}
+                  collapsed={fCollapsed}
+                  now={now}
+                  active={activeFolderDir === folder.dir}
+                  deleting={deleting}
+                  onToggle={() => {
+                    onToggle(key);
+                    onSelectFolder(folder.dir);
+                  }}
+                  onNewSession={() => onNewSession(folder.dir)}
+                  onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
+                  onDeleteWorktree={
+                    folder.isWorktree
+                      ? () => onDeleteWorktree(folder.dir, folder.name)
+                      : undefined
+                  }
+                  onOpenDiff={() => onOpenDiff(folder.dir)}
+                  onOpenFiles={() => onOpenFiles(folder.dir)}
+                />
+                {/* Note is a folder label — shown under the header even when the
+                    folder is collapsed (renders nothing when unset). */}
+                <PurposeRow folder={folder} />
+                {!fCollapsed && (
+                  <div className="pb-1">
+                    {sessionRows(folder)}
+                  </div>
+                )}
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
+      )}
       {!repoCollapsed && quiet.size > 0 && (
         <QuietToggleRow count={quiet.size} revealed={showQuiet} onToggle={onToggleQuiet} />
       )}
@@ -767,9 +807,16 @@ function FolderHeader({
     // is always present so the active violet edge never shifts content.
     <div
       className={cn(
-        "border-b border-l-2 border-border border-l-transparent bg-card pr-2 hover:bg-accent/50",
-        scope === "repo" ? "sticky top-0 z-10 pl-3" : "pl-6",
-        active && "border-l-violet-500 bg-accent/60",
+        "border-b border-l-2 border-border border-l-transparent bg-card pr-2",
+        // A repo-scope header is sticky, so rows scroll underneath it and every
+        // background it can take must be opaque — a translucent tint lets their
+        // text show through the stuck header. Folder-scope rows sit in normal
+        // flow with nothing passing beneath, so they keep the softer tint.
+        // Both backgrounds branch together on scope so they can't drift apart.
+        scope === "repo"
+          ? cn("sticky top-0 z-10 pl-3 hover:bg-accent", active && "bg-accent")
+          : cn("pl-6 hover:bg-accent/50", active && "bg-accent/60"),
+        active && "border-l-violet-500",
       )}
     >
       <div className="flex items-center gap-2 pt-1.5">

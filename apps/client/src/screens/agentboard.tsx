@@ -120,6 +120,8 @@ import type { OpenFileRequest } from "@/lib/ide";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { useFocusTarget } from "@/lib/focus-target";
+import { railRowMotion } from "@/lib/rail-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { openExternalUrl } from "@/lib/open-url";
 import { useWorkspace } from "@/lib/workspace";
 import { toast } from "sonner";
@@ -1500,52 +1502,58 @@ export function AgentboardScreen() {
                           </div>
                         </div>
                       )}
-                      {repos.map((repo) => (
-                        <RepoGroup
-                          key={repo.key}
-                          repo={repo}
-                          quietDirs={quietDirs.get(repo.key)}
-                          quietRevealed={!!quietRevealed[repo.key]}
-                          onToggleQuiet={() =>
-                            setQuietRevealed((m) => ({ ...m, [repo.key]: !m[repo.key] }))
-                          }
-                          now={now}
-                          compactPct={state.compactRecommendPercent}
-                          prs={snapshot.prs}
-                          selectedSessionId={selected?.sessionId ?? null}
-                          activeFolderDir={activeFolderDir}
-                          collapsed={collapsed}
-                          renaming={renaming}
-                          titles={titles}
-                          overlays={overlays}
-                          wins={wins}
-                          actions={actions}
-                          onToggle={toggleCollapsed}
-                          onSelectFolder={selectFolder}
-                          onSelect={selectSession}
-                          onNewSession={newSession}
-                          onNewSlot={toggleSlotForm}
-                          onRemoveRepo={requestRemoveRepo}
-                          onDeleteWorktree={requestDeleteWorktree}
-                          deletingDirs={deletingDirs}
-                          onRenameCommit={commitRename}
-                          onOpenDiff={openDiff}
-                          onOpenFiles={openFiles}
-                          slotFormOpen={openSlotForms.has(repo.key)}
-                          onCancelSlotForm={() => closeSlotForm(repo.key)}
-                          onSubmitSlotForm={(input) => {
-                            closeSlotForm(repo.key);
-                            void createSlot(
-                              { name: repo.name, dir: repo.folders[0].dir, key: repo.key },
-                              input,
-                            );
-                          }}
-                          pendingSlots={pendingSlots.filter((p) => p.repoKey === repo.key)}
-                          onRetryPendingSlot={retryPendingSlot}
-                          onDismissPendingSlot={dismissPendingSlot}
-                          onCreateTemplateRetry={createTemplateAndRetryPending}
-                        />
-                      ))}
+                      {/* initial={false} so the rail drawing itself on launch
+                          isn't mistaken for repos arriving — only genuine
+                          track/untrack animates. */}
+                      <AnimatePresence initial={false}>
+                        {repos.map((repo) => (
+                          <motion.div key={repo.key} {...railRowMotion}>
+                            <RepoGroup
+                              repo={repo}
+                              quietDirs={quietDirs.get(repo.key)}
+                              quietRevealed={!!quietRevealed[repo.key]}
+                              onToggleQuiet={() =>
+                                setQuietRevealed((m) => ({ ...m, [repo.key]: !m[repo.key] }))
+                              }
+                              now={now}
+                              compactPct={state.compactRecommendPercent}
+                              prs={snapshot.prs}
+                              selectedSessionId={selected?.sessionId ?? null}
+                              activeFolderDir={activeFolderDir}
+                              collapsed={collapsed}
+                              renaming={renaming}
+                              titles={titles}
+                              overlays={overlays}
+                              wins={wins}
+                              actions={actions}
+                              onToggle={toggleCollapsed}
+                              onSelectFolder={selectFolder}
+                              onSelect={selectSession}
+                              onNewSession={newSession}
+                              onNewSlot={toggleSlotForm}
+                              onRemoveRepo={requestRemoveRepo}
+                              onDeleteWorktree={requestDeleteWorktree}
+                              deletingDirs={deletingDirs}
+                              onRenameCommit={commitRename}
+                              onOpenDiff={openDiff}
+                              onOpenFiles={openFiles}
+                              slotFormOpen={openSlotForms.has(repo.key)}
+                              onCancelSlotForm={() => closeSlotForm(repo.key)}
+                              onSubmitSlotForm={(input) => {
+                                closeSlotForm(repo.key);
+                                void createSlot(
+                                  { name: repo.name, dir: repo.folders[0].dir, key: repo.key },
+                                  input,
+                                );
+                              }}
+                              pendingSlots={pendingSlots.filter((p) => p.repoKey === repo.key)}
+                              onRetryPendingSlot={retryPendingSlot}
+                              onDismissPendingSlot={dismissPendingSlot}
+                              onCreateTemplateRetry={createTemplateAndRetryPending}
+                            />
+                          </motion.div>
+                        ))}
+                      </AnimatePresence>
                     </div>
                   </ScrollArea>
                 </div>
