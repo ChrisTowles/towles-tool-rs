@@ -209,10 +209,15 @@ let workspaceDir: string | null = null;
 export async function setMonacoWorkspace(dir: string): Promise<void> {
   const monaco = await loadMonaco();
   if (workspaceDir === dir) return;
-  workspaceDir = dir;
   const { reinitializeWorkspace } =
     await import("@codingame/monaco-vscode-configuration-service-override");
   await reinitializeWorkspace({ id: dir, uri: monaco.Uri.file(dir) });
+  // Only marked done once the switch actually lands. Stamping it before the
+  // await (as this used to) meant a rejection here left the guard above
+  // believing a folder's workspace was already set, silently skipping every
+  // later retry for that exact dir — the same class of bug b110362 fixed on
+  // the LSP side, where an uncaught throw wedged its switch chain for good.
+  workspaceDir = dir;
   // The LSP bridge follows the workspace (rust-analyzer per Rust checkout).
   const { syncLspWorkspace } = await import("@/lib/lsp");
   syncLspWorkspace(dir);
