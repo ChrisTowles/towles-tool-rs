@@ -374,6 +374,10 @@ fn term_start_blocking(
         }
     });
 
+    // Every terminal and agent session starts here. A PTY outlives this call
+    // and has no exit code to wait for, so it can't use tt_exec's span shape —
+    // but it's the app's most consequential spawn, so it still gets recorded.
+    tt_exec::record_detached_spawn(&shell, &[], "pty");
     let mut cmd = CommandBuilder::new(shell);
     // Scrub the app instance's own env out of the shell's inherited environment
     // (dev-server port + session/instance stamps, Tauri build config, the npm
@@ -1030,8 +1034,16 @@ pub fn term_open_path(path: String, cwd: Option<String>, line: Option<u32>) -> R
     if !full.exists() {
         return Err(format!("No such file: {}", full.display()));
     }
+    let editor_args = editor_open_args(editor, &full, line);
+    let arg_strs: Vec<String> =
+        editor_args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    tt_exec::record_detached_spawn(
+        editor,
+        &arg_strs.iter().map(String::as_str).collect::<Vec<_>>(),
+        "editor",
+    );
     std::process::Command::new(editor)
-        .args(editor_open_args(editor, &full, line))
+        .args(&editor_args)
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Failed to launch {editor}: {e}"))

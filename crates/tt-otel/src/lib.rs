@@ -38,6 +38,23 @@ const RETAIN_DAYS: usize = 14;
 /// works). For contexts that must not write state at all.
 const DISABLE_ENV: &str = "TT_TELEMETRY";
 
+/// Filter for the disk sink: our own crates at `debug`, everything else at
+/// `warn`.
+///
+/// The scoping is load-bearing, not tidiness. `tracing-subscriber` is built
+/// with the `tracing-log` feature, so an unscoped `debug` sink would bridge in
+/// every `log::debug!` from the dependency tree (hyper, tao, wry, rusqlite,
+/// tokio-tungstenite) and write *and flush* each one. That is unbounded volume
+/// uncorrelated with anything this log exists to answer, and it would falsify
+/// the assumption [`EventLog`] relies on to justify flushing every record.
+///
+/// Third-party `warn`/`error` still lands, because a dependency complaining is
+/// exactly the kind of thing worth having already captured.
+const DISK_FILTER: &str = "warn,tt=debug,tt_agentboard=debug,tt_app=debug,tt_cli=debug,\
+                           tt_collect=debug,tt_config=debug,tt_exec=debug,tt_git=debug,\
+                           tt_ide=debug,tt_journal=debug,tt_mcp=debug,tt_otel=debug,\
+                           tt_slots=debug,tt_store=debug,tt_update=debug,tt_vt=debug";
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Failed to resolve the telemetry directory: {0}")]
@@ -51,7 +68,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Whether the disk sink is switched off by [`DISABLE_ENV`].
 fn disk_sink_disabled() -> bool {
-    matches!(std::env::var(DISABLE_ENV).ok().as_deref().map(str::trim), Some("0") | Some("false"))
+    std::env::var(DISABLE_ENV).is_ok_and(|value| matches!(value.trim(), "0" | "false"))
 }
 
 /// Resource attributes stamped on every record, in OpenTelemetry naming.
@@ -78,9 +95,10 @@ fn resource(service: &str) -> Map<String, Value> {
 ///
 /// `default_level` is the stderr filter used when `RUST_LOG` is unset — the
 /// `-v` count maps onto it. The disk sink is deliberately *not* filtered by
-/// `RUST_LOG`: it records at `DEBUG` regardless, because the whole value of an
-/// event log is having the detail already captured when a question comes up.
-/// A quiet terminal should not mean a useless log.
+/// `RUST_LOG`: it always records our own crates at `DEBUG` (see
+/// [`DISK_FILTER`]), because the whole value of an event log is having the
+/// detail already captured when a question comes up. A quiet terminal should
+/// not mean a useless log.
 ///
 /// Returns [`Error::AlreadyInitialized`] rather than panicking if called twice.
 pub fn init(service: &str, default_level: &str) -> Result<()> {
@@ -93,7 +111,7 @@ pub fn init(service: &str, default_level: &str) -> Result<()> {
         let dir = tt_config::telemetry_dir()?;
         Some(
             EventLogLayer::new(EventLog::new(dir, RETAIN_DAYS), resource(service))
-                .with_filter(EnvFilter::new("debug")),
+                .with_filter(EnvFilter::new(DISK_FILTER)),
         )
     };
 
@@ -118,5 +136,48 @@ mod tests {
         assert_eq!(attrs["service.name"], "tt");
         assert_eq!(attrs["process.pid"], Value::from(std::process::id()));
         assert!(attrs.contains_key("tt.slot"), "every record must be attributable to a slot");
+    }
+}
+
+#[cfg(test)]
+mod disk_filter_tests {
+    use super::*;
+    use tracing_subscriber::Layer;
+
+    /// Run `body` under a `DISK_FILTER`-scoped EventLogLayer; return the number
+    /// of records that reached disk.
+    fn records_written(body: impl FnOnce()) -> usize {
+        let dir = tempfile::tempdir().unwrap();
+        let layer = EventLogLayer::new(EventLog::new(dir.path(), 7), Map::new())
+            .with_filter(EnvFilter::new(DISK_FILTER));
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), body);
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default().lines().count())
+            .sum()
+    }
+
+    #[test]
+    fn first_party_debug_reaches_disk() {
+        let n = records_written(|| tracing::debug!(target: "tt_exec", "a subprocess span"));
+        assert_eq!(n, 1, "our own crates must be recorded at debug");
+    }
+
+    #[test]
+    fn third_party_debug_is_dropped() {
+        // The whole reason the filter is scoped: an unscoped debug sink bridges
+        // in every dependency's log::debug! and writes+flushes each one.
+        let n = records_written(|| {
+            tracing::debug!(target: "hyper::client", "connection reused");
+            tracing::debug!(target: "tao::platform_impl", "event loop tick");
+        });
+        assert_eq!(n, 0, "dependency debug chatter must never reach the event log");
+    }
+
+    #[test]
+    fn third_party_warnings_still_reach_disk() {
+        let n = records_written(|| tracing::warn!(target: "hyper::client", "pool exhausted"));
+        assert_eq!(n, 1, "a dependency complaining is worth having captured");
     }
 }

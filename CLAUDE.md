@@ -226,13 +226,20 @@ Cargo workspace + npm workspace (`apps/client` only):
     terminal must not mean a useless log — and every record carries OTel
     resource attributes including `tt.slot`, so a line is attributable to the
     checkout that produced it. `TT_TELEMETRY=0` disables the disk sink.
-    **Every subprocess is logged**: `tt-exec`'s three spawn paths open a
-    `process.spawn` span (`process.executable.name`, `process.command_args`,
-    `process.working_directory`, `duration_ms`, `exit_code`, `outcome` —
-    including `timed_out` and `spawn_failed`), so what the tool shelled out to
-    is answerable with `jq` after the fact rather than needing a repro. Add
-    instrumentation with `tracing` spans, not `log::` calls; existing `log::`
-    sites still flow in via the subscriber's `tracing-log` bridge.
+    **Every subprocess is logged**, in one of two shapes depending on its
+    lifecycle. Run-to-completion spawns (`gh`, `git`, `claude` — everything
+    going through `tt-exec`'s three run paths) open a `process.spawn` span
+    carrying `process.executable.name`, `process.command_args`,
+    `process.working_directory`, `duration_ms`, `exit_code`, and `outcome`
+    (`ok`/`non_zero_exit`/`timed_out`/`spawn_failed`). Spawns that outlive the
+    call and have no exit code to wait for — the PTY behind every terminal,
+    `rust-analyzer`, a detached editor — can't use that shape, so they call
+    `tt_exec::record_detached_spawn(cmd, args, kind)` instead and emit a single
+    event. **A new spawn site must use one or the other**, or it is invisible
+    in the log; a bare `Command::new` is the one way to break the "what did
+    this launch?" guarantee. Add instrumentation with `tracing` spans, not
+    `log::` calls; existing `log::` sites still flow in via the subscriber's
+    `tracing-log` bridge.
   - `tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and
     lockfile schema the app uses to pose as an "IDE" a Claude Code CLI session
     connects to. Transport-free by design (sockets, auth, clocks live in

@@ -214,6 +214,11 @@ pub fn journal_open(relative_path: String) -> Result<(), String> {
         return Err("No preferred editor configured".into());
     }
     let full_path = PathBuf::from(&journal.base_folder).join(&relative_path);
+    tt_exec::record_detached_spawn(
+        editor,
+        &[&journal.base_folder, &full_path.to_string_lossy()],
+        "editor",
+    );
     std::process::Command::new(editor)
         .arg(&journal.base_folder)
         .arg(&full_path)

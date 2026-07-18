@@ -150,15 +150,42 @@ fn record_exit(span: &tracing::Span, exit_code: i32) {
     span.record("outcome", if exit_code == 0 { "ok" } else { "non_zero_exit" });
 }
 
+/// Stamp `outcome` on a span whose process never produced an exit code, and
+/// build the matching error. The single home for the failure vocabulary, so
+/// adding an outcome or renaming the field is one edit rather than one per
+/// spawn site.
+fn spawn_error(span: &tracing::Span, outcome: &str, cmd: &str, source: std::io::Error) -> Error {
+    span.record("outcome", outcome);
+    Error::Spawn { cmd: cmd.to_string(), source }
+}
+
+/// Record a process this crate does *not* run to completion: a PTY shell, a
+/// long-lived language server, a detached editor. Those have a different
+/// lifecycle than [`run`] and friends — there is no exit code to wait for —
+/// so they can't use the span-per-call shape, but they still belong in the
+/// event log, which is what makes "what did the app launch?" answerable.
+///
+/// Emits a single event rather than a span, since there is no duration to
+/// close over. `kind` names the launch shape (`"pty"`, `"lsp"`, `"editor"`).
+pub fn record_detached_spawn(cmd: &str, args: &[&str], kind: &str) {
+    tracing::debug!(
+        "process.executable.name" = cmd,
+        "process.command_args" = args.join(" "),
+        outcome = "detached",
+        launch_kind = kind,
+        "spawned detached process"
+    );
+}
+
 /// Run a command, capturing output. Does not fail on a non-zero exit code.
 pub fn run(cmd: &str, args: &[&str]) -> Result<Output> {
     let span = spawn_span(cmd, args, None, None);
     let _entered = span.enter();
 
-    let output = Command::new(cmd).args(args).output().map_err(|source| {
-        span.record("outcome", "spawn_failed");
-        Error::Spawn { cmd: cmd.to_string(), source }
-    })?;
+    let output = Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|source| spawn_error(&span, "spawn_failed", cmd, source))?;
 
     let exit_code = output.status.code().unwrap_or(-1);
     record_exit(&span, exit_code);
@@ -185,19 +212,15 @@ pub fn run_with_stdin(cmd: &str, args: &[&str], stdin: &str) -> Result<Output> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|source| {
-            span.record("outcome", "spawn_failed");
-            Error::Spawn { cmd: cmd.to_string(), source }
-        })?;
+        .map_err(|source| spawn_error(&span, "spawn_failed", cmd, source))?;
 
     if let Some(mut handle) = child.stdin.take() {
         // A closed pipe (child exited early) is not fatal; we still collect output.
         let _ = handle.write_all(stdin.as_bytes());
     }
-    let output = child.wait_with_output().map_err(|source| {
-        span.record("outcome", "wait_failed");
-        Error::Spawn { cmd: cmd.to_string(), source }
-    })?;
+    let output = child
+        .wait_with_output()
+        .map_err(|source| spawn_error(&span, "wait_failed", cmd, source))?;
 
     let exit_code = output.status.code().unwrap_or(-1);
     record_exit(&span, exit_code);
@@ -271,10 +294,8 @@ fn run_with_timeout_in(
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
-    let mut child = command.spawn().map_err(|source| {
-        span.record("outcome", "spawn_failed");
-        Error::Spawn { cmd: cmd.to_string(), source }
-    })?;
+    let mut child =
+        command.spawn().map_err(|source| spawn_error(&span, "spawn_failed", cmd, source))?;
 
     fn drain(reader: Option<impl Read>) -> String {
         let mut buf = Vec::new();
@@ -289,10 +310,9 @@ fn run_with_timeout_in(
     let out_thread = std::thread::spawn(move || drain(out));
     let err_thread = std::thread::spawn(move || drain(err));
 
-    let status = child.wait_timeout(timeout).map_err(|source| {
-        span.record("outcome", "wait_failed");
-        Error::Spawn { cmd: cmd.to_string(), source }
-    })?;
+    let status = child
+        .wait_timeout(timeout)
+        .map_err(|source| spawn_error(&span, "wait_failed", cmd, source))?;
 
     let Some(status) = status else {
         // Timed out: kill and reap so we don't leave a zombie. The drain threads
