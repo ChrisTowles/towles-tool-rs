@@ -7,7 +7,6 @@
 mod agentboard;
 mod claude_sessions;
 mod diagnostics;
-mod dictation;
 mod doctor;
 mod gh_actions;
 mod ide;
@@ -92,8 +91,8 @@ fn app_identifier(base: &str) -> String {
 }
 
 pub fn run() {
-    // `log::*` calls (tt-dictate's engine thread especially) are dropped
-    // without a logger installed; errors always print, more with RUST_LOG.
+    // `log::*` calls are dropped without a logger installed; errors always
+    // print, more with RUST_LOG.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
 
     // WebKitGTK's DMABUF renderer glitches on the NVIDIA proprietary driver:
@@ -414,11 +413,9 @@ pub fn run() {
         .manage(ide::DiffRequests::default())
         .manage(resources::ResourceState::default())
         .manage(claude_sessions::ClaudeSessionsCache::default())
-        .manage(dictation::DictationState::default())
         .on_window_event(|window, event| {
             if let WindowEvent::Destroyed = event {
                 terminal::on_window_destroyed(window.app_handle(), window.label());
-                dictation::on_window_destroyed(window.app_handle(), window.label());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -535,13 +532,6 @@ pub fn run() {
             ide::ide_write_file,
             ide::ide_diff_resolve,
             diagnostics::ide_diagnostics_refresh,
-            dictation::dictation_status,
-            dictation::dictation_start,
-            dictation::dictation_stop,
-            dictation::dictation_toggle,
-            dictation::dictation_model_status,
-            dictation::dictation_model_fetch,
-            dictation::dictation_devices,
         ])
         .run(context)
         .expect("error while running Towles Tool application");

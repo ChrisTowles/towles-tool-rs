@@ -347,51 +347,6 @@ impl Default for IssueCollector {
     }
 }
 
-/// Dictation engine tuning, consumed by `tt-dictate::settings::EngineConfig::from_settings`.
-/// Clamping to safe ranges happens there, not here — this struct only carries
-/// the raw user-facing values.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", default)]
-pub struct DictationSettings {
-    /// Substring matched against the cpal input device name. Empty = default device.
-    pub input_device: String,
-    /// Pre-recognizer noise gate, in dBFS. Chunks quieter than this are
-    /// zero-filled before reaching the streaming recognizer.
-    ///
-    /// Real speech on a typical mic at moderate system input volume lands
-    /// around -30..-50 dBFS per 120ms chunk, so the gate must sit well below
-    /// that. scribed's -36 default silently erased entire utterances here
-    /// (verified: -45 dBFS speech → zero transcripts at -36, perfect at -60);
-    /// -60 still gates true silence (quiet-room floor ≈ -80s) fine.
-    pub silence_threshold_dbfs: f32,
-    /// Hard ceiling on a single recording session, in seconds.
-    pub max_recording_seconds: u32,
-    /// Auto-stop after this many seconds without new transcript text. 0 disables.
-    pub silence_auto_stop_seconds: u32,
-    /// Endpoint rule 1: trailing silence (seconds) required to fire an
-    /// endpoint when nothing has been decoded yet.
-    pub endpoint_rule1_silence_seconds: f32,
-    /// Endpoint rule 2: trailing silence (seconds) required after non-blank
-    /// tokens have been decoded — the main "user paused" trigger.
-    pub endpoint_rule2_silence_seconds: f32,
-    /// Endpoint rule 3: hard ceiling on a single utterance, in seconds.
-    pub endpoint_rule3_max_utterance_seconds: f32,
-}
-
-impl Default for DictationSettings {
-    fn default() -> Self {
-        Self {
-            input_device: String::new(),
-            silence_threshold_dbfs: -60.0,
-            max_recording_seconds: 300,
-            silence_auto_stop_seconds: 60,
-            endpoint_rule1_silence_seconds: 2.4,
-            endpoint_rule2_silence_seconds: 1.0,
-            endpoint_rule3_max_utterance_seconds: 20.0,
-        }
-    }
-}
-
 /// Top-level user settings, mirroring `UserSettingsSchema` in the TS CLI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", default)]
@@ -404,8 +359,6 @@ pub struct UserSettings {
     pub agentboard: AgentboardSettings,
 
     pub collectors: CollectorsSettings,
-
-    pub dictation: DictationSettings,
 }
 
 impl Default for UserSettings {
@@ -415,7 +368,6 @@ impl Default for UserSettings {
             journal_settings: JournalSettings::default(),
             agentboard: AgentboardSettings::default(),
             collectors: CollectorsSettings::default(),
-            dictation: DictationSettings::default(),
         }
     }
 }
@@ -595,14 +547,6 @@ pub fn store_db_path() -> Result<PathBuf> {
 /// WAL/SHM churn.
 pub fn nudge_dir_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("nudge"))
-}
-
-/// Dictation ASR model cache: `~/.cache/towles-tool/models`. Machine-shared,
-/// NOT instance-scoped — a downloaded model bundle is ~442MB, so every
-/// worktree slot must reuse the same one copy rather than each holding its
-/// own.
-pub fn models_cache_dir() -> Result<PathBuf> {
-    Ok(dirs::cache_dir().ok_or(Error::NoDataDir)?.join(TOOL_NAME).join("models"))
 }
 
 /// Agentboard *instance* persistence directory (sessions.json, windows.json,
@@ -835,18 +779,6 @@ mod tests {
         assert_eq!(loaded.journal_settings.base_folder, "/tmp/j");
         // Missing journal fields fall back to defaults.
         assert!(loaded.journal_settings.daily_path_template.contains("daily-notes"));
-    }
-
-    #[test]
-    fn dictation_settings_partial_object_fills_missing_defaults() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("towles-tool.settings.json");
-        std::fs::write(&path, r#"{"dictation":{"inputDevice":"USB Mic"}}"#).unwrap();
-
-        let loaded = load_from(&path).unwrap();
-        assert_eq!(loaded.dictation.input_device, "USB Mic");
-        assert_eq!(loaded.dictation.silence_threshold_dbfs, -60.0);
-        assert_eq!(loaded.dictation.max_recording_seconds, 300);
     }
 
     #[test]

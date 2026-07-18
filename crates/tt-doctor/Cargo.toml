@@ -7,9 +7,7 @@ publish = false
 [dependencies]
 tt-agentboard = { workspace = true }
 tt-config = { workspace = true }
-tt-dictate = { workspace = true }
 tt-exec = { workspace = true }
 chrono = { workspace = true }
-dirs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

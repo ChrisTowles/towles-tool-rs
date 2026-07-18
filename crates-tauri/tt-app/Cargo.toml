@@ -20,7 +20,6 @@ tauri-plugin-opener = { workspace = true }
 tt-agentboard = { workspace = true }
 tt-collect = { workspace = true }
 tt-config = { workspace = true }
-tt-dictate = { workspace = true, features = ["asr"] }
 tt-doctor = { workspace = true }
 tt-exec = { workspace = true }
 tt-git = { workspace = true }

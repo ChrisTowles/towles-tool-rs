@@ -343,37 +343,8 @@ pub fn check_agentboard() -> Vec<AgentBoardCheck> {
 
     results.push(check_settings_parse());
     results.push(check_tt_mcp_registered());
-    results.push(check_dictation_model());
 
     results
-}
-
-/// Whether the dictation ASR model bundle (~442MB, NVIDIA Nemotron streaming)
-/// is downloaded to the shared models cache. Informational, not a hard
-/// failure — dictation just isn't usable yet until the app's dictation panel
-/// (or `dictation_model_fetch`) downloads it, same as the data-hub row above.
-pub fn check_dictation_model() -> AgentBoardCheck {
-    let dir = match tt_config::models_cache_dir() {
-        Ok(dir) => dir.join(tt_dictate::asr::download::STREAMING_MODEL.extracted_dir),
-        Err(e) => {
-            return AgentBoardCheck {
-                name: "dictation model".to_string(),
-                value: format!("error: {e}"),
-                ok: false,
-                warning: None,
-                hint: None,
-            };
-        }
-    };
-    let downloaded = dir.exists();
-    AgentBoardCheck {
-        name: "dictation model".to_string(),
-        value: if downloaded { dir.display().to_string() } else { "not downloaded".to_string() },
-        ok: true,
-        warning: (!downloaded).then(|| "not downloaded yet — dictation is unavailable".to_string()),
-        hint: (!downloaded)
-            .then(|| "Open the dictation panel and download the model (~442MB)".to_string()),
-    }
 }
 
 /// Whether the shared settings file parses. A corrupt settings JSON otherwise
