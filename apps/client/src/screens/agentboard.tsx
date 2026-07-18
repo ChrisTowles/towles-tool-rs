@@ -60,7 +60,7 @@ import {
   claudeResumeCommand,
   claudeTitleName,
   consumePendingAgentboardNav,
-  consumePendingOpenSession,
+  consumePendingOpenSessions,
   cycleNeedsYou,
   COL_TOTAL,
   diffPaneDir,
@@ -83,6 +83,8 @@ import {
   onAgentboardNavRequest,
   onOpenSessionRequest,
   paneRects,
+  nextOpenFileNonce,
+  nextWindowId,
   placePane,
   replacePane,
   prForFolder,
@@ -90,7 +92,6 @@ import {
   pruneWins,
   sessionLabel,
   sleep,
-  termWrite,
   termWriteRetry,
   useAgentboardState,
   useNow,
@@ -415,7 +416,7 @@ export function AgentboardScreen() {
           endText: p.endText,
           selectToEndOfLine: p.selectToEndOfLine,
         },
-        nonce: Date.now(),
+        nonce: nextOpenFileNonce(),
       },
     }));
     openFiles(dir);
@@ -589,9 +590,7 @@ export function AgentboardScreen() {
   // appending a second pane beside the corpse.
   function addPaneToActive(folderDir: string, paneId: string) {
     updateWins([folderDir], (w) =>
-      placePane(replacePane(w, exitPaneId(paneId), paneId), folderDir, paneId, () =>
-        `w${Date.now()}`,
-      ),
+      placePane(replacePane(w, exitPaneId(paneId), paneId), folderDir, paneId, nextWindowId),
     );
   }
 
@@ -623,7 +622,7 @@ export function AgentboardScreen() {
   async function newWindow(folderDir: string) {
     const rec = await abInvoke<SessionData>("ab_add_session", { dir: folderDir, name: null });
     if (!rec) return;
-    const id = `w${Date.now()}`;
+    const id = nextWindowId();
     updateWins([folderDir], (cur) => {
       const count = cur.windows.filter((w) => w.folderDir === folderDir).length;
       return {
@@ -740,6 +739,31 @@ export function AgentboardScreen() {
       return rest;
     });
     ackFolder(folderDir);
+  }
+
+  /**
+   * Run `fn` against a session's PTY, guaranteeing its shell exists first.
+   *
+   * A pane spawns its shell only once rendered, and only the active folder's
+   * active window renders — so "write to session X" really means "make X
+   * visible, wait for its shell, then write". Every PTY-writing path goes
+   * through here: open-coding the three steps is how stop/compact came to
+   * silently no-op for any folder that wasn't the active one.
+   *
+   * `folderDir` is only needed when the session isn't on the board yet (the
+   * crash-resume handoff at boot); otherwise it's resolved from state, so
+   * callers don't have to carry it.
+   */
+  async function withLiveSession(
+    sessionId: string,
+    fn: () => Promise<unknown>,
+    folderDir?: string,
+  ) {
+    const dir = folderDir ?? folderOf.get(sessionId)?.dir ?? cwds.current[sessionId];
+    if (!dir) return;
+    selectSession(dir, sessionId);
+    await waitForFirstFrame(sessionId);
+    await fn();
   }
 
   // The user is now looking at this folder's rail entry — clear its agents'
@@ -927,13 +951,10 @@ export function AgentboardScreen() {
     if (!rec) return;
     mountSession(created.dir, rec.id);
     if (prompt) {
-      // Selecting mounts the TerminalView, which spawns the PTY; wait for its
-      // first real output (a proxy for "the shell is actually reading input")
-      // rather than a fixed guess — a successful term_write only proves the
-      // Rust-side write conduit exists, not that zsh has finished sourcing
-      // its rc files, and a queued command typed before that gets eaten (the
-      // termWriteRetry window alone lost this race on slower creations).
-      await waitForFirstFrame(rec.id);
+      // `launchClaudeIn` waits for the PTY's first frame itself — a proxy for
+      // "the shell is actually reading input", since a successful term_write
+      // only proves the Rust-side conduit exists, not that zsh finished
+      // sourcing its rc files.
       await launchClaudeIn(
         { folderDir: created.dir, sessionId: rec.id, sessionName: rec.name, restart: false },
         prompt,
@@ -965,19 +986,25 @@ export function AgentboardScreen() {
      * here. Defaults to `prompt` for every other caller. */
     label?: string,
   ) {
-    const { sessionId, sessionName, restart } = target;
+    const { folderDir, sessionId, sessionName, restart } = target;
     const shown = label ?? prompt;
     setOverlay(sessionId, "busy");
     const verb = restart ? "starting over — fresh Claude session" : "starting Claude";
     toast(shown ? `✦ ${verb} in ${sessionName}: ${shown}` : `✦ ${verb} in ${sessionName}`);
     if (shown) void abInvoke("ab_set_session_purpose", { id: sessionId, text: shown });
-    if (restart) {
-      await termWrite(sessionId, "\x03");
-      await sleep(150);
-      await termWrite(sessionId, "\x04");
-      await sleep(300);
-    }
-    await termWriteRetry(sessionId, claudeCommand(prompt, options));
+    await withLiveSession(
+      sessionId,
+      async () => {
+        if (restart) {
+          await termWriteRetry(sessionId, "\x03");
+          await sleep(150);
+          await termWriteRetry(sessionId, "\x04");
+          await sleep(300);
+        }
+        await termWriteRetry(sessionId, claudeCommand(prompt, options));
+      },
+      folderDir,
+    );
   }
 
   // Dismiss the start-Claude dialog (Enter, Escape, or click-outside all land
@@ -994,18 +1021,33 @@ export function AgentboardScreen() {
 
   // Claude Sessions' "Open in Agentboard" handoff (see `lib/agentboard.ts`'s
   // pending-open-session bridge doc comment for why this can't be a plain
-  // function call): select the resolved folder/session, then type the resume
-  // command into its PTY. `termWriteRetry` covers the beat before `term_start`
-  // registers the freshly-created session (same pattern as `launchClaudeIn`).
+  // function call).
+  //
+  // Requests run **one at a time** via a promise tail: `withLiveSession` makes
+  // each request's folder active to mount its pane, and only one folder can be
+  // active at a time — so overlapping them would leave every folder but the
+  // last with a pane that never started.
   useEffect(() => {
+    let cancelled = false;
+    let tail = Promise.resolve();
+
     const handle = (req: PendingOpenSession) => {
-      selectSession(req.folderDir, req.sessionId);
-      toast(`✦ resuming ${req.label} — claude --resume ${req.resumeId.slice(0, 8)}`);
-      void termWriteRetry(req.sessionId, claudeResumeCommand(req.resumeId));
+      tail = tail.then(async () => {
+        if (cancelled) return;
+        toast(`✦ resuming ${req.label} — claude --resume ${req.resumeId.slice(0, 8)}`);
+        await withLiveSession(
+          req.sessionId,
+          () => termWriteRetry(req.sessionId, claudeResumeCommand(req.resumeId)),
+          req.folderDir,
+        );
+      });
     };
-    const pending = consumePendingOpenSession();
-    if (pending) handle(pending);
-    return onOpenSessionRequest(handle);
+    for (const req of consumePendingOpenSessions()) handle(req);
+    const off = onOpenSessionRequest(handle);
+    return () => {
+      cancelled = true;
+      off();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1207,16 +1249,16 @@ export function AgentboardScreen() {
     stopClaude: (s) => {
       setOverlay(s.id, "interrupted");
       toast(`■ interrupting Claude — ${s.name}'s shell stays alive`);
-      void (async () => {
-        await termWrite(s.id, "\x03"); // interrupt the current turn
+      void withLiveSession(s.id, async () => {
+        await termWriteRetry(s.id, "\x03"); // interrupt the current turn
         await sleep(150);
-        await termWrite(s.id, "\x04"); // Ctrl-D at the empty prompt exits Claude
-      })();
+        await termWriteRetry(s.id, "\x04"); // Ctrl-D at the empty prompt exits Claude
+      });
     },
     compactClaude: (s) => {
       setOverlay(s.id, "busy");
       toast(`⤿ compacting ${s.name} — summarize & drop stale turns`);
-      void termWrite(s.id, "/compact\r");
+      void withLiveSession(s.id, () => termWriteRetry(s.id, "/compact\r"));
     },
     restartClaude: (folderDir, s) => {
       selectSession(folderDir, s.id);
@@ -1533,7 +1575,31 @@ export function AgentboardScreen() {
               )}
               {wins && activeFolderDir && (
                 <div className="flex items-center gap-1 border-b bg-card px-2 py-1">
-                  {windowsForFolder.map((w) => (
+                  {windowsForFolder.map((w) =>
+                    // Swap the chip for the input rather than nesting one
+                    // inside it: buttons may not contain interactive
+                    // descendants. See apps/client/CLAUDE.md.
+                    renamingWin === w.id ? (
+                      <input
+                        key={w.id}
+                        autoFocus
+                        defaultValue={w.name}
+                        aria-label={`rename window ${w.name}`}
+                        onBlur={(e) => {
+                          const name = e.target.value.trim() || w.name;
+                          setRenamingWin(null);
+                          updateWins([w.folderDir], (cur) => ({
+                            ...cur,
+                            windows: cur.windows.map((x) => (x.id === w.id ? { ...x, name } : x)),
+                          }));
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          if (e.key === "Escape") setRenamingWin(null);
+                        }}
+                        className="w-24 shrink-0 rounded-md border border-input bg-background px-2 py-1 text-[11px] outline-none"
+                      />
+                    ) : (
                     <button
                       key={w.id}
                       type="button"
@@ -1553,28 +1619,7 @@ export function AgentboardScreen() {
                       )}
                     >
                       <span className={cn("size-2 rounded-[3px]", windowColor(windowsForFolder, w.id))} />
-                      {renamingWin === w.id ? (
-                        <input
-                          autoFocus
-                          defaultValue={w.name}
-                          onClick={(e) => e.stopPropagation()}
-                          onBlur={(e) => {
-                            const name = e.target.value.trim() || w.name;
-                            setRenamingWin(null);
-                            updateWins([w.folderDir], (cur) => ({
-                              ...cur,
-                              windows: cur.windows.map((x) => (x.id === w.id ? { ...x, name } : x)),
-                            }));
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                            if (e.key === "Escape") setRenamingWin(null);
-                          }}
-                          className="w-24 rounded-sm border border-input bg-background px-1 text-[11px] outline-none"
-                        />
-                      ) : (
-                        w.name
-                      )}
+                      {w.name}
                       <span className="font-mono text-[10px] text-muted-foreground/60">
                         {w.panes.length}⊞
                       </span>
@@ -1609,7 +1654,8 @@ export function AgentboardScreen() {
                         </span>
                       )}
                     </button>
-                  ))}
+                    ),
+                  )}
                   {activeFolderDir && (
                     <button
                       type="button"

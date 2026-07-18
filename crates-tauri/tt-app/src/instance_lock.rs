@@ -67,7 +67,7 @@ fn create_new(path: &PathBuf) -> bool {
     }
 }
 
-fn pid_is_alive(pid: u32) -> bool {
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
     let mut system = System::new();
     system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
     system.process(Pid::from_u32(pid)).is_some()

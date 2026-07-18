@@ -38,6 +38,7 @@ pub mod notify;
 pub mod persist;
 pub mod procenv;
 pub mod repos;
+pub mod resume;
 pub mod session_order;
 pub mod sessions;
 pub mod text;

@@ -174,6 +174,48 @@ function fmt(v) {
   return JSON.stringify(v, null, 2);
 }
 
+// --- console errors ---------------------------------------------------------
+// The app buffers console.error/warn + uncaught exceptions on `window` under
+// VITE_WDIO (apps/client/src/lib/wdio-console.ts — keep this key in sync; it's
+// a cross-process contract and a rename just makes the check go quiet).
+// Without this, React's runtime complaints only reach the `dev:drive`
+// terminal's stdout, a different process from this script.
+const CONSOLE_KEY = "__ttConsoleErrors";
+
+/** Read the buffer. `summary` returns just a count + the last few errors —
+ * the buffer holds up to 200 × 2KB entries, too much to ship for a warning. */
+async function readConsole({ clear = false, summary = false } = {}) {
+  return await evalExpr(`(() => {
+    const b = window[${JSON.stringify(CONSOLE_KEY)}];
+    if (!b) return null;
+    const errors = b.filter((e) => e.kind !== "warn");
+    const out = ${summary}
+      ? { count: errors.length, last: errors.slice(-3) }
+      : b.slice();
+    if (${clear}) b.length = 0;
+    return out;
+  })()`);
+}
+
+/** Warn if the page has logged errors. Runs after every verb, so a broken
+ * render is impossible to miss even when the verb itself succeeded. */
+async function surfaceConsoleErrors() {
+  let found;
+  try {
+    found = await readConsole({ summary: true });
+  } catch {
+    return; // never let the check itself break a working command
+  }
+  // `null` = collector absent (not a VITE_WDIO build); stay quiet.
+  if (!found || found.count === 0) return;
+  console.error(
+    `\n[drive] ⚠ ${found.count} console error(s) in the page — run \`drive.mjs console\` for detail:`,
+  );
+  for (const e of found.last) {
+    console.error(`  [${e.kind}] ${e.text.split("\n")[0].slice(0, 160)}`);
+  }
+}
+
 function usage(exitCode) {
   console.log(
     [
@@ -189,6 +231,10 @@ function usage(exitCode) {
       "  url <path> [--session id]  navigate the window",
       "  session-open               open a session that outlives one command, print its id",
       "  session-close <id>         close a session opened with session-open",
+      "  console [--clear]          console errors/warnings the page has logged",
+      "",
+      "Every verb also prints a ⚠ summary when the page has logged errors —",
+      "React reports invalid markup at runtime, and nothing else here sees it.",
     ].join("\n"),
   );
   process.exit(exitCode);
@@ -328,10 +374,33 @@ switch (verb) {
     console.log(`navigated to ${full}`);
     break;
   }
+  case "console": {
+    const entries = await readConsole({ clear: rest.includes("--clear") });
+    if (entries === null) {
+      fail(
+        "no console collector in the page — is this a VITE_WDIO build (`npm run dev:drive`)?",
+      );
+    }
+    if (entries.length === 0) {
+      console.log("(no console errors or warnings)");
+      break;
+    }
+    for (const e of entries) {
+      console.log(`[${e.kind}] ${new Date(e.at).toISOString().slice(11, 19)} ${e.text}`);
+    }
+    // Non-zero on real errors so a caller can gate on this verb.
+    process.exit(entries.some((e) => e.kind !== "warn") ? 1 : 0);
+    break;
+  }
   case undefined:
     usage(0);
     break;
   default:
     console.error(`[drive] unknown verb: ${verb}\n`);
     usage(1);
+}
+
+// Ran a verb successfully — say so if the page is nonetheless broken.
+if (verb !== "console" && verb !== "status") {
+  await surfaceConsoleErrors();
 }

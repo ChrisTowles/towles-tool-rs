@@ -28,6 +28,12 @@ pub struct SessionRecord {
     /// session exists. Empty counts as unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
+    /// Last Claude Code session (thread) id observed running in this PTY.
+    /// Live attribution dies with the agent process, so persisting it is what
+    /// lets a *crashed* run still say "pane X was running session Y" — the
+    /// input to the resume picker (see [`crate::resume`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_claude_session_id: Option<String>,
 }
 
 /// On-disk shape: `{ "folders": { "<folderDir>": [ {id,name,createdAt}, ... ] },
@@ -117,7 +123,13 @@ impl SessionStore {
             None => format!("shell {seq}"),
         };
         let id = gen_id(dir, now_ms, seq);
-        let record = SessionRecord { id, name, created_at: now_ms, purpose: None };
+        let record = SessionRecord {
+            id,
+            name,
+            created_at: now_ms,
+            purpose: None,
+            last_claude_session_id: None,
+        };
         self.folders.entry(dir.to_string()).or_default().push(record.clone());
         self.dirty.insert(dir.to_string());
         record
@@ -149,6 +161,24 @@ impl SessionStore {
                     return true;
                 }
                 return false;
+            }
+        }
+        false
+    }
+
+    /// Record that Claude session `claude_session_id` was seen running in PTY
+    /// session `id`. Returns whether the link changed; the caller persists on
+    /// `true`. This runs on every payload rebuild, so an unchanged link must
+    /// not mark the folder dirty.
+    pub fn note_agent(&mut self, id: &str, claude_session_id: &str) -> bool {
+        for (dir, list) in self.folders.iter_mut() {
+            if let Some(rec) = list.iter_mut().find(|r| r.id == id) {
+                if rec.last_claude_session_id.as_deref() == Some(claude_session_id) {
+                    return false;
+                }
+                rec.last_claude_session_id = Some(claude_session_id.to_string());
+                self.dirty.insert(dir.clone());
+                return true;
             }
         }
         false
@@ -333,6 +363,49 @@ mod tests {
         assert_eq!(store.sessions_for("/r/a")[0].purpose, None);
         // Unknown id is a no-op.
         assert!(!store.set_purpose("nope", Some("x")));
+    }
+
+    #[test]
+    fn note_agent_records_link_and_only_dirties_on_change() {
+        let mut store = SessionStore::new(None);
+        let rec = store.add("/r/a", None, 1);
+        assert_eq!(store.sessions_for("/r/a")[0].last_claude_session_id, None);
+
+        assert!(store.note_agent(&rec.id, "claude-1"));
+        assert_eq!(
+            store.sessions_for("/r/a")[0].last_claude_session_id.as_deref(),
+            Some("claude-1")
+        );
+
+        // Same link on a later tick: no rewrite of the shared file requested.
+        assert!(!store.note_agent(&rec.id, "claude-1"));
+
+        // A different Claude session in the same pane replaces the link.
+        assert!(store.note_agent(&rec.id, "claude-2"));
+        assert_eq!(
+            store.sessions_for("/r/a")[0].last_claude_session_id.as_deref(),
+            Some("claude-2")
+        );
+
+        assert!(!store.note_agent("nope", "claude-3"));
+    }
+
+    #[test]
+    fn agent_link_survives_a_save_load_round_trip() {
+        // The whole point of persisting it: after a crash the process env is
+        // gone, so the file is the only surviving record of the pairing.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sessions.json");
+        let mut store = SessionStore::new(Some(path.clone()));
+        let rec = store.add("/r/a", None, 1);
+        store.note_agent(&rec.id, "claude-1");
+        store.save().unwrap();
+
+        let reloaded = SessionStore::new(Some(path));
+        assert_eq!(
+            reloaded.sessions_for("/r/a")[0].last_claude_session_id.as_deref(),
+            Some("claude-1")
+        );
     }
 
     #[test]

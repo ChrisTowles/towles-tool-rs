@@ -46,8 +46,38 @@ import {
   type SessionData,
   type WindowsPayload,
   type WireWindowsPayload,
+  nextOpenFileNonce,
+  nextWindowId,
 } from "./agentboard";
 import type { PrItem } from "./data";
+
+describe("nextWindowId", () => {
+  it("never repeats an id, even when minted within one millisecond", () => {
+    // Window ids key `activeWindows`; a duplicate makes two folders resolve to
+    // the same window and only one folder's panes ever mount. Restoring
+    // several panes after a crash mints them all in a single tick, so this is
+    // the realistic collision, not a theoretical one.
+    const ids = Array.from({ length: 200 }, () => nextWindowId());
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("stays monotonically increasing so ordering is preserved", () => {
+    const a = nextWindowId();
+    const b = nextWindowId();
+    expect(Number(b.slice(1))).toBeGreaterThan(Number(a.slice(1)));
+  });
+});
+
+describe("nextOpenFileNonce", () => {
+  it("changes on every call so back-to-back opens both re-trigger", () => {
+    // Claude's openFile tool calls arrive with no human delay between them;
+    // a repeated nonce reads as "nothing changed" and the second open would
+    // never scroll to its anchor.
+    const a = nextOpenFileNonce();
+    const b = nextOpenFileNonce();
+    expect(b).not.toBe(a);
+  });
+});
 
 describe("waitForFirstFrame", () => {
   it("resolves immediately outside the Tauri shell (browser dev mode)", async () => {
