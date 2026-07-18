@@ -25,6 +25,8 @@ npm run run                         # release build (`tauri build --no-bundle`) 
 npm run dev:drive                   # like dev, but the window is automatable (live-drive)
 npm run drive -- <verb>             # drive the dev:drive window (status|invoke|shot|click|…)
 npm run e2e                         # regression suite vs the real shell (see below)
+cd apps/client && npm run lint      # oxlint (types/react/unicorn/oxc rules; warnings are non-blocking)
+cd apps/client && npm run format    # oxfmt, in place (100-col, matches rustfmt's width)
 cd apps/client && npx shadcn@latest add <name>   # vendor a shadcn/ui component
 ```
 
@@ -52,6 +54,18 @@ Both are gated behind the `wdio` cargo feature + `VITE_WDIO` flag, so nothing
 ships in normal/release builds. Ports come from the env files (`TT_DEV_PORT` in `.env.local`, or `.env` rendered by `tt slot`;
 webdriver = the `TT_E2E_WEBDRIVER_PORT` claim, falling back to `+3000`); `dev:drive` and `e2e` share a slot's ports, so don't run
 both at once in one slot. Full docs + Linux gotchas: [e2e/README.md](e2e/README.md).
+
+**After finishing a task that touches the app, leave it running for Chris to
+check.** Once the change builds/lints/tests clean, launch `npm run run`
+(release build, the daily-driving binary) as a background task — Bash with
+`run_in_background: true`, not a foregrounded blocking call — as the last
+step before ending the turn. This is a courtesy handoff so the real running
+app is already on screen for Chris to click through and validate, rather than
+him having to remember to launch it himself. It doesn't replace driving/
+screenshotting the app yourself first for UI/IPC changes (previous section) —
+do both when the change touches the app. Skip it for changes with nothing in
+the app to look at (CLI-only, docs-only, crate-internal refactors with no
+`tt-app`/`apps/client` surface).
 
 > The binary is **`tt`**. The `ttr` → `tt` cutover from the TypeScript CLI
 > happened 2026-07-13 — hard cutover, no `ttr` alias left behind (see
@@ -197,7 +211,10 @@ Cargo workspace + npm workspace (`apps/client` only):
     per tick; issues + PRs via `gh`; a watched Slack DM via the Slack Web API
     (escalating banner in the app). Collector keys are `claude:calendar`,
     `issues`, `prs`, `slack:dm` — the frontend matches on them. Email was
-    removed in the day-screens pivot.
+    removed in the day-screens pivot. See
+    [`crates/tt-collect/CLAUDE.md`](crates/tt-collect/CLAUDE.md) for the
+    never-panic contract, per-repo isolation, and where the Slack
+    protocol/socket split lives.
   - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`tt mcp serve`) exposing
     the store + live agent sessions + `journal_append` to claude sessions.
   - `tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and
@@ -294,6 +311,11 @@ loose in `.claude/` — `.claude/hooks/` is reserved for hooks scoped to
 *this repo's own* Claude Code sessions (e.g. `guard-slot-pkill.sh`), not
 things meant to ship to other checkouts.
 
+Any commit touching a plugin package is auto-checked by the
+`.githooks/pre-commit` hook (`core.hooksPath .githooks`): it bumps that
+plugin's version and runs `claude plugin validate .` against the
+marketplace + both manifests before the commit lands.
+
 ## Migration
 
 Features are ported from the TypeScript CLI at
@@ -311,10 +333,10 @@ Rust/TypeScript coding standards (errors-as-values, parse-don't-validate,
 branded/newtype domain types, deep modules, testing through real seams,
 etc.). The points below are repo-specific specializations of that doc.
 
-- **Errors:** `thiserror` in library crates; flatten to exit codes at the CLI
-  boundary (in `tt-cli`), not deep in the libs.
-- **Tests:** black-box CLI tests with `assert_cmd`; unit tests alongside logic.
-- **Formatting:** rustfmt, 100-column width.
+- **Rust conventions** (errors, tests, formatting, TTY guards, shared-file
+  serde, etc.): see [`.claude/rules/rust.md`](.claude/rules/rust.md) — it
+  auto-loads for any `.rs` file under `crates/`, `crates-cli/`, or
+  `crates-tauri/`, so don't restate it here.
 - **Frontend styling:** Tailwind + shadcn/ui only — no CSS modules, no
   hand-rolled stylesheets, no CSS-in-JS. Add components with
   `npx shadcn@latest add <name>`, don't hand-write Radix wrappers. The one
