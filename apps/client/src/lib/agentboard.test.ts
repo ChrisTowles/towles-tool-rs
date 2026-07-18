@@ -20,6 +20,7 @@ import {
   folderPaneDir,
   isCacheExpiring,
   isFolderQuiet,
+  isPasteableImage,
   needingSessionsOldestFirst,
   normalizeWins,
   paneRects,
@@ -28,6 +29,7 @@ import {
   placePane,
   prForFolder,
   prMergedButFolderHasWork,
+  promptWithImages,
   pruneWins,
   QUIET_GRACE_MS,
   sessionNeeds,
@@ -913,5 +915,62 @@ describe("agentRollup expiring count", () => {
     const r = agentRollup([repoOf([expiring, warm])], now, 30);
     expect(r.total).toBe(2);
     expect(r.expiring).toBe(1);
+  });
+});
+
+describe("promptWithImages", () => {
+  it("returns the bare goal when nothing was pasted", () => {
+    expect(promptWithImages("  fix the header  ", [])).toBe("fix the header");
+  });
+
+  it("names the image and tells Claude to read it first", () => {
+    const prompt = promptWithImages("match this design", ["/slot/.claude/pasted-images/paste-1.png"]);
+    // The path alone isn't enough — a bare path in a prompt is something
+    // Claude may or may not act on, so the instruction is what makes the
+    // attachment reliable.
+    expect(prompt).toBe(
+      "match this design — Attached image — read it first, before anything else: " +
+        "/slot/.claude/pasted-images/paste-1.png",
+    );
+  });
+
+  it("pluralizes for several images and lists them in paste order", () => {
+    const prompt = promptWithImages("compare these", ["/a/paste-1.png", "/a/paste-2.png"]);
+    expect(prompt).toContain("Attached images — read them first");
+    expect(prompt).toContain("/a/paste-1.png /a/paste-2.png");
+  });
+
+  it("an image with no typed goal is still a prompt", () => {
+    // Pasting a screenshot and hitting create is a complete ask on its own —
+    // this must not collapse to an empty prompt, which would skip the launch.
+    const prompt = promptWithImages("", ["/a/paste-1.png"]);
+    expect(prompt).toBe("Attached image — read it first, before anything else: /a/paste-1.png");
+  });
+
+  it("never emits a newline — the prompt is typed into a PTY inside a quoted arg", () => {
+    // A literal newline mid-quote drops zsh's line editor to a PS2
+    // continuation prompt; the goal itself may contain one, but nothing this
+    // function adds should.
+    const prompt = promptWithImages("goal", ["/a/paste-1.png", "/a/paste-2.png"]);
+    expect(prompt).not.toContain("\n");
+  });
+});
+
+describe("isPasteableImage", () => {
+  it("accepts the types tt_slots::pasted writes an extension for", () => {
+    for (const m of ["image/png", "image/jpeg", "image/gif", "image/webp"]) {
+      expect(isPasteableImage(m)).toBe(true);
+    }
+  });
+
+  it("ignores mime parameters and casing", () => {
+    expect(isPasteableImage("image/PNG;charset=utf-8")).toBe(true);
+  });
+
+  it("rejects types the Rust side would error on", () => {
+    // Filtering at paste time means an unsupported paste is silently ignored
+    // where the user can see it didn't take, instead of failing mid-create.
+    expect(isPasteableImage("image/svg+xml")).toBe(false);
+    expect(isPasteableImage("text/plain")).toBe(false);
   });
 });

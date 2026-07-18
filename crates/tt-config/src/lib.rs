@@ -549,6 +549,19 @@ pub fn nudge_dir_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("nudge"))
 }
 
+/// Staging directory for images pasted into the app (today: the new-slot
+/// form). The bytes have to become a file somewhere before a path to them can
+/// go into a Claude prompt, and that somewhere is deliberately *not* the
+/// repo — Claude Code reads an absolute path outside its workspace without
+/// prompting, so there's nothing to gain by putting user content inside a
+/// checkout and a `.gitignore` to maintain if we do. This mirrors Claude
+/// Code's own `~/.claude/image-cache/<session>/` convention. Instance-scoped
+/// like `data_dir()`, and its own subdirectory so pruning stale pastes never
+/// walks tt.db.
+pub fn pasted_images_dir() -> Result<PathBuf> {
+    Ok(data_dir()?.join("pasted-images"))
+}
+
 /// Agentboard *instance* persistence directory (sessions.json, windows.json,
 /// collapse.json, … — one running app's state): scoped in a slot checkout.
 pub fn agentboard_dir() -> Result<PathBuf> {

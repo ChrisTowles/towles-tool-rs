@@ -24,6 +24,7 @@ pub mod envfile;
 pub mod guards;
 pub mod layout;
 pub mod ops;
+pub mod pasted;
 pub mod suggest;
 pub mod template;
 
@@ -36,5 +37,6 @@ pub use ops::{
     CleanOpts, CleanReport, CreateOpts, CreatedSlot, FinishedSlot, KeptSlot, OpsError, RemoveOpts,
     RemovedSlot, SlotRoot, clean_slots, create_slot, discover_root, remove_slot,
 };
+pub use pasted::{PastedError, PastedImage, write_images};
 pub use suggest::{SuggestError, Suggestion, suggest};
 pub use template::{RenderOutcome, SlotContext, TemplateError, render};

@@ -1064,6 +1064,97 @@ export function claudeCommand(prompt: string, options?: ClaudeLaunchOptions): st
   return `${parts.join(" ")}\r`;
 }
 
+/** MIME types the new-slot form accepts off the clipboard — the same closed
+ * set `tt_slots::pasted` writes an extension for. Filtering here means an
+ * unsupported paste is ignored at the point of paste (where the user can see
+ * it didn't take) rather than erroring minutes later mid-create. */
+const PASTEABLE_IMAGE_MIMES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
+
+export function isPasteableImage(mime: string): boolean {
+  return PASTEABLE_IMAGE_MIMES.includes(mime.split(";")[0].trim().toLowerCase());
+}
+
+/** Mirrors `MAX_IMAGE_BYTES` in `tt_slots::pasted`. Checked here as well as
+ * there so an over-cap paste is refused while the form is still open — the
+ * Rust-side check is the backstop, but by the time it fires the slot already
+ * exists and the error is much less actionable. */
+export const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/** An image sitting in the new-slot form, waiting for its slot to exist.
+ * `dataBase64` is what crosses to Rust; `previewUrl` is the same bytes as a
+ * data URL, kept for the thumbnail (a data URL rather than an object URL so
+ * there's no lifetime to manage against React's re-renders). */
+export type PastedImage = {
+  id: string;
+  name: string;
+  mime: string;
+  dataBase64: string;
+  previewUrl: string;
+};
+
+/** Pull every image off a paste/drop's `DataTransfer`, decoded to base64.
+ * Returns `[]` for a plain-text paste, which the caller treats as "not an
+ * image paste, let the textarea handle it normally". */
+export async function imagesFromDataTransfer(data: DataTransfer | null): Promise<PastedImage[]> {
+  const files = Array.from(data?.items ?? [])
+    .filter((it) => it.kind === "file" && isPasteableImage(it.type))
+    .map((it) => it.getAsFile())
+    .filter((f): f is File => f != null);
+  const tooBig = files.find((f) => f.size > MAX_PASTED_IMAGE_BYTES);
+  if (tooBig) {
+    throw new Error(
+      `${tooBig.name || "that image"} is ${Math.round(tooBig.size / 1024 / 1024)}MB — over the ${
+        MAX_PASTED_IMAGE_BYTES / 1024 / 1024
+      }MB limit for an attached image.`,
+    );
+  }
+  return Promise.all(files.map((file, i) => readImageFile(file, i)));
+}
+
+async function readImageFile(file: File, index: number): Promise<PastedImage> {
+  const previewUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error("couldn't read the pasted image"));
+    reader.readAsDataURL(file);
+  });
+  return {
+    // Clipboard images arrive as `image.png` every time, so the index keeps
+    // React keys distinct across several pastes in one form.
+    id: `${file.name || "pasted"}-${index}-${previewUrl.length}-${file.size}`,
+    name: file.name || `pasted-image-${index + 1}`,
+    mime: file.type,
+    dataBase64: previewUrl.slice(previewUrl.indexOf(",") + 1),
+    previewUrl,
+  };
+}
+
+/** Fold images pasted into the new-slot form into that slot's opening prompt.
+ *
+ * The prompt crosses into Claude as a single argv string (`claudeCommand`),
+ * so an image rides along as a *path* — `slot_write_pasted_images` has
+ * already written the bytes inside the slot, and Claude's Read tool loads an
+ * image from a path. The wording names the files and says to read them
+ * first, because a bare path in a prompt is something Claude may or may not
+ * act on; an explicit instruction is what makes the attachment reliable
+ * rather than incidental.
+ *
+ * A goal-less paste is still a valid prompt — the image alone is the ask.
+ *
+ * Deliberately newline-free: this string is typed into a live PTY inside a
+ * single-quoted argument, and a literal newline mid-quote makes zsh's line
+ * editor accept the partial line and drop to a PS2 continuation prompt. It
+ * recovers, but there's no reason to add that fragility for formatting. */
+export function promptWithImages(goal: string, imagePaths: string[]): string {
+  const trimmed = goal.trim();
+  if (imagePaths.length === 0) return trimmed;
+  const one = imagePaths.length === 1;
+  const attachment = `Attached ${one ? "image" : "images"} — read ${
+    one ? "it" : "them"
+  } first, before anything else: ${imagePaths.join(" ")}`;
+  return trimmed ? `${trimmed} — ${attachment}` : attachment;
+}
+
 /** The `claude` invocation to resume a past session (from the Claude Sessions
  * history) in place, typed into the folder's PTY. */
 export function claudeResumeCommand(sessionId: string): string {
