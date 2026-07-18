@@ -48,5 +48,8 @@ spawnTauriDev(
     VITE_WDIO: "1",
     TAURI_WEBVIEW_AUTOMATION: "true",
     TAURI_WEBDRIVER_PORT: String(wdPort),
+    // A live-drive window is a verification tool, not the user sitting down
+    // to use the app — don't let it steal OS focus on launch.
+    TT_NO_FOCUS_STEAL: "1",
   },
 );

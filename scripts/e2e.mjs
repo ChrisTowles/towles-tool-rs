@@ -133,6 +133,9 @@ async function main() {
       // embedded server port or browser.tauri.execute() hits the wrong port.
       TAURI_WEBDRIVER_PORT: String(wdPort),
       TAURI_WEBVIEW_AUTOMATION: "true",
+      // The e2e suite is a hands-off verification run — don't let the
+      // spawned window steal OS focus.
+      TT_NO_FOCUS_STEAL: "1",
     },
   });
   cleanup();

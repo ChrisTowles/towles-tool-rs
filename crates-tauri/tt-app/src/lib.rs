@@ -113,6 +113,19 @@ pub fn run() {
     let identifier = app_identifier(&context.config().identifier);
     context.config_mut().identifier = identifier.clone();
 
+    // Set by scripts/dev-drive.mjs and scripts/e2e.mjs: both are
+    // test/verification launches, never the user actually sitting down to
+    // use the app, so the window shouldn't grab OS focus and yank them away
+    // from whatever they were doing. A runtime signal, not `#[cfg(feature =
+    // "wdio")]` — that feature means "wdio plugins are compiled in," a
+    // different concern that only happens to correlate with these two
+    // scripts today.
+    if std::env::var_os("TT_NO_FOCUS_STEAL").is_some() {
+        for window in &mut context.config_mut().app.windows {
+            window.focus = false;
+        }
+    }
+
     // Guard against a second launch of the *same* checkout (same resolved
     // identifier — the primary, or one specific slot) running concurrently:
     // with no GTK/D-Bus single-instance registration (`enableGTKAppId` is
