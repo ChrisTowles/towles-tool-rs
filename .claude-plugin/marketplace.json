@@ -1,5 +1,6 @@
 {
   "name": "towles-tool",
+  "description": "Chris Towles's personal Claude Code plugins: the map-vs-territory workflow commands, and a bridge to the towles-tool desktop app (MCP server + gh refresh hook).",
   "owner": {
     "name": "Chris Towles"
   },
