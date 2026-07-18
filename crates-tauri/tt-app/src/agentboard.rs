@@ -545,13 +545,52 @@ pub fn ab_clear_log(state: State<Ab>, session: String) -> Result<(), String> {
 /// real subprocess wait that must not stall the main thread.
 #[tauri::command]
 pub async fn ab_get_diff(dir: String, mode: String, base_branch: Option<String>) -> String {
-    let mode = if mode == "uncommitted" {
+    let mode = parse_diff_mode(&mode);
+    tauri::async_runtime::spawn_blocking(move || {
+        tt_agentboard::diff_patch(&dir, mode, base_branch.as_deref())
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn parse_diff_mode(mode: &str) -> tt_agentboard::DiffMode {
+    if mode == "uncommitted" {
         tt_agentboard::DiffMode::Uncommitted
     } else {
         tt_agentboard::DiffMode::Main
-    };
+    }
+}
+
+/// Changed-file list for the diff pane's Monaco diff editor — same baseline
+/// rules as [`ab_get_diff`]. Async: rename-aware diffs are real subprocess
+/// waits.
+#[tauri::command]
+pub async fn ab_get_diff_files(
+    dir: String,
+    mode: String,
+    base_branch: Option<String>,
+) -> Vec<tt_agentboard::DiffFile> {
+    let mode = parse_diff_mode(&mode);
     tauri::async_runtime::spawn_blocking(move || {
-        tt_agentboard::diff_patch(&dir, mode, base_branch.as_deref())
+        tt_agentboard::diff_files(&dir, mode, base_branch.as_deref())
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// A file's content at the diff baseline (`git show`), the original side of
+/// the diff editor. `None` when the file doesn't exist at the base
+/// (added/untracked).
+#[tauri::command]
+pub async fn ab_get_base_file(
+    dir: String,
+    mode: String,
+    base_branch: Option<String>,
+    path: String,
+) -> Option<String> {
+    let mode = parse_diff_mode(&mode);
+    tauri::async_runtime::spawn_blocking(move || {
+        tt_agentboard::base_file_content(&dir, mode, base_branch.as_deref(), &path)
     })
     .await
     .unwrap_or_default()

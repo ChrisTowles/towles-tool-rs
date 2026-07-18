@@ -409,14 +409,7 @@ pub fn diff_patch(dir: &str, mode: DiffMode, base_branch: Option<&str>) -> Strin
     if dir.is_empty() {
         return String::new();
     }
-    let base = match mode {
-        DiffMode::Main => {
-            let base_ref = resolve_base_ref(dir, base_branch);
-            let merge_base = git_out(dir, &["merge-base", "HEAD", &base_ref]);
-            if merge_base.is_empty() { "HEAD".to_string() } else { merge_base }
-        }
-        DiffMode::Uncommitted => "HEAD".to_string(),
-    };
+    let base = resolve_diff_base(dir, mode, base_branch);
     let mut patch = git_out(dir, &["diff", &base]);
 
     let status_out = git_out(dir, &["status", "--porcelain"]);
@@ -434,6 +427,144 @@ pub fn diff_patch(dir: &str, mode: DiffMode, base_branch: Option<&str>) -> Strin
         }
     }
     patch
+}
+
+/// The commit the diff pane compares against: merge-base with the resolved
+/// base ref for [`DiffMode::Main`], HEAD for [`DiffMode::Uncommitted`].
+fn resolve_diff_base(dir: &str, mode: DiffMode, base_branch: Option<&str>) -> String {
+    match mode {
+        DiffMode::Main => {
+            let base_ref = resolve_base_ref(dir, base_branch);
+            let merge_base = git_out(dir, &["merge-base", "HEAD", &base_ref]);
+            if merge_base.is_empty() { "HEAD".to_string() } else { merge_base }
+        }
+        DiffMode::Uncommitted => "HEAD".to_string(),
+    }
+}
+
+/// One changed file in the diff pane's file list. `status` is git's
+/// name-status letter (`M`/`A`/`D`/`R`/`C`/`T`, or `?` for untracked);
+/// `old_path` is set on renames/copies (content at the base lives there).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: String,
+    pub lines_added: i64,
+    pub lines_removed: i64,
+}
+
+/// The diff pane's changed-file list, baseline picked like [`diff_patch`]:
+/// `git diff --name-status`/`--numstat` (rename-aware) merged per file, plus
+/// untracked files from `git status` (status `?`, no line counts — they have
+/// no diff yet). Empty when `dir` isn't a repo or nothing changed.
+pub fn diff_files(dir: &str, mode: DiffMode, base_branch: Option<&str>) -> Vec<DiffFile> {
+    if dir.is_empty() {
+        return Vec::new();
+    }
+    let base = resolve_diff_base(dir, mode, base_branch);
+    let name_status = git_out(dir, &["diff", "--name-status", "-M", &base]);
+    let numstat = git_out(dir, &["diff", "--numstat", "-M", &base]);
+    let status_out = git_out(dir, &["status", "--porcelain"]);
+    parse_diff_files(&name_status, &numstat, &status_out)
+}
+
+/// A file's content at the diff baseline (`git show <base>:<path>`), for the
+/// original side of the diff editor. `None` when the file doesn't exist there
+/// (added/untracked) or `dir` isn't a repo. Untrimmed — a stripped trailing
+/// newline would show up as a phantom EOL change.
+pub fn base_file_content(
+    dir: &str,
+    mode: DiffMode,
+    base_branch: Option<&str>,
+    path: &str,
+) -> Option<String> {
+    if dir.is_empty() || path.is_empty() {
+        return None;
+    }
+    let base = resolve_diff_base(dir, mode, base_branch);
+    let spec = format!("{base}:{path}");
+    let out = tt_exec::run_with_timeout(
+        "git",
+        &["-C", dir, "show", &spec],
+        std::time::Duration::from_secs(5),
+    )
+    .ok()?;
+    out.ok().then_some(out.stdout)
+}
+
+/// Pure parse behind [`diff_files`]: merge `--name-status` (status letter +
+/// rename old/new paths) with `--numstat` (per-file ± counts; `-` for binary)
+/// and append `git status --porcelain`'s `??` untracked entries. Both diff
+/// outputs are rename-aware (`-M`), so the numstat path arrow/brace forms are
+/// normalized to the post-rename path before matching.
+fn parse_diff_files(name_status: &str, numstat: &str, status_out: &str) -> Vec<DiffFile> {
+    let mut counts: std::collections::HashMap<String, (i64, i64)> =
+        std::collections::HashMap::new();
+    for line in numstat.lines() {
+        let mut parts = line.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        counts.insert(
+            numstat_new_path(path),
+            (added.parse().unwrap_or(0), removed.parse().unwrap_or(0)),
+        );
+    }
+    let mut files = Vec::new();
+    for line in name_status.lines() {
+        let mut parts = line.split('\t');
+        let Some(status_field) = parts.next() else {
+            continue;
+        };
+        let status = status_field.chars().next().unwrap_or_default();
+        if !status.is_ascii_alphabetic() {
+            continue;
+        }
+        let (old_path, path) = match (parts.next(), parts.next()) {
+            (Some(old), Some(new)) => (Some(old.to_string()), new.to_string()),
+            (Some(only), None) => (None, only.to_string()),
+            _ => continue,
+        };
+        let (lines_added, lines_removed) = counts.get(&path).copied().unwrap_or((0, 0));
+        files.push(DiffFile {
+            path,
+            old_path,
+            status: status.to_string(),
+            lines_added,
+            lines_removed,
+        });
+    }
+    for line in status_out.lines() {
+        if let Some(path) = line.strip_prefix("??") {
+            files.push(DiffFile {
+                path: path.trim().to_string(),
+                old_path: None,
+                status: "?".to_string(),
+                lines_added: 0,
+                lines_removed: 0,
+            });
+        }
+    }
+    files
+}
+
+/// Normalize a `--numstat` rename path to the post-rename path: either the
+/// brace form `dir/{old => new}/x` or the whole-path arrow `old => new`.
+fn numstat_new_path(path: &str) -> String {
+    if let (Some(open), Some(close)) = (path.find('{'), path.find('}'))
+        && let Some(arrow) = path[open..close].find(" => ")
+    {
+        let new_part = &path[open + arrow + 4..close];
+        let joined = format!("{}{}{}", &path[..open], new_part, &path[close + 1..]);
+        return joined.replace("//", "/");
+    }
+    if let Some((_, new)) = path.split_once(" => ") {
+        return new.to_string();
+    }
+    path.to_string()
 }
 
 /// One commit ahead of `compared_base`, with its own line-count diff — not
@@ -1185,5 +1316,55 @@ mod tests {
         // by `compute_git_info` before any shell-out.
         let info = compute_git_info_from_outputs("main", "/repo/.git", "", "", "");
         assert!(!info.dir_missing);
+    }
+
+    #[test]
+    fn parse_diff_files_merges_status_counts_and_untracked() {
+        let name_status =
+            "M\tsrc/a.rs\nA\tsrc/b.rs\nD\told.rs\nR087\tsrc/old_name.rs\tsrc/new_name.rs";
+        let numstat = "3\t1\tsrc/a.rs\n10\t0\tsrc/b.rs\n0\t5\told.rs\n2\t2\tsrc/{old_name.rs => new_name.rs}\n-\t-\tbin.png";
+        let status_out = "?? notes.md\n M src/a.rs";
+        let files = parse_diff_files(name_status, numstat, status_out);
+        assert_eq!(files.len(), 5);
+        assert_eq!(
+            files[0],
+            DiffFile {
+                path: "src/a.rs".into(),
+                old_path: None,
+                status: "M".into(),
+                lines_added: 3,
+                lines_removed: 1,
+            }
+        );
+        assert_eq!(files[2].status, "D");
+        assert_eq!(
+            files[3],
+            DiffFile {
+                path: "src/new_name.rs".into(),
+                old_path: Some("src/old_name.rs".into()),
+                status: "R".into(),
+                lines_added: 2,
+                lines_removed: 2,
+            }
+        );
+        assert_eq!(
+            files[4],
+            DiffFile {
+                path: "notes.md".into(),
+                old_path: None,
+                status: "?".into(),
+                lines_added: 0,
+                lines_removed: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn numstat_new_path_handles_arrow_forms() {
+        assert_eq!(numstat_new_path("plain/path.rs"), "plain/path.rs");
+        assert_eq!(numstat_new_path("old.rs => new.rs"), "new.rs");
+        assert_eq!(numstat_new_path("src/{old.rs => new.rs}"), "src/new.rs");
+        // A rename out of a directory leaves an empty brace side.
+        assert_eq!(numstat_new_path("src/{lib => }/mod.rs"), "src/mod.rs");
     }
 }

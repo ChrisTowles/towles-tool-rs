@@ -1,21 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { GitCompare, Pencil, RefreshCw } from "lucide-react";
 import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
-import { DiffViewer, type DiffIdeBridge } from "@/components/diff-view";
+import { MonacoFileDiff, type ChangedFile } from "@/components/diff-monaco";
 import { IconBtn } from "@/components/agentboard-bits";
 import { abInvoke, type FolderData } from "@/lib/agentboard";
-import {
-  ideAtMention,
-  ideClearSelection,
-  ideReadFile,
-  ideSetSelection,
-  useIdeConnected,
-} from "@/lib/ide";
+import { ideReadFile, useIdeConnected } from "@/lib/ide";
 import { isTauri } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
 /** Which baseline the pane diffs against (mirrors `DiffMode` in tt-agentboard). */
 type DiffMode = "main" | "uncommitted";
+
+/** Git name-status letter → folder-rail-ish color in the file list. */
+const STATUS_COLORS: Record<string, string> = {
+  A: "text-emerald-500",
+  "?": "text-emerald-500",
+  D: "text-red-500",
+  R: "text-sky-500",
+  C: "text-sky-500",
+  M: "text-amber-500",
+};
 
 const UNCOMMITTED_MODE = {
   key: "uncommitted" as const,
@@ -26,9 +30,11 @@ const UNCOMMITTED_MODE = {
 /**
  * A folder's diff as a *pane* in the Agentboard tiling — it sits beside the
  * live terminals (review while the agent works) instead of covering them in a
- * modal. Content refetches whenever the folder's git stats change (the 1.5s
- * poll only bumps them on real change), so the patch tracks the agent's edits
- * without a manual refresh. The header's segmented toggle picks the baseline:
+ * modal. A changed-file list on the left, the VS Code diff editor for the
+ * selected file on the right. Content refetches whenever the folder's git
+ * stats change (the 1.5s poll only bumps them on real change), so the diff
+ * tracks the agent's edits without a manual refresh; the open file's contents
+ * refresh in place. The header's segmented toggle picks the baseline:
  * the whole branch vs main, or just the uncommitted working tree. The full
  * checkout tree is its own pane (`FolderFilesPane`), not a tab here.
  */
@@ -49,7 +55,8 @@ export function DiffPane({
   const slotBaseBranch = folder?.slotBaseBranch?.trim() || null;
   const effectiveBase = baseBranch ?? slotBaseBranch;
   const [mode, setMode] = useState<DiffMode>("main");
-  const [text, setText] = useState<string | null>(null);
+  const [files, setFiles] = useState<ChangedFile[] | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [editingBase, setEditingBase] = useState(false);
   // Claude's pending openDiff reviews for this folder (shown one at a time,
@@ -100,23 +107,9 @@ export function DiffPane({
     };
   }, [dir]);
 
-  // Claude Code IDE bridge: highlights in this pane become the selection
-  // context of the `claude` running in this folder's terminal(s).
+  // Claude Code IDE bridge badge — the MonacoFileDiff streams selections to
+  // the folder's `claude` itself (same contract as CodeViewer).
   const ideConnected = useIdeConnected(dir);
-  const ide = useMemo<DiffIdeBridge | undefined>(
-    () =>
-      dir
-        ? {
-            connected: ideConnected,
-            select: (filePath, startLine, endLine) =>
-              ideSetSelection(dir, filePath, startLine, endLine),
-            clear: (filePath) => ideClearSelection(dir, filePath),
-            send: (filePath, startLine, endLine) =>
-              void ideAtMention(dir, filePath, startLine, endLine),
-          }
-        : undefined,
-    [dir, ideConnected],
-  );
 
   const mainMode = {
     key: "main" as const,
@@ -132,8 +125,11 @@ export function DiffPane({
   const fetchDiff = useCallback(async () => {
     if (!dir) return;
     setRefreshing(true);
-    const t = await abInvoke<string>("ab_get_diff", { dir, mode, baseBranch });
-    setText(t ?? "");
+    const list = await abInvoke<ChangedFile[]>("ab_get_diff_files", { dir, mode, baseBranch });
+    setFiles(list ?? []);
+    setSelected((prev) =>
+      prev != null && (list ?? []).some((f) => f.path === prev) ? prev : (list?.[0]?.path ?? null),
+    );
     setRefreshing(false);
   }, [dir, mode, baseBranch]);
 
@@ -144,6 +140,8 @@ export function DiffPane({
   useEffect(() => {
     void fetchDiff();
   }, [fetchDiff, statsKey]);
+
+  const selectedFile = files?.find((f) => f.path === selected) ?? null;
 
   async function commitBaseBranch(value: string) {
     setEditingBase(false);
@@ -236,11 +234,58 @@ export function DiffPane({
           </IconBtn>
         </span>
       </div>
-      <div className="relative flex min-h-0 flex-1 flex-col p-2">
-        {text == null ? (
+      <div className="relative flex min-h-0 flex-1 p-2">
+        {files == null ? (
           <p className="p-2 text-sm text-muted-foreground">Loading…</p>
+        ) : files.length === 0 ? (
+          <p className="p-2 text-sm text-muted-foreground">No changes.</p>
         ) : (
-          <DiffViewer text={text} ide={ide} />
+          <>
+            <ul className="w-52 shrink-0 overflow-y-auto border-r pr-1">
+              {files.map((f) => (
+                <li key={f.path}>
+                  <button
+                    type="button"
+                    onClick={() => setSelected(f.path)}
+                    title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}
+                    className={cn(
+                      "flex w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left font-mono text-[11px]",
+                      selected === f.path
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <span className={cn("shrink-0", STATUS_COLORS[f.status] ?? "text-muted-foreground")}>
+                      {f.status}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate" dir="rtl">
+                      &lrm;{f.path}
+                    </span>
+                    {(f.linesAdded > 0 || f.linesRemoved > 0) && (
+                      <span className="shrink-0 text-[10px]">
+                        <span className="text-emerald-500">+{f.linesAdded}</span>{" "}
+                        <span className="text-red-500">−{f.linesRemoved}</span>
+                      </span>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="min-w-0 flex-1">
+              {selectedFile ? (
+                <MonacoFileDiff
+                  key={`${dir}:${selectedFile.path}:${mode}`}
+                  dir={dir!}
+                  file={selectedFile}
+                  mode={mode}
+                  baseBranch={baseBranch}
+                  refreshKey={statsKey}
+                />
+              ) : (
+                <p className="p-2 text-sm text-muted-foreground">Select a file.</p>
+              )}
+            </div>
+          </>
         )}
         {reviews[0] && (
           <DiffReview
