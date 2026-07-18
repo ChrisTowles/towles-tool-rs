@@ -32,12 +32,17 @@ export function MonacoMultiDiff({
   mode,
   baseBranch,
   refreshKey,
+  registerReveal,
 }: {
   dir: string;
   files: ChangedFile[];
   mode: string;
   baseBranch: string | null;
   refreshKey: string;
+  /** Receives a jump-to-file function once the widget is up (null on
+   * teardown) — the diff pane's tree rail calls it to scroll a file's diff
+   * into view. */
+  registerReveal?: (reveal: ((path: string) => void) | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -164,6 +169,20 @@ export function MonacoMultiDiff({
         };
         disposables.push(widget.onDidChangeActiveControl(wire));
         wire();
+
+        registerReveal?.((path) => {
+          const entry = modelsRef.current.get(path);
+          if (!entry) return;
+          try {
+            widget.reveal(
+              { original: entry.original?.uri, modified: entry.modified?.uri },
+              { highlight: true },
+            );
+          } catch {
+            // Not in the view (set changed under us) — the rebuild catches up.
+          }
+        });
+        disposables.push({ dispose: () => registerReveal?.(null) });
 
         setLoading(false);
       } catch (e) {
