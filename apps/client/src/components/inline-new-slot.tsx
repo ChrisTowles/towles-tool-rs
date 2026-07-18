@@ -6,7 +6,16 @@
 // without awaiting it here) and a `PendingSlotRow` tracks the in-flight
 // create until it resolves, so switching to other repos/sessions while a
 // slot is being created just works.
-import { AlertTriangle, ImagePlus, Paperclip, RefreshCw, Sparkles, Undo2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  CircleDot,
+  ImagePlus,
+  Paperclip,
+  RefreshCw,
+  Sparkles,
+  Undo2,
+  X,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -40,6 +49,7 @@ import {
   isPasteableImage,
   nextDraftScopeId,
 } from "@/lib/agentboard";
+import { IssueItem, storeGhIssuesList } from "@/lib/data";
 import { errorMessage } from "@/lib/errors";
 import { BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
 import { invoke } from "@/lib/tauri";
@@ -112,16 +122,52 @@ export type PendingSlot = {
  * become a second copy of the whole goal. */
 export const BRANCH_SLUG_SOURCE_CHARS = 50;
 
-/** Goal → branch name, mirroring tt-git's slug rules (lowercase, spaces and
- * non `[0-9a-z_-]` to `-`, collapse runs, strip trailing) under a `feat/`
- * prefix, from just the first `BRANCH_SLUG_SOURCE_CHARS` of the goal. The
- * branch field stays editable — this is just the default. */
-export function goalToBranch(goal: string): string {
-  let slug = goal.slice(0, BRANCH_SLUG_SOURCE_CHARS).toLowerCase().trim().replaceAll(" ", "-");
+/** Per-repo "assigned to me" vs "all open issues" scope for the issue
+ * picker below, persisted per `repo.key` rather than one global toggle — a
+ * repo where you triage everything and a repo where only your own issues
+ * are relevant want different defaults, and both should stick across opens.
+ * Defaults to "all" when nothing's stored yet: unlike the Kanban board's
+ * import dialog, a new slot is just as often started from someone else's
+ * open issue as from one of your own. */
+function issueScopeKey(repoKey: string): string {
+  return `tt-new-slot-issue-mine:${repoKey}`;
+}
+
+function loadIssueScopeMine(repoKey: string): boolean {
+  return localStorage.getItem(issueScopeKey(repoKey)) === "true";
+}
+
+function saveIssueScopeMine(repoKey: string, mine: boolean): void {
+  localStorage.setItem(issueScopeKey(repoKey), String(mine));
+}
+
+/** Lowercase, spaces and non `[0-9a-z_-]` to `-`, collapse runs, strip
+ * trailing — mirrors tt-git's slug rules (`create_branch_name_from_issue`
+ * and the TS CLI's `branch-name.ts` before it). Shared by `goalToBranch` and
+ * `branchFromIssue` below. */
+function slugify(text: string): string {
+  let slug = text.toLowerCase().trim().replaceAll(" ", "-");
   slug = slug.replace(/[^0-9a-z_-]/g, "-");
   slug = slug.replace(/-+/g, "-");
   slug = slug.replace(/-+$/, "");
+  return slug;
+}
+
+/** Goal → branch name: the first `BRANCH_SLUG_SOURCE_CHARS` of the goal,
+ * slugged, under a `feat/` prefix. The branch field stays editable — this is
+ * just the default. */
+export function goalToBranch(goal: string): string {
+  const slug = slugify(goal.slice(0, BRANCH_SLUG_SOURCE_CHARS));
   return slug ? `feat/${slug}` : "";
+}
+
+/** Issue → branch name: `feat/<number>-<slug>`, keeping this form's own
+ * `feat/` prefix (not tt-git's `feature/<number>-<slug>`, which is Cockpit's
+ * issue-branch convention on an already-existing checkout, not a new slot)
+ * so a picked issue produces the same shape of branch name as a typed goal. */
+export function branchFromIssue(number: number, title: string): string {
+  const slug = slugify(title.slice(0, BRANCH_SLUG_SOURCE_CHARS));
+  return slug ? `feat/${number}-${slug}` : `feat/${number}`;
 }
 
 /** The inline goal/branch/base form, embedded directly in the rail under the
@@ -167,10 +213,21 @@ export function InlineNewSlot({
   const [branchCheck, setBranchCheck] = useState<BranchCheck | null>(null);
   const [suggesting, setSuggesting] = useState(false);
   // What the goal/branch fields held right before the last accepted
-  // suggestion overwrote them — lets "Undo" put them back exactly.
-  const [preSuggest, setPreSuggest] = useState<{ goal: string; branchEdit: string | null } | null>(
-    null,
+  // suggestion or picked issue overwrote them — lets "Undo" put them back
+  // exactly.
+  const [preOverwrite, setPreOverwrite] = useState<{
+    goal: string;
+    branchEdit: string | null;
+  } | null>(null);
+  const [issuePickerOpen, setIssuePickerOpen] = useState(false);
+  // Lazy-initialized once from this repo's stored preference: the form
+  // remounts fresh per open (see the base-branches effect below), so there's
+  // no prop-change case to keep in sync with.
+  const [issueAssignedToMe, setIssueAssignedToMeState] = useState(() =>
+    loadIssueScopeMine(repo.key),
   );
+  const [issues, setIssues] = useState<IssueItem[] | null>(null);
+  const [issuesError, setIssuesError] = useState<string | null>(null);
 
   const sortedBranches = [...branches].toSorted((a, b) => a.localeCompare(b));
 
@@ -251,7 +308,7 @@ export function InlineNewSlot({
     });
     suggestion.match({
       ok: (s) => {
-        setPreSuggest({ goal, branchEdit });
+        setPreOverwrite({ goal, branchEdit });
         setGoal(s.goal);
         setBranchEdit(s.branch);
       },
@@ -260,11 +317,46 @@ export function InlineNewSlot({
     setSuggesting(false);
   }
 
-  function undoSuggest() {
-    if (!preSuggest) return;
-    setGoal(preSuggest.goal);
-    setBranchEdit(preSuggest.branchEdit);
-    setPreSuggest(null);
+  function undoOverwrite() {
+    if (!preOverwrite) return;
+    setGoal(preOverwrite.goal);
+    setBranchEdit(preOverwrite.branchEdit);
+    setPreOverwrite(null);
+  }
+
+  function setIssueAssignedToMe(mine: boolean) {
+    setIssueAssignedToMeState(mine);
+    saveIssueScopeMine(repo.key, mine);
+  }
+
+  // Issue list follows the repo this form is open for and the assignee
+  // toggle, and only loads once the picker is opened — a slot is created far
+  // more often by typing a goal than by picking an issue, so there's no
+  // reason to shell `gh` on every form mount.
+  useEffect(() => {
+    if (!issuePickerOpen) return;
+    let cancelled = false;
+    setIssues(null);
+    setIssuesError(null);
+    void storeGhIssuesList(repo.dir, issueAssignedToMe).then((result) => {
+      if (cancelled) return;
+      result.match({ ok: setIssues, err: (e) => setIssuesError(e.message) });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [issuePickerOpen, issueAssignedToMe, repo.dir]);
+
+  // Seeds goal + branch straight from the issue, no confirmation step — same
+  // "just overwrite, Undo is the confirmation" shape as `suggest()` above.
+  // The title (plus the number, for traceability and so Claude can
+  // `gh issue view` it for the rest) is all there is to seed with: the
+  // issue-list fetch this form uses doesn't carry the issue body.
+  function pickIssue(issue: IssueItem) {
+    setPreOverwrite({ goal, branchEdit });
+    setGoal(`${issue.title} (#${issue.number})`);
+    setBranchEdit(branchFromIssue(issue.number, issue.title));
+    setIssuePickerOpen(false);
   }
 
   // Screenshots are how a lot of goals actually get described ("make it look
@@ -458,12 +550,60 @@ export function InlineNewSlot({
           <ImagePlus className="size-3" />
           Attach image
         </Button>
-        {preSuggest && (
+        <Popover open={issuePickerOpen} onOpenChange={setIssuePickerOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className="h-6 gap-1 px-1.5 text-[10.5px]">
+              <CircleDot className="size-3" />
+              Pick issue
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-80 p-0" align="start">
+            <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
+              <span className="text-[10.5px] text-muted-foreground">
+                GitHub issues — {repo.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => setIssueAssignedToMe(!issueAssignedToMe)}
+                className="text-[10.5px] font-medium text-primary hover:underline"
+              >
+                {issueAssignedToMe ? "Show all open issues" : "Show only mine"}
+              </button>
+            </div>
+            {issuesError ? (
+              <p className="p-3 text-[11px] text-red-500">{issuesError}</p>
+            ) : issues === null ? (
+              <p className="p-3 text-[11px] text-muted-foreground">Loading issues…</p>
+            ) : (
+              <Command>
+                <CommandInput placeholder="Search issues…" className="text-xs" />
+                <CommandList className="max-h-64">
+                  <CommandEmpty>No open issues.</CommandEmpty>
+                  {issues.map((issue) => (
+                    <CommandItem
+                      key={issue.number}
+                      value={`${issue.number} ${issue.title}`}
+                      onSelect={() => pickIssue(issue)}
+                      className="flex flex-col items-start gap-0.5"
+                    >
+                      <span className="w-full truncate text-xs">{issue.title}</span>
+                      <span className="text-[10.5px] text-muted-foreground">
+                        #{issue.number}
+                        {issue.labels.length > 0 ? ` · ${issue.labels.slice(0, 2).join(", ")}` : ""}
+                      </span>
+                    </CommandItem>
+                  ))}
+                </CommandList>
+              </Command>
+            )}
+          </PopoverContent>
+        </Popover>
+        {preOverwrite && (
           <Button
             variant="ghost"
             size="sm"
             className="h-6 gap-1 px-1.5 text-[10.5px]"
-            onClick={undoSuggest}
+            onClick={undoOverwrite}
           >
             <Undo2 className="size-3" />
             Undo
