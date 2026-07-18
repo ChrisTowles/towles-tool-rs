@@ -1,14 +1,14 @@
 /**
- * Commands the VS Code layer registers that this app can't honor — shadowed
- * out at startup.
+ * Formatting commands the VS Code layer registers that this app can't
+ * honor — shadowed out at startup.
  *
  * `@codingame/monaco-vscode-api`'s entry point is `services.js`, which
- * side-effect-imports the workbench's format and file-action contributions
- * whether we want them or not. Two of those reach `IDialogService.confirm`,
- * and the standalone dialog service implements confirm as a literal
- * `window.confirm()` — a blocking native script dialog. Inside the Tauri
- * WebView that spins a nested GTK main loop while the app dispatches sync IPC
- * on the same thread, and the window wedges.
+ * side-effect-imports the workbench's format contributions whether we want
+ * them or not. No formatter is registered for any language here (the
+ * standalone language features were removed — see `lib/monaco.ts`), so every
+ * one of these funnels into the "install a formatter?" prompt. Formatting is
+ * uniformly absent rather than inconsistently broken, and these ids are the
+ * loose ends of that decision.
  *
  * Shadowing works because `CommandsRegistry.registerCommand` unshifts onto a
  * per-id list and `getCommand` returns the first entry, so a later
@@ -31,13 +31,11 @@ export const PRUNED_COMMANDS: readonly string[] = [
   "editor.action.formatDocument.multiple",
   "editor.action.formatSelection.multiple",
   "editor.action.formatChanges",
-  // contrib/files/browser/fileActions.contribution.js — confirms through
-  // window.confirm, then writes through a provider that is read-only by
-  // design (edits belong on CodeViewer's mtime-guarded ide_write_file path).
-  // Delete is the gap: unlike New File/Rename/Cut it carries no writable
-  // precondition, and with no trash capability plain Delete maps to it too.
-  "deleteFile",
-  "moveFileToTrash",
+  // NOT listed here: deleteFile / moveFileToTrash. Those used to be shadowed
+  // because the file provider was read-only and their confirm() wedged the
+  // window. Both causes are gone — the provider writes through ide_* commands
+  // and IDialogService renders a real in-app dialog — so the Explorer's
+  // delete works for real now.
 ];
 
 /**

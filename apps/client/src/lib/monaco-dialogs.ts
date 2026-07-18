@@ -1,54 +1,88 @@
 /**
- * Dialog service override for the VS Code layer.
+ * Dialog service for the VS Code layer, backed by the app's own UI.
  *
- * Without this, `IDialogService` resolves to VS Code's `StandaloneDialogService`,
- * whose `confirm` is a literal `window.confirm()`. That is a blocking native
- * script dialog: inside the Tauri WebView it spins a nested GTK main loop while
- * the app is mid-JS and dispatching sync IPC on that same thread, and the
- * window wedges. Nothing else in this app has ever called one.
+ * The hazard this replaces: without an override, `IDialogService` resolves to
+ * VS Code's `StandaloneDialogService`, whose `confirm` is a literal
+ * `window.confirm()`. That is a blocking native script dialog — inside the
+ * Tauri WebView it spins a nested GTK main loop while the app is mid-JS and
+ * dispatching sync IPC on that same thread, and the window wedges. **Nothing
+ * in this file may ever call `window.confirm`/`alert`/`prompt`**, however
+ * convenient; that is the whole point of it existing.
  *
- * `lib/monaco-prune.ts` shadows the two commands known to reach it. This is the
- * backstop for the ones we haven't found: every prompt auto-declines, so an
- * unexpected caller loses its dialog instead of the user losing the window.
+ * The service is constructed by the VS Code service layer, well outside React,
+ * so it publishes pending requests through a store (the same `get`/`subscribe`
+ * shape as `lib/focus-target.ts`) and `<MonacoDialogHost>` renders them. Each
+ * request carries the `resolve` of the promise the workbench is awaiting, so a
+ * button click is what answers VS Code.
  */
 
 import { IDialogService } from "@codingame/monaco-vscode-api";
 import { Event } from "@codingame/monaco-vscode-api/vscode/vs/base/common/event";
+import { deleteCopyForTrash, isDangerous, stripMnemonic } from "@/lib/monaco-dialog-copy";
+import { dialogStore } from "@/lib/monaco-dialog-store";
 
-/** Declines everything. Mirrors StandaloneDialogService's shape minus the
- * native calls — `prompt` runs no button, so callers take their cancel path. */
-class DecliningDialogService {
+class AppDialogService {
   readonly onWillShowDialog = Event.None;
   readonly onDidShowDialog = Event.None;
 
-  private declined(what: string, message: unknown): void {
-    console.warn(`[monaco] auto-declined a ${what} dialog:`, message);
+  async confirm(confirmation: { message?: string; detail?: string; primaryButton?: string }) {
+    const copy = deleteCopyForTrash(
+      confirmation?.message ?? "Are you sure?",
+      confirmation?.detail,
+    );
+    const primary = stripMnemonic(confirmation?.primaryButton ?? "OK");
+    const confirmed = await dialogStore.ask({
+      message: copy.message,
+      detail: copy.detail,
+      primary,
+      danger: isDangerous(primary, copy.message),
+    });
+    return { confirmed, checkboxChecked: false };
   }
 
-  async confirm(confirmation: { message?: string }) {
-    this.declined("confirm", confirmation?.message);
-    return { confirmed: false, checkboxChecked: false };
+  /**
+   * A prompt is a confirm plus a set of buttons; VS Code runs the chosen
+   * button's `run()` to produce the result. We offer only the first
+   * (primary) button, so this is "do it / cancel" — enough for the
+   * confirmations the workbench actually raises here.
+   */
+  async prompt(prompt: {
+    message?: string;
+    detail?: string;
+    buttons?: { label?: string; run?: (ctx: { checkboxChecked: boolean }) => unknown }[];
+    cancelButton?: unknown;
+  }) {
+    const first = prompt?.buttons?.[0];
+    const message = prompt?.message ?? "Are you sure?";
+    const primary = stripMnemonic(first?.label ?? "OK");
+    const confirmed = await dialogStore.ask({
+      message,
+      detail: prompt?.detail,
+      primary,
+      danger: isDangerous(primary, message),
+    });
+    if (!confirmed) return { result: undefined };
+    return { result: await first?.run?.({ checkboxChecked: false }) };
   }
 
-  async prompt(prompt: { message?: string }) {
-    this.declined("prompt", prompt?.message);
-    return { result: undefined };
+  // Notifications, not questions — the workbench has nowhere to render them
+  // here, so they go to the console rather than interrupting.
+  async info(message: string, detail?: string) {
+    console.info("[monaco]", message, detail ?? "");
   }
 
-  async info(message: string) {
-    this.declined("info", message);
+  async warn(message: string, detail?: string) {
+    console.warn("[monaco]", message, detail ?? "");
   }
 
-  async warn(message: string) {
-    this.declined("warn", message);
+  async error(message: string, detail?: string) {
+    console.error("[monaco]", message, detail ?? "");
   }
 
-  async error(message: string) {
-    this.declined("error", message);
-  }
-
+  /** Text input (e.g. a rename prompt outside the tree's inline editor) has
+   * no host yet; decline rather than invent a value. */
   async input() {
-    this.declined("input", undefined);
+    console.warn("[monaco] declined an input dialog — no host for it");
     return { confirmed: false, values: undefined };
   }
 
@@ -57,5 +91,5 @@ class DecliningDialogService {
 
 /** Service map entry for `api.initialize`. */
 export default function getServiceOverride(): Record<string, unknown> {
-  return { [IDialogService.toString()]: new DecliningDialogService() };
+  return { [IDialogService.toString()]: new AppDialogService() };
 }
