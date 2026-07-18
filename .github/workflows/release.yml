@@ -161,7 +161,7 @@ jobs:
           # config-path input; it shells out to the same `tauri` CLI the root
           # `npm run build` uses, which auto-discovers tauri.conf.json by
           # scanning the Cargo workspace members (verified: the local
-          # `npm run run` / `npm run build` scripts already rely on this from
+          # `npm start` / `npm run build` scripts already rely on this from
           # repo root with no explicit path).
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseName: "Towles Tool ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"

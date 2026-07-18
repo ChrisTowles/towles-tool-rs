@@ -4,7 +4,7 @@
 // Debug builds (`npm run dev`) are fine for iterating, but their unoptimized
 // terminal rendering + IPC path is visibly laggy under everyday use (scroll,
 // typing) once several worktree slots + agent sessions are running at once.
-// This is the "just run it fast" counterpart to `npm run dev`.
+// This is the "just run it fast" counterpart to `npm run dev` — `npm start`.
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";

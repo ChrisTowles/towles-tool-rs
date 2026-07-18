@@ -11,7 +11,7 @@
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
     "dev": "node scripts/dev-port.mjs",
-    "run": "node scripts/run.mjs",
+    "start": "node scripts/start.mjs",
     "dev:drive": "node scripts/dev-drive.mjs",
     "drive": "node scripts/drive.mjs",
     "clean": "cargo clean && rm -rf apps/client/dist node_modules apps/client/node_modules",
