@@ -50,7 +50,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { SlotCreatedSchema } from "@/lib/schemas/slots";
+import { PastedImagePathsSchema, SlotCreatedSchema } from "@/lib/schemas/slots";
 import { cn } from "@/lib/utils";
 import {
   abInvoke,
@@ -83,6 +83,7 @@ import {
   paneRects,
   placePane,
   prForFolder,
+  promptWithImages,
   pruneWins,
   sessionLabel,
   sleep,
@@ -97,6 +98,7 @@ import {
   type FolderData,
   type Overlay,
   type PaneRect,
+  type PastedImage,
   type PendingOpenSession,
   type RemoveTarget,
   type RepoCandidate,
@@ -776,7 +778,13 @@ export function AgentboardScreen() {
   // submit), so a retry just re-runs this under the same id.
   async function createSlot(
     repo: NewSlotRepo,
-    input: { goal: string; branch: string; base: string; options: ClaudeLaunchOptions },
+    input: {
+      goal: string;
+      branch: string;
+      base: string;
+      options: ClaudeLaunchOptions;
+      images: PastedImage[];
+    },
   ) {
     const id = `${repo.key}::${input.branch}`;
     setPendingSlots((prev) => [
@@ -790,11 +798,28 @@ export function AgentboardScreen() {
         branch: input.branch,
         base: input.base,
         options: input.options,
+        images: input.images,
         startedAt: Date.now(),
         status: "creating",
       },
     ]);
     try {
+      // Stage pasted images *first*. They go to an app dir, not the slot, so
+      // this doesn't need the worktree to exist — and doing it up front means
+      // a failure here leaves nothing created, so the pending row's Retry is
+      // still the right (and only) recovery path.
+      const imagePaths = input.images.length
+        ? await invokeOrThrow<string[]>(
+            "slot_write_pasted_images",
+            {
+              repo: repo.name,
+              branch: input.branch,
+              images: input.images.map(({ mime, dataBase64 }) => ({ mime, dataBase64 })),
+            },
+            PastedImagePathsSchema,
+          )
+        : [];
+
       const created = await invokeOrThrow<SlotCreated>(
         "slot_create",
         { root: repo.dir, branch: input.branch, base: input.base },
@@ -805,7 +830,13 @@ export function AgentboardScreen() {
         toast(warning, warning.startsWith("setup `") ? { action: retryAction(created.dir) } : undefined);
       }
       setPendingSlots((prev) => prev.filter((p) => p.id !== id));
-      await slotCreated(created, input.goal, input.options);
+
+      // An image with no typed goal is still a valid ask — give the rail
+      // something to show rather than an unlabeled session.
+      const label =
+        input.goal ||
+        (imagePaths.length ? `attached ${imagePaths.length === 1 ? "image" : "images"}` : "");
+      await slotCreated(created, promptWithImages(input.goal, imagePaths), input.options, label);
     } catch (e) {
       setPendingSlots((prev) =>
         prev.map((p) => (p.id === id ? { ...p, status: "error" as const, error: String(e) } : p)),
@@ -818,7 +849,7 @@ export function AgentboardScreen() {
     if (!p) return;
     void createSlot(
       { name: p.repoName, dir: p.repoDir, key: p.repoKey },
-      { goal: p.goal, branch: p.branch, base: p.base, options: p.options },
+      { goal: p.goal, branch: p.branch, base: p.base, options: p.options, images: p.images },
     );
   }
 
@@ -837,7 +868,7 @@ export function AgentboardScreen() {
       await invokeOrThrow("slot_init_template", { root: p.repoDir });
       void createSlot(
         { name: p.repoName, dir: p.repoDir, key: p.repoKey },
-        { goal: p.goal, branch: p.branch, base: p.base, options: p.options },
+        { goal: p.goal, branch: p.branch, base: p.base, options: p.options, images: p.images },
       );
     } catch (e) {
       setPendingSlots((prev) => prev.map((x) => (x.id === id ? { ...x, error: String(e) } : x)));
@@ -848,7 +879,14 @@ export function AgentboardScreen() {
   // first session in the background, and start Claude on the goal in that
   // session's PTY — without switching the user's current view over to it.
   // They can jump to it via the rail whenever they're ready.
-  async function slotCreated(created: SlotCreated, goal: string, options: ClaudeLaunchOptions) {
+  async function slotCreated(
+    created: SlotCreated,
+    prompt: string,
+    options: ClaudeLaunchOptions,
+    /** The goal as the user typed it — what the rail and the toast show, so
+     * the image paths `promptWithImages` appended stay out of both. */
+    label?: string,
+  ) {
     toast(`created ${created.name}${created.branch ? ` on ${created.branch}` : ""}`);
     await abInvoke("ab_add_repo", { path: created.dir });
     // A freshly tracked folder already gets a default not-started session —
@@ -862,7 +900,7 @@ export function AgentboardScreen() {
     }
     if (!rec) return;
     mountSession(created.dir, rec.id);
-    if (goal) {
+    if (prompt) {
       // Selecting mounts the TerminalView, which spawns the PTY; wait for its
       // first real output (a proxy for "the shell is actually reading input")
       // rather than a fixed guess — a successful term_write only proves the
@@ -872,8 +910,9 @@ export function AgentboardScreen() {
       await waitForFirstFrame(rec.id);
       await launchClaudeIn(
         { folderDir: created.dir, sessionId: rec.id, sessionName: rec.name, restart: false },
-        goal,
+        prompt,
         options,
+        label,
       );
     }
   }
@@ -894,12 +933,18 @@ export function AgentboardScreen() {
     target: StartClaudeTarget,
     prompt: string,
     options?: ClaudeLaunchOptions,
+    /** What the toast and the session's rail purpose show, when that should
+     * differ from what's actually typed into the PTY — the new-slot flow
+     * appends attached-image paths to `prompt` that would only be noise
+     * here. Defaults to `prompt` for every other caller. */
+    label?: string,
   ) {
     const { sessionId, sessionName, restart } = target;
+    const shown = label ?? prompt;
     setOverlay(sessionId, "busy");
     const verb = restart ? "starting over — fresh Claude session" : "starting Claude";
-    toast(prompt ? `✦ ${verb} in ${sessionName}: ${prompt}` : `✦ ${verb} in ${sessionName}`);
-    if (prompt) void abInvoke("ab_set_session_purpose", { id: sessionId, text: prompt });
+    toast(shown ? `✦ ${verb} in ${sessionName}: ${shown}` : `✦ ${verb} in ${sessionName}`);
+    if (shown) void abInvoke("ab_set_session_purpose", { id: sessionId, text: shown });
     if (restart) {
       await termWrite(sessionId, "\x03");
       await sleep(150);

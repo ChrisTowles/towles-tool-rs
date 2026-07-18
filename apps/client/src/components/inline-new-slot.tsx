@@ -6,7 +6,7 @@
 // without awaiting it here) and a `PendingSlotRow` tracks the in-flight
 // create until it resolves, so switching to other repos/sessions while a
 // slot is being created just works.
-import { AlertTriangle, RefreshCw, Sparkles, Undo2 } from "lucide-react";
+import { AlertTriangle, Paperclip, RefreshCw, Sparkles, Undo2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -33,7 +33,10 @@ import {
   ClaudeModel,
   DEFAULT_CLAUDE_EFFORT,
   DEFAULT_CLAUDE_MODEL,
+  PastedImage,
   fmtElapsed,
+  imagesFromDataTransfer,
+  isPasteableImage,
 } from "@/lib/agentboard";
 import { BaseBranchesSchema } from "@/lib/schemas/slots";
 import { invokeOrThrow } from "@/lib/tauri";
@@ -91,6 +94,10 @@ export type PendingSlot = {
   branch: string;
   base: string;
   options: ClaudeLaunchOptions;
+  /** Carried on the pending row, not just consumed at submit, so a retry
+   * after a failed create re-attaches the same images — the form is long
+   * gone by then and the user would otherwise have to re-paste. */
+  images: PastedImage[];
   startedAt: number;
   status: "creating" | "error";
   error?: string;
@@ -134,9 +141,11 @@ export function InlineNewSlot({
     branch: string;
     base: string;
     options: ClaudeLaunchOptions;
+    images: PastedImage[];
   }) => void;
 }) {
   const [goal, setGoal] = useState("");
+  const [images, setImages] = useState<PastedImage[]>([]);
   const [branchEdit, setBranchEdit] = useState<string | null>(null);
   const [base, setBase] = useState("");
   const [model, setModel] = useState<ClaudeModel>(DEFAULT_CLAUDE_MODEL);
@@ -236,6 +245,27 @@ export function InlineNewSlot({
     setPreSuggest(null);
   }
 
+  // Screenshots are how a lot of goals actually get described ("make it look
+  // like this", "this is the error"), so the goal field takes an image paste
+  // directly. The bytes are held here until submit, then staged as files
+  // outside the repo (`tt_slots::pasted`) whose paths go into Claude's
+  // opening prompt.
+  async function pasteImages(data: DataTransfer | null) {
+    try {
+      const pasted = await imagesFromDataTransfer(data);
+      if (pasted.length) {
+        setImages((prev) => [...prev, ...pasted]);
+        setError(null);
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  function removeImage(id: string) {
+    setImages((prev) => prev.filter((img) => img.id !== id));
+  }
+
   function submit() {
     if (!branch) {
       setError("Give a goal (or type a branch name) first.");
@@ -245,7 +275,7 @@ export function InlineNewSlot({
       setError(branchProblem);
       return;
     }
-    onSubmit({ goal: goal.trim(), branch, base, options: { model, effort } });
+    onSubmit({ goal: goal.trim(), branch, base, options: { model, effort }, images });
   }
 
   return (
@@ -257,6 +287,29 @@ export function InlineNewSlot({
         autoFocus
         value={goal}
         onChange={(e) => setGoal(e.target.value)}
+        onPaste={(e) => {
+          // Only intercept an image paste — a text paste falls through to the
+          // textarea's own handling untouched.
+          const images = Array.from(e.clipboardData?.items ?? []).filter(
+            (it) => it.kind === "file" && it.type.startsWith("image/"),
+          );
+          if (!images.length) return;
+          e.preventDefault();
+          // An image type we can't write (SVG, say) would otherwise vanish
+          // silently — the paste is already swallowed by the preventDefault
+          // above, so say why rather than looking like nothing happened.
+          if (!images.some((it) => isPasteableImage(it.type))) {
+            setError(`Can't attach ${images[0].type} — paste a PNG, JPEG, GIF, or WebP.`);
+            return;
+          }
+          void pasteImages(e.clipboardData);
+        }}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          if (!Array.from(e.dataTransfer?.items ?? []).some((it) => it.kind === "file")) return;
+          e.preventDefault();
+          void pasteImages(e.dataTransfer);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
@@ -264,10 +317,32 @@ export function InlineNewSlot({
           }
           if (e.key === "Escape") cancel();
         }}
-        placeholder="what should get built in this slot?"
+        placeholder="what should get built in this slot? (paste a screenshot to attach it)"
         rows={2}
         className="text-xs"
       />
+      {images.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {images.map((img) => (
+            <div key={img.id} className="group relative">
+              <img
+                src={img.previewUrl}
+                alt={img.name}
+                title={`${img.name} — attached to the new slot's first prompt`}
+                className="size-12 rounded border border-border object-cover"
+              />
+              <button
+                type="button"
+                aria-label={`Remove ${img.name}`}
+                onClick={() => removeImage(img.id)}
+                className="absolute -top-1 -right-1 rounded-full border border-border bg-background p-0.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
+              >
+                <X className="size-2.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex items-center justify-end gap-2">
         {preSuggest && (
           <Button variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-[10.5px]" onClick={undoSuggest}>
@@ -404,6 +479,15 @@ export function PendingSlotRow({
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
           ⎇ {pending.branch}
         </span>
+        {pending.images.length > 0 && (
+          <span
+            title={`${pending.images.length} pasted image${pending.images.length === 1 ? "" : "s"} — attached to this slot's first prompt, and kept for a retry`}
+            className="flex shrink-0 items-center gap-0.5 font-mono text-[10.5px] text-muted-foreground/70"
+          >
+            <Paperclip className="size-2.5" />
+            {pending.images.length}
+          </span>
+        )}
         <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70">
           {fmtElapsed(now - pending.startedAt)}
         </span>

@@ -64,6 +64,7 @@ import {
   type ClaudeLaunchOptions,
   type FolderData,
   type Overlay,
+  type PastedImage,
   type RepoData,
   type SessionActions,
   type SessionData,
@@ -381,6 +382,7 @@ export function RepoGroup({
     branch: string;
     base: string;
     options: ClaudeLaunchOptions;
+    images: PastedImage[];
   }) => void;
   /** This repo's in-flight `slot_create` calls — see PendingSlot. */
   pendingSlots: PendingSlot[];

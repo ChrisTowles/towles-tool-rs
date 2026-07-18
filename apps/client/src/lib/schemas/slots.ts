@@ -14,3 +14,9 @@ export const SlotCreatedSchema = z.object({
 });
 
 export const BaseBranchesSchema = z.array(z.string());
+
+/** `slot_write_pasted_images`' result: the absolute path of each staged
+ * image, in paste order. These go straight into Claude's opening prompt, so a
+ * malformed payload is worth catching here rather than as a path that
+ * silently fails to read inside the session. */
+export const PastedImagePathsSchema = z.array(z.string());

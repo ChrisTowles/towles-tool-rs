@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 use tt_slots::ops::{self, CreateOpts, RemoveOpts};
+use tt_slots::pasted::{self, PastedImage};
 
 /// Fire-and-forget `git fetch` across every tracked repo (deduped, see
 /// [`tt_agentboard::git_info::fetch_all`]), then nudge the rail to re-emit.
@@ -134,6 +135,39 @@ pub async fn slot_create(
         base: created.base,
         warnings: created.warnings,
     })
+}
+
+/// Stage the images pasted into the new-slot form as files, returning their
+/// absolute paths for the caller to name in Claude's opening prompt. They
+/// land in `tt_config::pasted_images_dir()`, *not* in the repo — see
+/// `tt_slots::pasted` for why (short version: Claude Code reads an
+/// out-of-workspace path without prompting, so there's nothing to gain from
+/// writing user content into a checkout).
+///
+/// Called before `slot_create`, so a failure here means no slot was created
+/// and the caller's normal retry path still applies.
+///
+/// Decoding + writing a handful of megabytes → off the main thread, which on
+/// Linux is the GTK thread every other sync command dispatches on.
+#[tauri::command]
+pub async fn slot_write_pasted_images(
+    repo: String,
+    branch: String,
+    images: Vec<PastedImage>,
+) -> Result<Vec<String>, String> {
+    let base = tt_config::pasted_images_dir().map_err(|e| e.to_string())?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = pasted::scope_name(&repo, &branch);
+        pasted::write_images(&base, &scope, &images, now_ms)
+    })
+    .await
+    .map_err(|e| format!("slot task failed: {e}"))?
+    .map(|paths| paths.iter().map(|p| p.to_string_lossy().to_string()).collect())
+    .map_err(|e| e.to_string())
 }
 
 /// Re-run a checkout's setup step (declared `TT_SLOT_SETUP` or lockfile
