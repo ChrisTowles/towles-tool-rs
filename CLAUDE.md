@@ -240,6 +240,25 @@ Cargo workspace + npm workspace (`apps/client` only):
     this launch?" guarantee. Add instrumentation with `tracing` spans, not
     `log::` calls; existing `log::` sites still flow in via the subscriber's
     `tracing-log` bridge.
+    **Every user-initiated action must be logged too, not just subprocesses**
+    — see the README's "Core goal" section: this app's whole purpose is
+    helping Chris manage his own focus/attention instead of it becoming a
+    product, and that's only possible if the local event log is a complete,
+    honest record of what happened and when. A new Tauri command triggered by
+    an explicit user gesture (a click, a confirm, a delete, a shortcut that
+    mutates state) needs a `tracing` span or event recording at least the
+    action and its outcome — the same way `process.spawn` covers subprocesses.
+    OS-level signals with no other record — window focus/blur
+    (`WindowEvent::Focused` in `lib.rs`), a native notification actually
+    firing (`agentboard::notify_needs_you`) — get the same treatment, since
+    they're exactly the kind of thing that's impossible to reconstruct after
+    the fact otherwise (a real incident: `slot_remove`'s ~1-minute worktree
+    removal appeared to "steal focus" on completion, and there was no way to
+    tell from the log alone whether the window itself ever regained OS focus,
+    an unrelated needs-you notification fired at the same moment, or neither
+    — all three now emit `window.focus_changed` / `notify_needs_you: fired`
+    /`skipped` records precisely so the next occurrence is a `jq` query, not
+    another live repro session).
   - `tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and
     lockfile schema the app uses to pose as an "IDE" a Claude Code CLI session
     connects to. Transport-free by design (sockets, auth, clocks live in
