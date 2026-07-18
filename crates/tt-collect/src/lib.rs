@@ -178,7 +178,8 @@ fn local_day_end_ms(now_ms: i64) -> i64 {
 /// clean sweep does a full-table replace (which also purges rows of repos no
 /// longer tracked).
 pub fn collect_issues(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> CollectSummary {
-    let outcome = sweep_repos(repo_dirs, issues::collect_repo_issues);
+    let repo_dirs = dedupe_repo_dirs(repo_dirs);
+    let outcome = sweep_repos(&repo_dirs, issues::collect_repo_issues);
     let write = |all: &[tt_store::IssueInput], repos: Option<&[String]>| match repos {
         None => store.replace_issues(all),
         Some(repos) => store.replace_issues_for_repos(repos, all),
@@ -228,7 +229,8 @@ pub fn reconcile_linked_task_statuses(store: &Store, now_ms: i64) -> tt_store::R
 /// the stored PR set. Records `prs`. Failure containment matches
 /// [`collect_issues`]: failed repos keep their last-known-good rows.
 pub fn collect_prs(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> CollectSummary {
-    let outcome = sweep_repos(repo_dirs, prs::collect_repo_prs);
+    let repo_dirs = dedupe_repo_dirs(repo_dirs);
+    let outcome = sweep_repos(&repo_dirs, prs::collect_repo_prs);
     let write = |all: &[tt_store::PrInput], repos: Option<&[String]>| match repos {
         None => store.replace_prs(all),
         Some(repos) => store.replace_prs_for_repos(repos, all),
@@ -314,6 +316,39 @@ fn sweep_repos<T: Send>(
         }
     }
     sweep
+}
+
+/// Dedupe tracked repo dirs by their resolved GitHub `owner/repo`, keeping the
+/// first dir seen for each.
+///
+/// Every worktree slot of a repo is its own tracked directory but shares one
+/// GitHub identity; sweeping all of them fires byte-identical `gh` queries
+/// once per slot straight into the GraphQL budget, which is per-token, not
+/// per-directory (#322). Resolution reuses [`gh::repo_name_with_owner`]'s
+/// process-lifetime cache, so after a dir's first tick this costs nothing —
+/// the win is in the sweep this feeds skipping the expensive per-repo `gh`
+/// calls (PR/issue lists) for every duplicate dir, on every subsequent tick.
+fn dedupe_repo_dirs(repo_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let resolved = parallel_map(repo_dirs, SWEEP_CONCURRENCY, |dir| {
+        (dir.clone(), gh::repo_name_with_owner(dir))
+    });
+    dedupe_resolved(resolved)
+}
+
+/// Pure half of [`dedupe_repo_dirs`]: keep the first dir per successfully
+/// resolved name, plus every dir whose resolution failed. A failed resolution
+/// can't prove two dirs are the same repo, so it's kept as-is — its error
+/// still surfaces from `collect_repo_{issues,prs}` exactly as it would have
+/// without this dedup pass, rather than being silently dropped.
+fn dedupe_resolved(resolved: Vec<(PathBuf, Result<String, String>)>) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    resolved
+        .into_iter()
+        .filter_map(|(dir, name)| match name {
+            Ok(name) => seen.insert(name).then_some(dir),
+            Err(_) => Some(dir),
+        })
+        .collect()
 }
 
 /// Apply `f` to every item across up to `max_workers` scoped threads, returning
@@ -1070,6 +1105,39 @@ mod tests {
         let issues = store.issues().unwrap();
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].repo, "o/a", "full replace drops repos no longer tracked");
+    }
+
+    #[test]
+    fn dedupe_resolved_keeps_first_dir_per_resolved_repo() {
+        let deduped = dedupe_resolved(vec![
+            (PathBuf::from("/slots/repo-a"), Ok("o/repo".to_string())),
+            (PathBuf::from("/slots/repo-b"), Ok("o/repo".to_string())),
+            (PathBuf::from("/slots/other"), Ok("o/other".to_string())),
+        ]);
+        assert_eq!(
+            deduped,
+            vec![
+                PathBuf::from("/slots/repo-a"),
+                PathBuf::from("/slots/other")
+            ]
+        );
+    }
+
+    #[test]
+    fn dedupe_resolved_keeps_every_dir_that_fails_to_resolve() {
+        // A dir whose resolution errors (offline, no gh auth, moved) can't be
+        // proven a duplicate of anything, so it must survive the dedup pass —
+        // its error still needs to surface from the real collect call.
+        let deduped = dedupe_resolved(vec![
+            (PathBuf::from("/slots/a"), Err("gh: not a git repo".to_string())),
+            (PathBuf::from("/slots/b"), Err("gh: not a git repo".to_string())),
+        ]);
+        assert_eq!(deduped, vec![PathBuf::from("/slots/a"), PathBuf::from("/slots/b")]);
+    }
+
+    #[test]
+    fn dedupe_resolved_is_empty_for_empty_input() {
+        assert!(dedupe_resolved(vec![]).is_empty());
     }
 
     #[test]

@@ -26,6 +26,24 @@ dir, a repo `gh` can't reach) never sinks another repo's rows. Preserve this
 when touching the per-repo path; a shared early-return would silently zero
 out unrelated repos' data.
 
+## GitHub rate limiting (#322)
+
+Two mitigations, both load-bearing for keeping the GraphQL budget (per-token,
+not per-directory) from getting hammered:
+
+- `dedupe_repo_dirs` (`lib.rs`) runs before every sweep in `collect_issues`/
+  `collect_prs`, collapsing tracked dirs to one per resolved `owner/repo`
+  before the expensive PR/issue-list calls fire. Every worktree slot of a repo
+  is a separate tracked dir sharing one GitHub identity, so without this an
+  N-slot repo issues N sets of byte-identical queries per tick. Only a dir
+  that *fails* to resolve is kept unconditionally (can't prove it's a
+  duplicate) — don't "fix" that into dropping it, or a real error goes silent.
+- `gh::run` arms a process-wide backoff the moment a call's stderr looks like
+  a GitHub rate-limit response (primary or secondary/abuse-detection), and
+  every `gh` call short-circuits without spawning a subprocess while that
+  backoff is armed. This is intentionally global, not per-repo: the limit is
+  per-token, so one hit means the next call anywhere is likely limited too.
+
 ## Calendar collector: timeout matters more than it looks
 
 `collect_calendar` is **off by default** (it burns tokens every scheduler
