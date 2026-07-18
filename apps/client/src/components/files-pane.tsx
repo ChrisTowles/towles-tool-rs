@@ -7,6 +7,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { buildDiffTree, type DiffTreeNode } from "@/lib/diff";
 import { fileIconSpec, folderIconSpec } from "@/lib/file-icons";
 import { ideAtMention, useIdeConnected } from "@/lib/ide";
+import { setMonacoOpenHandler, setMonacoWorkspace } from "@/lib/monaco";
 import { invokeCmd } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import type { FolderData } from "@/lib/agentboard";
@@ -208,6 +209,18 @@ export function FilesPane({
     setDirty(false);
     void fetchFiles();
   }, [fetchFiles]);
+
+  // This pane is the VS Code workspace: quick-open (Ctrl+P in the editor)
+  // searches this folder, and picked files open here. Keyed on `open` too —
+  // panes stay mounted forever, so mount order says nothing about which pane
+  // the user is in; the one they last opened a file in wins.
+  useEffect(() => {
+    void setMonacoWorkspace(dir);
+    setMonacoOpenHandler((absolutePath) => {
+      if (absolutePath.startsWith(`${dir}/`)) setOpen(absolutePath.slice(dir.length + 1));
+    });
+    return () => setMonacoOpenHandler(null);
+  }, [dir, open]);
 
   const tree = useMemo(() => buildDiffTree(files ?? []), [files]);
   const needle = filter.trim().toLowerCase();

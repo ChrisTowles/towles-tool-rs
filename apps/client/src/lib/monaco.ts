@@ -15,14 +15,30 @@ let loading: Promise<typeof import("monaco-editor")> | null = null;
 
 export function loadMonaco(): Promise<typeof import("monaco-editor")> {
   loading ??= (async () => {
-    const [monaco, api, configuration, languages, textmate, theme, editorWorker, textmateWorker] =
-      await Promise.all([
+    const [
+      monaco,
+      api,
+      configuration,
+      languages,
+      textmate,
+      theme,
+      model,
+      quickaccess,
+      search,
+      tauriFs,
+      editorWorker,
+      textmateWorker,
+    ] = await Promise.all([
       import("monaco-editor"),
       import("@codingame/monaco-vscode-api"),
       import("@codingame/monaco-vscode-configuration-service-override"),
       import("@codingame/monaco-vscode-languages-service-override"),
       import("@codingame/monaco-vscode-textmate-service-override"),
       import("@codingame/monaco-vscode-theme-service-override"),
+      import("@codingame/monaco-vscode-model-service-override"),
+      import("@codingame/monaco-vscode-quickaccess-service-override"),
+      import("@codingame/monaco-vscode-search-service-override"),
+      import("@/lib/monaco-fs"),
       import("monaco-editor/esm/vs/editor/editor.worker?worker"),
       import("@codingame/monaco-vscode-textmate-service-override/worker?worker"),
       // Importing a default-extension package registers its TextMate grammars
@@ -52,16 +68,71 @@ export function loadMonaco(): Promise<typeof import("monaco-editor")> {
     // Through user config, seeded before the services start — `setTheme`
     // races the theme service's own async startup restore and loses.
     await configuration.initUserConfiguration(
-      JSON.stringify({ "workbench.colorTheme": "Default Dark Modern" }),
+      JSON.stringify({
+        "workbench.colorTheme": "Default Dark Modern",
+        // Quick-open walks the workspace through the Tauri fs bridge — keep
+        // it out of the build/dependency trees.
+        "search.exclude": {
+          "**/node_modules": true,
+          "**/target": true,
+          "**/dist": true,
+          "**/.git": true,
+        },
+      }),
     );
     await api.initialize({
       ...configuration.default(),
       ...languages.default(),
       ...textmate.default(),
       ...theme.default(),
+      // Resolves file: URIs into models through the file service (the Tauri
+      // fs bridge) — quick-open's Enter path needs this.
+      ...model.default(),
+      ...quickaccess.default({
+        // The app has no VS Code keybindings UI; always use the real picker.
+        isKeybindingConfigurationVisible: () => false,
+        shouldUseGlobalPicker: () => true,
+      }),
+      ...search.default(),
     });
+    tauriFs.registerTauriFileSystem();
     await themeDefaults.whenReady();
+    // Quick-open (and anything else workbench-y) resolves picked files
+    // through the editor opener — route them to the app's own viewer.
+    monaco.editor.registerEditorOpener({
+      openCodeEditor(_source, resource) {
+        if (resource.scheme !== "file" || openHandler == null) return false;
+        openHandler(resource.path);
+        return true;
+      },
+    });
     return monaco;
   })();
   return loading;
+}
+
+let workspaceDir: string | null = null;
+
+/**
+ * Point the VS Code workspace at one folder (quick-open's search root). The
+ * Files pane calls this as it mounts/changes — one workspace at a time, last
+ * pane wins.
+ */
+export async function setMonacoWorkspace(dir: string): Promise<void> {
+  const monaco = await loadMonaco();
+  if (workspaceDir === dir) return;
+  workspaceDir = dir;
+  const { reinitializeWorkspace } = await import(
+    "@codingame/monaco-vscode-configuration-service-override"
+  );
+  await reinitializeWorkspace({ id: dir, uri: monaco.Uri.file(dir) });
+}
+
+type OpenFileHandler = (absolutePath: string) => void;
+let openHandler: OpenFileHandler | null = null;
+
+/** Where "open this file" requests from the VS Code layer (quick-open picks)
+ * land — the active Files pane registers itself; null to unregister. */
+export function setMonacoOpenHandler(handler: OpenFileHandler | null): void {
+  openHandler = handler;
 }

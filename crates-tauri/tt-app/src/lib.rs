@@ -524,6 +524,8 @@ pub fn run() {
             ide::ide_list_files,
             ide::ide_set_open_file,
             ide::ide_read_file,
+            ide::ide_stat,
+            ide::ide_read_dir,
             ide::ide_write_file,
             ide::ide_diff_resolve,
             diagnostics::ide_diagnostics_refresh,
