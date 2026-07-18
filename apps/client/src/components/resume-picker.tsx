@@ -67,7 +67,7 @@ export function ResumePicker() {
     // Oldest first: Agentboard activates each folder as it restores it, so the
     // last one handed over is the one left on screen — and after a crash that
     // should be the session you were most recently in.
-    for (const c of [...picked].reverse()) {
+    for (const c of picked.toReversed()) {
       requestOpenSession({
         folderDir: c.folderDir,
         sessionId: c.paneId,
@@ -90,9 +90,8 @@ export function ResumePicker() {
         <DialogHeader>
           <DialogTitle>Resume your sessions?</DialogTitle>
           <DialogDescription>
-            Towles Tool closed unexpectedly. These panes were running Claude —
-            pick the ones to relaunch with{" "}
-            <span className="font-mono text-xs">claude --resume</span>.
+            Towles Tool closed unexpectedly. These panes were running Claude — pick the ones to
+            relaunch with <span className="font-mono text-xs">claude --resume</span>.
           </DialogDescription>
         </DialogHeader>
 
@@ -148,9 +147,7 @@ export function ResumePicker() {
             Not now
           </Button>
           <Button onClick={resume} disabled={chosen.size === 0}>
-            {chosen.size === 1
-              ? "Resume 1 session"
-              : `Resume ${chosen.size} sessions`}
+            {chosen.size === 1 ? "Resume 1 session" : `Resume ${chosen.size} sessions`}
           </Button>
         </DialogFooter>
       </DialogContent>

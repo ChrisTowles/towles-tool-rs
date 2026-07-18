@@ -626,9 +626,7 @@ export function AgentboardScreen() {
     const folderDir = wins?.windows.find((win) =>
       ids.some((id) => win.panes.includes(id)),
     )?.folderDir;
-    updateWins(folderDir ? [folderDir] : [], (w) =>
-      ids.reduce((acc, id) => dropPane(acc, id), w),
-    );
+    updateWins(folderDir ? [folderDir] : [], (w) => ids.reduce((acc, id) => dropPane(acc, id), w));
   }
 
   // "+ window": a window can't exist without panes, so minting one means
@@ -914,7 +912,13 @@ export function AgentboardScreen() {
     if (!p) return;
     void createSlot(
       { name: p.repoName, dir: p.repoDir, key: p.repoKey },
-      { goal: p.goal, branch: p.branch, base: p.base, options: p.options, imagePaths: p.imagePaths },
+      {
+        goal: p.goal,
+        branch: p.branch,
+        base: p.base,
+        options: p.options,
+        imagePaths: p.imagePaths,
+      },
     );
   }
 
@@ -933,7 +937,13 @@ export function AgentboardScreen() {
       await invokeOrThrow("slot_init_template", { root: p.repoDir });
       void createSlot(
         { name: p.repoName, dir: p.repoDir, key: p.repoKey },
-        { goal: p.goal, branch: p.branch, base: p.base, options: p.options, imagePaths: p.imagePaths },
+        {
+          goal: p.goal,
+          branch: p.branch,
+          base: p.base,
+          options: p.options,
+          imagePaths: p.imagePaths,
+        },
       );
     } catch (e) {
       setPendingSlots((prev) => prev.map((x) => (x.id === id ? { ...x, error: String(e) } : x)));
@@ -1625,60 +1635,65 @@ export function AgentboardScreen() {
                         className="w-24 shrink-0 rounded-md border border-input bg-background px-2 py-1 text-[11px] outline-none"
                       />
                     ) : (
-                    <button
-                      key={w.id}
-                      type="button"
-                      onClick={() => actions.focusWindow(w.id)}
-                      onDoubleClick={() => setRenamingWin(w.id)}
-                      title="double-click to rename"
-                      aria-pressed={w.id === activeWin?.id}
-                      className={cn(
-                        // border-b-2 mirrors the rail's border-l-2 active edge,
-                        // rotated to match this strip's horizontal layout — kept
-                        // transparent at rest so the violet edge never shifts
-                        // the tab's size when it becomes active.
-                        "flex shrink-0 items-center gap-1.5 rounded-md border-b-2 border-transparent px-2 py-1 text-[11px]",
-                        w.id === activeWin?.id
-                          ? "border-b-violet-500 bg-accent text-foreground"
-                          : "text-muted-foreground hover:bg-accent/50",
-                      )}
-                    >
-                      <span className={cn("size-2 rounded-[3px]", windowColor(windowsForFolder, w.id))} />
-                      {w.name}
-                      <span className="font-mono text-[10px] text-muted-foreground/60">
-                        {w.panes.length}⊞
-                      </span>
-                      {windowsForFolder.length > 1 && (
-                        // span-with-role, not <button>: it nests inside the
-                        // window chip's real <button>, and interactive elements
-                        // may not nest. Keyboard support added by hand instead.
+                      <button
+                        key={w.id}
+                        type="button"
+                        onClick={() => actions.focusWindow(w.id)}
+                        onDoubleClick={() => setRenamingWin(w.id)}
+                        title="double-click to rename"
+                        aria-pressed={w.id === activeWin?.id}
+                        className={cn(
+                          // border-b-2 mirrors the rail's border-l-2 active edge,
+                          // rotated to match this strip's horizontal layout — kept
+                          // transparent at rest so the violet edge never shifts
+                          // the tab's size when it becomes active.
+                          "flex shrink-0 items-center gap-1.5 rounded-md border-b-2 border-transparent px-2 py-1 text-[11px]",
+                          w.id === activeWin?.id
+                            ? "border-b-violet-500 bg-accent text-foreground"
+                            : "text-muted-foreground hover:bg-accent/50",
+                        )}
+                      >
                         <span
-                          role="button"
-                          tabIndex={0}
-                          title="close window (panes ungroup; sessions stay in the rail)"
-                          aria-label={`close window ${w.name}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            updateWins([w.folderDir], (cur) => ({
-                              ...cur,
-                              windows: cur.windows.filter((x) => x.id !== w.id),
-                            }));
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key !== "Enter" && e.key !== " ") return;
-                            e.preventDefault();
-                            e.stopPropagation();
-                            updateWins([w.folderDir], (cur) => ({
-                              ...cur,
-                              windows: cur.windows.filter((x) => x.id !== w.id),
-                            }));
-                          }}
-                          className="text-muted-foreground/50 hover:text-red-500"
-                        >
-                          ✕
+                          className={cn(
+                            "size-2 rounded-[3px]",
+                            windowColor(windowsForFolder, w.id),
+                          )}
+                        />
+                        {w.name}
+                        <span className="font-mono text-[10px] text-muted-foreground/60">
+                          {w.panes.length}⊞
                         </span>
-                      )}
-                    </button>
+                        {windowsForFolder.length > 1 && (
+                          // span-with-role, not <button>: it nests inside the
+                          // window chip's real <button>, and interactive elements
+                          // may not nest. Keyboard support added by hand instead.
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            title="close window (panes ungroup; sessions stay in the rail)"
+                            aria-label={`close window ${w.name}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              updateWins([w.folderDir], (cur) => ({
+                                ...cur,
+                                windows: cur.windows.filter((x) => x.id !== w.id),
+                              }));
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key !== "Enter" && e.key !== " ") return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              updateWins([w.folderDir], (cur) => ({
+                                ...cur,
+                                windows: cur.windows.filter((x) => x.id !== w.id),
+                              }));
+                            }}
+                            className="text-muted-foreground/50 hover:text-red-500"
+                          >
+                            ✕
+                          </span>
+                        )}
+                      </button>
                     ),
                   )}
                   {activeFolderDir && (
@@ -1835,7 +1850,11 @@ export function AgentboardScreen() {
                         const sessionId = exitPaneSession(id) ?? "";
                         const s = sessionById.get(sessionId);
                         return (
-                          <div key={id} style={r ? paneStyle(r) : undefined} className="absolute p-1.5">
+                          <div
+                            key={id}
+                            style={r ? paneStyle(r) : undefined}
+                            className="absolute p-1.5"
+                          >
                             <PanePlaceholder
                               label={s ? labelFor(s) : "shell"}
                               detail={exitLabels[sessionId]}

@@ -38,6 +38,7 @@ import {
   fmtElapsed,
   imagesFromDataTransfer,
   isPasteableImage,
+  nextDraftScopeId,
 } from "@/lib/agentboard";
 import { BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
 import { invokeOrThrow } from "@/lib/tauri";
@@ -154,7 +155,7 @@ export function InlineNewSlot({
   const [staging, setStaging] = useState(false);
   // Stable per-form staging directory. The branch can't key it — it's still
   // being edited while images are pasted.
-  const [draftScope] = useState(() => `draft-${Date.now()}`);
+  const [draftScope] = useState(nextDraftScopeId);
   const [branchEdit, setBranchEdit] = useState<string | null>(null);
   const [base, setBase] = useState("");
   const [model, setModel] = useState<ClaudeModel>(DEFAULT_CLAUDE_MODEL);
@@ -367,16 +368,16 @@ export function InlineNewSlot({
         onChange={(e) => setGoal(e.target.value)}
         onPaste={(e) => {
           const items = Array.from(e.clipboardData?.items ?? []);
-          const images = items.filter(
+          const pastedImages = items.filter(
             (it) => it.kind === "file" && it.type.startsWith("image/"),
           );
-          if (images.length) {
+          if (pastedImages.length) {
             e.preventDefault();
             // An image type we can't write (SVG, say) would otherwise vanish
             // silently — the paste is already swallowed by the preventDefault
             // above, so say why rather than looking like nothing happened.
-            if (!images.some((it) => isPasteableImage(it.type))) {
-              setError(`Can't attach ${images[0].type} — paste a PNG, JPEG, GIF, or WebP.`);
+            if (!pastedImages.some((it) => isPasteableImage(it.type))) {
+              setError(`Can't attach ${pastedImages[0].type} — paste a PNG, JPEG, GIF, or WebP.`);
               return;
             }
             void pasteImages(e.clipboardData);

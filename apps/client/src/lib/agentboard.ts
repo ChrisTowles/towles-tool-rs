@@ -383,6 +383,21 @@ export function nextOpenFileNonce(): number {
   return ++openFileNonce;
 }
 
+/** Last id handed out, so a same-millisecond mint can't repeat one. */
+let lastDraftScopeSeq = 0;
+
+/**
+ * Mint a scope id for a new-slot form's image staging directory. Same
+ * reasoning as {@link nextWindowId}: two forms opened in the same millisecond
+ * (e.g. across two repos) would otherwise share a staging dir and clobber
+ * each other's pasted images.
+ */
+export function nextDraftScopeId(): string {
+  const now = Date.now();
+  lastDraftScopeSeq = now > lastDraftScopeSeq ? now : lastDraftScopeSeq + 1;
+  return `draft-${lastDraftScopeSeq}`;
+}
+
 /** Place a pane in its folder's focused window, creating a "primary" window if
  * the folder has none. A pane already hosted somewhere isn't moved — its
  * window becomes the folder's active one instead, so clicking a rail row
@@ -1220,8 +1235,10 @@ export async function clipboardImageFromHost(): Promise<PastedImage | null> {
 async function readImageFile(file: File, index: number): Promise<PastedImage> {
   const previewUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error("couldn't read the pasted image"));
+    reader.addEventListener("load", () => resolve(String(reader.result)));
+    reader.addEventListener("error", () =>
+      reject(reader.error ?? new Error("couldn't read the pasted image")),
+    );
     reader.readAsDataURL(file);
   });
   return {

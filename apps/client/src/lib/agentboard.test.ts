@@ -550,7 +550,10 @@ describe("hydrateWins", () => {
 
   it("drops tombstones too — they report a crash from a run that's over", () => {
     const w: WireWindowsPayload = {
-      windows: [wireWin("w1", "/f", [exitPaneId("s1"), "~diff:/f"]), wireWin("w2", "/g", [exitPaneId("s2")])],
+      windows: [
+        wireWin("w1", "/f", [exitPaneId("s1"), "~diff:/f"]),
+        wireWin("w2", "/g", [exitPaneId("s2")]),
+      ],
       activeWindows: { "/f": "w1", "/g": "w2" },
     };
     const next = hydrateWins(w);
@@ -1054,7 +1057,9 @@ describe("promptWithImages", () => {
   });
 
   it("names the image and tells Claude to read it first", () => {
-    const prompt = promptWithImages("match this design", ["/slot/.claude/pasted-images/paste-1.png"]);
+    const prompt = promptWithImages("match this design", [
+      "/slot/.claude/pasted-images/paste-1.png",
+    ]);
     // The path alone isn't enough — a bare path in a prompt is something
     // Claude may or may not act on, so the instruction is what makes the
     // attachment reliable.
