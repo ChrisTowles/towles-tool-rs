@@ -40,8 +40,6 @@ import {
   ClaudeEffort,
   ClaudeLaunchOptions,
   ClaudeModel,
-  DEFAULT_CLAUDE_EFFORT,
-  DEFAULT_CLAUDE_MODEL,
   PastedImage,
   clipboardImageFromHost,
   fmtElapsed,
@@ -55,13 +53,23 @@ import { BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots"
 import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
-const MODEL_OPTIONS: { value: ClaudeModel; label: string }[] = [
+/** The unset state of the model/effort selects: no `--model`/`--effort` is
+ * passed at all, so the user's own Claude config decides. Its own option
+ * (rather than an empty value) because Radix `Select` can't represent "". */
+const USE_DEFAULT = "default";
+
+type ModelChoice = ClaudeModel | typeof USE_DEFAULT;
+type EffortChoice = ClaudeEffort | typeof USE_DEFAULT;
+
+const MODEL_OPTIONS: { value: ModelChoice; label: string }[] = [
+  { value: USE_DEFAULT, label: "Default model" },
   { value: "sonnet", label: "Sonnet" },
   { value: "opus", label: "Opus" },
   { value: "fable", label: "Fable" },
 ];
 
-const EFFORT_OPTIONS: { value: ClaudeEffort; label: string }[] = [
+const EFFORT_OPTIONS: { value: EffortChoice; label: string }[] = [
+  { value: USE_DEFAULT, label: "Default effort" },
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
@@ -205,8 +213,10 @@ export function InlineNewSlot({
   const [draftScope] = useState(nextDraftScopeId);
   const [branchEdit, setBranchEdit] = useState<string | null>(null);
   const [base, setBase] = useState("");
-  const [model, setModel] = useState<ClaudeModel>(DEFAULT_CLAUDE_MODEL);
-  const [effort, setEffort] = useState<ClaudeEffort>(DEFAULT_CLAUDE_EFFORT);
+  // Both start unset — the launched `claude` gets no --model/--effort unless
+  // the user explicitly picks one, so their own defaults apply.
+  const [model, setModel] = useState<ModelChoice>(USE_DEFAULT);
+  const [effort, setEffort] = useState<EffortChoice>(USE_DEFAULT);
   const [branches, setBranches] = useState<string[]>([]);
   const [baseOpen, setBaseOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -449,7 +459,16 @@ export function InlineNewSlot({
       setError(branchProblem);
       return;
     }
-    onSubmit({ goal: goal.trim(), branch, base, options: { model, effort }, imagePaths });
+    onSubmit({
+      goal: goal.trim(),
+      branch,
+      base,
+      options: {
+        model: model === USE_DEFAULT ? undefined : model,
+        effort: effort === USE_DEFAULT ? undefined : effort,
+      },
+      imagePaths,
+    });
   }
 
   return (
@@ -666,7 +685,7 @@ export function InlineNewSlot({
         </Popover>
       </div>
       <div className="flex items-center gap-2">
-        <Select value={model} onValueChange={(v) => setModel(v as ClaudeModel)}>
+        <Select value={model} onValueChange={(v) => setModel(v as ModelChoice)}>
           <SelectTrigger className="min-w-0 flex-1 font-mono text-xs">
             <SelectValue />
           </SelectTrigger>
@@ -678,7 +697,7 @@ export function InlineNewSlot({
             ))}
           </SelectContent>
         </Select>
-        <Select value={effort} onValueChange={(v) => setEffort(v as ClaudeEffort)}>
+        <Select value={effort} onValueChange={(v) => setEffort(v as EffortChoice)}>
           <SelectTrigger className="min-w-0 flex-1 font-mono text-xs">
             <SelectValue />
           </SelectTrigger>
