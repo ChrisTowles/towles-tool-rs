@@ -14,6 +14,13 @@ plugin enabled gets these tools without manual `claude mcp add` setup:
 `agent_sessions`, `calendar_next`, `calendar_today`, `dm_status`, `snapshot`,
 `tasks_open`.
 
+The dashboard reads work out of the box. The mutating tools (`todo_*`,
+`journal_append`, `collect_refresh`) and `agent_sessions` are **disabled by
+default**: they refuse until you set `"mcp": { "mutationsEnabled": true }`
+(and/or `"agentSessionsEnabled": true`) in `towles-tool.settings.json` —
+deliberately a hand edit, so a prompt-injected session can't self-approve
+(see the trust-boundary doc in `crates/tt-mcp`).
+
 Requires `tt` on `PATH` (see the root [README](../../README.md) / `install`
 command).
 

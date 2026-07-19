@@ -219,23 +219,13 @@ Cargo workspace + npm workspace (`apps/client` only):
     protocol/socket split lives.
   - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`tt mcp serve`) exposing
     the store + live agent sessions + `journal_append` to claude sessions.
-    Registered with Claude Code at **user scope**, so it's reachable from
-    every session on the machine regardless of project — a confused-deputy
-    risk if a session's instructions get hijacked by content it reads
-    mid-task (a hostile issue/PR body, a fetched page). The trust boundary:
-    read access to the aggregate personal dashboard is available from any of
-    the user's own sessions by design (that's the point — "what's on my
-    plate from anywhere"), but anything that mutates the store/journal,
-    shells out to `gh` machine-wide, or exposes *other* sessions' live data
-    (`todo_*`, `journal_append`, `collect_refresh`, `agent_sessions`) is
-    gated behind `mcp.mutationsEnabled`/`mcp.agentSessionsEnabled` in
-    `towles-tool.settings.json` — both off by default, and only settable by
-    editing that file directly (no MCP tool exposes a write path to it, so no
-    prompt injection can self-approve). See the crate's own module
-    doc-comment for the full reasoning, including why directory- and
-    token-based gating were rejected (both are inherited by/visible to the
-    exact same hijacked session, so neither distinguishes genuine intent from
-    injected intent).
+    It's registered at **user scope**, so every session on the machine can
+    reach it — reads are fine (that's the point), but mutations and other
+    sessions' live data (`todo_*`, `journal_append`, `collect_refresh`,
+    `agent_sessions`) are gated behind `mcp.mutationsEnabled` /
+    `mcp.agentSessionsEnabled`, both off by default and settable only by
+    hand-editing `towles-tool.settings.json`. The crate's module doc-comment
+    has the full threat model.
   - `tt-otel` — telemetry. `tt_otel::init` installs the global `tracing`
     subscriber for both binaries (it replaced `env_logger` — a hard cutover,
     no second logger), fanning out to stderr (filtered by `-v`/`RUST_LOG`) and
