@@ -8,13 +8,13 @@ exposes and one hook that keeps its PR view fresh.
 Registers the app's own `tt mcp serve` (`crates/tt-mcp`), so any session with this
 plugin enabled gets these tools without manual `claude mcp add` setup:
 
-`day_brief`, `needs_you`, `prs_status`, `issues_open`, `dm_status`,
-`snapshot`, `tasks_open`, `collect_status`.
+`task_list`, `task_status`, `task_create`.
 
-Every tool is a read of your own dashboard — the server is read-only by
-construction (the mutating `todo_*`/`journal_append`/`collect_refresh` tools
-and `agent_sessions` were removed in the 2026-07 telemetry datamine after
-showing zero use; see the trust-boundary doc in `crates/tt-mcp`).
+`task_list`/`task_status` read your own board; `task_create` is the one
+mutation and is gated off by default — opt in with
+`"mcp": {"mutationsEnabled": true}` in the shared settings file (no MCP tool
+can flip it; see the trust-boundary doc in `crates/tt-mcp`). The broader
+dashboard-read tools were pruned in the 2026-07 tool-surface review.
 
 Requires `tt` on `PATH` (see the root [README](../../README.md) / `install`
 command).
