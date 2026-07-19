@@ -152,6 +152,15 @@ export const SHORTCUTS = defineShortcuts([
     keys: "mod+shift+d",
     description: "New slot — goal, branch, base",
     when: "a folder is focused",
+    allowInEditable: true,
+  },
+  {
+    id: "ab-remove-slot",
+    scope: "agentboard",
+    keys: "mod+shift+backspace",
+    description: "Delete the focused worktree slot (confirms first)",
+    when: "a worktree slot is focused",
+    allowInEditable: true,
   },
   {
     id: "ab-close-session",
@@ -229,6 +238,10 @@ export const SHORTCUTS = defineShortcuts([
 /** True on macOS — chooses ⌘ vs Ctrl for the modifier key across the app. */
 export const IS_MAC = typeof navigator !== "undefined" && /mac/i.test(navigator.platform ?? "");
 
+/** Keycap symbols for multi-char `KeyboardEvent.key` names that would
+ * otherwise render as raw lowercase words in the help overlay. */
+const KEYCAP_LABELS: Record<string, string> = { backspace: "⌫" };
+
 /** Per-platform keycap tokens for a shortcut id: ["⌘","⇧","W"] on mac,
  * ["Ctrl","Shift","W"] elsewhere. Feed to <Kbd> or join for a title. */
 export function shortcutKeys(id: string): string[] {
@@ -238,7 +251,9 @@ export function shortcutKeys(id: string): string[] {
   if (s.spec.mod) caps.push(IS_MAC ? "⌘" : "Ctrl");
   if (s.spec.shift) caps.push(IS_MAC ? "⇧" : "Shift");
   if (s.spec.alt) caps.push(IS_MAC ? "⌥" : "Alt");
-  caps.push(s.spec.key.length === 1 ? s.spec.key.toUpperCase() : s.spec.key);
+  caps.push(
+    KEYCAP_LABELS[s.spec.key] ?? (s.spec.key.length === 1 ? s.spec.key.toUpperCase() : s.spec.key),
+  );
   return caps;
 }
 
