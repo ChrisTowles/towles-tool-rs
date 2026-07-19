@@ -36,20 +36,48 @@ export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
   done: "Done",
 };
 
+/** One GitHub issue linked to a task; `state` is the last observed state. */
+export type TaskIssueLink = {
+  repo: string;
+  number: number;
+  url: string;
+  state: "open" | "closed" | (string & {});
+};
+
+/** One GitHub PR linked to a task. */
+export type TaskPrLink = {
+  repo: string;
+  number: number;
+  url: string;
+  state: "open" | "merged" | "closed" | (string & {});
+  checks: string;
+};
+
+/**
+ * A task's worktree-slot binding. `repoRoot`/`branch` survive slot removal;
+ * `dir` is cleared when the worktree is removed (a detached task).
+ */
+export type TaskSlot = {
+  repoRoot: string;
+  repo?: string;
+  branch: string;
+  dir?: string;
+};
+
+/** A task — the unit of work (#339): 0..N issues, 0..N PRs, usually a slot. */
 export type TaskItem = {
   id: number;
   text: string;
   status: TaskStatus;
   position: number;
   dueTs?: number;
-  /** Set once the todo is promoted to / linked with a GitHub issue. */
-  repo?: string;
-  issueNumber?: number;
-  issueUrl?: string;
   createdAt: number;
   completedAt?: number;
-  /** Free-form context attached to the todo. */
+  /** Free-form context attached to the task. */
   notes?: string;
+  slot?: TaskSlot;
+  issues: TaskIssueLink[];
+  prs: TaskPrLink[];
 };
 
 export type IssueItem = {
@@ -481,31 +509,62 @@ export function useAppSlot(): string | null {
   return slot;
 }
 
-/** Create a todo in Backlog. */
-export const storeAddTask = (text: string, dueTs?: number, repo?: string) =>
-  invoke<void>("store_add_task", { text, dueTs, repo });
+/** Create a task; resolves to its id. `status` defaults to Backlog backend-side. */
+export const storeAddTask = (text: string, opts?: { status?: TaskStatus; dueTs?: number }) =>
+  invoke<number>("store_add_task", { text, status: opts?.status, dueTs: opts?.dueTs });
 
-/** Move a todo to another kanban column (appended at the end of it). */
+/** Move a task to another board column (appended at the end of it). */
 export const storeSetTaskStatus = (id: number, status: TaskStatus) =>
   invoke<void>("store_set_task_status", { id, status });
 
-/** Move a todo to `status` at slot `index` within that column (drag-to-reorder). */
+/** Move a task to `status` at slot `index` within that column (drag-to-reorder). */
 export const storeSetTaskPosition = (id: number, status: TaskStatus, index: number) =>
   invoke<void>("store_set_task_position", { id, status, index });
 
-/** Overwrite a todo's editable fields. */
+/** Overwrite a task's editable fields. */
 export const storeUpdateTask = (id: number, text: string, notes?: string, dueTs?: number) =>
   invoke<void>("store_update_task", { id, text, notes, dueTs });
 
-/** Delete a todo outright. */
+/** Delete a task outright. */
 export const storeDeleteTask = (id: number) => invoke<void>("store_delete_task", { id });
 
-/** Sweep Done todos older than the backend's retention window (default 7 days). */
+/** Sweep Done tasks older than the backend's retention window (default 7 days). */
 export const storeClearDone = () => invoke<void>("store_clear_done");
 
-/** Open a GitHub issue in `repo` for an existing todo and link the two. */
+/** Open a GitHub issue in `repo` for an existing task and attach the two. */
 export const storePromoteTaskToIssue = (id: number, repo: string) =>
   invoke<void>("store_promote_task_to_issue", { id, repo });
+
+/** Attach a GitHub issue to a task. */
+export const storeAttachTaskIssue = (id: number, repo: string, number: number, url: string) =>
+  invoke<void>("store_attach_task_issue", { id, repo, number, url });
+
+/** Detach a GitHub issue from a task. */
+export const storeDetachTaskIssue = (id: number, repo: string, number: number) =>
+  invoke<void>("store_detach_task_issue", { id, repo, number });
+
+/** Attach a GitHub PR to a task (slot-branch PRs auto-attach on collect). */
+export const storeAttachTaskPr = (id: number, repo: string, number: number, url: string) =>
+  invoke<void>("store_attach_task_pr", { id, repo, number, url });
+
+/** Detach a GitHub PR from a task. */
+export const storeDetachTaskPr = (id: number, repo: string, number: number) =>
+  invoke<void>("store_detach_task_pr", { id, repo, number });
+
+/** Bind a task to the worktree slot its work happens in. */
+export const storeTaskSetSlot = (
+  id: number,
+  repoRoot: string,
+  branch: string,
+  opts?: { repo?: string; dir?: string },
+) =>
+  invoke<void>("store_task_set_slot", {
+    id,
+    repoRoot,
+    branch,
+    repo: opts?.repo,
+    dir: opts?.dir,
+  });
 
 /** One Agentboard-tracked repo, resolved to its GitHub `owner/name`. */
 export type GhRepoOption = { dir: string; name: string };

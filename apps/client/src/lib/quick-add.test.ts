@@ -23,7 +23,6 @@ describe("parseQuickAdd", () => {
     const r = parseQuickAdd("write notes @today", NOW);
     expect(r.text).toBe("write notes");
     expect(r.dueTs).toBe(endOfDay(0));
-    expect(r.repo).toBeUndefined();
   });
 
   it("resolves @tomorrow to the end of the next local day", () => {
@@ -38,17 +37,9 @@ describe("parseQuickAdd", () => {
     expect(r.dueTs).toBe(new Date(2026, 6, 20, 23, 59, 59, 999).getTime());
   });
 
-  it("pulls a #owner/repo tag out of the text", () => {
+  it("leaves a #owner/repo tag in the text (the repo token died with #339)", () => {
     const r = parseQuickAdd("fix flaky test #octo/widgets", NOW);
-    expect(r.text).toBe("fix flaky test");
-    expect(r.repo).toBe("octo/widgets");
-  });
-
-  it("parses due and repo tokens together, anywhere in the text", () => {
-    const r = parseQuickAdd("@tomorrow cut the #octo/widgets release", NOW);
-    expect(r.text).toBe("cut the release");
-    expect(r.dueTs).toBe(endOfDay(1));
-    expect(r.repo).toBe("octo/widgets");
+    expect(r.text).toBe("fix flaky test #octo/widgets");
   });
 
   it("collapses the whitespace left where a mid-text token was removed", () => {
@@ -68,10 +59,9 @@ describe("parseQuickAdd", () => {
     expect(r.dueTs).toBeUndefined();
   });
 
-  it("leaves a #tag without an owner/repo slash in the text", () => {
+  it("leaves a #tag in the text", () => {
     const r = parseQuickAdd("groom #backlog", NOW);
     expect(r.text).toBe("groom #backlog");
-    expect(r.repo).toBeUndefined();
   });
 
   it("is case-insensitive on the @ keyword tokens", () => {

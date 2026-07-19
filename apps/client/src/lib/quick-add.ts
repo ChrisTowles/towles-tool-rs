@@ -1,26 +1,24 @@
 /**
- * Quick-add token parsing for the Board's New-todo input. Lets a todo be typed
- * as `ship the release @tomorrow #octo/widgets`, pulling a due date (`@today` /
- * `@tomorrow` / `@YYYY-MM-DD`) and a repo tag (`#owner/repo`) out of the text
- * and stripping the tokens from the stored title. Pure and host-independent so
- * it unit-tests without React or the Tauri shell; `now` is injected (never read
- * from the clock here) so `@today`/`@tomorrow` resolve deterministically.
+ * Quick-add token parsing for the Board's New-task input. Lets a task be typed
+ * as `ship the release @tomorrow`, pulling a due date (`@today` / `@tomorrow` /
+ * `@YYYY-MM-DD`) out of the text and stripping the token from the stored
+ * title. (The old `#owner/repo` tag died with the bare-repo association in
+ * #339 — a task relates to repos through its issue/PR links and slot now.)
+ * Pure and host-independent so it unit-tests without React or the Tauri
+ * shell; `now` is injected (never read from the clock here) so
+ * `@today`/`@tomorrow` resolve deterministically.
  */
 
-/** A parsed New-todo entry: the cleaned title plus any recognized tokens. */
+/** A parsed New-task entry: the cleaned title plus any recognized tokens. */
 export type QuickAdd = {
-  /** The todo text with recognized tokens removed and whitespace collapsed. */
+  /** The task text with recognized tokens removed and whitespace collapsed. */
   text: string;
   /** Due date as epoch ms at the end of the local day, when a `@` token was found. */
   dueTs?: number;
-  /** `owner/repo`, when a `#owner/repo` tag was found. */
-  repo?: string;
 };
 
 /** A due token (`@today` / `@tomorrow` / `@YYYY-MM-DD`) as a whole word. */
 const DUE_TOKEN = /(?:^|\s)@(today|tomorrow|\d{4}-\d{2}-\d{2})(?=\s|$)/i;
-/** A repo tag (`#owner/repo`) as a whole word. */
-const REPO_TOKEN = /(?:^|\s)#([\w.-]+\/[\w.-]+)(?=\s|$)/;
 
 /** Epoch ms at the end of the local calendar day `n` days from `now`, matching
  * the Board's date-picker semantics (a card is not overdue until the day ends). */
@@ -47,10 +45,10 @@ function resolveDue(value: string, now: number): number | undefined {
 }
 
 /**
- * Parse a New-todo input into its title, due date, and repo tag. The first
- * valid `@` and `#` token each win; a token that doesn't fully match (a bare
- * `@`, a bad date, a `#word` with no slash) is left in the text verbatim. `now`
- * is the shared wall clock, injected so resolution is deterministic and testable.
+ * Parse a New-task input into its title and due date. The first valid `@`
+ * token wins; a token that doesn't fully match (a bare `@`, a bad date) is
+ * left in the text verbatim. `now` is the shared wall clock, injected so
+ * resolution is deterministic and testable.
  */
 export function parseQuickAdd(input: string, now: number): QuickAdd {
   let text = input;
@@ -63,12 +61,6 @@ export function parseQuickAdd(input: string, now: number): QuickAdd {
       result.dueTs = dueTs;
       text = text.replace(dueMatch[0], " ");
     }
-  }
-
-  const repoMatch = text.match(REPO_TOKEN);
-  if (repoMatch) {
-    result.repo = repoMatch[1];
-    text = text.replace(repoMatch[0], " ");
   }
 
   result.text = text.replace(/\s+/g, " ").trim();
