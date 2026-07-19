@@ -212,4 +212,4 @@ Features port over selectively per [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ## License
 
-MIT © 2026 Chris Towles. See [LICENSE](LICENSE).
+MIT © 2026 Chris Towles. See [LICENSE.md](LICENSE.md).
