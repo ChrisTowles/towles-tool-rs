@@ -347,6 +347,30 @@ impl Default for IssueCollector {
     }
 }
 
+/// `tt-mcp`'s (`tt mcp serve`) capability gate — Rust-only, the TS CLI ignores
+/// this block. `tt` is registered with Claude Code at user scope, so the MCP
+/// server is spawned for every session on the machine regardless of which
+/// project it's working in; nothing about that spawn distinguishes genuine
+/// user intent from an instruction the session picked up from injected
+/// content (a hostile issue/PR body, a fetched page). Both flags therefore
+/// default `false` (secure by default) and can only be flipped by editing
+/// this file directly or via the app's Settings screen — never from inside a
+/// Claude Code session, since `tt-mcp` exposes no tool that writes settings.
+/// See `crates/tt-mcp/src/lib.rs`'s module doc-comment for the full trust
+/// boundary this enforces.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct McpSettings {
+    /// Gates `todo_create`/`update`/`delete`/`clear_done`/`link_issue`/
+    /// `set_status`, `journal_append`, and `collect_refresh` — anything that
+    /// mutates the store/journal or shells out to `gh` machine-wide.
+    pub mutations_enabled: bool,
+    /// Gates `agent_sessions`, which reports live session data (task names,
+    /// transcript paths, working directories) from every Claude Code session
+    /// on the machine, not just the caller's.
+    pub agent_sessions_enabled: bool,
+}
+
 /// Top-level user settings, mirroring `UserSettingsSchema` in the TS CLI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", default)]
@@ -359,6 +383,8 @@ pub struct UserSettings {
     pub agentboard: AgentboardSettings,
 
     pub collectors: CollectorsSettings,
+
+    pub mcp: McpSettings,
 }
 
 impl Default for UserSettings {
@@ -368,6 +394,7 @@ impl Default for UserSettings {
             journal_settings: JournalSettings::default(),
             agentboard: AgentboardSettings::default(),
             collectors: CollectorsSettings::default(),
+            mcp: McpSettings::default(),
         }
     }
 }

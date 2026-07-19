@@ -343,6 +343,7 @@ pub fn check_agentboard() -> Vec<AgentBoardCheck> {
 
     results.push(check_settings_parse());
     results.push(check_tt_mcp_registered());
+    results.push(check_mcp_capabilities());
 
     results
 }
@@ -408,6 +409,36 @@ pub fn check_tt_mcp_registered() -> AgentBoardCheck {
         ok: registered,
         warning: (!registered).then(|| "not registered with Claude Code".to_string()),
         hint: (!registered).then(|| "Run: tt install".to_string()),
+    }
+}
+
+/// Current `mcp.mutationsEnabled`/`mcp.agentSessionsEnabled` from the shared
+/// settings file — visibility only, since `tt mcp serve` is reachable from
+/// every Claude Code session on the machine (registered at user scope) and
+/// both flags are off by default. Neither state is a failure; this just makes
+/// the current posture obvious instead of buried in a JSON file. See
+/// `crates/tt-mcp/src/lib.rs`'s module doc-comment for why the gate exists.
+pub fn check_mcp_capabilities() -> AgentBoardCheck {
+    let mcp = match tt_config::load() {
+        Ok(settings) => settings.mcp,
+        Err(_) => tt_config::McpSettings::default(),
+    };
+    let value = match (mcp.mutations_enabled, mcp.agent_sessions_enabled) {
+        (false, false) => "mutations off, agent_sessions off (default)".to_string(),
+        (true, false) => "mutations ON, agent_sessions off".to_string(),
+        (false, true) => "mutations off, agent_sessions ON".to_string(),
+        (true, true) => "mutations ON, agent_sessions ON".to_string(),
+    };
+    AgentBoardCheck {
+        name: "tt-mcp capabilities".to_string(),
+        value,
+        ok: true,
+        warning: None,
+        hint: Some(
+            "Edit \"mcp\" in towles-tool.settings.json to change which tt-mcp tools any Claude \
+             Code session on this machine can reach."
+                .to_string(),
+        ),
     }
 }
 
