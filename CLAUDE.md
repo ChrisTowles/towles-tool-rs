@@ -274,7 +274,10 @@ Cargo workspace + npm workspace (`apps/client` only):
     optional word of `detail`; since the webview can't reach `tracing`, they
     cross IPC through one shared seam — `uiAction(action, screen, detail?)` in
     `apps/client/src/lib/ui-action.ts` → the `ui_action` command in
-    `tt-app/src/lib.rs` — never per-feature ad-hoc plumbing. Discrete intents
+    `tt-app/src/lib.rs` — never per-feature ad-hoc plumbing. A backend
+    command's own span should record what changed and be named for that
+    (`repo.identity_set`), not `ui.action` — the click already emitted one, and
+    reusing the name double-counts the action. Discrete intents
     only, never content or
     continuous input: no per-keystroke or mouse-move events, no PTY input, no
     note text (the log is plaintext, and per-record flushing assumes

@@ -12,7 +12,6 @@ import {
   EyeOff,
   FileDiff,
   FolderGit2,
-  FolderInput,
   FolderPlus,
   FolderX,
   GitCommitHorizontal,
@@ -45,7 +44,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Checkbox } from "@/components/ui/checkbox";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import {
   Command,
@@ -56,13 +54,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SlotCreatedSchema, SlotRemoveOutcomeSchema } from "@/lib/schemas/slots";
@@ -124,7 +116,6 @@ import {
   type PaneRect,
   type PendingOpenSession,
   type RemoveTarget,
-  type RepoCandidate,
   type RepoData,
   type Selected,
   type SessionActions,
@@ -154,6 +145,8 @@ import { railRowMotion } from "@/lib/rail-motion";
 import { AnimatePresence, motion } from "motion/react";
 import { openExternalUrl } from "@/lib/open-url";
 import { useWorkspace } from "@/lib/workspace";
+import { untrackRepo } from "@/lib/repo-actions";
+import { uiAction } from "@/lib/ui-action";
 import { toast } from "sonner";
 
 /**
@@ -191,12 +184,6 @@ const RAIL_COLLAPSE_KEY = "__rail__";
 const closeOnFalse = (fn: () => void) => (isOpen: boolean) => {
   if (!isOpen) fn();
 };
-
-/** Repos discoverable under the configured scan roots. Empty when the scan
- * fails — the rail's "add repo" list is a suggestion, not a source of truth. */
-async function fetchCandidates(): Promise<RepoCandidate[]> {
-  return (await invoke<RepoCandidate[]>("ab_discover_repos")).unwrapOr([]);
-}
 
 /** Untrack every repo whose directory is gone from disk, reporting the count.
  * The Rust side re-probes at call time, so a directory restored since the last
@@ -277,7 +264,7 @@ function BlockerIcon({ kind, losesWork }: { kind: string; losesWork: boolean }) 
 export function AgentboardScreen() {
   const state = useAgentboardState();
   const { snapshot } = useStoreSnapshot();
-  const { openTab, activeTab } = useWorkspace();
+  const { openTab, activeTab, openSettingsTab } = useWorkspace();
   // Deep-link focus: a "needs you" popover row scrolls its repo into view here.
   const focusRef = useFocusTarget<HTMLDivElement>("agentboard");
   const now = useNow(30_000);
@@ -316,16 +303,9 @@ export function AgentboardScreen() {
   // The folder whose windows the main area shows — set by clicking a folder
   // header or a session row. Null until the user picks a folder.
   const [activeFolderDir, setActiveFolderDir] = useState<string | null>(null);
-  // Manage-repos picker: every repo under the scan roots + already on the
-  // rail, fuzzy-searched by `repoQuery`, each toggled on/off by checkbox.
-  const [addRepoOpen, setAddRepoOpen] = useState(false);
-  const [repoQuery, setRepoQuery] = useState("");
-  const [candidates, setCandidates] = useState<RepoCandidate[]>([]);
   // Track-repo dialog: strictly-manual path entry (no discovery, no scanning —
   // a standing product rule). Just an absolute path typed in, added via the
   // same `ab_add_repo` command every other add path uses.
-  const [trackRepoOpen, setTrackRepoOpen] = useState(false);
-  const [trackRepoPath, setTrackRepoPath] = useState("");
   // ab-split-session picker: only shown when the active folder has more than
   // one session not already in the active window (a single candidate is
   // added directly — see `splitIntoWindow`).
@@ -357,6 +337,12 @@ export function AgentboardScreen() {
   // Folder dirs whose worktree is mid-delete (`slot_remove` in flight) — the
   // rail dims/disables that row for the duration, see `performDeleteWorktree`.
   const [deletingDirs, setDeletingDirs] = useState<Set<string>>(new Set());
+  // Repo management lives on one surface (Settings → Agentboard → Repos); the
+  // rail just links to it.
+  const openRepoManager = () => {
+    uiAction("repo.manage_opened", "agentboard");
+    openSettingsTab({ tab: "agentboard" });
+  };
   // Session awaiting the "what are you working toward?" prompt before Claude
   // actually launches — see `commitStartClaude`.
   const [startClaudeTarget, setStartClaudeTarget] = useState<StartClaudeTarget | null>(null);
@@ -1275,40 +1261,6 @@ export function AgentboardScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function refreshCandidates() {
-    setCandidates(await fetchCandidates());
-  }
-
-  // Add a repo to the rail; backend re-emits state so it appears. Mirrors
-  // `tt agentboard repos add <path>`. Reports whether the repo is actually
-  // tracked now, so callers don't announce a add that didn't happen.
-  async function addRepoPath(dir: string): Promise<boolean> {
-    const path = dir.trim();
-    if (!path) return false;
-    const added = await invoke("ab_add_repo", { path });
-    if (added.isErr()) {
-      toast.error(`Couldn't track ${path} — ${added.error.message}`);
-      return false;
-    }
-    await refreshCandidates();
-    return true;
-  }
-
-  // Commit the manual Track-repo dialog: an absolute path only (no discovery).
-  // Reuses `addRepoPath` (→ `ab_add_repo`); a relative/blank entry is rejected
-  // with a nudge rather than silently added as a bogus dir.
-  async function commitTrackRepo() {
-    const path = trackRepoPath.trim();
-    if (!path) return;
-    if (!path.startsWith("/")) {
-      toast("Enter an absolute path (starting with /).");
-      return;
-    }
-    setTrackRepoOpen(false);
-    setTrackRepoPath("");
-    if (await addRepoPath(path)) toast(`Tracking ${path}`);
-  }
-
   // Sweep every "missing" ghost in one click. The Rust side re-probes the
   // disk at call time, so a directory restored since the last poll survives;
   // no sessions to kill — a missing dir has no live PTY.
@@ -1320,9 +1272,12 @@ export function AgentboardScreen() {
   // one batch, and `ab_remove_repo`'s name resolution shifts as each removal
   // changes the collision-disambiguated names of whatever's left.
   async function performRemove(target: RemoveTarget) {
+    // Closed here rather than by `untrackRepo` because `closeSession` also
+    // clears this screen's local pane state (open list, selection, the pane
+    // itself) — so the seam is handed an empty id list and owns only the
+    // untrack, its `Result` check, and the `ui.action` event.
     for (const id of target.sessionIds) await closeSession(id);
-    for (const dir of target.dirs) await invoke("ab_remove_repo", { dir });
-    await refreshCandidates();
+    for (const dir of target.dirs) await untrackRepo(dir, target.label, [], "agentboard");
   }
 
   // Delete a worktree slot from disk. Always confirms (unlike untracking,
@@ -1333,7 +1288,6 @@ export function AgentboardScreen() {
   function requestDeleteWorktree(dir: string, label: string) {
     const folder = repos.flatMap((r) => r.folders).find((f) => f.dir === dir);
     const sessionIds = folder ? liveSessions(folder).map((s) => s.id) : [];
-    setAddRepoOpen(false);
     bumpDeleteFlow(dir); // a fresh flow — see `endDeleteFlow`
     setConfirmDeleteWt({ label, dirs: [dir], sessionIds });
   }
@@ -1480,38 +1434,8 @@ export function AgentboardScreen() {
       void performRemove(target);
       return;
     }
-    // Never stack the confirm AlertDialog on top of the still-open
-    // manage-repos CommandDialog — two simultaneous Radix dialogs fight over
-    // the focus trap. Close the picker first; reopening isn't needed since
-    // `performRemove` already refreshes `candidates` for next time.
-    setAddRepoOpen(false);
     setConfirmRemove(target);
   }
-
-  // Toggle a manage-repos row: add if off the rail, else remove it (guarded
-  // by the same live-session confirmation as every other remove entry point).
-  async function toggleRepo(c: RepoCandidate) {
-    if (!c.active) {
-      await addRepoPath(c.dir);
-      return;
-    }
-    const folder = repos.flatMap((r) => r.folders).find((f) => f.dir === c.dir);
-    requestRemoveRepo([c.dir], folder?.name ?? c.name);
-  }
-
-  // On opening the picker, (re)load the discoverable + on-rail repos.
-  useEffect(() => {
-    if (!addRepoOpen) return;
-    setRepoQuery("");
-    let active = true;
-    void (async () => {
-      const found = await fetchCandidates();
-      if (active) setCandidates(found);
-    })();
-    return () => {
-      active = false;
-    };
-  }, [addRepoOpen]);
 
   async function closeSession(sessionId: string) {
     await invoke("ab_close_session", { id: sessionId });
@@ -1696,20 +1620,11 @@ export function AgentboardScreen() {
                     <span className="flex items-center gap-0.5">
                       <button
                         type="button"
-                        onClick={() => setAddRepoOpen(true)}
+                        onClick={openRepoManager}
                         className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-violet-500 hover:bg-accent/50"
-                        title="Toggle which repos show up on the rail"
+                        title="Manage tracked repos in Settings — track, reorder, icon and color"
                       >
                         <FolderPlus className="size-3.5" /> Manage repos
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setTrackRepoOpen(true)}
-                        aria-label="Track a repo by path"
-                        className="rounded-md p-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                        title="Track a repo by typing its absolute path"
-                      >
-                        <FolderInput className="size-3.5" />
                       </button>
                       {missingRepoCount > 0 && (
                         <button
@@ -1794,19 +1709,8 @@ export function AgentboardScreen() {
                           <FolderGit2 className="size-8 text-muted-foreground" />
                           <p className="text-sm text-muted-foreground">No repos on the rail yet.</p>
                           <div className="flex items-center gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => setAddRepoOpen(true)}
-                            >
+                            <Button size="sm" variant="outline" onClick={openRepoManager}>
                               <FolderPlus className="size-3.5" /> Manage repos
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => setTrackRepoOpen(true)}
-                            >
-                              <FolderInput className="size-3.5" /> Track by path…
                             </Button>
                           </div>
                         </div>
@@ -2198,58 +2102,6 @@ export function AgentboardScreen() {
       </div>
 
       <CommandDialog
-        open={addRepoOpen}
-        onOpenChange={setAddRepoOpen}
-        title="Manage repos"
-        description="Toggle which repos show up on the rail."
-        className="sm:max-w-2xl"
-      >
-        <Command>
-          <CommandInput
-            autoFocus
-            value={repoQuery}
-            onValueChange={setRepoQuery}
-            placeholder="Search your git repos…"
-          />
-          <CommandList className="max-h-[60vh]">
-            <CommandEmpty>
-              {candidates.length === 0
-                ? "No git repos found. Type an absolute path to add one."
-                : "No match. Type an absolute path to add one."}
-            </CommandEmpty>
-            {candidates.length > 0 && (
-              <CommandGroup heading="Repos">
-                {candidates.map((c) => (
-                  <CommandItem
-                    key={c.dir}
-                    value={`${c.name} ${c.dir}`}
-                    onSelect={() => void toggleRepo(c)}
-                  >
-                    <Checkbox checked={c.active} tabIndex={-1} className="pointer-events-none" />
-                    <span className="flex-1 truncate">{c.name}</span>
-                    <span className="truncate font-mono text-[11px] text-muted-foreground">
-                      {c.dir}
-                    </span>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            )}
-            {repoQuery.startsWith("/") && !candidates.some((c) => c.dir === repoQuery) && (
-              <CommandGroup heading="Path">
-                <CommandItem value={repoQuery} onSelect={() => void addRepoPath(repoQuery)}>
-                  <FolderPlus className="size-3.5 shrink-0 text-violet-500" />
-                  <span>Add path</span>
-                  <span className="truncate font-mono text-[11px] text-muted-foreground">
-                    {repoQuery}
-                  </span>
-                </CommandItem>
-              </CommandGroup>
-            )}
-          </CommandList>
-        </Command>
-      </CommandDialog>
-
-      <CommandDialog
         open={splitOpen}
         onOpenChange={setSplitOpen}
         title="Add to window"
@@ -2456,38 +2308,6 @@ export function AgentboardScreen() {
               }
             }}
             placeholder="what are you working toward? (optional)"
-          />
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={trackRepoOpen}
-        onOpenChange={(isOpen) => {
-          setTrackRepoOpen(isOpen);
-          if (!isOpen) setTrackRepoPath("");
-        }}
-      >
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>Track a repo</DialogTitle>
-            <DialogDescription>
-              Type the absolute path to a git checkout to add it to the rail. Manual entry only —
-              nothing is scanned or suggested.
-            </DialogDescription>
-          </DialogHeader>
-          <Input
-            autoFocus
-            value={trackRepoPath}
-            onChange={(e) => setTrackRepoPath(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void commitTrackRepo();
-              }
-              if (e.key === "Escape") setTrackRepoOpen(false);
-            }}
-            placeholder="/home/you/code/some-repo"
-            className="font-mono"
           />
         </DialogContent>
       </Dialog>

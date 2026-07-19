@@ -36,7 +36,14 @@ function snapshot(over: Partial<StoreSnapshot>): StoreSnapshot {
 }
 
 function repo(over: Partial<RepoData>): RepoData {
-  return { key: "octo/widgets", name: "widgets", folders: [], needs: 0, ...over };
+  return {
+    key: "octo/widgets",
+    dir: "/repos/widgets",
+    name: "widgets",
+    folders: [],
+    needs: 0,
+    ...over,
+  };
 }
 
 const NO_AGENTS: StatePayload = {

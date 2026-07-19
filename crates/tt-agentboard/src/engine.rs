@@ -78,6 +78,7 @@ pub struct Engine {
     metadata: SessionMetadataStore,
     order: SessionOrder,
     folder_meta: crate::folder_meta::FolderMetaStore,
+    repo_meta: crate::repo_meta::RepoMetaStore,
     windows: crate::windows::WindowsStore,
     collapse: crate::collapse::CollapseStore,
     sessions: SessionStore,
@@ -197,6 +198,9 @@ impl Engine {
             sessions: SessionStore::new(Some(default_sessions_path())),
             folder_meta: crate::folder_meta::FolderMetaStore::new(Some(
                 crate::folder_meta::default_folder_meta_path(),
+            )),
+            repo_meta: crate::repo_meta::RepoMetaStore::new(Some(
+                crate::repo_meta::default_repo_meta_path(),
             )),
             windows: crate::windows::WindowsStore::new(Some(crate::default_windows_path())),
             collapse: crate::collapse::CollapseStore::new(Some(crate::default_collapse_path())),
@@ -375,8 +379,11 @@ impl Engine {
     pub fn compute_payload_with(&mut self, snapshot: &AgentSnapshot, now: i64) -> StatePayload {
         self.reload_repos();
         let all_paths = self.expand_with_worktrees();
-        let mut entries = repo_entries(&all_paths);
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        // NOT name-sorted: `expand_with_worktrees` already returns repos in
+        // `repoPaths` order (each followed by its worktrees), and that order is
+        // the user's — what a drag in Settings → Agentboard → Repos persists.
+        // Sorting by name here silently discarded that choice.
+        let entries = repo_entries(&all_paths);
         // New folders get a default `shell 1` seeded once; a folder whose
         // sessions were all closed stays empty (rendered as "no sessions").
         let mut seeded = false;
@@ -402,12 +409,31 @@ impl Engine {
             self.metadata.prune_sessions(&names);
             self.sessions.prune(&dirs);
             self.folder_meta.prune(&dirs);
+            // Repo identity is deliberately NOT pruned here. Everything else in
+            // this block is derived state that's cheap to lose and regenerates
+            // on the next poll; a hand-picked icon and color is user-authored,
+            // has no undo, and this `dirs` set is known to churn spuriously
+            // (the `!entries.is_empty()` guard above exists because of #75).
+            // Sweeping identity on a transient stat failure or an
+            // untrack/retrack would silently destroy a choice the user made.
+            // The map is bounded by "repos the user has ever styled" — a few
+            // kilobytes — so it's reaped on explicit removal, not on a timer.
             let gone = self.windows.prune(&dirs);
             if !gone.is_empty() {
                 let _ = self.windows.save(&gone);
             }
         }
         payload
+    }
+
+    /// Replace a repo's icon/color identity; an all-empty `meta` resets it to
+    /// the default. Persists on change.
+    pub fn set_repo_meta(&mut self, dir: &str, meta: crate::repo_meta::RepoMeta) -> bool {
+        let changed = self.repo_meta.set_meta(dir, meta);
+        if changed {
+            let _ = self.repo_meta.save();
+        }
+        changed
     }
 
     /// Set (or clear) a folder's user-authored purpose. Persists on change.
@@ -569,6 +595,13 @@ impl Engine {
             now,
         );
 
+        // Repo identity is a pure lookup on the row's anchor dir, so it
+        // decorates the assembled payload rather than adding another store to
+        // that already-wide signature.
+        for repo in &mut payload.repos {
+            repo.meta = self.repo_meta.meta_for(&repo.dir).cloned();
+        }
+
         payload.windows = self.windows.payload().clone();
         payload.collapsed = self.collapse.payload().collapsed.clone();
         payload
@@ -644,10 +677,23 @@ impl Engine {
         match remove_repo_persisted(&self.repos_path, dir) {
             Ok((merged, removed)) => {
                 self.repo_paths = merged;
+                // Explicit removal is the one place identity is reaped — see
+                // `RepoMetaStore::forget`.
+                if removed && self.repo_meta.forget(dir) {
+                    let _ = self.repo_meta.save();
+                }
                 removed
             }
             Err(_) => false,
         }
+    }
+
+    /// Set the rail's repo order (the user's drag). Persists on change; see
+    /// [`reorder_repos`] for why a stale `desired` can't drop a repo.
+    pub fn set_repo_order(&mut self, desired: &[String]) -> std::io::Result<()> {
+        let merged = crate::repos::reorder_repos_persisted(&self.repos_path, desired)?;
+        self.repo_paths = merged;
+        Ok(())
     }
 
     /// Untrack every repo whose directory is gone from disk (the rail's
@@ -771,10 +817,20 @@ fn merge_worktree_dirs(
     repo_paths: &[String],
     mut worktrees_of: impl FnMut(&str) -> Vec<String>,
 ) -> Vec<String> {
+    // Emits each tracked repo immediately followed by its own discovered
+    // worktrees, so the result carries `repoPaths` order — which *is* the
+    // user's chosen rail order (see `reorder_repos`). The caller must not
+    // re-sort this by name or that choice is silently discarded.
     let mut seen: HashSet<String> = repo_paths.iter().cloned().collect();
-    let mut all = repo_paths.to_vec();
+    let mut all: Vec<String> = Vec::with_capacity(repo_paths.len());
     for dir in repo_paths {
-        for wt in worktrees_of(dir) {
+        all.push(dir.clone());
+        // Sorted so a repo's own worktrees keep a stable order between polls —
+        // `git worktree list` order is not guaranteed, and only the *group's*
+        // position is the user's to choose, not the order within it.
+        let mut wts = worktrees_of(dir);
+        wts.sort();
+        for wt in wts {
             if seen.insert(wt.clone()) {
                 all.push(wt);
             }

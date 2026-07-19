@@ -426,6 +426,59 @@ pub fn ab_set_folder_purpose(state: State<Ab>, dir: String, text: Option<String>
     }
 }
 
+/// Set the rail's repo order to `dirs` (the user dragging a row in Settings →
+/// Agentboard → Repos). Tolerant of a stale list — see `reorder_repos`.
+#[tauri::command]
+pub fn ab_set_repo_order(state: State<Ab>, dirs: Vec<String>) -> Result<(), String> {
+    // Returns the failure rather than swallowing it: a drag that didn't reach
+    // disk otherwise looks settled and is simply gone on the next launch, and
+    // the client's revert path would be unreachable code.
+    let result = state.engine.lock().unwrap().set_repo_order(&dirs);
+    match result {
+        Ok(()) => {
+            tracing::info!(count = dirs.len(), "repo.order_set");
+            state.emit.notify_one();
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(count = dirs.len(), error = %e, "repo.order_set failed");
+            Err(format!("Couldn't save the repo order: {e}"))
+        }
+    }
+}
+
+/// Set a repo's chosen icon/color identity. All-`None` resets it to the
+/// default look. A `color` that isn't a hex color is stored as unset rather
+/// than rejecting the whole edit — the picker validates first, so a malformed
+/// value here means a hand-edited file, and dropping one field beats failing
+/// the user's icon change along with it.
+#[tauri::command]
+pub fn ab_set_repo_meta(
+    state: State<Ab>,
+    dir: String,
+    icon: Option<String>,
+    color: Option<String>,
+    style: Option<tt_agentboard::RepoAccentStyle>,
+) {
+    let meta = tt_agentboard::RepoMeta {
+        icon: icon.map(|i| i.trim().to_string()).filter(|i| !i.is_empty()),
+        color: color.as_deref().and_then(tt_agentboard::HexColor::parse),
+        style,
+    };
+    // Field values have to be read before `meta` moves into the engine.
+    let (icon, color) = (
+        meta.icon.clone().unwrap_or_default(),
+        meta.color.as_ref().map(|c| c.as_str().to_string()).unwrap_or_default(),
+    );
+    let changed = state.engine.lock().unwrap().set_repo_meta(&dir, meta);
+    // Not named `ui.action` — the click already emitted one of those; this is
+    // the backend record of what actually changed on disk.
+    tracing::info!(repo_dir = %dir, icon, color, changed, "repo.identity_set");
+    if changed {
+        state.emit.notify_one();
+    }
+}
+
 /// Set (or clear with `None`/blank) a folder's base-branch override — the
 /// parent branch its diff pane compares against instead of the
 /// origin/main-or-master auto-detect. For a long-running branch that didn't

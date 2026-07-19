@@ -47,7 +47,7 @@ function folder(overrides: Partial<FolderData>): FolderData {
 }
 
 function repo(name: string, folders: FolderData[]): RepoData {
-  return { key: name, name, folders, needs: 0 };
+  return { key: name, dir: name, name, folders, needs: 0 };
 }
 
 function pr(overrides: Partial<PrItem>): PrItem {

@@ -176,6 +176,19 @@ mod disk_filter_tests {
     }
 
     #[test]
+    fn ui_action_events_reach_disk() {
+        // The frontend action seam (`tt-app`'s `ui_action` command) emits at
+        // info under tt-app's own target, which `tt_app=debug` covers by
+        // prefix. Pinned because the sink's default is `warn`: an action seam
+        // that moved to a non-`tt_*` target would be silently swallowed, and a
+        // silent event log is worse than no event log.
+        let n = records_written(|| {
+            tracing::info!(target: "tt_app_lib", action = "repo.icon_set", screen = "settings", "ui.action");
+        });
+        assert_eq!(n, 1, "user actions must reach the event log");
+    }
+
+    #[test]
     fn third_party_warnings_still_reach_disk() {
         let n = records_written(|| tracing::warn!(target: "hyper::client", "pool exhausted"));
         assert_eq!(n, 1, "a dependency complaining is worth having captured");
