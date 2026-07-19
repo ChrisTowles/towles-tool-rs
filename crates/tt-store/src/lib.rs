@@ -42,7 +42,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// How many MCP call-log rows are retained; older rows are pruned on insert.
 const MCP_CALL_RETAIN: i64 = 500;
@@ -419,6 +419,7 @@ impl Store {
         self.migrate_tasks_v2()?;
         self.migrate_tasks_notes_v4()?;
         self.conn.execute_batch(SCHEMA_MCP_CALLS_V5)?;
+        self.migrate_collect_runs_v6()?;
         self.conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -488,6 +489,20 @@ impl Store {
             ))?;
         }
         self.conn.execute_batch("DROP TABLE IF EXISTS emails;")?;
+        Ok(())
+    }
+
+    /// v6: drop `collect_runs` freshness rows for collectors that no longer
+    /// exist (`claude:email` and `claude:tasks` died in the day-screens pivot,
+    /// but their rows lingered forever). Kept as a `NOT IN` sweep against the
+    /// live collector keys — the same set `tt-collect` records under — so any
+    /// future retired collector is cleaned up the same way. Idempotent.
+    fn migrate_collect_runs_v6(&self) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM collect_runs
+             WHERE collector NOT IN ('claude:calendar', 'issues', 'prs', 'slack:dm')",
+            [],
+        )?;
         Ok(())
     }
 
@@ -1529,6 +1544,29 @@ mod tests {
         assert_eq!(existing[0].notes, None);
         let t = s.add_task("with notes", None, None, Some("context"), 2).unwrap();
         assert_eq!(t.notes.as_deref(), Some("context"));
+    }
+
+    #[test]
+    fn migrate_drops_retired_collector_rows_v6() {
+        // A db carrying freshness rows from collectors removed in the
+        // day-screens pivot alongside live ones.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tt.db");
+        {
+            let s = Store::open(&path).unwrap();
+            for key in ["claude:email", "claude:tasks", "prs", "slack:dm"] {
+                s.conn
+                    .execute(
+                        "INSERT INTO collect_runs (collector, ran_at, ok) VALUES (?1, 1, 1)",
+                        params![key],
+                    )
+                    .unwrap();
+            }
+        }
+
+        let s = Store::open(&path).unwrap();
+        let keys: Vec<String> = s.runs().unwrap().into_iter().map(|r| r.collector).collect();
+        assert_eq!(keys, ["prs", "slack:dm"], "retired collector keys are swept");
     }
 
     #[test]

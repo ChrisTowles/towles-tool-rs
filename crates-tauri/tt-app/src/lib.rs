@@ -11,7 +11,6 @@ mod doctor;
 mod gh_actions;
 mod ide;
 mod instance_lock;
-mod journal;
 mod launch;
 #[cfg(target_os = "linux")]
 mod linux_desktop;
@@ -522,12 +521,6 @@ pub fn run() {
             slack::slack_dm_file,
             slack::slack_list_users,
             store::journal_log,
-            journal::journal_get_today,
-            journal::journal_save,
-            journal::journal_list,
-            journal::journal_search,
-            journal::journal_create,
-            journal::journal_open,
             claude_sessions::claude_sessions_summary,
             claude_sessions::claude_sessions_search,
             claude_sessions::claude_sessions_insights,

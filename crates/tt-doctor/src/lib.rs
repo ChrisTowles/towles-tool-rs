@@ -343,7 +343,6 @@ pub fn check_agentboard() -> Vec<AgentBoardCheck> {
 
     results.push(check_settings_parse());
     results.push(check_tt_mcp_registered());
-    results.push(check_mcp_capabilities());
 
     results
 }
@@ -409,54 +408,6 @@ pub fn check_tt_mcp_registered() -> AgentBoardCheck {
         ok: registered,
         warning: (!registered).then(|| "not registered with Claude Code".to_string()),
         hint: (!registered).then(|| "Run: tt install".to_string()),
-    }
-}
-
-/// Current `mcp.mutationsEnabled`/`mcp.agentSessionsEnabled` from the shared
-/// settings file — visibility only, since `tt mcp serve` is reachable from
-/// every Claude Code session on the machine (registered at user scope) and
-/// both flags are off by default. Neither state is a failure; this just makes
-/// the current posture obvious instead of buried in a JSON file. See
-/// `crates/tt-mcp/src/lib.rs`'s module doc-comment for why the gate exists.
-pub fn check_mcp_capabilities() -> AgentBoardCheck {
-    // Deliberately never `tt_config::load()`: that creates a missing settings
-    // file, and a diagnostic must not write to disk (check_settings_parse
-    // reports "not created yet" for the same reason). Unreadable settings are
-    // reported as what they mean for the gate — it fails closed — rather than
-    // mislabeled as the clean "(default)" posture.
-    let value = match tt_config::config_path() {
-        Ok(path) if !path.exists() => {
-            "not created yet — mutations off, agent_sessions off (default)".to_string()
-        }
-        Ok(path) => match tt_config::load_from(&path) {
-            Ok(settings) => {
-                let on_off = |enabled: bool| if enabled { "ON" } else { "off" };
-                let mcp = settings.mcp;
-                format!(
-                    "mutations {}, agent_sessions {}{}",
-                    on_off(mcp.mutations_enabled),
-                    on_off(mcp.agent_sessions_enabled),
-                    if mcp.mutations_enabled || mcp.agent_sessions_enabled {
-                        ""
-                    } else {
-                        " (default)"
-                    },
-                )
-            }
-            Err(_) => "settings unreadable — gated tools refuse (failing closed)".to_string(),
-        },
-        Err(_) => "settings path unresolved — gated tools refuse (failing closed)".to_string(),
-    };
-    AgentBoardCheck {
-        name: "tt-mcp capabilities".to_string(),
-        value,
-        ok: true,
-        warning: None,
-        hint: Some(
-            "Edit \"mcp\" in towles-tool.settings.json to change which tt-mcp tools any Claude \
-             Code session on this machine can reach."
-                .to_string(),
-        ),
     }
 }
 

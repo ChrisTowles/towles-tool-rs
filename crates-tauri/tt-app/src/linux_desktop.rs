@@ -36,7 +36,7 @@ pub fn ensure_installed(app_id: &str) {
         "[Desktop Entry]\n\
          Type=Application\n\
          Name=Towles Tool\n\
-         Comment=Personal dev tools: agentboard, PRs, journal\n\
+         Comment=Personal dev tools: agentboard, PRs\n\
          Exec={}\n\
          Icon={app_id}\n\
          Terminal=false\n\

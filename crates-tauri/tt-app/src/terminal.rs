@@ -1020,8 +1020,8 @@ pub fn on_window_destroyed(app: &AppHandle, label: &str) {
 /// seeking to `line` (1-based, from the link's `:line` suffix) if one was
 /// given and the editor's command is one we know a goto syntax for. Relative
 /// paths resolve against `cwd` (the clicked pane's working dir) and a leading
-/// `~` expands to home. Spawns without waiting — like `journal_open` /
-/// `ab_open_in_editor`, so a non-forking editor (vim, `code --wait`) doesn't
+/// `~` expands to home. Spawns without waiting — like `ab_open_in_editor`,
+/// so a non-forking editor (vim, `code --wait`) doesn't
 /// freeze the app. Report-only: it opens an editor, never writing to the PTY.
 #[tauri::command]
 pub fn term_open_path(path: String, cwd: Option<String>, line: Option<u32>) -> Result<(), String> {
