@@ -347,18 +347,22 @@ impl Default for IssueCollector {
     }
 }
 
-/// `tt-mcp`'s (`tt mcp serve`) capability gate — Rust-only, the TS CLI ignores
-/// this block. `tt` is registered with Claude Code at user scope, so the MCP
+/// `tt-mcp`'s (`tt mcp serve`) capability gate — Rust-only. (Beware: the
+/// legacy TS CLI does not merely ignore this block — its `loadSettings`
+/// strips keys its zod schema doesn't model and rewrites the file, so any
+/// legacy-CLI run reverts these flags to their off defaults. Fail closed,
+/// but a hand-edited opt-in doesn't survive it.)
+/// `tt` is registered with Claude Code at user scope, so the MCP
 /// server is spawned for every session on the machine regardless of which
 /// project it's working in; nothing about that spawn distinguishes genuine
 /// user intent from an instruction the session picked up from injected
 /// content (a hostile issue/PR body, a fetched page). Both flags therefore
-/// default `false` (secure by default) and can only be flipped by editing
-/// this file directly or via the app's Settings screen — never from inside a
-/// Claude Code session, since `tt-mcp` exposes no tool that writes settings.
-/// See `crates/tt-mcp/src/lib.rs`'s module doc-comment for the full trust
-/// boundary this enforces.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+/// default `false` (secure by default) and are only flipped by editing this
+/// file directly — deliberately, no `tt-mcp` tool writes settings, so a
+/// hijacked session can't self-approve (and the app's Settings screen doesn't
+/// expose these flags today either). See `crates/tt-mcp/src/lib.rs`'s module
+/// doc-comment for the full trust boundary this enforces.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", default)]
 pub struct McpSettings {
     /// Gates `todo_create`/`update`/`delete`/`clear_done`/`link_issue`/
@@ -384,7 +388,30 @@ pub struct UserSettings {
 
     pub collectors: CollectorsSettings,
 
+    /// Lenient on purpose: the docs invite hand-editing this block, and a slip
+    /// there (`"mcp": null`, a flag as the string `"true"`) must not fail the
+    /// whole settings file — every command loads it, so that would brick the
+    /// app, doctor, journal, and collect at once. A malformed block instead
+    /// falls back to the all-off defaults: the gate fails closed and the rest
+    /// of the file keeps working.
+    #[serde(default, deserialize_with = "lenient_mcp")]
     pub mcp: McpSettings,
+}
+
+/// Deserialize [`McpSettings`] but degrade any shape other than the documented
+/// object form to the (all-off) default — see the field's doc comment on
+/// `UserSettings::mcp` for why. Non-object shapes are rejected outright rather
+/// than fed to serde: a struct happily deserializes from a JSON *array*
+/// positionally (`"mcp": [true]` would set `mutationsEnabled`), and a security
+/// flag must not be flippable through an undocumented shape.
+fn lenient_mcp<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<McpSettings, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Object(_) => Ok(serde_json::from_value(value).unwrap_or_default()),
+        _ => Ok(McpSettings::default()),
+    }
 }
 
 impl Default for UserSettings {
@@ -846,6 +873,31 @@ mod tests {
         assert_eq!(loaded.journal_settings.base_folder, "/tmp/j");
         // Missing journal fields fall back to defaults.
         assert!(loaded.journal_settings.daily_path_template.contains("daily-notes"));
+    }
+
+    #[test]
+    fn malformed_mcp_block_falls_back_to_off_without_failing_the_file() {
+        // The docs invite hand-editing the `mcp` block, so a slip there must
+        // not brick every settings consumer — it degrades to the all-off
+        // defaults (the gate fails closed) while the rest of the file loads.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("towles-tool.settings.json");
+        for bad_block in [
+            r#"null"#,
+            r#"{"mutationsEnabled":"true"}"#, // string, not bool
+            r#"[true]"#,
+        ] {
+            std::fs::write(&path, format!(r#"{{"preferredEditor":"vim","mcp":{bad_block}}}"#))
+                .unwrap();
+            let loaded = load_from(&path).unwrap();
+            assert_eq!(loaded.preferred_editor, "vim", "rest of the file still loads");
+            assert!(!loaded.mcp.mutations_enabled, "fails closed for {bad_block}");
+            assert!(!loaded.mcp.agent_sessions_enabled, "fails closed for {bad_block}");
+        }
+
+        // A well-formed block still parses, of course.
+        std::fs::write(&path, r#"{"mcp":{"mutationsEnabled":true}}"#).unwrap();
+        assert!(load_from(&path).unwrap().mcp.mutations_enabled);
     }
 
     #[test]

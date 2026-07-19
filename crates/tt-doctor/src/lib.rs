@@ -419,15 +419,33 @@ pub fn check_tt_mcp_registered() -> AgentBoardCheck {
 /// the current posture obvious instead of buried in a JSON file. See
 /// `crates/tt-mcp/src/lib.rs`'s module doc-comment for why the gate exists.
 pub fn check_mcp_capabilities() -> AgentBoardCheck {
-    let mcp = match tt_config::load() {
-        Ok(settings) => settings.mcp,
-        Err(_) => tt_config::McpSettings::default(),
-    };
-    let value = match (mcp.mutations_enabled, mcp.agent_sessions_enabled) {
-        (false, false) => "mutations off, agent_sessions off (default)".to_string(),
-        (true, false) => "mutations ON, agent_sessions off".to_string(),
-        (false, true) => "mutations off, agent_sessions ON".to_string(),
-        (true, true) => "mutations ON, agent_sessions ON".to_string(),
+    // Deliberately never `tt_config::load()`: that creates a missing settings
+    // file, and a diagnostic must not write to disk (check_settings_parse
+    // reports "not created yet" for the same reason). Unreadable settings are
+    // reported as what they mean for the gate — it fails closed — rather than
+    // mislabeled as the clean "(default)" posture.
+    let value = match tt_config::config_path() {
+        Ok(path) if !path.exists() => {
+            "not created yet — mutations off, agent_sessions off (default)".to_string()
+        }
+        Ok(path) => match tt_config::load_from(&path) {
+            Ok(settings) => {
+                let on_off = |enabled: bool| if enabled { "ON" } else { "off" };
+                let mcp = settings.mcp;
+                format!(
+                    "mutations {}, agent_sessions {}{}",
+                    on_off(mcp.mutations_enabled),
+                    on_off(mcp.agent_sessions_enabled),
+                    if mcp.mutations_enabled || mcp.agent_sessions_enabled {
+                        ""
+                    } else {
+                        " (default)"
+                    },
+                )
+            }
+            Err(_) => "settings unreadable — gated tools refuse (failing closed)".to_string(),
+        },
+        Err(_) => "settings path unresolved — gated tools refuse (failing closed)".to_string(),
     };
     AgentBoardCheck {
         name: "tt-mcp capabilities".to_string(),
