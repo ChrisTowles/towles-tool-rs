@@ -618,15 +618,20 @@ export function TerminalView({
           if (reply.unwrapOr(null)?.needsConfirm) setPendingPaste(text);
         });
       };
-      // Paste from the system clipboard through the same path as a real
-      // paste event. Used by the context menu's Paste item.
-      const pasteClipboard = () =>
-        void navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) paste(text);
-          })
-          .catch(() => {});
+      // Paste from the system clipboard, read in Rust — the webview's
+      // navigator.clipboard.readText() rejects with NotAllowedError under
+      // WebKitGTK (the same reason term_copy writes the clipboard in Rust),
+      // which silently broke the context menu's Paste. Used by the context
+      // menu and the Ctrl/⌘+Shift+V chord.
+      const pasteClipboard = () => {
+        backToLive();
+        void invoke<{ needsConfirm: boolean; text: string }>("term_paste_clipboard", {
+          termId,
+        }).then((reply) => {
+          const r = reply.unwrapOr(null);
+          if (r?.needsConfirm) setPendingPaste(r.text);
+        });
+      };
 
       const onKeyDown = (e: KeyboardEvent) => {
         if (e.isComposing) return;
@@ -648,6 +653,11 @@ export function TerminalView({
         if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "c")) {
           e.preventDefault();
           copySelection();
+          return;
+        }
+        if (e.ctrlKey && e.shiftKey && (e.key === "V" || e.key === "v")) {
+          e.preventDefault();
+          pasteClipboard();
           return;
         }
         // Font zoom (Ctrl/⌘ +/-, Ctrl/⌘ 0 to reset) — ours, not the shell's.
@@ -858,12 +868,19 @@ export function TerminalView({
       });
       let anchor: { x: number; y: number } | null = null;
       let dragged = false;
-      // Pointer events belong to the program when it negotiated mouse
-      // tracking, the view is at the live bottom, and Shift isn't held —
-      // Shift+click/drag is the local-selection escape hatch, like every
-      // terminal. Right-click always stays local (the context menu).
+      // A tracking program (Claude Code sets ?1003h for its whole session)
+      // gets wheel reports, hover motion, middle clicks, and plain left
+      // *clicks* — but never left drags or multi-clicks: those are selection
+      // gestures, and forwarding them is what made text selection look
+      // broken in every agent pane. A plain left press is therefore held
+      // back until mouseup — a drag becomes a local selection the program
+      // never hears about; a clean click is delivered as a press+release
+      // pair. Right-click always stays local (the context menu).
       const mouseToProgram = (e: MouseEvent) =>
         grid.modes.mouseTracking && !grid.scrolledBack && !e.shiftKey;
+      // A held-back left press that should reach the program as a click if
+      // no drag develops before mouseup.
+      let clickToProgram = false;
       const MOUSE_BUTTONS = ["left", "middle", "right"] as const;
       let mouseGestureToProgram = false;
       let lastMotionCell: { x: number; y: number } | null = null;
@@ -910,12 +927,6 @@ export function TerminalView({
             return;
           }
         }
-        if (mouseToProgram(e)) {
-          mouseGestureToProgram = true;
-          lastMotionCell = cell;
-          sendMouse(e, "press", cell);
-          return;
-        }
         const kind = selectionKindForDetail(e.detail);
         if (kind === "word" || kind === "line") {
           void select(kind, cell);
@@ -923,6 +934,7 @@ export function TerminalView({
         } else {
           anchor = cell;
           dragged = false;
+          clickToProgram = mouseToProgram(e);
         }
       };
       const onMouseMove = (e: MouseEvent) => {
@@ -953,9 +965,19 @@ export function TerminalView({
           sendMouse(e, "release", lastMotionCell ?? cellOf(e));
           return;
         }
-        if (anchor && !dragged) void select("clear");
-        else if (dragged) maybeCopyOnSelect("drag");
+        if (anchor && !dragged) {
+          void select("clear");
+          // Deliver the click the program was owed — the press was held back
+          // at mousedown so a drag could become a local selection instead.
+          if (clickToProgram && mouseToProgram(e)) {
+            sendMouse(e, "press", anchor);
+            sendMouse(e, "release", anchor);
+          }
+        } else if (dragged) {
+          maybeCopyOnSelect("drag");
+        }
         anchor = null;
+        clickToProgram = false;
       };
       const onMouseLeave = () => setHoveredLink(null);
       // Report focus so the backend can gate OSC 52 clipboard writes to the
