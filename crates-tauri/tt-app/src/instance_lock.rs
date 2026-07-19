@@ -5,8 +5,8 @@
 //! the name is what determines the scope, not the type:
 //!
 //! - `"slack-socket"` (`slack_socket.rs`): Slack credentials live in the
-//!   *shared* config dir (`tt_config::config_dir()` only re-scopes under a
-//!   forced `TT_STATE_SCOPE`), so every open worktree slot's process reads the
+//!   *shared* config dir (tt-config's shared-store paths only re-scope under
+//!   a forced `TT_STATE_SCOPE`), so every open worktree slot's process reads the
 //!   same token. Without this guard, N open slots would each open their own
 //!   Slack Socket Mode connection and poll on the same token — see #227.
 //! - `"app-<identifier>"` (`lib.rs`'s `run`): stops the *same* checkout

@@ -44,7 +44,6 @@ pub mod resume;
 pub mod session_order;
 pub mod sessions;
 pub mod text;
-pub mod themes;
 pub mod tracker;
 pub mod types;
 pub mod watcher;
@@ -65,36 +64,25 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-// Re-export the public surface.
-pub use bridge::{StatePayload, assemble_state};
-pub use collapse::{CollapsePayload, CollapseStore, default_collapse_path};
+// Re-export the externally-consumed surface (the app, the remaining CLI
+// commands, and the collector/MCP/doctor crates). Everything else stays
+// reachable through its module path; the 2026-07-19 CLI trim removed the
+// last importer of the wider re-export list.
+pub use bridge::StatePayload;
 pub use env_drift::PortDrift;
-pub use folder_meta::{FolderMeta, FolderMetaStore, default_folder_meta_path};
 pub use git_info::{
-    CommitStat, DiffFile, DiffMode, GitInfo, GitInfoCache, base_file_content, commit_stats,
-    compute_git_info, diff_files, diff_patch,
+    CommitStat, DiffFile, DiffMode, base_file_content, commit_stats, compute_git_info, diff_files,
+    diff_patch,
 };
-pub use launch::{LaunchConfig, LaunchFile, port_listening, read_launch_file};
-pub use metadata::SessionMetadataStore;
+pub use launch::{LaunchConfig, port_listening, read_launch_file};
 pub use notify::{NeedsYouEdge, NeedsYouWatch};
-pub use repo_meta::{HexColor, RepoAccentStyle, RepoMeta, RepoMetaStore, default_repo_meta_path};
-pub use repos::{
-    RepoEntry, add_repo, add_repo_persisted, default_repos_path, load_repos, load_scan_roots,
-    missing_repo_dirs, remove_repo_by_dir, remove_repo_persisted, reorder_repos,
-    reorder_repos_persisted, repo_entries, resolve_session_name, save_repos, save_scan_roots,
-    try_load_repos, untrack_missing_persisted,
-};
-pub use session_order::{ReorderDelta, SessionOrder, default_session_order_path};
-pub use sessions::{SessionRecord, SessionStore, default_sessions_path};
-pub use tracker::{AgentTracker, instance_key};
+pub use repo_meta::{HexColor, RepoAccentStyle, RepoMeta};
+pub use repos::{RepoEntry, default_repos_path, load_repos, remove_repo_persisted, repo_entries};
+pub use session_order::ReorderDelta;
+pub use sessions::SessionRecord;
 pub use types::{
     AgentEvent, AgentEventDetails, AgentStatus, ClientCommand, FolderData, LoopInfo,
     MetadataLogEntry, MetadataProgress, MetadataStatus, MetadataTone, NeedsYouReason, RepoData,
     ServerMessage, SessionData, SessionMetadata, SubagentInfo, TmuxSessionData,
 };
-pub use watcher::{AgentWatcher, WatcherContext};
-pub use watchers::amp::AmpAgentWatcher;
-pub use watchers::claude_code::ClaudeCodeAgentWatcher;
-pub use watchers::codex::CodexAgentWatcher;
-pub use watchers::opencode::OpenCodeAgentWatcher;
-pub use windows::{AgWindow, WindowsPayload, WindowsStore, default_windows_path};
+pub use windows::WindowsPayload;

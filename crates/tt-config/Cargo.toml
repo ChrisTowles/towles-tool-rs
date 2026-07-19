@@ -6,10 +6,11 @@ publish = false
 
 [dependencies]
 dirs = { workspace = true }
-schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# Test-only: derives the settings JSON schema for the camelCase drift guard.
+schemars = { workspace = true }
 tempfile = "3.14.0"

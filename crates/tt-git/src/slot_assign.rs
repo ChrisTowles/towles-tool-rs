@@ -1,9 +1,9 @@
-//! Guard logic for `tt gh assign`: dispatching an open issue to a sibling
-//! slot checkout (managed via `tt slot`). The whole point of the feature is the
-//! guard — an issue must never land in a slot that is holding someone's
-//! in-progress work, so the checks hard-fail with no `--force` escape hatch.
+//! Guard logic for assigning an open issue to a worktree-slot checkout (the
+//! app's issue→slot flow). The whole point of the feature is the guard — an
+//! issue must never land in a slot that is holding someone's in-progress
+//! work, so the checks hard-fail with no `--force` escape hatch.
 //!
-//! Pure functions only (this crate's rule): the CLI layer gathers the git
+//! Pure functions only (this crate's rule): the caller gathers the git
 //! output (`remote get-url`, `status --porcelain`, `stash list`) in the target
 //! slot's directory and hands the raw text here for the decision.
 
@@ -28,7 +28,7 @@ pub enum SlotBlocked {
 /// `https://github.com/user/repo/`, and `ssh://git@github.com/User/repo` all
 /// name the same repo. Lowercased, scheme/credentials stripped, trailing
 /// `.git` and `/` dropped.
-pub fn normalize_remote_url(url: &str) -> String {
+fn normalize_remote_url(url: &str) -> String {
     let mut s = url.trim().to_lowercase();
     // scp-like syntax: git@host:path → host/path
     if let Some(rest) = s.strip_prefix("git@") {
@@ -48,12 +48,12 @@ pub fn normalize_remote_url(url: &str) -> String {
 
 /// Count entries in `git status --porcelain` output — each non-blank line is
 /// one changed tracked path or untracked path.
-pub fn dirty_entry_count(porcelain: &str) -> usize {
+fn dirty_entry_count(porcelain: &str) -> usize {
     porcelain.lines().filter(|l| !l.trim().is_empty()).count()
 }
 
 /// Count entries in `git stash list` output.
-pub fn stash_count(stash_list: &str) -> usize {
+fn stash_count(stash_list: &str) -> usize {
     stash_list.lines().filter(|l| !l.trim().is_empty()).count()
 }
 
@@ -62,7 +62,7 @@ pub fn stash_count(stash_list: &str) -> usize {
 /// two path segments (`github.com/owner/name` → `owner/name`), lowercased.
 /// `None` when the URL lacks two path segments (e.g. a bare host or a local
 /// path), so the caller can treat it as "not a GitHub checkout".
-pub fn repo_slug_from_remote(url: &str) -> Option<String> {
+fn repo_slug_from_remote(url: &str) -> Option<String> {
     let normalized = normalize_remote_url(url);
     let mut segments = normalized.split('/').filter(|s| !s.is_empty());
     // Drop everything before the final owner/name pair.
@@ -90,29 +90,11 @@ fn check_clean(status_porcelain: &str, stash_list: &str) -> Result<(), SlotBlock
     Ok(())
 }
 
-/// The full assignment guard, in the order the failures should surface:
-/// wrong repo first (the assignment makes no sense at all), then in-progress
-/// work (uncommitted changes, then stashes). Matches two full remote URLs — the
-/// CLI's `tt gh assign` compares the slot against the current checkout's
-/// `origin`.
-pub fn validate_slot(
-    expected_remote: &str,
-    slot_remote: &str,
-    status_porcelain: &str,
-    stash_list: &str,
-) -> Result<(), SlotBlocked> {
-    let expected = normalize_remote_url(expected_remote);
-    let found = normalize_remote_url(slot_remote);
-    if expected != found {
-        return Err(SlotBlocked::RemoteMismatch { expected, found });
-    }
-    check_clean(status_porcelain, stash_list)
-}
-
-/// The assignment guard keyed by a GitHub `owner/name` slug rather than a full
-/// remote URL. Used by the desktop app, where the "expected" repo comes from
-/// an issue's `repo` field (`owner/name`), not a current-directory checkout.
-/// Same failure order as [`validate_slot`].
+/// The assignment guard, keyed by a GitHub `owner/name` slug: the desktop
+/// app's "expected" repo comes from an issue's `repo` field (`owner/name`),
+/// not a current-directory checkout. Failure order: wrong repo first (the
+/// assignment makes no sense at all), then in-progress work (uncommitted
+/// changes, then stashes).
 pub fn validate_slot_for_repo(
     expected_repo: &str,
     slot_remote: &str,
@@ -172,49 +154,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_passes_a_clean_matching_slot() {
-        assert_eq!(
-            validate_slot("git@github.com:u/repo.git", "https://github.com/u/repo", "", ""),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn validate_rejects_remote_mismatch_before_dirty_checks() {
-        // Wrong repo wins even when the tree is also dirty — the assignment is
-        // nonsensical, not merely unsafe.
-        let err = validate_slot(
-            "git@github.com:u/repo.git",
-            "git@github.com:other/elsewhere.git",
-            "?? junk.txt\n",
-            "",
-        )
-        .unwrap_err();
-        assert!(matches!(err, SlotBlocked::RemoteMismatch { .. }));
-    }
-
-    #[test]
-    fn validate_rejects_dirty_tree() {
-        let err =
-            validate_slot("git@h:u/r.git", "git@h:u/r.git", " M a.rs\n?? b.txt\n", "").unwrap_err();
-        assert_eq!(err, SlotBlocked::DirtyTree { entries: 2 });
-    }
-
-    #[test]
-    fn validate_rejects_stash_entries_even_with_clean_tree() {
-        let err = validate_slot(
-            "git@h:u/r.git",
-            "git@h:u/r.git",
-            "",
-            "stash@{0}: WIP on main: abc123 wip\n",
-        )
-        .unwrap_err();
-        assert_eq!(err, SlotBlocked::StashNotEmpty { count: 1 });
-        // Error text is user-facing; keep the singular/plural readable.
-        assert!(err.to_string().contains("1 stash entry"));
-    }
-
-    #[test]
     fn repo_slug_extracts_owner_name_from_every_form() {
         let forms = [
             "git@github.com:ChrisTowles/towles-tool-rs.git",
@@ -264,7 +203,8 @@ mod tests {
 
     #[test]
     fn validate_for_repo_rejects_wrong_repo_before_dirty_checks() {
-        // Repo mismatch wins over a dirty tree — same precedence as validate_slot.
+        // Repo mismatch wins over a dirty tree — the assignment is
+        // nonsensical, not merely unsafe.
         let err = validate_slot_for_repo(
             "u/repo",
             "git@github.com:other/elsewhere.git",
@@ -294,5 +234,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(stashed, SlotBlocked::StashNotEmpty { count: 1 });
+        // Error text is user-facing; keep the singular/plural readable.
+        assert!(stashed.to_string().contains("1 stash entry"));
     }
 }

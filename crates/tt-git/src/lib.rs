@@ -1,54 +1,16 @@
-//! GitHub/git helper domain logic for the towles-tool CLI.
+//! GitHub/git helper domain logic shared by the app and the slot machinery.
 //!
-//! Ports the pure logic from `src/commands/gh/` and `src/lib/git/` in the TypeScript
-//! CLI. This crate is deliberately Tauri- and process-free: everything here is a pure
-//! function so it can be unit-tested without `gh`, `git`, or a terminal. The `tt-cli`
-//! layer shells out (via `tt-exec`) and drives the interactive prompts.
+//! This crate is deliberately Tauri- and process-free: everything here is a
+//! pure function so it can be unit-tested without `gh`, `git`, or a terminal.
+//! Callers shell out (via `tt-exec`) and hand the raw text here for decisions.
 //!
-//! Modules:
+//! The interactive `tt gh` CLI surface this crate once backed (issue picker,
+//! PR content, branch-clean, sync) was removed in the 2026-07-19 CLI trim;
+//! its modules went with it. What remains:
+//!
 //! - [`branch_name`] — `feature/<n>-<slug>` from an issue (`branch-name.ts`).
-//! - [`pr`] — PR title/body generation (`pr.ts`).
-//! - [`branch_clean`] — merged-branch filtering (`branch-clean.ts`).
-//! - [`issues`] — `gh issue list` arg building + JSON parsing (`gh-cli-wrapper.ts`).
-//! - [`picker`] — issue-picker column layout and rendering (`branch.ts`, `render.ts`).
-//! - [`slot_assign`] — clean-tree/remote guard for assigning an issue to a slot checkout.
-//! - [`pr_list`] — `tt gh pr-list` rendering + the "needs you" PR semantics.
-//! - [`sync`] — clean-tree/ahead-behind/rebase decisions for `gh sync` + `gh co`.
+//! - [`slot_assign`] — clean-tree/remote guard for assigning an issue to a
+//!   slot checkout (the app's issue→slot flow).
 
-use serde::Deserialize;
-use thiserror::Error;
-
-pub mod branch_clean;
 pub mod branch_name;
-pub mod issues;
-pub mod picker;
-pub mod pr;
-pub mod pr_list;
 pub mod slot_assign;
-pub mod sync;
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("Failed to parse GitHub CLI output as JSON. Raw output: {0}")]
-    ParseIssues(String),
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
-
-/// A GitHub issue label, mirroring the `labels` entries in the TS `Issue` type.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Label {
-    pub name: String,
-    pub color: String,
-}
-
-/// A GitHub issue as returned by `gh issue list --json labels,number,title,state`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Issue {
-    #[serde(default)]
-    pub labels: Vec<Label>,
-    pub number: u64,
-    pub title: String,
-    #[serde(default)]
-    pub state: String,
-}
