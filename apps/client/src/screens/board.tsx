@@ -2,7 +2,6 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarPlus,
   Download,
-  ExternalLink,
   GripVertical,
   ListTodo,
   MoreHorizontal,
@@ -41,8 +40,12 @@ import { cn } from "@/lib/utils";
 import {
   fmtDay,
   storeAddTask,
+  storeAttachTaskIssue,
+  storeAttachTaskPr,
   storeClearDone,
   storeDeleteTask,
+  storeDetachTaskIssue,
+  storeDetachTaskPr,
   storePromoteTaskToIssue,
   storeSetTaskPosition,
   storeSetTaskStatus,
@@ -50,7 +53,11 @@ import {
   TASK_STATUS_LABEL,
   TASK_STATUSES,
   useStoreSnapshot,
+  type IssueItem,
+  type PrItem,
+  type TaskIssueLink,
   type TaskItem,
+  type TaskPrLink,
   type TaskStatus,
 } from "@/lib/data";
 import {
@@ -77,7 +84,7 @@ import { useWorkspace } from "@/lib/workspace";
  * optimistic overlay first, so a dropped write would otherwise look like it
  * worked right up until the next snapshot quietly reverted it.
  */
-async function commit(mutation: Promise<Result<void, IpcError>>, what: string): Promise<void> {
+async function commit(mutation: Promise<Result<unknown, IpcError>>, what: string): Promise<void> {
   const done = await mutation;
   if (done.isErr()) toast.error(`Couldn't ${what} — ${done.error.message}`);
 }
@@ -166,23 +173,26 @@ export function BoardScreen() {
   // highlight (`dropSlot.status`) and the drop line before `beforeId`.
   const [dropSlot, setDropSlot] = useState<DropSlot | null>(null);
 
-  // Repos we know about (from collected PRs/issues + already-linked todos) — the
+  // Repos we know about (from collected PRs/issues + already-linked tasks) — the
   // promote-to-issue targets.
   const repos = useMemo(() => {
     const set = new Set<string>();
     for (const p of snapshot.prs) set.add(p.repo);
     for (const i of snapshot.issues) set.add(i.repo);
-    for (const t of snapshot.tasks) if (t.repo) set.add(t.repo);
+    for (const t of snapshot.tasks) {
+      for (const l of t.issues) set.add(l.repo);
+      for (const l of t.prs) set.add(l.repo);
+    }
     return [...set].toSorted();
   }, [snapshot.prs, snapshot.issues, snapshot.tasks]);
 
-  // `owner/repo#123` for every todo already linked to a GitHub issue — the
-  // import dialog disables these so re-running it over an overlapping
-  // selection is a visible no-op instead of a silent duplicate.
+  // `owner/repo#123` for every issue already linked to a task — the import
+  // dialog disables these so re-running it over an overlapping selection is a
+  // visible no-op instead of a silent duplicate.
   const linkedKeys = useMemo(() => {
     const set = new Set<string>();
     for (const t of snapshot.tasks) {
-      if (t.repo && t.issueNumber !== undefined) set.add(`${t.repo}#${t.issueNumber}`);
+      for (const l of t.issues) set.add(`${l.repo}#${l.number}`);
     }
     return set;
   }, [snapshot.tasks]);
@@ -193,10 +203,7 @@ export function BoardScreen() {
     setAddedTasks((prev) => {
       if (prev.length === 0) return prev;
       const next = prev.filter(
-        (a) =>
-          !snapshot.tasks.some(
-            (t) => t.text === a.text && t.repo === a.repo && t.dueTs === a.dueTs,
-          ),
+        (a) => !snapshot.tasks.some((t) => t.text === a.text && t.dueTs === a.dueTs),
       );
       return next.length === prev.length ? prev : next;
     });
@@ -291,7 +298,23 @@ export function BoardScreen() {
   }
 
   function promote(id: number, repo: string) {
-    void commit(storePromoteTaskToIssue(id, repo), "promote that todo to an issue");
+    void commit(storePromoteTaskToIssue(id, repo), "promote that task to an issue");
+  }
+
+  function attachIssue(id: number, issue: IssueItem) {
+    void commit(storeAttachTaskIssue(id, issue.repo, issue.number, issue.url), "attach that issue");
+  }
+
+  function detachIssue(id: number, link: TaskIssueLink) {
+    void commit(storeDetachTaskIssue(id, link.repo, link.number), "detach that issue");
+  }
+
+  function attachPr(id: number, pr: PrItem) {
+    void commit(storeAttachTaskPr(id, pr.repo, pr.number, pr.url), "attach that PR");
+  }
+
+  function detachPr(id: number, link: TaskPrLink) {
+    void commit(storeDetachTaskPr(id, link.repo, link.number), "detach that PR");
   }
 
   // Rename and due-date edits both re-send the todo's other free-form fields
@@ -336,7 +359,7 @@ export function BoardScreen() {
   const parsedDraft = useMemo(() => parseQuickAdd(draft, now), [draft, now]);
 
   function addTask() {
-    const { text, dueTs, repo } = parsedDraft;
+    const { text, dueTs } = parsedDraft;
     if (!text) return;
     setAddedTasks((prev) => [
       {
@@ -345,13 +368,14 @@ export function BoardScreen() {
         status: "backlog",
         position: -1,
         dueTs,
-        repo,
         createdAt: Date.now(),
+        issues: [],
+        prs: [],
       },
       ...prev,
     ]);
     setDraft("");
-    void commit(storeAddTask(text, dueTs, repo), "add that todo");
+    void commit(storeAddTask(text, { dueTs }), "add that task");
   }
 
   if (importOpen) {
@@ -367,7 +391,7 @@ export function BoardScreen() {
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2.5">
         <h2 className="text-sm font-medium">Board</h2>
         <span className="text-xs text-muted-foreground">
-          {repos.length} repos · {snapshot.tasks.length} todos
+          {repos.length} repos · {snapshot.tasks.length} tasks
         </span>
         {filter.trim() !== "" && hiddenCount > 0 && (
           <span className="text-xs text-muted-foreground">{hiddenCount} hidden</span>
@@ -396,22 +420,19 @@ export function BoardScreen() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") addTask();
               }}
-              placeholder="New todo… @tomorrow #owner/repo"
+              placeholder="New task… @tomorrow"
               className="h-7 w-full text-sm"
             />
-            {(parsedDraft.dueTs !== undefined || parsedDraft.repo) && (
+            {parsedDraft.dueTs !== undefined && (
               <div className="absolute top-full left-0 z-10 mt-1 flex items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
-                {parsedDraft.dueTs !== undefined && (
-                  <span className="flex items-center gap-1">
-                    <CalendarPlus aria-hidden className="size-3" />
-                    {fmtDay(parsedDraft.dueTs)}
-                  </span>
-                )}
-                {parsedDraft.repo && <span className="font-mono">#{parsedDraft.repo}</span>}
+                <span className="flex items-center gap-1">
+                  <CalendarPlus aria-hidden className="size-3" />
+                  {fmtDay(parsedDraft.dueTs)}
+                </span>
               </div>
             )}
           </div>
-          <Button variant="ghost" size="icon-sm" aria-label="Add todo" onClick={addTask}>
+          <Button variant="ghost" size="icon-sm" aria-label="Add task" onClick={addTask}>
             <Plus />
           </Button>
           <Button
@@ -432,9 +453,9 @@ export function BoardScreen() {
             <ListTodo aria-hidden className="size-8 text-muted-foreground/50" />
             <p className="text-sm font-medium">No tasks yet</p>
             <p className="text-xs text-muted-foreground">
-              Add one with the <span className="font-medium text-foreground">New todo…</span> box up
-              top — tag a due date with <span className="font-mono">@tomorrow</span> and a repo with{" "}
-              <span className="font-mono">#owner/repo</span>.
+              Add one with the <span className="font-medium text-foreground">New task…</span> box up
+              top — tag a due date with <span className="font-mono">@tomorrow</span>. Slot-backed
+              tasks appear here when you start one from the Agentboard.
             </p>
           </div>
         </div>
@@ -508,11 +529,17 @@ export function BoardScreen() {
                         task={task}
                         now={now}
                         repos={repos}
+                        openIssues={snapshot.issues}
+                        openPrs={snapshot.prs}
                         nextId={columns[status][i + 1]?.id ?? null}
                         onMove={move}
                         onReorderHover={setDropSlot}
                         onReorder={reorder}
                         onPromote={promote}
+                        onAttachIssue={attachIssue}
+                        onDetachIssue={detachIssue}
+                        onAttachPr={attachPr}
+                        onDetachPr={detachPr}
                         onRename={rename}
                         onSetDue={setDue}
                         onSetNotes={setNotes}
@@ -570,11 +597,17 @@ function Card({
   task,
   now,
   repos,
+  openIssues,
+  openPrs,
   nextId,
   onMove,
   onReorderHover,
   onReorder,
   onPromote,
+  onAttachIssue,
+  onDetachIssue,
+  onAttachPr,
+  onDetachPr,
   onRename,
   onSetDue,
   onSetNotes,
@@ -584,12 +617,20 @@ function Card({
   task: TaskItem;
   now: number;
   repos: string[];
+  /** Collected open issues — the "Attach issue…" candidates. */
+  openIssues: IssueItem[];
+  /** Collected PRs — the "Attach PR…" candidates. */
+  openPrs: PrItem[];
   /** The card below this one in the column (for a bottom-half drop), or null. */
   nextId: number | null;
   onMove: (id: number, status: TaskStatus) => void;
   onReorderHover: (slot: DropSlot) => void;
   onReorder: (id: number, status: TaskStatus, beforeId: number | "end") => void;
   onPromote: (id: number, repo: string) => void;
+  onAttachIssue: (id: number, issue: IssueItem) => void;
+  onDetachIssue: (id: number, link: TaskIssueLink) => void;
+  onAttachPr: (id: number, pr: PrItem) => void;
+  onDetachPr: (id: number, link: TaskPrLink) => void;
   onRename: (id: number, text: string) => void;
   onSetDue: (id: number, dueTs: number | undefined) => void;
   onSetNotes: (id: number, notes: string) => void;
@@ -604,6 +645,14 @@ function Card({
   // A shipped card is never "late", so done cards carry no due accent.
   const due = task.status === "done" ? "none" : dueState(task.dueTs, now);
   const hasNotes = (task.notes ?? "").trim() !== "";
+  // Attach candidates: collected refs not already linked to this task.
+  const attachableIssues = openIssues.filter(
+    (i) => !task.issues.some((l) => l.repo === i.repo && l.number === i.number),
+  );
+  const attachablePrs = openPrs.filter(
+    (p) => !task.prs.some((l) => l.repo === p.repo && l.number === p.number),
+  );
+  const hasLinks = task.issues.length > 0 || task.prs.length > 0;
 
   function startRename() {
     setEditValue(task.text);
@@ -751,13 +800,64 @@ function Card({
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
-            {task.issueUrl ? (
-              <DropdownMenuItem
-                onSelect={() => task.issueUrl && void openExternalUrl(task.issueUrl)}
-              >
-                Open issue <ExternalLink className="ml-auto size-3.5" />
-              </DropdownMenuItem>
-            ) : repos.length > 0 ? (
+            {attachableIssues.length > 0 && (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>Attach issue…</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+                  {attachableIssues.map((issue) => (
+                    <DropdownMenuItem
+                      key={`${issue.repo}#${issue.number}`}
+                      onSelect={() => onAttachIssue(task.id, issue)}
+                    >
+                      <span className="mr-1.5 font-mono text-muted-foreground">
+                        #{issue.number}
+                      </span>
+                      <span className="max-w-56 truncate">{issue.title}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
+            {attachablePrs.length > 0 && (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>Attach PR…</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+                  {attachablePrs.map((pr) => (
+                    <DropdownMenuItem
+                      key={`${pr.repo}#${pr.number}`}
+                      onSelect={() => onAttachPr(task.id, pr)}
+                    >
+                      <span className="mr-1.5 font-mono text-muted-foreground">#{pr.number}</span>
+                      <span className="max-w-56 truncate">{pr.title}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
+            {hasLinks && (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>Detach…</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  {task.issues.map((link) => (
+                    <DropdownMenuItem
+                      key={`i${link.repo}#${link.number}`}
+                      onSelect={() => onDetachIssue(task.id, link)}
+                    >
+                      issue #{link.number} · {link.repo}
+                    </DropdownMenuItem>
+                  ))}
+                  {task.prs.map((link) => (
+                    <DropdownMenuItem
+                      key={`p${link.repo}#${link.number}`}
+                      onSelect={() => onDetachPr(task.id, link)}
+                    >
+                      PR #{link.number} · {link.repo}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
+            {repos.length > 0 ? (
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Create issue in…</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
@@ -779,22 +879,63 @@ function Card({
         </DropdownMenu>
       </div>
 
-      {(task.repo || task.dueTs !== undefined || hasNotes) && (
+      {task.slot && (
+        <div
+          className={cn(
+            "mt-1.5 truncate font-mono text-[11px] text-muted-foreground",
+            !task.slot.dir && "italic text-muted-foreground/70",
+          )}
+          title={task.slot.dir ?? `worktree removed — branch ${task.slot.branch}`}
+        >
+          ⎇ {task.slot.branch}
+          {!task.slot.dir && " · detached"}
+        </div>
+      )}
+      {(hasLinks || task.dueTs !== undefined || hasNotes) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {task.repo && task.issueNumber !== undefined && (
+          {task.issues.map((link) => (
             <a
-              href={task.issueUrl}
+              key={`i${link.repo}#${link.number}`}
+              href={link.url}
               target="_blank"
               rel="noreferrer"
               onClick={(e) => {
                 e.preventDefault();
-                if (task.issueUrl) void openExternalUrl(task.issueUrl);
+                void openExternalUrl(link.url);
               }}
-              className="font-mono text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+              title={`${link.repo}#${link.number} · ${link.state}`}
+              className={cn(
+                "font-mono text-[11px] text-muted-foreground hover:text-foreground hover:underline",
+                link.state === "closed" && "line-through opacity-60",
+              )}
             >
-              {task.repo} #{task.issueNumber}
+              #{link.number}
             </a>
-          )}
+          ))}
+          {task.prs.map((link) => (
+            <a
+              key={`p${link.repo}#${link.number}`}
+              href={link.url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => {
+                e.preventDefault();
+                void openExternalUrl(link.url);
+              }}
+              title={`${link.repo}#${link.number} · ${link.state}${link.checks !== "none" ? ` · checks ${link.checks}` : ""}`}
+              className={cn(
+                "font-mono text-[11px] hover:underline",
+                link.state === "merged"
+                  ? "text-green-600 dark:text-green-400"
+                  : link.checks === "failing"
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              PR #{link.number}
+              {link.state === "merged" && " ✓"}
+            </a>
+          ))}
           {task.dueTs !== undefined && (
             <Badge
               variant="outline"
@@ -826,7 +967,7 @@ function Card({
       <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete this todo?</AlertDialogTitle>
+            <AlertDialogTitle>Delete this task?</AlertDialogTitle>
             <AlertDialogDescription>
               “{task.text}” will be permanently removed. This can't be undone.
             </AlertDialogDescription>

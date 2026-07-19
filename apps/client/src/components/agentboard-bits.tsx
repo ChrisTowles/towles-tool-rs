@@ -985,7 +985,7 @@ export function RepoMenu({
           )}
           {onNewSlot && (
             <DropdownMenuItem onSelect={onNewSlot} className="whitespace-nowrap">
-              <FolderPlus className="size-3.5" /> New slot…
+              <FolderPlus className="size-3.5" /> New task…
               <DropdownMenuShortcut>{shortcutHint("ab-new-slot")}</DropdownMenuShortcut>
             </DropdownMenuItem>
           )}

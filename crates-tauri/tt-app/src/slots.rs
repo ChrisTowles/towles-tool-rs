@@ -403,6 +403,10 @@ async fn slot_remove_inner(
     if untracked {
         messages.push("untracked from the agentboard rail".to_string());
     }
+    let detached = crate::store::detach_task_slot_dir(&app, &removed.dir.to_string_lossy());
+    if detached > 0 {
+        messages.push("detached the board task from the removed worktree".to_string());
+    }
     // Re-emit either way: a fleet-discovered (never-tracked) slot also drops
     // off the rail on the next recompute, so don't make the user wait a poll.
     ab.emit.notify_one();

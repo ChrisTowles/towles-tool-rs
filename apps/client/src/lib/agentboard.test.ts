@@ -8,6 +8,7 @@ import {
   diffPaneDir,
   diffPaneId,
   dragCol,
+  ownerRepoFromOrigin,
   dropPane,
   exitPaneId,
   exitPaneSession,
@@ -1195,5 +1196,24 @@ describe("isPasteableImage", () => {
     // where the user can see it didn't take, instead of failing mid-create.
     expect(isPasteableImage("image/svg+xml")).toBe(false);
     expect(isPasteableImage("text/plain")).toBe(false);
+  });
+});
+
+describe("ownerRepoFromOrigin", () => {
+  it("parses https, ssh, and scp-like origin urls to owner/name", () => {
+    expect(ownerRepoFromOrigin("https://github.com/ChrisTowles/towles-tool-rs")).toBe(
+      "ChrisTowles/towles-tool-rs",
+    );
+    expect(ownerRepoFromOrigin("https://github.com/octo/widgets.git")).toBe("octo/widgets");
+    expect(ownerRepoFromOrigin("git@github.com:octo/widgets.git")).toBe("octo/widgets");
+    expect(ownerRepoFromOrigin("ssh://git@github.com/octo/widgets")).toBe("octo/widgets");
+    expect(ownerRepoFromOrigin("https://github.com/octo/widgets/")).toBe("octo/widgets");
+  });
+
+  it("returns undefined for missing or unparseable origins", () => {
+    expect(ownerRepoFromOrigin(undefined)).toBeUndefined();
+    expect(ownerRepoFromOrigin(null)).toBeUndefined();
+    expect(ownerRepoFromOrigin("")).toBeUndefined();
+    expect(ownerRepoFromOrigin("not a url")).toBeUndefined();
   });
 });

@@ -801,6 +801,21 @@ export function pathScope(dir: string): string | null {
 /** The open PR for a folder's branch: exact branch match, scoped to the repo
  * via its origin URL (PR rows carry gh's `owner/name`, which both https and
  * ssh remote URLs contain). Origin-less repos match on branch alone. */
+/**
+ * Parse a git origin URL to its GitHub `owner/name`, or `undefined` when it
+ * doesn't look like one. Handles the three shapes that show up in practice —
+ * `https://github.com/owner/repo(.git)`, `git@github.com:owner/repo.git`,
+ * and `ssh://git@github.com/owner/repo` — by taking the last two path
+ * segments and stripping a `.git` suffix. Used to stamp a task's slot
+ * binding with the repo identity PR auto-attach matches on (#339).
+ */
+export function ownerRepoFromOrigin(originUrl: string | null | undefined): string | undefined {
+  if (!originUrl) return undefined;
+  const match = originUrl.trim().match(/[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/);
+  if (!match) return undefined;
+  return `${match[1]}/${match[2]}`;
+}
+
 export function prForFolder(
   prs: PrItem[],
   originUrl: string | null | undefined,

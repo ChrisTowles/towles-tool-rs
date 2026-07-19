@@ -11,6 +11,8 @@ function task(status: TaskStatus, over: Partial<TaskItem> = {}): TaskItem {
     status,
     position: 0,
     createdAt: 0,
+    issues: [],
+    prs: [],
     ...over,
   };
 }

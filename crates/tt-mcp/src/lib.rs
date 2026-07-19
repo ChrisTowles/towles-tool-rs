@@ -560,7 +560,7 @@ mod tests {
                 NOW,
             )
             .unwrap();
-        store.add_task("open task", Some(NOW + HOUR_MS), None, None, NOW).unwrap();
+        store.add_task("open task", "backlog", Some(NOW + HOUR_MS), None, NOW).unwrap();
         store.replace_issues(&[issue(390, "Refunds double-charge"), issue(391, "a11y")]).unwrap();
         store
             .replace_prs(&[PrInput {
@@ -829,10 +829,10 @@ mod tests {
             )
             .unwrap();
         // Todos across columns: two doing, one next, one backlog.
-        let doing_a = store.add_task("doing a", None, None, None, NOW).unwrap();
-        let doing_b = store.add_task("doing b", None, None, None, NOW).unwrap();
-        let next_a = store.add_task("next a", None, None, None, NOW).unwrap();
-        store.add_task("backlog a", None, None, None, NOW).unwrap();
+        let doing_a = store.add_task("doing a", "backlog", None, None, NOW).unwrap();
+        let doing_b = store.add_task("doing b", "backlog", None, None, NOW).unwrap();
+        let next_a = store.add_task("next a", "backlog", None, None, NOW).unwrap();
+        store.add_task("backlog a", "backlog", None, None, NOW).unwrap();
         store.set_task_status(doing_a.id, "doing", NOW).unwrap();
         store.set_task_status(doing_b.id, "doing", NOW).unwrap();
         store.set_task_status(next_a.id, "next", NOW).unwrap();
@@ -869,7 +869,7 @@ mod tests {
     fn day_brief_caps_todos_at_the_limit() {
         let store = Store::open_in_memory().unwrap();
         for i in 0..8 {
-            let task = store.add_task(&format!("t{i}"), None, None, None, NOW).unwrap();
+            let task = store.add_task(&format!("t{i}"), "backlog", None, None, NOW).unwrap();
             store.set_task_status(task.id, "doing", NOW).unwrap();
         }
         let mut dispatcher = Dispatcher::new(store);

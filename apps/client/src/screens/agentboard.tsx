@@ -27,7 +27,12 @@ import { ColdCacheOverlay, PaneHeader, WorkingContext } from "@/components/agent
 import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffPane } from "@/components/diff-pane";
 import { FolderFilesPane, type FilesOpenRequest } from "@/components/files-pane";
-import { type NewSlotRepo, type PendingSlot, type SlotCreated } from "@/components/inline-new-slot";
+import {
+  type NewSlotRepo,
+  type NewTaskSubmit,
+  type PendingSlot,
+  type SlotCreated,
+} from "@/components/inline-new-slot";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import {
@@ -99,6 +104,7 @@ import {
   placePane,
   replacePane,
   prForFolder,
+  ownerRepoFromOrigin,
   promptWithImages,
   pruneWins,
   sessionLabel,
@@ -129,13 +135,19 @@ import {
   type WindowsPayload,
   windowColor,
 } from "@/lib/agentboard";
-import { errorMessage } from "@/lib/errors";
+import { errorMessage, NotInTauri } from "@/lib/errors";
 import { launchCommand, launchRegister, type LaunchConfigStatus } from "@/lib/launch";
 import { exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
 import { invoke, isTauri } from "@/lib/tauri";
 import type { OpenFileRequest } from "@/lib/ide";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
-import { fmtCountdown, useStoreSnapshot } from "@/lib/data";
+import {
+  fmtCountdown,
+  storeAddTask,
+  storeAttachTaskIssue,
+  storeTaskSetSlot,
+  useStoreSnapshot,
+} from "@/lib/data";
 import { useFocusTarget } from "@/lib/focus-target";
 import { railRowMotion } from "@/lib/rail-motion";
 import { AnimatePresence, motion } from "motion/react";
@@ -205,6 +217,30 @@ const paneStyle = (r: PaneRect) => ({
   width: `${r.width}%`,
   height: `${r.height}%`,
 });
+
+/**
+ * Create the board task for a new-task submit (#339): the task row exists
+ * from the moment of submit — before any worktree work — with the picked
+ * issues attached. Best-effort: a store failure must not block the worktree
+ * (the slot is still useful without a card), so this resolves to `undefined`
+ * on error after surfacing a toast.
+ */
+async function createTaskForSubmit(input: NewTaskSubmit): Promise<number | undefined> {
+  const title = input.goal || input.issues[0]?.title || input.branch;
+  if (!title) return undefined;
+  const status = input.worktree ? "doing" : "backlog";
+  const created = await storeAddTask(title, { status });
+  if (created.isErr()) {
+    if (!NotInTauri.is(created.error)) {
+      toast(`couldn't add the board task: ${created.error.message}`);
+    }
+    return undefined;
+  }
+  for (const issue of input.issues) {
+    void storeAttachTaskIssue(created.value, issue.repo, issue.number, issue.url);
+  }
+  return created.value;
+}
 
 /** Glyph per blocker kind. Exhaustive over `SlotBlockerKind`, so a guard
  * added in Rust fails the build here rather than silently picking up
@@ -950,19 +986,16 @@ export function AgentboardScreen() {
   // in the rail instead of a blocking modal — the caller can keep working
   // anywhere else in the app while the worktree + setup finish. Keyed by
   // branch (unique per repo, since a collision is already rejected before
-  // submit), so a retry just re-runs this under the same id.
-  async function createSlot(
-    repo: NewSlotRepo,
-    input: {
-      goal: string;
-      branch: string;
-      base: string;
-      options: ClaudeLaunchOptions;
-      /** Already on disk — the form stages images when they're pasted, so
-       * "Suggest name + goal" can hand `claude -p` real paths too. */
-      imagePaths: string[];
-    },
-  ) {
+  // submit), so a retry just re-runs this under the same id. The board task
+  // is created first (`createTaskForSubmit`) — the slot is an attribute of
+  // the task, not the unit itself — and bound to the worktree once
+  // `slot_create` resolves; a "task only" submit stops after the card.
+  async function createSlot(repo: NewSlotRepo, input: NewTaskSubmit & { taskId?: number }) {
+    const taskId = input.taskId ?? (await createTaskForSubmit(input));
+    if (!input.worktree) {
+      toast("task added to the board");
+      return;
+    }
     const id = `${repo.key}::${input.branch}`;
     setPendingSlots((prev) => [
       ...prev.filter((p) => p.id !== id),
@@ -976,6 +1009,8 @@ export function AgentboardScreen() {
         base: input.base,
         options: input.options,
         imagePaths: input.imagePaths,
+        taskId,
+        repoOriginUrl: repo.originUrl,
         startedAt: Date.now(),
         status: "creating",
       },
@@ -994,6 +1029,14 @@ export function AgentboardScreen() {
       return;
     }
     const created = result.value;
+    // Bind the task to its worktree (branch + dir + repo identity for PR
+    // auto-attach). Fire-and-forget: the snapshot re-emit repaints the card.
+    if (taskId !== undefined) {
+      void storeTaskSetSlot(taskId, repo.dir, created.branch, {
+        repo: ownerRepoFromOrigin(repo.originUrl),
+        dir: created.dir,
+      });
+    }
     for (const warning of created.warnings) {
       toast(
         warning,
@@ -1014,13 +1057,18 @@ export function AgentboardScreen() {
     const p = pendingSlots.find((x) => x.id === id);
     if (!p) return;
     void createSlot(
-      { name: p.repoName, dir: p.repoDir, key: p.repoKey },
+      { name: p.repoName, dir: p.repoDir, key: p.repoKey, originUrl: p.repoOriginUrl },
       {
         goal: p.goal,
         branch: p.branch,
         base: p.base,
         options: p.options,
         imagePaths: p.imagePaths,
+        // The task already exists — a retry must rebind it, not mint a
+        // duplicate card. (Issues are already attached to it, too.)
+        issues: [],
+        worktree: true,
+        taskId: p.taskId,
       },
     );
   }
@@ -1779,7 +1827,12 @@ export function AgentboardScreen() {
                               onSubmitSlotForm={(input) => {
                                 closeSlotForm(repo.key);
                                 void createSlot(
-                                  { name: repo.name, dir: repo.folders[0].dir, key: repo.key },
+                                  {
+                                    name: repo.name,
+                                    dir: repo.folders[0].dir,
+                                    key: repo.key,
+                                    originUrl: repo.originUrl,
+                                  },
                                   input,
                                 );
                               }}

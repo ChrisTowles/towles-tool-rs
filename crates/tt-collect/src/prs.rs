@@ -51,6 +51,16 @@ pub(crate) fn collect_repo_prs(dir: &Path) -> Result<(String, Vec<PrInput>), Str
 }
 
 /// Run `gh pr list` in `dir` for the given `--state`/`--limit` plus `extra` filters.
+/// Targeted state fetch for one PR: the sweep only stores open PRs plus a
+/// bounded recently-merged list, so a task-linked PR absent from that
+/// snapshot needs an explicit `gh pr view` to learn whether it merged or
+/// closed. Returns the lowercased state (`open` | `merged` | `closed`).
+pub(crate) fn fetch_pr_state(dir: &Path, number: i64) -> Result<String, String> {
+    let value = gh::run_json(dir, &["pr", "view", &number.to_string(), "--json", "state"])?;
+    crate::issues::parse_state_field(&value)
+        .ok_or_else(|| format!("gh pr view {number}: no state in JSON"))
+}
+
 fn gh_pr_list(
     dir: &Path,
     state: &str,

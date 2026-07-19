@@ -11,7 +11,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use tt_store::{Snapshot, Store};
 
@@ -117,6 +117,27 @@ pub fn emit_snapshot(app: &AppHandle, state: &StoreState) {
     }
 }
 
+/// Detach any task bound to a removed worktree: clears the task's `slot_dir`
+/// (branch + repo root stay as historical fact), re-emitting the snapshot
+/// when something changed. The slot-removal seam calls this right where it
+/// already untracks the dir from repos.json. Returns how many tasks were
+/// detached; a slot with no task is a 0-count no-op.
+pub fn detach_task_slot_dir(app: &AppHandle, dir: &str) -> usize {
+    let state = app.state::<StoreState>();
+    let detached = with_store(&state, |store| {
+        store.clear_task_slot_dir(dir).map_err(|e| format!("clear_task_slot_dir failed: {e}"))
+    })
+    .unwrap_or_else(|e| {
+        eprintln!("task slot detach for {dir} failed: {e}");
+        0
+    });
+    if detached > 0 {
+        tracing::info!(%dir, count = detached, "task.slot_detached");
+        emit_snapshot(app, &state);
+    }
+    detached
+}
+
 // --- Tauri commands ---
 
 /// Pull the current snapshot (initial mount).
@@ -125,20 +146,125 @@ pub fn store_snapshot(state: State<StoreState>) -> Result<Snapshot, String> {
     snapshot_of(&state)
 }
 
-/// Add a manually-entered task, then re-emit the snapshot.
+/// Add a manually-entered task, then re-emit the snapshot. `status` picks the
+/// column it lands in (quick-add uses `backlog`; the new-task flow creates
+/// slot-backed tasks straight into `doing`).
 #[tauri::command]
 pub fn store_add_task(
     app: AppHandle,
     state: State<StoreState>,
     text: String,
+    status: Option<String>,
     due_ts: Option<i64>,
-    repo: Option<String>,
+) -> Result<i64, String> {
+    let status = status.unwrap_or_else(|| "backlog".to_string());
+    let task = with_store(&state, |store| {
+        store
+            .add_task(&text, &status, due_ts, None, now_ms())
+            .map_err(|e| format!("add_task failed: {e}"))
+    })?;
+    tracing::info!(task_id = task.id, %status, "task.created");
+    emit_snapshot(&app, &state);
+    Ok(task.id)
+}
+
+/// Attach a GitHub issue to a task, then re-emit the snapshot.
+#[tauri::command]
+pub fn store_attach_task_issue(
+    app: AppHandle,
+    state: State<StoreState>,
+    id: i64,
+    repo: String,
+    number: i64,
+    url: String,
 ) -> Result<(), String> {
     with_store(&state, |store| {
         store
-            .add_task(&text, due_ts, repo.as_deref(), None, now_ms())
-            .map_err(|e| format!("add_task failed: {e}"))
+            .attach_task_issue(id, &repo, number, &url)
+            .map_err(|e| format!("attach_task_issue failed: {e}"))
     })?;
+    tracing::info!(task_id = id, %repo, number, "task.issue_attached");
+    emit_snapshot(&app, &state);
+    Ok(())
+}
+
+/// Detach a GitHub issue from a task, then re-emit the snapshot.
+#[tauri::command]
+pub fn store_detach_task_issue(
+    app: AppHandle,
+    state: State<StoreState>,
+    id: i64,
+    repo: String,
+    number: i64,
+) -> Result<(), String> {
+    with_store(&state, |store| {
+        store
+            .detach_task_issue(id, &repo, number)
+            .map_err(|e| format!("detach_task_issue failed: {e}"))
+    })?;
+    tracing::info!(task_id = id, %repo, number, "task.issue_detached");
+    emit_snapshot(&app, &state);
+    Ok(())
+}
+
+/// Attach a GitHub PR to a task, then re-emit the snapshot. (PRs from the
+/// task's own slot branch attach automatically on collect; this is the manual
+/// path for cross-repo or extra PRs.)
+#[tauri::command]
+pub fn store_attach_task_pr(
+    app: AppHandle,
+    state: State<StoreState>,
+    id: i64,
+    repo: String,
+    number: i64,
+    url: String,
+) -> Result<(), String> {
+    with_store(&state, |store| {
+        store
+            .attach_task_pr(id, &repo, number, &url)
+            .map_err(|e| format!("attach_task_pr failed: {e}"))
+    })?;
+    tracing::info!(task_id = id, %repo, number, "task.pr_attached");
+    emit_snapshot(&app, &state);
+    Ok(())
+}
+
+/// Detach a GitHub PR from a task, then re-emit the snapshot.
+#[tauri::command]
+pub fn store_detach_task_pr(
+    app: AppHandle,
+    state: State<StoreState>,
+    id: i64,
+    repo: String,
+    number: i64,
+) -> Result<(), String> {
+    with_store(&state, |store| {
+        store.detach_task_pr(id, &repo, number).map_err(|e| format!("detach_task_pr failed: {e}"))
+    })?;
+    tracing::info!(task_id = id, %repo, number, "task.pr_detached");
+    emit_snapshot(&app, &state);
+    Ok(())
+}
+
+/// Bind a task to the worktree slot its work happens in (called by the
+/// new-task flow once `slot_create` resolves), then re-emit the snapshot.
+/// `repo` is the GitHub `owner/name` when known — it enables PR auto-attach.
+#[tauri::command]
+pub fn store_task_set_slot(
+    app: AppHandle,
+    state: State<StoreState>,
+    id: i64,
+    repo_root: String,
+    repo: Option<String>,
+    branch: String,
+    dir: Option<String>,
+) -> Result<(), String> {
+    with_store(&state, |store| {
+        store
+            .set_task_slot(id, &repo_root, repo.as_deref(), &branch, dir.as_deref())
+            .map_err(|e| format!("set_task_slot failed: {e}"))
+    })?;
+    tracing::info!(task_id = id, %branch, "task.slot_bound");
     emit_snapshot(&app, &state);
     Ok(())
 }
@@ -162,62 +288,69 @@ pub fn store_set_task_status(
     })?;
     emit_snapshot(&app, &state);
     if let Some(before) = before {
-        spawn_gh_status_sync(&before.status, &status, before.repo, before.issue_number);
+        spawn_gh_status_sync(&before.status, &status, &before.issues);
     }
     Ok(())
 }
 
-/// Best-effort close/reopen the GitHub issue linked to a todo whose status
-/// just crossed the `done` boundary (see [`gh_close_reopen_target`]), on a
+/// Best-effort close/reopen the GitHub issues linked to a task whose status
+/// just crossed the `done` boundary (see [`gh_close_reopen_targets`]), on a
 /// background thread — fire-and-forget so the caller's snapshot emit doesn't
-/// wait on the network round-trip. A failed gh call self-heals on the next
-/// `issues` collector poll via [`tt_collect::reconcile_linked_task_statuses`].
+/// wait on the network round-trips. A failed gh call self-heals on the next
+/// collector poll via [`tt_collect::rollup_task_statuses`].
 ///
 /// The single call site for this decision: every command that can change a
-/// todo's status (`store_set_task_status`, `store_set_task_position`) routes
+/// task's status (`store_set_task_status`, `store_set_task_position`) routes
 /// through here rather than each re-deriving/spawning its own sync, so the
 /// close/reopen behavior can't drift between them (#246 shipped only in
 /// `store_set_task_status`, so dragging a card — which goes through
-/// `store_set_task_position` — silently skipped the sync).
-fn spawn_gh_status_sync(
-    old_status: &str,
-    new_status: &str,
-    repo: Option<String>,
-    issue_number: Option<i64>,
-) {
-    let Some((repo, number, close)) =
-        gh_close_reopen_target(old_status, new_status, repo, issue_number)
-    else {
+/// `store_set_task_position` — silently skipped the sync). Only the
+/// board-originated commands sync: the collectors' rollup writes through
+/// `tt_store` directly, so a GitHub-driven status change never echoes back
+/// out as a gh mutation.
+fn spawn_gh_status_sync(old_status: &str, new_status: &str, issues: &[tt_store::TaskIssueLink]) {
+    let targets = gh_close_reopen_targets(old_status, new_status, issues);
+    if targets.is_empty() {
         return;
-    };
+    }
     std::thread::spawn(move || {
-        let verb = if close { "close" } else { "reopen" };
-        let result =
-            if close { close_gh_issue(&repo, number) } else { reopen_gh_issue(&repo, number) };
-        if let Err(e) = result {
-            eprintln!("gh issue {verb} sync failed for {repo}#{number}: {e}");
+        for (repo, number, close) in targets {
+            let verb = if close { "close" } else { "reopen" };
+            let result =
+                if close { close_gh_issue(&repo, number) } else { reopen_gh_issue(&repo, number) };
+            match result {
+                Ok(()) => tracing::info!(%repo, number, verb, "task.gh_issue_sync"),
+                Err(e) => eprintln!("gh issue {verb} sync failed for {repo}#{number}: {e}"),
+            }
         }
     });
 }
 
-/// Which gh action (if any) a todo's status change should trigger: `Some((repo,
-/// number, close))` when the todo is linked and the transition crosses the
-/// `done` boundary — entering `done` closes the issue, leaving it reopens.
-/// `None` for unlinked todos or moves that don't touch `done`.
-fn gh_close_reopen_target(
+/// Which gh actions a task's status change should trigger: entering `done`
+/// closes every linked issue still cached `open`; leaving `done` reopens the
+/// ones cached `closed`. Empty for link-less tasks, moves that don't touch
+/// `done`, and links already in the target state (so re-running is a no-op
+/// and a half-failed batch converges on retry).
+fn gh_close_reopen_targets(
     old_status: &str,
     new_status: &str,
-    repo: Option<String>,
-    issue_number: Option<i64>,
-) -> Option<(String, i64, bool)> {
-    let (repo, number) = (repo?, issue_number?);
-    if old_status != new_status && new_status == "done" {
-        Some((repo, number, true))
-    } else if old_status != new_status && old_status == "done" {
-        Some((repo, number, false))
-    } else {
-        None
+    issues: &[tt_store::TaskIssueLink],
+) -> Vec<(String, i64, bool)> {
+    if old_status == new_status {
+        return Vec::new();
     }
+    let close = if new_status == "done" {
+        true
+    } else if old_status == "done" {
+        false
+    } else {
+        return Vec::new();
+    };
+    issues
+        .iter()
+        .filter(|link| if close { link.state != "closed" } else { link.state == "closed" })
+        .map(|link| (link.repo.clone(), link.number, close))
+        .collect()
 }
 
 /// Run `gh issue close --repo <repo> <number>`.
@@ -264,7 +397,7 @@ pub fn store_set_task_position(
     })?;
     emit_snapshot(&app, &state);
     if let Some(before) = before {
-        spawn_gh_status_sync(&before.status, &status, before.repo, before.issue_number);
+        spawn_gh_status_sync(&before.status, &status, &before.issues);
     }
     Ok(())
 }
@@ -362,8 +495,8 @@ pub async fn store_promote_task_to_issue(
 
     with_store(&state, |store| {
         store
-            .link_task_issue(id, &repo, number, &url)
-            .map_err(|e| format!("link_task_issue failed: {e}"))
+            .attach_task_issue(id, &repo, number, &url)
+            .map_err(|e| format!("attach_task_issue failed: {e}"))
     })?;
     emit_snapshot(&app, &state);
     Ok(())
@@ -473,10 +606,9 @@ pub fn store_import_issues(
 ) -> Result<usize, String> {
     let imported = with_store(&state, |store| {
         let mut linked: std::collections::HashSet<(String, i64)> = store
-            .linked_tasks()
-            .map_err(|e| format!("linked_tasks failed: {e}"))?
+            .linked_issue_refs()
+            .map_err(|e| format!("linked_issue_refs failed: {e}"))?
             .into_iter()
-            .filter_map(|t| Some((t.repo?, t.issue_number?)))
             .collect();
         let mut count = 0;
         for item in &items {
@@ -485,11 +617,11 @@ pub fn store_import_issues(
                 continue;
             }
             let task = store
-                .add_task(&item.title, None, Some(&item.repo), None, now_ms())
+                .add_task(&item.title, "backlog", None, None, now_ms())
                 .map_err(|e| format!("add_task failed: {e}"))?;
             store
-                .link_task_issue(task.id, &item.repo, item.number, &item.url)
-                .map_err(|e| format!("link_task_issue failed: {e}"))?;
+                .attach_task_issue(task.id, &item.repo, item.number, &item.url)
+                .map_err(|e| format!("attach_task_issue failed: {e}"))?;
             linked.insert(key);
             count += 1;
         }
@@ -783,32 +915,34 @@ mod tests {
     }
 
     #[test]
-    fn gh_close_reopen_target_only_fires_on_a_done_crossing() {
-        // Unlinked: never fires.
-        assert!(gh_close_reopen_target("backlog", "done", None, Some(1)).is_none());
-        assert!(gh_close_reopen_target("backlog", "done", Some("o/r".to_string()), None).is_none());
-
-        // Entering done closes; staying outside done, moving within it (n/a
-        // here since old != new always), or leaving done reopens.
+    fn gh_close_reopen_targets_only_fire_on_a_done_crossing() {
+        let link = |number: i64, state: &str| tt_store::TaskIssueLink {
+            repo: "o/r".to_string(),
+            number,
+            url: format!("https://github.com/o/r/issues/{number}"),
+            state: state.to_string(),
+        };
+        // Entering done closes every still-open link; already-closed ones are
+        // skipped so a retry after a half-failed batch converges.
         assert_eq!(
-            gh_close_reopen_target("backlog", "done", Some("o/r".to_string()), Some(7)),
-            Some(("o/r".to_string(), 7, true))
+            gh_close_reopen_targets("backlog", "done", &[link(7, "open"), link(8, "closed")]),
+            vec![("o/r".to_string(), 7, true)]
         );
+        // Leaving done reopens only the closed ones.
         assert_eq!(
-            gh_close_reopen_target("done", "backlog", Some("o/r".to_string()), Some(7)),
-            Some(("o/r".to_string(), 7, false))
+            gh_close_reopen_targets("done", "backlog", &[link(7, "open"), link(8, "closed")]),
+            vec![("o/r".to_string(), 8, false)]
         );
-        // A move that never touches done is a no-op.
-        assert!(
-            gh_close_reopen_target("backlog", "doing", Some("o/r".to_string()), Some(7)).is_none()
-        );
+        // A move that never touches done, or a link-less task, is a no-op.
+        assert!(gh_close_reopen_targets("backlog", "doing", &[link(7, "open")]).is_empty());
+        assert!(gh_close_reopen_targets("backlog", "done", &[]).is_empty());
     }
 
     #[test]
     fn import_issues_skips_already_linked_and_in_batch_duplicates() {
         let store = Store::open_in_memory().unwrap();
-        let existing = store.add_task("existing", None, None, None, 1).unwrap();
-        store.link_task_issue(existing.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
+        let existing = store.add_task("existing", "backlog", None, None, 1).unwrap();
+        store.attach_task_issue(existing.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
         let state = StoreState::from_option(Some(store));
 
         let items = vec![
@@ -832,21 +966,16 @@ mod tests {
             },
         ];
         let imported = with_store(&state, |store| {
-            let mut linked: std::collections::HashSet<(String, i64)> = store
-                .linked_tasks()
-                .unwrap()
-                .into_iter()
-                .filter_map(|t| Some((t.repo?, t.issue_number?)))
-                .collect();
+            let mut linked: std::collections::HashSet<(String, i64)> =
+                store.linked_issue_refs().unwrap().into_iter().collect();
             let mut count = 0;
             for item in &items {
                 let key = (item.repo.clone(), item.number);
                 if linked.contains(&key) {
                     continue;
                 }
-                let task =
-                    store.add_task(&item.title, None, Some(&item.repo), None, now_ms()).unwrap();
-                store.link_task_issue(task.id, &item.repo, item.number, &item.url).unwrap();
+                let task = store.add_task(&item.title, "backlog", None, None, now_ms()).unwrap();
+                store.attach_task_issue(task.id, &item.repo, item.number, &item.url).unwrap();
                 linked.insert(key);
                 count += 1;
             }
@@ -895,7 +1024,7 @@ mod tests {
     #[test]
     fn snapshot_reflects_writes() {
         let store = Store::open_in_memory().unwrap();
-        store.add_task("buy milk", Some(500), None, None, 1).unwrap();
+        store.add_task("buy milk", "backlog", Some(500), None, 1).unwrap();
         let state = StoreState::from_option(Some(store));
         let snap = snapshot_of(&state).unwrap();
         assert_eq!(snap.tasks.len(), 1);
@@ -905,8 +1034,8 @@ mod tests {
     #[test]
     fn snapshot_reflects_task_edit_and_delete() {
         let store = Store::open_in_memory().unwrap();
-        let a = store.add_task("draft", None, None, None, 1).unwrap();
-        let b = store.add_task("scrap", None, None, None, 2).unwrap();
+        let a = store.add_task("draft", "backlog", None, None, 1).unwrap();
+        let b = store.add_task("scrap", "backlog", None, None, 2).unwrap();
         store.update_task(a.id, "final", Some("done"), Some(700)).unwrap();
         store.delete_task(b.id).unwrap();
         let state = StoreState::from_option(Some(store));

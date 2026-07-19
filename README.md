@@ -99,7 +99,7 @@ the zone while agents work:
 - **Cockpit** — the default day home: time until the next meeting (that is the
   entire calendar feature, by design), your PRs with CI status, and the issue
   queue.
-- **Board** — cross-repo kanban over local todos, promotable to GitHub issues.
+- **Board** — cross-repo kanban of tasks (#339): each links issues/PRs and usually a worktree slot; done rolls up from GitHub.
 - **Claude Sessions** — where the tokens went: per-session accounting, ranked
   waste insights, and a turn/tool drill-down.
 
@@ -181,7 +181,7 @@ Already installed? Pull the latest version with
 A second, separate plugin — `towles-tool-app` (in
 [`packages/app`](packages/app/README.md)) — bridges Claude Code to the
 desktop app itself: it registers the app's MCP server (`tt mcp serve` — day
-brief, needs-you, PR/issue status, kanban todos, journal), ships the
+brief, needs-you, PR/issue status, board tasks, journal), ships the
 `slot-onboarding` skill (guides onboarding any repo onto worktree slots), and
 a hook that nudges a running app instance to refresh its PR or issue data
 immediately after a `gh pr`/`gh issue` mutation, instead of waiting for its
@@ -214,7 +214,7 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-doctor` — dependency/environment checks (CLI `doctor` and the app screen both consume it).
 - `crates/tt-slots` — the worktree-slot convention: `${tt:...}` env-template renderer with port-pool claims, slot naming/layout, removal guards, and the shared `ops` orchestration behind `tt slot` and the app.
 - `crates/tt-claude-code` — shared Claude Code transcript parsing (session JSONL, titles, token usage, model table).
-- `crates/tt-store` — the data-hub SQLite store (events, kanban todos, issues, PR status, collector freshness).
+- `crates/tt-store` — the data-hub SQLite store (events, board tasks with issue/PR links + slot bindings, issues, PR status, collector freshness).
 - `crates/tt-collect` — collectors that fill the store: calendar via `claude -p`, issues/PRs via `gh`, a watched Slack DM via the Slack Web API.
 - `crates/tt-agentboard` — watched-repo and agent-session tracking behind the Agentboard screen.
 - `crates/tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and lockfile schema the app uses to pose as an IDE that Claude Code sessions connect to.
