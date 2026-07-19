@@ -1133,9 +1133,6 @@ export type ClaudeModel = "sonnet" | "opus" | "fable";
 /** `claude --effort` levels (see `claude --help`). */
 export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
-export const DEFAULT_CLAUDE_MODEL: ClaudeModel = "sonnet";
-export const DEFAULT_CLAUDE_EFFORT: ClaudeEffort = "xhigh";
-
 export type ClaudeLaunchOptions = {
   model?: ClaudeModel;
   effort?: ClaudeEffort;
