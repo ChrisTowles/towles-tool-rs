@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ideReadFile } from "@/lib/ide";
+import { ideReadFile, ideUnwatchFiles, ideWatchFiles, onFileChangedOnDisk } from "@/lib/ide";
 import { NotInTauri } from "@/lib/errors";
 import { monacoLanguageFor } from "@/lib/markdown-code";
 import { loadedMonaco } from "@/lib/monaco";
@@ -109,20 +109,34 @@ export function FilePreview({ dir, path, kind }: { dir: string; path: string; ki
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // One effect: initial read, plus re-reads when the file changes on disk
+  // (an agent edit). The preview registers its own watch — refcounted in
+  // Rust, so sharing a file with the sibling CodeViewer costs nothing, and
+  // the preview keeps refreshing even without one. On a refresh the old
+  // content stays up until the new read lands, so it never flashes
+  // "Loading…"; only the initial read surfaces an error state.
   useEffect(() => {
     let disposed = false;
     setContent(null);
     setError(null);
-    void (async () => {
-      const read = await ideReadFile(dir, path);
-      if (disposed) return;
-      read.match({
-        ok: (file) => setContent(file.content),
-        err: (e) => setError(NotInTauri.is(e) ? "not available in browser dev" : e.message),
+    const read = (initial: boolean) => {
+      void ideReadFile(dir, path).then((r) => {
+        if (disposed) return;
+        r.match({
+          ok: (file) => setContent(file.content),
+          err: (e) => {
+            if (initial) setError(NotInTauri.is(e) ? "not available in browser dev" : e.message);
+          },
+        });
       });
-    })();
+    };
+    read(true);
+    void ideWatchFiles(dir, [path]);
+    const off = onFileChangedOnDisk(dir, path, () => read(false));
     return () => {
       disposed = true;
+      off();
+      void ideUnwatchFiles(dir, [path]);
     };
   }, [dir, path]);
 

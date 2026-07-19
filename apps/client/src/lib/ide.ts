@@ -105,6 +105,16 @@ export function ideSetDiffDirty(
 /** A viewer file read: content + the mtime token the save path checks. */
 export type FileRead = { content: string; mtimeMs: number };
 
+/** Minimal stat (mirrors `FsStat` in ide.rs). An `Err` means the path does
+ * not exist (or is unreadable) — which is exactly what the viewer's
+ * deleted-on-disk detection needs to tell apart from a transient read
+ * failure on a file that is still there. */
+export type FsStat = { isDir: boolean; size: number; mtimeMs: number };
+
+export function ideStat(dir: string, filePath: string): Promise<Result<FsStat, IpcError>> {
+  return invoke<FsStat>("ide_stat", { dir, filePath });
+}
+
 /** Read a repo file for the code viewer (size-capped, text-only). Fails with a
  * readable message on binary/huge files, and with `NotInTauri` in browser dev. */
 export function ideReadFile(dir: string, filePath: string): Promise<Result<FileRead, IpcError>> {
@@ -122,38 +132,103 @@ export function ideWriteFile(
   return invoke<number>("ide_write_file", { dir, filePath, content, expectedMtimeMs });
 }
 
+const FILE_CHANGED_EVENT = "ide://file-changed";
+
+/** Payload of `ide://file-changed` — watched viewer files changed on disk
+ * (an agent edit, a `git checkout`, any external writer). One event per
+ * debounce batch, carrying every touched dir-relative path. */
+export type FilesChangedEvent = { dir: string; filePaths: string[] };
+
+/** Start watching open viewer files for on-disk changes; changes arrive as
+ * `ide://file-changed` events (subscribe with `onFilesChangedOnDisk`). One
+ * call for the whole list — a 50-file diff pane must not pay 50 IPC
+ * round-trips. Pair with `ideUnwatchFiles` over the same list when the files
+ * close. Failure just means no auto-refresh (browser dev, inotify limits) —
+ * safe to fire-and-forget. */
+export function ideWatchFiles(dir: string, filePaths: string[]): Promise<Result<void, IpcError>> {
+  return invoke<void>("ide_watch_files", { dir, filePaths });
+}
+
+/** Drop one reference each to a batch of viewer file watches. Unmatched
+ * entries are a no-op. */
+export function ideUnwatchFiles(dir: string, filePaths: string[]): Promise<Result<void, IpcError>> {
+  return invoke<void>("ide_unwatch_files", { dir, filePaths });
+}
+
+/** Subscribe to on-disk-change events for every watched file in `dir` — the
+ * diff pane's shape, where one listener covers the whole change set. The
+ * callback receives one changed dir-relative path per call (event batches
+ * fan out here). Returns an unsubscribe; a no-op outside Tauri. */
+export function onFilesChangedOnDisk(dir: string, cb: (filePath: string) => void): () => void {
+  if (!isTauri()) return () => {};
+  let disposed = false;
+  let unlisten: (() => void) | undefined;
+  void (async () => {
+    const { listen } = await import("@tauri-apps/api/event");
+    const sub = await listen<FilesChangedEvent>(FILE_CHANGED_EVENT, (e) => {
+      if (e.payload.dir !== dir) return;
+      for (const filePath of e.payload.filePaths) cb(filePath);
+    });
+    if (disposed) sub();
+    else unlisten = sub;
+  })();
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
+}
+
+/** Subscribe to on-disk-change events for one watched file. Returns an
+ * unsubscribe; a no-op outside Tauri. */
+export function onFileChangedOnDisk(dir: string, filePath: string, cb: () => void): () => void {
+  return onFilesChangedOnDisk(dir, (changed) => {
+    if (changed === filePath) cb();
+  });
+}
+
 /** A Monaco model's minimal save-relevant surface — structural, not
  * `monaco-editor`'s `ITextModel`, so this lib module (IPC + IDE-bridge
  * concerns) doesn't need an editor dependency. */
 type SavableModel = { getValue(): string; getAlternativeVersionId(): number };
+
+/** A buffer's save-relevant surface, captured synchronously (see
+ * `snapshotModel`) so a serialized save chain can write it later — after
+ * earlier in-flight writes finished and the mtime token is fresh, possibly
+ * after the model itself was disposed. */
+export type BufferSnapshot = { value: string; versionAtSave: number };
+
+export function snapshotModel(model: SavableModel): BufferSnapshot {
+  return { value: model.getValue(), versionAtSave: model.getAlternativeVersionId() };
+}
 
 /**
  * The save sequence every editable Monaco buffer in this app uses —
  * `CodeViewer` (one file) and the diff pane's editable modified side (N
  * files) both need the identical write/error/version-capture steps, just
  * different storage shape for the per-path mtime/version bookkeeping, so
- * that bookkeeping stays with the caller. On success, returns the new mtime
- * token plus the model's version *as of when the write started* — comparing
- * that to the model's *current* version afterward tells the caller whether
- * more was typed during the write and the buffer is therefore still dirty.
- * On failure, toasts and returns `null`: a refused save leaves the buffer
- * dirty and the file untouched, the one failure here the user must never
- * have to infer.
+ * that bookkeeping stays with the caller. Callers serialize saves per file
+ * (snapshot at request time, write when the previous save finished) —
+ * overlapping writes of the same file would race each other's mtime tokens
+ * and get one of them refused. On success, returns the new mtime token plus
+ * the snapshot's version — comparing that to the model's *current* version
+ * afterward tells the caller whether more was typed since and the buffer is
+ * therefore still dirty. On failure, toasts and returns `null`: a refused
+ * save leaves the buffer dirty and the file untouched, the one failure here
+ * the user must never have to infer.
  */
-export async function saveModelBuffer(
+export async function saveBufferSnapshot(
   dir: string,
   filePath: string,
-  model: SavableModel,
+  snapshot: BufferSnapshot,
   expectedMtimeMs: number | null,
 ): Promise<{ mtimeMs: number; versionAtSave: number } | null> {
-  const versionAtSave = model.getAlternativeVersionId();
-  const written = await ideWriteFile(dir, filePath, model.getValue(), expectedMtimeMs);
+  const written = await ideWriteFile(dir, filePath, snapshot.value, expectedMtimeMs);
   if (written.isErr()) {
     const { toast } = await import("sonner");
     toast.error(`Couldn't save ${filePath} — ${written.error.message}`);
     return null;
   }
-  return { mtimeMs: written.value, versionAtSave };
+  return { mtimeMs: written.value, versionAtSave: snapshot.versionAtSave };
 }
 
 /** Payload of the `ide://open-file` event (Claude called the openFile tool). */
