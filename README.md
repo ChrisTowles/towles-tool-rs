@@ -22,6 +22,25 @@ Two reasons:
 2. **Existing tools were a good GUI or a good TUI, never both.** This app
    aims to be both: a real GUI around real terminals.
 
+## Wishlist: in towles-tool, not yet in Claude Desktop
+
+A running list of things this repo already has that Claude Desktop hasn't
+shipped yet, biggest first:
+
+- **Editor-selection context.** This repo's IDE-protocol integration
+  (`tt-ide`) lets a Claude Code CLI session see what's highlighted in a
+  connected editor, so you can select a block of code and point the model at
+  it directly instead of describing the fix in words. Claude Desktop doesn't
+  have this yet — I asked it straight out whether it could see the files I'd
+  highlighted, and it confirmed no, it has no visibility into an editor
+  selection at all.
+
+  ![Claude Desktop confirming it can't see highlighted/selected code in an editor](docs/images/wishlist/claude-desktop-no-editor-selection.png)
+
+- ~~**Runs natively on Linux.** Only a community-hacked build of Claude
+  Desktop ran on Linux before now.~~ Shipped as an official
+  [beta](https://code.claude.com/docs/en/desktop-linux) on June 30, 2026.
+
 ## What this is (and is not)
 
 Claude Code is the harness. This is the layer around it.
