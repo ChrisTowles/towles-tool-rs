@@ -150,7 +150,7 @@ export const SHORTCUTS = defineShortcuts([
     id: "ab-new-slot",
     scope: "agentboard",
     keys: "mod+shift+d",
-    description: "New slot — goal, branch, base",
+    description: "New task — goal, issues, branch",
     when: "a folder is focused",
     allowInEditable: true,
   },

@@ -8,6 +8,7 @@
 // slot is being created just works.
 import {
   AlertTriangle,
+  Check,
   CircleDot,
   ImagePlus,
   Paperclip,
@@ -77,7 +78,29 @@ const EFFORT_OPTIONS: { value: EffortChoice; label: string }[] = [
   { value: "max", label: "Max" },
 ];
 
-export type NewSlotRepo = { name: string; dir: string; key: string };
+export type NewSlotRepo = {
+  name: string;
+  dir: string;
+  key: string;
+  /** The repo's git origin URL when known — parsed to `owner/name` so the
+   * created task's slot binding can auto-attach PRs by branch. */
+  originUrl?: string | null;
+};
+
+/** What the new-task form hands its parent on submit. */
+export type NewTaskSubmit = {
+  goal: string;
+  branch: string;
+  base: string;
+  options: ClaudeLaunchOptions;
+  /** Absolute paths of the already-staged images, not the bytes — they were
+   * written to disk when pasted. */
+  imagePaths: string[];
+  /** GitHub issues to attach to the created task (multi-select). */
+  issues: IssueItem[];
+  /** False for "Task only": create the board task but no worktree/agent. */
+  worktree: boolean;
+};
 
 /** Mirrors the Rust `SlotCreated` payload from `slot_create`. */
 export type SlotCreated = {
@@ -120,6 +143,11 @@ export type PendingSlot = {
    * gone by then and the user would otherwise have to re-paste. Paths, not
    * bytes: the files were staged when pasted and outlive the form. */
   imagePaths: string[];
+  /** The board task created at submit (#339) — carried so a retry binds the
+   * slot to the same task instead of minting a duplicate card. */
+  taskId?: number;
+  /** The repo's origin URL, for the task slot binding's `owner/name`. */
+  repoOriginUrl?: string | null;
   startedAt: number;
   status: "creating" | "error";
   error?: string;
@@ -190,15 +218,7 @@ export function InlineNewSlot({
 }: {
   repo: NewSlotRepo;
   onCancel: () => void;
-  onSubmit: (input: {
-    goal: string;
-    branch: string;
-    base: string;
-    options: ClaudeLaunchOptions;
-    /** Absolute paths of the already-staged images (see `imagePaths`), not
-     * the bytes — they were written to disk when pasted. */
-    imagePaths: string[];
-  }) => void;
+  onSubmit: (input: NewTaskSubmit) => void;
 }) {
   const [goal, setGoal] = useState("");
   const [images, setImages] = useState<PastedImage[]>([]);
@@ -238,6 +258,9 @@ export function InlineNewSlot({
   );
   const [issues, setIssues] = useState<IssueItem[] | null>(null);
   const [issuesError, setIssuesError] = useState<string | null>(null);
+  // Issues to attach to the created task — multi-select (#339); the first
+  // pick also seeds the goal/branch fields.
+  const [selectedIssues, setSelectedIssues] = useState<IssueItem[]>([]);
 
   const sortedBranches = [...branches].toSorted((a, b) => a.localeCompare(b));
 
@@ -357,16 +380,28 @@ export function InlineNewSlot({
     };
   }, [issuePickerOpen, issueAssignedToMe, repo.dir]);
 
-  // Seeds goal + branch straight from the issue, no confirmation step — same
-  // "just overwrite, Undo is the confirmation" shape as `suggest()` above.
-  // The title (plus the number, for traceability and so Claude can
-  // `gh issue view` it for the rest) is all there is to seed with: the
-  // issue-list fetch this form uses doesn't carry the issue body.
-  function pickIssue(issue: IssueItem) {
-    setPreOverwrite({ goal, branchEdit });
-    setGoal(`${issue.title} (#${issue.number})`);
-    setBranchEdit(branchFromIssue(issue.number, issue.title));
-    setIssuePickerOpen(false);
+  // Toggle an issue in/out of the selection (multi-select, #339 — every
+  // selected issue becomes a link on the created task). The *first* pick
+  // additionally seeds goal + branch, no confirmation step — same "just
+  // overwrite, Undo is the confirmation" shape as `suggest()` above; later
+  // picks only attach, so an edited goal is never clobbered. The title (plus
+  // the number, for traceability and so Claude can `gh issue view` it for
+  // the rest) is all there is to seed with: the issue-list fetch this form
+  // uses doesn't carry the issue body. The popover stays open for more picks.
+  function toggleIssue(issue: IssueItem) {
+    const already = selectedIssues.some((i) => i.repo === issue.repo && i.number === issue.number);
+    if (already) {
+      setSelectedIssues((prev) =>
+        prev.filter((i) => !(i.repo === issue.repo && i.number === issue.number)),
+      );
+      return;
+    }
+    if (selectedIssues.length === 0) {
+      setPreOverwrite({ goal, branchEdit });
+      setGoal(`${issue.title} (#${issue.number})`);
+      setBranchEdit(branchFromIssue(issue.number, issue.title));
+    }
+    setSelectedIssues((prev) => [...prev, issue]);
   }
 
   // Screenshots are how a lot of goals actually get described ("make it look
@@ -450,13 +485,19 @@ export function InlineNewSlot({
     void stageImages(next);
   }
 
-  function submit() {
-    if (!branch) {
-      setError("Give a goal (or type a branch name) first.");
-      return;
-    }
-    if (branchProblem) {
-      setError(branchProblem);
+  function submit(worktree = true) {
+    if (worktree) {
+      if (!branch) {
+        setError("Give a goal (or type a branch name) first.");
+        return;
+      }
+      if (branchProblem) {
+        setError(branchProblem);
+        return;
+      }
+    } else if (!goal.trim() && selectedIssues.length === 0) {
+      // A task-only create still needs *something* to become the card.
+      setError("Give a goal (or pick an issue) first.");
       return;
     }
     onSubmit({
@@ -468,13 +509,15 @@ export function InlineNewSlot({
         effort: effort === USE_DEFAULT ? undefined : effort,
       },
       imagePaths,
+      issues: selectedIssues,
+      worktree,
     });
   }
 
   return (
     <div className="mx-3 my-1.5 flex flex-col gap-2 rounded-lg border border-border bg-card p-2.5">
       <span className="text-[11px] font-medium text-muted-foreground">
-        ⬢ New slot — {repo.name}
+        ✦ New task — {repo.name}
       </span>
       <Textarea
         autoFocus
@@ -528,10 +571,31 @@ export function InlineNewSlot({
             void pasteFromHostClipboard();
           }
         }}
-        placeholder="what should get built in this slot? (paste a screenshot to attach it)"
+        placeholder="what should this task get done? (paste a screenshot to attach it)"
         rows={2}
         className="text-xs"
       />
+      {selectedIssues.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {selectedIssues.map((issue) => (
+            <span
+              key={`${issue.repo}#${issue.number}`}
+              title={issue.title}
+              className="flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[10.5px] text-muted-foreground"
+            >
+              #{issue.number}
+              <button
+                type="button"
+                aria-label={`Detach issue #${issue.number}`}
+                onClick={() => toggleIssue(issue)}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="size-2.5" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       {images.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {images.map((img) => (
@@ -598,20 +662,30 @@ export function InlineNewSlot({
                 <CommandInput placeholder="Search issues…" className="text-xs" />
                 <CommandList className="max-h-64">
                   <CommandEmpty>No open issues.</CommandEmpty>
-                  {issues.map((issue) => (
-                    <CommandItem
-                      key={issue.number}
-                      value={`${issue.number} ${issue.title}`}
-                      onSelect={() => pickIssue(issue)}
-                      className="flex flex-col items-start gap-0.5"
-                    >
-                      <span className="w-full truncate text-xs">{issue.title}</span>
-                      <span className="text-[10.5px] text-muted-foreground">
-                        #{issue.number}
-                        {issue.labels.length > 0 ? ` · ${issue.labels.slice(0, 2).join(", ")}` : ""}
-                      </span>
-                    </CommandItem>
-                  ))}
+                  {issues.map((issue) => {
+                    const selected = selectedIssues.some(
+                      (i) => i.repo === issue.repo && i.number === issue.number,
+                    );
+                    return (
+                      <CommandItem
+                        key={issue.number}
+                        value={`${issue.number} ${issue.title}`}
+                        onSelect={() => toggleIssue(issue)}
+                        className="flex items-start gap-2"
+                      >
+                        <Check className={cn("mt-0.5 size-3 shrink-0", !selected && "invisible")} />
+                        <span className="flex min-w-0 flex-col gap-0.5">
+                          <span className="w-full truncate text-xs">{issue.title}</span>
+                          <span className="text-[10.5px] text-muted-foreground">
+                            #{issue.number}
+                            {issue.labels.length > 0
+                              ? ` · ${issue.labels.slice(0, 2).join(", ")}`
+                              : ""}
+                          </span>
+                        </span>
+                      </CommandItem>
+                    );
+                  })}
                 </CommandList>
               </Command>
             )}
@@ -715,8 +789,17 @@ export function InlineNewSlot({
         <Button variant="ghost" size="sm" onClick={cancel}>
           Cancel
         </Button>
-        <Button size="sm" disabled={!branch} onClick={submit}>
-          Create slot
+        <Button
+          variant="outline"
+          size="sm"
+          title="Create the board task without a worktree — attach a slot later by starting it again"
+          disabled={!goal.trim() && selectedIssues.length === 0}
+          onClick={() => submit(false)}
+        >
+          Task only
+        </Button>
+        <Button size="sm" disabled={!branch} onClick={() => submit(true)}>
+          Start task
         </Button>
       </div>
     </div>

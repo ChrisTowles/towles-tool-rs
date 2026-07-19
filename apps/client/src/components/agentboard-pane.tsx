@@ -112,7 +112,7 @@ export function WorkingContext({
           )}
           {!missing && (
             <IconBtn
-              title={`New slot — goal, branch, base (${shortcutHint("ab-new-slot")})`}
+              title={`New task — goal, issues, branch (${shortcutHint("ab-new-slot")})`}
               onClick={newSlot}
               className="hover:text-violet-500"
             >

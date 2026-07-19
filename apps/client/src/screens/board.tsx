@@ -84,10 +84,7 @@ import { useWorkspace } from "@/lib/workspace";
  * optimistic overlay first, so a dropped write would otherwise look like it
  * worked right up until the next snapshot quietly reverted it.
  */
-async function commit(
-  mutation: Promise<Result<unknown, IpcError>>,
-  what: string,
-): Promise<void> {
+async function commit(mutation: Promise<Result<unknown, IpcError>>, what: string): Promise<void> {
   const done = await mutation;
   if (done.isErr()) toast.error(`Couldn't ${what} — ${done.error.message}`);
 }

@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { matchesTaskFilter } from "./board-filter";
 
 /** A minimal filterable task with empty link lists. */
-function task(fields: { text: string; notes?: string }, extra?: Partial<Parameters<typeof matchesTaskFilter>[0]>) {
+function task(
+  fields: { text: string; notes?: string },
+  extra?: Partial<Parameters<typeof matchesTaskFilter>[0]>,
+) {
   return { issues: [], prs: [], ...fields, ...extra };
 }
 

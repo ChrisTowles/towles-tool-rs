@@ -42,6 +42,7 @@ import {
   InlineNewSlot,
   PendingSlotRow,
   type NewSlotRepo,
+  type NewTaskSubmit,
   type PendingSlot,
 } from "@/components/inline-new-slot";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -68,7 +69,6 @@ import {
   windowColor,
   windowOf,
   type AgWindow,
-  type ClaudeLaunchOptions,
   type FolderData,
   type Overlay,
   type RepoData,
@@ -387,13 +387,7 @@ export function RepoGroup({
   /** Whether this repo's inline new-slot form is open. */
   slotFormOpen: boolean;
   onCancelSlotForm: () => void;
-  onSubmitSlotForm: (input: {
-    goal: string;
-    branch: string;
-    base: string;
-    options: ClaudeLaunchOptions;
-    imagePaths: string[];
-  }) => void;
+  onSubmitSlotForm: (input: NewTaskSubmit) => void;
   /** This repo's in-flight `slot_create` calls — see PendingSlot. */
   pendingSlots: PendingSlot[];
   onRetryPendingSlot: (id: string) => void;
@@ -603,7 +597,7 @@ export function RepoGroup({
           </span>
         </button>
         <IconBtn
-          title={`New slot — goal, branch, base (${shortcutHint("ab-new-slot")})`}
+          title={`New task — goal, issues, branch (${shortcutHint("ab-new-slot")})`}
           onClick={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir, key: repo.key })}
           className="hover:text-violet-500"
         >
@@ -874,7 +868,7 @@ function FolderHeader({
         )}
         {!missing && onNewSlot && (
           <IconBtn
-            title={`New slot — goal, branch, base (${shortcutHint("ab-new-slot")})`}
+            title={`New task — goal, issues, branch (${shortcutHint("ab-new-slot")})`}
             onClick={onNewSlot}
             className="hover:text-violet-500"
           >
