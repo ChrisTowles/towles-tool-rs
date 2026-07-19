@@ -122,6 +122,10 @@ export type BranchCheck = {
 export type SlotSuggestion = {
   branch: string;
   goal: string;
+  /** Set when claude couldn't answer and the fields were filled from a
+   * locally derived slug instead. A note, not an error — the suggestion is
+   * still usable, so it renders muted rather than red. */
+  fallback: string | null;
 };
 
 /** A `slot_create` call that's been fired and is running in the background —
@@ -242,6 +246,10 @@ export function InlineNewSlot({
   const [error, setError] = useState<string | null>(null);
   const [branchCheck, setBranchCheck] = useState<BranchCheck | null>(null);
   const [suggesting, setSuggesting] = useState(false);
+  // Non-blocking note from the last suggestion (claude was unreachable, so
+  // the fields were filled locally) — distinct from `error`, which means
+  // nothing got filled.
+  const [suggestNote, setSuggestNote] = useState<string | null>(null);
   // What the goal/branch fields held right before the last accepted
   // suggestion or picked issue overwrote them — lets "Undo" put them back
   // exactly.
@@ -334,6 +342,7 @@ export function InlineNewSlot({
     if (suggesting || (!goal.trim() && !imagePaths.length)) return;
     setSuggesting(true);
     setError(null);
+    setSuggestNote(null);
     const suggestion = await invoke<SlotSuggestion>("slot_suggest", {
       dir: repo.dir,
       goal,
@@ -344,6 +353,10 @@ export function InlineNewSlot({
         setPreOverwrite({ goal, branchEdit });
         setGoal(s.goal);
         setBranchEdit(s.branch);
+        // The backend already fell back to a locally derived branch/goal, so
+        // the fields are filled — say why claude sat this one out without
+        // making it look like the action failed.
+        if (s.fallback) setSuggestNote(`Filled in without claude — ${s.fallback}`);
       },
       err: (e) => setError(e.message),
     });
@@ -355,6 +368,7 @@ export function InlineNewSlot({
     setGoal(preOverwrite.goal);
     setBranchEdit(preOverwrite.branchEdit);
     setPreOverwrite(null);
+    setSuggestNote(null);
   }
 
   function setIssueAssignedToMe(mine: boolean) {
@@ -785,6 +799,7 @@ export function InlineNewSlot({
         </Select>
       </div>
       {error && <p className="text-[11px] text-red-500">{error}</p>}
+      {!error && suggestNote && <p className="text-[11px] text-muted-foreground">{suggestNote}</p>}
       <div className="flex items-center justify-end gap-2">
         <Button variant="ghost" size="sm" onClick={cancel}>
           Cancel

@@ -73,6 +73,10 @@ pub fn slot_check_branch(root: String, branch: String) -> Result<BranchCheck, St
 pub struct SlotSuggestion {
     pub branch: String,
     pub goal: String,
+    /// `Some(why)` when `claude` couldn't answer and the fields were filled
+    /// from a locally derived slug instead — a note for the user, not an
+    /// error: the suggestion is still usable.
+    pub fallback: Option<String>,
 }
 
 /// Manual "Suggest" button in the new-slot dialog: ask `claude -p` (cwd =
@@ -87,13 +91,32 @@ pub async fn slot_suggest(
     goal: String,
     image_paths: Vec<String>,
 ) -> Result<SlotSuggestion, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let images = image_paths.len();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         tt_slots::suggest(&PathBuf::from(dir), &goal, &image_paths)
     })
     .await
-    .map_err(|e| format!("slot task failed: {e}"))?
-    .map(|s| SlotSuggestion { branch: s.branch, goal: s.goal })
-    .map_err(|e| e.to_string())
+    .map_err(|e| format!("slot task failed: {e}"))?;
+    match result {
+        Ok(s) => {
+            tracing::info!(
+                images,
+                outcome = if s.fallback.is_some() { "fallback" } else { "ok" },
+                reason = s.fallback.as_deref().unwrap_or(""),
+                "slot_suggest"
+            );
+            Ok(SlotSuggestion {
+                branch: s.suggestion.branch,
+                goal: s.suggestion.goal,
+                fallback: s.fallback,
+            })
+        }
+        Err(e) => {
+            let reason = e.to_string();
+            tracing::warn!(images, outcome = "error", reason, "slot_suggest");
+            Err(reason)
+        }
+    }
 }
 
 /// Create the slot for `branch` off `base` (empty base = the primary's
