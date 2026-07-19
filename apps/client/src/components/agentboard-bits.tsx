@@ -113,7 +113,16 @@ export function Glyph({ agent }: { agent: boolean }) {
 /** Status dot mirroring `statusColor`; pulses while busy. A session with no
  * live PTY shows a hollow ring — the record exists but nothing is running.
  * "Look at this" is the row's amber border (`sessionCatchesEye`), not the
- * dot — a resting board stays still. */
+ * dot — a resting board stays still.
+ *
+ * `waiting` renders as a hollow ring rather than a filled disc: a plain
+ * blue circle reads too close to `complete`'s green at a glance (color is
+ * the only cue between them), and can even be mistaken for a `busy` dot
+ * caught mid-`animate-pulse` dip. The ring borrows the same shape language
+ * already used for "not started" — open = paused/pending on you, filled =
+ * something happened — so it's a real non-color cue, not just another hue,
+ * while staying quieter than the row-wide amber `sessionCatchesEye` wash
+ * that already flags a waiting session for real attention. */
 export function Dot({ session }: { session: SessionData }) {
   if (!session.live) {
     return (
@@ -124,6 +133,14 @@ export function Dot({ session }: { session: SessionData }) {
     );
   }
   const st = session.agentState?.status;
+  if (st === "waiting") {
+    return (
+      <span
+        title="agent waiting — needs your input"
+        className="size-2 shrink-0 rounded-full border-[1.5px] border-blue-500 bg-transparent"
+      />
+    );
+  }
   return (
     <span
       title={st ? `agent ${st}` : "shell running, no agent"}
@@ -137,12 +154,20 @@ export function Dot({ session }: { session: SessionData }) {
 }
 
 /** A status-colored micro-dot + count, e.g. "●3", for agent rollups (the rail
- * chip and the nav sidebar). Color always derives from `statusColor` so the
- * buckets can never drift from the `Dot` atom. */
+ * chip and the nav sidebar). Color always derives from `statusColor`, and
+ * `waiting` gets the same hollow-ring shape as the `Dot` atom, so the
+ * buckets can never drift from it. */
 export function DotCount({ status, n }: { status: AgentStatus; n: number }) {
   return (
     <span className="flex items-center gap-1 text-muted-foreground">
-      <span className={cn("size-1.5 rounded-full", statusColor(status))} />
+      <span
+        className={cn(
+          "size-1.5 rounded-full",
+          status === "waiting"
+            ? "border-[1.5px] border-blue-500 bg-transparent"
+            : statusColor(status),
+        )}
+      />
       {n}
     </span>
   );
