@@ -52,6 +52,7 @@ import {
 import { IssueItem, storeGhIssuesList } from "@/lib/data";
 import { errorMessage } from "@/lib/errors";
 import { BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
+import type { BaseBranch } from "@/lib/schemas/slots";
 import { invoke } from "@/lib/tauri";
 import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
@@ -253,7 +254,7 @@ export function InlineNewSlot({
   // grant than "start Claude on a goal" — opting in is per-task, never
   // remembered, so it's always a deliberate choice.
   const [dynamic, setDynamic] = useState(false);
-  const [branches, setBranches] = useState<string[]>([]);
+  const [branches, setBranches] = useState<BaseBranch[]>([]);
   const [baseOpen, setBaseOpen] = useState(false);
   // One slot for whatever the form has to say — an error (nothing happened)
   // or a note (something happened, with a caveat). Modeled as one piece of
@@ -283,7 +284,11 @@ export function InlineNewSlot({
   // pick also seeds the goal/branch fields.
   const [selectedIssues, setSelectedIssues] = useState<IssueItem[]>([]);
 
-  const sortedBranches = [...branches].toSorted((a, b) => a.localeCompare(b));
+  const sortedBranches = [...branches].toSorted((a, b) => a.name.localeCompare(b.name));
+  // What the closed combobox shows: the selected branch's honest label (e.g.
+  // `origin/main` when that's what creation will branch from), falling back
+  // to the raw value before the branch list has loaded.
+  const baseLabel = branches.find((b) => b.name === base)?.label ?? (base || "main");
 
   const branch = branchEdit ?? goalToBranch(goal);
 
@@ -293,7 +298,7 @@ export function InlineNewSlot({
     // so this mainly guards a fast close-then-reopen of the same repo's form
     // against a stale fetch's `.then` landing after a fresh one already has.
     let cancelled = false;
-    void invoke<string[]>(
+    void invoke<BaseBranch[]>(
       "slot_base_branches",
       { root: repo.dir },
       { schema: BaseBranchesSchema },
@@ -302,7 +307,7 @@ export function InlineNewSlot({
       result.match({
         ok: (list) => {
           setBranches(list);
-          setBase(list[0] ?? "main");
+          setBase(list[0]?.name ?? "main");
         },
         err: (e) => showError(e.message),
       });
@@ -763,7 +768,7 @@ export function InlineNewSlot({
               aria-expanded={baseOpen}
               className="min-w-0 justify-start truncate font-mono text-xs font-normal"
             >
-              <span className="truncate">{base || "main"}</span>
+              <span className="truncate">{baseLabel}</span>
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-(--radix-popover-trigger-width) p-0">
@@ -773,15 +778,15 @@ export function InlineNewSlot({
                 <CommandEmpty>No branches found.</CommandEmpty>
                 {sortedBranches.map((b) => (
                   <CommandItem
-                    key={b}
-                    value={b}
+                    key={b.name}
+                    value={b.label}
                     className="min-w-0 truncate font-mono text-xs"
-                    onSelect={(value) => {
-                      setBase(value);
+                    onSelect={() => {
+                      setBase(b.name);
                       setBaseOpen(false);
                     }}
                   >
-                    <span className="truncate">{b}</span>
+                    <span className="truncate">{b.label}</span>
                   </CommandItem>
                 ))}
               </CommandList>

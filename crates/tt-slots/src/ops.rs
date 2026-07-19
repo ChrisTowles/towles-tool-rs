@@ -417,8 +417,23 @@ fn fast_forward_base_if_behind(sr: &SlotRoot, base: &str, warnings: &mut Vec<Str
     }
 }
 
-/// Every local branch, default branch first, the rest sorted.
-pub fn checkout_branches(checkout: &Path) -> Result<Vec<String>> {
+/// One base-branch choice for the new-slot form. `name` is the local branch —
+/// what `create_slot` takes as `base` — and `label` is the ref creation will
+/// *effectively* branch from, which the UI should show instead of `name`.
+/// They differ only for the checkout's checked-out default branch when
+/// `origin/<name>` exists: `create_slot` fetches and fast-forwards that branch
+/// to its origin counterpart before branching (`fast_forward_base_if_behind`),
+/// so a form showing plain `main` there would be underselling what actually
+/// happens.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BaseBranch {
+    pub name: String,
+    pub label: String,
+}
+
+/// Every local branch as a [`BaseBranch`], default branch first, the rest
+/// sorted.
+pub fn checkout_branches(checkout: &Path) -> Result<Vec<BaseBranch>> {
     let default = base_branch(checkout);
     let out = git_checkout(checkout, &["for-each-ref", "refs/heads", "--format=%(refname:short)"])?;
     if !out.ok() {
@@ -432,9 +447,31 @@ pub fn checkout_branches(checkout: &Path) -> Result<Vec<String>> {
         .map(str::to_string)
         .collect();
     rest.sort();
-    let mut branches = vec![default];
-    branches.extend(rest);
+    // Only the default entry can earn an `origin/` label — the fast-forward in
+    // `create_slot` only ever touches the checkout's own checked-out branch.
+    let default_has_origin = git_checkout(
+        checkout,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{default}"),
+        ],
+    )
+    .map(|o| o.ok())
+    .unwrap_or(false);
+    let mut branches = vec![base_branch_choice(&default, true, default_has_origin)];
+    branches.extend(rest.iter().map(|b| base_branch_choice(b, false, false)));
     Ok(branches)
+}
+
+/// Pure labeling rule behind [`checkout_branches`]: the effective base is
+/// `origin/<name>` exactly when this is the default branch and that remote
+/// ref exists.
+fn base_branch_choice(name: &str, is_default: bool, origin_exists: bool) -> BaseBranch {
+    let label =
+        if is_default && origin_exists { format!("origin/{name}") } else { name.to_string() };
+    BaseBranch { name: name.to_string(), label }
 }
 
 /// Validate `branch` as a git ref via `git check-ref-format --branch` — git
@@ -1643,6 +1680,19 @@ mod tests {
         assert_eq!(setup_command(&env(&[]), |_| false), None);
         // declared-but-empty disables setup rather than running junk
         assert_eq!(setup_command(&env(&[(SETUP_ENV_KEY, "  ")]), |_| true), None);
+    }
+
+    #[test]
+    fn base_branch_choice_labels_only_the_default_with_an_origin() {
+        // The default branch with a remote counterpart is what creation
+        // actually branches from post-fetch/fast-forward — say so.
+        let choice = base_branch_choice("main", true, true);
+        assert_eq!(choice, BaseBranch { name: "main".into(), label: "origin/main".into() });
+        // Never-pushed default: plain local branch, plain label.
+        assert_eq!(base_branch_choice("main", true, false).label, "main");
+        // Non-default branches are used as local refs verbatim, even when an
+        // origin counterpart exists — `create_slot` never fast-forwards them.
+        assert_eq!(base_branch_choice("develop", false, false).label, "develop");
     }
 
     #[test]

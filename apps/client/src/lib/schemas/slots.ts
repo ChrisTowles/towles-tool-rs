@@ -13,7 +13,19 @@ export const SlotCreatedSchema = z.object({
   warnings: z.array(z.string()),
 });
 
-export const BaseBranchesSchema = z.array(z.string());
+/** One base choice from `slot_base_branches`: `name` is the local branch the
+ * form submits as the base; `label` is the ref creation will effectively
+ * branch from (`origin/main` for a default branch with a remote counterpart —
+ * `slot_create` fetches and fast-forwards it first), shown instead of `name`
+ * so the form doesn't undersell what actually happens. */
+export const BaseBranchesSchema = z.array(
+  z.object({
+    name: z.string(),
+    label: z.string(),
+  }),
+);
+
+export type BaseBranch = z.infer<typeof BaseBranchesSchema>[number];
 
 /** `slot_write_pasted_images`' result: the absolute path of each staged
  * image, in paste order. These go straight into Claude's opening prompt, so a
