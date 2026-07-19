@@ -14,6 +14,7 @@ import {
   RepoMenu,
   WorktreeBadge,
 } from "@/components/agentboard-bits";
+import { DevServersButton } from "@/components/dev-servers";
 import type { NewSlotRepo } from "@/components/inline-new-slot";
 import {
   fmtElapsed,
@@ -48,6 +49,7 @@ export function WorkingContext({
   repo,
   folder,
   pr,
+  actions,
   onOpenDiff,
   onOpenFiles,
   onNewSession,
@@ -58,6 +60,9 @@ export function WorkingContext({
   repo: RepoData;
   folder: FolderData;
   pr?: PrItem;
+  /** Session lifecycle dispatch — the dev-servers popover launches/focuses
+   * through it. */
+  actions: SessionActions;
   /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: (dir: string) => void;
   /** Opens the folder's files pane in its focused window. */
@@ -93,6 +98,9 @@ export function WorkingContext({
           <span className="min-w-0 flex-1 truncate text-2xl font-semibold leading-tight">
             {folder.name}
           </span>
+          {!missing && folder.hasLaunchConfig && (
+            <DevServersButton folder={folder} actions={actions} />
+          )}
           {!missing && (
             <IconBtn
               title={`New session (${shortcutHint("ab-new-session")})`}

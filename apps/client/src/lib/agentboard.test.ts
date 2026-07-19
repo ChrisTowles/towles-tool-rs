@@ -722,6 +722,7 @@ function folder(overrides: Partial<FolderData>): FolderData {
     sessions: [],
     needs: 0,
     hasPortDrift: false,
+    hasLaunchConfig: false,
     ...overrides,
   };
 }

@@ -30,6 +30,7 @@ import {
   SafeToDeleteBadge,
   WorktreeBadge,
 } from "@/components/agentboard-bits";
+import { DevServersButton } from "@/components/dev-servers";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -524,6 +525,7 @@ export function RepoGroup({
           now={now}
           active={activeFolderDir === folder.dir}
           deleting={deleting}
+          actions={actions}
           onToggle={() => {
             onToggle(repo.key);
             onSelectFolder(folder.dir);
@@ -656,6 +658,7 @@ export function RepoGroup({
                   now={now}
                   active={activeFolderDir === folder.dir}
                   deleting={deleting}
+                  actions={actions}
                   onToggle={() => {
                     onToggle(key);
                     onSelectFolder(folder.dir);
@@ -748,6 +751,7 @@ function FolderHeader({
   active,
   now,
   deleting,
+  actions,
   onToggle,
   onNewSession,
   onNewSlot,
@@ -772,6 +776,9 @@ function FolderHeader({
    * disables the whole row (`pointer-events-none opacity-50`); this just adds
    * the `DeletingBadge` label explaining why. */
   deleting?: boolean;
+  /** Session lifecycle dispatch — the dev-servers popover launches/focuses
+   * through it. */
+  actions: SessionActions;
   onToggle: () => void;
   onNewSession: () => void;
   /** Opens the new-slot modal — set only on a solo slot-convention repo's
@@ -853,6 +860,9 @@ function FolderHeader({
         {collapsed && !missing && <CollapsedLive sessions={folder.sessions} />}
         {needs > 0 && <NeedsBadge n={needs} />}
         {/* No "New session"/"New slot" on a ghost — the directory is gone. */}
+        {!missing && folder.hasLaunchConfig && (
+          <DevServersButton folder={folder} actions={actions} />
+        )}
         {!missing && (
           <IconBtn
             title={`New session (${shortcutHint("ab-new-session")})`}
