@@ -505,6 +505,7 @@ pub fn run() {
             slots::slot_check_branch,
             slots::slot_create,
             slots::slot_remove,
+            slots::slot_stop_port,
             slots::slot_run_setup,
             slots::slot_suggest,
             slots::slot_write_pasted_images,

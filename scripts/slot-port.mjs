@@ -224,15 +224,25 @@ function listeningPids(port) {
 }
 
 /**
+ * A process's group id, or `null` when there isn't a signalable one.
+ *
+ * Rejects a pgid below 2 rather than returning it: `killPort` negates this
+ * value for `process.kill`, where the two smallest inputs aren't process
+ * groups but wildcards — `kill(0)` signals *this* script's own group, and
+ * `kill(-1)` signals *every process the user can signal*. `ps -o pgid=`
+ * really does report 0 (kernel threads do), so this is a guard, not a
+ * formality. Mirrors the same check in `tt_slots::ports::parse_ps_row`.
+ *
  * @param {string} pid
  * @returns {string | null}
  */
 function pgidOf(pid) {
   try {
-    return execFileSync("ps", ["-o", "pgid=", "-p", pid], {
+    const pgid = execFileSync("ps", ["-o", "pgid=", "-p", pid], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
+    return Number(pgid) >= 2 ? pgid : null;
   } catch {
     return null; // process already gone
   }

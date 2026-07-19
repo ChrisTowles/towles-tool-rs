@@ -5543,6 +5543,7 @@ name = "tt-slots"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "libc",
  "png 0.18.1",
  "serde",
  "serde_json",

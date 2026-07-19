@@ -69,4 +69,4 @@ tempfile = "3.14.0"
 # Only for the terminal.rs unit test that spawns a real POSIX session leader
 # (setsid via pre_exec) to exercise kill_session_stragglers end to end.
 [target.'cfg(unix)'.dev-dependencies]
-libc = "0.2"
+libc = { workspace = true }
