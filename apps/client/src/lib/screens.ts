@@ -1,4 +1,5 @@
 import {
+  AppWindow,
   ChartColumn,
   GitPullRequest,
   Gauge,
@@ -15,6 +16,7 @@ export type ScreenId =
   | "cockpit"
   | "board"
   | "agentboard"
+  | "preview"
   | "slack"
   | "doctor"
   | "claude-sessions"
@@ -52,6 +54,23 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     title: "Agentboard",
     icon: TerminalSquare,
     keywords: ["agents", "terminal", "sessions", "shell", "folder", "repos", "rail"],
+    fullBleed: true,
+  },
+  preview: {
+    id: "preview",
+    title: "Preview",
+    icon: AppWindow,
+    keywords: [
+      "browser",
+      "dev server",
+      "localhost",
+      "annotate",
+      "draw",
+      "feedback",
+      "screenshot",
+      "markup",
+      "launch",
+    ],
     fullBleed: true,
   },
   slack: {
@@ -108,7 +127,7 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
 };
 
 export const NAV_SECTIONS: { label: string; screens: ScreenId[] }[] = [
-  { label: "Focus", screens: ["cockpit", "board", "agentboard", "slack"] },
+  { label: "Focus", screens: ["cockpit", "board", "agentboard", "preview", "slack"] },
   { label: "Tools", screens: ["doctor", "claude-sessions", "gh-prs", "mcp"] },
   { label: "App", screens: ["settings"] },
 ];

@@ -60,6 +60,15 @@ tauri-plugin-wdio = { version = "1", optional = true }
 tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 trash = "5.2.6"
 
+# Preview-screen capture (src/preview.rs): webkit2gtk is the same crate/
+# version/feature set wry already links on Linux (additive features, one build
+# graph instance — this adds no second WebKit), cairo-rs reads the snapshot
+# surface's pixels. Both are meaningless off Linux, where `preview_capture`
+# compiles to a stub.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "2.0.1", features = ["v2_40"] }
+cairo-rs = "0.18"
+
 [features]
 wdio = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 
