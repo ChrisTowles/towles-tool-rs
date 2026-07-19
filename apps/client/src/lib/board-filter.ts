@@ -9,7 +9,10 @@ import type { TaskItem } from "@/lib/data";
 /**
  * Does a task match the quick filter? Case-insensitive substring test over
  * the task's text, its notes, its linked issue/PR repos and numbers, and its
- * slot branch. The query is trimmed first, so a whitespace-only query matches
+ * slot repo + branch. The slot repo matters for the swimlane view: it is
+ * often a card's *only* repo identity (bound at submit, before any issue or
+ * PR exists), and typing a repo name must match the cards in that repo's
+ * lane. The query is trimmed first, so a whitespace-only query matches
  * everything.
  */
 export function matchesTaskFilter(
@@ -23,6 +26,7 @@ export function matchesTaskFilter(
     task.notes ?? "",
     ...task.issues.flatMap((l) => [l.repo, `#${l.number}`]),
     ...task.prs.flatMap((l) => [l.repo, `#${l.number}`]),
+    task.slot?.repo ?? "",
     task.slot?.branch ?? "",
   ]
     .join(" ")

@@ -25,7 +25,7 @@ mod quiet_hours;
 mod slack;
 mod slack_socket;
 
-pub use issues::{fetch_importable_issues, fetch_repo_milestones};
+pub use issues::fetch_importable_issues;
 pub use quiet_hours::{should_run_at, should_run_calendar};
 pub use slack::{
     DmFile, DmMessage, SlackDmConfig, SlackFile, SlackUser, dm_channel_id, fetch_dm_history,
@@ -644,12 +644,6 @@ fn write_repo_prs_now(
 pub fn tracked_repo_dirs() -> Vec<PathBuf> {
     let path = tt_agentboard::repos::default_repos_path();
     tt_agentboard::repos::load_repos(&path).into_iter().map(PathBuf::from).collect()
-}
-
-/// `owner/name` for the repo checked out at `dir`, via `gh repo view`. Used to
-/// label a tracked repo dir for the "Import from GitHub" repo picker.
-pub fn resolve_repo_name(dir: &std::path::Path) -> Result<String, String> {
-    gh::repo_name_with_owner(dir)
 }
 
 // ---------------------------------------------------------------------------

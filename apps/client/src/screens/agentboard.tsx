@@ -992,6 +992,15 @@ export function AgentboardScreen() {
   // `slot_create` resolves; a "task only" submit stops after the card.
   async function createSlot(repo: NewSlotRepo, input: NewTaskSubmit & { taskId?: number }) {
     const taskId = input.taskId ?? (await createTaskForSubmit(input));
+    // Bind the repo before any worktree exists. The Board groups tasks into
+    // repo swimlanes, and the repo is known here — at the `+` the user clicked
+    // — so binding it now is what keeps every task out of the "No repo" lane,
+    // including a "task only" submit that never gets a branch or dir.
+    if (taskId !== undefined) {
+      void storeTaskSetSlot(taskId, repo.dir, undefined, {
+        repo: ownerRepoFromOrigin(repo.originUrl),
+      });
+    }
     if (!input.worktree) {
       toast("task added to the board");
       return;

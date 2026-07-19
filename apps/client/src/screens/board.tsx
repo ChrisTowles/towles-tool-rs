@@ -1,15 +1,13 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useMemo, useRef, useState } from "react";
 import {
   CalendarPlus,
-  Download,
+  FolderGit2,
   GripVertical,
   ListTodo,
   MoreHorizontal,
-  Plus,
   Search,
   StickyNote,
 } from "lucide-react";
-import { ImportIssuesPage } from "@/components/import-issues-page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,7 +37,6 @@ import {
 import { cn } from "@/lib/utils";
 import {
   fmtDay,
-  storeAddTask,
   storeAttachTaskIssue,
   storeAttachTaskPr,
   storeClearDone,
@@ -67,9 +64,9 @@ import {
   reorderedPosition,
   TASK_DRAG_TYPE,
 } from "@/lib/kanban-dnd";
-import { dueState, overdueByStatus } from "@/lib/board-metrics";
+import { countByStatus, dueState, overdueByStatus } from "@/lib/board-metrics";
 import { matchesTaskFilter } from "@/lib/board-filter";
-import { parseQuickAdd } from "@/lib/quick-add";
+import { bucketByStatus, byBoardOrder, groupTasksByRepo, NO_REPO_GROUP } from "@/lib/board-groups";
 import { useFocusTarget } from "@/lib/focus-target";
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
@@ -87,20 +84,6 @@ import { useWorkspace } from "@/lib/workspace";
 async function commit(mutation: Promise<Result<unknown, IpcError>>, what: string): Promise<void> {
   const done = await mutation;
   if (done.isErr()) toast.error(`Couldn't ${what} — ${done.error.message}`);
-}
-
-let lastDraftId = 0;
-
-/**
- * A placeholder id for an optimistically-added todo, before the backend
- * assigns the real one. Negative so it can't collide with a real row id, and
- * monotonic rather than `-Date.now()` because two todos added in the same
- * millisecond would otherwise share an id — which surfaces as a duplicate
- * React key and one card silently overwriting the other.
- */
-function nextDraftTaskId(): number {
-  lastDraftId += 1;
-  return -lastDraftId;
 }
 
 /** Optimistic edits (text/notes/due) applied over a snapshot todo until it
@@ -131,11 +114,18 @@ function dueDateToMs(value: string): number | undefined {
 }
 
 /**
- * Board — the cross-repo personal kanban over local todos. Columns are the five
- * task statuses; a card can be promoted to a real GitHub issue (optional link),
- * renamed, given/cleared a due date, or deleted. Read-only over the snapshot
- * with local optimistic overlays for status moves, edits, deletes, and
- * freshly-added todos until the next `store://snapshot` arrives.
+ * Board — the cross-repo kanban for finding and watching work in flight.
+ *
+ * Columns are the five task statuses; rows are automatic per-repo swimlanes
+ * derived from each task's repo binding (see `lib/board-groups.ts`), so a lane
+ * appears and disappears with its work rather than being managed by hand.
+ *
+ * **This screen does not create tasks** — the Agentboard's `+` flow is the only
+ * creator, so a task and the repo it belongs to are established together at
+ * submit. Here a card can be moved, reordered, renamed, given a due date,
+ * linked to issues/PRs, promoted to a GitHub issue, or deleted. Read-only over
+ * the snapshot with local optimistic overlays for moves, edits and deletes
+ * until the next `store://snapshot` arrives.
  */
 export function BoardScreen() {
   const { snapshot } = useStoreSnapshot();
@@ -143,16 +133,12 @@ export function BoardScreen() {
   const now = useNow();
   // Deep-link focus: a promoted-todo / board deep link scrolls the card here.
   const focusRef = useFocusTarget<HTMLDivElement>("board");
-  const draftInputRef = useRef<HTMLInputElement>(null);
   const filterInputRef = useRef<HTMLInputElement>(null);
 
   const [statusOverrides, setStatusOverrides] = useState<Record<number, TaskStatus>>({});
   const [posOverrides, setPosOverrides] = useState<Record<number, PosOverride>>({});
   const [editOverrides, setEditOverrides] = useState<Record<number, TaskEdit>>({});
   const [deletedIds, setDeletedIds] = useState<Set<number>>(() => new Set());
-  const [addedTasks, setAddedTasks] = useState<TaskItem[]>([]);
-  const [draft, setDraft] = useState("");
-  const [importOpen, setImportOpen] = useState(false);
   // Quick filter: case-insensitive substring over each todo's text + repo tag.
   const [filter, setFilter] = useState("");
 
@@ -162,7 +148,6 @@ export function BoardScreen() {
   useShortcuts(
     useMemo(
       () => ({
-        "board-new-todo": () => draftInputRef.current?.focus(),
         "board-filter": () => filterInputRef.current?.focus(),
       }),
       [],
@@ -172,6 +157,9 @@ export function BoardScreen() {
   // The insertion slot the current drag would land in: drives both the column
   // highlight (`dropSlot.status`) and the drop line before `beforeId`.
   const [dropSlot, setDropSlot] = useState<DropSlot | null>(null);
+  // Stable identity so every card shares one `onDragEnd` instead of a fresh
+  // closure per card per render.
+  const clearDropSlot = useCallback(() => setDropSlot(null), []);
 
   // Repos we know about (from collected PRs/issues + already-linked tasks) — the
   // promote-to-issue targets.
@@ -186,32 +174,9 @@ export function BoardScreen() {
     return [...set].toSorted();
   }, [snapshot.prs, snapshot.issues, snapshot.tasks]);
 
-  // `owner/repo#123` for every issue already linked to a task — the import
-  // dialog disables these so re-running it over an overlapping selection is a
-  // visible no-op instead of a silent duplicate.
-  const linkedKeys = useMemo(() => {
-    const set = new Set<string>();
-    for (const t of snapshot.tasks) {
-      for (const l of t.issues) set.add(`${l.repo}#${l.number}`);
-    }
-    return set;
-  }, [snapshot.tasks]);
-
-  // Drop an optimistic quick-add copy once the store snapshot delivers the real
-  // row — matched on the content the add sent, since the store assigns the id.
-  useEffect(() => {
-    setAddedTasks((prev) => {
-      if (prev.length === 0) return prev;
-      const next = prev.filter(
-        (a) => !snapshot.tasks.some((t) => t.text === a.text && t.dueTs === a.dueTs),
-      );
-      return next.length === prev.length ? prev : next;
-    });
-  }, [snapshot.tasks]);
-
   const merged = useMemo(
     () =>
-      [...addedTasks, ...snapshot.tasks]
+      snapshot.tasks
         .filter((t) => !deletedIds.has(t.id))
         .map((t) => {
           const pos = posOverrides[t.id];
@@ -224,7 +189,7 @@ export function BoardScreen() {
             position: pos ? pos.position : t.position,
           };
         }),
-    [snapshot.tasks, addedTasks, editOverrides, statusOverrides, posOverrides, deletedIds],
+    [snapshot.tasks, editOverrides, statusOverrides, posOverrides, deletedIds],
   );
 
   // The cards actually rendered: everything matching the quick filter (an empty
@@ -238,20 +203,22 @@ export function BoardScreen() {
   // state — the header still shows the count and the filter box).
   const isEmpty = merged.length === 0;
 
-  const columns = useMemo(() => {
-    const byStatus: Record<TaskStatus, TaskItem[]> = {
-      backlog: [],
-      next: [],
-      doing: [],
-      review: [],
-      done: [],
-    };
-    for (const t of visible) byStatus[t.status]?.push(t);
-    for (const s of TASK_STATUSES) {
-      byStatus[s].sort((a, b) => a.position - b.position || a.createdAt - b.createdAt);
-    }
-    return byStatus;
-  }, [visible]);
+  // Repo swimlanes. Grouping is automatic — a lane is just "the tasks that
+  // resolved to this repo" — so lanes appear and vanish with the work and
+  // there is nothing to create, name, or clean up. The only bucketing pass:
+  // header totals come from `counts`, and `reorder` sorts the one column it
+  // needs at drop time, so nothing here re-buckets the whole board.
+  const lanes = useMemo(
+    () => groupTasksByRepo(visible).map((g) => ({ ...g, columns: bucketByStatus(g.tasks) })),
+    [visible],
+  );
+
+  // Real repos only — the "No repo" lane is a bucket, not a repo, and must
+  // not inflate the header's repo count.
+  const repoLaneCount = useMemo(() => lanes.filter((l) => l.key !== NO_REPO_GROUP).length, [lanes]);
+
+  // Per-status totals for the sticky header (and the Clear-done gate).
+  const counts = useMemo(() => countByStatus(visible), [visible]);
 
   // Overdue cards per column, for the header's red load pip.
   const overdue = useMemo(() => overdueByStatus(visible, now), [visible, now]);
@@ -271,11 +238,12 @@ export function BoardScreen() {
   // Reorder `id` into `status` just before `beforeId` ("end" = append). Computes
   // a fractional optimistic position from the neighbors so the card sorts into
   // its new slot immediately, and sends the integer slot index to the backend
-  // (which renumbers the column). The backend orders by real positions, so the
-  // insertion index is taken from the currently-displayed column order.
+  // (which renumbers the column). Positions are global per status in the store,
+  // so the column is assembled across every lane — built here, on drop, rather
+  // than kept as a second render-time bucketing of the whole board.
   function reorder(id: number, status: TaskStatus, beforeId: number | "end") {
     if (beforeId === id) return;
-    const col = columns[status].filter((t) => t.id !== id);
+    const col = visible.filter((t) => t.status === status && t.id !== id).toSorted(byBoardOrder);
     const insertAt =
       beforeId === "end"
         ? col.length
@@ -353,50 +321,28 @@ export function BoardScreen() {
     void commit(storeClearDone(), "clear the Done column");
   }
 
-  // Live preview of the quick-add tokens (`@today`/`@tomorrow`/`@YYYY-MM-DD` due
-  // dates, `#owner/repo` repo tag) parsed out of the New-todo draft, so the hint
-  // under the input shows what will be stored before the todo is added.
-  const parsedDraft = useMemo(() => parseQuickAdd(draft, now), [draft, now]);
-
-  function addTask() {
-    const { text, dueTs } = parsedDraft;
-    if (!text) return;
-    setAddedTasks((prev) => [
-      {
-        id: nextDraftTaskId(),
-        text,
-        status: "backlog",
-        position: -1,
-        dueTs,
-        createdAt: Date.now(),
-        issues: [],
-        prs: [],
-      },
-      ...prev,
-    ]);
-    setDraft("");
-    void commit(storeAddTask(text, { dueTs }), "add that task");
-  }
-
-  if (importOpen) {
-    return (
-      <div className="flex h-full min-h-0 flex-col">
-        <ImportIssuesPage onClose={() => setImportOpen(false)} linkedKeys={linkedKeys} />
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2.5">
         <h2 className="text-sm font-medium">Board</h2>
         <span className="text-xs text-muted-foreground">
-          {repos.length} repos · {snapshot.tasks.length} tasks
+          {repoLaneCount} {repoLaneCount === 1 ? "repo" : "repos"} · {snapshot.tasks.length} tasks
         </span>
         {filter.trim() !== "" && hiddenCount > 0 && (
           <span className="text-xs text-muted-foreground">{hiddenCount} hidden</span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
+          {counts.done > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs text-muted-foreground"
+              title="Remove done tasks completed over 7 days ago"
+              onClick={clearDone}
+            >
+              Clear done
+            </Button>
+          )}
           <div className="relative w-44">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -409,41 +355,9 @@ export function BoardScreen() {
               placeholder="Filter…"
               className="h-7 pl-7 text-sm"
               spellCheck={false}
-              aria-label="Filter todos"
+              aria-label="Filter tasks"
             />
           </div>
-          <div className="relative w-56">
-            <Input
-              ref={draftInputRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") addTask();
-              }}
-              placeholder="New task… @tomorrow"
-              className="h-7 w-full text-sm"
-            />
-            {parsedDraft.dueTs !== undefined && (
-              <div className="absolute top-full left-0 z-10 mt-1 flex items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <CalendarPlus aria-hidden className="size-3" />
-                  {fmtDay(parsedDraft.dueTs)}
-                </span>
-              </div>
-            )}
-          </div>
-          <Button variant="ghost" size="icon-sm" aria-label="Add task" onClick={addTask}>
-            <Plus />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1.5 px-2 text-xs"
-            onClick={() => setImportOpen(true)}
-          >
-            <Download className="size-3.5" />
-            Import
-          </Button>
         </div>
       </div>
 
@@ -453,105 +367,141 @@ export function BoardScreen() {
             <ListTodo aria-hidden className="size-8 text-muted-foreground/50" />
             <p className="text-sm font-medium">No tasks yet</p>
             <p className="text-xs text-muted-foreground">
-              Add one with the <span className="font-medium text-foreground">New task…</span> box up
-              top — tag a due date with <span className="font-mono">@tomorrow</span>. Slot-backed
-              tasks appear here when you start one from the Agentboard.
+              Tasks are created on the{" "}
+              <span className="font-medium text-foreground">Agentboard</span> — hit{" "}
+              <span className="font-medium text-foreground">+</span> on a repo to start one. It
+              shows up here, in that repo&apos;s lane, the moment you submit.
             </p>
           </div>
         </div>
       ) : (
         <ScrollArea className="min-h-0 flex-1">
-          <div ref={focusRef} className="grid min-w-[900px] grid-cols-5 gap-3 p-3">
-            {TASK_STATUSES.map((status) => (
-              <div
-                key={status}
-                onDragOver={(e) => {
-                  if (!isTaskDrag(e.dataTransfer.types)) return;
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "move";
-                  // Over the column's empty tail (cards handle their own hover and
-                  // stop propagation), so the card would land at the end.
-                  setDropSlot({ status, beforeId: "end" });
-                }}
-                onDragLeave={(e) => {
-                  // Ignore moves between children of the same column.
-                  if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-                  setDropSlot((cur) => (cur?.status === status ? null : cur));
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setDropSlot(null);
-                  const payload = decodeTaskDrag(e.dataTransfer.getData(TASK_DRAG_TYPE));
-                  if (payload) reorder(payload.id, status, "end");
-                }}
-                className={cn(
-                  "flex flex-col rounded-lg border bg-muted/30",
-                  dropSlot?.status === status &&
-                    "border-violet-500/60 bg-violet-500/5 dark:bg-violet-500/10",
-                )}
-              >
-                <div className="flex items-center justify-between px-2.5 py-2">
-                  <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <div ref={focusRef} className="min-w-[900px] p-3">
+            {/* One status header for the whole board — the columns are shared
+                across every lane, so repeating the labels per lane would be
+                four-fifths noise. Sticky so they stay readable while scrolling
+                a long list of repos. */}
+            <div className="sticky top-0 z-10 grid grid-cols-5 gap-3 bg-background pb-2">
+              {TASK_STATUSES.map((status) => (
+                <div key={status} className="flex items-center justify-between gap-1 px-2.5">
+                  <span className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     {TASK_STATUS_LABEL[status]}
                   </span>
                   <span className="flex items-center gap-1">
-                    {status === "done" && columns.done.length > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-5 px-1.5 text-[10px] uppercase tracking-wide text-muted-foreground"
-                        title="Remove done todos completed over 7 days ago"
-                        onClick={clearDone}
-                      >
-                        Clear done
-                      </Button>
-                    )}
                     {overdue[status] > 0 && (
                       <span
                         title={`${overdue[status]} overdue`}
-                        className="rounded-full border border-transparent bg-red-500/15 px-1.5 font-mono text-[10px] text-red-600 dark:text-red-400"
+                        className="rounded-full bg-red-500/15 px-1.5 font-mono text-[10px] text-red-600 dark:text-red-400"
                       >
                         {overdue[status]} late
                       </span>
                     )}
-                    <span className="rounded-full bg-background px-1.5 font-mono text-[10px] text-muted-foreground">
-                      {columns[status].length}
+                    <span className="rounded-full bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
+                      {counts[status]}
                     </span>
                   </span>
                 </div>
-                <div className="flex flex-col gap-2 p-2 pt-0">
-                  {columns[status].map((task, i) => (
-                    <Fragment key={task.id}>
-                      <DropLine
-                        active={dropSlot?.status === status && dropSlot.beforeId === task.id}
-                      />
-                      <Card
-                        task={task}
-                        now={now}
-                        repos={repos}
-                        openIssues={snapshot.issues}
-                        openPrs={snapshot.prs}
-                        nextId={columns[status][i + 1]?.id ?? null}
-                        onMove={move}
-                        onReorderHover={setDropSlot}
-                        onReorder={reorder}
-                        onPromote={promote}
-                        onAttachIssue={attachIssue}
-                        onDetachIssue={detachIssue}
-                        onAttachPr={attachPr}
-                        onDetachPr={detachPr}
-                        onRename={rename}
-                        onSetDue={setDue}
-                        onSetNotes={setNotes}
-                        onDelete={remove}
-                        onDragEnd={() => setDropSlot(null)}
-                      />
-                    </Fragment>
-                  ))}
-                  <DropLine active={dropSlot?.status === status && dropSlot.beforeId === "end"} />
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
+
+            <div className="flex flex-col gap-4">
+              {lanes.map((lane) => (
+                <section key={lane.key}>
+                  <div className="flex items-center gap-1.5 pb-1.5">
+                    <FolderGit2 aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+                    <span
+                      className={cn(
+                        // `pr-px`: the italic variant's final glyph overhangs
+                        // its content box, and `truncate`'s overflow:hidden
+                        // clips the overhang without ever showing an ellipsis.
+                        "truncate pr-px text-sm font-semibold",
+                        lane.key === NO_REPO_GROUP && "font-normal italic text-muted-foreground",
+                      )}
+                      title={lane.key === NO_REPO_GROUP ? undefined : lane.key}
+                    >
+                      {lane.label}
+                    </span>
+                    <span className="rounded-full bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
+                      {lane.tasks.length}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-5 gap-3">
+                    {TASK_STATUSES.map((status) => (
+                      <div
+                        key={status}
+                        onDragOver={(e) => {
+                          if (!isTaskDrag(e.dataTransfer.types)) return;
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                          // Over a cell's empty tail (cards handle their own
+                          // hover and stop propagation) — append to the column.
+                          // Keep identity when unchanged: dragover fires
+                          // continuously, and a fresh object every event would
+                          // re-render all lanes for the whole drag.
+                          setDropSlot((cur) =>
+                            cur?.status === status && cur.beforeId === "end"
+                              ? cur
+                              : { status, beforeId: "end" },
+                          );
+                        }}
+                        onDragLeave={(e) => {
+                          // Ignore moves between children of the same cell.
+                          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                          setDropSlot((cur) => (cur?.status === status ? null : cur));
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          setDropSlot(null);
+                          const payload = decodeTaskDrag(e.dataTransfer.getData(TASK_DRAG_TYPE));
+                          if (payload) reorder(payload.id, status, "end");
+                        }}
+                        className={cn(
+                          "flex min-h-12 flex-col gap-2 rounded-lg border bg-muted/30 p-2",
+                          // Highlights the status across every lane, because
+                          // that is what a drop actually changes: a card's repo
+                          // comes from its slot/links, so dropping into another
+                          // repo's lane can't move it there.
+                          dropSlot?.status === status &&
+                            "border-violet-500/60 bg-violet-500/5 dark:bg-violet-500/10",
+                        )}
+                      >
+                        {lane.columns[status].map((task, i) => (
+                          <Fragment key={task.id}>
+                            <DropLine
+                              active={dropSlot?.status === status && dropSlot.beforeId === task.id}
+                            />
+                            <Card
+                              task={task}
+                              now={now}
+                              repos={repos}
+                              openIssues={snapshot.issues}
+                              openPrs={snapshot.prs}
+                              nextId={lane.columns[status][i + 1]?.id ?? null}
+                              onMove={move}
+                              onReorderHover={setDropSlot}
+                              onReorder={reorder}
+                              onPromote={promote}
+                              onAttachIssue={attachIssue}
+                              onDetachIssue={detachIssue}
+                              onAttachPr={attachPr}
+                              onDetachPr={detachPr}
+                              onRename={rename}
+                              onSetDue={setDue}
+                              onSetNotes={setNotes}
+                              onDelete={remove}
+                              onDragEnd={clearDropSlot}
+                            />
+                          </Fragment>
+                        ))}
+                        <DropLine
+                          active={dropSlot?.status === status && dropSlot.beforeId === "end"}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
           </div>
         </ScrollArea>
       )}
@@ -879,7 +829,10 @@ function Card({
         </DropdownMenu>
       </div>
 
-      {task.slot && (
+      {/* Only a task that actually has a branch shows this row. A task bound to
+          its repo but never given a worktree ("task only") has no branch, and
+          rendering it here would read as a nameless detached slot. */}
+      {task.slot?.branch && (
         <div
           className={cn(
             "mt-1.5 truncate font-mono text-[11px] text-muted-foreground",

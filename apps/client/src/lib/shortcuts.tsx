@@ -128,12 +128,6 @@ export const SHORTCUTS = defineShortcuts([
   },
   { id: "help", scope: "global", keys: "?", description: "Keyboard shortcuts (this overlay)" },
   {
-    id: "board-new-todo",
-    scope: "board",
-    keys: "n",
-    description: "Focus the new-todo input",
-  },
-  {
     id: "board-filter",
     scope: "board",
     keys: "/",

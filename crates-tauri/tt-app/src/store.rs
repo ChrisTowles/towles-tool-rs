@@ -246,9 +246,12 @@ pub fn store_detach_task_pr(
     Ok(())
 }
 
-/// Bind a task to the worktree slot its work happens in (called by the
-/// new-task flow once `slot_create` resolves), then re-emit the snapshot.
-/// `repo` is the GitHub `owner/name` when known — it enables PR auto-attach.
+/// Bind a task to its repo, and to the worktree slot its work happens in
+/// once one exists, then re-emit the snapshot. The Agentboard's new-task flow
+/// calls this at submit with the repo alone (`branch`/`dir` `None`) so the
+/// task has a Board swimlane immediately, then again once `slot_create`
+/// resolves. `repo` is the GitHub `owner/name` when known — it enables PR
+/// auto-attach.
 #[tauri::command]
 pub fn store_task_set_slot(
     app: AppHandle,
@@ -256,15 +259,15 @@ pub fn store_task_set_slot(
     id: i64,
     repo_root: String,
     repo: Option<String>,
-    branch: String,
+    branch: Option<String>,
     dir: Option<String>,
 ) -> Result<(), String> {
     with_store(&state, |store| {
         store
-            .set_task_slot(id, &repo_root, repo.as_deref(), &branch, dir.as_deref())
+            .set_task_slot(id, &repo_root, repo.as_deref(), branch.as_deref(), dir.as_deref())
             .map_err(|e| format!("set_task_slot failed: {e}"))
     })?;
-    tracing::info!(task_id = id, %branch, "task.slot_bound");
+    tracing::info!(task_id = id, branch = branch.as_deref().unwrap_or(""), "task.slot_bound");
     emit_snapshot(&app, &state);
     Ok(())
 }
@@ -502,133 +505,19 @@ pub async fn store_promote_task_to_issue(
     Ok(())
 }
 
-/// One Agentboard-tracked repo, resolved to its GitHub `owner/name` — an
-/// option in the "Import from GitHub" repo picker.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GhRepoOption {
-    pub dir: String,
-    pub name: String,
-}
-
-/// Tracked repos resolved to their GitHub `owner/name`, for the "Import from
-/// GitHub" dialog's repo picker. A repo that fails to resolve (offline, no
-/// `gh` auth, non-GitHub remote) is silently skipped rather than failing the
-/// whole list. Deduped by `owner/name`, keeping the first dir seen — several
-/// tracked dirs (a primary checkout plus its worktree slots) commonly share
-/// one GitHub identity, and issues belong to the repo, not to a particular
-/// worktree, so the picker should only list it once. Async: each resolution
-/// shells `gh repo view`.
-#[tauri::command]
-pub async fn store_gh_tracked_repos() -> Result<Vec<GhRepoOption>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let resolved = tt_collect::tracked_repo_dirs()
-            .into_iter()
-            .filter_map(|dir| {
-                let name = tt_collect::resolve_repo_name(&dir).ok()?;
-                Some((dir.to_string_lossy().into_owned(), name))
-            })
-            .collect::<Vec<_>>();
-        dedupe_repo_options(resolved)
-    })
-    .await
-    .map_err(|e| format!("gh tracked repos task failed: {e}"))
-}
-
-/// Collapse `(dir, name)` pairs to one [`GhRepoOption`] per `name`, keeping
-/// the first dir seen for each — several tracked dirs (a primary checkout
-/// plus its worktree slots) commonly share one GitHub identity, and an issue
-/// belongs to the repo, not to a particular worktree.
-fn dedupe_repo_options(resolved: Vec<(String, String)>) -> Vec<GhRepoOption> {
-    let mut seen = std::collections::HashSet::new();
-    resolved
-        .into_iter()
-        .filter_map(|(dir, name)| {
-            if !seen.insert(name.clone()) {
-                return None;
-            }
-            Some(GhRepoOption { dir, name })
-        })
-        .collect()
-}
-
-/// Open issues in the repo checked out at `dir`, for the import dialog's
-/// issue picker: `assigned_to_me` toggles `--assignee @me`, `milestone`
-/// optionally scopes to one milestone title. Read-only — no store write.
+/// Open issues in the repo checked out at `dir`, for the new-task flow's
+/// issue picker: `assigned_to_me` toggles `--assignee @me`. Read-only — no
+/// store write.
 #[tauri::command]
 pub async fn store_gh_issues_list(
     dir: String,
     assigned_to_me: bool,
-    milestone: Option<String>,
 ) -> Result<Vec<tt_store::IssueInput>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        tt_collect::fetch_importable_issues(
-            std::path::Path::new(&dir),
-            assigned_to_me,
-            milestone.as_deref(),
-        )
+        tt_collect::fetch_importable_issues(std::path::Path::new(&dir), assigned_to_me)
     })
     .await
     .map_err(|e| format!("gh issues list task failed: {e}"))?
-}
-
-/// Open milestone titles for the repo checked out at `dir`, feeding the
-/// import dialog's milestone filter dropdown.
-#[tauri::command]
-pub async fn store_gh_milestones_list(dir: String) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        tt_collect::fetch_repo_milestones(std::path::Path::new(&dir))
-    })
-    .await
-    .map_err(|e| format!("gh milestones list task failed: {e}"))?
-}
-
-/// One issue selected in the import dialog.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportIssueInput {
-    pub repo: String,
-    pub number: i64,
-    pub title: String,
-    pub url: String,
-}
-
-/// Import selected GitHub issues onto the board as new `backlog` todos linked
-/// to their issue, then re-emit the snapshot. Issues already linked to a todo
-/// (including duplicates within `items` itself) are skipped, so re-running
-/// the import dialog over an overlapping selection is a no-op for the
-/// overlap. Returns how many todos were created.
-#[tauri::command]
-pub fn store_import_issues(
-    app: AppHandle,
-    state: State<StoreState>,
-    items: Vec<ImportIssueInput>,
-) -> Result<usize, String> {
-    let imported = with_store(&state, |store| {
-        let mut linked: std::collections::HashSet<(String, i64)> = store
-            .linked_issue_refs()
-            .map_err(|e| format!("linked_issue_refs failed: {e}"))?
-            .into_iter()
-            .collect();
-        let mut count = 0;
-        for item in &items {
-            let key = (item.repo.clone(), item.number);
-            if linked.contains(&key) {
-                continue;
-            }
-            let task = store
-                .add_task(&item.title, "backlog", None, None, now_ms())
-                .map_err(|e| format!("add_task failed: {e}"))?;
-            store
-                .attach_task_issue(task.id, &item.repo, item.number, &item.url)
-                .map_err(|e| format!("attach_task_issue failed: {e}"))?;
-            linked.insert(key);
-            count += 1;
-        }
-        Ok(count)
-    })?;
-    emit_snapshot(&app, &state);
-    Ok(imported)
 }
 
 /// Create a new GitHub issue directly for the repo checked out at `dir` (no
@@ -900,21 +789,6 @@ mod tests {
     }
 
     #[test]
-    fn dedupe_repo_options_collapses_worktrees_of_the_same_repo() {
-        let resolved = vec![
-            ("/repo-primary".to_string(), "o/r".to_string()),
-            ("/repo-slots/a".to_string(), "o/r".to_string()),
-            ("/repo-slots/b".to_string(), "o/r".to_string()),
-            ("/other".to_string(), "o/other".to_string()),
-        ];
-        let options = dedupe_repo_options(resolved);
-        assert_eq!(options.len(), 2);
-        assert_eq!(options[0].name, "o/r");
-        assert_eq!(options[0].dir, "/repo-primary", "keeps the first dir seen for the name");
-        assert_eq!(options[1].name, "o/other");
-    }
-
-    #[test]
     fn gh_close_reopen_targets_only_fire_on_a_done_crossing() {
         let link = |number: i64, state: &str| tt_store::TaskIssueLink {
             repo: "o/r".to_string(),
@@ -936,57 +810,6 @@ mod tests {
         // A move that never touches done, or a link-less task, is a no-op.
         assert!(gh_close_reopen_targets("backlog", "doing", &[link(7, "open")]).is_empty());
         assert!(gh_close_reopen_targets("backlog", "done", &[]).is_empty());
-    }
-
-    #[test]
-    fn import_issues_skips_already_linked_and_in_batch_duplicates() {
-        let store = Store::open_in_memory().unwrap();
-        let existing = store.add_task("existing", "backlog", None, None, 1).unwrap();
-        store.attach_task_issue(existing.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
-        let state = StoreState::from_option(Some(store));
-
-        let items = vec![
-            ImportIssueInput {
-                repo: "o/r".to_string(),
-                number: 1,
-                title: "already linked".to_string(),
-                url: "https://github.com/o/r/issues/1".to_string(),
-            },
-            ImportIssueInput {
-                repo: "o/r".to_string(),
-                number: 2,
-                title: "fresh".to_string(),
-                url: "https://github.com/o/r/issues/2".to_string(),
-            },
-            ImportIssueInput {
-                repo: "o/r".to_string(),
-                number: 2,
-                title: "fresh (duplicate in batch)".to_string(),
-                url: "https://github.com/o/r/issues/2".to_string(),
-            },
-        ];
-        let imported = with_store(&state, |store| {
-            let mut linked: std::collections::HashSet<(String, i64)> =
-                store.linked_issue_refs().unwrap().into_iter().collect();
-            let mut count = 0;
-            for item in &items {
-                let key = (item.repo.clone(), item.number);
-                if linked.contains(&key) {
-                    continue;
-                }
-                let task = store.add_task(&item.title, "backlog", None, None, now_ms()).unwrap();
-                store.attach_task_issue(task.id, &item.repo, item.number, &item.url).unwrap();
-                linked.insert(key);
-                count += 1;
-            }
-            Ok::<_, String>(count)
-        })
-        .unwrap();
-        assert_eq!(imported, 1);
-
-        let snap = snapshot_of(&state).unwrap();
-        assert_eq!(snap.tasks.len(), 2);
-        assert!(snap.tasks.iter().any(|t| t.text == "fresh" && t.status == "backlog"));
     }
 
     #[test]

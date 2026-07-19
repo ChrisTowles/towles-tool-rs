@@ -231,18 +231,26 @@ pub struct TaskItem {
     pub prs: Vec<TaskPrLink>,
 }
 
-/// A task's slot binding: where its work happens. `repo_root` and `branch`
-/// survive slot removal as historical fact; `dir` is cleared when the
-/// worktree is removed (a "detached" task). `repo` is the GitHub
-/// `owner/name`, used to auto-attach collected PRs whose head branch matches
-/// `branch`.
+/// A task's repo binding, and the slot its work happens in once one exists.
+///
+/// `repo_root` is the only required part: a task created from the Agentboard
+/// knows its repo from the moment of submit, including a "task only" submit
+/// that never creates a worktree. `branch` is therefore `None` until the slot
+/// is created — which is what lets every task land in a repo swimlane on the
+/// Board rather than an "unassigned" bucket.
+///
+/// `repo_root` and `branch` survive slot removal as historical fact; `dir` is
+/// cleared when the worktree is removed (a "detached" task). `repo` is the
+/// GitHub `owner/name`, used to auto-attach collected PRs whose head branch
+/// matches `branch`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskSlot {
     pub repo_root: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
-    pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
 }
@@ -948,20 +956,30 @@ impl Store {
         Ok(())
     }
 
-    /// Bind a task to its worktree slot. `repo` is the GitHub `owner/name`
-    /// when known (enables PR auto-attach); `dir` is the worktree path.
-    /// Returns [`Error::TaskNotFound`] when no task has `id`.
+    /// Bind a task to its repo, and to the worktree slot its work happens in
+    /// once one exists. Called twice in the Agentboard's new-task flow: at
+    /// submit with the repo alone (`branch`/`dir` `None`), then again once
+    /// `slot_create` resolves. A "task only" submit stops after the first.
+    ///
+    /// The optional columns are upserts, never clears: a `None` means "leave
+    /// as is" (`COALESCE`), so a repo-only rebind — e.g. retrying a failed
+    /// `slot_create` on a task whose worktree already exists — can't erase an
+    /// established branch/dir. Clearing `dir` has its own dedicated path
+    /// ([`Store::clear_task_slot_dir`]); nothing legitimately un-sets a
+    /// branch. Returns [`Error::TaskNotFound`] when no task has `id`.
     pub fn set_task_slot(
         &self,
         id: i64,
         repo_root: &str,
         repo: Option<&str>,
-        branch: &str,
+        branch: Option<&str>,
         dir: Option<&str>,
     ) -> Result<()> {
         let affected = self.conn.execute(
-            "UPDATE tasks SET slot_repo_root = ?1, slot_repo = ?2, slot_branch = ?3,
-                              slot_dir = ?4
+            "UPDATE tasks SET slot_repo_root = ?1,
+                              slot_repo = COALESCE(?2, slot_repo),
+                              slot_branch = COALESCE(?3, slot_branch),
+                              slot_dir = COALESCE(?4, slot_dir)
              WHERE id = ?5",
             params![repo_root, repo, branch, dir, id],
         )?;
@@ -1181,12 +1199,6 @@ impl Store {
     /// rollup walks this; the board gets it via [`Store::snapshot`].
     pub fn all_tasks(&self) -> Result<Vec<TaskItem>> {
         self.query_tasks(&format!("SELECT {TASK_COLS} FROM tasks {TASK_ORDER}"), [])
-    }
-
-    /// Distinct `(repo, number)` issue refs linked to any task. Used by
-    /// import-dedup and the collectors' link-state refresh.
-    pub fn linked_issue_refs(&self) -> Result<Vec<(String, i64)>> {
-        self.query_refs("SELECT DISTINCT repo, number FROM task_issues ORDER BY repo, number")
     }
 
     /// Distinct `(repo, number)` PR refs linked to any task.
@@ -1413,12 +1425,15 @@ impl Store {
             let slot_repo: Option<String> = r.get(9)?;
             let slot_branch: Option<String> = r.get(10)?;
             let slot_dir: Option<String> = r.get(11)?;
-            let slot = match (slot_repo_root, slot_branch) {
-                (Some(repo_root), Some(branch)) => {
-                    Some(TaskSlot { repo_root, repo: slot_repo, branch, dir: slot_dir })
-                }
-                _ => None,
-            };
+            // Keyed on `repo_root` alone: a repo-bound task with no worktree
+            // yet still has a slot binding, and dropping it here would hide
+            // the task's repo from the Board's swimlanes.
+            let slot = slot_repo_root.map(|repo_root| TaskSlot {
+                repo_root,
+                repo: slot_repo,
+                branch: slot_branch,
+                dir: slot_dir,
+            });
             Ok(TaskItem {
                 id: r.get(0)?,
                 text: r.get(1)?,
@@ -1606,6 +1621,21 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Raw `task_issues` rows — the observable for delete-cascade tests, now
+    /// that no production API exposes the table's contents directly.
+    fn issue_link_rows(s: &Store) -> Vec<(i64, String, i64)> {
+        let mut stmt = s
+            .conn
+            .prepare("SELECT task_id, repo, number FROM task_issues ORDER BY repo, number")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows
+    }
 
     fn event(ext: &str, start: i64) -> EventInput {
         EventInput {
@@ -1806,7 +1836,6 @@ mod tests {
         s.attach_task_issue(linked.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
         s.attach_task_issue(linked.id, "o/r", 2, "https://github.com/o/r/issues/2").unwrap();
 
-        assert_eq!(s.linked_issue_refs().unwrap().len(), 2);
         let got = s.get_task(linked.id).unwrap().unwrap();
         assert_eq!(got.issues.len(), 2);
         assert_eq!(got.issues[0].state, "open");
@@ -1840,7 +1869,7 @@ mod tests {
             t.id,
             "/repos/x",
             Some("o/x"),
-            "feat/y",
+            Some("feat/y"),
             Some("/repos/x/.claude/worktrees/feat-y"),
         )
         .unwrap();
@@ -1850,19 +1879,27 @@ mod tests {
         let slot = bound.slot.unwrap();
         assert_eq!(slot.repo_root, "/repos/x");
         assert_eq!(slot.repo.as_deref(), Some("o/x"));
-        assert_eq!(slot.branch, "feat/y");
+        assert_eq!(slot.branch.as_deref(), Some("feat/y"));
+
+        // A repo-only rebind (the retry path re-sends the submit-time bind)
+        // upserts: `None` means "leave as is", never "clear".
+        s.set_task_slot(t.id, "/repos/x", None, None, None).unwrap();
+        let rebound = s.get_task(t.id).unwrap().unwrap().slot.unwrap();
+        assert_eq!(rebound.repo.as_deref(), Some("o/x"));
+        assert_eq!(rebound.branch.as_deref(), Some("feat/y"));
+        assert_eq!(rebound.dir.as_deref(), Some("/repos/x/.claude/worktrees/feat-y"));
 
         // Removing the worktree detaches the dir but keeps branch + root.
         let n = s.clear_task_slot_dir("/repos/x/.claude/worktrees/feat-y").unwrap();
         assert_eq!(n, 1);
         assert!(s.task_for_slot_dir("/repos/x/.claude/worktrees/feat-y").unwrap().is_none());
         let after = s.get_task(t.id).unwrap().unwrap().slot.unwrap();
-        assert_eq!(after.branch, "feat/y");
+        assert_eq!(after.branch.as_deref(), Some("feat/y"));
         assert_eq!(after.dir, None);
         // Clearing an unknown dir is a 0-count no-op; unknown task errors.
         assert_eq!(s.clear_task_slot_dir("/nope").unwrap(), 0);
         assert!(matches!(
-            s.set_task_slot(777, "/r", None, "b", None),
+            s.set_task_slot(777, "/r", None, Some("b"), None),
             Err(Error::TaskNotFound(777))
         ));
     }
@@ -1908,7 +1945,7 @@ mod tests {
         };
         let s = Store::open_in_memory().unwrap();
         let t = s.add_task("slot task", "doing", None, None, 1).unwrap();
-        s.set_task_slot(t.id, "/repos/x", Some("o/x"), "feat/y", Some("/w")).unwrap();
+        s.set_task_slot(t.id, "/repos/x", Some("o/x"), Some("feat/y"), Some("/w")).unwrap();
         let other = s.add_task("no slot", "backlog", None, None, 2).unwrap();
 
         s.replace_prs(&[pr("feat/y", 7), pr("other-branch", 8)]).unwrap();
@@ -2695,13 +2732,13 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         let t = s.add_task("wire board", "backlog", None, None, 1).unwrap();
         s.attach_task_issue(t.id, "o/r", 7, "https://github.com/o/r/issues/7").unwrap();
-        s.set_task_slot(t.id, "/repos/r", Some("o/r"), "feat/wire", Some("/w")).unwrap();
+        s.set_task_slot(t.id, "/repos/r", Some("o/r"), Some("feat/wire"), Some("/w")).unwrap();
         let updated = s.update_task(t.id, "wire board v2", Some("note"), None).unwrap();
         assert_eq!(updated.text, "wire board v2");
         // Editing free-form fields must not disturb links or the slot binding.
         assert_eq!(updated.issues.len(), 1);
         assert_eq!(updated.issues[0].number, 7);
-        assert_eq!(updated.slot.unwrap().branch, "feat/wire");
+        assert_eq!(updated.slot.unwrap().branch.as_deref(), Some("feat/wire"));
     }
 
     #[test]
@@ -2727,12 +2764,12 @@ mod tests {
         s.attach_task_issue(b.id, "o/r", 3, "u").unwrap();
 
         s.delete_task(a.id).unwrap();
-        assert_eq!(s.linked_issue_refs().unwrap(), vec![("o/r".to_string(), 3)]);
+        assert_eq!(issue_link_rows(&s), vec![(b.id, "o/r".to_string(), 3)]);
         assert!(s.linked_pr_refs().unwrap().is_empty());
 
         s.set_task_status(b.id, "done", 10).unwrap();
         assert_eq!(s.clear_done_tasks(100).unwrap(), 1);
-        assert!(s.linked_issue_refs().unwrap().is_empty());
+        assert!(issue_link_rows(&s).is_empty());
     }
 
     #[test]
