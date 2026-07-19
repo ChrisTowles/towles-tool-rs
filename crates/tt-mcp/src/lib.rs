@@ -70,12 +70,15 @@ const CALL_LOG_ARGS_MAX: usize = 400;
 /// that mutates the store/journal or shells out to `gh` machine-wide. See the
 /// module doc-comment's "Trust boundary" section for why this exists.
 const MUTATING_TOOLS: &[&str] = &[
-    "todo_create",
-    "todo_update",
-    "todo_delete",
-    "todo_clear_done",
-    "todo_link_issue",
-    "todo_set_status",
+    "task_create",
+    "task_update",
+    "task_delete",
+    "task_clear_done",
+    "task_attach_issue",
+    "task_detach_issue",
+    "task_attach_pr",
+    "task_detach_pr",
+    "task_set_status",
     "journal_append",
     "collect_refresh",
 ];
@@ -361,12 +364,15 @@ impl Dispatcher {
             "calendar_today" => self.calendar_today(now_ms),
             "calendar_next" => self.calendar_next(now_ms),
             "tasks_open" => self.tasks_open(),
-            "todo_create" => self.todo_create(args, now_ms),
-            "todo_update" => self.todo_update(args),
-            "todo_delete" => self.todo_delete(args),
-            "todo_clear_done" => self.todo_clear_done(args, now_ms),
-            "todo_link_issue" => self.todo_link_issue(args),
-            "todo_set_status" => self.todo_set_status(args, now_ms),
+            "task_create" => self.task_create(args, now_ms),
+            "task_update" => self.task_update(args),
+            "task_delete" => self.task_delete(args),
+            "task_clear_done" => self.task_clear_done(args, now_ms),
+            "task_attach_issue" => self.task_attach_issue(args),
+            "task_detach_issue" => self.task_detach_issue(args),
+            "task_attach_pr" => self.task_attach_pr(args),
+            "task_detach_pr" => self.task_detach_pr(args),
+            "task_set_status" => self.task_set_status(args, now_ms),
             "issues_open" => self.issues_open(),
             "prs_status" => self.prs_status(),
             "dm_status" => self.dm_status(),
@@ -411,24 +417,26 @@ impl Dispatcher {
         Ok(json!({ "tasks": tasks }))
     }
 
-    /// Create a kanban todo in the `backlog` column, optionally tagged with a
-    /// repo and free-form notes.
-    fn todo_create(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
+    /// Create a task in the `backlog` column with optional free-form notes.
+    /// Issues/PRs are attached separately (`task_attach_issue` /
+    /// `task_attach_pr`).
+    fn task_create(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
         let title = args
             .get("title")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|title| !title.is_empty())
             .ok_or_else(|| "missing required argument: title".to_string())?;
-        let repo = args.get("repo").and_then(Value::as_str);
         let notes = args.get("notes").and_then(Value::as_str);
-        let todo =
-            self.store.add_task(title, None, repo, notes, now_ms).map_err(|e| e.to_string())?;
-        Ok(json!({ "todo": todo }))
+        let task = self
+            .store
+            .add_task(title, "backlog", None, notes, now_ms)
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "task": task }))
     }
 
-    /// Move a todo to another kanban column; returns the updated todo.
-    fn todo_set_status(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
+    /// Move a task to another kanban column; returns the updated task.
+    fn task_set_status(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
         let id = args
             .get("id")
             .and_then(Value::as_i64)
@@ -444,22 +452,23 @@ impl Dispatcher {
             ));
         }
         if self.store.get_task(id).map_err(|e| e.to_string())?.is_none() {
-            return Err(format!("no todo with id {id}"));
+            return Err(format!("no task with id {id}"));
         }
         self.store.set_task_status(id, status, now_ms).map_err(|e| e.to_string())?;
-        let todo = self
+        let task = self
             .store
             .get_task(id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("no todo with id {id}"))?;
-        Ok(json!({ "todo": todo }))
+            .ok_or_else(|| format!("no task with id {id}"))?;
+        Ok(json!({ "task": task }))
     }
 
-    /// Edit a todo's free-form fields (title/notes/due). This is a full replace
+    /// Edit a task's free-form fields (title/notes/due). This is a full replace
     /// of those fields — omitting `notes` or `dueTs` clears them, matching
-    /// [`tt_store::Store::update_task`]. Status, position, and any issue link are
-    /// left untouched. Returns the updated todo, or an error when no todo has `id`.
-    fn todo_update(&self, args: &Value) -> Result<Value, String> {
+    /// [`tt_store::Store::update_task`]. Status, position, links, and the slot
+    /// binding are left untouched. Returns the updated task, or an error when
+    /// no task has `id`.
+    fn task_update(&self, args: &Value) -> Result<Value, String> {
         let id = args
             .get("id")
             .and_then(Value::as_i64)
@@ -472,12 +481,13 @@ impl Dispatcher {
             .ok_or_else(|| "missing required argument: title".to_string())?;
         let notes = args.get("notes").and_then(Value::as_str);
         let due_ts = args.get("dueTs").and_then(Value::as_i64);
-        let todo = self.store.update_task(id, title, notes, due_ts).map_err(|e| e.to_string())?;
-        Ok(json!({ "todo": todo }))
+        let task = self.store.update_task(id, title, notes, due_ts).map_err(|e| e.to_string())?;
+        Ok(json!({ "task": task }))
     }
 
-    /// Delete a todo permanently; errors when no todo has `id`.
-    fn todo_delete(&self, args: &Value) -> Result<Value, String> {
+    /// Delete a task permanently (its issue/PR links cascade); errors when no
+    /// task has `id`.
+    fn task_delete(&self, args: &Value) -> Result<Value, String> {
         let id = args
             .get("id")
             .and_then(Value::as_i64)
@@ -486,10 +496,10 @@ impl Dispatcher {
         Ok(json!({ "ok": true, "id": id }))
     }
 
-    /// Sweep `done` todos completed more than `olderThanDays` (default 7) before
+    /// Sweep `done` tasks completed more than `olderThanDays` (default 7) before
     /// `now_ms`, returning how many were removed. The cutoff is derived from the
     /// injected `now_ms`, never a clock read in the store.
-    fn todo_clear_done(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
+    fn task_clear_done(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
         let older_than_days = args.get("olderThanDays").and_then(Value::as_i64).unwrap_or(7);
         if older_than_days < 0 {
             return Err("olderThanDays must be zero or positive".to_string());
@@ -499,11 +509,9 @@ impl Dispatcher {
         Ok(json!({ "deleted": deleted }))
     }
 
-    /// Link a todo to a GitHub issue (repo + number + url). `link_task_issue`
-    /// itself is a no-op update on a missing id, so existence is checked first to
-    /// surface a clear error instead of silently succeeding. Returns the updated
-    /// todo with its issue fields set.
-    fn todo_link_issue(&self, args: &Value) -> Result<Value, String> {
+    /// Pull the shared `(id, repo, number)` link-ref arguments used by every
+    /// attach/detach tool.
+    fn link_ref_args(args: &Value) -> Result<(i64, String, i64), String> {
         let id = args
             .get("id")
             .and_then(Value::as_i64)
@@ -518,20 +526,59 @@ impl Dispatcher {
             .get("number")
             .and_then(Value::as_i64)
             .ok_or_else(|| "missing required argument: number".to_string())?;
+        Ok((id, repo.to_string(), number))
+    }
+
+    /// The updated task payload every attach/detach tool returns.
+    fn task_payload(&self, id: i64) -> Result<Value, String> {
+        let task = self
+            .store
+            .get_task(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("no task with id {id}"))?;
+        Ok(json!({ "task": task }))
+    }
+
+    /// Attach a GitHub issue to a task (repo + number + url). A task links
+    /// any number of issues; re-attaching one refreshes its url. Returns the
+    /// updated task with its links.
+    fn task_attach_issue(&self, args: &Value) -> Result<Value, String> {
+        let (id, repo, number) = Self::link_ref_args(args)?;
         let url = args
             .get("url")
             .and_then(Value::as_str)
             .ok_or_else(|| "missing required argument: url".to_string())?;
-        if self.store.get_task(id).map_err(|e| e.to_string())?.is_none() {
-            return Err(format!("no todo with id {id}"));
-        }
-        self.store.link_task_issue(id, repo, number, url).map_err(|e| e.to_string())?;
-        let todo = self
-            .store
-            .get_task(id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("no todo with id {id}"))?;
-        Ok(json!({ "todo": todo }))
+        self.store.attach_task_issue(id, &repo, number, url).map_err(|e| e.to_string())?;
+        self.task_payload(id)
+    }
+
+    /// Detach a GitHub issue from a task; a link that doesn't exist is a
+    /// no-op. Returns the updated task.
+    fn task_detach_issue(&self, args: &Value) -> Result<Value, String> {
+        let (id, repo, number) = Self::link_ref_args(args)?;
+        self.store.detach_task_issue(id, &repo, number).map_err(|e| e.to_string())?;
+        self.task_payload(id)
+    }
+
+    /// Attach a GitHub PR to a task (repo + number + url). PRs opened from
+    /// the task's slot branch attach automatically on collect; this covers
+    /// cross-repo or extra PRs. Returns the updated task.
+    fn task_attach_pr(&self, args: &Value) -> Result<Value, String> {
+        let (id, repo, number) = Self::link_ref_args(args)?;
+        let url = args
+            .get("url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "missing required argument: url".to_string())?;
+        self.store.attach_task_pr(id, &repo, number, url).map_err(|e| e.to_string())?;
+        self.task_payload(id)
+    }
+
+    /// Detach a GitHub PR from a task; a link that doesn't exist is a no-op.
+    /// Returns the updated task.
+    fn task_detach_pr(&self, args: &Value) -> Result<Value, String> {
+        let (id, repo, number) = Self::link_ref_args(args)?;
+        self.store.detach_task_pr(id, &repo, number).map_err(|e| e.to_string())?;
+        self.task_payload(id)
     }
 
     fn issues_open(&self) -> Result<Value, String> {
@@ -798,7 +845,7 @@ fn settings_path_hint() -> String {
 /// The refusal a mutating tool returns while `mcp.mutationsEnabled` is off.
 fn mutations_disabled_message(tool: &str, path_hint: &str) -> String {
     format!(
-        "{tool} is disabled: tt-mcp's mutating tools (todo_*, journal_append, collect_refresh) \
+        "{tool} is disabled: tt-mcp's mutating tools (task_*, journal_append, collect_refresh) \
          are off until you opt in. Set \"mcp\": {{\"mutationsEnabled\": true}} in {path_hint} — \
          tt-mcp deliberately exposes no tool that can change that setting."
     )
@@ -974,6 +1021,22 @@ fn local_date_and_time(now_ms: i64) -> Option<(NaiveDate, String)> {
 /// `tt mcp serve` actually exposes.
 pub fn tool_definitions() -> Value {
     let no_args = || json!({ "type": "object", "properties": {}, "required": [] });
+    // The shared (id, repo, number[, url]) schema behind the four
+    // attach/detach tools; `kind` only flavors the descriptions.
+    let link_ref_schema = |kind: &str, with_url: bool| {
+        let mut properties = json!({
+            "id": { "type": "integer", "description": "The task's id." },
+            "repo": { "type": "string", "description": format!("The {kind}'s repository, as owner/name.") },
+            "number": { "type": "integer", "description": format!("The GitHub {kind} number.") },
+        });
+        let mut required = vec!["id", "repo", "number"];
+        if with_url {
+            properties["url"] =
+                json!({ "type": "string", "description": format!("The {kind}'s URL.") });
+            required.push("url");
+        }
+        json!({ "type": "object", "properties": properties, "required": required })
+    };
     let mut tools = json!([
         {
             "name": "calendar_today",
@@ -991,29 +1054,25 @@ pub fn tool_definitions() -> Value {
             "inputSchema": no_args(),
         },
         {
-            "name": "todo_create",
-            "description": "Create a kanban todo (lands in the backlog column).",
+            "name": "task_create",
+            "description": "Create a task on the board (lands in the backlog column). Attach issues/PRs with task_attach_issue / task_attach_pr.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "title": { "type": "string", "description": "The todo's title." },
-                    "repo": {
-                        "type": "string",
-                        "description": "Repository the todo relates to, as owner/name.",
-                    },
+                    "title": { "type": "string", "description": "The task's title." },
                     "notes": { "type": "string", "description": "Free-form context notes." },
                 },
                 "required": ["title"],
             },
         },
         {
-            "name": "todo_update",
-            "description": "Edit a todo's title, notes, and due date (full replace: omitting notes/dueTs clears them). Status and any issue link are untouched.",
+            "name": "task_update",
+            "description": "Edit a task's title, notes, and due date (full replace: omitting notes/dueTs clears them). Status, links, and the slot binding are untouched.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "integer", "description": "The todo's id." },
-                    "title": { "type": "string", "description": "The todo's title." },
+                    "id": { "type": "integer", "description": "The task's id." },
+                    "title": { "type": "string", "description": "The task's title." },
                     "notes": { "type": "string", "description": "Free-form context notes (omit to clear)." },
                     "dueTs": {
                         "type": "integer",
@@ -1024,54 +1083,60 @@ pub fn tool_definitions() -> Value {
             },
         },
         {
-            "name": "todo_delete",
-            "description": "Delete a kanban todo permanently.",
+            "name": "task_delete",
+            "description": "Delete a task permanently (its issue/PR links go with it).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "integer", "description": "The todo's id." },
+                    "id": { "type": "integer", "description": "The task's id." },
                 },
                 "required": ["id"],
             },
         },
         {
-            "name": "todo_clear_done",
-            "description": "Delete done todos completed more than olderThanDays (default 7) ago.",
+            "name": "task_clear_done",
+            "description": "Delete done tasks completed more than olderThanDays (default 7) ago.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "olderThanDays": {
                         "type": "integer",
-                        "description": "Only sweep todos completed at least this many days ago (default 7).",
+                        "description": "Only sweep tasks completed at least this many days ago (default 7).",
                     },
                 },
             },
         },
         {
-            "name": "todo_link_issue",
-            "description": "Link a todo to a GitHub issue (sets its repo, number, and url).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": { "type": "integer", "description": "The todo's id." },
-                    "repo": { "type": "string", "description": "The issue's repository, as owner/name." },
-                    "number": { "type": "integer", "description": "The GitHub issue number." },
-                    "url": { "type": "string", "description": "The issue's URL." },
-                },
-                "required": ["id", "repo", "number", "url"],
-            },
+            "name": "task_attach_issue",
+            "description": "Attach a GitHub issue to a task (a task links any number of issues).",
+            "inputSchema": link_ref_schema("issue", true),
         },
         {
-            "name": "todo_set_status",
-            "description": "Move a kanban todo to another column.",
+            "name": "task_detach_issue",
+            "description": "Detach a GitHub issue from a task.",
+            "inputSchema": link_ref_schema("issue", false),
+        },
+        {
+            "name": "task_attach_pr",
+            "description": "Attach a GitHub PR to a task. PRs from the task's own slot branch attach automatically on collect; use this for cross-repo or extra PRs.",
+            "inputSchema": link_ref_schema("PR", true),
+        },
+        {
+            "name": "task_detach_pr",
+            "description": "Detach a GitHub PR from a task.",
+            "inputSchema": link_ref_schema("PR", false),
+        },
+        {
+            "name": "task_set_status",
+            "description": "Move a task to another board column.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "integer", "description": "The todo's id." },
+                    "id": { "type": "integer", "description": "The task's id." },
                     "status": {
                         "type": "string",
                         "enum": tt_store::TASK_STATUSES,
-                        "description": "The kanban column to move the todo to.",
+                        "description": "The board column to move the task to.",
                     },
                 },
                 "required": ["id", "status"],
@@ -1215,7 +1280,7 @@ mod tests {
                 NOW,
             )
             .unwrap();
-        store.add_task("open task", Some(NOW + HOUR_MS), None, None, NOW).unwrap();
+        store.add_task("open task", "backlog", Some(NOW + HOUR_MS), None, NOW).unwrap();
         store.replace_issues(&[issue(390, "Refunds double-charge"), issue(391, "a11y")]).unwrap();
         store
             .replace_prs(&[PrInput {
@@ -1336,12 +1401,15 @@ mod tests {
             "calendar_today",
             "calendar_next",
             "tasks_open",
-            "todo_create",
-            "todo_update",
-            "todo_delete",
-            "todo_clear_done",
-            "todo_link_issue",
-            "todo_set_status",
+            "task_create",
+            "task_update",
+            "task_delete",
+            "task_clear_done",
+            "task_attach_issue",
+            "task_detach_issue",
+            "task_attach_pr",
+            "task_detach_pr",
+            "task_set_status",
             "issues_open",
             "prs_status",
             "dm_status",
@@ -1355,7 +1423,7 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "missing tool {expected} in {names:?}");
         }
-        assert_eq!(names.len(), 19);
+        assert_eq!(names.len(), 22);
     }
 
     #[test]
@@ -1421,69 +1489,69 @@ mod tests {
     }
 
     #[test]
-    fn todo_create_lands_in_backlog_with_repo_and_notes() {
+    fn task_create_lands_in_backlog_with_notes() {
         let mut dispatcher = dispatcher();
         let result = call_tool(
             &mut dispatcher,
-            "todo_create",
-            json!({ "title": "port the CLI", "repo": "o/r", "notes": "start with doctor" }),
+            "task_create",
+            json!({ "title": "port the CLI", "notes": "start with doctor" }),
         );
-        assert_eq!(result["todo"]["text"], "port the CLI");
-        assert_eq!(result["todo"]["status"], "backlog");
-        assert_eq!(result["todo"]["repo"], "o/r");
-        assert_eq!(result["todo"]["notes"], "start with doctor");
-        assert_eq!(result["todo"]["createdAt"], NOW);
+        assert_eq!(result["task"]["text"], "port the CLI");
+        assert_eq!(result["task"]["status"], "backlog");
+        assert_eq!(result["task"]["notes"], "start with doctor");
+        assert_eq!(result["task"]["createdAt"], NOW);
+        assert_eq!(result["task"]["issues"], json!([]));
+        assert_eq!(result["task"]["prs"], json!([]));
 
-        // The new todo shows up in the tasks_open read tool.
+        // The new task shows up in the tasks_open read tool.
         let open = call_tool(&mut dispatcher, "tasks_open", json!({}));
         let texts: Vec<&str> =
             open["tasks"].as_array().unwrap().iter().map(|t| t["text"].as_str().unwrap()).collect();
-        assert!(texts.contains(&"port the CLI"), "created todo missing: {texts:?}");
+        assert!(texts.contains(&"port the CLI"), "created task missing: {texts:?}");
     }
 
     #[test]
-    fn todo_create_without_repo_or_notes() {
+    fn task_create_without_notes() {
         let mut dispatcher = dispatcher();
-        let result = call_tool(&mut dispatcher, "todo_create", json!({ "title": "bare" }));
-        assert_eq!(result["todo"]["text"], "bare");
-        assert_eq!(result["todo"]["repo"], Value::Null);
-        assert_eq!(result["todo"]["notes"], Value::Null);
+        let result = call_tool(&mut dispatcher, "task_create", json!({ "title": "bare" }));
+        assert_eq!(result["task"]["text"], "bare");
+        assert_eq!(result["task"]["notes"], Value::Null);
     }
 
     #[test]
-    fn todo_create_requires_title() {
+    fn task_create_requires_title() {
         let mut dispatcher = dispatcher();
-        let message = call_tool_err(&mut dispatcher, "todo_create", json!({}));
+        let message = call_tool_err(&mut dispatcher, "task_create", json!({}));
         assert!(message.contains("title"), "error should name the missing arg: {message}");
-        let message = call_tool_err(&mut dispatcher, "todo_create", json!({ "title": "  " }));
+        let message = call_tool_err(&mut dispatcher, "task_create", json!({ "title": "  " }));
         assert!(message.contains("title"), "blank title should be rejected: {message}");
     }
 
     #[test]
-    fn todo_set_status_moves_and_stamps_done() {
+    fn task_set_status_moves_and_stamps_done() {
         let mut dispatcher = dispatcher();
-        let created = call_tool(&mut dispatcher, "todo_create", json!({ "title": "ship it" }));
-        let id = created["todo"]["id"].as_i64().unwrap();
+        let created = call_tool(&mut dispatcher, "task_create", json!({ "title": "ship it" }));
+        let id = created["task"]["id"].as_i64().unwrap();
 
         let result =
-            call_tool(&mut dispatcher, "todo_set_status", json!({ "id": id, "status": "doing" }));
-        assert_eq!(result["todo"]["status"], "doing");
-        assert_eq!(result["todo"]["completedAt"], Value::Null);
+            call_tool(&mut dispatcher, "task_set_status", json!({ "id": id, "status": "doing" }));
+        assert_eq!(result["task"]["status"], "doing");
+        assert_eq!(result["task"]["completedAt"], Value::Null);
 
         let result =
-            call_tool(&mut dispatcher, "todo_set_status", json!({ "id": id, "status": "done" }));
-        assert_eq!(result["todo"]["status"], "done");
-        assert_eq!(result["todo"]["completedAt"], NOW);
+            call_tool(&mut dispatcher, "task_set_status", json!({ "id": id, "status": "done" }));
+        assert_eq!(result["task"]["status"], "done");
+        assert_eq!(result["task"]["completedAt"], NOW);
     }
 
     #[test]
-    fn todo_set_status_rejects_unknown_status() {
+    fn task_set_status_rejects_unknown_status() {
         let mut dispatcher = dispatcher();
-        let created = call_tool(&mut dispatcher, "todo_create", json!({ "title": "x" }));
-        let id = created["todo"]["id"].as_i64().unwrap();
+        let created = call_tool(&mut dispatcher, "task_create", json!({ "title": "x" }));
+        let id = created["task"]["id"].as_i64().unwrap();
         let message = call_tool_err(
             &mut dispatcher,
-            "todo_set_status",
+            "task_set_status",
             json!({ "id": id, "status": "bogus" }),
         );
         assert!(message.contains("bogus"), "error should echo the bad status: {message}");
@@ -1491,139 +1559,139 @@ mod tests {
     }
 
     #[test]
-    fn todo_set_status_rejects_unknown_id() {
+    fn task_set_status_rejects_unknown_id() {
         let mut dispatcher = dispatcher();
         let message = call_tool_err(
             &mut dispatcher,
-            "todo_set_status",
+            "task_set_status",
             json!({ "id": 9999, "status": "doing" }),
         );
         assert!(message.contains("9999"), "error should name the missing id: {message}");
     }
 
     #[test]
-    fn todo_set_status_requires_id_and_status() {
+    fn task_set_status_requires_id_and_status() {
         let mut dispatcher = dispatcher();
         let message =
-            call_tool_err(&mut dispatcher, "todo_set_status", json!({ "status": "doing" }));
+            call_tool_err(&mut dispatcher, "task_set_status", json!({ "status": "doing" }));
         assert!(message.contains("id"), "error should name the missing arg: {message}");
-        let message = call_tool_err(&mut dispatcher, "todo_set_status", json!({ "id": 1 }));
+        let message = call_tool_err(&mut dispatcher, "task_set_status", json!({ "id": 1 }));
         assert!(message.contains("status"), "error should name the missing arg: {message}");
     }
 
     #[test]
-    fn todo_update_replaces_title_notes_and_due() {
+    fn task_update_replaces_title_notes_and_due() {
         let mut dispatcher = dispatcher();
         let created = call_tool(
             &mut dispatcher,
-            "todo_create",
+            "task_create",
             json!({ "title": "draft", "notes": "old notes" }),
         );
-        let id = created["todo"]["id"].as_i64().unwrap();
+        let id = created["task"]["id"].as_i64().unwrap();
 
         let result = call_tool(
             &mut dispatcher,
-            "todo_update",
+            "task_update",
             json!({ "id": id, "title": "final", "notes": "new notes", "dueTs": NOW + HOUR_MS }),
         );
-        assert_eq!(result["todo"]["text"], "final");
-        assert_eq!(result["todo"]["notes"], "new notes");
-        assert_eq!(result["todo"]["dueTs"], NOW + HOUR_MS);
+        assert_eq!(result["task"]["text"], "final");
+        assert_eq!(result["task"]["notes"], "new notes");
+        assert_eq!(result["task"]["dueTs"], NOW + HOUR_MS);
 
         // Omitting notes/dueTs is a full replace that clears them.
         let cleared =
-            call_tool(&mut dispatcher, "todo_update", json!({ "id": id, "title": "final" }));
-        assert_eq!(cleared["todo"]["notes"], Value::Null);
-        assert_eq!(cleared["todo"]["dueTs"], Value::Null);
+            call_tool(&mut dispatcher, "task_update", json!({ "id": id, "title": "final" }));
+        assert_eq!(cleared["task"]["notes"], Value::Null);
+        assert_eq!(cleared["task"]["dueTs"], Value::Null);
     }
 
     #[test]
-    fn todo_update_rejects_missing_args_and_unknown_id() {
+    fn task_update_rejects_missing_args_and_unknown_id() {
         let mut dispatcher = dispatcher();
-        let message = call_tool_err(&mut dispatcher, "todo_update", json!({ "title": "x" }));
+        let message = call_tool_err(&mut dispatcher, "task_update", json!({ "title": "x" }));
         assert!(message.contains("id"), "error should name the missing arg: {message}");
-        let message = call_tool_err(&mut dispatcher, "todo_update", json!({ "id": 1 }));
+        let message = call_tool_err(&mut dispatcher, "task_update", json!({ "id": 1 }));
         assert!(message.contains("title"), "error should name the missing arg: {message}");
         let message =
-            call_tool_err(&mut dispatcher, "todo_update", json!({ "id": 9999, "title": "x" }));
+            call_tool_err(&mut dispatcher, "task_update", json!({ "id": 9999, "title": "x" }));
         assert!(message.contains("9999"), "error should name the missing id: {message}");
     }
 
     #[test]
-    fn todo_delete_removes_the_todo() {
+    fn task_delete_removes_the_todo() {
         let mut dispatcher = dispatcher();
-        let created = call_tool(&mut dispatcher, "todo_create", json!({ "title": "temp" }));
-        let id = created["todo"]["id"].as_i64().unwrap();
+        let created = call_tool(&mut dispatcher, "task_create", json!({ "title": "temp" }));
+        let id = created["task"]["id"].as_i64().unwrap();
 
-        let result = call_tool(&mut dispatcher, "todo_delete", json!({ "id": id }));
+        let result = call_tool(&mut dispatcher, "task_delete", json!({ "id": id }));
         assert_eq!(result["ok"], true);
         assert_eq!(result["id"], id);
 
         // The todo is gone: set_status on it now errors with its id.
         let message = call_tool_err(
             &mut dispatcher,
-            "todo_set_status",
+            "task_set_status",
             json!({ "id": id, "status": "doing" }),
         );
         assert!(message.contains(&id.to_string()), "deleted id should be gone: {message}");
     }
 
     #[test]
-    fn todo_delete_rejects_missing_and_unknown_id() {
+    fn task_delete_rejects_missing_and_unknown_id() {
         let mut dispatcher = dispatcher();
-        let message = call_tool_err(&mut dispatcher, "todo_delete", json!({}));
+        let message = call_tool_err(&mut dispatcher, "task_delete", json!({}));
         assert!(message.contains("id"), "error should name the missing arg: {message}");
-        let message = call_tool_err(&mut dispatcher, "todo_delete", json!({ "id": 9999 }));
+        let message = call_tool_err(&mut dispatcher, "task_delete", json!({ "id": 9999 }));
         assert!(message.contains("9999"), "error should name the missing id: {message}");
     }
 
     #[test]
-    fn todo_clear_done_sweeps_only_old_done() {
+    fn task_clear_done_sweeps_only_old_done() {
         let mut dispatcher = dispatcher();
-        let old = call_tool(&mut dispatcher, "todo_create", json!({ "title": "old" }));
-        let old_id = old["todo"]["id"].as_i64().unwrap();
-        let recent = call_tool(&mut dispatcher, "todo_create", json!({ "title": "recent" }));
-        let recent_id = recent["todo"]["id"].as_i64().unwrap();
+        let old = call_tool(&mut dispatcher, "task_create", json!({ "title": "old" }));
+        let old_id = old["task"]["id"].as_i64().unwrap();
+        let recent = call_tool(&mut dispatcher, "task_create", json!({ "title": "recent" }));
+        let recent_id = recent["task"]["id"].as_i64().unwrap();
 
         // Complete "old" at NOW and "recent" ten days later.
         call_tool_at(
             &mut dispatcher,
-            "todo_set_status",
+            "task_set_status",
             json!({ "id": old_id, "status": "done" }),
             NOW,
         );
         call_tool_at(
             &mut dispatcher,
-            "todo_set_status",
+            "task_set_status",
             json!({ "id": recent_id, "status": "done" }),
             NOW + 10 * DAY_MS,
         );
 
         // Sweep eight days out with the default 7-day window: only "old" qualifies.
-        let result = call_tool_at(&mut dispatcher, "todo_clear_done", json!({}), NOW + 8 * DAY_MS);
+        let result = call_tool_at(&mut dispatcher, "task_clear_done", json!({}), NOW + 8 * DAY_MS);
         assert_eq!(result["deleted"], 1);
 
         // "old" is gone; "recent" survives (still errors nothing on set_status).
         let message = call_tool_err(
             &mut dispatcher,
-            "todo_set_status",
+            "task_set_status",
             json!({ "id": old_id, "status": "doing" }),
         );
         assert!(message.contains(&old_id.to_string()), "old id should be gone: {message}");
         let survived =
-            call_tool_at(&mut dispatcher, "todo_clear_done", json!({}), NOW + 8 * DAY_MS);
+            call_tool_at(&mut dispatcher, "task_clear_done", json!({}), NOW + 8 * DAY_MS);
         assert_eq!(survived["deleted"], 0);
     }
 
     #[test]
-    fn todo_link_issue_sets_issue_fields() {
+    fn task_attach_and_detach_issue_and_pr_links() {
         let mut dispatcher = dispatcher();
-        let created = call_tool(&mut dispatcher, "todo_create", json!({ "title": "promote me" }));
-        let id = created["todo"]["id"].as_i64().unwrap();
+        let created = call_tool(&mut dispatcher, "task_create", json!({ "title": "promote me" }));
+        let id = created["task"]["id"].as_i64().unwrap();
 
         let result = call_tool(
             &mut dispatcher,
-            "todo_link_issue",
+            "task_attach_issue",
             json!({
                 "id": id,
                 "repo": "o/r",
@@ -1631,25 +1699,46 @@ mod tests {
                 "url": "https://github.com/o/r/issues/42",
             }),
         );
-        assert_eq!(result["todo"]["repo"], "o/r");
-        assert_eq!(result["todo"]["issueNumber"], 42);
-        assert_eq!(result["todo"]["issueUrl"], "https://github.com/o/r/issues/42");
+        assert_eq!(result["task"]["issues"][0]["repo"], "o/r");
+        assert_eq!(result["task"]["issues"][0]["number"], 42);
+        assert_eq!(result["task"]["issues"][0]["url"], "https://github.com/o/r/issues/42");
+        assert_eq!(result["task"]["issues"][0]["state"], "open");
+
+        let result = call_tool(
+            &mut dispatcher,
+            "task_attach_pr",
+            json!({ "id": id, "repo": "o/r", "number": 7, "url": "https://github.com/o/r/pull/7" }),
+        );
+        assert_eq!(result["task"]["prs"][0]["number"], 7);
+
+        let result = call_tool(
+            &mut dispatcher,
+            "task_detach_issue",
+            json!({ "id": id, "repo": "o/r", "number": 42 }),
+        );
+        assert_eq!(result["task"]["issues"], json!([]));
+        let result = call_tool(
+            &mut dispatcher,
+            "task_detach_pr",
+            json!({ "id": id, "repo": "o/r", "number": 7 }),
+        );
+        assert_eq!(result["task"]["prs"], json!([]));
     }
 
     #[test]
-    fn todo_link_issue_rejects_unknown_id_and_missing_args() {
+    fn task_link_issue_rejects_unknown_id_and_missing_args() {
         let mut dispatcher = dispatcher();
         let message = call_tool_err(
             &mut dispatcher,
-            "todo_link_issue",
+            "task_attach_issue",
             json!({ "id": 9999, "repo": "o/r", "number": 1, "url": "u" }),
         );
         assert!(message.contains("9999"), "error should name the missing id: {message}");
 
-        let created = call_tool(&mut dispatcher, "todo_create", json!({ "title": "x" }));
-        let id = created["todo"]["id"].as_i64().unwrap();
+        let created = call_tool(&mut dispatcher, "task_create", json!({ "title": "x" }));
+        let id = created["task"]["id"].as_i64().unwrap();
         let message =
-            call_tool_err(&mut dispatcher, "todo_link_issue", json!({ "id": id, "repo": "o/r" }));
+            call_tool_err(&mut dispatcher, "task_attach_issue", json!({ "id": id, "repo": "o/r" }));
         assert!(message.contains("number"), "error should name the missing arg: {message}");
     }
 
@@ -1793,10 +1882,10 @@ mod tests {
             )
             .unwrap();
         // Todos across columns: two doing, one next, one backlog.
-        let doing_a = store.add_task("doing a", None, None, None, NOW).unwrap();
-        let doing_b = store.add_task("doing b", None, None, None, NOW).unwrap();
-        let next_a = store.add_task("next a", None, None, None, NOW).unwrap();
-        store.add_task("backlog a", None, None, None, NOW).unwrap();
+        let doing_a = store.add_task("doing a", "backlog", None, None, NOW).unwrap();
+        let doing_b = store.add_task("doing b", "backlog", None, None, NOW).unwrap();
+        let next_a = store.add_task("next a", "backlog", None, None, NOW).unwrap();
+        store.add_task("backlog a", "backlog", None, None, NOW).unwrap();
         store.set_task_status(doing_a.id, "doing", NOW).unwrap();
         store.set_task_status(doing_b.id, "doing", NOW).unwrap();
         store.set_task_status(next_a.id, "next", NOW).unwrap();
@@ -1833,7 +1922,7 @@ mod tests {
     fn day_brief_caps_todos_at_the_limit() {
         let store = Store::open_in_memory().unwrap();
         for i in 0..8 {
-            let task = store.add_task(&format!("t{i}"), None, None, None, NOW).unwrap();
+            let task = store.add_task(&format!("t{i}"), "backlog", None, None, NOW).unwrap();
             store.set_task_status(task.id, "doing", NOW).unwrap();
         }
         let mut dispatcher = Dispatcher::new(store);
@@ -2043,12 +2132,12 @@ mod tests {
         // message names the exact tool plus the setting to flip.
         let mut dispatcher = gate_disabled_dispatcher();
         for (tool, args) in [
-            ("todo_create", json!({ "title": "x" })),
-            ("todo_update", json!({ "id": 1, "title": "x" })),
-            ("todo_delete", json!({ "id": 1 })),
-            ("todo_clear_done", json!({})),
-            ("todo_link_issue", json!({ "id": 1, "repo": "o/r", "number": 1, "url": "u" })),
-            ("todo_set_status", json!({ "id": 1, "status": "doing" })),
+            ("task_create", json!({ "title": "x" })),
+            ("task_update", json!({ "id": 1, "title": "x" })),
+            ("task_delete", json!({ "id": 1 })),
+            ("task_clear_done", json!({})),
+            ("task_attach_issue", json!({ "id": 1, "repo": "o/r", "number": 1, "url": "u" })),
+            ("task_set_status", json!({ "id": 1, "status": "doing" })),
             ("journal_append", json!({ "text": "hi" })),
             ("collect_refresh", json!({})),
         ] {
@@ -2088,8 +2177,8 @@ mod tests {
                 mutations_enabled: true,
                 agent_sessions_enabled: false,
             });
-        let result = call_tool(&mut dispatcher, "todo_create", json!({ "title": "ship it" }));
-        assert_eq!(result["todo"]["text"], "ship it");
+        let result = call_tool(&mut dispatcher, "task_create", json!({ "title": "ship it" }));
+        assert_eq!(result["task"]["text"], "ship it");
 
         // agent_sessions stays gated independently of mutations_enabled.
         let message = call_tool_err(&mut dispatcher, "agent_sessions", json!({}));
@@ -2149,14 +2238,14 @@ mod tests {
         let mut dispatcher = Dispatcher::new(seeded_store()).with_settings_path(path.clone());
 
         // No file yet → created with defaults → both gates refuse.
-        let message = call_tool_err(&mut dispatcher, "todo_create", json!({ "title": "x" }));
+        let message = call_tool_err(&mut dispatcher, "task_create", json!({ "title": "x" }));
         assert!(message.contains("mutationsEnabled"), "default-off from disk: {message}");
         assert!(path.exists(), "first load creates the settings file with defaults");
 
         // Flip the flag in the file — the very next call sees it, no restart.
         std::fs::write(&path, r#"{ "mcp": { "mutationsEnabled": true } }"#).unwrap();
-        let result = call_tool(&mut dispatcher, "todo_create", json!({ "title": "ship it" }));
-        assert_eq!(result["todo"]["text"], "ship it");
+        let result = call_tool(&mut dispatcher, "task_create", json!({ "title": "ship it" }));
+        assert_eq!(result["task"]["text"], "ship it");
 
         // agent_sessions is still off in that file.
         let message = call_tool_err(&mut dispatcher, "agent_sessions", json!({}));
@@ -2171,9 +2260,9 @@ mod tests {
         let mut dispatcher = Dispatcher::new(seeded_store()).with_settings_path(path);
 
         // Gated tools refuse with an actionable message, not a raw serde error.
-        let message = call_tool_err(&mut dispatcher, "todo_create", json!({ "title": "x" }));
+        let message = call_tool_err(&mut dispatcher, "task_create", json!({ "title": "x" }));
         assert!(message.contains("failing closed"), "names the posture: {message}");
-        assert!(message.contains("todo_create"), "names the tool: {message}");
+        assert!(message.contains("task_create"), "names the tool: {message}");
         assert!(message.contains("towles-tool.settings.json"), "names the file: {message}");
 
         // Read-only tools never consult the gate and keep working.
@@ -2207,7 +2296,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
-                "params": { "name": "todo_create", "arguments": { "title": "ship it" } },
+                "params": { "name": "task_create", "arguments": { "title": "ship it" } },
             }),
         );
         drive(
@@ -2216,7 +2305,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "tools/call",
-                "params": { "name": "todo_set_status", "arguments": { "id": 9999, "status": "bad" } },
+                "params": { "name": "task_set_status", "arguments": { "id": 9999, "status": "bad" } },
             }),
         );
 
@@ -2225,7 +2314,7 @@ mod tests {
 
         // Newest first: the failing set-status call.
         assert_eq!(calls[0].method, "tools/call");
-        assert_eq!(calls[0].tool.as_deref(), Some("todo_set_status"));
+        assert_eq!(calls[0].tool.as_deref(), Some("task_set_status"));
         assert!(!calls[0].ok);
         assert!(calls[0].error.is_some(), "failed call records an error");
         assert!(calls[0].duration_ms.is_some());
@@ -2233,7 +2322,7 @@ mod tests {
         assert_eq!(calls[0].client.as_deref(), Some("claude-code 2.1"));
 
         // The successful todo_create call, with its compacted args and ts.
-        assert_eq!(calls[1].tool.as_deref(), Some("todo_create"));
+        assert_eq!(calls[1].tool.as_deref(), Some("task_create"));
         assert!(calls[1].ok);
         assert_eq!(calls[1].error, None);
         assert_eq!(calls[1].ts, NOW);
