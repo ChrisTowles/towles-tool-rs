@@ -172,6 +172,13 @@ export type FolderData = {
   hasLaunchConfig: boolean;
 };
 
+/** The one definition of "this folder's working tree measurably changed" —
+ * the diff pane refetches on it. Extend it here, not inline in a component,
+ * so every consumer moves together. */
+export function folderStatsKey(folder: FolderData): string {
+  return `${folder.filesChanged}:${folder.linesAdded}:${folder.linesRemoved}:${folder.commitsAhead}`;
+}
+
 /** One commit ahead of `comparedBase`, with its own line-count diff — not the
  * folder's cumulative `linesAdded`/`linesRemoved`. Mirrors the Rust
  * `CommitStat` (`crates/tt-agentboard/src/git_info.rs`), returned oldest

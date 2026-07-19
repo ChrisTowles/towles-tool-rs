@@ -1,10 +1,19 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { ChevronRight, GitCompare, Pencil, RefreshCw } from "lucide-react";
 import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
 import { MonacoMultiDiff, type ChangedFile } from "@/components/diff-monaco";
 import { ClaudeBadge, IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
 import { Checkbox } from "@/components/ui/checkbox";
-import type { FolderData } from "@/lib/agentboard";
+import { folderStatsKey, type FolderData } from "@/lib/agentboard";
 import { buildDiffTree, type DiffTreeNode } from "@/lib/diff";
 import { ideReadFile, useIdeConnected } from "@/lib/ide";
 import { invoke, isTauri } from "@/lib/tauri";
@@ -36,6 +45,7 @@ const DiffTreeRail = memo(function DiffTreeRail({
   files,
   reviewed,
   dirty,
+  conflict,
   onJump,
   onToggleReviewed,
   onToggleReviewedMany,
@@ -46,6 +56,9 @@ const DiffTreeRail = memo(function DiffTreeRail({
   /** Paths with unsaved edits made right in the diff pane — same signal the
    * Files tab's dirty dot shows, mirrored here per file. */
   dirty: ReadonlySet<string>;
+  /** Paths whose disk content changed under those unsaved edits — resolution
+   * lives in the Monaco pane's banner; this rail just marks which rows. */
+  conflict: ReadonlySet<string>;
   onJump: (path: string) => void;
   /** Toggle one file's reviewed flag. */
   onToggleReviewed: (path: string) => void;
@@ -153,11 +166,18 @@ const DiffTreeRail = memo(function DiffTreeRail({
                 {file?.status ?? ""}
               </span>
               <span className="min-w-0 flex-1 truncate">{node.name}</span>
-              {dirty.has(node.path) && (
+              {conflict.has(node.path) ? (
                 <span
-                  title="Unsaved changes — ⌘S saves"
-                  className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                  title="Changed on disk while you have unsaved edits — resolve in the banner"
+                  className="size-1.5 shrink-0 rounded-full bg-red-500"
                 />
+              ) : (
+                dirty.has(node.path) && (
+                  <span
+                    title="Unsaved changes — autosaves after a pause; ⌘S saves now"
+                    className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                  />
+                )
               )}
               {file && (file.linesAdded > 0 || file.linesRemoved > 0) && (
                 <span className="shrink-0 pr-1 text-[10px]">
@@ -173,6 +193,21 @@ const DiffTreeRail = memo(function DiffTreeRail({
 
   return <ul className="w-56 shrink-0 overflow-y-auto border-r pr-1">{renderNodes(tree, 0)}</ul>;
 });
+
+/** A state setter for a `Set<string>` → a `(path, on)` toggle that only
+ * produces a new Set on an actual transition — shared by the dirty and
+ * conflict mirrors so the flip logic can't drift between them. */
+function flipPathIn(setter: Dispatch<SetStateAction<Set<string>>>) {
+  return (path: string, on: boolean) => {
+    setter((prev) => {
+      if (prev.has(path) === on) return prev;
+      const next = new Set(prev);
+      if (on) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+  };
+}
 
 const UNCOMMITTED_MODE = {
   key: "uncommitted" as const,
@@ -291,15 +326,12 @@ export function DiffPane({
   // MonacoMultiDiff also reports to the IDE bridge (`ideSetDiffDirty`), kept
   // here too so the tree rail can show the same dirty dot the Files tab does.
   const [dirty, setDirty] = useState<Set<string>>(() => new Set());
-  const handleDirtyChange = useCallback((path: string, isDirty: boolean) => {
-    setDirty((prev) => {
-      if (prev.has(path) === isDirty) return prev;
-      const next = new Set(prev);
-      if (isDirty) next.add(path);
-      else next.delete(path);
-      return next;
-    });
-  }, []);
+  // Files whose disk content changed under unsaved pane edits — reported by
+  // MonacoMultiDiff (which owns the resolution banner); mirrored here so the
+  // tree rail can mark the affected rows.
+  const [conflict, setConflict] = useState<Set<string>>(() => new Set());
+  const handleDirtyChange = useMemo(() => flipPathIn(setDirty), []);
+  const handleConflictChange = useMemo(() => flipPathIn(setConflict), []);
 
   const fetchDiff = useCallback(async () => {
     if (!dir) return;
@@ -324,11 +356,17 @@ export function DiffPane({
   useEffect(() => {
     setReviewed(new Set());
     setDirty(new Set());
+    setConflict(new Set());
   }, [dir]);
 
   // Refetch on mount and whenever the working tree measurably changes.
-  const statsKey = folder
-    ? `${folder.filesChanged}:${folder.linesAdded}:${folder.linesRemoved}:${folder.commitsAhead}`
+  const statsKey = folder ? folderStatsKey(folder) : "";
+  // The baseline can only move when a commit lands, the branch is rebased
+  // (commitsBehind snaps to 0 without commitsAhead moving), or the compared
+  // ref changes — the multi-diff refetches its read-only base sides on
+  // this, not on every working-tree stats bump.
+  const baseKey = folder
+    ? `${folder.commitsAhead}:${folder.commitsBehind}:${folder.comparedBase ?? ""}`
     : "";
   useEffect(() => {
     void fetchDiff();
@@ -463,6 +501,7 @@ export function DiffPane({
               files={files}
               reviewed={reviewed}
               dirty={dirty}
+              conflict={conflict}
               onJump={jumpTo}
               onToggleReviewed={toggleReviewed}
               onToggleReviewedMany={toggleReviewedMany}
@@ -474,11 +513,13 @@ export function DiffPane({
                 mode={mode}
                 baseBranch={baseBranch}
                 refreshKey={statsKey}
+                baseKey={baseKey}
                 connected={ideConnected}
                 registerReveal={registerReveal}
                 reviewed={reviewed}
                 onToggleReviewed={toggleReviewed}
                 onDirtyChange={handleDirtyChange}
+                onConflictChange={handleConflictChange}
               />
             </div>
           </>

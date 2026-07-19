@@ -13,7 +13,7 @@ import {
   setMonacoWorkspace,
 } from "@/lib/monaco";
 import { cn } from "@/lib/utils";
-import type { FolderData } from "@/lib/agentboard";
+import { folderStatsKey, type FolderData } from "@/lib/agentboard";
 
 /**
  * The files pane: VS Code's real Explorer view on the left (the workbench
@@ -139,12 +139,12 @@ export function FilesPane({
               </span>
               {dirty && (
                 <span
-                  title="Unsaved changes — ⌘S saves"
+                  title="Unsaved changes — autosaves after a pause; ⌘S saves now"
                   className="size-1.5 shrink-0 rounded-full bg-amber-500"
                 />
               )}
               <span className="shrink-0 text-[10.5px] text-muted-foreground">
-                editable · ⌘S saves
+                editable · autosaves
               </span>
               <IconBtn
                 title={
@@ -253,6 +253,39 @@ export function FolderFilesPane({
   openRequest?: FilesOpenRequest;
 }) {
   const ideConnected = useIdeConnected(folder?.dir);
+
+  // The Explorer's provider has no disk watch (see `lib/monaco-fs.ts`), so a
+  // file an agent creates or deletes never appears on its own. The folder's
+  // git stats (1.5s poll, bumped only on real change) notice exactly that —
+  // refresh the tree when they move. Keyed on the *full* stats: a
+  // count-only key misses membership changes that keep the count, like an
+  // already-modified file being deleted (M→D) or renamed. Line counts also
+  // move on every auto-saved edit, though, so the refresh is throttled — at
+  // most one tree re-enumeration per window, trailing so the last change
+  // always lands. Skipped on mount: the Explorer just enumerated the disk.
+  // This pane only renders for the active folder, so the workspace the
+  // refresh command hits is (at worst briefly) this one.
+  const statsKey = folder ? folderStatsKey(folder) : "";
+  const statsSeen = useRef(false);
+  const lastRefreshAtRef = useRef(0);
+  const pendingRefreshRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => {
+    if (!statsKey) return;
+    if (!statsSeen.current) {
+      statsSeen.current = true;
+      return;
+    }
+    const THROTTLE_MS = 5000;
+    const refresh = () => {
+      lastRefreshAtRef.current = Date.now();
+      void runMonacoCommand("workbench.files.action.refreshFilesExplorer");
+    };
+    clearTimeout(pendingRefreshRef.current);
+    const wait = lastRefreshAtRef.current + THROTTLE_MS - Date.now();
+    if (wait <= 0) refresh();
+    else pendingRefreshRef.current = setTimeout(refresh, wait);
+  }, [statsKey]);
+  useEffect(() => () => clearTimeout(pendingRefreshRef.current), []);
   if (!folder) return <PanePlaceholder label="folder gone" focused={focused} onRemove={onClose} />;
   return (
     <div

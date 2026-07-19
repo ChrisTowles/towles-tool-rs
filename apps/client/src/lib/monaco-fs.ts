@@ -39,8 +39,8 @@ import type { URI } from "@codingame/monaco-vscode-api/vscode/vs/base/common/uri
 import { Disposable } from "@codingame/monaco-vscode-api/vscode/vs/base/common/lifecycle";
 import { invoke } from "@/lib/tauri";
 import { errorMessage } from "@/lib/errors";
+import { ideStat, type FsStat } from "@/lib/ide";
 
-type FsStat = { isDir: boolean; size: number; mtimeMs: number };
 type FsDirEntry = { name: string; isDir: boolean };
 
 function notFound(): FileSystemProviderError {
@@ -96,7 +96,7 @@ class TauriFileSystemProvider
    * "missing" from "present" to honor its options, and an exception is the
    * wrong shape for a question. */
   private async statOrNull(filePath: string): Promise<FsStat | null> {
-    const stat = await invoke<FsStat>("ide_stat", { dir: "/", filePath });
+    const stat = await ideStat("/", filePath);
     return stat.unwrapOr(null);
   }
 

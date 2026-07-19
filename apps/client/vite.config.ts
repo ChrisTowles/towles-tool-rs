@@ -72,6 +72,17 @@ export default defineConfig({
   worker: {
     format: "es",
   },
+  // The main chunk is ~2.4 MB minified and that is accepted, not an
+  // oversight: the monaco-vscode stack must stay one module graph (see the
+  // dedupe note above — splitting it breaks grammar/theme registration),
+  // screens are static imports by design (apps/client/CLAUDE.md's motion
+  // note), and a Tauri webview loads assets from local disk, so the 500 kB
+  // default — a network-delivery heuristic — doesn't apply. The limit is
+  // raised with headroom rather than removed: growth past ~3 MB should
+  // resurface the warning and prompt a fresh look.
+  build: {
+    chunkSizeWarningLimit: 3000,
+  },
   // Prevent Vite from obscuring Rust errors
   clearScreen: false,
   server: {
