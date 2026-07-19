@@ -192,8 +192,9 @@ export type FolderData = {
    * `SessionData.portDrift` up for the rail badge. */
   hasPortDrift: boolean;
   /** True when this checkout has a Claude Desktop `.claude/launch.json` —
-   * gates the dev-servers affordance (`components/dev-servers.tsx`); the
-   * configs themselves are fetched on demand via `launch_configs`. */
+   * gates the rail's dev-servers button and picks the pane-header button's
+   * dimmed/how-to state (`components/dev-servers.tsx`); the configs
+   * themselves are fetched on demand via `launch_configs`. */
   hasLaunchConfig: boolean;
 };
 

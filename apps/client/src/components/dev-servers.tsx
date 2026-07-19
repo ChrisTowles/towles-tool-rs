@@ -12,6 +12,7 @@ import {
   type LaunchConfigStatus,
 } from "@/lib/launch";
 import { openExternalUrl } from "@/lib/open-url";
+import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
 
 /** How often the open popover re-probes ports/panes — long enough to stay
@@ -19,12 +20,14 @@ import { cn } from "@/lib/utils";
  * you watch. */
 const REFRESH_MS = 3000;
 
-/** The dev-servers affordance for a checkout with a Claude Desktop
- * `.claude/launch.json` (callers gate on `folder.hasLaunchConfig`): a
- * folder-header icon button opening a popover of the file's configs. Each
- * row shows a running dot (port probe) and one action — launch into a fresh
- * pane, focus the pane we already launched it in, or an inert "external"
- * chip when something outside the app holds the port. */
+/** The dev-servers affordance for a checkout's Claude Desktop
+ * `.claude/launch.json`: a folder-header icon button opening a popover of
+ * the file's configs. Each row shows a running dot (port probe) and one
+ * action — launch into a fresh pane, focus the pane we already launched it
+ * in, or an inert "external" chip when something outside the app holds the
+ * port. The pane header mounts it for every checkout (dimmed when the file
+ * is absent, with a how-to-enable empty state) so the feature is
+ * discoverable; the dense rail still gates on `folder.hasLaunchConfig`. */
 export function DevServersButton({
   folder,
   actions,
@@ -61,15 +64,25 @@ export function DevServersButton({
     };
   }, [open, folder.dir]);
 
+  const onOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (next) {
+      uiAction("dev_servers.opened", "agentboard", folder.hasLaunchConfig ? "configs" : "howto");
+    }
+  };
+
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <Button
           variant="outline"
           size="icon-xs"
           aria-label="Dev servers"
           title="Dev servers (.claude/launch.json)"
-          className="hover:text-violet-500"
+          className={cn(
+            "hover:text-violet-500",
+            !folder.hasLaunchConfig && "text-muted-foreground/50",
+          )}
           onClick={(e) => e.stopPropagation()}
         >
           <Server className="size-3.5" />
@@ -83,11 +96,16 @@ export function DevServersButton({
           </span>
         </div>
         {error && <p className="px-1 pb-1 text-[12px] text-red-500">{error}</p>}
-        {!error && rows && rows.length === 0 && (
-          <p className="px-1 pb-1 text-[12px] text-muted-foreground">
-            no launchable configurations
-          </p>
-        )}
+        {!error &&
+          rows &&
+          rows.length === 0 &&
+          (folder.hasLaunchConfig ? (
+            <p className="px-1 pb-1 text-[12px] text-muted-foreground">
+              no launchable configurations
+            </p>
+          ) : (
+            <LaunchFileHowTo />
+          ))}
         {!error &&
           rows?.map((cfg) => (
             <ConfigRow
@@ -102,6 +120,40 @@ export function DevServersButton({
           ))}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** Example the empty state shows — the minimal launch.json that makes a
+ * config launchable here (name + runtimeExecutable; port lights the dot). */
+const EXAMPLE_LAUNCH_JSON = `{
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173
+    }
+  ]
+}`;
+
+/** Empty state for a checkout with no `.claude/launch.json` yet: says what
+ * the feature does and shows the file to create — discovery, since the
+ * button now renders for every checkout in the pane header. */
+function LaunchFileHowTo() {
+  return (
+    <div className="px-1 pb-1">
+      <p className="text-[12px] text-muted-foreground">
+        This repo has no <span className="font-mono text-[11px]">.claude/launch.json</span>. Add one
+        to start dev servers from here — each configuration becomes a one-click launch into its own
+        terminal pane, with a running dot from its port.
+      </p>
+      <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 p-2 font-mono text-[11px] leading-snug text-muted-foreground">
+        {EXAMPLE_LAUNCH_JSON}
+      </pre>
+      <p className="mt-1.5 text-[11px] text-muted-foreground/70">
+        Shared with Claude Desktop's dev-server previews — the same file drives both.
+      </p>
+    </div>
   );
 }
 
