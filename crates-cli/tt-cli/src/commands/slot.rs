@@ -133,7 +133,9 @@ fn cmd_hook_remove() -> Result<(), String> {
     let opts = RemoveOpts { root: Some(path.clone()), name, force: false };
     let removed = match ops::remove_slot(&opts, || {}).map_err(|e| e.to_string())? {
         RemoveOutcome::Removed(r) => r,
-        RemoveOutcome::Blocked { name, blocked } => return Err(refusal(&name, &blocked)),
+        RemoveOutcome::Blocked { name, blocked, messages } => {
+            return Err(refusal(&name, &blocked, &messages));
+        }
     };
     for message in &removed.messages {
         eprintln!("tt slot: {message}");
@@ -424,7 +426,9 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
     let opts = RemoveOpts { root: root.map(Path::to_path_buf), name: name.to_string(), force };
     let removed = match ops::remove_slot(&opts, || {}).map_err(|e| e.to_string())? {
         RemoveOutcome::Removed(r) => r,
-        RemoveOutcome::Blocked { name, blocked } => return Err(refusal(&name, &blocked)),
+        RemoveOutcome::Blocked { name, blocked, messages } => {
+            return Err(refusal(&name, &blocked, &messages));
+        }
     };
     for message in &removed.messages {
         ui::warning(message);
@@ -450,8 +454,15 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
 /// wrong but not what to do next, which is the difference between a dead end
 /// and a decision. Sole owner of this text — `RemoveOutcome::Blocked` carries
 /// typed reasons precisely so each shell can format them its own way.
-fn refusal(name: &str, blocked: &[tt_slots::RmBlocked]) -> String {
+/// `messages` carries caveats gathered before the verdict — chiefly a failed
+/// `fetch --prune`, which means the guards judged against stale `origin/*`
+/// refs. Printed above the reasons rather than dropped: a refusal that might
+/// be an artifact of being offline reads exactly like a real one otherwise.
+fn refusal(name: &str, blocked: &[tt_slots::RmBlocked], messages: &[String]) -> String {
     let mut out = format!("refused to remove {name}:");
+    for note in messages {
+        out.push_str(&format!("\n  note: {note}"));
+    }
     for reason in blocked {
         out.push_str(&format!("\n  {reason}\n    → {}", reason.remedy()));
     }
