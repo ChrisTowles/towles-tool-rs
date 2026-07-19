@@ -53,5 +53,10 @@ export const SlotRemoveOutcomeSchema = z.discriminatedUnion("status", [
     status: z.literal("blocked"),
     name: z.string(),
     blockers: z.array(SlotBlockerSchema),
+    /** Caveats gathered before the verdict — in practice a failed
+     * `fetch --prune`, meaning the guards judged against stale `origin/*`.
+     * Rendered above the blockers so an offline refusal doesn't read as an
+     * authoritative one. */
+    messages: z.array(z.string()),
   }),
 ]);

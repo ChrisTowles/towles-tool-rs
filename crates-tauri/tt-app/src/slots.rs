@@ -247,6 +247,13 @@ pub enum SlotRemoveOutcome {
     Blocked {
         name: String,
         blockers: Vec<Blocker>,
+        /// Caveats gathered before the verdict — carried for the same reason
+        /// `Removed` carries them. A refusal computed against stale refs (the
+        /// pre-flight `fetch --prune` failed) must not look identical to one
+        /// computed online: "commits unreachable from any branch/remote" can
+        /// be an artifact of the staleness rather than a fact about the
+        /// branch.
+        messages: Vec<String>,
     },
 }
 
@@ -390,10 +397,12 @@ async fn slot_remove_inner(
     // below applies — the panes stay put for the user to retry from.
     let removed = match outcome {
         ops::RemoveOutcome::Removed(removed) => removed,
-        ops::RemoveOutcome::Blocked { name, blocked } => {
+        ops::RemoveOutcome::Blocked { name, blocked, messages: notes } => {
+            messages.extend(notes);
             return Ok(SlotRemoveOutcome::Blocked {
                 name,
                 blockers: blocked.iter().map(Blocker::from).collect(),
+                messages,
             });
         }
     };

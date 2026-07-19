@@ -1105,6 +1105,15 @@ pub enum RemoveOutcome {
     Blocked {
         name: String,
         blocked: Vec<RmBlocked>,
+        /// Caveats gathered before the verdict — carried here for the same
+        /// reason `Removed` carries them. A refusal computed against stale
+        /// refs (the `fetch --prune` failed, so `origin/*` is whatever was
+        /// last seen) is exactly the case a user must be told about: the
+        /// blockers are reported as fact, and "unreachable from any
+        /// branch/remote" can be an artifact of the staleness rather than a
+        /// property of the branch. Dropping these left the offline verdict
+        /// indistinguishable from an online one.
+        messages: Vec<String>,
     },
 }
 
@@ -1207,7 +1216,7 @@ pub fn remove_slot(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
     let blocked = crate::guards::check_removal(dirty, unreachable, &foreign);
     if !blocked.is_empty() {
         if !opts.force {
-            return Ok(RemoveOutcome::Blocked { name, blocked });
+            return Ok(RemoveOutcome::Blocked { name, blocked, messages });
         }
         for reason in &blocked {
             messages.push(format!("skipping guard (--force): {reason}"));

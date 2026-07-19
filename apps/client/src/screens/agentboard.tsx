@@ -1390,7 +1390,13 @@ export function AgentboardScreen() {
         // Refused, not failed: hand the reasons to the dialog that can act on
         // them rather than a toast that can only be dismissed.
         if (outcome.status === "blocked") {
-          if (current) setBlockedDelete({ target, name: outcome.name, blockers: outcome.blockers });
+          if (current)
+            setBlockedDelete({
+              target,
+              name: outcome.name,
+              blockers: outcome.blockers,
+              messages: outcome.messages,
+            });
           return;
         }
         endDeleteFlow(dir);
@@ -2363,6 +2369,18 @@ export function AgentboardScreen() {
               anyway.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {/* Caveats about how the verdict itself was reached — chiefly a
+              failed fetch, meaning these blockers were judged against stale
+              refs. Above the list because it qualifies every row below it. */}
+          {blockedDelete && blockedDelete.messages.length > 0 && (
+            <ul className="flex flex-col gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2">
+              {blockedDelete.messages.map((message) => (
+                <li key={message} className="text-[11.5px] text-amber-600 dark:text-amber-400">
+                  {message}
+                </li>
+              ))}
+            </ul>
+          )}
           <ul className="flex flex-col gap-3">
             {blockedDelete?.blockers.map((blocker, i) => {
               const port = stoppablePort(blocker);

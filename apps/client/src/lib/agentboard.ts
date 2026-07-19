@@ -150,7 +150,7 @@ export type FolderData = {
    * commit on this branch has landed there — even after a rebase/squash
    * merge gave the landed commits new SHAs, which `commitsAhead` can never
    * see past (it stays nonzero forever in that case). See
-   * `folderSafeToDelete`. */
+   * `folderHoldsNoWork`. */
   commitsUnlanded: number;
   /** How this branch's work reached `comparedBase` — `"merged"` (a merge
    * commit), `"rebase-merged"` or `"squash-merged"` — and `null` while it
@@ -866,10 +866,40 @@ export function prForFolder(
  * safe to delete while never having landed, and a branch whose remote was
  * deleted (`"upstream gone"`) reports landed on the weakest possible evidence
  * while its commits are still counted as outstanding — so requiring `landed`
- * here would be both too strict and too loose. Call sites that want "finished
- * *and* nothing would be lost" combine this with `folderLanded`. */
-export function folderSafeToDelete(folder: Pick<FolderData, "dirty" | "commitsUnlanded">): boolean {
+ * here would be both too strict and too loose.
+ *
+ * This is *not* the badge gate — it is one half of it. The affirmative
+ * "safe to delete" claim additionally requires a merged PR; see
+ * {@link folderSafeToDelete}. */
+export function folderHoldsNoWork(folder: Pick<FolderData, "dirty" | "commitsUnlanded">): boolean {
   return !folder.dirty && folder.commitsUnlanded === 0;
+}
+
+/** Whether this checkout may be shown as **safe to delete**: its PR merged,
+ * and nothing here would be lost.
+ *
+ * Both halves are required, and a folder with **no merged PR is never safe to
+ * delete** no matter what git says. Git can prove a branch's *content* reached
+ * the base, but it cannot tell "this work landed" apart from "this work was
+ * abandoned" — a branch deleted unmerged, or reset away, leaves the same trace
+ * as one that shipped. A merged PR is the durable external fact that closes
+ * that gap, so the affirmative claim rests on it.
+ *
+ * The cost is deliberate: a PR-less scratch slot never earns the badge, even
+ * when git can see it is clean. That is fail-safe — deletion is still offered
+ * through the guarded modal — and it is the direction chosen over the looser
+ * git-only gate that shipped in #371.
+ *
+ * Note this is *stricter* than `tt slot rm`'s own guard
+ * (`crates/tt-slots/src/guards.rs`), which blocks only on a dirty tree or
+ * commits reachable from no branch/remote. Absence of this badge therefore
+ * says nothing about whether removal would be refused — the guard remains the
+ * last line of defense either way. */
+export function folderSafeToDelete(
+  folder: Pick<FolderData, "dirty" | "commitsUnlanded">,
+  pr: Pick<PrItem, "state"> | undefined,
+): boolean {
+  return pr?.state === "merged" && folderHoldsNoWork(folder);
 }
 
 /** True when this branch's work reached the base branch — proven either by
@@ -959,17 +989,22 @@ export function stoppablePort(blocker: SlotBlocker): number | null {
 /** True when a branch having landed doesn't actually make its checkout safe to
  * delete: the work reached the base (`folderLanded` — a merged PR, or git's
  * own proof), but the checkout still has uncommitted changes or commits that
- * haven't landed yet (`!folderSafeToDelete`).
+ * haven't landed yet (`!folderHoldsNoWork`).
  *
  * This is the "squash-merged, but 2 uncommitted files" case, and it is exactly
  * where a merged badge would otherwise lie. Replaces the old PR-only check:
  * that one couldn't warn about a slot whose branch merged locally, which is
- * the same data-loss risk with no GitHub row to notice it. */
+ * the same data-loss risk with no GitHub row to notice it.
+ *
+ * Pairs with `folderHoldsNoWork`, not `folderSafeToDelete`: this warns that
+ * finished-looking work is still held, which is true whether or not a PR
+ * merged. Gating it on a merged PR would silence the warning for exactly the
+ * locally-merged branch it was added to cover. */
 export function folderLandedButHasWork(
   folder: Pick<FolderData, "dirty" | "commitsUnlanded" | "landed">,
   pr: Pick<PrItem, "state"> | undefined,
 ): boolean {
-  return folderLanded(folder, pr) && !folderSafeToDelete(folder);
+  return folderLanded(folder, pr) && !folderHoldsNoWork(folder);
 }
 
 /** A per-folder actionable signal: the checkout is safe to clean up, has
@@ -988,14 +1023,14 @@ export type ActionableItem = {
 };
 
 /** Every actionable signal that applies to one folder — the same gates the
- * rail's badges use (`folderLanded` + `folderSafeToDelete`, `folder.needs > 0`,
+ * rail's badges use (`folderSafeToDelete`, `folder.needs > 0`,
  * `folderPortDrift`). `pr` is the folder's already-resolved PR (see
  * `prForFolder`), not looked up again here.
  *
- * The safe-to-delete subtitle names whichever evidence is strongest: a merged
- * PR when there is one, otherwise how git saw the branch land. A slot with no
- * PR at all used to produce no signal here even when git could prove it was
- * finished. */
+ * The safe-to-delete signal requires a merged PR, so its subtitle always names
+ * one, and adds git's own account of the landing when it has one — the PR says
+ * the work was accepted, `landed` says the content is actually in this
+ * checkout's base. */
 export function folderActionableItems(
   folder: Pick<
     FolderData,
@@ -1006,12 +1041,14 @@ export function folderActionableItems(
   const items: ActionableItem[] = [];
 
   const merged = pr?.state === "merged" ? pr : undefined;
-  const how = merged ? `PR #${merged.number} merged` : folder.landed;
-  if (how && folder.isWorktree && folderSafeToDelete(folder)) {
+  if (merged && folder.isWorktree && folderSafeToDelete(folder, pr)) {
+    const how = folder.landed
+      ? `PR #${merged.number} merged, ${folder.landed} into ${comparedBaseLabel(folder)}`
+      : `PR #${merged.number} merged`;
     items.push({
       kind: "safe-to-delete",
-      subtitle: `${how}, no uncommitted changes, every commit landed on ${comparedBaseLabel(folder)}`,
-      ...(merged ? { pr: { number: merged.number, url: merged.url } } : {}),
+      subtitle: `${how}, no uncommitted changes, every commit landed`,
+      pr: { number: merged.number, url: merged.url },
     });
   }
 
@@ -1733,7 +1770,14 @@ export type RemoveTarget = { label: string; dirs: string[]; sessionIds: string[]
  * `target` so every remedy in the dialog (stop the port's process, force)
  * retries the same removal — the user shouldn't have to find the row again
  * after resolving what blocked it. */
-export type BlockedDelete = { target: RemoveTarget; name: string; blockers: SlotBlocker[] };
+export type BlockedDelete = {
+  target: RemoveTarget;
+  name: string;
+  blockers: SlotBlocker[];
+  /** Caveats about how the verdict was reached (a failed fetch → stale refs),
+   * carried through so the dialog can qualify the blockers it lists. */
+  messages: string[];
+};
 
 /** A session about to get Claude launched in it, awaiting the "what are you
  * working toward?" prompt (see `commitStartClaude`). `restart` runs the

@@ -20,6 +20,7 @@ import {
   forceDeleteLabel,
   stoppablePort,
   type SlotBlocker,
+  folderHoldsNoWork,
   folderSafeToDelete,
   hydrateWins,
   isDiffPane,
@@ -170,28 +171,28 @@ describe("prForFolder", () => {
   });
 });
 
-describe("folderSafeToDelete", () => {
+describe("folderHoldsNoWork", () => {
   it("is true for a clean folder with nothing unlanded", () => {
-    expect(folderSafeToDelete(folder({}))).toBe(true);
+    expect(folderHoldsNoWork(folder({}))).toBe(true);
   });
 
   it("is false for a dirty working tree", () => {
-    expect(folderSafeToDelete(folder({ dirty: true }))).toBe(false);
+    expect(folderHoldsNoWork(folder({ dirty: true }))).toBe(false);
   });
 
   it("is false with commits that haven't landed on comparedBase yet", () => {
-    expect(folderSafeToDelete(folder({ commitsUnlanded: 1 }))).toBe(false);
+    expect(folderHoldsNoWork(folder({ commitsUnlanded: 1 }))).toBe(false);
   });
 
   it("stays true despite a nonzero commitsAhead — that's just SHA reachability, not unlanded work", () => {
     // The rebase/squash-merge case: commitsAhead never reaches 0, but
     // commitsUnlanded (patch-equivalence) does once the content has landed.
-    expect(folderSafeToDelete(folder({ commitsAhead: 2, commitsUnlanded: 0 }))).toBe(true);
+    expect(folderHoldsNoWork(folder({ commitsAhead: 2, commitsUnlanded: 0 }))).toBe(true);
   });
 
   it("is true for a squash-merged branch with a clean tree", () => {
     expect(
-      folderSafeToDelete(
+      folderHoldsNoWork(
         folder({ landed: "squash-merged", commitsAhead: 3, commitsUnlanded: 0, dirty: false }),
       ),
     ).toBe(true);
@@ -201,21 +202,59 @@ describe("folderSafeToDelete", () => {
     // The two axes are independent: the commits are all on the base, but the
     // working tree still holds files that exist nowhere else.
     expect(
-      folderSafeToDelete(folder({ landed: "squash-merged", commitsUnlanded: 0, dirty: true })),
+      folderHoldsNoWork(folder({ landed: "squash-merged", commitsUnlanded: 0, dirty: true })),
     ).toBe(false);
   });
 
   it("is false for a branch squash-merged and then committed to again", () => {
     // commitsUnlanded counts only the commits made after the squash.
-    expect(folderSafeToDelete(folder({ landed: null, commitsAhead: 3, commitsUnlanded: 1 }))).toBe(
+    expect(folderHoldsNoWork(folder({ landed: null, commitsAhead: 3, commitsUnlanded: 1 }))).toBe(
       false,
     );
   });
 
   it("ignores landed itself — 'upstream gone' is not proof the commits are anywhere", () => {
     expect(
-      folderSafeToDelete(folder({ landed: "upstream gone", commitsAhead: 2, commitsUnlanded: 2 })),
+      folderHoldsNoWork(folder({ landed: "upstream gone", commitsAhead: 2, commitsUnlanded: 2 })),
     ).toBe(false);
+  });
+});
+
+describe("folderSafeToDelete", () => {
+  it("is true for a merged PR over a checkout holding nothing", () => {
+    expect(folderSafeToDelete(folder({ landed: "squash-merged" }), pr({ state: "merged" }))).toBe(
+      true,
+    );
+  });
+
+  it("is false with no PR at all, even when git proves the branch landed", () => {
+    // The rule: git can prove content reached the base, but not that the work
+    // was accepted rather than abandoned. No PR, no affirmative claim.
+    expect(folderSafeToDelete(folder({ landed: "squash-merged" }), undefined)).toBe(false);
+  });
+
+  it("is false for a clean checkout with no PR — the PR-less scratch slot", () => {
+    expect(folderSafeToDelete(folder({}), undefined)).toBe(false);
+  });
+
+  it("is false while the PR is still open", () => {
+    expect(folderSafeToDelete(folder({ landed: "squash-merged" }), pr({ state: "open" }))).toBe(
+      false,
+    );
+  });
+
+  it("is false for a closed-unmerged PR — that's abandoned work, not landed work", () => {
+    // The case the badge must never fire on: closed-without-merge means the
+    // branch may hold the only copy.
+    expect(folderSafeToDelete(folder({}), pr({ state: "closed" }))).toBe(false);
+  });
+
+  it("is false when the PR merged but the tree is dirty", () => {
+    expect(folderSafeToDelete(folder({ dirty: true }), pr({ state: "merged" }))).toBe(false);
+  });
+
+  it("is false when the PR merged but commits were added after", () => {
+    expect(folderSafeToDelete(folder({ commitsUnlanded: 1 }), pr({ state: "merged" }))).toBe(false);
   });
 });
 
@@ -1108,9 +1147,10 @@ describe("folderActionableItems", () => {
     expect(folderActionableItems(f, undefined)).toEqual([]);
   });
 
-  it("flags a squash-merged worktree with no PR at all, naming the git evidence", () => {
-    // The whole point of `landed`: a slot that never had a PR (or whose
-    // branch merged locally) is still provably finished.
+  it("does NOT flag a squash-merged worktree with no PR at all", () => {
+    // Deliberate: git proves the content reached the base, but not that the
+    // work was accepted. A branch abandoned and reset away leaves the same
+    // trace as one that shipped, so no PR means no affirmative signal.
     const f = folder({
       isWorktree: true,
       landed: "squash-merged",
@@ -1118,17 +1158,43 @@ describe("folderActionableItems", () => {
       commitsUnlanded: 0,
       comparedBase: "origin/main",
     });
-    expect(folderActionableItems(f, undefined)).toEqual([
+    expect(folderActionableItems(f, undefined)).toEqual([]);
+  });
+
+  it("flags a merged PR and names git's account of the landing alongside it", () => {
+    const f = folder({
+      isWorktree: true,
+      landed: "squash-merged",
+      commitsAhead: 3,
+      commitsUnlanded: 0,
+      comparedBase: "origin/main",
+    });
+    expect(folderActionableItems(f, pr({ state: "merged", number: 42 }))).toEqual([
       {
         kind: "safe-to-delete",
-        subtitle: "squash-merged, no uncommitted changes, every commit landed on main",
+        subtitle:
+          "PR #42 merged, squash-merged into main, no uncommitted changes, every commit landed",
+        pr: { number: 42, url: pr({ number: 42 }).url },
+      },
+    ]);
+  });
+
+  it("flags a merged PR that git can't corroborate, naming only the PR", () => {
+    // The base this checkout compares against may not have been fetched since
+    // the merge, so `landed` stays null while the PR is authoritative.
+    const f = folder({ isWorktree: true, landed: null, commitsUnlanded: 0 });
+    expect(folderActionableItems(f, pr({ state: "merged", number: 7 }))).toEqual([
+      {
+        kind: "safe-to-delete",
+        subtitle: "PR #7 merged, no uncommitted changes, every commit landed",
+        pr: { number: 7, url: pr({ number: 7 }).url },
       },
     ]);
   });
 
   it("does not flag a squash-merged worktree that still has uncommitted changes", () => {
     const f = folder({ isWorktree: true, landed: "squash-merged", dirty: true });
-    expect(folderActionableItems(f, undefined)).toEqual([]);
+    expect(folderActionableItems(f, pr({ state: "merged" }))).toEqual([]);
   });
 
   it("flags sessions waiting on you, pluralized by count", () => {

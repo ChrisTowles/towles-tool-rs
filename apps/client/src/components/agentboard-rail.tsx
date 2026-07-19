@@ -59,7 +59,6 @@ import {
   fmtWaitingAge,
   folderPortDrift,
   folderRemovableSlot,
-  folderLanded,
   folderSafeToDelete,
   isAgent,
   isSoloRepo,
@@ -925,19 +924,17 @@ function FolderHeader({
           <FilesButton onOpen={onOpenFiles} />
           {pr && <PrChip pr={pr} stats={folder} />}
           <FolderLandedBadge folder={folder} pr={pr} />
-          {/* Landed and nothing would be lost. Gated on `folderLanded`, not on
-              a merged PR: the PR-only gate hid this from every PR-less slot,
-              which is exactly the slot most likely to be forgotten. */}
-          {folderLanded(folder, pr) &&
-            folder.isWorktree &&
-            onDeleteWorktree &&
-            folderSafeToDelete(folder) && (
-              <SafeToDeleteBadge
-                base={comparedBaseLabel(folder)}
-                landed={folder.landed}
-                onDeleteWorktree={onDeleteWorktree}
-              />
-            )}
+          {/* Merged PR, and nothing here would be lost. A PR-less slot never
+              shows this — git alone can't tell landed work from abandoned
+              work, so the affirmative claim needs the merged PR. See
+              `folderSafeToDelete`. */}
+          {folder.isWorktree && onDeleteWorktree && folderSafeToDelete(folder, pr) && (
+            <SafeToDeleteBadge
+              base={comparedBaseLabel(folder)}
+              landed={folder.landed}
+              onDeleteWorktree={onDeleteWorktree}
+            />
+          )}
           {typeof progress?.percent === "number" && (
             <span
               title={progress.label ?? "agent-reported progress"}

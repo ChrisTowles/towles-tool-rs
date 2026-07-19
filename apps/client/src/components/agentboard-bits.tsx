@@ -571,7 +571,7 @@ export function FilesButton({ onOpen }: { onOpen: () => void }) {
 }
 
 /** Precise reason a landed branch's checkout still isn't safe to delete — the
- * two conditions `folderSafeToDelete` checks, each named *with its own
+ * two conditions `folderHoldsNoWork` checks, each named *with its own
  * consequence*, so the tooltip never leaves you guessing which one is blocking
  * it or how much it matters. Null once both are satisfied (the caller has
  * nothing left to warn about).
@@ -601,7 +601,7 @@ function unsafeToDeleteReason(
  * chip normally turns purple — the slot is done, time to `tt slot rm` it —
  * but merged only means the *PR's* content is safe; it says nothing about
  * this checkout. If `stats` shows uncommitted changes or commits that
- * haven't landed on the base branch yet (`folderSafeToDelete`), the chip
+ * haven't landed on the base branch yet (`folderHoldsNoWork`), the chip
  * turns amber (this app's needs-you hue) instead, since removing the slot
  * would lose that work despite the PR being merged — see the adjacent
  * `SafeToDeleteBadge` for the positive case. Opens GitHub. */
@@ -696,10 +696,11 @@ export function FolderLandedBadge({
   return <LandedBadge landed={folder.landed} base={comparedBaseLabel(folder)} />;
 }
 
-/** The positive counterpart to `PrChip`'s amber warning: a folder whose branch
- * landed (a merged PR, or git's own proof — `folderLanded`), has no
- * uncommitted changes, and has every commit landed on its
- * base — `folderSafeToDelete`. Deliberately louder than a bare chip (the bug
+/** The positive counterpart to `PrChip`'s amber warning: a folder whose PR
+ * merged, has no uncommitted changes, and has every commit landed on its
+ * base — `folderSafeToDelete`. A PR-less slot never gets here, by design: git
+ * can prove content landed but not that it was *accepted*, so the affirmative
+ * claim is gated on the merged PR. Deliberately louder than a bare chip (the bug
  * this replaces: a subdued purple "#N" was the *only* signal, indistinguishable
  * at a glance from an ordinary merged-but-still-active checkout). Emerald
  * (this app's "done/complete" hue — matches `statusColor`'s `complete` dot and
