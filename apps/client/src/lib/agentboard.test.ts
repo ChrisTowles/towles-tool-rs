@@ -13,6 +13,7 @@ import {
   exitPaneSession,
   fmtWaitingAge,
   folderActionableItems,
+  folderRemovableSlot,
   folderSafeToDelete,
   hydrateWins,
   isDiffPane,
@@ -179,6 +180,14 @@ describe("folderSafeToDelete", () => {
     // The rebase/squash-merge case: commitsAhead never reaches 0, but
     // commitsUnlanded (patch-equivalence) does once the content has landed.
     expect(folderSafeToDelete(folder({ commitsAhead: 2, commitsUnlanded: 0 }))).toBe(true);
+  });
+});
+
+describe("folderRemovableSlot", () => {
+  it("is true only for a worktree that still exists on disk", () => {
+    expect(folderRemovableSlot(folder({ isWorktree: true }))).toBe(true);
+    expect(folderRemovableSlot(folder({}))).toBe(false); // main checkout
+    expect(folderRemovableSlot(folder({ isWorktree: true, dirMissing: true }))).toBe(false); // ghost
   });
 });
 

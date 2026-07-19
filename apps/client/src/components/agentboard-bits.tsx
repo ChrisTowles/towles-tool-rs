@@ -21,6 +21,7 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
@@ -47,6 +48,7 @@ import {
 } from "@/lib/agentboard";
 import type { PrItem } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
+import { shortcutHint } from "@/lib/shortcuts";
 import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
@@ -984,6 +986,7 @@ export function RepoMenu({
           {onNewSlot && (
             <DropdownMenuItem onSelect={onNewSlot} className="whitespace-nowrap">
               <FolderPlus className="size-3.5" /> New slot…
+              <DropdownMenuShortcut>{shortcutHint("ab-new-slot")}</DropdownMenuShortcut>
             </DropdownMenuItem>
           )}
           {onDeleteWorktree && (
@@ -993,6 +996,7 @@ export function RepoMenu({
               className="whitespace-nowrap"
             >
               <Trash2 className="size-3.5" /> Delete worktree…
+              <DropdownMenuShortcut>{shortcutHint("ab-remove-slot")}</DropdownMenuShortcut>
             </DropdownMenuItem>
           )}
           {(onNewSlot || onDeleteWorktree) && <DropdownMenuSeparator />}

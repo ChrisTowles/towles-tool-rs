@@ -812,6 +812,19 @@ export function folderSafeToDelete(folder: Pick<FolderData, "dirty" | "commitsUn
   return !folder.dirty && folder.commitsUnlanded === 0;
 }
 
+/** Whether the delete-worktree affordances (rail menu, the `ab-remove-slot`
+ * chord) apply to a folder: a worktree slot that still exists on disk. The
+ * main checkout has no `slot_remove` path, and a ghost (`dirMissing`) has
+ * nothing on disk to delete — its affordance is Untrack. Unrelated to
+ * `folderSafeToDelete`: this gates whether deletion can be *offered*, not
+ * whether it would succeed (the guarded removal decides that after the
+ * confirm). */
+export function folderRemovableSlot(
+  folder: Pick<FolderData, "isWorktree" | "dirMissing">,
+): boolean {
+  return folder.isWorktree && !folder.dirMissing;
+}
+
 /** True when a PR's merge doesn't actually make its folder safe to delete:
  * the PR's content merged, but the checkout itself still has uncommitted
  * changes or commits that haven't landed on `comparedBase` yet

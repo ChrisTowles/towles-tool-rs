@@ -82,6 +82,7 @@ import {
   isCacheExpiring,
   isDiffPane,
   isFilesPane,
+  folderRemovableSlot,
   isFolderQuiet,
   liveSessions,
   normalizeWins,
@@ -1326,6 +1327,14 @@ export function AgentboardScreen() {
           if (activeFolderDir) void newSession(activeFolderDir);
         },
         "ab-new-slot": newSlotForActiveRepo,
+        "ab-remove-slot": () => {
+          // `requestDeleteWorktree` always confirms before touching anything;
+          // the in-flight check mirrors the rail row dimming itself while a
+          // removal runs.
+          if (!activeFolder || !folderRemovableSlot(activeFolder)) return;
+          if (deletingDirs.has(activeFolder.dir)) return;
+          requestDeleteWorktree(activeFolder.dir, activeFolder.name);
+        },
         "ab-close-session": () => {
           if (selected) void closeSession(selected.sessionId);
         },
@@ -1348,6 +1357,7 @@ export function AgentboardScreen() {
       // eslint-disable-next-line react-hooks/exhaustive-deps
       [
         activeFolderDir,
+        deletingDirs,
         selected,
         wins,
         repos,

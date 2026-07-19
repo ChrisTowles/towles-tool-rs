@@ -55,6 +55,7 @@ import {
   fmtElapsed,
   fmtWaitingAge,
   folderPortDrift,
+  folderRemovableSlot,
   folderSafeToDelete,
   isAgent,
   isSoloRepo,
@@ -531,7 +532,7 @@ export function RepoGroup({
           onNewSlot={() => onNewSlot({ name: repo.name, dir: folder.dir, key: repo.key })}
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
           onDeleteWorktree={
-            folder.isWorktree ? () => onDeleteWorktree(folder.dir, repo.name) : undefined
+            folderRemovableSlot(folder) ? () => onDeleteWorktree(folder.dir, repo.name) : undefined
           }
           onOpenDiff={() => onOpenDiff(folder.dir)}
           onOpenFiles={() => onOpenFiles(folder.dir)}
@@ -662,7 +663,9 @@ export function RepoGroup({
                   onNewSession={() => onNewSession(folder.dir)}
                   onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
                   onDeleteWorktree={
-                    folder.isWorktree ? () => onDeleteWorktree(folder.dir, folder.name) : undefined
+                    folderRemovableSlot(folder)
+                      ? () => onDeleteWorktree(folder.dir, folder.name)
+                      : undefined
                   }
                   onOpenDiff={() => onOpenDiff(folder.dir)}
                   onOpenFiles={() => onOpenFiles(folder.dir)}
