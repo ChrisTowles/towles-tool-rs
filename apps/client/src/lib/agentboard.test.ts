@@ -994,7 +994,7 @@ describe("isFolderQuiet", () => {
 });
 
 function repo(key: string, folders: FolderData[]): RepoData {
-  return { key, name: key, folders, needs: 0 };
+  return { key, dir: key, name: key, folders, needs: 0 };
 }
 
 describe("cycleNeedsYou", () => {

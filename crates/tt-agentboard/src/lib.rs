@@ -38,6 +38,7 @@ pub mod metadata;
 pub mod notify;
 pub mod persist;
 pub mod procenv;
+pub mod repo_meta;
 pub mod repos;
 pub mod resume;
 pub mod session_order;
@@ -76,10 +77,12 @@ pub use git_info::{
 pub use launch::{LaunchConfig, LaunchFile, port_listening, read_launch_file};
 pub use metadata::SessionMetadataStore;
 pub use notify::{NeedsYouEdge, NeedsYouWatch};
+pub use repo_meta::{HexColor, RepoAccentStyle, RepoMeta, RepoMetaStore, default_repo_meta_path};
 pub use repos::{
     RepoEntry, add_repo, add_repo_persisted, default_repos_path, load_repos, load_scan_roots,
-    missing_repo_dirs, remove_repo_by_dir, remove_repo_persisted, repo_entries,
-    resolve_session_name, save_repos, save_scan_roots, try_load_repos, untrack_missing_persisted,
+    missing_repo_dirs, remove_repo_by_dir, remove_repo_persisted, reorder_repos,
+    reorder_repos_persisted, repo_entries, resolve_session_name, save_repos, save_scan_roots,
+    try_load_repos, untrack_missing_persisted,
 };
 pub use session_order::{ReorderDelta, SessionOrder, default_session_order_path};
 pub use sessions::{SessionRecord, SessionStore, default_sessions_path};

@@ -293,6 +293,10 @@ pub struct RepoData {
     /// `"path:<dir>"` of whichever folder in this group `assemble_state`
     /// happened to see first (stable across polls: entries are name-sorted).
     pub key: String,
+    /// Absolute dir of the checkout this row is anchored to — the same dir
+    /// embedded in `key`, but as a field, so readers never parse it back out
+    /// of the key string. Repo identity (`meta`) is looked up by it.
+    pub dir: String,
     /// Display name: the repo segment of `owner/repo`, else the folder basename.
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -300,6 +304,10 @@ pub struct RepoData {
     pub folders: Vec<FolderData>,
     /// Σ of `folder.needs` across this repo's checkouts.
     pub needs: i64,
+    /// The user-chosen icon/color for this repo, absent until they pick one.
+    /// See [`crate::repo_meta`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<crate::repo_meta::RepoMeta>,
 }
 
 // --- Legacy tmux session snapshot (ports the original `SessionData`) ---

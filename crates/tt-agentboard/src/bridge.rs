@@ -136,6 +136,7 @@ pub fn assemble_state(
                     // from under it — destabilizing rail position and
                     // collapse-state persistence (both keyed on `repo.key`).
                     repos[i].key = format!("path:{}", entry.dir);
+                    repos[i].dir = entry.dir.clone();
                     if repos[i].origin_url.is_none() {
                         repos[i].name = git
                             .origin_url
@@ -381,10 +382,13 @@ fn new_repo_row(entry: &RepoEntry, git: &GitInfo, folder: FolderData) -> RepoDat
     let needs = folder.needs;
     RepoData {
         key: format!("path:{}", entry.dir),
+        dir: entry.dir.clone(),
         name,
         origin_url: git.origin_url.clone(),
         folders: vec![folder],
         needs,
+        // Filled in by the engine after assembly — a pure lookup on `key`.
+        meta: None,
     }
 }
 

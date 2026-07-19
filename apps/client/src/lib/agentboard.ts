@@ -4,6 +4,7 @@ import type { z } from "zod";
 import type { PrItem } from "./data";
 import type { IpcError } from "./errors";
 import type { LaunchConfigStatus } from "./launch";
+import type { RepoMeta } from "./repo-identity";
 import { OpenedSessionSchema } from "./schemas/agentboard";
 import { SlotBlockerSchema, SlotRemoveOutcomeSchema } from "./schemas/slots";
 import { invoke } from "./tauri";
@@ -231,10 +232,19 @@ export function comparedBaseLabel(folder: Pick<FolderData, "comparedBase">): str
  * worktree relationship does. */
 export type RepoData = {
   key: string;
+  /** Absolute dir of the checkout this row is anchored to — the dir also
+   * embedded in `key`, as a field so readers never parse it back out. The
+   * key repo identity (`meta`) is stored under. */
+  dir: string;
   name: string;
   originUrl?: string | null;
   folders: FolderData[];
   needs: number;
+  /** User-chosen icon/color for this repo (Settings → Agentboard). Absent —
+   * or absent fields — means "render exactly as an unthemed repo": never
+   * synthesize a color from the name. Values are untrusted; resolve them
+   * through `lib/repo-identity.ts`. */
+  meta?: RepoMeta;
 };
 
 /** A window's tiled pane ids: always at least one — the empty-pane state is
@@ -1759,7 +1769,7 @@ export function useNow(intervalMs: number): number {
   return now;
 }
 
-/** A repo row in the manage-repos picker (from `ab_discover_repos`): every
+/** A repo row in Settings → Agentboard → Repos (from `ab_discover_repos`): every
  * repo under the scan roots, unioned with every repo already on the rail. */
 export type RepoCandidate = { name: string; dir: string; active: boolean };
 

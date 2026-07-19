@@ -49,6 +49,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
+import { hasRepoColor, repoAccentStyles, repoIcon, type RepoMeta } from "@/lib/repo-identity";
 import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import {
@@ -146,6 +147,14 @@ export function RailIconStrip({
     const needs = solo ? repo.needs : folder.needs;
     const live = collapsedLiveColor(folder.sessions);
     const label = solo ? repo.name : `${repo.name} / ${folder.name}`;
+    // Repo identity: the collapsed strip is where a chosen icon+color earns
+    // its keep — it's the only thing distinguishing one 36px square from the
+    // next. Status still outranks it: the violet active edge and the amber
+    // needs-you edge/badge keep the border, and a needs-you square never
+    // takes the calmer identity wash.
+    const RepoIcon = repoIcon(repo.meta);
+    const accent = repoAccentStyles(repo.meta);
+    const statusOwnsEdge = active || needs > 0;
     return (
       <Tooltip key={folder.dir}>
         <TooltipTrigger asChild>
@@ -154,6 +163,7 @@ export function RailIconStrip({
             aria-label={label}
             aria-current={active || undefined}
             onClick={() => onSelectFolder(folder.dir)}
+            style={statusOwnsEdge ? undefined : { ...accent.edgeStyle, ...accent.surfaceStyle }}
             className={cn(
               "relative flex size-9 shrink-0 items-center justify-center rounded-md border-l-2 border-transparent text-muted-foreground hover:bg-accent/50",
               active && "border-l-violet-500 bg-accent text-foreground",
@@ -161,7 +171,11 @@ export function RailIconStrip({
               needs > 0 && "border-l-amber-500",
             )}
           >
-            {solo ? <FolderGit2 className="size-4" /> : <Folder className="size-4" />}
+            {solo ? (
+              <RepoIcon className="size-4" style={accent.iconStyle} />
+            ) : (
+              <Folder className="size-4" style={accent.iconStyle} />
+            )}
             {live && <span className={cn("absolute top-1 right-1 size-2 rounded-full", live)} />}
             {needs > 0 && (
               <span className="absolute -right-1 -bottom-1 min-w-4 rounded-full border border-amber-500/50 bg-background px-0.5 text-center font-mono text-[9px] leading-[14px] text-amber-500">
@@ -513,6 +527,7 @@ export function RepoGroup({
         <FolderHeader
           scope="repo"
           title={repo.name}
+          meta={repo.meta}
           folder={folder}
           needs={repo.needs}
           pr={prForFolder(prs, repo.originUrl, folder.branch)}
@@ -567,9 +582,18 @@ export function RepoGroup({
   // at (folder-rail rule: focus never stops at the child level).
   const repoActive = repo.folders.some((f) => f.dir === activeFolderDir);
   const scopePrefix = pathScope(repo.folders[0].dir);
+  const RepoIcon = repoIcon(repo.meta);
+  // The header is sticky, so its wash must resolve to an opaque color — rows
+  // scroll underneath it and a translucent tint reads as a rendering glitch.
+  const accent = repoAccentStyles(repo.meta, "var(--card)");
+  // Identity never outranks status: the violet active edge and the amber
+  // needs-you signal keep the border, and a repo waiting on you never gets
+  // the calmer identity wash laid over it.
+  const statusOwnsRow = repoActive || repo.needs > 0;
   return (
     <div className="border-b" data-focus-kind="repo" data-focus-id={repo.key}>
       <div
+        style={statusOwnsRow ? undefined : { ...accent.edgeStyle, ...accent.surfaceStyle }}
         className={cn(
           // Every background on this row must be fully opaque. It is sticky, so
           // folder and session rows scroll *underneath* it — a translucent tint
@@ -585,7 +609,10 @@ export function RepoGroup({
           className="flex min-w-0 flex-1 items-center gap-2"
         >
           <Chevron collapsed={repoCollapsed} />
-          <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+          <RepoIcon
+            className={cn("size-3.5 shrink-0", !hasRepoColor(repo.meta) && "text-muted-foreground")}
+            style={accent.iconStyle}
+          />
           {scopePrefix && (
             <span className="shrink-0 font-mono text-sm text-muted-foreground/60">
               {scopePrefix}
@@ -739,6 +766,7 @@ function QuietToggleRow({
 function FolderHeader({
   scope,
   title,
+  meta,
   folder,
   needs,
   pr,
@@ -758,6 +786,9 @@ function FolderHeader({
   scope: "repo" | "folder";
   /** repo.name at repo scope, folder.name at folder scope. */
   title: string;
+  /** The owning repo's chosen icon/color — set only at repo scope (a solo
+   * repo's collapsed repo+folder header). Absent renders the default look. */
+  meta?: RepoMeta;
   /** The checkout this header describes: dir, branch, worktree + diff facts. */
   folder: FolderData;
   needs: number;
@@ -792,6 +823,10 @@ function FolderHeader({
 }) {
   const scopePrefix = pathScope(folder.dir);
   const progress = folder.metadata?.progress;
+  // Repo identity, repo scope only. A repo-scope header is sticky, so its
+  // tint must mix into an opaque base (see the background comment below).
+  const HeaderIcon = repoIcon(meta);
+  const accent = repoAccentStyles(meta, "var(--card)");
   // Ghost checkout: the tracked directory is gone. Dim the whole band and
   // swap the git-facts line (branch/diff are meaningless) for an inline
   // Untrack — a dead folder's one useful action, surfaced not buried.
@@ -802,6 +837,13 @@ function FolderHeader({
     // name and all git info reads as one cluster. The transparent border-l-2
     // is always present so the active violet edge never shifts content.
     <div
+      style={
+        // Identity never outranks status: the violet active edge and an amber
+        // needs-you count keep the row to themselves.
+        scope === "repo" && !active && needs === 0 && !missing
+          ? { ...accent.edgeStyle, ...accent.surfaceStyle }
+          : undefined
+      }
       className={cn(
         "border-b border-l-2 border-border border-l-transparent bg-card pr-2",
         // A repo-scope header is sticky, so rows scroll underneath it and every
@@ -830,7 +872,10 @@ function FolderHeader({
           {missing ? (
             <FolderX className="size-3.5 shrink-0 text-muted-foreground/70" />
           ) : scope === "repo" ? (
-            <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+            <HeaderIcon
+              className={cn("size-3.5 shrink-0", !hasRepoColor(meta) && "text-muted-foreground")}
+              style={accent.iconStyle}
+            />
           ) : (
             <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
           )}

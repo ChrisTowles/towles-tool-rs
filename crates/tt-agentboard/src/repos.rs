@@ -194,6 +194,48 @@ pub fn add_repo(repo_paths: &mut Vec<String>, path: &str) -> bool {
     true
 }
 
+/// Reorder `current` to match `desired` — the rail's user-chosen repo order.
+///
+/// `repoPaths` *is* the order (nothing else expresses it), so reordering the
+/// list is the whole feature. Deliberately tolerant of a stale `desired`,
+/// because the client that dragged a row may have been looking at a snapshot
+/// another window has since changed: dirs in `desired` are taken in that
+/// order, anything in `current` it doesn't mention keeps its relative order
+/// and lands after, and anything in `desired` that isn't tracked is ignored.
+/// So a concurrent add is never dropped by a drag that predates it.
+///
+/// Note an untracked-then-retracked repo lands at the end rather than back in
+/// its old slot — deliberately, and deliberately unlike `repo_meta`, which
+/// *does* survive that round trip (see `RepoMetaStore::forget`). Re-dragging
+/// one row is cheap; re-picking a glyph and a hex colour is not.
+pub fn reorder_repos(current: &[String], desired: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(current.len());
+    for dir in desired {
+        if current.contains(dir) && !out.contains(dir) {
+            out.push(dir.clone());
+        }
+    }
+    for dir in current {
+        if !out.contains(dir) {
+            out.push(dir.clone());
+        }
+    }
+    out
+}
+
+/// Apply [`reorder_repos`] straight against the on-disk file, same
+/// reread-then-write rationale as [`add_repo_persisted`]. Returns the new list.
+pub fn reorder_repos_persisted(path: &Path, desired: &[String]) -> std::io::Result<Vec<String>> {
+    let mut config = load_config(path);
+    let reordered = reorder_repos(&config.repo_paths, desired);
+    if reordered == config.repo_paths {
+        return Ok(reordered);
+    }
+    config.repo_paths = reordered.clone();
+    save_config(path, &config)?;
+    Ok(reordered)
+}
+
 /// Remove the repo at `dir` exactly. Returns whether removed.
 ///
 /// Dir, not the resolved session `name`, is the only safe key to remove by:
@@ -582,5 +624,67 @@ mod tests {
         let dir = root.path().join("no/git/here");
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(find_repo_root(&dir), dir);
+    }
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn reorder_applies_the_requested_order() {
+        assert_eq!(
+            reorder_repos(&v(&["/a", "/b", "/c"]), &v(&["/c", "/a", "/b"])),
+            v(&["/c", "/a", "/b"])
+        );
+    }
+
+    #[test]
+    fn reorder_keeps_repos_the_client_never_saw() {
+        // Another window added /d after this client rendered its list. A drag
+        // based on the older snapshot must not untrack it.
+        assert_eq!(
+            reorder_repos(&v(&["/a", "/b", "/d"]), &v(&["/b", "/a"])),
+            v(&["/b", "/a", "/d"]),
+            "an unmentioned repo keeps its relative position, after the ordered ones"
+        );
+    }
+
+    #[test]
+    fn reorder_ignores_repos_that_are_no_longer_tracked() {
+        // Mirror image: another window untracked /b while this client dragged.
+        assert_eq!(reorder_repos(&v(&["/a", "/c"]), &v(&["/b", "/c", "/a"])), v(&["/c", "/a"]));
+    }
+
+    #[test]
+    fn reorder_tolerates_a_duplicated_dir_in_the_request() {
+        assert_eq!(reorder_repos(&v(&["/a", "/b"]), &v(&["/b", "/b", "/a"])), v(&["/b", "/a"]));
+    }
+
+    #[test]
+    fn reorder_persisted_writes_and_is_a_noop_when_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("repos.json");
+        save_repos(&path, &v(&["/a", "/b", "/c"])).unwrap();
+
+        let out = reorder_repos_persisted(&path, &v(&["/c", "/b", "/a"])).unwrap();
+        assert_eq!(out, v(&["/c", "/b", "/a"]));
+        assert_eq!(load_repos(&path), v(&["/c", "/b", "/a"]), "order must survive the round-trip");
+
+        // Re-applying the same order must not rewrite the file.
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let again = reorder_repos_persisted(&path, &v(&["/c", "/b", "/a"])).unwrap();
+        assert_eq!(again, v(&["/c", "/b", "/a"]));
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
+    #[test]
+    fn reorder_preserves_scan_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("repos.json");
+        save_repos(&path, &v(&["/a", "/b"])).unwrap();
+        save_scan_roots(&path, &v(&["~/code"])).unwrap();
+
+        reorder_repos_persisted(&path, &v(&["/b", "/a"])).unwrap();
+        assert_eq!(load_scan_roots(&path), v(&["~/code"]), "reordering must not drop scanRoots");
     }
 }

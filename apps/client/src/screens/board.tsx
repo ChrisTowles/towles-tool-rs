@@ -34,6 +34,8 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ownerRepoFromOrigin, useAgentboardState } from "@/lib/agentboard";
+import { repoAccentStyles, repoIcon, type RepoMeta } from "@/lib/repo-identity";
 import { cn } from "@/lib/utils";
 import {
   fmtDay,
@@ -160,6 +162,22 @@ export function BoardScreen() {
   // Stable identity so every card shares one `onDragEnd` instead of a fresh
   // closure per card per render.
   const clearDropSlot = useCallback(() => setDropSlot(null), []);
+  const agentState = useAgentboardState();
+
+  // Repo identity (chosen icon + color) for the swimlane headers, keyed the
+  // way lanes are: GitHub `owner/name`, bridged from each tracked repo's
+  // origin URL. Sourced from the same agentboard snapshot the rail renders —
+  // no second poll. Only repos that actually carry a `meta` land here, so an
+  // unthemed lane keeps today's plain folder glyph.
+  const repoMetaByKey = useMemo(() => {
+    const m = new Map<string, RepoMeta>();
+    for (const r of agentState.repos) {
+      if (!r.meta) continue;
+      const key = ownerRepoFromOrigin(r.originUrl);
+      if (key) m.set(key, r.meta);
+    }
+    return m;
+  }, [agentState.repos]);
 
   // Repos we know about (from collected PRs/issues + already-linked tasks) — the
   // promote-to-issue targets.
@@ -408,7 +426,7 @@ export function BoardScreen() {
               {lanes.map((lane) => (
                 <section key={lane.key}>
                   <div className="flex items-center gap-1.5 pb-1.5">
-                    <FolderGit2 aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+                    <LaneGlyph meta={repoMetaByKey.get(lane.key)} />
                     <span
                       className={cn(
                         // `pr-px`: the italic variant's final glyph overhangs
@@ -537,6 +555,24 @@ function NotesField({
   );
 }
 
+/** A swimlane's repo glyph: the repo's chosen icon tinted with its color, or
+ * the plain folder glyph when it has no identity set. The lane header is where
+ * repo identity belongs on this screen — every card beneath it is that repo's,
+ * so a per-card glyph would repeat the header once per row. */
+function LaneGlyph({ meta }: { meta?: RepoMeta }) {
+  if (!meta) {
+    return <FolderGit2 aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />;
+  }
+  const Icon = repoIcon(meta);
+  return (
+    <Icon
+      aria-hidden
+      className="size-3.5 shrink-0 text-muted-foreground"
+      style={repoAccentStyles(meta).iconStyle}
+    />
+  );
+}
+
 /** The insertion indicator drawn between cards at the current drop slot. */
 function DropLine({ active }: { active: boolean }) {
   if (!active) return null;
@@ -567,6 +603,9 @@ function Card({
   task: TaskItem;
   now: number;
   repos: string[];
+  /** The chosen icon/color of the repo this task's slot lives in, when that
+   * repo has one. Undefined (no slot, or an unthemed repo) renders the card
+   * exactly as it did before repo identity existed. */
   /** Collected open issues — the "Attach issue…" candidates. */
   openIssues: IssueItem[];
   /** Collected PRs — the "Attach PR…" candidates. */
@@ -835,13 +874,15 @@ function Card({
       {task.slot?.branch && (
         <div
           className={cn(
-            "mt-1.5 truncate font-mono text-[11px] text-muted-foreground",
+            "mt-1.5 flex items-center gap-1 font-mono text-[11px] text-muted-foreground",
             !task.slot.dir && "italic text-muted-foreground/70",
           )}
           title={task.slot.dir ?? `worktree removed — branch ${task.slot.branch}`}
         >
-          ⎇ {task.slot.branch}
-          {!task.slot.dir && " · detached"}
+          <span className="truncate">
+            ⎇ {task.slot.branch}
+            {!task.slot.dir && " · detached"}
+          </span>
         </div>
       )}
       {(hasLinks || task.dueTs !== undefined || hasNotes) && (

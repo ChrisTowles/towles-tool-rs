@@ -128,7 +128,9 @@ mod tests {
     fn payload(repo: &str, sessions: Vec<SessionData>) -> StatePayload {
         StatePayload {
             repos: vec![RepoData {
+                meta: None,
                 key: format!("path:/{repo}"),
+                dir: format!("/{repo}"),
                 name: repo.to_string(),
                 origin_url: None,
                 folders: vec![FolderData {
