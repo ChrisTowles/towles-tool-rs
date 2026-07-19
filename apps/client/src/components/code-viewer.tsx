@@ -203,11 +203,15 @@ export function CodeViewer({
           // The token is read here — after the previous save refreshed it.
           const result = await saveBufferSnapshot(dir, path, snapshot, mtimeRef.current);
           if (!result) return;
+          // A disposed model means this generation is dead (the unmount
+          // flush racing the next mount) — the write itself was the point;
+          // the bookkeeping belongs to the next mount's own fresh read, and
+          // stamping it here would hand that mount an old-generation
+          // version id and a token its buffer never saw.
+          if (!model || model.isDisposed()) return;
           mtimeRef.current = result.mtimeMs;
           savedVersionRef.current = result.versionAtSave;
-          if (model && !model.isDisposed()) {
-            setDirty(model.getAlternativeVersionId() !== result.versionAtSave);
-          }
+          setDirty(model.getAlternativeVersionId() !== result.versionAtSave);
           // A successful save means disk and buffer agree again — a deleted
           // file is recreated by it, and a conflict can only reach here
           // after its resolution re-armed the token.

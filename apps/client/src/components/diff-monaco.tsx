@@ -250,12 +250,18 @@ export function MonacoMultiDiff({
         mtimesRef.current.get(path) ?? null,
       );
       if (!result) return;
+      // A disposed model means this generation is dead (the rebuild flush
+      // racing the next build) — the write itself was the point; the maps
+      // now belong to the next generation, whose own fresh read set this
+      // path's token, and stamping them here would hand it an
+      // old-generation version id and a token its buffer never saw.
+      if (model.isDisposed()) return;
       mtimesRef.current.set(path, result.mtimeMs);
       savedVersionsRef.current.set(path, result.versionAtSave);
       // Reconciles against `model`'s *current* version, not
       // `result.versionAtSave` — more may have been typed during the write,
       // in which case the buffer is still dirty post-save.
-      if (!model.isDisposed()) reportDirty(path, model);
+      reportDirty(path, model);
     });
     saveChainsRef.current.set(path, chain);
     return chain;
