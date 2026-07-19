@@ -320,6 +320,7 @@ export function windowOf(wins: AgWindow[], sessionId: string): AgWindow | undefi
 
 const DIFF_PANE_PREFIX = "~diff:";
 const FILES_PANE_PREFIX = "~files:";
+const PREVIEW_PANE_PREFIX = "~preview:";
 const EXIT_PANE_PREFIX = "~exit:";
 
 /** The (per-folder) pane id of the folder's diff pane. */
@@ -350,10 +351,27 @@ export function filesPaneDir(paneId: string): string | null {
   return isFilesPane(paneId) ? paneId.slice(FILES_PANE_PREFIX.length) : null;
 }
 
-/** The folder dir any sentinel pane id (diff or files) points at — null for
- * session and exit panes. */
+/** The (per-folder) pane id of the folder's live-preview pane — the task's own
+ * dev server embedded beside its terminals, with draw-on-page feedback. */
+export function previewPaneId(folderDir: string): string {
+  return `${PREVIEW_PANE_PREFIX}${folderDir}`;
+}
+
+export function isPreviewPane(paneId: string): boolean {
+  return paneId.startsWith(PREVIEW_PANE_PREFIX);
+}
+
+/** The folder dir a preview pane id points at (null otherwise). */
+export function previewPaneDir(paneId: string): string | null {
+  return isPreviewPane(paneId) ? paneId.slice(PREVIEW_PANE_PREFIX.length) : null;
+}
+
+/** The folder dir any sentinel pane id (diff, files, or preview) points at —
+ * null for session and exit panes. This is the single gate `hydrateWins`/
+ * `pruneWins` use to keep a folder-derivable pane across restore, so adding a
+ * kind here makes it first-class in persistence automatically. */
 export function folderPaneDir(paneId: string): string | null {
-  return diffPaneDir(paneId) ?? filesPaneDir(paneId);
+  return diffPaneDir(paneId) ?? filesPaneDir(paneId) ?? previewPaneDir(paneId);
 }
 
 /** The pane id of a crashed session's tombstone. A shell that dies on its own

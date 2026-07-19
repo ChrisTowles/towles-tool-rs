@@ -27,6 +27,7 @@ import { ColdCacheOverlay, PaneHeader, WorkingContext } from "@/components/agent
 import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { DiffPane } from "@/components/diff-pane";
 import { FolderFilesPane, type FilesOpenRequest } from "@/components/files-pane";
+import { PreviewPane } from "@/components/preview-pane";
 import {
   type NewSlotRepo,
   type NewTaskSubmit,
@@ -92,6 +93,9 @@ import {
   isCacheExpiring,
   isDiffPane,
   isFilesPane,
+  isPreviewPane,
+  previewPaneDir,
+  previewPaneId,
   folderRemovableSlot,
   forceDeleteLabel,
   isFolderQuiet,
@@ -542,6 +546,13 @@ export function AgentboardScreen() {
   function openFiles(dir: string) {
     setActiveFolderDir(dir);
     addPaneToActive(dir, filesPaneId(dir));
+  }
+
+  // Same, for the folder's live dev-server preview (embedded browser + draw-on-
+  // page feedback to this task's own session).
+  function openPreview(dir: string) {
+    setActiveFolderDir(dir);
+    addPaneToActive(dir, previewPaneId(dir));
   }
 
   // Claude called the openFile tool → open (or focus) that folder's files
@@ -1603,6 +1614,9 @@ export function AgentboardScreen() {
         "ab-toggle-files": () => {
           if (activeFolderDir) openFiles(activeFolderDir);
         },
+        "ab-toggle-preview": () => {
+          if (activeFolderDir) openPreview(activeFolderDir);
+        },
         "ab-toggle-rail": toggleRail,
         "ab-jump-next": () => jumpToNeedsYou("next"),
         "ab-jump-prev": () => jumpToNeedsYou("prev"),
@@ -1846,6 +1860,7 @@ export function AgentboardScreen() {
                               onRenameCommit={commitRename}
                               onOpenDiff={openDiff}
                               onOpenFiles={openFiles}
+                              onOpenPreview={openPreview}
                               slotFormOpen={openSlotForms.has(repo.key)}
                               onCancelSlotForm={() => closeSlotForm(repo.key)}
                               onSubmitSlotForm={(input) => {
@@ -1889,6 +1904,7 @@ export function AgentboardScreen() {
                   actions={actions}
                   onOpenDiff={openDiff}
                   onOpenFiles={openFiles}
+                  onOpenPreview={openPreview}
                   onNewSession={newSession}
                   onNewSlot={newSlotForActiveRepo}
                   onRemoveRepo={requestRemoveRepo}
@@ -2124,6 +2140,26 @@ export function AgentboardScreen() {
                               folder={folderByDir.get(dir)}
                               focused={focusedPaneId === id}
                               openRequest={filesOpenRequests[dir]}
+                              onClose={() => removePane(id)}
+                            />
+                          </div>
+                        );
+                      })}
+                      {/* Preview panes: a folder's live dev server tiled beside
+                          its terminals, with draw-on-page feedback. */}
+                      {panes.filter(isPreviewPane).map((id) => {
+                        const r = rectFor(id);
+                        const dir = previewPaneDir(id) ?? "";
+                        return (
+                          <div
+                            key={id}
+                            style={r ? paneStyle(r) : undefined}
+                            className="absolute p-1.5"
+                            onClick={() => setFocusedPaneId(id)}
+                          >
+                            <PreviewPane
+                              folder={folderByDir.get(dir)}
+                              focused={focusedPaneId === id}
                               onClose={() => removePane(id)}
                             />
                           </div>

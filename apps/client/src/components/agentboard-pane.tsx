@@ -10,6 +10,7 @@ import {
   fmtMins,
   Glyph,
   IconBtn,
+  PreviewButton,
   PrChip,
   PurposeRow,
   RepoMenu,
@@ -53,6 +54,7 @@ export function WorkingContext({
   actions,
   onOpenDiff,
   onOpenFiles,
+  onOpenPreview,
   onNewSession,
   onNewSlot,
   onRemoveRepo,
@@ -68,6 +70,8 @@ export function WorkingContext({
   onOpenDiff: (dir: string) => void;
   /** Opens the folder's files pane in its focused window. */
   onOpenFiles: (dir: string) => void;
+  /** Opens the folder's live-preview pane in its focused window. */
+  onOpenPreview: (dir: string) => void;
   /** Starts a new session (shell) in this checkout. */
   onNewSession: (dir: string) => void;
   /** Toggles the inline new-slot form open/closed for this repo (worktree
@@ -143,6 +147,7 @@ export function WorkingContext({
           <AheadBehind stats={folder} />
           <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir)} />
           <FilesButton onOpen={() => onOpenFiles(folder.dir)} />
+          {folder.hasLaunchConfig && <PreviewButton onOpen={() => onOpenPreview(folder.dir)} />}
           {pr && <PrChip pr={pr} stats={folder} />}
           <FolderLandedBadge folder={folder} pr={pr} />
         </div>

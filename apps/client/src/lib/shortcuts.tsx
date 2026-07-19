@@ -181,6 +181,14 @@ export const SHORTCUTS = defineShortcuts([
     allowInEditable: true,
   },
   {
+    id: "ab-toggle-preview",
+    scope: "agentboard",
+    keys: "mod+shift+v",
+    description: "Open the focused folder's live-preview pane",
+    when: "a folder is focused",
+    allowInEditable: true,
+  },
+  {
     id: "ab-toggle-rail",
     scope: "agentboard",
     keys: "mod+shift+b",

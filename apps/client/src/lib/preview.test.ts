@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { FolderData, RepoData, SessionData } from "@/lib/agentboard";
+import type { FolderData, SessionData } from "@/lib/agentboard";
 import type { LaunchConfigStatus } from "@/lib/launch";
 import {
   devServersOf,
   feedbackPrompt,
   feedbackPtyData,
+  folderSendTargets,
   normRect,
-  sendTargets,
 } from "@/lib/preview";
 
 const cfg = (over: Partial<LaunchConfigStatus>): LaunchConfigStatus => ({
@@ -87,9 +87,6 @@ const session = (over: Partial<SessionData>): SessionData =>
     ...over,
   }) as SessionData;
 
-const repo = (folders: FolderData[]): RepoData =>
-  ({ key: "r", name: "towles-tool-rs", folders, needs: 0 }) as RepoData;
-
 const folder = (sessions: SessionData[]): FolderData =>
   ({
     name: "primary",
@@ -100,26 +97,27 @@ const folder = (sessions: SessionData[]): FolderData =>
     sessions,
   }) as unknown as FolderData;
 
-describe("sendTargets", () => {
-  it("keeps only PTY-live sessions and puts Claude sessions first", () => {
-    const repos = [
-      repo([
-        folder([
-          session({ id: "dead", live: false }),
-          session({ id: "shell", live: true, name: "zsh" }),
-          session({
-            id: "agent",
-            live: true,
-            name: "claude",
-            agentState: { status: "busy" } as SessionData["agentState"],
-          }),
-        ]),
+describe("folderSendTargets", () => {
+  it("keeps only PTY-live sessions in the folder, Claude sessions first", () => {
+    const targets = folderSendTargets(
+      folder([
+        session({ id: "dead", live: false }),
+        session({ id: "shell", live: true, name: "zsh" }),
+        session({
+          id: "agent",
+          live: true,
+          name: "claude",
+          agentState: { status: "busy" } as SessionData["agentState"],
+        }),
       ]),
-    ];
-    const targets = sendTargets(repos);
+    );
     expect(targets.map((t) => t.sessionId)).toEqual(["agent", "shell"]);
     expect(targets[0].agentRunning).toBe(true);
-    expect(targets[0].label).toBe("towles-tool-rs/primary · claude");
-    expect(targets[0].folderDir).toBe("/repo");
+    expect(targets[0].label).toBe("claude");
+  });
+
+  it("is empty for an undefined or session-less folder", () => {
+    expect(folderSendTargets(undefined)).toEqual([]);
+    expect(folderSendTargets(folder([]))).toEqual([]);
   });
 });
