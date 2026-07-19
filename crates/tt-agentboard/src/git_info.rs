@@ -77,8 +77,13 @@ pub struct GitInfo {
     /// together, never merely folders that happen to share an origin remote.
     pub common_dir: String,
     /// Absolute paths of this repo's OTHER `git worktree` checkouts (this dir
-    /// excluded), from `git worktree list`. Not part of the wire payload — the
-    /// engine uses it to auto-discover worktrees that aren't in `repoPaths` yet.
+    /// excluded), from `git worktree list`: the main checkout plus every
+    /// *managed* slot (unmanaged linked worktrees are hidden). Not part of the
+    /// wire payload — the engine uses it to auto-discover sibling checkouts
+    /// that aren't in `repoPaths` yet, in both directions: a tracked primary
+    /// pulls in its slots, and a tracked slot pulls in its primary, so a repo
+    /// group always has its main checkout even when only slots were ever
+    /// tracked.
     pub worktree_dirs: Vec<String>,
     /// True when `dir` doesn't exist on disk (a tracked repo whose checkout was
     /// moved or deleted). Distinguishes a genuinely-missing directory from a
@@ -322,11 +327,19 @@ fn git_common_dir(dir: &str) -> String {
 /// `repos.json`) is unaffected: this fn only prunes the auto-discovery
 /// candidate list, never the user's own configured paths. Empty for a plain
 /// clone (no linked worktrees) or a non-repo dir.
+/// This repo's other checkouts worth showing in the rail: the main checkout
+/// (always the first `git worktree list` entry — kept so a tracked slot pulls
+/// its primary into the rail even when the primary was never tracked) plus
+/// every managed slot. Unmanaged *linked* worktrees stay hidden.
 fn list_other_worktrees(dir: &str) -> Vec<String> {
     let out = git_out(dir, &["worktree", "list", "--porcelain"]);
     parse_worktree_list(&out)
         .into_iter()
-        .filter(|w| w != dir && tt_slots::is_managed_slot(std::path::Path::new(w)))
+        .enumerate()
+        .filter(|(i, w)| {
+            w != dir && (*i == 0 || tt_slots::is_managed_slot(std::path::Path::new(w)))
+        })
+        .map(|(_, w)| w)
         .collect()
 }
 
@@ -1047,6 +1060,14 @@ mod tests {
 
         let dirs = list_other_worktrees(main.to_str().unwrap());
         assert_eq!(dirs, vec![managed.to_str().unwrap().to_string()]);
+
+        // From the slot's perspective the primary checkout is discovered too —
+        // it has no `.tt-slot` marker, but it's the main worktree, not an
+        // unmanaged linked one. This is what keeps a repo group's main
+        // checkout in the rail when only slots were ever tracked in
+        // repos.json. The unmanaged linked worktree stays hidden either way.
+        let dirs = list_other_worktrees(managed.to_str().unwrap());
+        assert_eq!(dirs, vec![main.to_str().unwrap().to_string()]);
     }
 
     #[test]
