@@ -315,41 +315,49 @@ fn git_common_dir(dir: &str) -> String {
     std::fs::canonicalize(&abs).unwrap_or(abs).to_string_lossy().into_owned()
 }
 
-/// This repo's OTHER `git worktree` checkouts (`dir` itself excluded), MINUS
-/// any that aren't a `tt slot`-managed worktree ([`tt_slots::is_managed_slot`])
-/// — a worktree Claude Code created via an unwired `WorktreeCreate` hook, or
-/// one added by hand outside the slot convention, must not auto-populate the
-/// Folder Rail unprompted. This is the only place auto-discovered worktree
-/// paths enter the engine's discovery pipeline
-/// ([`crate::engine::Engine::expand_with_worktrees`] reads nothing else), so
-/// filtering here is sufficient — no downstream code needs to know about
-/// unmanaged worktrees at all. A directory the user explicitly tracks (in
-/// `repos.json`) is unaffected: this fn only prunes the auto-discovery
+/// This repo's other checkouts worth showing in the rail (`dir` itself
+/// excluded): the main checkout — no managed slot, but kept so a tracked slot
+/// pulls its primary into the rail even when the primary was never tracked —
+/// plus every `tt slot`-managed worktree. An unmanaged *linked* worktree
+/// ([`tt_slots::is_managed_slot`] says no — one Claude Code created via an
+/// unwired `WorktreeCreate` hook, or added by hand outside the slot
+/// convention) must not auto-populate the Folder Rail unprompted. This is the
+/// only place auto-discovered worktree paths enter the engine's discovery
+/// pipeline ([`crate::engine::Engine::expand_with_worktrees`] reads nothing
+/// else), so filtering here is sufficient — no downstream code needs to know
+/// about unmanaged worktrees at all. A directory the user explicitly tracks
+/// (in `repos.json`) is unaffected: this fn only prunes the auto-discovery
 /// candidate list, never the user's own configured paths. Empty for a plain
 /// clone (no linked worktrees) or a non-repo dir.
-/// This repo's other checkouts worth showing in the rail: the main checkout
-/// (always the first `git worktree list` entry — kept so a tracked slot pulls
-/// its primary into the rail even when the primary was never tracked) plus
-/// every managed slot. Unmanaged *linked* worktrees stay hidden.
 fn list_other_worktrees(dir: &str) -> Vec<String> {
     let out = git_out(dir, &["worktree", "list", "--porcelain"]);
     parse_worktree_list(&out)
         .into_iter()
-        .enumerate()
-        .filter(|(i, w)| {
-            w != dir && (*i == 0 || tt_slots::is_managed_slot(std::path::Path::new(w)))
+        .filter(|w| {
+            w.dir != dir && (w.is_main || tt_slots::is_managed_slot(std::path::Path::new(&w.dir)))
         })
-        .map(|(_, w)| w)
+        .map(|w| w.dir)
         .collect()
 }
 
-/// Parse `git worktree list --porcelain` into the absolute path of each
-/// worktree (main + linked). Pure — unit-tested on fixture output.
-fn parse_worktree_list(porcelain: &str) -> Vec<String> {
+/// One `git worktree list` entry: the checkout's absolute path, and whether it
+/// is the repo's main worktree.
+struct WorktreeEntry {
+    dir: String,
+    is_main: bool,
+}
+
+/// Parse `git worktree list --porcelain` into one [`WorktreeEntry`] per
+/// worktree. The porcelain contract lists the main worktree first — this
+/// parser is where that positional fact becomes the named `is_main`, so
+/// callers never reconstruct it from ordering. Pure — unit-tested on fixture
+/// output.
+fn parse_worktree_list(porcelain: &str) -> Vec<WorktreeEntry> {
     porcelain
         .lines()
         .filter_map(|line| line.strip_prefix("worktree "))
-        .map(str::to_string)
+        .enumerate()
+        .map(|(i, dir)| WorktreeEntry { dir: dir.to_string(), is_main: i == 0 })
         .collect()
 }
 
@@ -947,15 +955,19 @@ mod tests {
     fn worktree_list_parses_each_entry_path() {
         let porcelain = "worktree /repo/main\nHEAD abc\nbranch refs/heads/main\n\n\
             worktree /repo/.claude/worktrees/feat\nHEAD def\nbranch refs/heads/feat\n";
+        let entries = parse_worktree_list(porcelain);
         assert_eq!(
-            parse_worktree_list(porcelain),
+            entries.iter().map(|e| e.dir.as_str()).collect::<Vec<_>>(),
             vec!["/repo/main", "/repo/.claude/worktrees/feat"],
         );
+        // The porcelain contract lists the main worktree first; the parser is
+        // what turns that ordering into the named flag.
+        assert_eq!(entries.iter().map(|e| e.is_main).collect::<Vec<_>>(), vec![true, false]);
     }
 
     #[test]
     fn worktree_list_empty_for_plain_clone_or_blank_output() {
-        assert_eq!(parse_worktree_list(""), Vec::<String>::new());
+        assert!(parse_worktree_list("").is_empty());
     }
 
     #[test]

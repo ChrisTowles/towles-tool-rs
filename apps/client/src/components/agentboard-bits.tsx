@@ -282,12 +282,10 @@ export function GhostBadge() {
 export function BranchLabel({
   branch,
   isWorktree,
-  className,
   onClick,
 }: {
   branch: string;
   isWorktree: boolean;
-  className?: string;
   onClick?: () => void;
 }) {
   return (
@@ -295,7 +293,6 @@ export function BranchLabel({
       className={cn(
         "min-w-0 truncate font-mono text-[11px]",
         isWorktree ? "text-muted-foreground" : "text-sky-500",
-        className,
       )}
       title={
         isWorktree
