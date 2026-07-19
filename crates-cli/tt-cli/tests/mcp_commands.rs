@@ -73,7 +73,7 @@ fn mcp_serve_gates_mutating_tools_from_the_config_dir_settings() {
     let requests = concat!(
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
         "\n",
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"todo_create","arguments":{"title":"gated"}}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"task_create","arguments":{"title":"gated"}}}"#,
         "\n",
     );
 

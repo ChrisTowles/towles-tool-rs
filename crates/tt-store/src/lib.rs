@@ -1495,8 +1495,7 @@ impl Store {
 
     /// Error with [`Error::TaskNotFound`] unless a task with `id` exists.
     fn require_task(&self, id: i64) -> Result<()> {
-        let exists =
-            self.conn.prepare("SELECT 1 FROM tasks WHERE id = ?1")?.exists(params![id])?;
+        let exists = self.conn.prepare("SELECT 1 FROM tasks WHERE id = ?1")?.exists(params![id])?;
         if exists { Ok(()) } else { Err(Error::TaskNotFound(id)) }
     }
 
@@ -1810,10 +1809,7 @@ mod tests {
         assert_eq!(s.get_task(linked.id).unwrap().unwrap().issues.len(), 1);
         // Detaching a non-existent link is a no-op, attaching to a missing task errors.
         s.detach_task_issue(linked.id, "o/r", 99).unwrap();
-        assert!(matches!(
-            s.attach_task_issue(9999, "o/r", 1, "u"),
-            Err(Error::TaskNotFound(9999))
-        ));
+        assert!(matches!(s.attach_task_issue(9999, "o/r", 1, "u"), Err(Error::TaskNotFound(9999))));
 
         let found = s.get_issue("o/r", 1).unwrap().unwrap();
         assert_eq!(found.number, 1);
@@ -1825,8 +1821,14 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         let t = s.add_task("slot-backed", "doing", None, None, 1).unwrap();
         assert!(t.slot.is_none());
-        s.set_task_slot(t.id, "/repos/x", Some("o/x"), "feat/y", Some("/repos/x/.claude/worktrees/feat-y"))
-            .unwrap();
+        s.set_task_slot(
+            t.id,
+            "/repos/x",
+            Some("o/x"),
+            "feat/y",
+            Some("/repos/x/.claude/worktrees/feat-y"),
+        )
+        .unwrap();
 
         let bound = s.task_for_slot_dir("/repos/x/.claude/worktrees/feat-y").unwrap().unwrap();
         assert_eq!(bound.id, t.id);

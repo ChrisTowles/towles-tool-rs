@@ -214,7 +214,9 @@ fn sync_task_links(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) {
     match store.open_issue_refs_missing_from_cache() {
         Ok(refs) => {
             for (repo, number) in refs {
-                let Some(dir) = dir_by_repo.get(&repo) else { continue };
+                let Some(dir) = dir_by_repo.get(&repo) else {
+                    continue;
+                };
                 match issues::fetch_issue_state(dir, number) {
                     Ok(state) => {
                         if let Err(e) = store.set_issue_link_state(&repo, number, &state, now_ms) {
@@ -230,11 +232,12 @@ fn sync_task_links(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) {
     match store.open_pr_refs_missing_from_cache() {
         Ok(refs) => {
             for (repo, number) in refs {
-                let Some(dir) = dir_by_repo.get(&repo) else { continue };
+                let Some(dir) = dir_by_repo.get(&repo) else {
+                    continue;
+                };
                 match prs::fetch_pr_state(dir, number) {
                     Ok(state) => {
-                        if let Err(e) =
-                            store.set_pr_link_state(&repo, number, &state, None, now_ms)
+                        if let Err(e) = store.set_pr_link_state(&repo, number, &state, None, now_ms)
                         {
                             log::warn!("set_pr_link_state {repo}#{number} failed: {e}");
                         }
@@ -307,7 +310,8 @@ pub fn collect_prs(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> Collect
         None => store.replace_prs(all),
         Some(repos) => store.replace_prs_for_repos(repos, all),
     };
-    let summary = finish_sweep(store, "prs", outcome, write, |p| (p.repo.clone(), p.number), now_ms);
+    let summary =
+        finish_sweep(store, "prs", outcome, write, |p| (p.repo.clone(), p.number), now_ms);
     sync_task_links(store, &repo_dirs, now_ms);
     summary
 }

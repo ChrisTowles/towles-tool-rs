@@ -149,6 +149,23 @@ fn untrack_from_agentboard(dir: &Path) {
     ) {
         eprintln!("tt slot: untracked {dir_s} from the agentboard rail");
     }
+    detach_task_slot(dir);
+}
+
+/// Detach any board task bound to the removed worktree (#339): clears its
+/// `slot_dir` while the branch stays recorded. Best-effort — the store this
+/// process resolves may not be the one holding the task (instance state is
+/// per-checkout-scoped), in which case this is a harmless 0-row no-op and
+/// the app's own removal path does the real detach.
+fn detach_task_slot(dir: &Path) {
+    let Ok(store) = tt_store::Store::open_default() else {
+        return;
+    };
+    if let Ok(detached) = store.clear_task_slot_dir(&dir.to_string_lossy())
+        && detached > 0
+    {
+        eprintln!("tt slot: detached the board task from the removed worktree");
+    }
 }
 
 fn cmd_new(
@@ -341,6 +358,7 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
     {
         println!("  untracked from the agentboard rail");
     }
+    detach_task_slot(&removed.dir);
     ui::success(&format!("removed {} (ports released with its .env)", removed.name));
     Ok(())
 }
@@ -366,6 +384,7 @@ fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), Strin
             {
                 ui::warning(&format!("untracked {} from the agentboard rail", slot.name));
             }
+            detach_task_slot(&slot.dir);
         }
     }
 
