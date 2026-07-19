@@ -33,6 +33,7 @@ pub mod env_drift;
 pub mod folder_meta;
 pub mod fs_notify;
 pub mod git_info;
+pub mod launch;
 pub mod metadata;
 pub mod notify;
 pub mod persist;
@@ -72,6 +73,7 @@ pub use git_info::{
     CommitStat, DiffFile, DiffMode, GitInfo, GitInfoCache, base_file_content, commit_stats,
     compute_git_info, diff_files, diff_patch,
 };
+pub use launch::{LaunchConfig, LaunchFile, port_listening, read_launch_file};
 pub use metadata::SessionMetadataStore;
 pub use notify::{NeedsYouEdge, NeedsYouWatch};
 pub use repos::{
