@@ -2,6 +2,7 @@
 //! (`<tmp>/demo` + nested `<tmp>/demo/.claude/worktrees/<name>` worktrees).
 
 use assert_cmd::Command as Tt;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -438,6 +439,70 @@ fn rm_guards_dirty_and_orphan_commits() {
         .success()
         .stdout(contains("skipping guard"));
     assert!(!slot_dir(&checkout, "feat-redo").exists());
+}
+
+/// Committed-but-unlanded work does not block removal — the branch keeps it —
+/// but the two must never be confused with each other, so removal says which
+/// one it is instead of reporting a bare success.
+#[test]
+fn rm_reports_unlanded_commits_it_does_not_block_on() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+
+    tt().args(["slot", "new", "-b", "feat/unlanded", "--root", &root_s]).assert().success();
+    let slot = slot_dir(&checkout, "feat-unlanded");
+    std::fs::write(slot.join("kept.txt"), "committed work").unwrap();
+    git(&slot, &["add", "kept.txt"]);
+    git(&slot, &["commit", "-m", "work that never landed"]);
+
+    tt().args(["slot", "rm", "feat-unlanded", "--root", &root_s])
+        .assert()
+        .success()
+        .stdout(contains("have not reached main").and(contains("stay on the branch")));
+
+    assert!(!slot.exists());
+    // The commit survives on its branch — that is why this is not a guard.
+    let branches = std::process::Command::new("git")
+        .args([
+            "-C",
+            checkout.to_str().unwrap(),
+            "branch",
+            "--list",
+            "feat/unlanded",
+        ])
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&branches.stdout).trim().is_empty());
+}
+
+/// A slot whose branch really did land reports that instead, so "removed" and
+/// "removed, but you still owe a push" never look the same.
+#[test]
+fn rm_reports_a_merged_branch_as_having_nothing_outstanding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+
+    tt().args(["slot", "new", "-b", "feat/landed", "--root", &root_s]).assert().success();
+    let slot = slot_dir(&checkout, "feat-landed");
+    // Two commits: squashing a single commit yields a patch-identical one,
+    // which is genuinely indistinguishable from a rebase (and reports as
+    // such). Collapsing several is what only the tree probe can recognise.
+    std::fs::write(slot.join("a.txt"), "a").unwrap();
+    git(&slot, &["add", "a.txt"]);
+    git(&slot, &["commit", "-m", "a"]);
+    std::fs::write(slot.join("b.txt"), "b").unwrap();
+    git(&slot, &["add", "b.txt"]);
+    git(&slot, &["commit", "-m", "b"]);
+    // Squash it onto main the way a merged PR would, under a fresh SHA.
+    git(&checkout, &["merge", "--squash", "feat/landed"]);
+    git(&checkout, &["commit", "-m", "squashed feat/landed (#1)"]);
+
+    tt().args(["slot", "rm", "feat-landed", "--root", &root_s])
+        .assert()
+        .success()
+        .stdout(contains("squash-merged into main").and(contains("nothing outstanding")));
 }
 
 #[test]

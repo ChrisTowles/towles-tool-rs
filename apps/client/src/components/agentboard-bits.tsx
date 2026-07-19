@@ -6,6 +6,7 @@ import {
   Files,
   FolderPlus,
   GitCompare,
+  GitMerge,
   GitPullRequest,
   Loader2,
   MoreVertical,
@@ -33,15 +34,16 @@ import {
   abSyncRepo,
   comparedBaseLabel,
   ctxPct,
+  folderLandedButHasWork,
   isCacheExpiring,
   isCold,
   needsCompact,
-  prMergedButFolderHasWork,
   statusColor,
   type AgentStatus,
   type CommitStat,
   type FolderData,
   type FolderMetadata,
+  type LandedVia,
   type MetadataTone,
   type PortDrift,
   type SessionData,
@@ -453,7 +455,22 @@ function CommitBreakdownPreview({
  * Clean folders read a quiet `diff`; dirty ones carry the commit count next
  * to the ± tally. Hovering previews the per-commit breakdown (each commit's
  * own ± tally, plus a total) so a branch with many commits doesn't force a
- * click just to see roughly what changed. */
+ * click just to see roughly what changed.
+ *
+ * The count is `commitsAhead` — SHA reachability, which never falls back to 0
+ * after a squash merge rewrites the commits. The tooltip therefore also says
+ * how many are genuinely still outstanding, so "12c" on a finished slot can't
+ * read as twelve commits of pending work. */
+function outstandingNote(
+  stats: Pick<FolderData, "commitsAhead" | "commitsUnlanded" | "landed">,
+  base: string,
+): string {
+  if (stats.landed && stats.commitsUnlanded === 0) return ` (${stats.landed}, nothing outstanding)`;
+  return stats.commitsUnlanded > 0 && stats.commitsUnlanded !== stats.commitsAhead
+    ? ` (${stats.commitsUnlanded} not on ${base} yet)`
+    : "";
+}
+
 export function DiffButton({
   stats,
   onOpen,
@@ -465,6 +482,8 @@ export function DiffButton({
     | "linesAdded"
     | "linesRemoved"
     | "commitsAhead"
+    | "commitsUnlanded"
+    | "landed"
     | "comparedBase"
     | "baseBranch"
   >;
@@ -498,7 +517,7 @@ export function DiffButton({
           title={
             clean
               ? `No changes vs ${base} — view diff`
-              : `${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} ahead of ${base} — view diff`
+              : `${filesChanged} file${filesChanged === 1 ? "" : "s"} changed, ${commitsAhead} commit${commitsAhead === 1 ? "" : "s"} ahead of ${base}${outstandingNote(stats, base)} — view diff`
           }
         >
           <GitCompare className="size-3" />
@@ -551,23 +570,30 @@ export function FilesButton({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-/** Precise reason a merged PR's checkout still isn't safe to delete — the two
- * conditions `folderSafeToDelete` checks, spelled out separately so the
- * tooltip never leaves you guessing which one is blocking it. Null once both
- * are satisfied (the caller has nothing left to warn about). */
+/** Precise reason a landed branch's checkout still isn't safe to delete — the
+ * two conditions `folderSafeToDelete` checks, each named *with its own
+ * consequence*, so the tooltip never leaves you guessing which one is blocking
+ * it or how much it matters. Null once both are satisfied (the caller has
+ * nothing left to warn about).
+ *
+ * The two axes are independent and are not equally serious, which is the whole
+ * point of separating them: uncommitted changes exist nowhere but this
+ * directory and deleting it destroys them, while unlanded commits stay on the
+ * branch and survive. Collapsing both into one "still has work" phrase is what
+ * made the old warning unreadable. */
 function unsafeToDeleteReason(
   stats: Pick<FolderData, "dirty" | "commitsUnlanded">,
   base: string,
 ): string | null {
   const reasons: string[] = [];
-  if (stats.dirty) reasons.push("has uncommitted changes");
+  if (stats.dirty) reasons.push("uncommitted changes — deleting this checkout destroys them");
   if (stats.commitsUnlanded > 0) {
     reasons.push(
-      `has ${stats.commitsUnlanded} commit${stats.commitsUnlanded === 1 ? "" : "s"} that haven't landed on ${base} yet`,
+      `${stats.commitsUnlanded} commit${stats.commitsUnlanded === 1 ? "" : "s"} not on ${base} yet — those stay on the branch`,
     );
   }
   if (reasons.length === 0) return null;
-  return `this checkout still ${reasons.join(" and ")}`;
+  return reasons.join("; and ");
 }
 
 /** Clickable `#N` chip for the folder's PR, tinted by its checks state (red
@@ -584,10 +610,10 @@ export function PrChip({
   stats,
 }: {
   pr: PrItem;
-  stats: Pick<FolderData, "dirty" | "commitsUnlanded" | "comparedBase">;
+  stats: Pick<FolderData, "dirty" | "commitsUnlanded" | "landed" | "comparedBase">;
 }) {
   const merged = pr.state === "merged";
-  const hasLocalWork = prMergedButFolderHasWork(pr, stats);
+  const hasLocalWork = folderLandedButHasWork(stats, pr);
   const base = comparedBaseLabel(stats);
   const tone = hasLocalWork
     ? "border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
@@ -613,7 +639,7 @@ export function PrChip({
       )}
       title={
         hasLocalWork
-          ? `${pr.title} — merged, but ${unsafeToDeleteReason(stats, base)}. Removing the slot would lose them — commit/push first. Open on GitHub.`
+          ? `${pr.title} — ${merged ? "merged" : stats.landed}, but this checkout still has ${unsafeToDeleteReason(stats, base)}. Commit or push before removing the slot. Open on GitHub.`
           : merged
             ? `${pr.title} — merged. Open on GitHub.`
             : `${pr.title} — checks ${pr.checks}${pr.reviewState === "review_requested" ? ", review requested" : ""}. Open on GitHub.`
@@ -625,8 +651,54 @@ export function PrChip({
   );
 }
 
-/** The positive counterpart to `PrChip`'s amber warning: a folder whose PR
- * merged, has no uncommitted changes, and has every commit landed on its
+/** How this branch's work reached the base, straight from git — `merged`,
+ * `rebase-merged` or `squash-merged` (see `FolderData.landed`).
+ *
+ * This exists because a squash merge — how this repo's PRs land — is invisible
+ * to every naive git check, so a fully merged slot used to read as outstanding
+ * work with nothing on screen to contradict it. It also covers the slot that
+ * never had a PR at all, where GitHub can say nothing and this is the only
+ * evidence there is.
+ *
+ * Purple, matching `PrChip`'s merged tint, because it reports the *same*
+ * status by other means — this is "it landed", not the separate, actionable
+ * "and nothing here would be lost" that `SafeToDeleteBadge` says in emerald.
+ * A plain `<span>`: a fact, not a control (rule: static things must not look
+ * clickable). Gating lives in {@link FolderLandedBadge}. */
+export function LandedBadge({ landed, base }: { landed: LandedVia; base: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="flex h-5 shrink-0 items-center gap-1 rounded-md border border-purple-500/50 bg-purple-500/10 px-1.5 font-mono text-[10.5px] text-purple-600 dark:text-purple-400">
+          <GitMerge className="size-3" />
+          {landed}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="start">
+        {`Git says this branch's work is already on ${base} (${landed}), with or without a PR.`}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** {@link LandedBadge} plus the rule about when it may show at all: only when a
+ * merged `PrChip` isn't already saying the same thing — one signal per fact.
+ * This is the whole point of `landed`: a slot with no PR (or one whose branch
+ * merged locally) can still report that it's finished. */
+export function FolderLandedBadge({
+  folder,
+  pr,
+}: {
+  folder: Pick<FolderData, "landed" | "comparedBase">;
+  pr?: PrItem | null;
+}) {
+  if (!folder.landed || pr?.state === "merged") return null;
+  return <LandedBadge landed={folder.landed} base={comparedBaseLabel(folder)} />;
+}
+
+/** The positive counterpart to `PrChip`'s amber warning: a folder whose branch
+ * landed (a merged PR, or git's own proof — `folderLanded`), has no
+ * uncommitted changes, and has every commit landed on its
  * base — `folderSafeToDelete`. Deliberately louder than a bare chip (the bug
  * this replaces: a subdued purple "#N" was the *only* signal, indistinguishable
  * at a glance from an ordinary merged-but-still-active checkout). Emerald
@@ -638,9 +710,13 @@ export function PrChip({
  * it, since this state is exactly when you'd want to take that action. */
 export function SafeToDeleteBadge({
   base,
+  landed,
   onDeleteWorktree,
 }: {
   base: string;
+  /** How git saw the branch land, when it could tell — named in the tooltip so
+   * the claim is attributable rather than asserted. */
+  landed?: LandedVia | null;
   onDeleteWorktree: () => void;
 }) {
   return (
@@ -658,8 +734,8 @@ export function SafeToDeleteBadge({
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" align="start">
-        No uncommitted changes, and every commit has landed on {base}. Nothing here would be lost —
-        click to delete this worktree.
+        No uncommitted changes, and every commit has landed on {base}
+        {landed ? ` (${landed})` : ""}. Nothing here would be lost — click to delete this worktree.
       </TooltipContent>
     </Tooltip>
   );

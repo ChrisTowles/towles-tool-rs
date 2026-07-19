@@ -234,6 +234,13 @@ pub struct FolderData {
     /// rebase/squash merge that gave them new SHAs (which `commits_ahead`,
     /// being SHA-reachability, can never see past).
     pub commits_unlanded: i64,
+    /// How this branch's work reached `compared_base` (`"merged"`,
+    /// `"rebase-merged"`, `"squash-merged"`, `"upstream gone"`), or `None`
+    /// when it hasn't fully landed — `GitInfo::landed`. Lets the rail state
+    /// that a branch is finished on git evidence, rather than only inferring
+    /// it from a GitHub PR (which never sees a locally-merged branch, and
+    /// whose "merged" says nothing about work committed since).
+    pub landed: Option<String>,
     pub sessions: Vec<SessionData>,
     /// Number of sessions that "need you" (see `bridge::session_needs`): a live
     /// shell whose agent is waiting/errored, or whose turn just ended and is

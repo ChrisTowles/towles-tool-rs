@@ -44,15 +44,23 @@ pub struct GitInfo {
     /// for any real feature branch even once it's merged — those answer "what
     /// does this branch contain", not "is anything uncommitted".
     pub dirty: bool,
-    /// Of `commits_ahead`, how many aren't yet patch-equivalent to a commit
-    /// already on `compared_base` (`git cherry`, which compares diffs rather
-    /// than commit SHAs). 0 whenever `commits_ahead` is 0, but — unlike
-    /// `commits_ahead` — it *also* drops to 0 once a rebase or squash merge
-    /// has landed this branch's changes upstream, even though the landed
-    /// commits carry brand-new SHAs that never become reachable from this
-    /// branch's HEAD. `commits_ahead` alone can never reach 0 in that case,
-    /// which is exactly why it can't answer "has everything landed".
+    /// Of `commits_ahead`, how many hold changes `compared_base` has never
+    /// received. 0 whenever `commits_ahead` is 0, and — unlike `commits_ahead`,
+    /// which can never reach 0 once the landed commits carry new SHAs — it
+    /// also drops to 0 after a rebase *or squash* merge.
+    ///
+    /// Squash needs more than the `git cherry` patch-id comparison this used
+    /// to be: a squash replaces N commits with one whose diff matches none of
+    /// them individually, so `cherry` reported every commit of a merged branch
+    /// as outstanding. [`tt_slots::landed`] combines the signals that actually
+    /// cover all three landing shapes; see its module docs.
     pub commits_unlanded: i64,
+    /// How this branch's work reached `compared_base` — `"merged"`,
+    /// `"rebase-merged"`, `"squash-merged"`, `"upstream gone"` — or `None`
+    /// when it has not fully landed. Lets the rail say *why* a branch is
+    /// finished instead of inferring it from a GitHub PR state, which is all
+    /// it had before and which says nothing about a branch merged locally.
+    pub landed: Option<String>,
     /// `git remote get-url origin`, if the checkout has an origin remote.
     /// Display-only (repo name derivation) — NOT the Folder Rail nesting key;
     /// two unrelated clones can share an origin without being linked worktrees
@@ -232,24 +240,37 @@ pub fn compute_git_info(dir: &str, base_branch_override: Option<&str>) -> GitInf
     info.worktree_dirs = list_other_worktrees(dir);
     info.slot_base_branch = tt_slots::read_slot_base(std::path::Path::new(dir));
     info.has_launch_config = crate::launch::has_launch_file(std::path::Path::new(dir));
-    // Only worth the extra shell-out once there's something to check —
+    // Only worth the extra shell-outs once there's something to check —
     // nothing ahead trivially means nothing unlanded.
-    info.commits_unlanded = if info.commits_ahead > 0 {
-        parse_cherry_unlanded(&git_out(dir, &["cherry", &compared_base, "HEAD"]))
+    if info.commits_ahead > 0 {
+        // Goes through `ops::work_state` rather than calling the probe
+        // directly, for two reasons beyond not duplicating it. It owns the
+        // strict exit-code contract the probe requires (`merge-base
+        // --is-ancestor` answers through its exit status and prints nothing,
+        // so the empty-string-on-failure `git_out` would read every branch as
+        // merged). And it redirects the probe's synthetic commit objects into
+        // scratch storage — which this path, running on the poll loop, is
+        // precisely the caller that cannot afford to skip.
+        //
+        // `compared_base` is already the resolved ref (see `resolve_base_ref`,
+        // which prefers `origin/<name>`), so there is no local-then-remote
+        // retry to do here: `remote: None` makes the single pass the whole
+        // story. The uncommitted and orphaned axes are passed as 0 because
+        // this struct reports the first as `dirty` and does not carry the
+        // second; only the landing half of `WorkState` is read below.
+        let refs = tt_slots::ops::BaseRefs {
+            base: compared_base.clone(),
+            local: compared_base.clone(),
+            remote: None,
+        };
+        let work = tt_slots::ops::work_state(&refs, std::path::Path::new(dir), "HEAD", 0, 0);
+        info.commits_unlanded = work.unlanded as i64;
+        info.landed = work.landed.map(|via| via.label().to_string());
     } else {
-        0
-    };
+        info.commits_unlanded = 0;
+    }
     info.compared_base = compared_base;
     info
-}
-
-/// Count commits `git cherry <upstream> <head>` reports as NOT yet
-/// patch-equivalent to anything on `<upstream>` (`+`-prefixed lines; a `-`
-/// prefix means that commit's diff already exists there, however it got
-/// there). Pure — unit-tested on fixture output; the shell-out lives in
-/// [`compute_git_info`].
-fn parse_cherry_unlanded(cherry_out: &str) -> i64 {
-    cherry_out.lines().filter(|l| l.starts_with("+ ")).count() as i64
 }
 
 /// Fetch `origin` for each distinct repo among `dirs`, deduped by common git
@@ -386,6 +407,9 @@ pub fn compute_git_info_from_outputs(
         lines_removed,
         commits_ahead,
         commits_behind,
+        // Filled by `compute_git_info`, which owns the git shell-outs the
+        // landed probe needs; this pure assembly has no subprocess access.
+        landed: None,
         dirty,
         // `compute_git_info` fills this in — it needs `compared_base`, which
         // this pure parser never sees.
@@ -844,16 +868,6 @@ mod tests {
         assert!(!info.dirty);
         let dirty = compute_git_info_from_outputs("main", "/repo/.git", "?? new.txt\n", "", "");
         assert!(dirty.dirty);
-    }
-
-    #[test]
-    fn cherry_unlanded_counts_only_plus_prefixed_lines() {
-        assert_eq!(parse_cherry_unlanded(""), 0);
-        assert_eq!(
-            parse_cherry_unlanded("- 1111111 landed already\n+ 2222222 not landed yet\n"),
-            1,
-        );
-        assert_eq!(parse_cherry_unlanded("- 1111111 one\n- 2222222 two\n"), 0,);
     }
 
     #[test]
@@ -1322,6 +1336,177 @@ mod tests {
         let info = compute_git_info(dir, None);
         assert_eq!(info.commits_ahead, 1);
         assert_eq!(info.commits_unlanded, 1);
+        assert_eq!(info.landed, None, "nothing landed, so the rail must not claim otherwise");
+    }
+
+    /// The rail's headline false alarm. A squash merge collapses the branch's
+    /// commits into one new commit whose diff matches none of them
+    /// individually, so the `git cherry` patch-id check this used to rely on
+    /// reported *every* commit as outstanding — a merged slot looked like it
+    /// still held work, and "safe to delete" could never fire.
+    #[test]
+    fn commits_unlanded_reaches_zero_after_a_squash_merge() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+
+        // Two commits, so the squash genuinely collapses several into one.
+        run(&["checkout", "--quiet", "-b", "feature"]);
+        std::fs::write(repo.join("a.txt"), "a").unwrap();
+        run(&["add", "a.txt"]);
+        run(&["commit", "--quiet", "-m", "a"]);
+        std::fs::write(repo.join("b.txt"), "b").unwrap();
+        run(&["add", "b.txt"]);
+        run(&["commit", "--quiet", "-m", "b"]);
+
+        run(&["checkout", "--quiet", "main"]);
+        run(&["merge", "--squash", "feature"]);
+        run(&["commit", "--quiet", "-m", "squashed feature (#1)"]);
+        run(&["update-ref", "refs/remotes/origin/main", "main"]);
+        run(&["checkout", "--quiet", "feature"]);
+
+        let dir = repo.to_str().unwrap();
+        let info = compute_git_info(dir, None);
+        // Still ahead by SHA reachability — the squash commit is a new object.
+        assert_eq!(info.commits_ahead, 2);
+        assert_eq!(info.commits_unlanded, 0, "a squash-merged branch holds no outstanding work");
+        assert_eq!(info.landed.as_deref(), Some("squash-merged"), "and the rail can say why");
+    }
+
+    /// The landing probe synthesises commit objects to get a patch-id to
+    /// compare. This runs on the Agentboard's poll, so if those land in the
+    /// repo's own object store they accumulate indefinitely — nothing here
+    /// triggers auto-gc, and `git gc` keeps unreachable objects for two weeks
+    /// even when it does run. `ops::work_state` redirects them to scratch
+    /// storage; nothing else in the test suite would notice if that stopped
+    /// working.
+    #[test]
+    fn computing_git_info_leaves_no_objects_behind_in_the_repo() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+        run(&["update-ref", "refs/remotes/origin/main", "main"]);
+        // An unlanded branch: the path that probes every commit, so the one
+        // that would litter the most.
+        run(&["checkout", "--quiet", "-b", "feature"]);
+        for n in ["a", "b", "c"] {
+            std::fs::write(repo.join(format!("{n}.txt")), n).unwrap();
+            run(&["add", "-A"]);
+            run(&["commit", "--quiet", "-m", n]);
+        }
+
+        let count_objects =
+            || walkdir(&repo.join(".git").join("objects")).filter(|p| p.is_file()).count();
+        let before = count_objects();
+        let info = compute_git_info(repo.to_str().unwrap(), None);
+        assert_eq!(info.commits_unlanded, 3, "the probe actually ran");
+        assert_eq!(
+            count_objects(),
+            before,
+            "the landing probe must not leave synthetic commits in the object store"
+        );
+    }
+
+    /// Recursive file listing, so the object-store count covers the `xx/`
+    /// fan-out directories loose objects live in.
+    fn walkdir(dir: &std::path::Path) -> impl Iterator<Item = std::path::PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    out.push(path);
+                }
+            }
+        }
+        out.into_iter()
+    }
+
+    /// Committing again after the merge is the case that must NOT read as
+    /// clean — and the count has to be the one new commit, not all three.
+    #[test]
+    fn work_committed_after_a_squash_merge_counts_only_the_new_commit() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+
+        run(&["checkout", "--quiet", "-b", "feature"]);
+        std::fs::write(repo.join("a.txt"), "a").unwrap();
+        run(&["add", "a.txt"]);
+        run(&["commit", "--quiet", "-m", "a"]);
+        std::fs::write(repo.join("b.txt"), "b").unwrap();
+        run(&["add", "b.txt"]);
+        run(&["commit", "--quiet", "-m", "b"]);
+
+        run(&["checkout", "--quiet", "main"]);
+        run(&["merge", "--squash", "feature"]);
+        run(&["commit", "--quiet", "-m", "squashed feature (#1)"]);
+        run(&["update-ref", "refs/remotes/origin/main", "main"]);
+
+        run(&["checkout", "--quiet", "feature"]);
+        std::fs::write(repo.join("c.txt"), "c").unwrap();
+        run(&["add", "c.txt"]);
+        run(&["commit", "--quiet", "-m", "c, after the merge"]);
+
+        let dir = repo.to_str().unwrap();
+        let info = compute_git_info(dir, None);
+        assert_eq!(info.commits_ahead, 3);
+        assert_eq!(info.commits_unlanded, 1, "only the post-merge commit is outstanding");
+        assert_eq!(info.landed, None, "a branch with new work has not fully landed");
     }
 
     #[test]

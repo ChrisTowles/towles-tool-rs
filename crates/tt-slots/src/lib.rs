@@ -22,6 +22,7 @@
 pub mod clean;
 pub mod envfile;
 pub mod guards;
+pub mod landed;
 pub mod layout;
 pub mod ops;
 pub mod pasted;
@@ -30,6 +31,7 @@ pub mod suggest;
 pub mod template;
 
 pub use guards::{RmBlocked, check_removal, docker_resource_matches};
+pub use landed::{LandedVia, WorkState, classify, probe_work_state};
 pub use layout::{
     CLAUDE_DIR, MARKER_FILE, WORKTREES_DIR, is_managed_slot, main_checkout_for, marker_contents,
     parse_marker, read_slot_base, slot_name_from_branch, worktrees_dir,
