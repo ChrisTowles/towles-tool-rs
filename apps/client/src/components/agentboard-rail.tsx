@@ -29,7 +29,7 @@ import {
   PurposeRow,
   RepoMenu,
   SafeToDeleteBadge,
-  WorktreeBadge,
+  BranchLabel,
 } from "@/components/agentboard-bits";
 import { DevServersButton } from "@/components/dev-servers";
 import { Button } from "@/components/ui/button";
@@ -910,13 +910,7 @@ function FolderHeader({
         </div>
       ) : (
         <div className="ml-11 flex items-center gap-1.5 pb-1.5">
-          <span
-            className="min-w-0 truncate font-mono text-[11px] text-muted-foreground"
-            onClick={onToggle}
-          >
-            ⎇ {folder.branch}
-          </span>
-          {folder.isWorktree && <WorktreeBadge />}
+          <BranchLabel branch={folder.branch} isWorktree={folder.isWorktree} onClick={onToggle} />
           {deleting && <DeletingBadge />}
           <AheadBehind stats={folder} />
           {folder.hasPortDrift && <PortDriftBadge drift={folderPortDrift(folder)} />}

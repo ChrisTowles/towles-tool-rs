@@ -77,8 +77,13 @@ pub struct GitInfo {
     /// together, never merely folders that happen to share an origin remote.
     pub common_dir: String,
     /// Absolute paths of this repo's OTHER `git worktree` checkouts (this dir
-    /// excluded), from `git worktree list`. Not part of the wire payload — the
-    /// engine uses it to auto-discover worktrees that aren't in `repoPaths` yet.
+    /// excluded), from `git worktree list`: the main checkout plus every
+    /// *managed* slot (unmanaged linked worktrees are hidden). Not part of the
+    /// wire payload — the engine uses it to auto-discover sibling checkouts
+    /// that aren't in `repoPaths` yet, in both directions: a tracked primary
+    /// pulls in its slots, and a tracked slot pulls in its primary, so a repo
+    /// group always has its main checkout even when only slots were ever
+    /// tracked.
     pub worktree_dirs: Vec<String>,
     /// True when `dir` doesn't exist on disk (a tracked repo whose checkout was
     /// moved or deleted). Distinguishes a genuinely-missing directory from a
@@ -310,33 +315,49 @@ fn git_common_dir(dir: &str) -> String {
     std::fs::canonicalize(&abs).unwrap_or(abs).to_string_lossy().into_owned()
 }
 
-/// This repo's OTHER `git worktree` checkouts (`dir` itself excluded), MINUS
-/// any that aren't a `tt slot`-managed worktree ([`tt_slots::is_managed_slot`])
-/// — a worktree Claude Code created via an unwired `WorktreeCreate` hook, or
-/// one added by hand outside the slot convention, must not auto-populate the
-/// Folder Rail unprompted. This is the only place auto-discovered worktree
-/// paths enter the engine's discovery pipeline
-/// ([`crate::engine::Engine::expand_with_worktrees`] reads nothing else), so
-/// filtering here is sufficient — no downstream code needs to know about
-/// unmanaged worktrees at all. A directory the user explicitly tracks (in
-/// `repos.json`) is unaffected: this fn only prunes the auto-discovery
+/// This repo's other checkouts worth showing in the rail (`dir` itself
+/// excluded): the main checkout — no managed slot, but kept so a tracked slot
+/// pulls its primary into the rail even when the primary was never tracked —
+/// plus every `tt slot`-managed worktree. An unmanaged *linked* worktree
+/// ([`tt_slots::is_managed_slot`] says no — one Claude Code created via an
+/// unwired `WorktreeCreate` hook, or added by hand outside the slot
+/// convention) must not auto-populate the Folder Rail unprompted. This is the
+/// only place auto-discovered worktree paths enter the engine's discovery
+/// pipeline ([`crate::engine::Engine::expand_with_worktrees`] reads nothing
+/// else), so filtering here is sufficient — no downstream code needs to know
+/// about unmanaged worktrees at all. A directory the user explicitly tracks
+/// (in `repos.json`) is unaffected: this fn only prunes the auto-discovery
 /// candidate list, never the user's own configured paths. Empty for a plain
 /// clone (no linked worktrees) or a non-repo dir.
 fn list_other_worktrees(dir: &str) -> Vec<String> {
     let out = git_out(dir, &["worktree", "list", "--porcelain"]);
     parse_worktree_list(&out)
         .into_iter()
-        .filter(|w| w != dir && tt_slots::is_managed_slot(std::path::Path::new(w)))
+        .filter(|w| {
+            w.dir != dir && (w.is_main || tt_slots::is_managed_slot(std::path::Path::new(&w.dir)))
+        })
+        .map(|w| w.dir)
         .collect()
 }
 
-/// Parse `git worktree list --porcelain` into the absolute path of each
-/// worktree (main + linked). Pure — unit-tested on fixture output.
-fn parse_worktree_list(porcelain: &str) -> Vec<String> {
+/// One `git worktree list` entry: the checkout's absolute path, and whether it
+/// is the repo's main worktree.
+struct WorktreeEntry {
+    dir: String,
+    is_main: bool,
+}
+
+/// Parse `git worktree list --porcelain` into one [`WorktreeEntry`] per
+/// worktree. The porcelain contract lists the main worktree first — this
+/// parser is where that positional fact becomes the named `is_main`, so
+/// callers never reconstruct it from ordering. Pure — unit-tested on fixture
+/// output.
+fn parse_worktree_list(porcelain: &str) -> Vec<WorktreeEntry> {
     porcelain
         .lines()
         .filter_map(|line| line.strip_prefix("worktree "))
-        .map(str::to_string)
+        .enumerate()
+        .map(|(i, dir)| WorktreeEntry { dir: dir.to_string(), is_main: i == 0 })
         .collect()
 }
 
@@ -934,15 +955,19 @@ mod tests {
     fn worktree_list_parses_each_entry_path() {
         let porcelain = "worktree /repo/main\nHEAD abc\nbranch refs/heads/main\n\n\
             worktree /repo/.claude/worktrees/feat\nHEAD def\nbranch refs/heads/feat\n";
+        let entries = parse_worktree_list(porcelain);
         assert_eq!(
-            parse_worktree_list(porcelain),
+            entries.iter().map(|e| e.dir.as_str()).collect::<Vec<_>>(),
             vec!["/repo/main", "/repo/.claude/worktrees/feat"],
         );
+        // The porcelain contract lists the main worktree first; the parser is
+        // what turns that ordering into the named flag.
+        assert_eq!(entries.iter().map(|e| e.is_main).collect::<Vec<_>>(), vec![true, false]);
     }
 
     #[test]
     fn worktree_list_empty_for_plain_clone_or_blank_output() {
-        assert_eq!(parse_worktree_list(""), Vec::<String>::new());
+        assert!(parse_worktree_list("").is_empty());
     }
 
     #[test]
@@ -1047,6 +1072,14 @@ mod tests {
 
         let dirs = list_other_worktrees(main.to_str().unwrap());
         assert_eq!(dirs, vec![managed.to_str().unwrap().to_string()]);
+
+        // From the slot's perspective the primary checkout is discovered too —
+        // it has no `.tt-slot` marker, but it's the main worktree, not an
+        // unmanaged linked one. This is what keeps a repo group's main
+        // checkout in the rail when only slots were ever tracked in
+        // repos.json. The unmanaged linked worktree stays hidden either way.
+        let dirs = list_other_worktrees(managed.to_str().unwrap());
+        assert_eq!(dirs, vec![main.to_str().unwrap().to_string()]);
     }
 
     #[test]
