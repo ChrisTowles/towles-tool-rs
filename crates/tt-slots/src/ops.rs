@@ -6,8 +6,10 @@
 //! [`crate::layout`]). Callers surface [`CreatedSlot::warnings`] to the user —
 //! nothing here prints.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -365,13 +367,32 @@ pub fn port_occupied(port: u16) -> bool {
 // agents create slots together; without this, both scan siblings before
 // either writes, and claim the same ports)
 
+/// Path of the claim lock for `checkout`, in `tt_config::locks_dir()` and
+/// keyed by a hash of the checkout path. Deliberately *not* inside the
+/// repo's `.git/` — that directory is git's own, and a third-party tool
+/// dropping state next to git's index/ref locks is not ours to do. The hash
+/// only has to be per-checkout-unique, not cryptographic (a collision would
+/// serialize two unrelated repos' claims — slower, never incorrect), so the
+/// stdlib hasher is enough; the checkout's basename is kept as a readable
+/// prefix so a stuck lock names the repo it belongs to.
+fn claim_lock_path(checkout: &Path) -> PathBuf {
+    let mut h = DefaultHasher::new();
+    checkout.hash(&mut h);
+    let repo = checkout.file_name().and_then(|n| n.to_str()).unwrap_or("repo");
+    tt_config::locks_dir().join(format!("{repo}-{:016x}-{LOCK_FILE}", h.finish()))
+}
+
 struct ClaimLock {
     path: PathBuf,
 }
 
 impl ClaimLock {
     fn acquire(checkout: &Path) -> Result<Self> {
-        let path = checkout.join(".git").join(LOCK_FILE);
+        let path = claim_lock_path(checkout);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", parent.display())))?;
+        }
         for _ in 0..100 {
             match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(_) => return Ok(Self { path }),
@@ -1478,6 +1499,30 @@ mod tests {
         let plain = tmp.path().join("just-a-dir");
         fs::create_dir_all(&plain).unwrap();
         assert!(matches!(discover_root(Some(&plain)), Err(OpsError::NoCheckout(_))));
+    }
+
+    #[test]
+    fn claim_lock_path_is_per_checkout_and_never_inside_the_repo() {
+        let a = claim_lock_path(Path::new("/home/x/code/repo-one"));
+        let b = claim_lock_path(Path::new("/home/x/code/repo-two"));
+        let a_again = claim_lock_path(Path::new("/home/x/code/repo-one"));
+
+        assert_ne!(a, b, "different checkouts must not share a claim lock");
+        assert_eq!(a, a_again, "the same checkout must resolve stably");
+        assert!(a.starts_with(tt_config::locks_dir()));
+        // The whole point of the move: nothing lands in the repo's .git/.
+        assert!(!a.components().any(|c| c.as_os_str() == ".git"));
+        assert!(
+            a.file_name().unwrap().to_str().unwrap().starts_with("repo-one-"),
+            "a stuck lock should name the repo it belongs to"
+        );
+    }
+
+    #[test]
+    fn same_named_checkouts_in_different_parents_get_different_locks() {
+        let a = claim_lock_path(Path::new("/home/x/work/api"));
+        let b = claim_lock_path(Path::new("/home/x/personal/api"));
+        assert_ne!(a, b, "basename collisions must be separated by the path hash");
     }
 
     #[test]
