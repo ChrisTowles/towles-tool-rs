@@ -152,6 +152,7 @@ mod tests {
                     compared_base: String::new(),
                     metadata: None,
                     has_port_drift: false,
+                    has_launch_config: false,
                 }],
                 needs: 0,
             }],

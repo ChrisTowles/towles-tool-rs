@@ -266,6 +266,12 @@ pub struct FolderData {
     /// liveness stamping (mirrors `needs`).
     #[serde(default)]
     pub has_port_drift: bool,
+    /// True when this checkout has a Claude Desktop `.claude/launch.json`
+    /// (`GitInfo::has_launch_config`) — gates the client's dev-servers
+    /// affordance; the configs themselves are fetched on demand, not carried
+    /// on the snapshot.
+    #[serde(default)]
+    pub has_launch_config: bool,
 }
 
 /// A logical repo: a checkout and every other folder on the rail that's a

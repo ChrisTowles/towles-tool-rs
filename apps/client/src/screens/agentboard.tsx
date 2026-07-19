@@ -120,6 +120,8 @@ import {
   type WindowsPayload,
   windowColor,
 } from "@/lib/agentboard";
+import { errorMessage } from "@/lib/errors";
+import { launchCommand, launchRegister, type LaunchConfigStatus } from "@/lib/launch";
 import { exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
 import { invoke, isTauri } from "@/lib/tauri";
 import type { OpenFileRequest } from "@/lib/ide";
@@ -1052,6 +1054,37 @@ export function AgentboardScreen() {
     );
   }
 
+  // Start a `.claude/launch.json` dev-server config in a fresh session named
+  // after it — the same PTY-typing path `launchClaudeIn` uses (no backend
+  // spawn), then register the config→session mapping so the popover offers
+  // "focus" instead of a second launch while the pane lives.
+  async function launchDevServer(folderDir: string, cfg: LaunchConfigStatus) {
+    const added = await invoke<SessionData>("ab_add_session", {
+      dir: folderDir,
+      name: `dev: ${cfg.name}`,
+    });
+    if (added.isErr()) {
+      toast(errorMessage(added.error));
+      return;
+    }
+    const rec = added.value;
+    const command = launchCommand(cfg);
+    toast(`▶ ${command} — in ${rec.name}`);
+    void invoke("ab_set_session_purpose", { id: rec.id, text: command });
+    await withLiveSession(
+      rec.id,
+      async () => {
+        const wrote = await termWriteRetry(rec.id, `${command}\r`);
+        if (wrote.isErr()) {
+          toast(`could not start ${cfg.name}: ${errorMessage(wrote.error)}`);
+          return;
+        }
+        void launchRegister(folderDir, cfg.name, rec.id, cfg.port ?? null, command);
+      },
+      folderDir,
+    );
+  }
+
   // Dismiss the start-Claude dialog (Enter, Escape, or click-outside all land
   // here via `onOpenChange`/`onKeyDown`) and launch with whatever's typed —
   // blank is a valid answer, it just skips the initial prompt + purpose.
@@ -1305,6 +1338,8 @@ export function AgentboardScreen() {
     close: (sessionId) => void closeSession(sessionId),
     renameStart: setRenaming,
     ungroup: removeSessionPane,
+    launchDevServer: (folderDir, cfg) => void launchDevServer(folderDir, cfg),
+    focusSession: selectSession,
     focusWindow: (windowId) => {
       const win = wins?.windows.find((w) => w.id === windowId);
       if (!win) return;
@@ -1622,6 +1657,7 @@ export function AgentboardScreen() {
                   repo={activeRepo}
                   folder={activeFolder}
                   pr={prForFolder(snapshot.prs, activeRepo.originUrl, activeFolder.branch)}
+                  actions={actions}
                   onOpenDiff={openDiff}
                   onOpenFiles={openFiles}
                   onNewSession={newSession}

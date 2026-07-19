@@ -88,6 +88,11 @@ pub struct GitInfo {
     /// Rail label its stats with what they mean instead of always implying
     /// "vs main". Empty when `compute_git_info` never ran (default/missing).
     pub compared_base: String,
+    /// True when the checkout has a Claude Desktop `.claude/launch.json`
+    /// (see [`crate::launch`]) — filesystem-derived here like `dir_missing`,
+    /// copied onto the wire `FolderData` so the client can gate its
+    /// dev-servers affordance without a per-poll file read of its own.
+    pub has_launch_config: bool,
 }
 
 /// Must stay above the git poll interval so the poll keeps entries warm.
@@ -226,6 +231,7 @@ pub fn compute_git_info(dir: &str, base_branch_override: Option<&str>) -> GitInf
     info.common_dir = git_common_dir(dir);
     info.worktree_dirs = list_other_worktrees(dir);
     info.slot_base_branch = tt_slots::read_slot_base(std::path::Path::new(dir));
+    info.has_launch_config = crate::launch::has_launch_file(std::path::Path::new(dir));
     // Only worth the extra shell-out once there's something to check —
     // nothing ahead trivially means nothing unlanded.
     info.commits_unlanded = if info.commits_ahead > 0 {
@@ -394,6 +400,7 @@ pub fn compute_git_info_from_outputs(
         dir_missing: false,
         slot_base_branch: None,
         compared_base: String::new(),
+        has_launch_config: false,
     }
 }
 

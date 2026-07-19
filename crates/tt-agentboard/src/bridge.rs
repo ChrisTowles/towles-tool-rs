@@ -256,6 +256,7 @@ fn build_folder(
         compared_base: git.compared_base.clone(),
         metadata: metadata.get(&entry.name).cloned(),
         has_port_drift: false, // stamped by the app from its terminal registry
+        has_launch_config: git.has_launch_config,
     }
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Result } from "better-result";
 import type { PrItem } from "./data";
 import type { IpcError } from "./errors";
+import type { LaunchConfigStatus } from "./launch";
 import { OpenedSessionSchema } from "./schemas/agentboard";
 import { invoke } from "./tauri";
 
@@ -165,6 +166,10 @@ export type FolderData = {
   /** True when a live session in this folder has drifted ports — bubbles
    * `SessionData.portDrift` up for the rail badge. */
   hasPortDrift: boolean;
+  /** True when this checkout has a Claude Desktop `.claude/launch.json` —
+   * gates the dev-servers affordance (`components/dev-servers.tsx`); the
+   * configs themselves are fetched on demand via `launch_configs`. */
+  hasLaunchConfig: boolean;
 };
 
 /** One commit ahead of `comparedBase`, with its own line-count diff — not the
@@ -1415,6 +1420,11 @@ export type SessionActions = {
   ungroup: (sessionId: string) => void;
   /** Focus the window a session's group tag points at. */
   focusWindow: (windowId: string) => void;
+  /** Start a `.claude/launch.json` dev-server config in a fresh session in
+   * `folderDir` — same PTY-typing path as `startClaude`. */
+  launchDevServer: (folderDir: string, cfg: LaunchConfigStatus) => void;
+  /** Mount + select the pane a dev-server config already runs in. */
+  focusSession: (folderDir: string, sessionId: string) => void;
 };
 
 /** Percent-rect for one pane in the active window's tiling: side-by-side up to
