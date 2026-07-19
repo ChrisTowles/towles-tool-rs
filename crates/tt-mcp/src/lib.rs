@@ -9,6 +9,40 @@
 //!
 //! Exposed tools surface the towles-tool "personal dashboard" ([`tt_store`]),
 //! the journal ([`tt_journal`]), and the agentboard engine ([`tt_agentboard`]).
+//!
+//! ## Trust boundary
+//!
+//! `tt` is registered with Claude Code at **user scope**
+//! (`claude mcp add --scope user`), so this server is spawned fresh for
+//! *every* Claude Code session on the machine, in any project, with no
+//! awareness of which one. The threat that matters here isn't an
+//! unauthenticated third party reaching the stdio pipe — it isn't
+//! network-reachable, so every call already comes from a genuinely local,
+//! genuinely-authenticated Claude Code process. It's that same legitimate
+//! process's model getting its instructions hijacked by content it reads
+//! mid-session (a hostile GitHub issue/PR body, a fetched web page) while
+//! working on something unrelated, then calling a tool whose reach is the
+//! whole machine. Neither "which directory is the caller in" nor a bearer
+//! token in the environment can gate against that: both would be inherited
+//! by (or visible to) the exact same hijacked session, so neither
+//! distinguishes genuine user intent from injected intent.
+//!
+//! The boundary this server actually enforces: **read access to the
+//! aggregate personal dashboard (calendar, PRs, issues, DMs, todos, collector
+//! status) is available from any of the user's own Claude Code sessions by
+//! design** — that's the whole point of "ask what's on my plate from
+//! anywhere." But nothing that mutates the store/journal, shells out to `gh`
+//! machine-wide, or exposes *other* sessions' live data is reachable until
+//! the human opts in via [`tt_config::McpSettings`] — a settings-file edit
+//! that no tool exposed here can perform, so no prompt injection can
+//! self-approve it. See [`Dispatcher::call_tool`]'s gate and
+//! [`tt_config::McpSettings`]'s doc comment for the mechanics. (This does not
+//! defend against a session with unrestricted shell access being instructed
+//! to edit the settings file directly and then call a gated tool — that
+//! raises the bar a lot, since it's a visible, out-of-project, two-step
+//! write rather than one opaque tool call, but it isn't airtight. A fully
+//! airtight fix needs OS-level process isolation, which is out of scope
+//! here.)
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -32,6 +66,20 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 /// truncated with an ellipsis so a huge payload can't bloat tt.db.
 const CALL_LOG_ARGS_MAX: usize = 400;
 
+/// Tools gated behind [`tt_config::McpSettings::mutations_enabled`]: anything
+/// that mutates the store/journal or shells out to `gh` machine-wide. See the
+/// module doc-comment's "Trust boundary" section for why this exists.
+const MUTATING_TOOLS: &[&str] = &[
+    "todo_create",
+    "todo_update",
+    "todo_delete",
+    "todo_clear_done",
+    "todo_link_issue",
+    "todo_set_status",
+    "journal_append",
+    "collect_refresh",
+];
+
 /// The stateful core of the server: owns the [`Store`] and dispatches JSON-RPC
 /// requests to tool handlers. Kept free of stdio so it can be driven directly in
 /// tests.
@@ -49,6 +97,11 @@ pub struct Dispatcher {
     /// `clientInfo` from the session's `initialize` (e.g. `claude-code 2.1`),
     /// stamped onto call-log rows so the app's MCP screen can say who called.
     client: Option<String>,
+    /// When set, gates mutating tools + `agent_sessions` against this instead
+    /// of the shared settings file — see [`Dispatcher::with_mcp_capabilities`].
+    /// The stdio/CLI path leaves it `None` and re-resolves from disk on every
+    /// call, so a settings edit takes effect without restarting the server.
+    mcp_settings: Option<tt_config::McpSettings>,
 }
 
 /// The runtime inputs `collect_refresh` feeds to [`tt_collect::collect_manual`]:
@@ -89,7 +142,13 @@ impl Dispatcher {
     /// Build a dispatcher over `store`; `journal_append` and `collect_refresh`
     /// resolve their config from the shared settings file on demand.
     pub fn new(store: Store) -> Dispatcher {
-        Dispatcher { store, journal_settings: None, collect_config: None, client: None }
+        Dispatcher {
+            store,
+            journal_settings: None,
+            collect_config: None,
+            client: None,
+            mcp_settings: None,
+        }
     }
 
     /// Build a dispatcher with fixed [`JournalSettings`] (test hook — keeps
@@ -100,6 +159,7 @@ impl Dispatcher {
             journal_settings: Some(journal_settings),
             collect_config: None,
             client: None,
+            mcp_settings: None,
         }
     }
 
@@ -115,6 +175,27 @@ impl Dispatcher {
             journal_settings: None,
             collect_config: Some(CollectConfig { repo_dirs, slack }),
             client: None,
+            mcp_settings: None,
+        }
+    }
+
+    /// Override the [`tt_config::McpSettings`] capability gate (test hook —
+    /// keeps the gate off the real settings file; also lets a test flip a
+    /// tool on/off deterministically instead of depending on this machine's
+    /// config). The stdio/CLI path never calls this, so `serve()` always
+    /// re-resolves from disk per call.
+    pub fn with_mcp_capabilities(mut self, mcp_settings: tt_config::McpSettings) -> Dispatcher {
+        self.mcp_settings = Some(mcp_settings);
+        self
+    }
+
+    /// The capability gate to enforce for this call: the injected override if
+    /// any, else re-resolved from the shared settings file every time (so a
+    /// settings edit takes effect without restarting the server).
+    fn mcp_capabilities(&self) -> Result<tt_config::McpSettings, String> {
+        match &self.mcp_settings {
+            Some(settings) => Ok(settings.clone()),
+            None => Ok(tt_config::load().map_err(|e| e.to_string())?.mcp),
         }
     }
 
@@ -212,6 +293,14 @@ impl Dispatcher {
     }
 
     fn call_tool(&mut self, name: &str, args: &Value, now_ms: i64) -> Result<Value, String> {
+        // Only resolve the capability gate (a settings-file read) for tools it
+        // actually applies to — the 11 read-only dashboard tools never touch it.
+        if MUTATING_TOOLS.contains(&name) && !self.mcp_capabilities()?.mutations_enabled {
+            return Err(mutations_disabled_message(name));
+        }
+        if name == "agent_sessions" && !self.mcp_capabilities()?.agent_sessions_enabled {
+            return Err(agent_sessions_disabled_message());
+        }
         match name {
             "calendar_today" => self.calendar_today(now_ms),
             "calendar_next" => self.calendar_next(now_ms),
@@ -515,8 +604,12 @@ impl Dispatcher {
     fn agent_sessions(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
         let status_filter = args.get("status").and_then(Value::as_str).map(str::to_string);
         let scanned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // The MCP server has no PTYs of its own — report agents from any
-            // app instance.
+            // The MCP server has no PTYs of its own, so `InstanceScope::this_app()`
+            // would always report zero sessions — `Any` is the only scope that
+            // makes this tool work at all. Its cross-machine reach is exactly why
+            // it's gated behind `mcp.agentSessionsEnabled` in `call_tool` (see the
+            // module doc-comment's "Trust boundary" section); this scope itself
+            // doesn't change.
             let mut engine =
                 tt_agentboard::engine::Engine::new(tt_agentboard::procenv::InstanceScope::Any);
             engine.scan_once(now_ms);
@@ -636,6 +729,34 @@ fn slack_config(slack: &tt_config::SlackDmCollector) -> Option<SlackDmConfig> {
         watch_user_id: slack.watch_user_id.clone(),
         watch_name: slack.watch_name.clone(),
     })
+}
+
+/// Path to the shared settings file, for use in the two refusal messages
+/// below — best-effort; falls back to a description if it can't be resolved.
+fn settings_path_hint() -> String {
+    tt_config::config_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "your towles-tool.settings.json".to_string())
+}
+
+/// The refusal a mutating tool returns while `mcp.mutationsEnabled` is off.
+fn mutations_disabled_message(tool: &str) -> String {
+    format!(
+        "{tool} is disabled: tt-mcp's mutating tools (todo_*, journal_append, collect_refresh) \
+         are off until you opt in. Set \"mcp\": {{\"mutationsEnabled\": true}} in {} — this can't \
+         be done from inside a Claude Code session.",
+        settings_path_hint()
+    )
+}
+
+/// The refusal `agent_sessions` returns while `mcp.agentSessionsEnabled` is off.
+fn agent_sessions_disabled_message() -> String {
+    format!(
+        "agent_sessions is disabled: it reports live session data (task names, transcript paths, \
+         working directories) from every Claude Code session on this machine, not just this one. \
+         Set \"mcp\": {{\"agentSessionsEnabled\": true}} in {} to enable it.",
+        settings_path_hint()
+    )
 }
 
 /// Run the stdio server: open the store (at `store_path` when given, else the
@@ -801,7 +922,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "todo_create",
-            "description": "Create a kanban todo (lands in the backlog column).",
+            "description": "Create a kanban todo (lands in the backlog column). Disabled by default until \"mcp\":{\"mutationsEnabled\":true} is set in settings.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -817,7 +938,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "todo_update",
-            "description": "Edit a todo's title, notes, and due date (full replace: omitting notes/dueTs clears them). Status and any issue link are untouched.",
+            "description": "Edit a todo's title, notes, and due date (full replace: omitting notes/dueTs clears them). Status and any issue link are untouched. Disabled by default until \"mcp\":{\"mutationsEnabled\":true} is set in settings.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -834,7 +955,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "todo_delete",
-            "description": "Delete a kanban todo permanently.",
+            "description": "Delete a kanban todo permanently. Disabled by default until \"mcp\":{\"mutationsEnabled\":true} is set in settings.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -845,7 +966,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "todo_clear_done",
-            "description": "Delete done todos completed more than olderThanDays (default 7) ago.",
+            "description": "Delete done todos completed more than olderThanDays (default 7) ago. Disabled by default until \"mcp\":{\"mutationsEnabled\":true} is set in settings.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -858,7 +979,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "todo_link_issue",
-            "description": "Link a todo to a GitHub issue (sets its repo, number, and url).",
+            "description": "Link a todo to a GitHub issue (sets its repo, number, and url). Disabled by default until \"mcp\":{\"mutationsEnabled\":true} is set in settings.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -872,7 +993,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "todo_set_status",
-            "description": "Move a kanban todo to another column.",
+            "description": "Move a kanban todo to another column. Disabled by default until \"mcp\":{\"mutationsEnabled\":true} is set in settings.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -918,7 +1039,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "agent_sessions",
-            "description": "Agentboard sessions, optionally filtered by agent status.",
+            "description": "Agentboard sessions, optionally filtered by agent status. Reports live session data from every Claude Code session on this machine, not just the caller's. Disabled by default until \"mcp\":{\"agentSessionsEnabled\":true} is set in settings.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -932,7 +1053,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "journal_append",
-            "description": "Append a timestamped line to today's daily note.",
+            "description": "Append a timestamped line to today's daily note. Disabled by default until \"mcp\":{\"mutationsEnabled\":true} is set in settings.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -948,7 +1069,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "collect_refresh",
-            "description": "Refresh the store now by running the issues + PRs sweep (and the watched Slack DM when configured), deliberately never calendar. Returns one summary per collector (key, ok, count, message). Use before answering 'what needs me' so the data isn't stale.",
+            "description": "Refresh the store now by running the issues + PRs sweep (and the watched Slack DM when configured), deliberately never calendar. Returns one summary per collector (key, ok, count, message). Use before answering 'what needs me' so the data isn't stale. Disabled by default until \"mcp\":{\"mutationsEnabled\":true} is set in settings.",
             "inputSchema": no_args(),
         },
     ])
@@ -1020,8 +1141,15 @@ mod tests {
         store
     }
 
+    /// All existing tests predate the mutations/agent_sessions capability
+    /// gate and assume every tool works, so the shared helper opts every
+    /// tool in; the gate itself is exercised by its own dedicated tests below.
+    fn allow_all_mcp_capabilities() -> tt_config::McpSettings {
+        tt_config::McpSettings { mutations_enabled: true, agent_sessions_enabled: true }
+    }
+
     fn dispatcher() -> Dispatcher {
-        Dispatcher::new(seeded_store())
+        Dispatcher::new(seeded_store()).with_mcp_capabilities(allow_all_mcp_capabilities())
     }
 
     /// Call a tool and return the parsed inner JSON result (the `text` payload).
@@ -1689,7 +1817,8 @@ mod tests {
         // Empty repo dirs + no Slack config → the manual sweep is a clean no-op
         // that never shells out: it still runs issues then prs (never calendar)
         // and reports each as ok with a "no repos configured" note.
-        let mut dispatcher = Dispatcher::with_collect_config(seeded_store(), vec![], None);
+        let mut dispatcher = Dispatcher::with_collect_config(seeded_store(), vec![], None)
+            .with_mcp_capabilities(allow_all_mcp_capabilities());
         let result = call_tool(&mut dispatcher, "collect_refresh", json!({}));
         let summaries = result["summaries"].as_array().unwrap();
         let keys: Vec<&str> = summaries.iter().map(|s| s["collector"].as_str().unwrap()).collect();
@@ -1768,7 +1897,8 @@ mod tests {
             template_dir: dir.path().join("templates").to_string_lossy().to_string(),
             ..Default::default()
         };
-        let mut dispatcher = Dispatcher::with_journal_settings(seeded_store(), settings);
+        let mut dispatcher = Dispatcher::with_journal_settings(seeded_store(), settings)
+            .with_mcp_capabilities(allow_all_mcp_capabilities());
         let result = call_tool(&mut dispatcher, "journal_append", json!({ "text": "hello world" }));
         assert_eq!(result["ok"], true);
         let path = result["path"].as_str().unwrap();
@@ -1784,7 +1914,8 @@ mod tests {
             template_dir: dir.path().join("templates").to_string_lossy().to_string(),
             ..Default::default()
         };
-        let mut dispatcher = Dispatcher::with_journal_settings(seeded_store(), settings);
+        let mut dispatcher = Dispatcher::with_journal_settings(seeded_store(), settings)
+            .with_mcp_capabilities(allow_all_mcp_capabilities());
         let request = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -1804,6 +1935,69 @@ mod tests {
         let mut dispatcher = dispatcher();
         let result = call_tool(&mut dispatcher, "agent_sessions", json!({}));
         assert!(result.get("sessions").is_some(), "expected a sessions field: {result}");
+    }
+
+    #[test]
+    fn mutating_tools_are_refused_when_disabled() {
+        // The default (all-false) gate: mutating tools across every family
+        // (todo_*, journal_append, collect_refresh) are refused, and the
+        // message names the exact tool plus the setting to flip.
+        let mut dispatcher = Dispatcher::new(seeded_store())
+            .with_mcp_capabilities(tt_config::McpSettings::default());
+        for (tool, args) in [
+            ("todo_create", json!({ "title": "x" })),
+            ("todo_update", json!({ "id": 1, "title": "x" })),
+            ("todo_delete", json!({ "id": 1 })),
+            ("todo_clear_done", json!({})),
+            ("todo_link_issue", json!({ "id": 1, "repo": "o/r", "number": 1, "url": "u" })),
+            ("todo_set_status", json!({ "id": 1, "status": "doing" })),
+            ("journal_append", json!({ "text": "hi" })),
+            ("collect_refresh", json!({})),
+        ] {
+            let message = call_tool_err(&mut dispatcher, tool, args);
+            assert!(message.contains(tool), "message should name the tool {tool}: {message}");
+            assert!(
+                message.contains("mutationsEnabled"),
+                "message should name the setting for {tool}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_sessions_is_refused_when_disabled() {
+        let mut dispatcher = Dispatcher::new(seeded_store())
+            .with_mcp_capabilities(tt_config::McpSettings::default());
+        let message = call_tool_err(&mut dispatcher, "agent_sessions", json!({}));
+        assert!(
+            message.contains("agentSessionsEnabled"),
+            "message should name the setting: {message}"
+        );
+    }
+
+    #[test]
+    fn read_only_tools_are_unaffected_by_a_disabled_gate() {
+        // The gate only applies to mutating tools + agent_sessions — the
+        // "personal dashboard" reads are the product's cross-project purpose
+        // and stay available regardless of the capability settings.
+        let mut dispatcher = Dispatcher::new(seeded_store())
+            .with_mcp_capabilities(tt_config::McpSettings::default());
+        let result = call_tool(&mut dispatcher, "prs_status", json!({}));
+        assert_eq!(result["prs"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn mutating_tool_succeeds_once_capability_is_enabled() {
+        let mut dispatcher =
+            Dispatcher::new(seeded_store()).with_mcp_capabilities(tt_config::McpSettings {
+                mutations_enabled: true,
+                agent_sessions_enabled: false,
+            });
+        let result = call_tool(&mut dispatcher, "todo_create", json!({ "title": "ship it" }));
+        assert_eq!(result["todo"]["text"], "ship it");
+
+        // agent_sessions stays gated independently of mutations_enabled.
+        let message = call_tool_err(&mut dispatcher, "agent_sessions", json!({}));
+        assert!(message.contains("agentSessionsEnabled"), "still gated: {message}");
     }
 
     /// Drive a raw request line through the dispatcher, discarding its response.
