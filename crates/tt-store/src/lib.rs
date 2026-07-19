@@ -42,7 +42,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// How many MCP call-log rows are retained; older rows are pruned on insert.
 const MCP_CALL_RETAIN: i64 = 500;
@@ -141,13 +141,13 @@ CREATE TABLE IF NOT EXISTS mcp_calls (
 );
 ";
 
-/// v6 (#339): a task links 0..N GitHub issues and 0..N PRs. Link rows cache
+/// v7 (#339): a task links 0..N GitHub issues and 0..N PRs. Link rows cache
 /// the last observed `state` (and `checks` for PRs) because the collector
 /// snapshot only holds open-assigned issues and a bounded merged-PR list —
 /// absence from the snapshot is ambiguous, so once a ref is observed
 /// closed/merged that fact must survive the ref leaving the snapshot.
 /// `state_ts` is when the state was last confirmed.
-const SCHEMA_TASK_LINKS_V6: &str = "\
+const SCHEMA_TASK_LINKS_V7: &str = "\
 CREATE TABLE IF NOT EXISTS task_issues (
     task_id INTEGER NOT NULL,
     repo TEXT NOT NULL,
@@ -248,7 +248,7 @@ pub struct TaskSlot {
 }
 
 /// One GitHub issue linked to a task. `state` is the last observed state
-/// (`open` | `closed`), cached on the link (see [`SCHEMA_TASK_LINKS_V6`]).
+/// (`open` | `closed`), cached on the link (see [`SCHEMA_TASK_LINKS_V7`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskIssueLink {
@@ -487,9 +487,10 @@ impl Store {
         self.conn.execute_batch(SCHEMA_V1)?;
         self.migrate_tasks_v2()?;
         self.migrate_tasks_notes_v4()?;
-        self.conn.execute_batch(SCHEMA_TASK_LINKS_V6)?;
-        self.migrate_tasks_v6()?;
+        self.conn.execute_batch(SCHEMA_TASK_LINKS_V7)?;
+        self.migrate_tasks_v7()?;
         self.conn.execute_batch(SCHEMA_MCP_CALLS_V5)?;
+        self.migrate_collect_runs_v6()?;
         self.conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -562,6 +563,20 @@ impl Store {
         Ok(())
     }
 
+    /// v6: drop `collect_runs` freshness rows for collectors that no longer
+    /// exist (`claude:email` and `claude:tasks` died in the day-screens pivot,
+    /// but their rows lingered forever). Kept as a `NOT IN` sweep against the
+    /// live collector keys — the same set `tt-collect` records under — so any
+    /// future retired collector is cleaned up the same way. Idempotent.
+    fn migrate_collect_runs_v6(&self) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM collect_runs
+             WHERE collector NOT IN ('claude:calendar', 'issues', 'prs', 'slack:dm')",
+            [],
+        )?;
+        Ok(())
+    }
+
     /// v4: free-form `notes` on todos. Dbs created before v4 (including ones the
     /// v2 rebuild just produced) lack the column; a nullable ADD COLUMN brings
     /// them forward in place. Idempotent via the `PRAGMA table_info` check.
@@ -583,16 +598,16 @@ impl Store {
         Ok(())
     }
 
-    /// v6 (#339): tasks become the unit of work. The single issue link
+    /// v7 (#339): tasks become the unit of work. The single issue link
     /// (`repo`/`issue_number`/`issue_url` columns) generalizes into the
     /// `task_issues` link table, and the task gains its slot binding
     /// (`slot_repo_root`/`slot_repo`/`slot_branch`/`slot_dir`). A rebuild —
     /// not `ALTER` — for the same reason as the v2 repair (dropping columns
     /// in place is off the table). Existing single links are ported into
     /// `task_issues` with state `open`; the next collect pass refreshes
-    /// their real state. Detects a pre-v6 table by the `repo` column, so it
+    /// their real state. Detects a pre-v7 table by the `repo` column, so it
     /// is idempotent and a no-op on fresh dbs.
-    fn migrate_tasks_v6(&self) -> Result<()> {
+    fn migrate_tasks_v7(&self) -> Result<()> {
         let mut has_repo = false;
         {
             let mut stmt = self.conn.prepare("PRAGMA table_info(tasks)")?;
@@ -609,7 +624,7 @@ impl Store {
         }
         self.conn.execute_batch(
             "BEGIN;
-             CREATE TABLE tasks_v6 (
+             CREATE TABLE tasks_v7 (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 text TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'backlog',
@@ -623,7 +638,7 @@ impl Store {
                 slot_branch TEXT,
                 slot_dir TEXT
              );
-             INSERT INTO tasks_v6 (id, text, status, position, due_ts, created_at, completed_at,
+             INSERT INTO tasks_v7 (id, text, status, position, due_ts, created_at, completed_at,
                                    notes)
                SELECT id, text, status, position, due_ts, created_at, completed_at, notes
                FROM tasks;
@@ -632,7 +647,7 @@ impl Store {
                FROM tasks
                WHERE repo IS NOT NULL AND issue_number IS NOT NULL;
              DROP TABLE tasks;
-             ALTER TABLE tasks_v6 RENAME TO tasks;
+             ALTER TABLE tasks_v7 RENAME TO tasks;
              COMMIT;",
         )?;
         Ok(())
@@ -1726,7 +1741,7 @@ mod tests {
         let t = s.snapshot().unwrap().tasks.into_iter().find(|t| t.text == "linked todo").unwrap();
         assert_eq!(t.status, "doing");
         assert_eq!(t.position, 2);
-        // The old single link came through the v2 rebuild AND the v6 port
+        // The old single link came through the v2 rebuild AND the v7 port
         // into the task_issues link table.
         assert_eq!(t.issues.len(), 1);
         assert_eq!(t.issues[0].repo, "o/r");
@@ -2071,6 +2086,29 @@ mod tests {
         assert_eq!(existing[0].notes, None);
         let t = s.add_task("with notes", "backlog", None, Some("context"), 2).unwrap();
         assert_eq!(t.notes.as_deref(), Some("context"));
+    }
+
+    #[test]
+    fn migrate_drops_retired_collector_rows_v6() {
+        // A db carrying freshness rows from collectors removed in the
+        // day-screens pivot alongside live ones.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tt.db");
+        {
+            let s = Store::open(&path).unwrap();
+            for key in ["claude:email", "claude:tasks", "prs", "slack:dm"] {
+                s.conn
+                    .execute(
+                        "INSERT INTO collect_runs (collector, ran_at, ok) VALUES (?1, 1, 1)",
+                        params![key],
+                    )
+                    .unwrap();
+            }
+        }
+
+        let s = Store::open(&path).unwrap();
+        let keys: Vec<String> = s.runs().unwrap().into_iter().map(|r| r.collector).collect();
+        assert_eq!(keys, ["prs", "slack:dm"], "retired collector keys are swept");
     }
 
     #[test]
@@ -2698,7 +2736,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_v6_ports_single_link_and_drops_link_columns() {
+    fn migrate_v7_ports_single_link_and_drops_link_columns() {
         // A v5-era db: kanban tasks table with the single-issue link columns
         // and one linked + one bare todo.
         let dir = tempfile::TempDir::new().unwrap();

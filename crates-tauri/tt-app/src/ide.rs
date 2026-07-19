@@ -14,7 +14,7 @@
 //! replacement, window teardown) aborts the server task and removes the
 //! lockfile.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::TcpListener as StdTcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,6 +27,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::Message;
+use tt_agentboard::fs_notify::MultiFileNotifier;
 
 use crate::terminal::TermState;
 
@@ -437,17 +438,26 @@ fn rejected_result(tab_name: &str) -> serde_json::Value {
 }
 
 /// Atomic write (tmp + rename), shared by the save command and diff accept.
-fn atomic_write(abs: &Path, content: &str) -> Result<(), String> {
+/// Returns the written file's mtime, taken from the tmp file *before* the
+/// rename (which preserves it): a stat of the destination path after the
+/// rename could adopt a concurrent writer's mtime as our save token, which
+/// would make the frontend treat that foreign write as its own echo and
+/// silently overwrite it on the next save.
+fn atomic_write(abs: &Path, content: &str) -> Result<i64, String> {
     let parent = abs.parent().ok_or_else(|| format!("no parent dir for {}", abs.display()))?;
     let tmp = parent.join(format!(
         ".{}.tt-tmp",
         abs.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
     ));
     std::fs::write(&tmp, content).map_err(|e| format!("cannot write {}: {e}", abs.display()))?;
+    let written_mtime = std::fs::metadata(&tmp)
+        .map(|meta| mtime_ms(&meta))
+        .map_err(|e| format!("cannot stat {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, abs).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("cannot save {}: {e}", abs.display())
-    })
+    })?;
+    Ok(written_mtime)
 }
 
 /// Outcome of the app-side tool interception.
@@ -845,16 +855,118 @@ pub async fn ide_write_file(
         if let (Some(expected), Ok(meta)) = (expected_mtime_ms, std::fs::metadata(&abs))
             && mtime_ms(&meta) != expected
         {
+            tracing::debug!(dir = %dir, file = %file_path, "viewer save refused: changed on disk");
             return Err(format!(
                 "{file_path} changed on disk since it was opened — reopen it to pick up the new contents"
             ));
         }
-        atomic_write(&abs, &content)?;
-        let meta = std::fs::metadata(&abs).map_err(|e| format!("cannot stat {file_path}: {e}"))?;
-        Ok(mtime_ms(&meta))
+        let written_mtime = atomic_write(&abs, &content)?;
+        // Recorded because saves are no longer always a user gesture — the
+        // editors auto-save after a typing pause — and "when did the app
+        // write this file?" must stay answerable from the event log alone.
+        tracing::debug!(dir = %dir, file = %file_path, bytes = content.len(), "viewer file saved");
+        Ok(written_mtime)
     })
     .await
     .map_err(|e| format!("write task failed: {e}"))?
+}
+
+/// Emitted when files open in the code viewer / diff pane change on disk
+/// underneath it — an agent edit in the same checkout, a `git checkout`, any
+/// external writer. One event per debounce batch, carrying every touched
+/// path; the viewer re-checks each and either reloads in place (clean
+/// buffer) or raises its conflict banner (unsaved edits).
+pub const FILE_CHANGED_EVENT: &str = "ide://file-changed";
+
+/// Live disk watchers behind the code viewer's and diff pane's open files:
+/// **one** [`MultiFileNotifier`] per checkout dir (inotify instances are a
+/// scarce per-user resource — see the notifier's own doc), with per-file
+/// refcounts inside it, so a 50-file diff pane and a viewer on the same file
+/// all share one OS watcher. The last `ide_unwatch_files` for a dir drops it.
+#[derive(Default)]
+pub struct ViewerWatches(Mutex<HashMap<String, MultiFileNotifier>>);
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FilesChangedPayload {
+    dir: String,
+    file_paths: Vec<String>,
+}
+
+/// Start watching open viewer/diff files for on-disk changes; changes arrive
+/// as [`FILE_CHANGED_EVENT`]s (debounced + batched in [`MultiFileNotifier`]).
+/// Takes the whole list in one call — a 50-file diff pane must not pay 50
+/// sync-command round-trips on the GTK main thread. Pair with a matching
+/// `ide_unwatch_files` when the files close. Per-path registration failures
+/// are logged and skipped, not propagated — those files just degrade to the
+/// callers' poll-driven refresh.
+#[tauri::command]
+pub fn ide_watch_files(
+    app: AppHandle,
+    watches: State<ViewerWatches>,
+    dir: String,
+    file_paths: Vec<String>,
+) -> Result<(), String> {
+    let mut map = watches.0.lock().unwrap();
+    let notifier = match map.entry(dir.clone()) {
+        std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+        std::collections::hash_map::Entry::Vacant(v) => {
+            let app = app.clone();
+            let event_dir = dir.clone();
+            let notifier = MultiFileNotifier::new(move |paths| {
+                let file_paths: Vec<String> = paths
+                    .iter()
+                    .filter_map(|abs| abs.strip_prefix(&event_dir).ok())
+                    .map(|rel| rel.to_string_lossy().into_owned())
+                    .collect();
+                if file_paths.is_empty() {
+                    return;
+                }
+                tracing::debug!(dir = %event_dir, files = ?file_paths, "viewer files changed on disk");
+                let payload = FilesChangedPayload { dir: event_dir.clone(), file_paths };
+                let _ = app.emit_to(MAIN_WINDOW_LABEL, FILE_CHANGED_EVENT, payload);
+            })
+            .map_err(|e| format!("cannot start watching {dir}: {e}"))?;
+            tracing::debug!(dir = %dir, "viewer watch instance started");
+            v.insert(notifier)
+        }
+    };
+    // Per-path failures (a parent directory the agent just deleted, a bad
+    // path) must not doom the rest of the batch — an unwatched file only
+    // degrades to the poll-driven safety net, and the caller tears down
+    // with the same full list either way (unmatched removes are no-ops).
+    for file_path in &file_paths {
+        match confined(Path::new(&dir), file_path).map(|abs| notifier.add(&abs)) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::debug!(dir = %dir, file = %file_path, error = %e, "viewer watch skipped")
+            }
+            Err(e) => {
+                tracing::debug!(dir = %dir, file = %file_path, error = %e, "viewer watch skipped")
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Drop one reference each to a batch of viewer file watches (see
+/// [`ide_watch_files`]). Unmatched calls (a watch never started — browser
+/// dev, an error path) are a no-op.
+#[tauri::command]
+pub fn ide_unwatch_files(watches: State<ViewerWatches>, dir: String, file_paths: Vec<String>) {
+    let mut map = watches.0.lock().unwrap();
+    let Some(notifier) = map.get_mut(&dir) else {
+        return;
+    };
+    for file_path in &file_paths {
+        if let Ok(abs) = confined(Path::new(&dir), file_path) {
+            notifier.remove(&abs);
+        }
+    }
+    if notifier.is_empty() {
+        tracing::debug!(dir = %dir, "viewer watch instance stopped");
+        map.remove(&dir);
+    }
 }
 
 /// Minimal stat for the editor's filesystem-provider bridge (monaco-fs.ts).

@@ -11,7 +11,6 @@ mod doctor;
 mod gh_actions;
 mod ide;
 mod instance_lock;
-mod journal;
 mod launch;
 #[cfg(target_os = "linux")]
 mod linux_desktop;
@@ -434,10 +433,22 @@ pub fn run() {
         .manage(launch::LaunchState::default())
         .manage(lsp::Lsp::default())
         .manage(ide::DiffRequests::default())
+        .manage(ide::ViewerWatches::default())
         .manage(resources::ResourceState::default())
         .manage(claude_sessions::ClaudeSessionsCache::default())
         .on_window_event(|window, event| match event {
+            // Logged like focus_changed below, and for the same reason: an
+            // orderly close otherwise leaves *no* record, making it
+            // indistinguishable in the event log from a kill or crash (a
+            // real triage dead-end: a dev-drive window that "vanished"
+            // turned out to be a manual close, provable only by this gap).
+            // CloseRequested says someone asked; Destroyed says the window
+            // went down the orderly path.
+            WindowEvent::CloseRequested { .. } => {
+                tracing::info!(window = window.label(), "window.close_requested");
+            }
             WindowEvent::Destroyed => {
+                tracing::info!(window = window.label(), "window.destroyed");
                 terminal::on_window_destroyed(window.app_handle(), window.label());
                 // Reaching here at all means an orderly shutdown — a crash or
                 // reboot never fires this, which is exactly what the next
@@ -494,6 +505,7 @@ pub fn run() {
             slots::slot_check_branch,
             slots::slot_create,
             slots::slot_remove,
+            slots::slot_stop_port,
             slots::slot_run_setup,
             slots::slot_suggest,
             slots::slot_write_pasted_images,
@@ -527,12 +539,6 @@ pub fn run() {
             slack::slack_dm_file,
             slack::slack_list_users,
             store::journal_log,
-            journal::journal_get_today,
-            journal::journal_save,
-            journal::journal_list,
-            journal::journal_search,
-            journal::journal_create,
-            journal::journal_open,
             claude_sessions::claude_sessions_summary,
             claude_sessions::claude_sessions_search,
             claude_sessions::claude_sessions_insights,
@@ -578,6 +584,8 @@ pub fn run() {
             lsp::lsp_stop,
             lsp::lsp_stop_all,
             ide::ide_write_file,
+            ide::ide_watch_files,
+            ide::ide_unwatch_files,
             ide::ide_diff_resolve,
             diagnostics::ide_diagnostics_refresh,
         ])

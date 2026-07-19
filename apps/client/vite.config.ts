@@ -23,21 +23,25 @@ const monacoVscodeDeps = Object.keys(pkg.dependencies).filter((d) =>
 // collides with whichever sibling checkout claimed it — 1420 in particular is
 // the pool's first port, and therefore almost always already held. Failing
 // here with the fix is better than binding a port that isn't ours.
+//
+// Resolved only when the dev *server* is actually going to bind it: a
+// `vite build` never listens on anything, and failing it (as a top-level
+// resolve did) broke every checkout without a rendered `.env` — CI first.
 const repoRoot = path.resolve(__dirname, "../..");
-const devPort =
-  Number(process.env.TT_DEV_PORT) ||
-  resolveDevPort(repoRoot).unwrapOr(undefined) ||
-  fatalNoDevPort();
 
-function fatalNoDevPort(): never {
-  throw new Error(
-    "no TT_DEV_PORT for this checkout — run `tt slot env <name>` to claim ports, " +
-      "or pin TT_DEV_PORT in .env.local",
-  );
+function requireDevPort(): number {
+  const port = Number(process.env.TT_DEV_PORT) || resolveDevPort(repoRoot).unwrapOr(undefined);
+  if (!port) {
+    throw new Error(
+      "no TT_DEV_PORT for this checkout — run `tt slot env <name>` to claim ports, " +
+        "or pin TT_DEV_PORT in .env.local",
+    );
+  }
+  return port;
 }
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -72,12 +76,26 @@ export default defineConfig({
   worker: {
     format: "es",
   },
+  // The main chunk is ~2.4 MB minified and that is accepted, not an
+  // oversight: the monaco-vscode stack must stay one module graph (see the
+  // dedupe note above — splitting it breaks grammar/theme registration),
+  // screens are static imports by design (apps/client/CLAUDE.md's motion
+  // note), and a Tauri webview loads assets from local disk, so the 500 kB
+  // default — a network-delivery heuristic — doesn't apply. The limit is
+  // raised with headroom rather than removed: growth past ~3 MB should
+  // resurface the warning and prompt a fresh look.
+  build: {
+    chunkSizeWarningLimit: 3000,
+  },
   // Prevent Vite from obscuring Rust errors
   clearScreen: false,
-  server: {
-    port: devPort,
-    strictPort: true,
-  },
+  server:
+    command === "serve"
+      ? {
+          port: requireDevPort(),
+          strictPort: true,
+        }
+      : undefined,
   // Env variables starting with these prefixes are exposed to the client
   envPrefix: ["VITE_", "TAURI_"],
-});
+}));

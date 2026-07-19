@@ -1,16 +1,13 @@
 import {
   ChartColumn,
-  FileText,
   GitPullRequest,
   Gauge,
   KanbanSquare,
-  CalendarDays,
   MessageCircle,
   Radio,
   Settings,
   Stethoscope,
   TerminalSquare,
-  Users,
   type LucideIcon,
 } from "lucide-react";
 
@@ -19,9 +16,6 @@ export type ScreenId =
   | "board"
   | "agentboard"
   | "slack"
-  | "journal-today"
-  | "journal-notes"
-  | "journal-meetings"
   | "doctor"
   | "claude-sessions"
   | "gh-prs"
@@ -66,24 +60,6 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     icon: MessageCircle,
     keywords: ["slack", "dm", "chat", "message", "danielle", "wife"],
     fullBleed: true,
-  },
-  "journal-today": {
-    id: "journal-today",
-    title: "Today",
-    icon: CalendarDays,
-    keywords: ["journal", "daily", "notes"],
-  },
-  "journal-notes": {
-    id: "journal-notes",
-    title: "Notes",
-    icon: FileText,
-    keywords: ["journal", "search"],
-  },
-  "journal-meetings": {
-    id: "journal-meetings",
-    title: "Meetings",
-    icon: Users,
-    keywords: ["journal"],
   },
   doctor: {
     id: "doctor",
@@ -133,7 +109,6 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
 
 export const NAV_SECTIONS: { label: string; screens: ScreenId[] }[] = [
   { label: "Focus", screens: ["cockpit", "board", "agentboard", "slack"] },
-  { label: "Journal", screens: ["journal-today", "journal-notes", "journal-meetings"] },
   { label: "Tools", screens: ["doctor", "claude-sessions", "gh-prs", "mcp"] },
   { label: "App", screens: ["settings"] },
 ];
