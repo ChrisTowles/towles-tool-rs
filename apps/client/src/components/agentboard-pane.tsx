@@ -103,9 +103,9 @@ export function WorkingContext({
           <span className="min-w-0 flex-1 truncate text-2xl font-semibold leading-tight">
             {folder.name}
           </span>
-          {!missing && folder.hasLaunchConfig && (
-            <DevServersButton folder={folder} actions={actions} />
-          )}
+          {/* Always mounted (dimmed sans launch.json) so the dev-servers
+              feature is discoverable; the dense rail stays gated. */}
+          {!missing && <DevServersButton folder={folder} actions={actions} />}
           {!missing && (
             <IconBtn
               title={`New session (${shortcutHint("ab-new-session")})`}

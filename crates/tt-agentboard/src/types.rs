@@ -274,9 +274,10 @@ pub struct FolderData {
     #[serde(default)]
     pub has_port_drift: bool,
     /// True when this checkout has a Claude Desktop `.claude/launch.json`
-    /// (`GitInfo::has_launch_config`) — gates the client's dev-servers
-    /// affordance; the configs themselves are fetched on demand, not carried
-    /// on the snapshot.
+    /// (`GitInfo::has_launch_config`) — gates the rail's dev-servers button
+    /// and dims/branches the pane header's (always-mounted there for
+    /// discoverability); the configs themselves are fetched on demand, not
+    /// carried on the snapshot.
     #[serde(default)]
     pub has_launch_config: bool,
 }
