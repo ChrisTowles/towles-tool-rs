@@ -1,10 +1,4 @@
-pub mod agentboard;
-pub mod claude_settings;
 pub mod collect;
-pub mod config;
-pub mod doctor;
-pub mod gh;
-pub mod install;
 pub mod journal;
 pub mod mcp;
 pub mod slot;

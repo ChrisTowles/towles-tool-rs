@@ -1,36 +1,34 @@
 ---
 name: towles-tool
-description: Use towles-tool (`tt`) CLI for git helpers, journaling, and developer utilities. Use when asked about "tt commands", "create branch from issue", "daily notes", "meeting notes", or "check dependencies".
+description: Use towles-tool (`tt`) CLI for journaling and worktree slots. Use when asked about "tt commands", "daily notes", "meeting notes", or worktree slot management.
 user_invocable: true
 ---
 
 # towles-tool CLI
 
-Personal CLI toolkit. Alias: `tt`
+Personal CLI toolkit. Binary: `tt`
 
 Config: `~/.config/towles-tool/towles-tool.settings.json`
-
-## Git
-
-```bash
-tt gh branch        # Create branch from GitHub issue
-tt gh pr            # Create pull request
-tt gh branch-clean  # Delete merged branches
-```
 
 ## Journaling
 
 ```bash
 tt journal daily-notes  # Weekly file, daily sections (alias: tt today)
-tt journal meeting      # Meeting notes (alias: tt m)
-tt journal note         # General notes (alias: tt n)
+tt journal meeting      # Meeting notes
+tt journal note         # General notes
+tt journal jot "text"   # Append a timestamped bullet to today's note
+tt journal list         # Recent entries
+tt journal search TEXT  # Search entries
 ```
 
-## Utilities
+## Worktree slots
 
 ```bash
-tt config   # Show config (alias: cfg)
-tt doctor   # Check dependencies
-tt graph    # Visualize dependency graph
-tt install  # Configure Claude Code settings
+tt slot new -b feat/thing  # Create a slot (branch-named worktree + rendered .env)
+tt slot ls                 # Fleet: main checkout + slots, branch, dirty, ports
+tt slot rm <name>          # Guarded removal
+tt slot clean              # Remove every merged/gone slot
 ```
+
+Everything else (PR/issue flow, dashboards, collectors) lives in the desktop
+app; headless entry points are `tt mcp serve` and `tt collect`.

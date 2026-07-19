@@ -3,7 +3,7 @@ mod commands;
 mod ui;
 
 use clap::Parser;
-use cli::{Cli, Commands, GhCommands, JournalCommands};
+use cli::{Cli, Commands, JournalCommands};
 
 fn main() {
     let Cli { verbose, config_dir, command } = Cli::parse();
@@ -11,17 +11,10 @@ fn main() {
     init_logging(verbose);
 
     let exit_code = match command {
-        Commands::Config(args) => commands::config::run(args.command, config_dir.as_deref()),
-        Commands::Doctor { json, track, diff } => commands::doctor::run(json, track, diff),
-        Commands::Install { observability } => commands::install::run(observability),
         Commands::Journal(args) => commands::journal::run(args.command, config_dir.as_deref()),
         Commands::Today { no_open } => {
             commands::journal::run(JournalCommands::DailyNotes { no_open }, config_dir.as_deref())
         }
-        Commands::Gh(args) => commands::gh::run(args.command),
-        Commands::Pr(args) => commands::gh::run(GhCommands::Pr(args)),
-        Commands::Prs => commands::gh::run(GhCommands::PrList),
-        Commands::Agentboard(args) => commands::agentboard::run(args.command),
         Commands::Collect(args) => commands::collect::run(args.command, config_dir.as_deref()),
         Commands::Mcp(args) => commands::mcp::run(args.command, config_dir.as_deref()),
         Commands::Slot(args) => commands::slot::run(args.command),

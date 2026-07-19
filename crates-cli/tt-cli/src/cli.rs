@@ -21,32 +21,6 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Manage towles-tool configuration
-    Config(ConfigArgs),
-
-    /// Check system dependencies and environment
-    Doctor {
-        /// Emit results as JSON
-        #[arg(long)]
-        json: bool,
-
-        /// Save check results to history
-        #[arg(long)]
-        track: bool,
-
-        /// Compare current run against the last tracked run (human-format; not
-        /// combinable with --json)
-        #[arg(long, conflicts_with = "json")]
-        diff: bool,
-    },
-
-    /// Configure Claude Code settings and ensure required plugins
-    Install {
-        /// Show OTEL observability setup instructions
-        #[arg(long, short = 'o')]
-        observability: bool,
-    },
-
     /// Journal and note-taking commands
     Journal(JournalArgs),
 
@@ -56,19 +30,6 @@ pub enum Commands {
         #[arg(long)]
         no_open: bool,
     },
-
-    /// GitHub utilities
-    Gh(GhArgs),
-
-    /// Create a pull request from the current branch (alias for `gh pr`)
-    Pr(PrArgs),
-
-    /// List my open PRs with CI status across repos (alias for `gh pr-list`)
-    Prs,
-
-    /// Agentboard: manage the watched-repo list (app + collectors read it)
-    #[command(alias = "ag")]
-    Agentboard(AgentboardArgs),
 
     /// Collect dashboard data into the local store (calendar, issues, PRs)
     Collect(CollectArgs),
@@ -280,176 +241,6 @@ pub struct CollectStatusArgs {
 
 #[derive(Args)]
 #[command(disable_help_subcommand = true)]
-pub struct AgentboardArgs {
-    #[command(subcommand)]
-    pub command: AgentboardCommands,
-}
-
-#[derive(Subcommand)]
-pub enum AgentboardCommands {
-    /// Manage the watched-repo list (repos.json) that feeds the app + collectors
-    Repos(ReposArgs),
-
-    /// Manage a folder's PTY sessions (sessions.json)
-    Sessions(SessionsArgs),
-}
-
-#[derive(Args)]
-#[command(disable_help_subcommand = true)]
-pub struct SessionsArgs {
-    #[command(subcommand)]
-    pub command: Option<SessionsCommands>,
-}
-
-#[derive(Subcommand)]
-pub enum SessionsCommands {
-    /// Add a PTY session to a folder (a watched checkout)
-    Add {
-        /// Path to the folder/checkout (must exist)
-        path: String,
-        /// Optional session name (defaults to "shell N")
-        #[arg(long)]
-        name: Option<String>,
-    },
-
-    /// Rename a session by id
-    Rename {
-        /// Session id (from `sessions list`)
-        id: String,
-        /// New name
-        name: String,
-    },
-
-    /// Remove a session by id
-    Remove {
-        /// Session id (from `sessions list`)
-        id: String,
-    },
-}
-
-#[derive(Args)]
-#[command(disable_help_subcommand = true)]
-pub struct ReposArgs {
-    #[command(subcommand)]
-    pub command: Option<ReposCommands>,
-}
-
-#[derive(Subcommand)]
-pub enum ReposCommands {
-    /// Add a repo directory to the watch list
-    Add {
-        /// Path to the repo (must exist; a warning is printed if it isn't a git repo)
-        path: String,
-    },
-
-    /// Remove a repo from the watch list by session name or path
-    Remove {
-        /// Session name (dir basename) or the exact configured path
-        target: String,
-    },
-}
-
-#[derive(Args)]
-#[command(disable_help_subcommand = true)]
-pub struct GhArgs {
-    #[command(subcommand)]
-    pub command: GhCommands,
-}
-
-#[derive(Subcommand)]
-pub enum GhCommands {
-    /// Create a git branch from a GitHub issue
-    Branch {
-        /// Only show issues assigned to me
-        #[arg(long, short = 'a')]
-        assigned_to_me: bool,
-    },
-
-    /// Delete local branches that have been merged into main
-    BranchClean(BranchCleanArgs),
-
-    /// Create a pull request from the current branch
-    Pr(PrArgs),
-
-    /// List my open PRs across tracked repos with CI check status
-    #[command(alias = "prs")]
-    PrList,
-
-    /// Assign an open issue to a sibling slot checkout of this repo
-    /// (hard-fails unless the slot is clean: no changes, no stashes)
-    Assign(AssignArgs),
-
-    /// Get the current checkout current with main: fetch + rebase onto
-    /// origin/<base> (hard-fails on a dirty tree or a rebase conflict)
-    Sync(SyncArgs),
-
-    /// Check out the branch for a PR number (resolves via `gh pr view`,
-    /// guards on a clean tree, fetches the branch if needed)
-    #[command(alias = "pr-checkout")]
-    Co(CoArgs),
-}
-
-#[derive(Args)]
-pub struct SyncArgs {
-    /// Base branch to rebase onto
-    #[arg(long, short = 'b', default_value = "main")]
-    pub base: String,
-}
-
-#[derive(Args)]
-pub struct CoArgs {
-    /// PR number whose head branch to check out
-    pub number: u64,
-}
-
-#[derive(Args)]
-pub struct AssignArgs {
-    /// Issue number to assign
-    pub issue: u64,
-
-    /// Target slot checkout directory (a clone of this same repo)
-    #[arg(long, short = 's')]
-    pub slot: std::path::PathBuf,
-}
-
-#[derive(Args)]
-pub struct BranchCleanArgs {
-    /// Skip confirmation prompt
-    #[arg(long, short = 'f')]
-    pub force: bool,
-
-    /// Preview branches without deleting
-    #[arg(long)]
-    pub dry_run: bool,
-
-    /// Clean branches whose upstream is gone (deleted on the remote) instead of
-    /// ancestor-merged ones — catches GitHub rebase-and-merge branches. Deletes
-    /// with `git branch -D` since they aren't ancestor-merged.
-    #[arg(long)]
-    pub gone: bool,
-
-    /// Base branch to check against
-    #[arg(long, short = 'b', default_value = "main")]
-    pub base: String,
-}
-
-#[derive(Args)]
-pub struct PrArgs {
-    /// Create as draft PR
-    #[arg(long, short = 'D')]
-    pub draft: bool,
-
-    /// Base branch for the PR
-    #[arg(long, short = 'b', default_value = "main")]
-    pub base: String,
-
-    /// Skip confirmation prompt
-    #[arg(long, short = 'y')]
-    pub yes: bool,
-}
-
-#[derive(Args)]
-#[command(disable_help_subcommand = true)]
 pub struct JournalArgs {
     #[command(subcommand)]
     pub command: JournalCommands,
@@ -544,31 +335,5 @@ pub enum JournalCommands {
         /// Emit matches as a JSON array instead of grouped text
         #[arg(long)]
         json: bool,
-    },
-}
-
-#[derive(Args)]
-#[command(disable_help_subcommand = true)]
-pub struct ConfigArgs {
-    #[command(subcommand)]
-    pub command: ConfigCommands,
-}
-
-#[derive(Subcommand)]
-pub enum ConfigCommands {
-    /// Show current settings and the settings file path
-    Show,
-
-    /// Validate the settings file against the config schema
-    Validate,
-
-    /// Print the settings JSON schema
-    Schema,
-
-    /// Reset settings to defaults
-    Reset {
-        /// Confirm the reset (required to actually write)
-        #[arg(long)]
-        confirm: bool,
     },
 }
