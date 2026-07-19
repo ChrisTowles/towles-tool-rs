@@ -220,6 +220,8 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and lockfile schema the app uses to pose as an IDE that Claude Code sessions connect to.
 - `crates/tt-vt` — libghostty-vt terminal-state engine driving the app's canvas terminals (needs zig 0.15.x).
 - `crates/tt-mcp` — stdio JSON-RPC MCP server over the store and live sessions.
+- `crates/tt-otel` — telemetry: the `tracing` subscriber and the local JSONL
+  event log every subprocess and user action lands in.
 - `crates/tt-update` — GitHub Releases update check for the running app.
 - `crates-cli/tt-cli` — the `clap` CLI (binary `tt`).
 - `crates-tauri/tt-app` — the Tauri 2 desktop shell; `apps/client` is its React + Vite frontend.
