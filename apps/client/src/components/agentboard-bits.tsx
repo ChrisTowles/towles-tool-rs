@@ -1048,17 +1048,22 @@ export function PanePlaceholder({
   label,
   detail,
   tone = "muted",
+  focused = false,
   onRemove,
 }: {
   label: string;
   detail?: string;
   tone?: "muted" | "alert";
+  /** This pane is the one the user last clicked into — see the focus-ring
+   * rule in `screens/agentboard.tsx`'s `focusedPaneId`. */
+  focused?: boolean;
   onRemove: () => void;
 }) {
   return (
     <div
       className={cn(
         "flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-muted-foreground",
+        focused && "border-violet-500/60",
         tone === "alert" && "border-amber-500/40",
       )}
     >

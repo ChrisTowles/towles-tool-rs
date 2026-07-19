@@ -89,6 +89,19 @@ export function ideSetOpenFile(
   return invoke<void>("ide_set_open_file", { dir, filePath, dirty });
 }
 
+/** Flip one diff-pane file's unsaved-edit state — same
+ * getOpenEditors/checkDocumentDirty surface as `ideSetOpenFile`, but additive
+ * rather than replacing: unlike the Files tab's single viewer, several diff
+ * pane files can be dirty at once, so this upserts (or, on `dirty: false`,
+ * clears) just this one path instead of replacing the whole open-file. */
+export function ideSetDiffDirty(
+  dir: string,
+  filePath: string,
+  dirty: boolean,
+): Promise<Result<void, IpcError>> {
+  return invoke<void>("ide_set_diff_dirty", { dir, filePath, dirty });
+}
+
 /** A viewer file read: content + the mtime token the save path checks. */
 export type FileRead = { content: string; mtimeMs: number };
 
@@ -107,6 +120,40 @@ export function ideWriteFile(
   expectedMtimeMs: number | null,
 ): Promise<Result<number, IpcError>> {
   return invoke<number>("ide_write_file", { dir, filePath, content, expectedMtimeMs });
+}
+
+/** A Monaco model's minimal save-relevant surface — structural, not
+ * `monaco-editor`'s `ITextModel`, so this lib module (IPC + IDE-bridge
+ * concerns) doesn't need an editor dependency. */
+type SavableModel = { getValue(): string; getAlternativeVersionId(): number };
+
+/**
+ * The save sequence every editable Monaco buffer in this app uses —
+ * `CodeViewer` (one file) and the diff pane's editable modified side (N
+ * files) both need the identical write/error/version-capture steps, just
+ * different storage shape for the per-path mtime/version bookkeeping, so
+ * that bookkeeping stays with the caller. On success, returns the new mtime
+ * token plus the model's version *as of when the write started* — comparing
+ * that to the model's *current* version afterward tells the caller whether
+ * more was typed during the write and the buffer is therefore still dirty.
+ * On failure, toasts and returns `null`: a refused save leaves the buffer
+ * dirty and the file untouched, the one failure here the user must never
+ * have to infer.
+ */
+export async function saveModelBuffer(
+  dir: string,
+  filePath: string,
+  model: SavableModel,
+  expectedMtimeMs: number | null,
+): Promise<{ mtimeMs: number; versionAtSave: number } | null> {
+  const versionAtSave = model.getAlternativeVersionId();
+  const written = await ideWriteFile(dir, filePath, model.getValue(), expectedMtimeMs);
+  if (written.isErr()) {
+    const { toast } = await import("sonner");
+    toast.error(`Couldn't save ${filePath} — ${written.error.message}`);
+    return null;
+  }
+  return { mtimeMs: written.value, versionAtSave };
 }
 
 /** Payload of the `ide://open-file` event (Claude called the openFile tool). */

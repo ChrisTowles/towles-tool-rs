@@ -603,6 +603,19 @@ pub fn pasted_images_dir() -> PathBuf {
     std::env::temp_dir().join(TOOL_NAME).join("pasted-images")
 }
 
+/// Directory for single-instance PID lock files (see `InstanceLock` in
+/// `tt-app`). Deliberately the OS temp dir, not `config_dir()`: a lock file
+/// only means anything while the process that created it is still running —
+/// it carries no durable state worth keeping across a reboot, and doesn't
+/// belong next to settings a user might back up or sync. Unscoped like
+/// `config_dir()` (not nested under `slots/<scope>`) since some holders
+/// (e.g. `"slack-socket"`) are intentionally shared across every worktree
+/// slot on the machine; per-checkout holders instead vary the lock *name*
+/// (e.g. `"app-<identifier>"`).
+pub fn locks_dir() -> PathBuf {
+    std::env::temp_dir().join(TOOL_NAME).join("locks")
+}
+
 /// Agentboard *instance* persistence directory (sessions.json, windows.json,
 /// collapse.json, … — one running app's state): scoped in a slot checkout.
 pub fn agentboard_dir() -> Result<PathBuf> {

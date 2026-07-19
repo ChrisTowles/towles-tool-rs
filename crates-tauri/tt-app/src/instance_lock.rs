@@ -22,17 +22,17 @@ use std::path::PathBuf;
 
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
-/// A held lock file under the shared config dir, released on `Drop`.
+/// A held lock file under `tt_config::locks_dir()`, released on `Drop`.
 pub struct InstanceLock {
     path: PathBuf,
 }
 
 impl InstanceLock {
-    /// Try to acquire `<config_dir>/<name>.lock`. `None` if another live
-    /// process already holds it or the config dir is unavailable; a lock
-    /// whose recorded PID is no longer running is stolen.
+    /// Try to acquire `<locks_dir>/<name>.lock`. `None` if another live
+    /// process already holds it; a lock whose recorded PID is no longer
+    /// running is stolen.
     pub fn try_acquire(name: &str) -> Option<Self> {
-        let path = tt_config::config_dir().ok()?.join(format!("{name}.lock"));
+        let path = tt_config::locks_dir().join(format!("{name}.lock"));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).ok()?;
         }
