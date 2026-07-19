@@ -4,6 +4,18 @@ A [Tauri 2](https://v2.tauri.app/) desktop app plus the `tt` CLI, built for one
 job: **going from steering one coding agent to steering many without going
 insane.**
 
+## Why this exists
+
+Two reasons:
+
+1. **The Codex and Claude Code desktop apps didn't run on Linux.** This work
+   happens on a Linux desktop, so the shell had to be built. (Claude Desktop
+   [now has a Linux beta](https://code.claude.com/docs/en/desktop-linux) —
+   released June 30, 2026, the day before this repo's first commit.)
+
+2. **Existing tools were a good GUI or a good TUI, never both.** This app
+   aims to be both: a real GUI around real terminals.
+
 ## What this is (and is not)
 
 Claude Code is the harness. This is the layer around it.
