@@ -270,11 +270,12 @@ Cargo workspace + npm workspace (`apps/client` only):
     mutates state) needs a `tracing` span or event recording at least the
     action and its outcome — the same way `process.spawn` covers subprocesses.
     Frontend actions (click, shortcut, palette command, form submit) emit a
-    `ui.action` event carrying a stable action id and the screen; since the
-    webview can't reach `tracing`, they cross IPC through one shared
-    helper/command seam — `uiAction(action, screen)` in
+    `ui.action` event carrying a stable action id, the screen, and an
+    optional word of `detail`; since the webview can't reach `tracing`, they
+    cross IPC through one shared seam — `uiAction(action, screen, detail?)` in
     `apps/client/src/lib/ui-action.ts` → the `ui_action` command in
-    `tt-app/src/lib.rs` — never per-feature ad-hoc plumbing. Discrete intents only, never content or
+    `tt-app/src/lib.rs` — never per-feature ad-hoc plumbing. Discrete intents
+    only, never content or
     continuous input: no per-keystroke or mouse-move events, no PTY input, no
     note text (the log is plaintext, and per-record flushing assumes
     human-rate volume). OS-level signals with no other record — window focus/blur

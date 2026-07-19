@@ -7,6 +7,7 @@ import { CockpitScreen } from "@/screens/cockpit";
 import { DoctorScreen } from "@/screens/doctor";
 import { GhPrsScreen } from "@/screens/gh-prs";
 import { McpScreen } from "@/screens/mcp";
+import { PreviewScreen } from "@/screens/preview";
 import { SettingsScreen } from "@/screens/settings";
 import { SlackScreen } from "@/screens/slack";
 
@@ -14,6 +15,7 @@ export const SCREEN_COMPONENTS: Record<ScreenId, ComponentType> = {
   cockpit: CockpitScreen,
   board: BoardScreen,
   agentboard: AgentboardScreen,
+  preview: PreviewScreen,
   slack: SlackScreen,
   doctor: DoctorScreen,
   "claude-sessions": ClaudeSessionsScreen,

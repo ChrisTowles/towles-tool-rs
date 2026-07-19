@@ -1,13 +1,17 @@
 import { invoke } from "@/lib/tauri";
+import type { ScreenId } from "@/lib/screens";
 
-/** Record a user gesture in the OTel event log (the root CLAUDE.md's
- * "every user action must be logged" rule). One shared seam: crosses IPC to
- * the `ui_action` Tauri command, which emits a `ui.action` tracing event with
- * a stable action id and the screen it happened on. Fire-and-forget by
- * design — telemetry must never change the gesture's own behavior, and an
- * ignored `Result` can't produce an unhandled rejection (in browser dev the
- * call is a `NotInTauri` no-op). Discrete intents only: no content, no
- * continuous input. */
-export function uiAction(action: string, screen: string): void {
-  void invoke("ui_action", { action, screen });
+/** Record one user gesture in the on-disk event log — the frontend half of
+ * the root CLAUDE.md's "every user action emits its OTel event" doctrine,
+ * crossing IPC through the single `ui_action` command (`tt-app/src/lib.rs`)
+ * rather than per-feature plumbing.
+ *
+ * Discrete intents only: a stable dot-separated action id
+ * (`preview.feedback.send`, `task.start`) plus the screen — never content,
+ * keystrokes, or continuous input. `detail` is for a word of context (an
+ * outcome, a count), not payloads. Fire-and-forget by design: `invoke` can't
+ * throw, and a lost record must never block the gesture it describes (in
+ * browser dev the call is a `NotInTauri` no-op). */
+export function uiAction(action: string, screen: ScreenId, detail?: string): void {
+  void invoke<void>("ui_action", { action, screen, detail: detail ?? null });
 }

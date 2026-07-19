@@ -16,6 +16,7 @@ mod launch;
 mod linux_desktop;
 mod lsp;
 mod mcp;
+mod preview;
 mod resources;
 mod resume;
 mod scheduler;
@@ -59,12 +60,12 @@ fn app_slot() -> String {
 
 /// The shared IPC seam for frontend `ui.action` telemetry (see the root
 /// CLAUDE.md's `tt-otel` bullet): the webview can't reach `tracing`, so every
-/// user gesture worth recording crosses here with a stable action id and the
-/// screen it happened on. Discrete intents only — no content, no continuous
-/// input.
+/// user gesture worth recording crosses here with a stable action id, the
+/// screen it happened on, and an optional word of `detail` (an outcome, a
+/// count — never content or continuous input).
 #[tauri::command]
-fn ui_action(action: String, screen: String) {
-    tracing::info!(%action, %screen, "ui.action");
+fn ui_action(action: String, screen: String, detail: Option<String>) {
+    tracing::info!(%action, %screen, detail = %detail.as_deref().unwrap_or(""), "ui.action");
 }
 
 /// Per-slot Tauri app identifier, so each worktree slot's self-installed
@@ -512,6 +513,8 @@ pub fn run() {
             agentboard::ab_get_commit_stats,
             launch::launch_configs,
             launch::launch_register,
+            preview::preview_capture,
+            preview::preview_write_feedback,
             slots::slot_base_branches,
             slots::slot_check_branch,
             slots::slot_create,

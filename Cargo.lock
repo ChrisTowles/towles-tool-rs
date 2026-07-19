@@ -5345,6 +5345,7 @@ name = "tt-app"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "cairo-rs",
  "chrono",
  "dirs",
  "futures-util",
@@ -5382,6 +5383,7 @@ dependencies = [
  "tt-update",
  "tt-vt",
  "uuid",
+ "webkit2gtk",
 ]
 
 [[package]]
