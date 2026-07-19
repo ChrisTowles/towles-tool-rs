@@ -5551,6 +5551,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tt-config",
  "tt-exec",
+ "tt-git",
 ]
 
 [[package]]

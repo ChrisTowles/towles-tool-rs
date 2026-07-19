@@ -11,21 +11,60 @@
 //! The one carve-out is attached screenshots, which are named by path and
 //! explicitly readable — a pasted image is frequently the entire brief, and
 //! without it an image-only request yields a generic suggestion.
+//!
+//! The shape of the answer is the CLI's problem, not ours: `--json-schema`
+//! makes `claude` route the model through a structured-output tool and hand
+//! back a validated object in its `--output-format json` envelope, so there's
+//! no JSON-out-of-prose extraction here. Anything that still goes wrong lands
+//! on [`local_fallback`] instead of an error — a "Suggest" button that can
+//! only ever fill the fields in.
 
 use std::path::Path;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Generous — a cold `claude` CLI (auth check, MCP startup) can take a while,
 /// but this is a manual, one-shot user action, not a background poll.
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(60);
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Mirrors the dialog's own `BRANCH_SLUG_SOURCE_CHARS`.
+const BRANCH_SLUG_SOURCE_CHARS: usize = 50;
+
+/// JSON Schema handed to `claude -p --json-schema`, which makes the CLI itself
+/// enforce the shape: the model answers through a structured-output tool and
+/// the envelope carries a validated `structured_output` object. That's the
+/// difference between "we asked nicely for JSON" and "the CLI guarantees it".
+const SUGGESTION_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {
+    "branch": { "type": "string", "description": "legal git ref: lowercase kebab-case, prefixed feat/, fix/, or chore/" },
+    "goal": { "type": "string", "description": "one clear, concise sentence restating the task" }
+  },
+  "required": ["branch", "goal"],
+  "additionalProperties": false
+}"#;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Suggestion {
     pub branch: String,
     pub goal: String,
+}
+
+/// What [`suggest`] hands back: always a usable suggestion. `fallback` is
+/// `Some(why)` when `claude` couldn't be reached or answered unusably and the
+/// branch/goal were derived locally instead — the dialog shows that as a note,
+/// not an error, because the fields still got filled with something sane.
+///
+/// Serializes flat (`{branch, goal, fallback}`) so the Tauri command can hand
+/// it straight to the dialog instead of restating the fields in a parallel
+/// payload type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Suggested {
+    #[serde(flatten)]
+    pub suggestion: Suggestion,
+    pub fallback: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -48,14 +87,104 @@ pub type Result<T> = std::result::Result<T, SuggestError>;
 /// "make it look like this" with no typed goal at all — so they're named in
 /// the prompt and reading them is explicitly allowed, unlike every other
 /// file.
-pub fn suggest(cwd: &Path, goal: &str, images: &[String]) -> Result<Suggestion> {
+///
+/// Never fails while the user gave us anything to slug (see [`Suggested`]).
+/// Only an image-only brief can still error, and even then the dialog's typed
+/// fields are left untouched.
+pub fn suggest(cwd: &Path, goal: &str, images: &[String]) -> Result<Suggested> {
+    match ask_claude(cwd, goal, images) {
+        Ok(suggestion) => Ok(Suggested { suggestion, fallback: None }),
+        Err(e) => local_fallback(goal)
+            .map(|suggestion| Suggested { suggestion, fallback: Some(one_line(&e)) })
+            .ok_or(e),
+    }
+}
+
+/// The `fallback` note renders as one short line in the dialog, but
+/// [`SuggestError::Failed`] carries raw multi-line stderr — enough to blow out
+/// the form. Keep its first non-empty line; the full text is still in the log.
+/// `Exec` and `Unparseable` are already one line, so they pass through.
+fn one_line(e: &SuggestError) -> String {
+    let SuggestError::Failed(stderr) = e else {
+        return e.to_string();
+    };
+    match stderr.lines().map(str::trim).find(|l| !l.is_empty()) {
+        Some(first) => format!("claude -p failed: {first}"),
+        // A non-zero exit with silent stderr — Display would give a bare
+        // "claude -p failed:" with nothing after the colon.
+        None => "claude -p exited non-zero with no output".to_string(),
+    }
+}
+
+fn ask_claude(cwd: &Path, goal: &str, images: &[String]) -> Result<Suggestion> {
     let prompt = prompt_for(goal, images);
-    let out = tt_exec::run_in_dir_with_timeout("claude", &["-p", &prompt], cwd, CLAUDE_TIMEOUT)
-        .map_err(|e| SuggestError::Exec(e.to_string()))?;
+    let out =
+        tt_exec::run_in_dir_with_timeout("claude", &claude_args(&prompt), cwd, CLAUDE_TIMEOUT)
+            .map_err(|e| SuggestError::Exec(e.to_string()))?;
     if !out.ok() {
         return Err(SuggestError::Failed(out.stderr.trim().to_string()));
     }
-    parse_suggestion(&out.stdout).ok_or(SuggestError::Unparseable)
+    parse_response(&out.stdout)
+}
+
+/// Split out so a test can assert the flags that make the answer's shape the
+/// CLI's problem — asserting against [`SUGGESTION_SCHEMA`] alone would pass
+/// even if `--json-schema` were dropped from the command.
+fn claude_args(prompt: &str) -> [&str; 6] {
+    [
+        "-p",
+        prompt,
+        "--output-format",
+        "json",
+        "--json-schema",
+        SUGGESTION_SCHEMA,
+    ]
+}
+
+/// The `--output-format json` envelope. Only the three fields that decide the
+/// outcome are named; everything else (usage, cost, session id) is ignored.
+#[derive(Deserialize)]
+struct Envelope {
+    #[serde(default)]
+    is_error: bool,
+    /// The schema-validated object `--json-schema` guarantees.
+    #[serde(default)]
+    structured_output: Option<Suggestion>,
+    /// Only read for its error message, when `is_error`.
+    #[serde(default)]
+    result: Option<String>,
+}
+
+/// Read the envelope, and nothing else. A `claude` too old for these flags
+/// exits non-zero on the unknown argument and never reaches here, so there is
+/// no older-CLI text shape worth carrying — and a schema regression should
+/// surface as a fallback the user can see, not be silently rescued by a
+/// lenient re-read.
+fn parse_response(stdout: &str) -> Result<Suggestion> {
+    let env: Envelope =
+        serde_json::from_str(stdout.trim()).map_err(|_| SuggestError::Unparseable)?;
+    if env.is_error {
+        return Err(SuggestError::Failed(env.result.unwrap_or_default().trim().to_string()));
+    }
+    env.structured_output
+        .map(|s| Suggestion {
+            branch: s.branch.trim().to_string(),
+            goal: s.goal.trim().to_string(),
+        })
+        .filter(|s| !s.branch.is_empty() && !s.goal.is_empty())
+        .ok_or(SuggestError::Unparseable)
+}
+
+/// Derive a suggestion without `claude` at all: the goal as typed, and the
+/// same `feat/<slug>` the dialog's branch field already derives — same rules
+/// and source-char budget, through the one shared slug helper, so the two
+/// can't disagree about what the branch should be.
+fn local_fallback(goal: &str) -> Option<Suggestion> {
+    let goal = goal.trim();
+    let slug =
+        tt_git::branch_name::slug(&goal.chars().take(BRANCH_SLUG_SOURCE_CHARS).collect::<String>());
+    (!slug.is_empty())
+        .then(|| Suggestion { branch: format!("feat/{slug}"), goal: goal.to_string() })
 }
 
 fn prompt_for(goal: &str, images: &[String]) -> String {
@@ -93,43 +222,18 @@ fn prompt_for(goal: &str, images: &[String]) -> String {
     let goal_line = if goal.trim().is_empty() { "(no goal text — use the images)" } else { goal };
     format!(
         "You are naming a git branch and tidying a one-line task goal for a \
-         new git worktree in this repository. Reply with ONLY a JSON object (no \
-         prose, no markdown code fences) of the shape {{\"branch\": \
-         \"feat/short-kebab-slug\", \"goal\": \"a clear, concise restatement of the \
-         goal\"}}. The branch must be a legal git ref name: lowercase, kebab-case, \
-         prefixed with feat/, fix/, or chore/ as fits the goal.{image_task} \
+         new git worktree in this repository. Answer with the required \
+         structured output: a `branch` like \"feat/short-kebab-slug\" and a \
+         `goal` that clearly and concisely restates the task. The branch must \
+         be a legal git ref name: lowercase, kebab-case, prefixed with feat/, \
+         fix/, or chore/ as fits the goal.{image_task} \
          {image_rule}\n\nGoal: {goal_line}"
     )
-}
-
-/// Strip an optional ```json fence, then parse. `claude -p` is asked for bare
-/// JSON, but models reach for a fence out of habit often enough to bother.
-fn parse_suggestion(raw: &str) -> Option<Suggestion> {
-    let text = raw.trim();
-    let text = text.strip_prefix("```json").or_else(|| text.strip_prefix("```")).unwrap_or(text);
-    let text = text.strip_suffix("```").unwrap_or(text).trim();
-    serde_json::from_str(text).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_bare_json() {
-        let s = parse_suggestion(r#"{"branch": "feat/add-thing", "goal": "add the thing"}"#);
-        assert_eq!(
-            s,
-            Some(Suggestion { branch: "feat/add-thing".into(), goal: "add the thing".into() })
-        );
-    }
-
-    #[test]
-    fn strips_a_json_code_fence() {
-        let raw = "```json\n{\"branch\": \"fix/bug\", \"goal\": \"fix the bug\"}\n```";
-        let s = parse_suggestion(raw);
-        assert_eq!(s, Some(Suggestion { branch: "fix/bug".into(), goal: "fix the bug".into() }));
-    }
 
     #[test]
     fn without_images_the_prompt_forbids_touching_anything() {
@@ -169,11 +273,99 @@ mod tests {
     }
 
     #[test]
-    fn prose_around_json_fails_to_parse() {
-        // Deliberately strict: this is a controlled prompt to our own model,
-        // not third-party output, so no lenient extraction is worth the
-        // complexity — a malformed reply just surfaces as "unparseable" and
-        // the user's typed text is untouched.
-        assert_eq!(parse_suggestion("Sure! {\"branch\": \"x\", \"goal\": \"y\"}"), None);
+    fn the_call_makes_the_cli_enforce_the_schema() {
+        // Asserting against SUGGESTION_SCHEMA alone would still pass with the
+        // flags dropped, so check the command that actually gets run.
+        let args = claude_args("the prompt");
+        assert_eq!(args[2..4], ["--output-format", "json"]);
+        assert_eq!(args[4], "--json-schema");
+        let schema: serde_json::Value = serde_json::from_str(args[5]).unwrap();
+        assert_eq!(schema["required"], serde_json::json!(["branch", "goal"]));
+        assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn serializes_flat_for_the_dialog() {
+        // The dialog reads {branch, goal, fallback}; `flatten` is what keeps
+        // the Tauri command from needing a parallel payload struct.
+        let s = Suggested {
+            suggestion: Suggestion { branch: "feat/a".into(), goal: "do a".into() },
+            fallback: None,
+        };
+        let json: serde_json::Value = serde_json::to_value(&s).unwrap();
+        assert_eq!(json, serde_json::json!({"branch": "feat/a", "goal": "do a", "fallback": null}));
+    }
+
+    #[test]
+    fn reads_the_envelopes_validated_structured_output() {
+        let raw = r#"{"type":"result","is_error":false,
+            "result":"{\"branch\":\"ignored\",\"goal\":\"ignored\"}",
+            "structured_output":{"branch":"feat/a","goal":"do a"},
+            "total_cost_usd":0.28}"#;
+        let s = parse_response(raw).unwrap();
+        assert_eq!(s, Suggestion { branch: "feat/a".into(), goal: "do a".into() });
+    }
+
+    #[test]
+    fn an_envelope_without_structured_output_is_unparseable() {
+        // Deliberately not re-read out of `result`: that hedge would silently
+        // paper over a schema regression. It falls through to the local
+        // fallback, which the user can see.
+        let raw = r#"{"type":"result","is_error":false,
+            "result":"Sure! {\"branch\":\"fix/b\",\"goal\":\"fix b\"}"}"#;
+        assert!(matches!(parse_response(raw), Err(SuggestError::Unparseable)));
+    }
+
+    #[test]
+    fn an_error_envelope_reports_its_message() {
+        let raw = r#"{"type":"result","is_error":true,"result":"credit balance too low"}"#;
+        let e = parse_response(raw).unwrap_err();
+        assert!(e.to_string().contains("credit balance too low"), "{e}");
+    }
+
+    #[test]
+    fn blank_fields_count_as_unparseable() {
+        let raw = r#"{"is_error":false,"structured_output":{"branch":"  ","goal":"x"}}"#;
+        assert!(matches!(parse_response(raw), Err(SuggestError::Unparseable)));
+    }
+
+    #[test]
+    fn a_local_fallback_mirrors_the_dialogs_own_branch_slug() {
+        let s = local_fallback("  I want All tasks: agentboard → kanban!  ").unwrap();
+        assert_eq!(s.branch, "feat/i-want-all-tasks-agentboard-kanban");
+        assert_eq!(s.goal, "I want All tasks: agentboard → kanban!");
+    }
+
+    #[test]
+    fn a_long_goal_only_slugs_its_opening() {
+        // Counted in chars, not bytes — the budget is `chars().take(..)`, so a
+        // byte-length assertion would pass on ASCII and miss a multi-byte
+        // overrun entirely.
+        for goal in [&"word ".repeat(40), &"wörd ".repeat(40)] {
+            let s = local_fallback(goal).unwrap();
+            let slug_chars = s.branch.chars().count() - "feat/".chars().count();
+            assert!(slug_chars <= BRANCH_SLUG_SOURCE_CHARS, "{} ({slug_chars} chars)", s.branch);
+        }
+    }
+
+    #[test]
+    fn a_fallback_note_stays_one_line() {
+        // The note is a single 11px line in the dialog; raw stderr is not.
+        let e = SuggestError::Failed("error: boom\n  at frame one\n  at frame two".into());
+        assert_eq!(one_line(&e), "claude -p failed: error: boom");
+        // Display would render a bare "claude -p failed:" with nothing after it.
+        assert_eq!(
+            one_line(&SuggestError::Failed(String::new())),
+            "claude -p exited non-zero with no output"
+        );
+        assert_eq!(one_line(&SuggestError::Unparseable), SuggestError::Unparseable.to_string());
+    }
+
+    #[test]
+    fn nothing_to_slug_means_no_fallback() {
+        // An image-only brief with no typed text: there is genuinely nothing
+        // to derive, so the caller surfaces the real error instead.
+        assert_eq!(local_fallback("   "), None);
+        assert_eq!(local_fallback("!!!"), None);
     }
 }

@@ -16,6 +16,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tt-config = { workspace = true }
 tt-exec = { workspace = true }
+# For the one shared branch-name slug rule (`branch_name::slug`), so the
+# suggestion fallback can't drift from the issue-branch convention.
+tt-git = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.14.0"

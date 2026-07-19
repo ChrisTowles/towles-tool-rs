@@ -122,6 +122,10 @@ export type BranchCheck = {
 export type SlotSuggestion = {
   branch: string;
   goal: string;
+  /** Set when claude couldn't answer and the fields were filled from a
+   * locally derived slug instead. A note, not an error — the suggestion is
+   * still usable, so it renders muted rather than red. */
+  fallback: string | null;
 };
 
 /** A `slot_create` call that's been fired and is running in the background —
@@ -239,7 +243,12 @@ export function InlineNewSlot({
   const [effort, setEffort] = useState<EffortChoice>(USE_DEFAULT);
   const [branches, setBranches] = useState<string[]>([]);
   const [baseOpen, setBaseOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // One slot for whatever the form has to say — an error (nothing happened)
+  // or a note (something happened, with a caveat). Modeled as one piece of
+  // state because they are mutually exclusive on screen; two would mean every
+  // `showError` also had to remember to clear the other one.
+  const [notice, setNotice] = useState<{ text: string; kind: "error" | "note" } | null>(null);
+  const showError = (text: string) => setNotice({ text, kind: "error" });
   const [branchCheck, setBranchCheck] = useState<BranchCheck | null>(null);
   const [suggesting, setSuggesting] = useState(false);
   // What the goal/branch fields held right before the last accepted
@@ -283,7 +292,7 @@ export function InlineNewSlot({
           setBranches(list);
           setBase(list[0] ?? "main");
         },
-        err: (e) => setError(e.message),
+        err: (e) => showError(e.message),
       });
     });
     return () => {
@@ -333,7 +342,7 @@ export function InlineNewSlot({
     // like this"), so images alone are enough to ask — not just typed text.
     if (suggesting || (!goal.trim() && !imagePaths.length)) return;
     setSuggesting(true);
-    setError(null);
+    setNotice(null);
     const suggestion = await invoke<SlotSuggestion>("slot_suggest", {
       dir: repo.dir,
       goal,
@@ -344,8 +353,11 @@ export function InlineNewSlot({
         setPreOverwrite({ goal, branchEdit });
         setGoal(s.goal);
         setBranchEdit(s.branch);
+        if (s.fallback) {
+          setNotice({ text: `Filled in without claude — ${s.fallback}`, kind: "note" });
+        }
       },
-      err: (e) => setError(e.message),
+      err: (e) => showError(e.message),
     });
     setSuggesting(false);
   }
@@ -355,6 +367,7 @@ export function InlineNewSlot({
     setGoal(preOverwrite.goal);
     setBranchEdit(preOverwrite.branchEdit);
     setPreOverwrite(null);
+    setNotice(null);
   }
 
   function setIssueAssignedToMe(mine: boolean) {
@@ -420,7 +433,7 @@ export function InlineNewSlot({
     if (!fresh.length) return;
     const next = [...images, ...fresh];
     setImages(next);
-    setError(null);
+    setNotice(null);
     await stageImages(next);
   }
 
@@ -448,7 +461,7 @@ export function InlineNewSlot({
       err: (e) => {
         setImages([]);
         setImagePaths([]);
-        setError(`Couldn't attach that image: ${e.message}`);
+        showError(`Couldn't attach that image: ${e.message}`);
       },
     });
     setStaging(false);
@@ -458,7 +471,7 @@ export function InlineNewSlot({
     try {
       await addImages(await imagesFromDataTransfer(data));
     } catch (e) {
-      setError(errorMessage(e));
+      showError(errorMessage(e));
     }
   }
 
@@ -488,16 +501,16 @@ export function InlineNewSlot({
   function submit(worktree = true) {
     if (worktree) {
       if (!branch) {
-        setError("Give a goal (or type a branch name) first.");
+        showError("Give a goal (or type a branch name) first.");
         return;
       }
       if (branchProblem) {
-        setError(branchProblem);
+        showError(branchProblem);
         return;
       }
     } else if (!goal.trim() && selectedIssues.length === 0) {
       // A task-only create still needs *something* to become the card.
-      setError("Give a goal (or pick an issue) first.");
+      showError("Give a goal (or pick an issue) first.");
       return;
     }
     onSubmit({
@@ -534,7 +547,7 @@ export function InlineNewSlot({
             // silently — the paste is already swallowed by the preventDefault
             // above, so say why rather than looking like nothing happened.
             if (!pastedImages.some((it) => isPasteableImage(it.type))) {
-              setError(`Can't attach ${pastedImages[0].type} — paste a PNG, JPEG, GIF, or WebP.`);
+              showError(`Can't attach ${pastedImages[0].type} — paste a PNG, JPEG, GIF, or WebP.`);
               return;
             }
             void pasteImages(e.clipboardData);
@@ -626,7 +639,7 @@ export function InlineNewSlot({
           title="Attach the image currently on your clipboard"
           onClick={() => {
             void pasteFromHostClipboard().then((found) => {
-              if (!found) setError("No image on the clipboard — copy one first.");
+              if (!found) showError("No image on the clipboard — copy one first.");
             });
           }}
         >
@@ -784,7 +797,16 @@ export function InlineNewSlot({
           </SelectContent>
         </Select>
       </div>
-      {error && <p className="text-[11px] text-red-500">{error}</p>}
+      {notice && (
+        <p
+          className={cn(
+            "text-[11px]",
+            notice.kind === "error" ? "text-red-500" : "text-muted-foreground",
+          )}
+        >
+          {notice.text}
+        </p>
+      )}
       <div className="flex items-center justify-end gap-2">
         <Button variant="ghost" size="sm" onClick={cancel}>
           Cancel

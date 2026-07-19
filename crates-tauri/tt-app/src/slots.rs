@@ -11,6 +11,7 @@ use tauri::Manager;
 use tt_slots::guards::RmBlocked;
 use tt_slots::ops::{self, CreateOpts, RemoveOpts};
 use tt_slots::pasted::{self, PastedImage};
+use tt_slots::suggest::Suggested;
 
 /// Fire-and-forget `git fetch` across every tracked repo (deduped, see
 /// [`tt_agentboard::git_info::fetch_all`]), then nudge the rail to re-emit.
@@ -68,32 +69,43 @@ pub fn slot_check_branch(root: String, branch: String) -> Result<BranchCheck, St
     Ok(BranchCheck { name: check.name, taken: check.taken, error: check.error })
 }
 
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct SlotSuggestion {
-    pub branch: String,
-    pub goal: String,
-}
-
 /// Manual "Suggest" button in the new-slot dialog: ask `claude -p` (cwd =
 /// `dir`, the repo checkout the dialog is open for, so it sees real repo
 /// context) to propose a better branch name and a cleaned-up goal for the
 /// text the user typed. The dialog fills its editable fields with the
 /// result — nothing here writes anything or is called automatically.
 /// Long-running (a cold `claude` CLI) → off the main thread.
+///
+/// Returns `tt_slots::Suggested`, which serializes flat as
+/// `{branch, goal, fallback}`.
 #[tauri::command]
 pub async fn slot_suggest(
     dir: String,
     goal: String,
     image_paths: Vec<String>,
-) -> Result<SlotSuggestion, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+) -> Result<Suggested, String> {
+    let images = image_paths.len();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         tt_slots::suggest(&PathBuf::from(dir), &goal, &image_paths)
     })
     .await
     .map_err(|e| format!("slot task failed: {e}"))?
-    .map(|s| SlotSuggestion { branch: s.branch, goal: s.goal })
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string());
+    // A hard failure stays at `warn` — merging the two log sites must not cost
+    // the severity an operator filters on.
+    match &result {
+        Ok(s) => {
+            let outcome = if s.fallback.is_some() { "fallback" } else { "ok" };
+            tracing::info!(
+                images,
+                outcome,
+                reason = s.fallback.as_deref().unwrap_or(""),
+                "slot_suggest"
+            );
+        }
+        Err(e) => tracing::warn!(images, outcome = "error", reason = e.as_str(), "slot_suggest"),
+    }
+    result
 }
 
 /// Create the slot for `branch` off `base` (empty base = the primary's

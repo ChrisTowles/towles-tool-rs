@@ -352,8 +352,7 @@ export function AgentboardScreen() {
   // still-in-flight outcome.
   const deleteFlows = useRef(new Map<string, number>());
   const deleteFlowOf = (dir: string) => deleteFlows.current.get(dir) ?? 0;
-  const bumpDeleteFlow = (dir: string) =>
-    deleteFlows.current.set(dir, deleteFlowOf(dir) + 1);
+  const bumpDeleteFlow = (dir: string) => deleteFlows.current.set(dir, deleteFlowOf(dir) + 1);
   // Folder dirs whose worktree is mid-delete (`slot_remove` in flight) — the
   // rail dims/disables that row for the duration, see `performDeleteWorktree`.
   const [deletingDirs, setDeletingDirs] = useState<Set<string>>(new Set());
