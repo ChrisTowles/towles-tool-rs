@@ -1,5 +1,5 @@
 import { invoke } from "@/lib/tauri";
-import { claudeCommand, isAgent, promptWithImages, type RepoData } from "@/lib/agentboard";
+import { claudeCommand, type FolderData, isAgent, promptWithImages } from "@/lib/agentboard";
 import { devServerUrl, type LaunchConfigStatus } from "@/lib/launch";
 
 /** A dev server detected from some tracked checkout's `.claude/launch.json`
@@ -170,36 +170,25 @@ export function feedbackPtyData(prompt: string, agentRunning: boolean): string {
   return agentRunning ? `${prompt}\r` : claudeCommand(prompt);
 }
 
-/** A PTY-live session the feedback can be typed into, flattened out of the
- * agentboard state tree. Only `live` sessions qualify: `term_write` reaches a
- * PTY directly (no pane mount needed), but a session that was never started
- * has no PTY to reach — see "A pane has no PTY until it is rendered" in
- * apps/client/CLAUDE.md. */
+/** A PTY-live session the feedback can be typed into. Only `live` sessions
+ * qualify: `term_write` reaches a PTY directly (no pane mount needed), but a
+ * session that was never started has no PTY to reach — see "A pane has no PTY
+ * until it is rendered" in apps/client/CLAUDE.md. */
 export type SendTarget = {
   sessionId: string;
   label: string;
-  folderDir: string;
-  repoName: string;
   agentRunning: boolean;
 };
 
-/** Flatten live sessions into picker rows, Claude sessions first (feedback
- * is usually for the agent already working on that app). */
-export function sendTargets(repos: RepoData[]): SendTarget[] {
-  const rows: SendTarget[] = [];
-  for (const repo of repos) {
-    for (const folder of repo.folders) {
-      for (const s of folder.sessions) {
-        if (!s.live) continue;
-        rows.push({
-          sessionId: s.id,
-          label: `${repo.name}/${folder.name} · ${s.name}`,
-          folderDir: folder.dir,
-          repoName: repo.name,
-          agentRunning: isAgent(s),
-        });
-      }
-    }
-  }
-  return rows.toSorted((a, b) => Number(b.agentRunning) - Number(a.agentRunning));
+/** The live sessions in one folder — the preview pane belongs to a task
+ * (folder), so its feedback goes to that task's own session, not a global
+ * pick. Claude sessions first (feedback is usually for the agent already
+ * working on that checkout); a folder with one live session needs no picker
+ * at all. */
+export function folderSendTargets(folder: Pick<FolderData, "sessions"> | undefined): SendTarget[] {
+  if (!folder) return [];
+  return folder.sessions
+    .filter((s) => s.live)
+    .map((s) => ({ sessionId: s.id, label: s.name, agentRunning: isAgent(s) }))
+    .toSorted((a, b) => Number(b.agentRunning) - Number(a.agentRunning));
 }

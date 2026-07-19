@@ -1,5 +1,6 @@
 import { useState, type ComponentProps, type ReactNode } from "react";
 import {
+  AppWindow,
   Check,
   ChevronDown,
   CircleDot,
@@ -584,6 +585,25 @@ export function FilesButton({ onOpen }: { onOpen: () => void }) {
     >
       <Files className="size-3" />
       <span>files</span>
+    </button>
+  );
+}
+
+/** Opens the folder's live-preview pane — the task's own dev server embedded
+ * beside its terminals, with draw-on-page feedback to that task's session. */
+export function PreviewButton({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen();
+      }}
+      className="flex h-5 shrink-0 items-center gap-1 rounded-md border border-border/70 px-1.5 font-mono text-[10.5px] text-muted-foreground transition-colors hover:border-border hover:bg-accent hover:text-foreground"
+      title="Preview this checkout's dev server — annotate the page and send it to the agent"
+    >
+      <AppWindow className="size-3" />
+      <span>preview</span>
     </button>
   );
 }

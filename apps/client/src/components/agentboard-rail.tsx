@@ -17,6 +17,7 @@ import {
   DeletingBadge,
   DiffButton,
   FilesButton,
+  PreviewButton,
   Dot,
   DotCount,
   GhostBadge,
@@ -351,6 +352,7 @@ export function RepoGroup({
   onRenameCommit,
   onOpenDiff,
   onOpenFiles,
+  onOpenPreview,
   quietDirs,
   quietRevealed,
   onToggleQuiet,
@@ -392,6 +394,8 @@ export function RepoGroup({
   onOpenDiff: (dir: string) => void;
   /** Opens the folder's files pane in its focused window. */
   onOpenFiles: (dir: string) => void;
+  /** Opens the folder's live-preview pane in its focused window. */
+  onOpenPreview: (dir: string) => void;
   /** Dirs the hide-inactive filter tucks behind a "N quiet" stub (empty/
    * undefined when the filter is off). Quiet folders demote to the stub
    * instead of vanishing — nothing ever silently disappears from the rail. */
@@ -548,6 +552,7 @@ export function RepoGroup({
           }
           onOpenDiff={() => onOpenDiff(folder.dir)}
           onOpenFiles={() => onOpenFiles(folder.dir)}
+          onOpenPreview={() => onOpenPreview(folder.dir)}
         />
         {/* The note is a folder label — visible under the header even when the
             folder is collapsed (renders nothing when unset). */}
@@ -694,6 +699,7 @@ export function RepoGroup({
                   }
                   onOpenDiff={() => onOpenDiff(folder.dir)}
                   onOpenFiles={() => onOpenFiles(folder.dir)}
+                  onOpenPreview={() => onOpenPreview(folder.dir)}
                 />
                 {/* Note is a folder label — shown under the header even when the
                     folder is collapsed (renders nothing when unset). */}
@@ -782,6 +788,7 @@ function FolderHeader({
   onDeleteWorktree,
   onOpenDiff,
   onOpenFiles,
+  onOpenPreview,
 }: {
   scope: "repo" | "folder";
   /** repo.name at repo scope, folder.name at folder scope. */
@@ -820,6 +827,8 @@ function FolderHeader({
   onOpenDiff: () => void;
   /** Opens the folder's files pane in its focused window. */
   onOpenFiles: () => void;
+  /** Opens the folder's live-preview pane in its focused window. */
+  onOpenPreview: () => void;
 }) {
   const scopePrefix = pathScope(folder.dir);
   const progress = folder.metadata?.progress;
@@ -961,6 +970,7 @@ function FolderHeader({
           {folder.hasPortDrift && <PortDriftBadge drift={folderPortDrift(folder)} />}
           <DiffButton stats={folder} onOpen={onOpenDiff} />
           <FilesButton onOpen={onOpenFiles} />
+          {folder.hasLaunchConfig && <PreviewButton onOpen={onOpenPreview} />}
           {pr && <PrChip pr={pr} stats={folder} />}
           <FolderLandedBadge folder={folder} pr={pr} />
           {/* Merged PR, and nothing here would be lost. A PR-less slot never

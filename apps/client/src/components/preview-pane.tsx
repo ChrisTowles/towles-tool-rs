@@ -8,11 +8,10 @@ import {
   Send,
   Slash,
   Square,
-  Trash2,
   Type,
-  Undo2,
 } from "lucide-react";
 import { toast } from "sonner";
+import { Glyph, IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -32,7 +31,7 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { termWriteRetry, useAgentboardState } from "@/lib/agentboard";
+import { type FolderData, termWriteRetry } from "@/lib/agentboard";
 import { errorMessage } from "@/lib/errors";
 import { launchConfigs } from "@/lib/launch";
 import { openExternalUrl } from "@/lib/open-url";
@@ -46,26 +45,12 @@ import {
   drawAnnotation,
   feedbackPrompt,
   feedbackPtyData,
+  folderSendTargets,
   previewCapture,
   previewWriteFeedback,
-  sendTargets,
 } from "@/lib/preview";
 import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
-
-/** The listening-state dot shared by the dev-server dropdown and the
- * empty-state launcher rows. */
-function ServerDot({ listening }: { listening: boolean }) {
-  return (
-    <span
-      className={cn("size-2 rounded-full", listening ? "bg-green-500" : "bg-muted-foreground/40")}
-    />
-  );
-}
-
-function pointFrom(e: React.PointerEvent<HTMLCanvasElement>) {
-  return { x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY };
-}
 
 const TOOLS: { tool: AnnotationTool; icon: typeof Pen; title: string }[] = [
   { tool: "pen", icon: Pen, title: "Draw freehand" },
@@ -75,12 +60,29 @@ const TOOLS: { tool: AnnotationTool; icon: typeof Pen; title: string }[] = [
   { tool: "text", icon: Type, title: "Text note" },
 ];
 
-/** Live preview of a running dev server with draw-on-the-page annotation,
- * sent back to a Claude session as an annotated screenshot — the Claude
- * Desktop page-preview flow, rebuilt on this app's own seams (launch.json
- * discovery, webview snapshot capture, PTY prompt delivery). */
-export function PreviewScreen() {
-  const state = useAgentboardState();
+function pointFrom(e: React.PointerEvent<HTMLCanvasElement>) {
+  return { x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY };
+}
+
+/** A task's live dev server embedded beside its terminals, with draw-on-page
+ * annotation sent back to that task's own Claude session as an annotated
+ * screenshot. A folder pane (like diff/files): scoped to one checkout, so the
+ * dev server comes from *this* folder's `.claude/launch.json` and the feedback
+ * targets *this* folder's session — no global URL bar or session picker. */
+export function PreviewPane({
+  folder,
+  focused,
+  onClose,
+}: {
+  /** The checkout this pane previews; undefined when it left the rail. */
+  folder: FolderData | undefined;
+  /** This pane is the one the user last clicked into — see the focus-ring
+   * rule in `screens/agentboard.tsx`'s `focusedPaneId`. */
+  focused: boolean;
+  /** Removes the pane from its window. */
+  onClose: () => void;
+}) {
+  const dir = folder?.dir;
 
   // --- URL / navigation ---
   const [url, setUrl] = useState("");
@@ -92,7 +94,6 @@ export function PreviewScreen() {
   const [tool, setTool] = useState<AnnotationTool | null>(null);
   const [color, setColor] = useState<string>(ANNOTATION_COLORS[0]);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [draft, setDraft] = useState<Annotation | null>(null);
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; value: string } | null>(null);
 
   // --- send dialog ---
@@ -105,38 +106,32 @@ export function PreviewScreen() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const draftRef = useRef<Annotation | null>(null);
   const redrawRef = useRef<() => void>(() => {});
-  const stateRef = useRef(state);
-  stateRef.current = state;
 
-  const targets = useMemo(() => sendTargets(state.repos), [state.repos]);
+  const targets = useMemo(() => folderSendTargets(folder), [folder]);
 
-  // Discover dev servers by probing each tracked folder's launch.json. Keyed
-  // on the folder-dir set plus a slow interval, not the repos array identity —
-  // state snapshots arrive on every poll, and each probe is a TCP connect per
-  // port; the interval is what notices a launch.json appearing or a server
-  // starting/stopping without a folder-set change (loopback connects are
-  // effectively free at this cadence, and it keeps the status dots honest).
-  const dirsKey = state.repos
-    .flatMap((r) => r.folders.map((f) => f.dir))
-    .toSorted()
-    .join("\n");
+  // Discover this folder's dev server(s) from its launch.json — probing on
+  // mount, on folder change, and a slow interval (each probe is a TCP connect
+  // per port; the interval catches a server starting/stopping). Auto-load the
+  // first listening one so the pane opens showing something.
+  //
+  // Unlike diff-pane (which refetches off `statsKey`, a value the shared 1.5s
+  // agentboard poll already bumps), this owns a timer per open pane. That's a
+  // deliberate divergence: launch.json + port status isn't in the agentboard
+  // snapshot, and a handful of panes probing every 15s is cheap. If dev-server
+  // status ever lands on `FolderData`, key off it and drop this timer.
   useEffect(() => {
+    if (!dir) return;
     let cancelled = false;
     const probe = async () => {
-      // Folders are independent, so probe them concurrently — one slow port
-      // connect can't serialize the rest behind it.
-      const folders = stateRef.current.repos.flatMap((repo) =>
-        repo.folders.filter((f) => !f.dirMissing).map((folder) => ({ repo, folder })),
-      );
-      const found = (
-        await Promise.all(
-          folders.map(async ({ repo, folder }) => {
-            const res = await launchConfigs(folder.dir);
-            return res.isOk() ? devServersOf(repo.name, folder.dir, res.value) : [];
-          }),
-        )
-      ).flat();
-      if (!cancelled) setServers(found);
+      const res = await launchConfigs(dir);
+      if (cancelled) return;
+      const found = res.isOk() ? devServersOf(folder?.name ?? "", dir, res.value) : [];
+      setServers(found);
+      setUrl((cur) => {
+        if (cur) return cur;
+        const auto = found.find((s) => s.listening) ?? found[0];
+        return auto?.url ?? cur;
+      });
     };
     void probe();
     const timer = setInterval(() => void probe(), 15_000);
@@ -144,16 +139,25 @@ export function PreviewScreen() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [dirsKey]);
+    // folder?.name only feeds labels; dir is the identity that matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dir]);
 
   function navigate(next: string, source: "manual" | "config") {
     const withScheme = /^[a-z]+:\/\//i.test(next) ? next : `http://${next}`;
     setUrl(withScheme);
     setInput(withScheme);
     setFrameKey((k) => k + 1);
-    uiAction("preview.navigate", "preview", source);
+    uiAction("preview.navigate", "agentboard", source);
   }
 
+  // --- canvas draw model ---
+  // The in-progress stroke lives only in `draftRef`, never React state: it's
+  // the authoritative value the pointer handlers mutate and paint imperatively
+  // (a `setDraft` per pointermove would re-render the whole pane every move for
+  // no benefit — and reading it back from state would drop points, since
+  // several moves can fire before a render lands). Committed `annotations` are
+  // state and repaint via the effect below.
   function redraw() {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
@@ -161,15 +165,10 @@ export function PreviewScreen() {
     const dpr = window.devicePixelRatio || 1;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     for (const a of annotations) drawAnnotation(ctx, a, dpr);
-    if (draft) drawAnnotation(ctx, draft, dpr);
+    if (draftRef.current) drawAnnotation(ctx, draftRef.current, dpr);
   }
-  // A resize fires from the ResizeObserver, which is installed once at mount —
-  // its closure would otherwise capture the empty mount-render `redraw` and
-  // repaint the canvas blank after a resize. Route both the resize and the
-  // reactive redraw through the always-current function.
   redrawRef.current = redraw;
 
-  // --- canvas sizing ---
   useEffect(() => {
     const canvas = canvasRef.current;
     const surface = surfaceRef.current;
@@ -187,24 +186,27 @@ export function PreviewScreen() {
     return () => ro.disconnect();
   }, []);
 
-  // Redraw on every annotation change (the canvas is imperative).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(redraw, [annotations, draft]);
+  useEffect(redraw, [annotations]);
 
-  // Escape backs out one level: draft → text note → tool.
+  // Abandon the in-progress stroke and wipe it off the canvas — the shared
+  // "escape the current draft" used by Escape, tool-switch, and clear.
+  function discardDraft() {
+    draftRef.current = null;
+    redrawRef.current();
+  }
+
   useEffect(() => {
     if (!tool) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (textDraft) setTextDraft(null);
-      else if (draftRef.current) {
-        draftRef.current = null;
-        setDraft(null);
-      } else setTool(null);
+      else if (draftRef.current) discardDraft();
+      else setTool(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tool, draft, textDraft]);
+  }, [tool, textDraft]);
 
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
     if (!tool || e.button !== 0) return;
@@ -214,43 +216,37 @@ export function PreviewScreen() {
       setTextDraft({ x: p.x, y: p.y, value: "" });
       return;
     }
-    // Throws NotFoundError if the pointer was already released (a fast
-    // click can race the capture request) — losing capture just means an
-    // off-canvas drag stops extending the stroke, not worth crashing over.
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
       // ignore
     }
     draftRef.current = { tool, color, points: [p] };
-    setDraft(draftRef.current);
+    redrawRef.current();
   }
 
-  // The in-progress stroke lives in a ref, with `draft` state as its render
-  // mirror: pointermove fires faster than React re-renders, and a handler
-  // reading the state closure would extend a stale stroke and drop points.
   function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
     const d = draftRef.current;
     if (!d) return;
     const p = pointFrom(e);
     draftRef.current =
       d.tool === "pen" ? { ...d, points: [...d.points, p] } : { ...d, points: [d.points[0], p] };
-    setDraft(draftRef.current);
+    redrawRef.current();
   }
 
   function onPointerUp() {
     const d = draftRef.current;
     if (!d) return;
     draftRef.current = null;
-    setDraft(null);
+    // Promoting to state re-renders and the effect repaints it as committed —
+    // the imperative frame stays on screen until then, so no flicker.
     setAnnotations((all) => [...all, d]);
   }
 
-  // Two independent top-level setStates, never a setAnnotations nested inside
-  // the setTextDraft updater — an updater must be pure, and StrictMode's dev
-  // double-invoke would otherwise enqueue the note twice. Reading `textDraft`
-  // from the render closure is safe: every caller is a fresh per-render
-  // handler (blur/Enter/tool-switch/next-click), never a mount-bound effect.
+  // Two independent top-level setStates — never setAnnotations nested inside
+  // the setTextDraft updater (StrictMode double-invoke would duplicate the
+  // note). Reading `textDraft` from the render closure is safe: callers are
+  // all fresh per-render handlers.
   function commitTextDraft() {
     const td = textDraft;
     if (td && td.value.trim()) {
@@ -263,28 +259,22 @@ export function PreviewScreen() {
   }
 
   function clearAnnotations() {
-    setAnnotations([]);
     draftRef.current = null;
-    setDraft(null);
     setTextDraft(null);
-    uiAction("preview.annotate.clear", "preview");
+    setAnnotations([]); // effect repaints the now-empty canvas
   }
 
   function selectTool(next: AnnotationTool | null) {
-    // A tool switch mid-stroke abandons the stroke — committing a half-drawn
-    // shape the user was escaping from would be worse.
-    draftRef.current = null;
-    setDraft(null);
     commitTextDraft();
+    discardDraft();
     setTool(next);
   }
 
-  // --- capture + send ---
   async function openSendDialog() {
     const surface = surfaceRef.current;
     if (!surface) return;
     commitTextDraft();
-    uiAction("preview.feedback.capture", "preview");
+    uiAction("preview.feedback.capture", "agentboard");
     const r = surface.getBoundingClientRect();
     const res = await previewCapture({
       x: r.x,
@@ -297,31 +287,26 @@ export function PreviewScreen() {
       ok: (png) => {
         setCapture(png);
         setComment("");
-        const server = servers.find((s) => s.url === url);
-        const preferred = targets.find((t) => t.folderDir === server?.folderDir) ?? targets.at(0);
-        setTargetId(preferred?.sessionId ?? null);
+        setTargetId(targets.at(0)?.sessionId ?? null);
       },
       err: (e) => toast.error(`Capture failed: ${errorMessage(e)}`),
     });
   }
 
   async function sendFeedback() {
-    if (!capture) return;
+    if (!capture || !dir) return;
     const target = targets.find((t) => t.sessionId === targetId);
     if (!target) {
-      // The chosen session can die between opening the dialog and clicking
-      // Send (targets is recomputed from every agentboard poll) — say so
-      // rather than no-op'ing on the click.
       toast.error("That session is no longer running — pick another.");
       return;
     }
     setSending(true);
-    const written = await previewWriteFeedback(target.repoName, [
+    const written = await previewWriteFeedback(folder?.name ?? "preview", [
       { mime: "image/png", dataBase64: capture },
     ]);
     if (written.isErr()) {
       setSending(false);
-      uiAction("preview.feedback.send", "preview", "err");
+      uiAction("preview.feedback.send", "agentboard", "err");
       toast.error(`Send failed: ${errorMessage(written.error)}`);
       return;
     }
@@ -333,27 +318,32 @@ export function PreviewScreen() {
     setSending(false);
     sent.match({
       ok: () => {
-        uiAction("preview.feedback.send", "preview", "ok");
+        uiAction("preview.feedback.send", "agentboard", "ok");
         toast.success(`Sent to ${target.label}`);
         setCapture(null);
         setAnnotations([]);
         setTool(null);
       },
       err: (e) => {
-        uiAction("preview.feedback.send", "preview", "err");
+        uiAction("preview.feedback.send", "agentboard", "err");
         toast.error(`Send failed: ${errorMessage(e)}`);
       },
     });
   }
 
-  // The surface div renders unconditionally, so its ref is set on every frame
-  // after mount; a URL is the only real gate. openSendDialog re-checks the ref.
-  const canSend = url !== "";
+  if (!folder) return <PanePlaceholder label="folder gone" focused={focused} onRemove={onClose} />;
 
   return (
-    <div className="flex h-full flex-col">
-      {/* URL bar */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-card px-3">
+    <div
+      className={cn(
+        "flex h-full flex-col overflow-hidden rounded-lg border bg-card",
+        focused && "border-violet-500/60",
+      )}
+    >
+      {/* Header: title + URL/server + reload/external + close */}
+      <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
+        <AppWindow className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 truncate font-mono text-xs text-foreground">{folder.name}</span>
         {servers.length > 0 && (
           <Select
             value={servers.find((s) => s.url === url)?.key ?? ""}
@@ -362,13 +352,18 @@ export function PreviewScreen() {
               if (s) navigate(s.url, "config");
             }}
           >
-            <SelectTrigger size="sm" className="w-56">
-              <SelectValue placeholder="Dev servers" />
+            <SelectTrigger size="sm" className="h-6 w-40 text-[11px]">
+              <SelectValue placeholder="Dev server" />
             </SelectTrigger>
             <SelectContent>
               {servers.map((s) => (
                 <SelectItem key={s.key} value={s.key}>
-                  <ServerDot listening={s.listening} />
+                  <span
+                    className={cn(
+                      "size-2 rounded-full",
+                      s.listening ? "bg-green-500" : "bg-muted-foreground/40",
+                    )}
+                  />
                   {s.label}
                 </SelectItem>
               ))}
@@ -381,47 +376,48 @@ export function PreviewScreen() {
           onKeyDown={(e) => {
             if (e.key === "Enter" && input.trim()) navigate(input.trim(), "manual");
           }}
-          placeholder="http://localhost:<port>/ — or pick a detected dev server"
-          className="h-7 flex-1 font-mono text-xs"
+          placeholder="http://localhost:<port>/"
+          className="h-6 min-w-0 flex-1 font-mono text-[11px]"
         />
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7"
-          title="Reload"
-          disabled={!url}
-          onClick={() => {
-            setFrameKey((k) => k + 1);
-            uiAction("preview.reload", "preview");
-          }}
-        >
-          <RotateCw />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7"
-          title="Open in browser"
-          disabled={!url}
-          onClick={() => {
-            uiAction("preview.open_external", "preview");
-            void openExternalUrl(url);
-          }}
-        >
-          <ExternalLink />
-        </Button>
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+          <IconBtn
+            title="reload preview"
+            disabled={!url}
+            className="hover:text-sky-500"
+            onClick={() => {
+              setFrameKey((k) => k + 1);
+              uiAction("preview.reload", "agentboard");
+            }}
+          >
+            <RotateCw className="size-3" />
+          </IconBtn>
+          <IconBtn
+            title="open in browser"
+            disabled={!url}
+            className="hover:text-sky-500"
+            onClick={() => {
+              uiAction("preview.open_external", "agentboard");
+              void openExternalUrl(url);
+            }}
+          >
+            <ExternalLink className="size-3" />
+          </IconBtn>
+          <IconBtn
+            title="remove pane (preview stays a click away on the folder)"
+            className="hover:text-red-500"
+            onClick={onClose}
+          >
+            ⊟
+          </IconBtn>
+        </span>
       </div>
 
-      {/* Preview surface: iframe + annotation canvas */}
+      {/* Surface: iframe + annotation canvas */}
       <div ref={surfaceRef} className="relative min-h-0 flex-1 overflow-hidden bg-background">
         {url ? (
           /* Unsandboxed by intent: the previewed page is the user's own local
-           * dev server, and it needs scripts *and* its own origin (HMR
-           * websockets, storage) to function — and a sandbox granting both is
-           * the combination the lint itself flags as useless. The rule's
-           * escape scenario (sandboxed content same-origin with the host)
-           * doesn't apply: localhost:<port> is a different origin than the
-           * app shell. */
+           * dev server and needs scripts + its own origin (HMR, storage) to
+           * function — the combination the sandbox lint flags as useless. */
           // oxlint-disable-next-line react/iframe-missing-sandbox
           <iframe
             key={frameKey}
@@ -430,32 +426,12 @@ export function PreviewScreen() {
             className="absolute inset-0 h-full w-full border-0 bg-white"
           />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-            <AppWindow className="size-8 text-muted-foreground/60" />
-            <div className="text-sm text-muted-foreground">
-              Point the preview at a running dev server
+          <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
+            <AppWindow className="size-6 text-muted-foreground/60" />
+            <div className="text-xs text-muted-foreground">
+              No dev server found in this checkout&apos;s{" "}
+              <span className="font-mono">.claude/launch.json</span> — enter a URL above.
             </div>
-            {servers.length > 0 ? (
-              <div className="flex flex-col gap-1.5">
-                {servers.map((s) => (
-                  <button
-                    key={s.key}
-                    type="button"
-                    className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-left text-xs hover:bg-accent"
-                    onClick={() => navigate(s.url, "config")}
-                  >
-                    <ServerDot listening={s.listening} />
-                    <span className="font-mono">{s.label}</span>
-                    {!s.listening && <span className="text-muted-foreground/60">not running</span>}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="max-w-sm text-xs text-muted-foreground/60">
-                No <span className="font-mono">.claude/launch.json</span> configs found in tracked
-                repos — enter a URL above.
-              </div>
-            )}
           </div>
         )}
         <canvas
@@ -485,14 +461,14 @@ export function PreviewScreen() {
               color,
               borderColor: color,
               font: ANNOTATION_FONT,
-              minWidth: 120,
+              minWidth: 100,
             }}
           />
         )}
       </div>
 
       {/* Annotation toolbar */}
-      <div className="flex shrink-0 items-center gap-1 border-t border-border bg-card px-3 py-1.5">
+      <div className="flex shrink-0 items-center gap-1 border-t bg-card px-2 py-1">
         {TOOLS.map(({ tool: t, icon: Icon, title }) => (
           <Button
             key={t}
@@ -500,63 +476,39 @@ export function PreviewScreen() {
             size="icon"
             title={title}
             disabled={!url}
-            className={cn("size-7", tool === t && "bg-accent text-foreground")}
+            className={cn("size-6", tool === t && "bg-accent text-foreground")}
             onClick={() => selectTool(tool === t ? null : t)}
           >
-            <Icon />
+            <Icon className="size-3.5" />
           </Button>
         ))}
-        <Separator orientation="vertical" className="mx-1 h-5" />
+        <Separator orientation="vertical" className="mx-0.5 h-4" />
         {ANNOTATION_COLORS.map((c) => (
           <button
             key={c}
             type="button"
             title="Ink color"
             className={cn(
-              "size-4 rounded-full border border-border",
+              "size-3.5 rounded-full border border-border",
               color === c && "ring-2 ring-ring ring-offset-1 ring-offset-card",
             )}
             style={{ backgroundColor: c }}
             onClick={() => setColor(c)}
           />
         ))}
-        <Separator orientation="vertical" className="mx-1 h-5" />
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7"
-          title="Undo last mark"
-          disabled={annotations.length === 0}
-          onClick={() => setAnnotations((all) => all.slice(0, -1))}
-        >
-          <Undo2 />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7"
-          title="Clear all marks"
-          disabled={annotations.length === 0 && !draft}
-          onClick={clearAnnotations}
-        >
-          <Trash2 />
-        </Button>
-        <div className="ml-auto flex items-center gap-2">
-          {(tool || annotations.length > 0) && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                clearAnnotations();
-                selectTool(null);
-                uiAction("preview.annotate.cancel", "preview");
-              }}
-            >
-              Cancel
+        <div className="ml-auto flex items-center gap-1.5">
+          {annotations.length > 0 && (
+            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={clearAnnotations}>
+              Clear
             </Button>
           )}
-          <Button size="sm" disabled={!canSend} onClick={() => void openSendDialog()}>
-            <Send /> Send to agent
+          <Button
+            size="sm"
+            className="h-6 text-xs"
+            disabled={!url}
+            onClick={() => void openSendDialog()}
+          >
+            <Send className="size-3" /> Send to agent
           </Button>
         </div>
       </div>
@@ -584,7 +536,7 @@ export function PreviewScreen() {
             placeholder="What should the agent do about it?"
             rows={2}
           />
-          {targets.length > 0 ? (
+          {targets.length > 1 ? (
             <Select value={targetId ?? ""} onValueChange={setTargetId}>
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Send to session…" />
@@ -592,32 +544,22 @@ export function PreviewScreen() {
               <SelectContent>
                 {targets.map((t) => (
                   <SelectItem key={t.sessionId} value={t.sessionId}>
-                    <span
-                      className={cn(
-                        "font-mono text-xs",
-                        t.agentRunning ? "text-violet-500" : "text-muted-foreground/60",
-                      )}
-                    >
-                      {t.agentRunning ? "✦" : "❯"}
-                    </span>
+                    <Glyph agent={t.agentRunning} />
                     {t.label}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          ) : (
+          ) : targets.length === 0 ? (
             <div className="text-xs text-muted-foreground">
-              No live sessions — start one in Agentboard first.
+              No live session in this checkout — start one in the rail first.
             </div>
-          )}
+          ) : null}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setCapture(null)}>
               Cancel
             </Button>
-            <Button
-              disabled={sending || !targetId || targets.length === 0}
-              onClick={() => void sendFeedback()}
-            >
+            <Button disabled={sending || !targetId} onClick={() => void sendFeedback()}>
               {sending ? "Sending…" : "Send"}
             </Button>
           </DialogFooter>
