@@ -12,6 +12,7 @@ mod gh_actions;
 mod ide;
 mod instance_lock;
 mod journal;
+mod launch;
 #[cfg(target_os = "linux")]
 mod linux_desktop;
 mod lsp;
@@ -430,6 +431,7 @@ pub fn run() {
         })
         .manage(resume::ResumeState::begin())
         .manage(terminal::TermState::default())
+        .manage(launch::LaunchState::default())
         .manage(lsp::Lsp::default())
         .manage(ide::DiffRequests::default())
         .manage(resources::ResourceState::default())
@@ -486,6 +488,8 @@ pub fn run() {
             agentboard::ab_get_diff_files,
             agentboard::ab_get_base_file,
             agentboard::ab_get_commit_stats,
+            launch::launch_configs,
+            launch::launch_register,
             slots::slot_base_branches,
             slots::slot_check_branch,
             slots::slot_create,
