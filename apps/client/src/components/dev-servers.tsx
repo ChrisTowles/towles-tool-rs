@@ -20,6 +20,10 @@ import { cn } from "@/lib/utils";
  * you watch. */
 const REFRESH_MS = 3000;
 
+/** Anthropic's reference for `.claude/launch.json` — the "Configure preview
+ * servers" section of the Claude Code desktop docs. */
+const LAUNCH_JSON_DOCS_URL = "https://code.claude.com/docs/en/desktop#configure-preview-servers";
+
 /** The dev-servers affordance for a checkout's Claude Desktop
  * `.claude/launch.json`: a folder-header icon button opening a popover of
  * the file's configs. Each row shows a running dot (port probe) and one
@@ -91,9 +95,17 @@ export function DevServersButton({
       <PopoverContent align="end" className="w-96 p-2">
         <div className="flex items-baseline justify-between px-1 pb-1.5">
           <span className="text-[13px] font-medium">Dev servers</span>
-          <span className="font-mono text-[10.5px] text-muted-foreground/60">
-            .claude/launch.json
-          </span>
+          <button
+            type="button"
+            title="Open Anthropic's launch.json reference (Configure preview servers)"
+            className="font-mono text-[10.5px] text-muted-foreground/60 underline-offset-2 hover:text-violet-500 hover:underline"
+            onClick={() => {
+              uiAction("dev_servers.docs_opened", "agentboard");
+              void openExternalUrl(LAUNCH_JSON_DOCS_URL);
+            }}
+          >
+            .claude/launch.json ↗
+          </button>
         </div>
         {error && <p className="px-1 pb-1 text-[12px] text-red-500">{error}</p>}
         {!error &&
@@ -151,7 +163,20 @@ function LaunchFileHowTo() {
         {EXAMPLE_LAUNCH_JSON}
       </pre>
       <p className="mt-1.5 text-[11px] text-muted-foreground/70">
-        Shared with Claude Desktop's dev-server previews — the same file drives both.
+        Configs also take <span className="font-mono">cwd</span>,{" "}
+        <span className="font-mono">env</span>, <span className="font-mono">autoPort</span>, or{" "}
+        <span className="font-mono">program</span> for a bare Node script — see{" "}
+        <button
+          type="button"
+          className="underline underline-offset-2 hover:text-violet-500"
+          onClick={() => {
+            uiAction("dev_servers.docs_opened", "agentboard");
+            void openExternalUrl(LAUNCH_JSON_DOCS_URL);
+          }}
+        >
+          Anthropic's reference
+        </button>
+        . Shared with Claude Desktop's dev-server previews — the same file drives both.
       </p>
     </div>
   );
