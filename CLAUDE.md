@@ -272,8 +272,9 @@ Cargo workspace + npm workspace (`apps/client` only):
     Frontend actions (click, shortcut, palette command, form submit) emit a
     `ui.action` event carrying a stable action id and the screen; since the
     webview can't reach `tracing`, they cross IPC through one shared
-    helper/command seam — build it when the first instrumented action lands,
-    not per-feature ad-hoc plumbing. Discrete intents only, never content or
+    helper/command seam — `uiAction(action, screen)` in
+    `apps/client/src/lib/ui-action.ts` → the `ui_action` command in
+    `tt-app/src/lib.rs` — never per-feature ad-hoc plumbing. Discrete intents only, never content or
     continuous input: no per-keystroke or mouse-move events, no PTY input, no
     note text (the log is plaintext, and per-record flushing assumes
     human-rate volume). OS-level signals with no other record — window focus/blur
@@ -336,7 +337,14 @@ Cargo workspace + npm workspace (`apps/client` only):
   (cross-repo kanban of tasks — #339's unit of work: issue/PR link chips,
   slot branch, attach/detach + promote-to-issue; done rolls up from GitHub),
   and **Agentboard** (repos + per-repo terminals; its `+` flow creates a
-  task whose worktree slot is an attribute of the task).
+  task whose worktree slot is an attribute of the task). The `+` form's
+  **Dynamic** option launches the slot's Claude session in plan mode with the
+  goal wrapped by `dynamicFlowPrompt` (`apps/client/src/lib/agentboard.ts`):
+  once the user approves the plan in the PTY, the session implements, runs
+  `/code-review low --fix` and `/simplify`, rebases onto the base branch,
+  opens the PR, and merges it — the merged PR then auto-attaches to the task
+  and rolls it to `done` via the existing collect-side
+  `auto_attach_slot_prs`/`rollup_task_statuses` path (no new backend state).
   Terminals are a canvas renderer over **libghostty-vt** terminal state in
   Rust (`crates/tt-vt`); the PTY host
   (`crates-tauri/tt-app/src/terminal.rs`) spawns shells with portable-pty and

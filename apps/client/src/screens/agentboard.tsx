@@ -71,6 +71,7 @@ import {
   changedFolderDirs,
   ClaudeLaunchOptions,
   claudeCommand,
+  dynamicFlowPrompt,
   claudeResumeCommand,
   claudeTitleName,
   consumePendingAgentboardNav,
@@ -1009,6 +1010,7 @@ export function AgentboardScreen() {
         options: input.options,
         imagePaths: input.imagePaths,
         taskId,
+        dynamic: input.dynamic,
         repoOriginUrl: repo.originUrl,
         startedAt: Date.now(),
         status: "creating",
@@ -1049,7 +1051,14 @@ export function AgentboardScreen() {
     const label =
       input.goal ||
       (imagePaths.length ? `attached ${imagePaths.length === 1 ? "image" : "images"}` : "");
-    await slotCreated(created, promptWithImages(input.goal, imagePaths), input.options, label);
+    // A dynamic task wraps the goal with the post-plan-approval delivery
+    // pipeline and launches in plan mode — the base comes from the resolved
+    // create (what the branch actually forked from), not the form field.
+    const goalPrompt = input.dynamic ? dynamicFlowPrompt(input.goal, created.base) : input.goal;
+    const launchOptions: ClaudeLaunchOptions = input.dynamic
+      ? { ...input.options, permissionMode: "plan" }
+      : input.options;
+    await slotCreated(created, promptWithImages(goalPrompt, imagePaths), launchOptions, label);
   }
 
   function retryPendingSlot(id: string) {
@@ -1067,6 +1076,7 @@ export function AgentboardScreen() {
         // duplicate card. (Issues are already attached to it, too.)
         issues: [],
         worktree: true,
+        dynamic: p.dynamic,
         taskId: p.taskId,
       },
     );
