@@ -99,7 +99,7 @@ the zone while agents work:
 - **Cockpit** — the default day home: time until the next meeting (that is the
   entire calendar feature, by design), your PRs with CI status, and the issue
   queue.
-- **Board** — cross-repo kanban over local todos, promotable to GitHub issues.
+- **Board** — cross-repo kanban of tasks (#339): each links issues/PRs and usually a worktree slot; done rolls up from GitHub.
 - **Claude Sessions** — where the tokens went: per-session accounting, ranked
   waste insights, and a turn/tool drill-down.
 
@@ -181,7 +181,7 @@ Already installed? Pull the latest version with
 A second, separate plugin — `towles-tool-app` (in
 [`packages/app`](packages/app/README.md)) — bridges Claude Code to the
 desktop app itself: it registers the app's MCP server (`tt mcp serve` — day
-brief, needs-you, PR/issue status, kanban todos, journal), ships the
+brief, needs-you, PR/issue status, board tasks, journal), ships the
 `slot-onboarding` skill (guides onboarding any repo onto worktree slots), and
 a hook that nudges a running app instance to refresh its PR or issue data
 immediately after a `gh pr`/`gh issue` mutation, instead of waiting for its
@@ -199,7 +199,7 @@ The CLI binary is `tt`. Run any command with `--help` for its flags.
 - `install [-o/--observability]` — apply recommended Claude Code settings and ensure required plugins.
 - `agentboard repos|sessions` — manage the watched-repo list and per-folder PTY sessions the app and collectors read (`ag` is an alias).
 - `collect calendar|issues|prs|slack|all|status|nudge <prs|issues>` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`, and a watched Slack DM; `status` reports each collector's health; `nudge <prs|issues>` makes a running app instance refresh that data immediately instead of waiting for its normal poll interval (used by the `towles-tool-app` plugin's `gh pr`/`gh issue` mutation hook).
-- `mcp serve` — stdio MCP server exposing the store, live agent sessions, and `journal_append` (register with `claude mcp add tt -- tt mcp serve`). The dashboard reads are always on; mutating tools (`todo_*`, `journal_append`, `collect_refresh`) and `agent_sessions` are **off by default** until the `mcp` block in `towles-tool.settings.json` opts in (see `crates/tt-mcp`'s trust-boundary doc).
+- `mcp serve` — stdio MCP server exposing the store, live agent sessions, and `journal_append` (register with `claude mcp add tt -- tt mcp serve`). The dashboard reads are always on; mutating tools (`task_*`, `journal_append`, `collect_refresh`) and `agent_sessions` are **off by default** until the `mcp` block in `towles-tool.settings.json` opts in (see `crates/tt-mcp`'s trust-boundary doc).
 - `slot init|new|ls|rm|env|clean` — manage worktree slots (see [Worktree slots](#worktree-slots) above).
 
 ## Crates
@@ -214,7 +214,7 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-doctor` — dependency/environment checks (CLI `doctor` and the app screen both consume it).
 - `crates/tt-slots` — the worktree-slot convention: `${tt:...}` env-template renderer with port-pool claims, slot naming/layout, removal guards, and the shared `ops` orchestration behind `tt slot` and the app.
 - `crates/tt-claude-code` — shared Claude Code transcript parsing (session JSONL, titles, token usage, model table).
-- `crates/tt-store` — the data-hub SQLite store (events, kanban todos, issues, PR status, collector freshness).
+- `crates/tt-store` — the data-hub SQLite store (events, board tasks with issue/PR links + slot bindings, issues, PR status, collector freshness).
 - `crates/tt-collect` — collectors that fill the store: calendar via `claude -p`, issues/PRs via `gh`, a watched Slack DM via the Slack Web API.
 - `crates/tt-agentboard` — watched-repo and agent-session tracking behind the Agentboard screen.
 - `crates/tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and lockfile schema the app uses to pose as an IDE that Claude Code sessions connect to.

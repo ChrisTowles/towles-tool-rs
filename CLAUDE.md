@@ -202,11 +202,13 @@ Cargo workspace + npm workspace (`apps/client` only):
     orchestration in `ops` that both `tt slot` and the app's `slot_create`
     call.
   - `tt-store` — the data-hub SQLite store (`~/.local/share/towles-tool/tt.db`):
-    events, kanban todos (local, optionally issue-linked), issues, PR status,
-    collector freshness. Collectors write events/issues/PRs; todos are
-    user-created (and promotable to a `gh` issue). The app UI and MCP server
-    read. Timestamps are epoch ms, passed in (`now_ms`) — never read the clock
-    in logic.
+    events, board tasks (#339: the unit of work — 0..N issue links + 0..N PR
+    links in `task_issues`/`task_prs`, plus an optional worktree-slot
+    binding), issues, PR status, collector freshness. Collectors write
+    events/issues/PRs and refresh link states; tasks are user-created
+    (issues attachable/promotable via `gh`). The app UI and MCP server read.
+    Timestamps are epoch ms, passed in (`now_ms`) — never read the clock in
+    logic.
   - `tt-collect` — collectors that fill tt.db: calendar via `claude -p`
     (strict-JSON prompt + lenient extraction; `CalendarProvider` picks the
     Google/Outlook prompt+MCP) — **off by default** since it burns tokens
@@ -221,7 +223,7 @@ Cargo workspace + npm workspace (`apps/client` only):
     the store + live agent sessions + `journal_append` to claude sessions.
     It's registered at **user scope**, so every session on the machine can
     reach it — reads are fine (that's the point), but mutations and other
-    sessions' live data (`todo_*`, `journal_append`, `collect_refresh`,
+    sessions' live data (`task_*`, `journal_append`, `collect_refresh`,
     `agent_sessions`) are gated behind `mcp.mutationsEnabled` /
     `mcp.agentSessionsEnabled`, both off by default and settable only by
     hand-editing `towles-tool.settings.json`. The crate's module doc-comment
@@ -314,8 +316,10 @@ Cargo workspace + npm workspace (`apps/client` only):
   settings dialog, status bar, keyboard shortcuts (`?` opens the help overlay).
   Screens live in `src/screens/`; the three "Focus" screens are **Cockpit**
   (default day home — next-meeting countdown + PRs + issue queue), **Board**
-  (cross-repo kanban over local todos grouped by status, with
-  promote-to-issue), and **Agentboard** (repos + per-repo terminals).
+  (cross-repo kanban of tasks — #339's unit of work: issue/PR link chips,
+  slot branch, attach/detach + promote-to-issue; done rolls up from GitHub),
+  and **Agentboard** (repos + per-repo terminals; its `+` flow creates a
+  task whose worktree slot is an attribute of the task).
   Terminals are a canvas renderer over **libghostty-vt** terminal state in
   Rust (`crates/tt-vt`); the PTY host
   (`crates-tauri/tt-app/src/terminal.rs`) spawns shells with portable-pty and
@@ -345,7 +349,7 @@ plugins ship today:
   (`/tt:01-blindspot` … `/tt:22-memories`).
 - `towles-tool-app` (`packages/app`) — bridges Claude Code to the desktop
   app itself: registers its `tt mcp serve` MCP server (day brief, needs-you,
-  PR/issue status, todos, journal), ships the `slot-onboarding` skill
+  PR/issue status, tasks, journal), ships the `slot-onboarding` skill
   (guides onboarding any repo onto worktree slots — port discovery, template
   authoring, `tt slot init`), and a `PostToolUse` hook
   (`hooks/scripts/gh-pr-nudge.sh`) that nudges a running app instance to

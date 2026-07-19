@@ -8,13 +8,14 @@ exposes and one hook that keeps its PR view fresh.
 Registers the app's own `tt mcp serve` (`crates/tt-mcp`), so any session with this
 plugin enabled gets these tools without manual `claude mcp add` setup:
 
-`day_brief`, `needs_you`, `prs_status`, `issues_open`, `todo_create`,
-`todo_update`, `todo_set_status`, `todo_delete`, `todo_link_issue`,
-`todo_clear_done`, `journal_append`, `collect_refresh`, `collect_status`,
+`day_brief`, `needs_you`, `prs_status`, `issues_open`, `task_create`,
+`task_update`, `task_set_status`, `task_delete`, `task_attach_issue`,
+`task_detach_issue`, `task_attach_pr`, `task_detach_pr`, `task_clear_done`,
+`journal_append`, `collect_refresh`, `collect_status`,
 `agent_sessions`, `calendar_next`, `calendar_today`, `dm_status`, `snapshot`,
 `tasks_open`.
 
-The dashboard reads work out of the box. The mutating tools (`todo_*`,
+The dashboard reads work out of the box. The mutating tools (`task_*`,
 `journal_append`, `collect_refresh`) and `agent_sessions` are **disabled by
 default**: they refuse until you set `"mcp": { "mutationsEnabled": true }`
 (and/or `"agentSessionsEnabled": true`) in `towles-tool.settings.json` —
