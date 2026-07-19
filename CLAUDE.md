@@ -200,7 +200,17 @@ Cargo workspace + npm workspace (`apps/client` only):
     the `${tt:...}` env-template renderer with port-pool claims, dotenv-lite
     parse/merge, slot naming/layout, removal guards, and the shared
     orchestration in `ops` that both `tt slot` and the app's `slot_create`
-    call.
+    call. **`landed` is the one answer to "has this slot's work reached the
+    base branch"** — `tt slot ls`/`rm`/`clean` and the Agentboard rail all go
+    through `ops::work_state`, never their own git checks, because no single
+    git signal covers all three landing shapes (a squash merge is invisible to
+    both `--merged` and `git cherry`, which is what used to make merged slots
+    look like they still held work). It keeps *uncommitted changes* and
+    *commits that never reached the base* as separate counts: only the first
+    dies with the worktree, and only content-based evidence
+    (`LandedVia::is_content_proof`) may justify `clean`'s `git branch -D` — a
+    `[gone]` upstream looks identical whether the branch merged or was deleted
+    unmerged. Read the module docs before touching the detection.
   - `tt-store` — the data-hub SQLite store (`~/.local/share/towles-tool/tt.db`):
     events, board tasks (#339: the unit of work — 0..N issue links + 0..N PR
     links in `task_issues`/`task_prs`, plus an optional worktree-slot

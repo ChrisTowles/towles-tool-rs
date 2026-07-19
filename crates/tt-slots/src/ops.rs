@@ -241,6 +241,121 @@ fn note_if_slow(warnings: &mut Vec<String>, label: &str, elapsed: Duration) {
     }
 }
 
+/// The refs a slot's work is judged against: the checkout's base branch, and
+/// its remote-tracking twin when one exists.
+///
+/// Both are needed because they answer at different times. A squash merge
+/// lands on `origin/<base>` the moment the PR is merged, while local `<base>`
+/// only catches up when the user pulls — so judging against the local ref
+/// alone makes every merged slot look active until the next `git pull`.
+#[derive(Debug, Clone)]
+pub struct BaseRefs {
+    /// Base branch name, e.g. `main`.
+    pub base: String,
+    /// `refs/heads/<base>`.
+    pub local: String,
+    /// `refs/remotes/origin/<base>`, when it resolves.
+    pub remote: Option<String>,
+}
+
+/// Resolve the base refs for a checkout. One set of git calls, reused across
+/// every slot by callers that loop.
+pub fn base_refs(checkout: &Path) -> BaseRefs {
+    let base = base_branch(checkout);
+    let local = format!("refs/heads/{base}");
+    let candidate = format!("refs/remotes/origin/{base}");
+    let remote = git_checkout(checkout, &["rev-parse", "--quiet", "--verify", &candidate])
+        .ok()
+        .filter(|o| o.ok())
+        .map(|_| candidate);
+    BaseRefs { base, local, remote }
+}
+
+/// What a slot still holds — uncommitted work and commits that never reached
+/// the base — as one answer shared by `ls`, `rm`, `clean` and the Agentboard
+/// rail. See [`crate::landed`] for why several git signals are combined.
+///
+/// `branch` is a full ref (`refs/heads/<name>`). Best-effort: git failures
+/// degrade to "work is present", never to "safe to delete".
+///
+/// `uncommitted` and `orphaned` are passed in rather than gathered here. Every
+/// caller either already has them (`remove_slot` computes both for
+/// [`crate::guards::check_removal`]) or needs them for a checkout this function
+/// cannot judge (a detached HEAD has no branch to compare). Re-reading them
+/// would also mean two snapshots of one working tree, so the guard could pass
+/// on a clean tree while the message reported uncommitted files.
+/// [`uncommitted_count`] and [`orphaned_count`] produce them.
+pub fn work_state(
+    refs: &BaseRefs,
+    dir: &Path,
+    branch: &str,
+    uncommitted: usize,
+    orphaned: u64,
+) -> crate::landed::WorkState {
+    use crate::landed::{LandedVia, WorkState, probe_work_state};
+
+    // `Some` only on a zero exit — `merge-base --is-ancestor` answers through
+    // the exit code and prints nothing.
+    let probe_git = |dir: &Path, args: &[&str]| -> Option<String> {
+        git_slot(dir, args).ok().filter(|o| o.ok()).map(|o| o.stdout)
+    };
+
+    let gone = probe_git(dir, &["for-each-ref", branch, "--format=%(upstream:track)"])
+        .map(|out| crate::clean::upstream_gone(&out))
+        .unwrap_or(false);
+
+    let probe =
+        |base: &str| probe_work_state(&probe_git, dir, base, branch, uncommitted, orphaned, gone);
+    let proven = |w: &WorkState| w.landed.is_some_and(LandedVia::is_content_proof);
+
+    // Judge against the local base first, then the remote-tracking one. A
+    // squash merge lands on `origin/<base>` and nothing here fast-forwards
+    // local `<base>`, so a checkout that has not pulled since the merge would
+    // otherwise read every merged slot as active. The local ref is still asked
+    // first so a repo with no remote, or one merged only locally, keeps
+    // working. The retry runs whenever the local base gave no *content* proof
+    // — a bare `[gone]` upstream included, since that is exactly the shape a
+    // squash merge leaves behind.
+    let local = probe(&refs.local);
+    if proven(&local) {
+        return local;
+    }
+    match refs.remote.as_deref().map(&probe).filter(&proven) {
+        Some(remote) => remote,
+        None => local,
+    }
+}
+
+/// `git status --porcelain` entry count for a checkout — the uncommitted axis.
+pub fn uncommitted_count(dir: &Path) -> usize {
+    git_slot(dir, &["status", "--porcelain"])
+        .ok()
+        .filter(|o| o.ok())
+        .map(|o| crate::guards::dirty_entry_count(&o.stdout))
+        .unwrap_or(0)
+}
+
+/// Commits reachable from no branch and no remote — the orphaned axis, the one
+/// removal genuinely destroys. Base-independent, so it is meaningful even for a
+/// detached HEAD that [`work_state`] cannot otherwise judge.
+pub fn orphaned_count(dir: &Path) -> u64 {
+    git_slot(
+        dir,
+        &[
+            "rev-list",
+            "--count",
+            "HEAD",
+            "--not",
+            "--branches",
+            "--remotes",
+        ],
+    )
+    .ok()
+    .filter(|o| o.ok())
+    .and_then(|o| crate::guards::unreachable_commit_count(&o.stdout))
+    .unwrap_or(0)
+}
+
 pub fn git_slot(dir: &Path, args: &[&str]) -> Result<tt_exec::Output> {
     tt_exec::run_in_dir_with_timeout_env(
         "git",
@@ -1099,6 +1214,42 @@ pub fn remove_slot(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
         }
     }
 
+    // Commits that never reached the base are NOT a removal guard — removing a
+    // worktree leaves the branch (and its commits) in the shared `.git`, so
+    // nothing is lost. But staying silent about them is what made the old
+    // output ambiguous: "removed" read as "that work is dealt with". Say
+    // plainly what survives and where, so the difference from the uncommitted
+    // work the guard above *does* block on is visible.
+    let branch = git_slot(&dir, &["branch", "--show-current"])
+        .ok()
+        .filter(|o| o.ok())
+        .map(|o| o.stdout.trim().to_string())
+        .filter(|b| !b.is_empty());
+    if let Some(branch) = &branch {
+        let refs = base_refs(&sr.checkout);
+        if *branch != refs.base {
+            let work = work_state(&refs, &dir, &format!("refs/heads/{branch}"), dirty, unreachable);
+            match (work.unlanded, work.landed) {
+                (0, Some(via)) => {
+                    messages.push(format!(
+                        "{branch} is {} into {} — nothing outstanding",
+                        via.label(),
+                        refs.base
+                    ));
+                }
+                (n, _) if n > 0 => {
+                    messages.push(format!(
+                        "{n} commit(s) on {branch} have not reached {} — they stay on the branch, not in this worktree",
+                        refs.base
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Past every guard, and the state above is already gathered — only now is
+    // it safe to kill the folder's PTYs (#366).
     before_removal();
     docker_cleanup(&name, &dir, &mut messages);
 
@@ -1200,7 +1351,8 @@ pub struct CleanOpts {
 pub struct FinishedSlot {
     pub name: String,
     pub branch: String,
-    /// Why it counted as finished ([`crate::clean::FinishedReason`], rendered).
+    /// How the branch landed, e.g. `"squash-merged into main"`
+    /// ([`crate::landed::LandedVia`], rendered against the base).
     pub reason: String,
     /// Removal progress notes (docker resources, branch deletion). Empty on
     /// dry-run.
@@ -1261,14 +1413,8 @@ pub fn clean_slots(
         ),
     }
 
-    let base = base_branch(&sr.checkout);
-    let rev_parse = |refname: &str| {
-        git_checkout(&sr.checkout, &["rev-parse", "--quiet", "--verify", refname])
-            .ok()
-            .filter(|o| o.ok())
-            .map(|o| o.stdout.trim().to_string())
-    };
-    let base_tip = rev_parse(&format!("refs/heads/{base}"));
+    let refs = base_refs(&sr.checkout);
+    let base = refs.base.clone();
 
     let mut removed = Vec::new();
     let mut kept = Vec::new();
@@ -1308,40 +1454,36 @@ pub fn clean_slots(
         }
 
         let branch_ref = format!("refs/heads/{branch}");
-        let merged =
-            git_checkout(&sr.checkout, &["merge-base", "--is-ancestor", &branch_ref, &base])
-                .map(|o| o.ok())
-                .unwrap_or(false);
-        let gone = git_checkout(
-            &sr.checkout,
-            &["for-each-ref", &branch_ref, "--format=%(upstream:track)"],
-        )
-        .ok()
-        .filter(|o| o.ok())
-        .map(|o| crate::clean::upstream_gone(&o.stdout))
-        .unwrap_or(false);
-        let tip_equals_base = match (rev_parse(&branch_ref), &base_tip) {
-            (Some(tip), Some(base_tip)) => tip == *base_tip,
-            _ => false,
-        };
+        let work =
+            work_state(&refs, &dir, &branch_ref, uncommitted_count(&dir), orphaned_count(&dir));
 
-        let Some(reason) = crate::clean::finished_reason(&base, merged, tip_equals_base, gone)
-        else {
+        let Some(via) = work.landed else {
+            keep(name, branch, vec![format!("active: {}", work.headline())]);
+            continue;
+        };
+        // `clean` deletes the branch after removing the worktree, so unlanded
+        // commits are unrecoverable here in a way they never are for
+        // `tt slot rm` (which leaves the branch behind). Only content-based
+        // evidence clears that bar — see `LandedVia::is_content_proof`.
+        if work.unlanded > 0 || !via.is_content_proof() {
             keep(
                 name,
                 branch,
                 vec![format!(
-                    "active: not merged into {base} and upstream not gone"
+                    "{} but {} commit(s) never reached {base} — push or merge before cleaning",
+                    via.label(),
+                    work.unlanded
                 )],
             );
             continue;
-        };
+        }
+        let reason = format!("{} into {base}", via.label());
 
         if opts.dry_run {
             removed.push(FinishedSlot {
                 name,
                 branch,
-                reason: reason.to_string(),
+                reason: reason.clone(),
                 messages: Vec::new(),
                 dir,
             });
@@ -1360,7 +1502,7 @@ pub fn clean_slots(
                 removed.push(FinishedSlot {
                     name,
                     branch,
-                    reason: reason.to_string(),
+                    reason: reason.clone(),
                     messages,
                     dir: r.dir,
                 });

@@ -118,6 +118,11 @@ export type FolderMetadata = {
   logs?: { message: string; tone?: MetadataTone | null; source?: string | null; ts: number }[];
 };
 
+/** How git decided a branch's work reached its base. The wire mirror of
+ * `LandedVia::label()` (`crates/tt-slots/src/landed.rs`) — every value the
+ * backend can put in {@link FolderData.landed}. */
+export type LandedVia = "merged" | "rebase-merged" | "squash-merged" | "upstream gone";
+
 /** One checkout of a repo on disk (a clone, worktree, or slot). */
 export type FolderData = {
   name: string;
@@ -147,6 +152,23 @@ export type FolderData = {
    * see past (it stays nonzero forever in that case). See
    * `folderSafeToDelete`. */
   commitsUnlanded: number;
+  /** How this branch's work reached `comparedBase` — `"merged"` (a merge
+   * commit), `"rebase-merged"` or `"squash-merged"` — and `null` while it
+   * hasn't fully landed. Mirrors `LandedVia::label()`
+   * (`crates/tt-slots/src/landed.rs`), which explains why no single git signal
+   * answers this.
+   *
+   * {@link LandedVia}'s fourth label, `"upstream gone"`, is a real value in
+   * Rust but never arrives here: it only says the remote branch vanished, which
+   * looks identical whether the branch merged or was deleted unmerged, so
+   * `compute_git_info` suppresses it rather than let a badge claim a merge git
+   * can't prove.
+   *
+   * This is git's own proof that a branch is finished, independent of GitHub:
+   * a locally merged branch that never had a PR still reports here, and a
+   * merged PR says nothing about commits made since. `commitsUnlanded` is the
+   * *whether*; this is the *how*. */
+  landed: LandedVia | null;
   sessions: SessionData[];
   needs: number;
   /** User-authored "what am I working toward here" (persisted per folder). */
@@ -829,16 +851,41 @@ export function prForFolder(
 /** True when a folder is provably safe to delete: no uncommitted changes
  * (`dirty`) and every commit on this branch has landed on `comparedBase`
  * (`commitsUnlanded === 0`). Deliberately independent of any PR's state —
- * it's a pure git fact — so call sites that want to gate on "PR merged" do
- * that themselves (see `prMergedButFolderHasWork`). Note this checks a
+ * it's a pure git fact — so call sites that want to gate on "the work
+ * landed" do that themselves (see `folderLandedButHasWork`). Note this checks a
  * narrower, more optimistic thing than `tt slot rm`'s own removal guard
  * (`crates/tt-slots/src/guards.rs`): that guard only blocks on a dirty tree
  * or commits unreachable from *any* branch/remote (deleting a worktree never
  * deletes its branch, so an unmerged-but-pushed branch is still "safe" by
  * its math). This is the stricter "nothing left to do here" signal — the
- * guard remains the last line of defense either way. */
+ * guard remains the last line of defense either way.
+ *
+ * `landed` is deliberately *not* part of this. The two answer different
+ * questions: this one is "would removing this lose anything", `landed` is
+ * "how did the work get to the base". A branch nobody has committed to is
+ * safe to delete while never having landed, and a branch whose remote was
+ * deleted (`"upstream gone"`) reports landed on the weakest possible evidence
+ * while its commits are still counted as outstanding — so requiring `landed`
+ * here would be both too strict and too loose. Call sites that want "finished
+ * *and* nothing would be lost" combine this with `folderLanded`. */
 export function folderSafeToDelete(folder: Pick<FolderData, "dirty" | "commitsUnlanded">): boolean {
   return !folder.dirty && folder.commitsUnlanded === 0;
+}
+
+/** True when this branch's work reached the base branch — proven either by
+ * git itself (`folder.landed`, which sees merge commits, rebases and squash
+ * merges alike) or by a merged GitHub PR.
+ *
+ * Both halves are needed. Git can't see a PR that merged into a base this
+ * checkout never fetched, and GitHub can't see a branch merged locally or one
+ * that never had a PR at all — which used to make every PR-less slot read as
+ * unfinished forever. Says nothing about whether the checkout still holds
+ * work; that's `folderSafeToDelete`. */
+export function folderLanded(
+  folder: Pick<FolderData, "landed">,
+  pr: Pick<PrItem, "state"> | undefined,
+): boolean {
+  return folder.landed !== null || pr?.state === "merged";
 }
 
 /** Whether the delete-worktree affordances (rail menu, the `ab-remove-slot`
@@ -909,16 +956,20 @@ export function stoppablePort(blocker: SlotBlocker): number | null {
   return typeof blocker.port === "number" ? blocker.port : null;
 }
 
-/** True when a PR's merge doesn't actually make its folder safe to delete:
- * the PR's content merged, but the checkout itself still has uncommitted
- * changes or commits that haven't landed on `comparedBase` yet
- * (`!folderSafeToDelete`). The rail's merged PR badge shouldn't read "safe to
- * remove" when this is true. */
-export function prMergedButFolderHasWork(
-  pr: Pick<PrItem, "state">,
-  folder: Pick<FolderData, "dirty" | "commitsUnlanded">,
+/** True when a branch having landed doesn't actually make its checkout safe to
+ * delete: the work reached the base (`folderLanded` — a merged PR, or git's
+ * own proof), but the checkout still has uncommitted changes or commits that
+ * haven't landed yet (`!folderSafeToDelete`).
+ *
+ * This is the "squash-merged, but 2 uncommitted files" case, and it is exactly
+ * where a merged badge would otherwise lie. Replaces the old PR-only check:
+ * that one couldn't warn about a slot whose branch merged locally, which is
+ * the same data-loss risk with no GitHub row to notice it. */
+export function folderLandedButHasWork(
+  folder: Pick<FolderData, "dirty" | "commitsUnlanded" | "landed">,
+  pr: Pick<PrItem, "state"> | undefined,
 ): boolean {
-  return pr.state === "merged" && !folderSafeToDelete(folder);
+  return folderLanded(folder, pr) && !folderSafeToDelete(folder);
 }
 
 /** A per-folder actionable signal: the checkout is safe to clean up, has
@@ -937,23 +988,30 @@ export type ActionableItem = {
 };
 
 /** Every actionable signal that applies to one folder — the same gates the
- * rail's badges use (merged PR + `folderSafeToDelete`, `folder.needs > 0`,
+ * rail's badges use (`folderLanded` + `folderSafeToDelete`, `folder.needs > 0`,
  * `folderPortDrift`). `pr` is the folder's already-resolved PR (see
- * `prForFolder`), not looked up again here. */
+ * `prForFolder`), not looked up again here.
+ *
+ * The safe-to-delete subtitle names whichever evidence is strongest: a merged
+ * PR when there is one, otherwise how git saw the branch land. A slot with no
+ * PR at all used to produce no signal here even when git could prove it was
+ * finished. */
 export function folderActionableItems(
   folder: Pick<
     FolderData,
-    "isWorktree" | "dirty" | "commitsUnlanded" | "comparedBase" | "needs" | "sessions"
+    "isWorktree" | "dirty" | "commitsUnlanded" | "landed" | "comparedBase" | "needs" | "sessions"
   >,
   pr: PrItem | undefined,
 ): ActionableItem[] {
   const items: ActionableItem[] = [];
 
-  if (pr?.state === "merged" && folder.isWorktree && folderSafeToDelete(folder)) {
+  const merged = pr?.state === "merged" ? pr : undefined;
+  const how = merged ? `PR #${merged.number} merged` : folder.landed;
+  if (how && folder.isWorktree && folderSafeToDelete(folder)) {
     items.push({
       kind: "safe-to-delete",
-      subtitle: `PR #${pr.number} merged, no uncommitted changes, every commit landed on ${comparedBaseLabel(folder)}`,
-      pr: { number: pr.number, url: pr.url },
+      subtitle: `${how}, no uncommitted changes, every commit landed on ${comparedBaseLabel(folder)}`,
+      ...(merged ? { pr: { number: merged.number, url: merged.url } } : {}),
     });
   }
 

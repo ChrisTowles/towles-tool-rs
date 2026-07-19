@@ -6,6 +6,7 @@ import {
   DiffButton,
   Dot,
   FilesButton,
+  FolderLandedBadge,
   fmtMins,
   Glyph,
   IconBtn,
@@ -144,6 +145,7 @@ export function WorkingContext({
           <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir)} />
           <FilesButton onOpen={() => onOpenFiles(folder.dir)} />
           {pr && <PrChip pr={pr} stats={folder} />}
+          <FolderLandedBadge folder={folder} pr={pr} />
         </div>
         <PurposeRow folder={folder} variant="band" />
         {!missing && (

@@ -11,8 +11,8 @@ use std::fs;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
+use tt_slots::envfile;
 use tt_slots::ops::{self, CleanOpts, CreateOpts, OpsError, RemoveOpts, RemoveOutcome, SlotRoot};
-use tt_slots::{envfile, guards};
 
 use crate::cli::SlotCommands;
 use crate::ui;
@@ -283,27 +283,70 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
         vec![("primary".to_string(), sr.checkout.clone(), true)];
     checkouts.extend(sr.slots().into_iter().map(|(name, dir)| (name, dir, false)));
 
+    let refs = ops::base_refs(&sr.checkout);
+
+    struct Row {
+        name: String,
+        branch: String,
+        detached: bool,
+        broken: bool,
+        work: tt_slots::landed::WorkState,
+        /// Rendered STATE cell — each arm below knows which vocabulary applies
+        /// to it, so nothing downstream has to re-derive that.
+        state: String,
+        ports: Vec<(String, String)>,
+        primary: bool,
+    }
+
     let mut rows = Vec::new();
     for (name, dir, is_primary) in checkouts {
         let broken = !ops::git_slot(&dir, &["rev-parse", "--is-inside-work-tree"])
             .map(|o| o.ok())
             .unwrap_or(false);
-        let (branch, detached, dirty) = if broken {
-            ("BROKEN".to_string(), false, 0)
+        let (branch, detached, work, state) = if broken {
+            ("BROKEN".to_string(), false, Default::default(), "broken".to_string())
         } else {
             let current = ops::git_slot(&dir, &["branch", "--show-current"])
                 .map(|o| o.stdout.trim().to_string())
                 .unwrap_or_default();
-            let dirty = ops::git_slot(&dir, &["status", "--porcelain"])
-                .map(|o| guards::dirty_entry_count(&o.stdout))
-                .unwrap_or(0);
+            let uncommitted = ops::uncommitted_count(&dir);
             if current.is_empty() {
+                // A detached HEAD has no branch to compare against a base, so
+                // the landed axes are unanswerable — but the orphan count is
+                // base-independent and is exactly the work removal destroys,
+                // so it is measured rather than left at a default 0 that would
+                // report `holdsWork: false` for a slot holding unreachable
+                // commits.
                 let sha = ops::git_slot(&dir, &["rev-parse", "--short", "HEAD"])
                     .map(|o| o.stdout.trim().to_string())
                     .unwrap_or_else(|_| "?".to_string());
-                (format!("detached:{sha}"), true, dirty)
+                let work = tt_slots::landed::WorkState {
+                    uncommitted,
+                    orphaned: ops::orphaned_count(&dir),
+                    ..Default::default()
+                };
+                let state = work.headline();
+                (format!("detached:{sha}"), true, work, state)
+            } else if current == refs.base {
+                // A checkout sitting on the base branch has no line of work to
+                // judge; running it through the landed vocabulary would label
+                // the main checkout "no commits".
+                let work = tt_slots::landed::WorkState { uncommitted, ..Default::default() };
+                let state = match uncommitted {
+                    0 => "clean".to_string(),
+                    n => format!("{n} uncommitted"),
+                };
+                (current, false, work, state)
             } else {
-                (current, false, dirty)
+                let work = ops::work_state(
+                    &refs,
+                    &dir,
+                    &format!("refs/heads/{current}"),
+                    uncommitted,
+                    ops::orphaned_count(&dir),
+                );
+                let state = work.headline();
+                (current, false, work, state)
             }
         };
         let env_text = fs::read_to_string(dir.join(".env")).unwrap_or_default();
@@ -313,32 +356,65 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
                 k.ends_with("PORT") && v.bytes().all(|b| b.is_ascii_digit()) && !v.is_empty()
             })
             .collect();
-        rows.push((name, branch, detached, broken, dirty, ports, is_primary));
+        rows.push(Row { name, branch, detached, broken, work, state, ports, primary: is_primary });
     }
 
     if json {
         let items: Vec<serde_json::Value> = rows
             .iter()
-            .map(|(name, branch, detached, broken, dirty, ports, is_primary)| {
+            .map(|r| {
                 let port_map: serde_json::Map<String, serde_json::Value> =
-                    ports.iter().map(|(k, v)| (k.clone(), v.clone().into())).collect();
+                    r.ports.iter().map(|(k, v)| (k.clone(), v.clone().into())).collect();
                 serde_json::json!({
-                    "name": name,
-                    "branch": branch,
-                    "detached": detached,
-                    "broken": broken,
-                    "dirty": dirty,
+                    "name": r.name,
+                    "branch": r.branch,
+                    "detached": r.detached,
+                    "broken": r.broken,
+                    // The two axes, separately: work that exists only here and
+                    // dies with the slot, vs commits the base has never seen.
+                    "uncommitted": r.work.uncommitted,
+                    "unlanded": r.work.unlanded,
+                    "orphaned": r.work.orphaned,
+                    "landed": r.work.landed.map(|v| v.label()),
+                    "holdsWork": r.work.holds_work(),
+                    "state": r.state,
                     "ports": port_map,
-                    "primary": is_primary,
+                    "primary": r.primary,
                 })
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&items).unwrap_or_default());
     } else {
-        println!("{:<20} {:<36} {:<6} PORTS", "CHECKOUT", "BRANCH", "DIRTY");
-        for (name, branch, _, _, dirty, ports, _) in &rows {
-            let ports_s: Vec<String> = ports.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            println!("{name:<20} {branch:<36} {dirty:<6} {}", ports_s.join(" "));
+        // Slot names are branch slugs and run long, so the columns are sized to
+        // the actual rows — a fixed width silently shifted every later column
+        // out of alignment as soon as one name overflowed it.
+        const HEADERS: [&str; 4] = ["CHECKOUT", "BRANCH", "STATE", "PORTS"];
+        let cells: Vec<[String; 4]> = rows
+            .iter()
+            .map(|r| {
+                let ports: Vec<String> = r.ports.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                [
+                    r.name.clone(),
+                    r.branch.clone(),
+                    r.state.clone(),
+                    ports.join(" "),
+                ]
+            })
+            .collect();
+        // Width counts chars, not bytes, so a multi-byte branch name doesn't
+        // over-pad its column.
+        let width = |i: usize| {
+            cells
+                .iter()
+                .map(|c| c[i].chars().count())
+                .chain([HEADERS[i].chars().count()])
+                .max()
+                .unwrap_or(0)
+        };
+        let (wn, wb, ws) = (width(0), width(1), width(2));
+        println!("{:<wn$}  {:<wb$}  {:<ws$}  {}", HEADERS[0], HEADERS[1], HEADERS[2], HEADERS[3]);
+        for c in &cells {
+            println!("{:<wn$}  {:<wb$}  {:<ws$}  {}", c[0], c[1], c[2], c[3]);
         }
     }
     Ok(())

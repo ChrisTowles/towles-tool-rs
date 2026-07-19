@@ -113,7 +113,8 @@ pub enum SlotCommands {
         root: Option<PathBuf>,
     },
 
-    /// List the main checkout and slots with branch, dirty count, and claimed ports
+    /// List the main checkout and slots with branch, work state (uncommitted
+    /// changes vs commits that never reached the base), and claimed ports
     Ls {
         /// Emit checkouts as a JSON array
         #[arg(long)]

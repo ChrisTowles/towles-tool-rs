@@ -22,6 +22,7 @@ import {
   GhostBadge,
   Glyph,
   IconBtn,
+  FolderLandedBadge,
   NeedsBadge,
   PortDriftBadge,
   PrChip,
@@ -58,6 +59,7 @@ import {
   fmtWaitingAge,
   folderPortDrift,
   folderRemovableSlot,
+  folderLanded,
   folderSafeToDelete,
   isAgent,
   isSoloRepo,
@@ -922,12 +924,17 @@ function FolderHeader({
           <DiffButton stats={folder} onOpen={onOpenDiff} />
           <FilesButton onOpen={onOpenFiles} />
           {pr && <PrChip pr={pr} stats={folder} />}
-          {pr?.state === "merged" &&
+          <FolderLandedBadge folder={folder} pr={pr} />
+          {/* Landed and nothing would be lost. Gated on `folderLanded`, not on
+              a merged PR: the PR-only gate hid this from every PR-less slot,
+              which is exactly the slot most likely to be forgotten. */}
+          {folderLanded(folder, pr) &&
             folder.isWorktree &&
             onDeleteWorktree &&
             folderSafeToDelete(folder) && (
               <SafeToDeleteBadge
                 base={comparedBaseLabel(folder)}
+                landed={folder.landed}
                 onDeleteWorktree={onDeleteWorktree}
               />
             )}

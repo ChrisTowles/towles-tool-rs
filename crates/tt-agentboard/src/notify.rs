@@ -137,6 +137,7 @@ mod tests {
                     dir_missing: false,
                     branch: "main".into(),
                     is_worktree: false,
+                    landed: None,
                     files_changed: 0,
                     lines_added: 0,
                     lines_removed: 0,

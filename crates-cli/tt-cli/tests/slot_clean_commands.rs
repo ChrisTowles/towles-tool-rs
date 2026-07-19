@@ -202,27 +202,91 @@ fn clean_removes_merged_slot_and_sweeps_state_keeps_the_rest() {
 }
 
 #[test]
-fn clean_removes_slot_whose_upstream_is_gone() {
+fn clean_removes_a_squash_merged_slot_even_when_local_base_is_stale() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+    let seed = tmp.path().join("seed");
+
+    // The real GitHub signature: the branch's content is squashed onto the
+    // remote's main under a brand-new SHA and the remote branch is deleted.
+    // The local `main` is never pulled, so this only resolves against
+    // `origin/main` — and only the tree probe sees it, since neither
+    // reachability nor `git cherry` matches a squashed commit.
+    new_slot(&home, &root_s, "feat/push");
+    let slot = slot_dir(&checkout, "feat-push");
+    commit_file(&slot, "pushed.txt");
+    commit_file(&slot, "pushed2.txt");
+    git(&slot, &["push", "-u", "origin", "feat/push"]);
+    git(&seed, &["merge", "--squash", "feat/push"]);
+    git(&seed, &["commit", "-m", "squashed feat/push (#1)"]);
+    git(&seed, &["branch", "-D", "feat/push"]);
+
+    let report = clean_json(&home, &root_s, &[]);
+    // Failure here means the squash went undetected. The reason the slot was
+    // kept, plus the state of the ref the detection actually depends on, is
+    // the whole diagnosis — without it this reads as a bare
+    // `Null != "feat-push"` with nothing to act on.
+    let git_out = |dir: &Path, args: &[&str]| -> String {
+        let out = Command::new("git").arg("-C").arg(dir).args(args).output().expect("git runs");
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )
+    };
+    assert_eq!(
+        report["removed"][0]["name"],
+        "feat-push",
+        "a squash-merged slot must be cleaned\n  kept={}\n  warnings={}\n  origin/main={}\n  main={}",
+        report["kept"],
+        report["warnings"],
+        git_out(
+            &checkout,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "refs/remotes/origin/main"
+            ]
+        ),
+        git_out(&checkout, &["rev-parse", "--verify", "--quiet", "refs/heads/main"]),
+    );
+    let reason = report["removed"][0]["reason"].as_str().unwrap();
+    assert!(reason.contains("squash-merged"), "reason should name how it landed, got {reason:?}");
+    assert!(!slot.exists());
+    assert!(!branch_exists(&checkout, "feat/push"));
+}
+
+#[test]
+fn clean_keeps_a_slot_whose_remote_branch_vanished_without_merging() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let checkout = make_checkout(tmp.path());
     let root_s = checkout.to_string_lossy().to_string();
 
-    // Push the branch, then delete it on the "remote" (the seed repo) — the
-    // squash-merge signature: commits landed under new SHAs, remote branch
-    // deleted, so only `fetch --prune` + gone-upstream detection catches it.
-    new_slot(&home, &root_s, "feat/push");
-    let slot = slot_dir(&checkout, "feat-push");
-    commit_file(&slot, "pushed.txt");
-    git(&slot, &["push", "-u", "origin", "feat/push"]);
-    git(&tmp.path().join("seed"), &["branch", "-D", "feat/push"]);
+    // Identical to a merged PR from the outside — pushed, then the remote
+    // branch disappeared — except the commit never reached main. `clean`
+    // deletes branches, so treating a gone upstream as proof of merge would
+    // destroy the only copy of this work.
+    new_slot(&home, &root_s, "feat/vanished");
+    let slot = slot_dir(&checkout, "feat-vanished");
+    commit_file(&slot, "unmerged.txt");
+    git(&slot, &["push", "-u", "origin", "feat/vanished"]);
+    git(&tmp.path().join("seed"), &["branch", "-D", "feat/vanished"]);
 
     let report = clean_json(&home, &root_s, &[]);
-    assert_eq!(report["removed"][0]["name"], "feat-push");
-    assert!(report["removed"][0]["reason"].as_str().unwrap().contains("upstream gone"));
-    assert!(!slot.exists());
-    assert!(!branch_exists(&checkout, "feat/push"));
+    assert!(
+        report["removed"].as_array().unwrap().is_empty(),
+        "work that never landed must not be cleaned"
+    );
+    let why = report["kept"][0]["why"][0].as_str().unwrap();
+    assert!(why.contains("never reached"), "kept reason should explain, got {why:?}");
+    assert!(slot.exists());
+    assert!(branch_exists(&checkout, "feat/vanished"), "the branch still holds the only copy");
 }
 
 #[test]

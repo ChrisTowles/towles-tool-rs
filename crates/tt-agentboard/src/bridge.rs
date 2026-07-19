@@ -248,6 +248,7 @@ fn build_folder(
         commits_behind: git.commits_behind,
         dirty: git.dirty,
         commits_unlanded: git.commits_unlanded,
+        landed: git.landed.clone(),
         sessions: session_data,
         needs,
         purpose: folder_meta.purpose_for(&entry.dir).map(str::to_string),

@@ -1,57 +1,14 @@
-//! Pure decisions for `tt slot clean` — which slots are *finished* (their
-//! branch's work has landed) and which per-checkout state directories are
-//! stale. The orchestration (git calls, removal, directory sweep) lives in
-//! [`crate::ops::clean_slots`]; this module only decides.
+//! Pure helpers for `tt slot clean`: reading a branch's upstream-tracking
+//! state, and deciding which per-checkout state directories are stale. The
+//! orchestration (git calls, removal, directory sweep) lives in
+//! [`crate::ops::clean_slots`].
+//!
+//! Whether a slot is *finished* is no longer decided here — that moved to
+//! [`crate::landed`], which combines several git signals because the
+//! ancestor-or-`[gone]` rule this module used to apply could not see a squash
+//! merge and treated a deleted remote branch as proof of one.
 
 use std::collections::BTreeSet;
-use std::fmt;
-
-/// Why a slot counts as finished — safe to clean because its branch's work
-/// is reachable from somewhere else.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FinishedReason {
-    /// The branch is a strict ancestor of the base branch (a classic merge
-    /// landed it).
-    MergedInto(String),
-    /// The branch's upstream is gone — the remote branch was deleted, the
-    /// GitHub squash/rebase-merge signature (`git branch -vv` shows `: gone`).
-    UpstreamGone,
-}
-
-impl fmt::Display for FinishedReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MergedInto(base) => write!(f, "merged into {base}"),
-            Self::UpstreamGone => write!(f, "upstream gone (remote branch deleted after merge)"),
-        }
-    }
-}
-
-/// Decide whether a slot's branch is finished.
-///
-/// `merged_ancestor` is `git merge-base --is-ancestor <branch> <base>`. On its
-/// own it also matches a *fresh* slot — a branch just created from the base
-/// tip has no commits of its own and is trivially an ancestor — and cleaning
-/// a slot someone is about to work in would be hostile, so ancestor-merge only
-/// counts when the branch tip differs from the base tip (`tip_equals_base`).
-/// A slot created from an older `--base` ref therefore still reads as merged;
-/// it holds zero unique commits, so nothing is lost. `upstream_gone` needs no
-/// such guard: an upstream only exists after a push, and only reads gone after
-/// the remote branch was deleted.
-pub fn finished_reason(
-    base: &str,
-    merged_ancestor: bool,
-    tip_equals_base: bool,
-    upstream_gone: bool,
-) -> Option<FinishedReason> {
-    if merged_ancestor && !tip_equals_base {
-        return Some(FinishedReason::MergedInto(base.to_string()));
-    }
-    if upstream_gone {
-        return Some(FinishedReason::UpstreamGone);
-    }
-    None
-}
 
 /// Whether `git for-each-ref --format=%(upstream:track)` output marks the
 /// branch's upstream as deleted. Git prints exactly `[gone]` for that case
@@ -89,32 +46,6 @@ pub fn stale_scope_dirs(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fresh_slot_is_not_finished() {
-        // A branch just created from the base tip: ancestor-merged trivially,
-        // tip equals base tip — must be kept for the work about to happen.
-        assert_eq!(finished_reason("main", true, true, false), None);
-    }
-
-    #[test]
-    fn classic_merge_finishes() {
-        assert_eq!(
-            finished_reason("main", true, false, false),
-            Some(FinishedReason::MergedInto("main".into()))
-        );
-    }
-
-    #[test]
-    fn gone_upstream_finishes_even_when_not_ancestor() {
-        // Squash/rebase merges land under new SHAs — never ancestor-merged.
-        assert_eq!(finished_reason("main", false, false, true), Some(FinishedReason::UpstreamGone));
-    }
-
-    #[test]
-    fn active_branch_is_kept() {
-        assert_eq!(finished_reason("main", false, false, false), None);
-    }
 
     #[test]
     fn upstream_gone_parses_track_output() {
