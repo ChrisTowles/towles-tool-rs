@@ -1,5 +1,11 @@
 # Towles Tool (Rust)
 
+> [!WARNING]
+> **This is a personal playground.** It exists so I can learn by building.
+> If you want to steer many coding agents, use
+> [Claude Desktop](https://code.claude.com/docs/en/desktop-linux) instead —
+> that goes for me too.
+
 A [Tauri 2](https://v2.tauri.app/) desktop app plus the `tt` CLI, built for one
 job: **going from steering one coding agent to steering many without going
 insane.**
