@@ -1291,6 +1291,10 @@ export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ClaudeLaunchOptions = {
   model?: ClaudeModel;
   effort?: ClaudeEffort;
+  /** Start the session in a specific permission mode (`claude
+   * --permission-mode`). The dynamic-task flow launches in `plan` so the
+   * session explores and presents a plan before any edit is possible. */
+  permissionMode?: "plan";
 };
 
 /** The `claude` invocation for a session's PTY: bare, or with an initial
@@ -1303,9 +1307,38 @@ export function claudeCommand(prompt: string, options?: ClaudeLaunchOptions): st
     "claude",
     options?.model ? `--model ${shellQuote(options.model)}` : null,
     options?.effort ? `--effort ${shellQuote(options.effort)}` : null,
+    options?.permissionMode ? `--permission-mode ${shellQuote(options.permissionMode)}` : null,
     trimmed ? shellQuote(trimmed) : null,
   ].filter((p): p is string => p != null);
   return `${parts.join(" ")}\r`;
+}
+
+/** Wrap a dynamic task's goal with the delivery pipeline the session runs
+ * once its plan is approved: implement → `/code-review low --fix` →
+ * `/simplify` → rebase onto the base branch → PR → merge. The session is
+ * launched in plan mode (see `ClaudeLaunchOptions.permissionMode`), so "the
+ * plan is approved" is the user's interactive approval in the PTY — after
+ * that gate the instructions carry the session all the way to a merged PR,
+ * and the merged PR is what rolls the board task to done (PR auto-attach +
+ * status rollup on collect). */
+export function dynamicFlowPrompt(goal: string, base: string): string {
+  const trimmed = goal.trim();
+  // Single line by construction — like `promptWithImages`, this is typed into
+  // a PTY inside a quoted arg, where a literal newline drops zsh to PS2.
+  return [
+    trimmed ? `${trimmed} — ` : "",
+    "This is a dynamic task: after your plan is approved, deliver it all the way ",
+    "to a merged PR without stopping to ask. You are in a dedicated worktree on ",
+    `this task's branch; the target branch is ${base}. Once the plan is approved: `,
+    "(1) implement it, verifying with the project's build/lint/test commands, and ",
+    "commit; (2) run /code-review low --fix; (3) run /simplify; commit what those ",
+    `two change; (4) fetch and rebase this branch onto the latest ${base}, `,
+    "resolving conflicts; (5) push and open the PR with gh pr create; (6) merge it ",
+    "with gh pr merge, using a strategy the repo allows — but if the merge is ",
+    "blocked by required checks or reviews you cannot satisfy, stop and report ",
+    "instead of forcing it. Then stop: leave the worktree in place — the board ",
+    "task closes itself once the merged PR is detected.",
+  ].join("");
 }
 
 /** MIME types the new-slot form accepts off the clipboard — the same closed

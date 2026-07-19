@@ -57,6 +57,16 @@ fn app_slot() -> String {
     slot_label()
 }
 
+/// The shared IPC seam for frontend `ui.action` telemetry (see the root
+/// CLAUDE.md's `tt-otel` bullet): the webview can't reach `tracing`, so every
+/// user gesture worth recording crosses here with a stable action id and the
+/// screen it happened on. Discrete intents only — no content, no continuous
+/// input.
+#[tauri::command]
+fn ui_action(action: String, screen: String) {
+    tracing::info!(%action, %screen, "ui.action");
+}
+
 /// Per-slot Tauri app identifier, so each worktree slot's self-installed
 /// `.desktop` entry + icon (`linux_desktop::ensure_installed`) gets its own
 /// filename instead of every slot's binary overwriting the same one on
@@ -466,6 +476,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_slot,
+            ui_action,
             update::check_for_update,
             resources::app_resource_usage,
             agentboard::ab_get_state,

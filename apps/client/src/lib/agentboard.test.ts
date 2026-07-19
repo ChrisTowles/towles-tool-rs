@@ -29,6 +29,8 @@ import {
   filesPaneId,
   folderPaneDir,
   isCacheExpiring,
+  claudeCommand,
+  dynamicFlowPrompt,
   isFolderQuiet,
   isPasteableImage,
   needingSessionsOldestFirst,
@@ -1261,6 +1263,53 @@ describe("promptWithImages", () => {
     // function adds should.
     const prompt = promptWithImages("goal", ["/a/paste-1.png", "/a/paste-2.png"]);
     expect(prompt).not.toContain("\n");
+  });
+});
+
+describe("claudeCommand", () => {
+  it("passes --permission-mode before the prompt when asked", () => {
+    expect(claudeCommand("do it", { permissionMode: "plan" })).toBe(
+      "claude --permission-mode 'plan' 'do it'\r",
+    );
+  });
+
+  it("omits the flag by default", () => {
+    expect(claudeCommand("do it")).toBe("claude 'do it'\r");
+  });
+});
+
+describe("dynamicFlowPrompt", () => {
+  it("leads with the goal and carries the whole post-approval pipeline in order", () => {
+    const prompt = dynamicFlowPrompt("add dark mode", "main");
+    expect(prompt.startsWith("add dark mode — ")).toBe(true);
+    // The steps must appear in delivery order — implement, review, simplify,
+    // rebase, PR, merge — since the session executes them as written.
+    const order = [
+      "implement",
+      "/code-review low --fix",
+      "/simplify",
+      "rebase",
+      "gh pr create",
+      "gh pr merge",
+    ];
+    const positions = order.map((s) => prompt.indexOf(s));
+    expect(positions.every((p) => p >= 0)).toBe(true);
+    expect(positions.toSorted((a, b) => a - b)).toEqual(positions);
+  });
+
+  it("names the actual base branch, not a hardcoded main", () => {
+    const prompt = dynamicFlowPrompt("fix", "release/2.0");
+    expect(prompt).toContain("release/2.0");
+    expect(prompt).not.toContain("main");
+  });
+
+  it("stands alone when the goal is empty (image-only ask)", () => {
+    const prompt = dynamicFlowPrompt("  ", "main");
+    expect(prompt.startsWith("This is a dynamic task")).toBe(true);
+  });
+
+  it("never emits a newline — typed into a PTY inside a quoted arg", () => {
+    expect(dynamicFlowPrompt("goal", "main")).not.toContain("\n");
   });
 });
 

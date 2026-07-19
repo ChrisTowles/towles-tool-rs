@@ -20,6 +20,7 @@ import {
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Command,
   CommandEmpty,
@@ -52,6 +53,7 @@ import { IssueItem, storeGhIssuesList } from "@/lib/data";
 import { errorMessage } from "@/lib/errors";
 import { BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
 import { invoke } from "@/lib/tauri";
+import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
 
 /** The unset state of the model/effort selects: no `--model`/`--effort` is
@@ -100,6 +102,10 @@ export type NewTaskSubmit = {
   issues: IssueItem[];
   /** False for "Task only": create the board task but no worktree/agent. */
   worktree: boolean;
+  /** True for a dynamic task: Claude launches in plan mode, and once the
+   * user approves the plan in the PTY it delivers all the way to a merged
+   * PR (`dynamicFlowPrompt`) — the merge is what closes the board task. */
+  dynamic: boolean;
 };
 
 /** Mirrors the Rust `SlotCreated` payload from `slot_create`. */
@@ -150,6 +156,8 @@ export type PendingSlot = {
   /** The board task created at submit (#339) — carried so a retry binds the
    * slot to the same task instead of minting a duplicate card. */
   taskId?: number;
+  /** Carried so a retry launches the same flow the submit asked for. */
+  dynamic: boolean;
   /** The repo's origin URL, for the task slot binding's `owner/name`. */
   repoOriginUrl?: string | null;
   startedAt: number;
@@ -241,6 +249,10 @@ export function InlineNewSlot({
   // the user explicitly picks one, so their own defaults apply.
   const [model, setModel] = useState<ModelChoice>(USE_DEFAULT);
   const [effort, setEffort] = useState<EffortChoice>(USE_DEFAULT);
+  // Off by default: a dynamic task merges its own PR, which is a bigger
+  // grant than "start Claude on a goal" — opting in is per-task, never
+  // remembered, so it's always a deliberate choice.
+  const [dynamic, setDynamic] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);
   const [baseOpen, setBaseOpen] = useState(false);
   // One slot for whatever the form has to say — an error (nothing happened)
@@ -513,6 +525,11 @@ export function InlineNewSlot({
       showError("Give a goal (or pick an issue) first.");
       return;
     }
+    const isDynamic = worktree && dynamic;
+    uiAction(
+      worktree ? (isDynamic ? "task.start_dynamic" : "task.start") : "task.create_only",
+      "agentboard",
+    );
     onSubmit({
       goal: goal.trim(),
       branch,
@@ -524,6 +541,7 @@ export function InlineNewSlot({
       imagePaths,
       issues: selectedIssues,
       worktree,
+      dynamic: isDynamic,
     });
   }
 
@@ -797,6 +815,21 @@ export function InlineNewSlot({
           </SelectContent>
         </Select>
       </div>
+      <label
+        htmlFor="new-slot-dynamic"
+        className="flex cursor-pointer items-start gap-2"
+        title="Launches Claude in plan mode. Once you approve its plan in the terminal, it implements the work, runs /code-review low --fix and /simplify, rebases on the base branch, opens the PR, and merges it — the board task closes when the merge lands."
+      >
+        <Checkbox
+          id="new-slot-dynamic"
+          checked={dynamic}
+          onCheckedChange={(v) => setDynamic(v === true)}
+          className="mt-0.5"
+        />
+        <span className="text-[11px] leading-snug text-muted-foreground">
+          Dynamic — after you approve the plan: review, simplify, rebase, PR, merge
+        </span>
+      </label>
       {notice && (
         <p
           className={cn(
