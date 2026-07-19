@@ -257,7 +257,14 @@ Cargo workspace + npm workspace (`apps/client` only):
     an explicit user gesture (a click, a confirm, a delete, a shortcut that
     mutates state) needs a `tracing` span or event recording at least the
     action and its outcome — the same way `process.spawn` covers subprocesses.
-    OS-level signals with no other record — window focus/blur
+    Frontend actions (click, shortcut, palette command, form submit) emit a
+    `ui.action` event carrying a stable action id and the screen; since the
+    webview can't reach `tracing`, they cross IPC through one shared
+    helper/command seam — build it when the first instrumented action lands,
+    not per-feature ad-hoc plumbing. Discrete intents only, never content or
+    continuous input: no per-keystroke or mouse-move events, no PTY input, no
+    note text (the log is plaintext, and per-record flushing assumes
+    human-rate volume). OS-level signals with no other record — window focus/blur
     (`WindowEvent::Focused` in `lib.rs`), a native notification actually
     firing (`agentboard::notify_needs_you`) — get the same treatment, since
     they're exactly the kind of thing that's impossible to reconstruct after
@@ -412,6 +419,8 @@ etc.). The points below are repo-specific specializations of that doc.
   from a backend snapshot unmounts before CSS can run, and only `motion`'s
   `AnimatePresence` can hold it on screen or `layout`-animate the rows that
   survive it. `apps/client/src/lib/rail-motion.ts` is the canonical config.
+- **Every user action in the app must emit its OTel event** — event shape
+  and exclusions in the `tt-otel` bullet in Architecture.
 - **No CLI-parity requirement.** The app is the primary product; each feature
   picks its natural surface. App-only features don't need a `tt` subcommand,
   and terminal-native tools (journal, gh, doctor) don't need app screens. The
