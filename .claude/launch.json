@@ -1,0 +1,10 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "app (dev:drive)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:drive"]
+    }
+  ]
+}
