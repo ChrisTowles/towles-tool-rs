@@ -226,6 +226,13 @@ export function AgentboardScreen() {
   }, [state.repos, now]);
 
   const [selected, setSelected] = useState<Selected>(null);
+  // Which pane tile (session, diff, files, or tombstone) last claimed the
+  // click — the sole driver of the violet focus ring below. Deliberately
+  // separate from `selected`: `selected` targets the session the toolbar's
+  // Close/⌘D/⌘W and cache-badge actions act on, while this is purely "which
+  // tile is visually active" and every pane kind can claim it, not just
+  // sessions.
+  const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null);
   // The folder whose windows the main area shows — set by clicking a folder
   // header or a session row. Null until the user picks a folder.
   const [activeFolderDir, setActiveFolderDir] = useState<string | null>(null);
@@ -771,6 +778,7 @@ export function AgentboardScreen() {
   function selectSession(folderDir: string, sessionId: string) {
     mountSession(folderDir, sessionId);
     setSelected({ folderDir, sessionId });
+    setFocusedPaneId(sessionId);
     setActiveFolderDir(folderDir);
     // Looking at it acknowledges it — drop the attention badge.
     setTermAttention((m) => {
@@ -1793,8 +1801,13 @@ export function AgentboardScreen() {
                               }
                               className={cn(
                                 "flex h-full flex-col overflow-hidden rounded-lg border bg-card",
+                                // Amber (needs-you) wins the border over violet
+                                // (focus) when both apply — see the folder-rail-ui
+                                // skill's "Two accent hues" rule; class order here
+                                // matters because `cn` (tailwind-merge) keeps only
+                                // the last conflicting border-color utility.
+                                focusedPaneId === id && "border-violet-500/60",
                                 termAttention[id] && "border-amber-500/70",
-                                selected?.sessionId === id && "border-violet-500/60",
                               )}
                             >
                               {s && (
@@ -1837,9 +1850,11 @@ export function AgentboardScreen() {
                             key={id}
                             style={r ? paneStyle(r) : undefined}
                             className="absolute p-1.5"
+                            onClick={() => setFocusedPaneId(id)}
                           >
                             <DiffPane
                               folder={folderByDir.get(dir)}
+                              focused={focusedPaneId === id}
                               onClose={() => removePane(id)}
                             />
                           </div>
@@ -1854,9 +1869,11 @@ export function AgentboardScreen() {
                             key={id}
                             style={r ? paneStyle(r) : undefined}
                             className="absolute p-1.5"
+                            onClick={() => setFocusedPaneId(id)}
                           >
                             <FolderFilesPane
                               folder={folderByDir.get(dir)}
+                              focused={focusedPaneId === id}
                               openRequest={filesOpenRequests[dir]}
                               onClose={() => removePane(id)}
                             />
@@ -1878,11 +1895,13 @@ export function AgentboardScreen() {
                             key={id}
                             style={r ? paneStyle(r) : undefined}
                             className="absolute p-1.5"
+                            onClick={() => setFocusedPaneId(id)}
                           >
                             <PanePlaceholder
                               label={s ? labelFor(s) : "shell"}
                               detail={exitLabels[sessionId]}
                               tone="alert"
+                              focused={focusedPaneId === id}
                               onRemove={() => removePane(id)}
                             />
                           </div>

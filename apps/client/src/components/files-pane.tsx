@@ -238,20 +238,29 @@ export function FilesPane({
  */
 export function FolderFilesPane({
   folder,
+  focused,
   onClose,
   openRequest,
 }: {
   /** The checkout this pane browses; undefined when it left the rail. */
   folder: FolderData | undefined;
+  /** This pane is the one the user last clicked into — see the focus-ring
+   * rule in `screens/agentboard.tsx`'s `focusedPaneId`. */
+  focused: boolean;
   /** Removes the pane from its window. */
   onClose: () => void;
   /** Claude called openFile — focus this file (new nonce per request). */
   openRequest?: FilesOpenRequest;
 }) {
   const ideConnected = useIdeConnected(folder?.dir);
-  if (!folder) return <PanePlaceholder label="folder gone" onRemove={onClose} />;
+  if (!folder) return <PanePlaceholder label="folder gone" focused={focused} onRemove={onClose} />;
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-lg border bg-card">
+    <div
+      className={cn(
+        "flex h-full flex-col overflow-hidden rounded-lg border bg-card",
+        focused && "border-violet-500/60",
+      )}
+    >
       <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
         <FilesIcon className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate font-mono text-xs text-foreground">{folder.name}</span>
