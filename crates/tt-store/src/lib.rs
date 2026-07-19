@@ -1629,12 +1629,10 @@ mod tests {
             .conn
             .prepare("SELECT task_id, repo, number FROM task_issues ORDER BY repo, number")
             .unwrap();
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        rows
+            .unwrap()
     }
 
     fn event(ext: &str, start: i64) -> EventInput {
