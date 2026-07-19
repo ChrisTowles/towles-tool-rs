@@ -274,16 +274,37 @@ export function GhostBadge() {
   );
 }
 
-/** Marks a folder as a git worktree checkout (linked to another checkout's
- * `.git`) — distinct from the `p/`/`w/` path-scope prefix, so a worktree's
- * WIP diff doesn't read as the repo's one canonical state. */
-export function WorktreeBadge() {
+/** The `⎇ branch` line under a checkout's name. Worktree slots are the common
+ * case in the rail, so they stay quiet (muted, like the rest of the git row);
+ * the *primary* checkout — the one clone whose `.git` is load-bearing for
+ * every worktree — is the special row, and carries the sky tint that used to
+ * be a "wt" badge on every slot. */
+export function BranchLabel({
+  branch,
+  isWorktree,
+  className,
+  onClick,
+}: {
+  branch: string;
+  isWorktree: boolean;
+  className?: string;
+  onClick?: () => void;
+}) {
   return (
     <span
-      className="shrink-0 rounded-md border border-sky-500/40 bg-sky-500/10 px-1 font-mono text-[10px] text-sky-500"
-      title="Git worktree checkout — a linked working tree, not the primary clone"
+      className={cn(
+        "min-w-0 truncate font-mono text-[11px]",
+        isWorktree ? "text-muted-foreground" : "text-sky-500",
+        className,
+      )}
+      title={
+        isWorktree
+          ? undefined
+          : "Primary checkout — the main clone; its .git is load-bearing for every worktree slot"
+      }
+      onClick={onClick}
     >
-      ⬡ wt
+      ⎇ {branch}
     </span>
   );
 }

@@ -13,7 +13,7 @@ import {
   PrChip,
   PurposeRow,
   RepoMenu,
-  WorktreeBadge,
+  BranchLabel,
 } from "@/components/agentboard-bits";
 import { DevServersButton } from "@/components/dev-servers";
 import type { NewSlotRepo } from "@/components/inline-new-slot";
@@ -138,9 +138,8 @@ export function WorkingContext({
         <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
           {scope && <span className="shrink-0 font-mono text-muted-foreground/60">{scope}</span>}
           {repoDistinct && <span className="shrink-0 font-medium">{repo.name}</span>}
-          <span className="min-w-0 shrink truncate font-mono text-[11px]">⎇ {folder.branch}</span>
+          <BranchLabel branch={folder.branch} isWorktree={folder.isWorktree} className="shrink" />
           <ComparedBaseBadge folder={folder} />
-          {folder.isWorktree && <WorktreeBadge />}
           <AheadBehind stats={folder} />
           <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir)} />
           <FilesButton onOpen={() => onOpenFiles(folder.dir)} />
