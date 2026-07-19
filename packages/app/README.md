@@ -8,18 +8,13 @@ exposes and one hook that keeps its PR view fresh.
 Registers the app's own `tt mcp serve` (`crates/tt-mcp`), so any session with this
 plugin enabled gets these tools without manual `claude mcp add` setup:
 
-`day_brief`, `needs_you`, `prs_status`, `issues_open`, `todo_create`,
-`todo_update`, `todo_set_status`, `todo_delete`, `todo_link_issue`,
-`todo_clear_done`, `journal_append`, `collect_refresh`, `collect_status`,
-`agent_sessions`, `calendar_next`, `calendar_today`, `dm_status`, `snapshot`,
-`tasks_open`.
+`day_brief`, `needs_you`, `prs_status`, `issues_open`, `dm_status`,
+`snapshot`, `tasks_open`, `collect_status`.
 
-The dashboard reads work out of the box. The mutating tools (`todo_*`,
-`journal_append`, `collect_refresh`) and `agent_sessions` are **disabled by
-default**: they refuse until you set `"mcp": { "mutationsEnabled": true }`
-(and/or `"agentSessionsEnabled": true`) in `towles-tool.settings.json` —
-deliberately a hand edit, so a prompt-injected session can't self-approve
-(see the trust-boundary doc in `crates/tt-mcp`).
+Every tool is a read of your own dashboard — the server is read-only by
+construction (the mutating `todo_*`/`journal_append`/`collect_refresh` tools
+and `agent_sessions` were removed in the 2026-07 telemetry datamine after
+showing zero use; see the trust-boundary doc in `crates/tt-mcp`).
 
 Requires `tt` on `PATH` (see the root [README](../../README.md) / `install`
 command).
