@@ -53,6 +53,12 @@ describe("matchesTaskFilter", () => {
     expect(matchesTaskFilter(slotted, "rate-limit")).toBe(true);
   });
 
+  it("matches against the slot repo — often a card's only repo identity", () => {
+    const bound = task({ text: "Ship it" }, { slot: { repoRoot: "/r", repo: "octo/blog" } });
+    expect(matchesTaskFilter(bound, "blog")).toBe(true);
+    expect(matchesTaskFilter(task({ text: "Ship it" }), "blog")).toBe(false);
+  });
+
   it("trims surrounding whitespace before comparing", () => {
     expect(matchesTaskFilter(task({ text: "Refresh cadence" }), "  refresh  ")).toBe(true);
   });

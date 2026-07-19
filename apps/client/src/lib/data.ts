@@ -54,13 +54,20 @@ export type TaskPrLink = {
 };
 
 /**
- * A task's worktree-slot binding. `repoRoot`/`branch` survive slot removal;
- * `dir` is cleared when the worktree is removed (a detached task).
+ * A task's repo binding, and the slot its work happens in once one exists.
+ *
+ * `repoRoot` is the only required part: an Agentboard task knows its repo from
+ * the moment of submit, so `branch` is absent until a worktree is created (and
+ * absent forever for a "task only" submit). That's what puts every task in a
+ * repo swimlane on the Board.
+ *
+ * `repoRoot`/`branch` survive slot removal; `dir` is cleared when the worktree
+ * is removed (a detached task).
  */
 export type TaskSlot = {
   repoRoot: string;
   repo?: string;
-  branch: string;
+  branch?: string;
   dir?: string;
 };
 
@@ -551,11 +558,13 @@ export const storeAttachTaskPr = (id: number, repo: string, number: number, url:
 export const storeDetachTaskPr = (id: number, repo: string, number: number) =>
   invoke<void>("store_detach_task_pr", { id, repo, number });
 
-/** Bind a task to the worktree slot its work happens in. */
+/** Bind a task to its repo, and to the worktree slot its work happens in once
+ * one exists. The new-task flow calls this at submit with the repo alone, then
+ * again with `branch`/`dir` once `slot_create` resolves. */
 export const storeTaskSetSlot = (
   id: number,
   repoRoot: string,
-  branch: string,
+  branch: string | undefined,
   opts?: { repo?: string; dir?: string },
 ) =>
   invoke<void>("store_task_set_slot", {
@@ -566,30 +575,9 @@ export const storeTaskSetSlot = (
     dir: opts?.dir,
   });
 
-/** One Agentboard-tracked repo, resolved to its GitHub `owner/name`. */
-export type GhRepoOption = { dir: string; name: string };
-
-/** Tracked repos resolved to their GitHub identity, for the "Import from
- * GitHub" dialog's repo picker. The failure stays in the `Result` (rather than
- * degrading to an empty list) so the dialog can show a real error state. */
-export const storeGhTrackedRepos = () => invoke<GhRepoOption[]>("store_gh_tracked_repos");
-
-/** Open issues in `dir`'s repo, for the import dialog's issue picker. */
-export const storeGhIssuesList = (dir: string, assignedToMe: boolean, milestone?: string) =>
-  invoke<IssueItem[]>("store_gh_issues_list", { dir, assignedToMe, milestone });
-
-/** Open milestone titles in `dir`'s repo, for the import dialog's filter. */
-export const storeGhMilestonesList = (dir: string) =>
-  invoke<string[]>("store_gh_milestones_list", { dir });
-
-/** One issue selected in the import dialog. */
-export type ImportIssueInput = { repo: string; number: number; title: string; url: string };
-
-/** Import selected GitHub issues onto the board as new Backlog todos.
- * Resolves to how many todos were created (issues already linked are
- * skipped). */
-export const storeImportIssues = (items: ImportIssueInput[]) =>
-  invoke<number>("store_import_issues", { items });
+/** Open issues in `dir`'s repo, for the new-task flow's issue picker. */
+export const storeGhIssuesList = (dir: string, assignedToMe: boolean) =>
+  invoke<IssueItem[]>("store_gh_issues_list", { dir, assignedToMe });
 
 /** Mark a watched Slack DM handled up to `ts`, clearing its banner. */
 export const storeDmDismiss = (channel: string, ts: number) =>

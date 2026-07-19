@@ -60,11 +60,13 @@ describe("tab shortcuts", () => {
 });
 
 describe("board shortcuts", () => {
-  it("registers board-scoped bindings for the new-todo input and filter", () => {
-    expect(SHORTCUTS["board-new-todo"].scope).toBe("board");
+  it("registers the board-scoped filter binding", () => {
     expect(SHORTCUTS["board-filter"].scope).toBe("board");
-    expect(matchesShortcut("board-new-todo", key({ key: "n" }))).toBe(true);
     expect(matchesShortcut("board-filter", key({ key: "/" }))).toBe(true);
+  });
+
+  it("has no new-task binding — tasks are created on the Agentboard", () => {
+    expect("board-new-todo" in SHORTCUTS).toBe(false);
   });
 });
 
