@@ -1378,7 +1378,9 @@ impl Store {
 
     // --- Row-mapping helpers ---------------------------------------------
 
-    fn task_by_id(&self, id: i64) -> Result<TaskItem> {
+    /// One task by id, with its links and slot binding (the same row shape
+    /// [`Store::open_tasks`] returns).
+    pub fn task_by_id(&self, id: i64) -> Result<TaskItem> {
         self.query_tasks(&format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"), [id])?
             .into_iter()
             .next()

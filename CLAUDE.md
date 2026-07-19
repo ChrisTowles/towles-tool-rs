@@ -229,15 +229,19 @@ Cargo workspace + npm workspace (`apps/client` only):
     [`crates/tt-collect/CLAUDE.md`](crates/tt-collect/CLAUDE.md) for the
     never-panic contract, per-repo isolation, and where the Slack
     protocol/socket split lives.
-  - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`tt mcp serve`) exposing
-    read-only dashboard tools over the store to claude sessions. It's
-    registered at **user scope**, so every session on the machine can reach
-    it — fine, because the server is **read-only by construction**: the
-    mutating tools (`todo_*`, `journal_append`, `collect_refresh`) and
-    `agent_sessions`, plus their `mcp.*` capability gate, were removed in the
-    2026-07 telemetry datamine after showing zero use. A future mutating tool
-    must bring the gate back — the crate's module doc-comment has the threat
-    model and points at the old design in git history.
+  - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`tt mcp serve`)
+    exposing the board's task family to claude sessions: `task_list`,
+    `task_status` (reads), and `task_create` (the one mutation — creates a
+    #339 board task in a tracked repo's swimlane, same store path as the
+    app's `store_add_task`). It's registered at **user scope**, so every
+    session on the machine can reach it; mutations therefore sit behind the
+    `mcp.mutationsEnabled` capability gate in the shared settings file —
+    default off, re-read per call, failing closed, and not writable by any
+    exposed tool, so prompt injection can't self-approve (the crate's module
+    doc-comment has the threat model). The broader dashboard-read tools
+    (`day_brief`, `needs_you`, `snapshot`, PR/issue/DM/collector reads) were
+    pruned in the 2026-07 tool-surface review; a calendar family may return
+    later.
   - `tt-otel` — telemetry. `tt_otel::init` installs the global `tracing`
     subscriber for both binaries (it replaced `env_logger` — a hard cutover,
     no second logger), fanning out to stderr (filtered by `-v`/`RUST_LOG`) and
@@ -377,8 +381,8 @@ plugins ship today:
 - `tt` (`packages/core`) — the map-vs-territory workflow commands/skills
   (`/tt:01-blindspot` … `/tt:22-memories`).
 - `towles-tool-app` (`packages/app`) — bridges Claude Code to the desktop
-  app itself: registers its `tt mcp serve` MCP server (read-only dashboard:
-  day brief, needs-you, PR/issue status, todos), ships the `slot-onboarding` skill
+  app itself: registers its `tt mcp serve` MCP server (board tasks:
+  `task_list`, `task_status`, gated `task_create`), ships the `slot-onboarding` skill
   (guides onboarding any repo onto worktree slots — port discovery, template
   authoring, `tt slot init`), and a `PostToolUse` hook
   (`hooks/scripts/gh-pr-nudge.sh`) that nudges a running app instance to

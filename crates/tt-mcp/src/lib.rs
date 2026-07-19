@@ -7,7 +7,12 @@
 //! which is the testable core: [`Dispatcher::handle_at`] takes the request line
 //! plus an injected `now_ms` so tool logic never reads the clock itself.
 //!
-//! Exposed tools surface the towles-tool "personal dashboard" ([`tt_store`]).
+//! Exposed tools surface the towles-tool board ([`tt_store`]'s tasks — the
+//! #339 unit of work): `task_list`, `task_status`, and the gated
+//! `task_create`. The broader dashboard-read tools (`day_brief`, `needs_you`,
+//! `snapshot`, `prs_status`, `issues_open`, `dm_status`, `collect_status`)
+//! were pruned in the 2026-07 tool-surface review — the task family is the
+//! surface a session actually needs; a calendar family may join it later.
 //!
 //! ## Trust boundary
 //!
@@ -23,30 +28,33 @@
 //! working on something unrelated, then calling a tool whose reach is the
 //! whole machine.
 //!
-//! The posture is therefore **read-only by construction**: every exposed tool
-//! reads the aggregate personal dashboard (PRs, issues, DMs, todos, collector
-//! status) and nothing else — that's the whole point of "ask what's on my
-//! plate from anywhere," and a read of the user's own dashboard is available
-//! to any of the user's own sessions by design. There used to be a set of
-//! mutating tools (`todo_*`, `journal_append`, `collect_refresh`) and a
-//! cross-session `agent_sessions` tool behind an opt-in capability gate
-//! (`mcp.mutationsEnabled` / `mcp.agentSessionsEnabled`); telemetry showed
-//! zero real use, so the 2026-07 datamine removed the tools and the gate
-//! machinery with them. A future mutating tool must bring the gate back —
-//! see git history for the design (settings-file opt-in that no exposed tool
-//! can flip, so prompt injection can't self-approve).
+//! The posture is therefore **read-only by default**: the ungated tools read
+//! the user's own board, which is available to any of the user's own sessions
+//! by design. The one mutating tool, `task_create`, sits behind the
+//! capability gate ([`tt_config::McpSettings::mutations_enabled`]): a
+//! settings-file opt-in, default off, that no tool exposed here can flip — so
+//! prompt injection can't self-approve it — re-resolved from disk on every
+//! call (a settings edit needs no server restart) and failing closed when the
+//! file is unreadable. (This does not defend against a session with
+//! unrestricted shell access being instructed to edit the settings file
+//! directly and then call the gated tool — that session could just as well
+//! run `sqlite3` against tt.db itself.) The previous generation of mutating
+//! tools (`todo_*`, `journal_append`, `collect_refresh`) and the
+//! cross-session `agent_sessions` tool showed zero real use in telemetry, so
+//! the 2026-07 datamine removed them; `task_create` brought the gate
+//! machinery back.
 
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde_json::{Value, json};
 use tt_store::{McpCallInput, Store};
 
-pub mod needs_you;
-
-/// How many doing/next todos `day_brief` surfaces.
-const DAY_BRIEF_TODO_LIMIT: usize = 5;
+/// Tools gated behind [`tt_config::McpSettings::mutations_enabled`] — anything
+/// that writes the store. Everything else is a read of the user's own board
+/// and never touches the gate (or the settings file).
+const MUTATING_TOOLS: &[&str] = &["task_create"];
 
 /// Protocol version advertised when the client does not send one of its own.
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -63,6 +71,20 @@ pub struct Dispatcher {
     /// `clientInfo` from the session's `initialize` (e.g. `claude-code 2.1`),
     /// stamped onto call-log rows so the app's MCP screen can say who called.
     client: Option<String>,
+    /// Injected capability gate (test hook). The stdio/CLI path leaves it
+    /// `None` and re-resolves from disk on every gated call, so a settings
+    /// edit takes effect without restarting the server.
+    mcp_settings: Option<tt_config::McpSettings>,
+    /// When set, the capability gate loads this settings file instead of the
+    /// shared default — the CLI's global `--config-dir` flag lands here, so
+    /// `tt --config-dir <dir> mcp serve` really is isolated from the machine's
+    /// settings (and tests can exercise the real disk-resolution path against
+    /// a sandbox).
+    settings_path: Option<PathBuf>,
+    /// Injected tracked-repo dirs (test hook). The stdio/CLI path leaves it
+    /// `None` and re-reads the shared agentboard `repos.json` on every
+    /// `task_create`, so newly tracked repos are creatable without a restart.
+    tracked_repos: Option<Vec<String>>,
 }
 
 /// The result of dispatching one request: the response line to write back, plus
@@ -95,7 +117,69 @@ impl Outcome {
 impl Dispatcher {
     /// Build a dispatcher over `store`.
     pub fn new(store: Store) -> Dispatcher {
-        Dispatcher { store, client: None }
+        Dispatcher {
+            store,
+            client: None,
+            mcp_settings: None,
+            settings_path: None,
+            tracked_repos: None,
+        }
+    }
+
+    /// Build a dispatcher with a fixed capability gate (test hook — keeps the
+    /// gate off the real settings file).
+    pub fn with_mcp_settings(mut self, settings: tt_config::McpSettings) -> Dispatcher {
+        self.mcp_settings = Some(settings);
+        self
+    }
+
+    /// Point the capability gate at an explicit settings file — how the CLI's
+    /// global `--config-dir` flag reaches the server.
+    pub fn with_settings_path(mut self, path: PathBuf) -> Dispatcher {
+        self.settings_path = Some(path);
+        self
+    }
+
+    /// Build a dispatcher with a fixed tracked-repo list (test hook — keeps
+    /// `task_create`'s repo validation off the real agentboard `repos.json`).
+    pub fn with_tracked_repos(mut self, repos: Vec<String>) -> Dispatcher {
+        self.tracked_repos = Some(repos);
+        self
+    }
+
+    /// The capability gate to enforce for this call: the injected override if
+    /// any, else re-resolved from the settings file every time (so a settings
+    /// edit takes effect without restarting the server). Like every other
+    /// consumer of `tt_config`, a missing file is created with defaults on
+    /// first use.
+    fn mcp_capabilities(&self) -> Result<tt_config::McpSettings, String> {
+        match self.mcp_settings {
+            Some(settings) => Ok(settings),
+            None => match &self.settings_path {
+                Some(path) => Ok(tt_config::load_from(path).map_err(|e| e.to_string())?.mcp),
+                None => Ok(tt_config::load().map_err(|e| e.to_string())?.mcp),
+            },
+        }
+    }
+
+    /// The settings-file path named in the gate's refusal messages, honoring
+    /// [`Dispatcher::with_settings_path`] so the hint points at the file the
+    /// gate actually read.
+    fn settings_hint(&self) -> String {
+        match &self.settings_path {
+            Some(path) => path.display().to_string(),
+            None => settings_path_hint(),
+        }
+    }
+
+    /// The tracked-repo dirs `task_create` validates against: the injected
+    /// override if any, else re-read from the shared agentboard `repos.json`
+    /// every time (so a newly tracked repo is creatable without a restart).
+    fn tracked_repo_dirs(&self) -> Vec<String> {
+        match &self.tracked_repos {
+            Some(repos) => repos.clone(),
+            None => tt_agentboard::repos::load_repos(&tt_agentboard::repos::default_repos_path()),
+        }
     }
 
     /// Handle one request line, reading the wall clock at the boundary. Returns
@@ -192,166 +276,93 @@ impl Dispatcher {
     }
 
     fn call_tool(&mut self, name: &str, args: &Value, now_ms: i64) -> Result<Value, String> {
-        // Every tool here is a read of the user's own dashboard — see the
-        // module doc-comment's "Trust boundary" section before adding one
-        // that mutates anything.
-        let _ = args;
+        // Only resolve the capability gate (a settings-file read) for the
+        // mutating tools — the read-only board tools never touch it. An
+        // unreadable settings file fails closed with an actionable refusal
+        // rather than leaking a raw parse error that reads as transient.
+        if MUTATING_TOOLS.contains(&name) {
+            match self.mcp_capabilities() {
+                Ok(caps) if caps.mutations_enabled => {}
+                Ok(_) => return Err(mutations_disabled_message(name, &self.settings_hint())),
+                Err(error) => {
+                    return Err(capabilities_unreadable_message(
+                        name,
+                        &error,
+                        &self.settings_hint(),
+                    ));
+                }
+            }
+        }
         match name {
-            "tasks_open" => self.tasks_open(),
-            "issues_open" => self.issues_open(),
-            "prs_status" => self.prs_status(),
-            "dm_status" => self.dm_status(),
-            "day_brief" => self.day_brief(now_ms),
-            "needs_you" => self.needs_you(),
-            "snapshot" => self.snapshot(),
-            "collect_status" => self.collect_status(now_ms),
+            "task_list" => self.task_list(),
+            "task_status" => self.task_status(args),
+            "task_create" => self.task_create(args, now_ms),
             other => Err(format!("unknown tool: {other}")),
         }
     }
 
-    fn tasks_open(&self) -> Result<Value, String> {
+    /// Open (not-done) board tasks in board order, each with its issue/PR
+    /// links and repo/slot binding.
+    fn task_list(&self) -> Result<Value, String> {
         let tasks = self.store.open_tasks().map_err(|e| e.to_string())?;
         Ok(json!({ "tasks": tasks }))
     }
 
-    fn issues_open(&self) -> Result<Value, String> {
-        let issues = self.store.issues().map_err(|e| e.to_string())?;
-        Ok(json!({ "issues": issues }))
+    /// One task by id — the full row including done tasks, which `task_list`
+    /// excludes.
+    fn task_status(&self, args: &Value) -> Result<Value, String> {
+        let id = args
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "missing required argument: id".to_string())?;
+        let task = self.store.task_by_id(id).map_err(|_| format!("no task with id {id}"))?;
+        Ok(json!({ "task": task }))
     }
 
-    fn prs_status(&self) -> Result<Value, String> {
-        let prs = self.store.prs().map_err(|e| e.to_string())?;
-        Ok(json!({ "prs": prs }))
-    }
+    /// Create a board task in a tracked repo — the same store path as the
+    /// app's Agentboard `+` flow: [`Store::add_task`] then a repo-only
+    /// [`Store::set_task_slot`], so the task lands in that repo's Board
+    /// swimlane immediately (no worktree yet).
+    fn task_create(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
+        let title = args
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .ok_or_else(|| "missing required argument: title".to_string())?;
+        let repo_arg = args
+            .get("repo")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|repo| !repo.is_empty())
+            .ok_or_else(|| "missing required argument: repo".to_string())?;
+        let status = args.get("status").and_then(Value::as_str).unwrap_or("backlog");
+        let notes = args.get("notes").and_then(Value::as_str);
 
-    /// Watched Slack DMs, each annotated with `needsReply` — true when the newest
-    /// message is not the user's own and is newer than the last dismissal
-    /// (`!fromMe && dismissedTs < ts`), matching the app's DM banner predicate.
-    fn dm_status(&self) -> Result<Value, String> {
-        let dms = self.store.dms().map_err(|e| e.to_string())?;
-        let mut items = Vec::with_capacity(dms.len());
-        for dm in &dms {
-            let mut value = serde_json::to_value(dm).map_err(|e| e.to_string())?;
-            if let Some(object) = value.as_object_mut() {
-                object.insert("needsReply".to_string(), json!(needs_you::dm_needs_reply(dm)));
-            }
-            items.push(value);
-        }
-        Ok(json!({ "dms": items }))
-    }
-
-    /// One aggregate answer to "what's on my plate": the next meeting (title +
-    /// minutes-until only, never a full agenda), PR review/CI counts, open-issue
-    /// count, unanswered-DM count, the top few doing/next todos, and collector
-    /// freshness. Pure composition over the existing store reads.
-    fn day_brief(&self, now_ms: i64) -> Result<Value, String> {
-        let next_meeting =
-            match self.store.current_or_next_event(now_ms).map_err(|e| e.to_string())? {
-                Some(event) => {
-                    let minutes_until = (event.start_ts - now_ms) / 60_000;
-                    let live =
-                        event.start_ts <= now_ms && event.end_ts.is_some_and(|end| now_ms < end);
-                    json!({
-                        "title": event.title,
-                        "startTs": event.start_ts,
-                        "minutesUntil": minutes_until,
-                        "live": live,
-                    })
-                }
-                None => Value::Null,
-            };
-
-        let prs = self.store.prs().map_err(|e| e.to_string())?;
-        let review_requested =
-            prs.iter().filter(|pr| pr.review_state == "review_requested").count();
-        let failing_checks =
-            prs.iter().filter(|pr| pr.state != "merged" && pr.checks == "failing").count();
-
-        let open_issues = self
-            .store
-            .issues()
-            .map_err(|e| e.to_string())?
+        let repos = self.tracked_repo_dirs();
+        let entries = tt_agentboard::repos::repo_entries(&repos);
+        let entry = entries
             .iter()
-            .filter(|i| i.state == "open")
-            .count();
+            .find(|entry| entry.dir == repo_arg || entry.name == repo_arg)
+            .ok_or_else(|| unknown_repo_message(repo_arg, &entries))?;
 
-        let dms = self.store.dms().map_err(|e| e.to_string())?;
-        let unanswered_dms = dms.iter().filter(|dm| needs_you::dm_needs_reply(dm)).count();
-
-        // Top todos from the two active columns: doing first, then next, each in
-        // the store's board order, capped at DAY_BRIEF_TODO_LIMIT.
-        let tasks = self.store.open_tasks().map_err(|e| e.to_string())?;
-        let top_todos: Vec<Value> = tasks
-            .iter()
-            .filter(|t| t.status == "doing")
-            .chain(tasks.iter().filter(|t| t.status == "next"))
-            .take(DAY_BRIEF_TODO_LIMIT)
-            .map(|t| serde_json::to_value(t).map_err(|e| e.to_string()))
-            .collect::<Result<_, _>>()?;
-
-        // Collector freshness: each run with the age of its last attempt.
-        let collectors: Vec<Value> = self
-            .store
-            .runs()
-            .map_err(|e| e.to_string())?
-            .iter()
-            .map(|run| {
-                json!({
-                    "collector": run.collector,
-                    "ok": run.ok,
-                    "ageMs": now_ms - run.ran_at,
-                    "message": run.message,
-                })
-            })
-            .collect();
-
-        Ok(json!({
-            "now": now_ms,
-            "nextMeeting": next_meeting,
-            "prs": { "reviewRequested": review_requested, "failingChecks": failing_checks },
-            "issues": { "open": open_issues },
-            "dms": { "unanswered": unanswered_dms },
-            "todos": top_todos,
-            "collectors": collectors,
-        }))
-    }
-
-    /// The itemized, ranked attention feed (failing CI + DMs first, then review
-    /// requests), each entry carrying a stable id, kind, label, and any URL. See
-    /// [`needs_you::attention_feed`] for the ranking rules.
-    fn needs_you(&self) -> Result<Value, String> {
-        let prs = self.store.prs().map_err(|e| e.to_string())?;
-        let dms = self.store.dms().map_err(|e| e.to_string())?;
-        let items = needs_you::attention_feed(&prs, &dms);
-        Ok(json!({ "items": items }))
-    }
-
-    /// The whole store in one call (events, tasks, issues, PRs, runs, DMs) for
-    /// "what's on my plate" summaries.
-    fn snapshot(&self) -> Result<Value, String> {
-        let snapshot = self.store.snapshot().map_err(|e| e.to_string())?;
-        serde_json::to_value(snapshot).map_err(|e| e.to_string())
-    }
-
-    /// Collector run records, each annotated with `ageMs` (now minus `ranAt`).
-    fn collect_status(&self, now_ms: i64) -> Result<Value, String> {
-        let runs = self.store.runs().map_err(|e| e.to_string())?;
-        let mut items = Vec::with_capacity(runs.len());
-        for run in &runs {
-            let mut value = serde_json::to_value(run).map_err(|e| e.to_string())?;
-            if let Some(object) = value.as_object_mut() {
-                object.insert("ageMs".to_string(), json!(now_ms - run.ran_at));
-            }
-            items.push(value);
-        }
-        Ok(json!({ "runs": items }))
+        let task =
+            self.store.add_task(title, status, None, notes, now_ms).map_err(|e| e.to_string())?;
+        self.store
+            .set_task_slot(task.id, &entry.dir, None, None, None)
+            .map_err(|e| e.to_string())?;
+        let task = self.store.task_by_id(task.id).map_err(|e| e.to_string())?;
+        tracing::info!(task_id = task.id, repo = %entry.dir, %status, "task.created");
+        Ok(json!({ "task": task }))
     }
 }
 
 /// Run the stdio server: open the store (at `store_path` when given, else the
-/// default location), then read/dispatch/write until EOF. Returns a process
-/// exit code (0 on clean EOF, 1 on a fatal IO/store error).
-pub fn serve(store_path: Option<&Path>) -> i32 {
+/// default location), then read/dispatch/write until EOF. `settings_path`
+/// overrides where the capability gate reads settings (the CLI's global
+/// `--config-dir`). Returns a process exit code (0 on clean EOF, 1 on a fatal
+/// IO/store error).
+pub fn serve(store_path: Option<&Path>, settings_path: Option<&Path>) -> i32 {
     let store = match store_path {
         Some(path) => Store::open(path),
         None => Store::open_default(),
@@ -364,6 +375,9 @@ pub fn serve(store_path: Option<&Path>) -> i32 {
         }
     };
     let mut dispatcher = Dispatcher::new(store);
+    if let Some(path) = settings_path {
+        dispatcher = dispatcher.with_settings_path(path.to_path_buf());
+    }
     log::info!("tt-mcp: serving on stdio");
 
     let stdin = io::stdin();
@@ -465,6 +479,45 @@ fn tool_error_response(id: Value, message: &str) -> String {
     )
 }
 
+/// Path to the shared settings file, for use in the refusal messages below —
+/// best-effort; falls back to a description if it can't be resolved.
+fn settings_path_hint() -> String {
+    tt_config::config_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "your towles-tool.settings.json".to_string())
+}
+
+/// The gate's refusal when mutations are off (the default).
+fn mutations_disabled_message(tool: &str, path_hint: &str) -> String {
+    format!(
+        "{tool} is disabled: tt-mcp's mutating tools are off until you opt in. \
+         Set \"mcp\": {{\"mutationsEnabled\": true}} in {path_hint} — tt-mcp deliberately \
+         exposes no tool that can change that setting."
+    )
+}
+
+/// The gate's refusal when the settings file can't be read: fail closed with a
+/// hint at the file, rather than surfacing a raw parse error that reads as a
+/// transient failure worth retrying.
+fn capabilities_unreadable_message(tool: &str, error: &str, path_hint: &str) -> String {
+    format!(
+        "{tool} is disabled: the capability gate could not read {path_hint} ({error}). \
+         Mutations stay off until the settings file is readable."
+    )
+}
+
+/// The repo-validation refusal: names the argument and lists what *is*
+/// tracked, so a caller can self-correct without another round trip.
+fn unknown_repo_message(repo: &str, entries: &[tt_agentboard::repos::RepoEntry]) -> String {
+    if entries.is_empty() {
+        return format!(
+            "unknown repo: {repo} — no repos are tracked yet (add one on the app's Agentboard)"
+        );
+    }
+    let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+    format!("unknown repo: {repo} — tracked repos: {}", names.join(", "))
+}
+
 /// JSON Schema tool descriptors returned by `tools/list` — the MCP contract's
 /// single source of truth. Also called directly by the app's `mcp_tool_docs`
 /// command so the MCP screen's tool documentation can never drift from what
@@ -473,44 +526,34 @@ pub fn tool_definitions() -> Value {
     let no_args = || json!({ "type": "object", "properties": {}, "required": [] });
     json!([
         {
-            "name": "tasks_open",
-            "description": "Open (not-done) tasks, due-soonest first.",
+            "name": "task_list",
+            "description": "Open (not-done) board tasks in board order, each with its issue/PR links and repo/slot binding.",
             "inputSchema": no_args(),
         },
         {
-            "name": "issues_open",
-            "description": "Open GitHub issues assigned to me across tracked repos.",
-            "inputSchema": no_args(),
+            "name": "task_status",
+            "description": "One board task by id — the full row (status, links, repo/slot binding), including done tasks.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "The task's id (from task_list or task_create)." },
+                },
+                "required": ["id"],
+            },
         },
         {
-            "name": "prs_status",
-            "description": "Tracked pull-request status rows.",
-            "inputSchema": no_args(),
-        },
-        {
-            "name": "dm_status",
-            "description": "Watched Slack DMs, each annotated with needsReply (true when the newest message is not yours and newer than the last dismissal).",
-            "inputSchema": no_args(),
-        },
-        {
-            "name": "day_brief",
-            "description": "One aggregate 'what's on my plate' answer: next meeting (title + minutes-until), PR review-requested/failing-check counts, open-issue count, unanswered-DM count, top doing/next todos, and collector freshness.",
-            "inputSchema": no_args(),
-        },
-        {
-            "name": "needs_you",
-            "description": "The ranked attention feed: failing-CI PRs and unanswered DMs first, then review-requested PRs, each with a stable id, kind, label, and URL where available.",
-            "inputSchema": no_args(),
-        },
-        {
-            "name": "snapshot",
-            "description": "The whole store in one call (events, tasks, issues, prs, runs, dms) for a 'what's on my plate' summary.",
-            "inputSchema": no_args(),
-        },
-        {
-            "name": "collect_status",
-            "description": "Collector run records with the age of each run in ms.",
-            "inputSchema": no_args(),
+            "name": "task_create",
+            "description": "Create a board task in a tracked repo's swimlane. Gated: requires \"mcp\": {\"mutationsEnabled\": true} in the settings file.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo": { "type": "string", "description": "The tracked repo — its Agentboard name (dir basename) or absolute path." },
+                    "title": { "type": "string", "description": "The task's title." },
+                    "notes": { "type": "string", "description": "Optional free-form context." },
+                    "status": { "type": "string", "enum": ["backlog", "next", "doing", "review", "done"], "description": "Column to land in (default backlog)." },
+                },
+                "required": ["repo", "title"],
+            },
         },
     ])
 }
@@ -518,79 +561,43 @@ pub fn tool_definitions() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tt_store::{DmInput, EventInput, IssueInput, PrInput};
 
     const NOW: i64 = 1_700_000_000_000; // fixed epoch ms for deterministic tests
     const HOUR_MS: i64 = 3_600_000;
 
-    fn event(external_id: &str, start_ts: i64) -> EventInput {
-        EventInput {
-            external_id: external_id.to_string(),
-            title: external_id.to_string(),
-            start_ts,
-            end_ts: Some(start_ts + 1000),
-            attendees: vec![],
-            location: None,
-            join_url: None,
-        }
-    }
-
-    fn issue(number: i64, title: &str) -> IssueInput {
-        IssueInput {
-            repo: "o/r".to_string(),
-            number,
-            title: title.to_string(),
-            labels: vec!["bug".to_string()],
-            state: "open".to_string(),
-            url: format!("https://github.com/o/r/issues/{number}"),
-            updated_ts: NOW,
-        }
-    }
+    /// The tracked-repo dir every test dispatcher knows about.
+    const REPO_DIR: &str = "/home/u/code/demo";
 
     fn seeded_store() -> Store {
         let store = Store::open_in_memory().unwrap();
-        store
-            .replace_events(
-                &[
-                    event("today", NOW),                 // exactly now → within today's bounds
-                    event("soon", NOW + HOUR_MS),        // next upcoming event
-                    event("future", NOW + 25 * HOUR_MS), // different calendar day
-                    event("past", NOW - 25 * HOUR_MS),   // different calendar day
-                ],
-                NOW,
-            )
-            .unwrap();
         store.add_task("open task", "backlog", Some(NOW + HOUR_MS), None, NOW).unwrap();
-        store.replace_issues(&[issue(390, "Refunds double-charge"), issue(391, "a11y")]).unwrap();
-        store
-            .replace_prs(&[PrInput {
-                repo: "o/r".to_string(),
-                number: 7,
-                title: "Fix".to_string(),
-                branch: "feat".to_string(),
-                state: "open".to_string(),
-                checks: "passing".to_string(),
-                review_state: "approved".to_string(),
-                url: "https://example.com/pr/7".to_string(),
-                updated_ts: NOW,
-            }])
-            .unwrap();
-        store.record_run("gcal", true, None, NOW - 60_000).unwrap();
         store
     }
 
+    /// A dispatcher with the gate ON and one tracked repo — both injected, so
+    /// no test touches the real settings file or agentboard repos.json.
     fn dispatcher() -> Dispatcher {
         Dispatcher::new(seeded_store())
+            .with_mcp_settings(tt_config::McpSettings { mutations_enabled: true })
+            .with_tracked_repos(vec![REPO_DIR.to_string()])
     }
 
     /// Call a tool and return the parsed inner JSON result (the `text` payload).
     fn call_tool(dispatcher: &mut Dispatcher, name: &str, args: Value) -> Value {
-        call_tool_at(dispatcher, name, args, NOW)
+        let response = call_tool_raw(dispatcher, name, args);
+        assert_eq!(response["result"]["isError"], Value::Null, "unexpected tool error");
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        serde_json::from_str(text).unwrap()
     }
 
-    /// Like {@link call_tool} but at an explicit `now_ms`, so time-dependent
-    /// tools (e.g. `calendar_next`) can be exercised across the meeting lifecycle.
-    fn call_tool_at(dispatcher: &mut Dispatcher, name: &str, args: Value, now_ms: i64) -> Value {
+    /// Call a tool expecting an `isError` result; returns the error text.
+    fn call_tool_err(dispatcher: &mut Dispatcher, name: &str, args: Value) -> String {
+        let response = call_tool_raw(dispatcher, name, args);
+        assert_eq!(response["result"]["isError"], true, "expected a tool error: {response}");
+        response["result"]["content"][0]["text"].as_str().unwrap().to_string()
+    }
+
+    fn call_tool_raw(dispatcher: &mut Dispatcher, name: &str, args: Value) -> Value {
         let request = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -598,12 +605,8 @@ mod tests {
             "params": { "name": name, "arguments": args },
         })
         .to_string();
-        let response =
-            dispatcher.handle_at(&request, now_ms).expect("tool call returns a response");
-        let response: Value = serde_json::from_str(&response).unwrap();
-        assert_eq!(response["result"]["isError"], Value::Null, "unexpected tool error");
-        let text = response["result"]["content"][0]["text"].as_str().unwrap();
-        serde_json::from_str(text).unwrap()
+        let response = dispatcher.handle_at(&request, NOW).expect("tool call returns a response");
+        serde_json::from_str(&response).unwrap()
     }
 
     #[test]
@@ -653,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_contains_all_read_only_tools() {
+    fn tools_list_is_exactly_the_task_family() {
         let mut dispatcher = dispatcher();
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }).to_string();
         let response: Value =
@@ -664,7 +667,191 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
-        for expected in [
+        assert_eq!(names, vec!["task_list", "task_status", "task_create"]);
+    }
+
+    #[test]
+    fn every_mutating_tool_is_defined_and_flagged_gated() {
+        // MUTATING_TOOLS and tool_definitions can't drift: every gated name
+        // must be a real tool whose description says it is gated.
+        let tools = tool_definitions();
+        for name in MUTATING_TOOLS {
+            let tool = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == *name)
+                .unwrap_or_else(|| panic!("{name} is gated but not defined"));
+            assert!(
+                tool["description"].as_str().unwrap().contains("Gated"),
+                "{name}'s description should say it is gated"
+            );
+        }
+    }
+
+    #[test]
+    fn task_list_returns_seeded_task() {
+        let mut dispatcher = dispatcher();
+        let result = call_tool(&mut dispatcher, "task_list", json!({}));
+        let tasks = result["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["text"], "open task");
+        assert_eq!(tasks[0]["dueTs"], NOW + HOUR_MS);
+    }
+
+    #[test]
+    fn task_status_returns_one_task_including_done() {
+        let store = seeded_store();
+        let done = store.add_task("shipped", "done", None, None, NOW).unwrap();
+        let mut dispatcher = Dispatcher::new(store);
+        let result = call_tool(&mut dispatcher, "task_status", json!({ "id": done.id }));
+        assert_eq!(result["task"]["text"], "shipped");
+        assert_eq!(result["task"]["status"], "done");
+    }
+
+    #[test]
+    fn task_status_requires_a_known_id() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(&mut dispatcher, "task_status", json!({}));
+        assert!(message.contains("id"), "error should name the missing arg: {message}");
+        let message = call_tool_err(&mut dispatcher, "task_status", json!({ "id": 9999 }));
+        assert!(message.contains("9999"), "error should name the unknown id: {message}");
+    }
+
+    #[test]
+    fn task_create_lands_in_the_repo_swimlane() {
+        let mut dispatcher = dispatcher();
+        let result = call_tool(
+            &mut dispatcher,
+            "task_create",
+            json!({ "repo": "demo", "title": "port the CLI", "notes": "start with doctor" }),
+        );
+        assert_eq!(result["task"]["text"], "port the CLI");
+        assert_eq!(result["task"]["status"], "backlog");
+        assert_eq!(result["task"]["notes"], "start with doctor");
+        assert_eq!(result["task"]["createdAt"], NOW);
+        // The repo binding is what puts the task in a Board swimlane.
+        assert_eq!(result["task"]["slot"]["repoRoot"], REPO_DIR);
+
+        // The new task shows up in the task_list read tool.
+        let open = call_tool(&mut dispatcher, "task_list", json!({}));
+        let texts: Vec<&str> =
+            open["tasks"].as_array().unwrap().iter().map(|t| t["text"].as_str().unwrap()).collect();
+        assert!(texts.contains(&"port the CLI"), "created task missing: {texts:?}");
+    }
+
+    #[test]
+    fn task_create_accepts_the_repo_dir_and_a_status() {
+        let mut dispatcher = dispatcher();
+        let result = call_tool(
+            &mut dispatcher,
+            "task_create",
+            json!({ "repo": REPO_DIR, "title": "already underway", "status": "doing" }),
+        );
+        assert_eq!(result["task"]["status"], "doing");
+        assert_eq!(result["task"]["slot"]["repoRoot"], REPO_DIR);
+    }
+
+    #[test]
+    fn task_create_rejects_an_untracked_repo() {
+        let mut dispatcher = dispatcher();
+        let message =
+            call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "nope", "title": "x" }));
+        assert!(message.contains("unknown repo: nope"), "{message}");
+        assert!(message.contains("demo"), "error should list tracked repos: {message}");
+
+        let mut empty = Dispatcher::new(seeded_store())
+            .with_mcp_settings(tt_config::McpSettings { mutations_enabled: true })
+            .with_tracked_repos(vec![]);
+        let message =
+            call_tool_err(&mut empty, "task_create", json!({ "repo": "demo", "title": "x" }));
+        assert!(message.contains("no repos are tracked"), "{message}");
+    }
+
+    #[test]
+    fn task_create_requires_title_and_repo() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "demo" }));
+        assert!(message.contains("title"), "error should name the missing arg: {message}");
+        let message =
+            call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "demo", "title": " " }));
+        assert!(message.contains("title"), "blank title should be rejected: {message}");
+        let message = call_tool_err(&mut dispatcher, "task_create", json!({ "title": "x" }));
+        assert!(message.contains("repo"), "error should name the missing arg: {message}");
+    }
+
+    #[test]
+    fn task_create_rejects_a_bogus_status() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(
+            &mut dispatcher,
+            "task_create",
+            json!({ "repo": "demo", "title": "x", "status": "bogus" }),
+        );
+        assert!(message.contains("bogus"), "{message}");
+        // Nothing was created.
+        let open = call_tool(&mut dispatcher, "task_list", json!({}));
+        assert_eq!(open["tasks"].as_array().unwrap().len(), 1, "only the seeded task remains");
+    }
+
+    #[test]
+    fn task_create_is_gated_off_by_default() {
+        // A settings file in a sandbox dir with no mcp block: the gate reads
+        // the real disk-resolution path and refuses with the opt-in hint.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("towles-tool.settings.json");
+        let mut dispatcher = Dispatcher::new(seeded_store())
+            .with_settings_path(path.clone())
+            .with_tracked_repos(vec![REPO_DIR.to_string()]);
+        let message =
+            call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "demo", "title": "x" }));
+        assert!(message.contains("mutationsEnabled"), "refusal carries the opt-in hint: {message}");
+        assert!(
+            message.contains(&path.display().to_string()),
+            "refusal names the settings file the gate read: {message}"
+        );
+        // Nothing was created, and the read tools still work ungated.
+        let open = call_tool(&mut dispatcher, "task_list", json!({}));
+        assert_eq!(open["tasks"].as_array().unwrap().len(), 1, "only the seeded task remains");
+    }
+
+    #[test]
+    fn task_create_honors_a_settings_file_opt_in() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("towles-tool.settings.json");
+        std::fs::write(&path, r#"{"mcp":{"mutationsEnabled":true}}"#).unwrap();
+        let mut dispatcher = Dispatcher::new(seeded_store())
+            .with_settings_path(path)
+            .with_tracked_repos(vec![REPO_DIR.to_string()]);
+        let result =
+            call_tool(&mut dispatcher, "task_create", json!({ "repo": "demo", "title": "opted" }));
+        assert_eq!(result["task"]["text"], "opted");
+    }
+
+    #[test]
+    fn task_create_fails_closed_when_settings_are_unreadable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("towles-tool.settings.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let mut dispatcher = Dispatcher::new(seeded_store())
+            .with_settings_path(path)
+            .with_tracked_repos(vec![REPO_DIR.to_string()]);
+        let message =
+            call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "demo", "title": "x" }));
+        assert!(message.contains("could not read"), "fails closed, actionably: {message}");
+    }
+
+    #[test]
+    fn removed_tools_are_unknown() {
+        // The 2026-07 datamine (mutating tools) and tool-surface review (the
+        // broad dashboard reads) removed these outright; a straggling client
+        // gets a plain unknown-tool refusal, not a capability hint.
+        let mut dispatcher = dispatcher();
+        for tool in [
+            "todo_create",
+            "journal_append",
+            "collect_refresh",
+            "agent_sessions",
             "tasks_open",
             "issues_open",
             "prs_status",
@@ -674,295 +861,9 @@ mod tests {
             "snapshot",
             "collect_status",
         ] {
-            assert!(names.contains(&expected), "missing tool {expected} in {names:?}");
+            let message = call_tool_err(&mut dispatcher, tool, json!({}));
+            assert!(message.contains("unknown tool"), "{tool}: {message}");
         }
-        assert_eq!(names.len(), 8);
-    }
-
-    #[test]
-    fn tasks_open_returns_seeded_task() {
-        let mut dispatcher = dispatcher();
-        let result = call_tool(&mut dispatcher, "tasks_open", json!({}));
-        let tasks = result["tasks"].as_array().unwrap();
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0]["text"], "open task");
-        assert_eq!(tasks[0]["dueTs"], NOW + HOUR_MS);
-    }
-
-    #[test]
-    fn dm_status_flags_needs_reply() {
-        let store = seeded_store();
-        // Unanswered: their message, not dismissed → needsReply.
-        store
-            .upsert_dm(
-                &DmInput {
-                    channel: "D_UNANSWERED".to_string(),
-                    from_name: "Ada".to_string(),
-                    text: "ping?".to_string(),
-                    ts: NOW,
-                    from_me: false,
-                    url: None,
-                },
-                NOW,
-            )
-            .unwrap();
-        // Answered: my own most-recent message → not needsReply.
-        store
-            .upsert_dm(
-                &DmInput {
-                    channel: "D_ANSWERED".to_string(),
-                    from_name: "Bob".to_string(),
-                    text: "on it".to_string(),
-                    ts: NOW,
-                    from_me: true,
-                    url: None,
-                },
-                NOW,
-            )
-            .unwrap();
-        // Dismissed: their message but already marked handled → not needsReply.
-        store
-            .upsert_dm(
-                &DmInput {
-                    channel: "D_DISMISSED".to_string(),
-                    from_name: "Cy".to_string(),
-                    text: "fyi".to_string(),
-                    ts: NOW,
-                    from_me: false,
-                    url: None,
-                },
-                NOW,
-            )
-            .unwrap();
-        store.dismiss_dm("D_DISMISSED", NOW).unwrap();
-
-        let mut dispatcher = Dispatcher::new(store);
-        let result = call_tool(&mut dispatcher, "dm_status", json!({}));
-        let by_channel = |channel: &str| -> bool {
-            result["dms"].as_array().unwrap().iter().find(|d| d["channel"] == channel).unwrap()
-                    ["needsReply"]
-                    .as_bool()
-                    .unwrap()
-        };
-        assert!(by_channel("D_UNANSWERED"), "unanswered DM should need a reply");
-        assert!(!by_channel("D_ANSWERED"), "answered DM should not need a reply");
-        assert!(!by_channel("D_DISMISSED"), "dismissed DM should not need a reply");
-    }
-
-    #[test]
-    fn snapshot_returns_the_whole_store() {
-        let mut dispatcher = dispatcher();
-        let result = call_tool(&mut dispatcher, "snapshot", json!({}));
-        assert!(result["events"].is_array(), "snapshot missing events: {result}");
-        assert!(result["tasks"].is_array(), "snapshot missing tasks: {result}");
-        assert_eq!(result["issues"].as_array().unwrap().len(), 2);
-        assert_eq!(result["prs"].as_array().unwrap().len(), 1);
-        assert_eq!(result["runs"].as_array().unwrap().len(), 1);
-        assert!(result["dms"].is_array(), "snapshot missing dms: {result}");
-    }
-
-    /// Build a PR input row with explicit checks/review states.
-    fn pr_input(number: i64, checks: &str, review_state: &str) -> PrInput {
-        PrInput {
-            repo: "o/r".to_string(),
-            number,
-            title: format!("PR {number}"),
-            branch: "feat".to_string(),
-            state: "open".to_string(),
-            checks: checks.to_string(),
-            review_state: review_state.to_string(),
-            url: format!("https://example.com/pr/{number}"),
-            updated_ts: NOW,
-        }
-    }
-
-    fn unanswered_dm(store: &Store, channel: &str) {
-        store
-            .upsert_dm(
-                &DmInput {
-                    channel: channel.to_string(),
-                    from_name: "Ada".to_string(),
-                    text: "ping?".to_string(),
-                    ts: NOW,
-                    from_me: false,
-                    url: Some(format!("https://slack.example/{channel}")),
-                },
-                NOW,
-            )
-            .unwrap();
-    }
-
-    #[test]
-    fn day_brief_reflects_each_signal() {
-        let store = Store::open_in_memory().unwrap();
-        // Next meeting 30 minutes out (not live).
-        store.replace_events(&[event("standup", NOW + 30 * 60_000)], NOW).unwrap();
-        // One failing PR, one review-requested, one clean → counts 1 and 1.
-        store
-            .replace_prs(&[
-                pr_input(1, "failing", "none"),
-                pr_input(2, "passing", "review_requested"),
-                pr_input(3, "passing", "approved"),
-            ])
-            .unwrap();
-        // Two open issues, one closed → open count 2.
-        store
-            .replace_issues(&[
-                issue(10, "open one"),
-                issue(11, "open two"),
-                IssueInput { state: "closed".to_string(), ..issue(12, "closed") },
-            ])
-            .unwrap();
-        // One unanswered DM, one already answered → unanswered count 1.
-        unanswered_dm(&store, "D_UNANSWERED");
-        store
-            .upsert_dm(
-                &DmInput {
-                    channel: "D_ANSWERED".to_string(),
-                    from_name: "Bob".to_string(),
-                    text: "done".to_string(),
-                    ts: NOW,
-                    from_me: true,
-                    url: None,
-                },
-                NOW,
-            )
-            .unwrap();
-        // Todos across columns: two doing, one next, one backlog.
-        let doing_a = store.add_task("doing a", "backlog", None, None, NOW).unwrap();
-        let doing_b = store.add_task("doing b", "backlog", None, None, NOW).unwrap();
-        let next_a = store.add_task("next a", "backlog", None, None, NOW).unwrap();
-        store.add_task("backlog a", "backlog", None, None, NOW).unwrap();
-        store.set_task_status(doing_a.id, "doing", NOW).unwrap();
-        store.set_task_status(doing_b.id, "doing", NOW).unwrap();
-        store.set_task_status(next_a.id, "next", NOW).unwrap();
-        store.record_run("prs", true, None, NOW - 5_000).unwrap();
-
-        let mut dispatcher = Dispatcher::new(store);
-        let result = call_tool(&mut dispatcher, "day_brief", json!({}));
-
-        assert_eq!(result["now"], NOW);
-        assert_eq!(result["nextMeeting"]["title"], "standup");
-        assert_eq!(result["nextMeeting"]["minutesUntil"], 30);
-        assert_eq!(result["nextMeeting"]["live"], false);
-        assert_eq!(result["prs"]["failingChecks"], 1);
-        assert_eq!(result["prs"]["reviewRequested"], 1);
-        assert_eq!(result["issues"]["open"], 2);
-        assert_eq!(result["dms"]["unanswered"], 1);
-
-        // Only doing/next todos surface; backlog is excluded, doing before next.
-        let todo_texts: Vec<&str> = result["todos"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["text"].as_str().unwrap())
-            .collect();
-        assert_eq!(todo_texts, vec!["doing a", "doing b", "next a"]);
-
-        let collectors = result["collectors"].as_array().unwrap();
-        assert_eq!(collectors.len(), 1);
-        assert_eq!(collectors[0]["collector"], "prs");
-        assert_eq!(collectors[0]["ageMs"], 5_000);
-    }
-
-    #[test]
-    fn day_brief_caps_todos_at_the_limit() {
-        let store = Store::open_in_memory().unwrap();
-        for i in 0..8 {
-            let task = store.add_task(&format!("t{i}"), "backlog", None, None, NOW).unwrap();
-            store.set_task_status(task.id, "doing", NOW).unwrap();
-        }
-        let mut dispatcher = Dispatcher::new(store);
-        let result = call_tool(&mut dispatcher, "day_brief", json!({}));
-        assert_eq!(result["todos"].as_array().unwrap().len(), DAY_BRIEF_TODO_LIMIT);
-    }
-
-    #[test]
-    fn day_brief_over_empty_store_is_clean() {
-        let mut dispatcher = Dispatcher::new(Store::open_in_memory().unwrap());
-        let result = call_tool(&mut dispatcher, "day_brief", json!({}));
-        assert_eq!(result["nextMeeting"], Value::Null);
-        assert_eq!(result["prs"]["failingChecks"], 0);
-        assert_eq!(result["prs"]["reviewRequested"], 0);
-        assert_eq!(result["issues"]["open"], 0);
-        assert_eq!(result["dms"]["unanswered"], 0);
-        assert!(result["todos"].as_array().unwrap().is_empty());
-        assert!(result["collectors"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn needs_you_ranks_and_ids_items() {
-        let store = Store::open_in_memory().unwrap();
-        store
-            .replace_prs(&[
-                pr_input(2, "passing", "review_requested"),
-                pr_input(1, "failing", "none"),
-            ])
-            .unwrap();
-        unanswered_dm(&store, "D_PING");
-        let mut dispatcher = Dispatcher::new(store);
-        let result = call_tool(&mut dispatcher, "needs_you", json!({}));
-        let items = result["items"].as_array().unwrap();
-        let ids: Vec<&str> = items.iter().map(|i| i["id"].as_str().unwrap()).collect();
-        let kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
-        assert_eq!(kinds, vec!["failing_ci", "dm", "review_requested"]);
-        assert_eq!(ids, vec!["pr:o/r#1", "dm:D_PING", "pr:o/r#2"]);
-        assert_eq!(items[0]["url"], "https://example.com/pr/1");
-    }
-
-    #[test]
-    fn needs_you_over_empty_store_is_empty() {
-        let mut dispatcher = Dispatcher::new(Store::open_in_memory().unwrap());
-        let result = call_tool(&mut dispatcher, "needs_you", json!({}));
-        assert!(result["items"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn issues_open_returns_rows() {
-        let mut dispatcher = dispatcher();
-        let result = call_tool(&mut dispatcher, "issues_open", json!({}));
-        let issues = result["issues"].as_array().unwrap();
-        assert_eq!(issues.len(), 2);
-        assert_eq!(issues[0]["repo"], "o/r");
-        assert!(issues.iter().any(|i| i["number"] == 390));
-    }
-
-    #[test]
-    fn prs_status_returns_rows() {
-        let mut dispatcher = dispatcher();
-        let result = call_tool(&mut dispatcher, "prs_status", json!({}));
-        let prs = result["prs"].as_array().unwrap();
-        assert_eq!(prs.len(), 1);
-        assert_eq!(prs[0]["number"], 7);
-        assert_eq!(prs[0]["reviewState"], "approved");
-    }
-
-    #[test]
-    fn collect_status_annotates_age() {
-        let mut dispatcher = dispatcher();
-        let result = call_tool(&mut dispatcher, "collect_status", json!({}));
-        let runs = result["runs"].as_array().unwrap();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0]["collector"], "gcal");
-        assert_eq!(runs[0]["ageMs"], 60_000);
-    }
-
-    #[test]
-    fn unknown_tool_returns_is_error_content() {
-        let mut dispatcher = dispatcher();
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": { "name": "does_not_exist", "arguments": {} },
-        })
-        .to_string();
-        let response: Value =
-            serde_json::from_str(&dispatcher.handle_at(&request, NOW).unwrap()).unwrap();
-        assert_eq!(response["result"]["isError"], true);
-        assert!(
-            response["result"]["content"][0]["text"].as_str().unwrap().contains("does_not_exist")
-        );
     }
 
     #[test]
@@ -1006,33 +907,6 @@ mod tests {
         assert_eq!(response["error"]["code"], -32600);
     }
 
-    #[test]
-    fn removed_mutating_tools_are_unknown() {
-        // The 2026-07 datamine removed the mutating/gated tool families
-        // outright; a straggling client calling one gets a plain unknown-tool
-        // refusal, not a capability hint.
-        let mut dispatcher = dispatcher();
-        for tool in [
-            "todo_create",
-            "journal_append",
-            "collect_refresh",
-            "agent_sessions",
-        ] {
-            let request = json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": { "name": tool, "arguments": {} },
-            })
-            .to_string();
-            let response: Value =
-                serde_json::from_str(&dispatcher.handle_at(&request, NOW).unwrap()).unwrap();
-            assert_eq!(response["result"]["isError"], true, "{tool} should be unknown");
-            let text = response["result"]["content"][0]["text"].as_str().unwrap();
-            assert!(text.contains("unknown tool"), "{tool}: {text}");
-        }
-    }
-
     /// Drive a raw request line through the dispatcher, discarding its response.
     fn drive(dispatcher: &mut Dispatcher, request: Value) {
         dispatcher.handle_at(&request.to_string(), NOW);
@@ -1059,7 +933,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
-                "params": { "name": "tasks_open", "arguments": { "why": "ship it" } },
+                "params": { "name": "task_list", "arguments": { "why": "ship it" } },
             }),
         );
         drive(
@@ -1084,8 +958,8 @@ mod tests {
         // The client identity from initialize rides along on every later row.
         assert_eq!(calls[0].client.as_deref(), Some("claude-code 2.1"));
 
-        // The successful tasks_open call, with its compacted args and ts.
-        assert_eq!(calls[1].tool.as_deref(), Some("tasks_open"));
+        // The successful task_list call, with its compacted args and ts.
+        assert_eq!(calls[1].tool.as_deref(), Some("task_list"));
         assert!(calls[1].ok);
         assert_eq!(calls[1].error, None);
         assert_eq!(calls[1].ts, NOW);
@@ -1100,6 +974,32 @@ mod tests {
         assert_eq!(calls[2].tool, None);
         assert!(calls[2].ok);
         assert_eq!(calls[2].client.as_deref(), Some("claude-code 2.1"));
+    }
+
+    #[test]
+    fn gate_refusals_land_in_the_call_log() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("towles-tool.settings.json");
+        let mut dispatcher = Dispatcher::new(seeded_store())
+            .with_settings_path(path)
+            .with_tracked_repos(vec![REPO_DIR.to_string()]);
+        drive(
+            &mut dispatcher,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": "task_create", "arguments": { "repo": "demo", "title": "x" } },
+            }),
+        );
+        let calls = dispatcher.store.mcp_calls(10).unwrap();
+        assert_eq!(calls[0].tool.as_deref(), Some("task_create"));
+        assert!(!calls[0].ok);
+        assert!(
+            calls[0].error.as_deref().is_some_and(|e| e.contains("mutationsEnabled")),
+            "the refusal is the recorded error: {:?}",
+            calls[0].error
+        );
     }
 
     #[test]

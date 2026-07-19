@@ -23,7 +23,7 @@ fn main() {
         Commands::Prs => commands::gh::run(GhCommands::PrList),
         Commands::Agentboard(args) => commands::agentboard::run(args.command),
         Commands::Collect(args) => commands::collect::run(args.command, config_dir.as_deref()),
-        Commands::Mcp(args) => commands::mcp::run(args.command),
+        Commands::Mcp(args) => commands::mcp::run(args.command, config_dir.as_deref()),
         Commands::Slot(args) => commands::slot::run(args.command),
     };
 

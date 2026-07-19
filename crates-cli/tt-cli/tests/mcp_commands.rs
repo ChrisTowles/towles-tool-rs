@@ -29,9 +29,9 @@ fn mcp_serve_handshake_and_tool_list() {
         .success()
         .stdout(contains("protocolVersion"))
         .stdout(contains("towles-tool"))
-        .stdout(contains("day_brief"))
-        .stdout(contains("needs_you"))
-        .stdout(contains("snapshot"));
+        .stdout(contains("task_list"))
+        .stdout(contains("task_status"))
+        .stdout(contains("task_create"));
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn mcp_serve_tools_call_roundtrip() {
     let requests = concat!(
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
         "\n",
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tasks_open","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"task_list","arguments":{}}}"#,
         "\n",
     );
 
@@ -57,16 +57,44 @@ fn mcp_serve_tools_call_roundtrip() {
 }
 
 #[test]
-fn mcp_serve_refuses_removed_mutating_tools() {
-    // The mutating tool families were removed outright in the 2026-07 datamine;
-    // a straggling client gets a plain unknown-tool refusal.
+fn mcp_serve_gates_task_create_off_by_default() {
+    // A sandboxed `--config-dir` with no opt-in: the gate refuses with the
+    // settings hint before any repo validation or store write happens.
     let dir = tempfile::TempDir::new().unwrap();
     let db = dir.path().join("tt.db");
 
     let requests = concat!(
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
         "\n",
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"todo_create","arguments":{"title":"gone"}}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"task_create","arguments":{"repo":"demo","title":"nope"}}}"#,
+        "\n",
+    );
+
+    Command::cargo_bin("tt")
+        .unwrap()
+        .args(["--config-dir"])
+        .arg(dir.path())
+        .args(["mcp", "serve", "--store"])
+        .arg(&db)
+        .write_stdin(requests)
+        .assert()
+        .success()
+        .stdout(contains("mutationsEnabled"))
+        .stdout(contains("isError"));
+}
+
+#[test]
+fn mcp_serve_refuses_removed_tools() {
+    // The mutating tool families (2026-07 datamine) and the broad dashboard
+    // reads (2026-07 tool-surface review) were removed outright; a straggling
+    // client gets a plain unknown-tool refusal.
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = dir.path().join("tt.db");
+
+    let requests = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"day_brief","arguments":{}}}"#,
         "\n",
     );
 
