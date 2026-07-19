@@ -572,6 +572,7 @@ pub fn run() {
             terminal::term_select,
             terminal::term_copy,
             terminal::term_paste,
+            terminal::term_paste_clipboard,
             terminal::term_search,
             terminal::term_scroll_to,
             terminal::term_clear,

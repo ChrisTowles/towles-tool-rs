@@ -958,6 +958,59 @@ pub async fn term_paste(
     .map_err(|e| format!("paste task failed: {e}"))?
 }
 
+/// Reply of [`term_paste_clipboard`]: the clipboard text that was pasted (or
+/// held back) plus the same needs-confirm flag as [`term_paste`]. The caller
+/// shows the confirm dialog over `text` and retries `term_paste` with
+/// `force: true`.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardPasteReply {
+    needs_confirm: bool,
+    text: String,
+}
+
+/// Paste the system clipboard into the shell, reading the clipboard in Rust.
+/// The webview's `navigator.clipboard.readText()` rejects with
+/// `NotAllowedError` under WebKitGTK — the same reason [`term_copy`] writes
+/// the clipboard in Rust — which silently broke the context menu's Paste.
+/// The text routes through the same engine paste encoder as [`term_paste`].
+#[tauri::command]
+pub async fn term_paste_clipboard(
+    app: AppHandle,
+    term_id: String,
+) -> Result<ClipboardPasteReply, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+        // An empty or non-text clipboard is a no-op paste, not an error.
+        let text = app.clipboard().read_text().unwrap_or_default();
+        if text.is_empty() {
+            return Ok(ClipboardPasteReply { needs_confirm: false, text });
+        }
+        let (reply_tx, reply_rx) = sync_channel::<tt_vt::PasteOutcome>(1);
+        {
+            let state = app.state::<TermState>();
+            let guard = state.sessions.lock().unwrap();
+            let session = guard.get(&term_id).ok_or("no shell running")?;
+            if !session.vt.send(VtInput::Paste {
+                text: text.clone(),
+                force: false,
+                reply: reply_tx,
+            }) {
+                return Err("terminal engine gone".to_string());
+            }
+        }
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map(|outcome| ClipboardPasteReply {
+                needs_confirm: outcome == tt_vt::PasteOutcome::NeedsConfirm,
+                text,
+            })
+            .map_err(|_| "terminal engine did not answer".to_string())
+    })
+    .await
+    .map_err(|e| format!("paste task failed: {e}"))?
+}
+
 /// Scroll the viewport so the given absolute row (0 = oldest scrollback row)
 /// is visible — search prev/next navigation jumps the viewport to a match.
 #[tauri::command]

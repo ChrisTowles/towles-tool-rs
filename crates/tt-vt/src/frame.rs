@@ -123,8 +123,8 @@ pub struct Colors {
 pub struct Modes {
     /// Alternate screen active (fullscreen TUI owns the scrollback chords).
     pub alt_screen: bool,
-    /// Any mouse tracking mode enabled (clicks go to the program, not local
-    /// selection; Shift bypasses).
+    /// Any mouse tracking mode enabled (clicks, wheel, and hover motion go
+    /// to the program; left drags and multi-clicks stay local selection).
     pub mouse_tracking: bool,
 }
 
