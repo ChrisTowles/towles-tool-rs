@@ -965,31 +965,6 @@ export function AgentboardScreen() {
     setPendingSlots((prev) => prev.filter((p) => p.id !== id));
   }
 
-  // `slot_create`'s "no template" error means this repo has neither a
-  // tokenized .env.example nor the root-side sidecar — offer to create an
-  // empty sidecar (comment-only, no ${tt:...} tokens) right from the pending
-  // row instead of sending the user to a terminal, then retry immediately.
-  async function createTemplateAndRetryPending(id: string) {
-    const p = pendingSlots.find((x) => x.id === id);
-    if (!p) return;
-    const init = await invoke("slot_init_template", { root: p.repoDir });
-    if (init.isErr()) {
-      const error = init.error.message;
-      setPendingSlots((prev) => prev.map((x) => (x.id === id ? { ...x, error } : x)));
-      return;
-    }
-    void createSlot(
-      { name: p.repoName, dir: p.repoDir, key: p.repoKey },
-      {
-        goal: p.goal,
-        branch: p.branch,
-        base: p.base,
-        options: p.options,
-        imagePaths: p.imagePaths,
-      },
-    );
-  }
-
   // A slot the inline form just created: track it in the rail, mount its
   // first session in the background, and start Claude on the goal in that
   // session's PTY — without switching the user's current view over to it.
@@ -1614,7 +1589,6 @@ export function AgentboardScreen() {
                               pendingSlots={pendingSlots.filter((p) => p.repoKey === repo.key)}
                               onRetryPendingSlot={retryPendingSlot}
                               onDismissPendingSlot={dismissPendingSlot}
-                              onCreateTemplateRetry={createTemplateAndRetryPending}
                             />
                           </motion.div>
                         ))}

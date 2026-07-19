@@ -314,27 +314,62 @@ fn new_warns_but_still_creates_when_base_diverged_from_origin() {
     assert!(!slot.join("upstream.txt").is_file());
 }
 
-/// A `new` that fails after `git worktree add` (e.g. no env template) must
-/// roll the worktree back — leaving one behind blocks every retry with a
-/// bogus "already exists" and hides the failed attempt from `slot ls`.
+/// A repo with neither a tokenized `.env.example` nor the
+/// `.claude/slot-env.template` sidecar — any plain checkout never onboarded
+/// onto slots — must still get a slot: the render falls back to an empty
+/// template (empty `.env`, no port claims) instead of failing with the old
+/// "no template" error (hit for real creating toolbox slots from the app).
 #[test]
-fn new_rolls_back_the_worktree_when_env_render_fails() {
+fn new_works_in_a_repo_with_no_template() {
     let tmp = tempfile::tempdir().unwrap();
     let seed = tmp.path().join("seed");
     std::fs::create_dir_all(&seed).unwrap();
     git(tmp.path(), &["init", "seed"]);
-    // no .env.example / slot-env.template at all — render_slot_env must fail
-    std::fs::write(seed.join("README.md"), "demo\n").unwrap();
+    std::fs::write(seed.join("README.md"), "plain repo\n").unwrap();
     git(&seed, &["add", "."]);
     git(&seed, &["commit", "-m", "seed"]);
     git(tmp.path(), &["clone", "seed", "demo"]);
     let checkout = tmp.path().join("demo");
     let root_s = checkout.to_string_lossy().to_string();
 
+    tt().args(["slot", "new", "-b", "feat/thing", "--root", &root_s]).assert().success();
+
+    let slot = slot_dir(&checkout, "feat-thing");
+    assert!(slot.join(".tt-slot").is_file(), "the slot marker must still be written");
+    let env = std::fs::read_to_string(slot.join(".env")).unwrap();
+    assert!(env.trim().is_empty(), "nothing to template → an empty .env, got: {env}");
+
+    // re-rendering the templateless slot stays a no-op, not an error
+    tt().args(["slot", "env", "feat-thing", "--root", &root_s]).assert().success();
+}
+
+/// A `new` that fails after `git worktree add` (e.g. a template render
+/// error) must roll the worktree back — leaving one behind blocks every
+/// retry with a bogus "already exists" and hides the failed attempt from
+/// `slot ls`.
+#[test]
+fn new_rolls_back_the_worktree_when_env_render_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let seed = tmp.path().join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    git(tmp.path(), &["init", "seed"]);
+    // a committed .env.example with a malformed ${tt:...} token — the render
+    // is a hard error, and it happens after the worktree already exists
+    std::fs::write(seed.join(".env.example"), "X=${tt:prot 3000-3010}\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-m", "seed"]);
+    git(tmp.path(), &["clone", "seed", "demo"]);
+    let checkout = tmp.path().join("demo");
+    let root_s = checkout.to_string_lossy().to_string();
+
+    // the error names the template file and the offending line, so the fix
+    // is actionable straight from the message
     tt().args(["slot", "new", "-b", "feat/thing", "--root", &root_s])
         .assert()
         .failure()
-        .stderr(contains("no template"));
+        .stderr(contains("env template"))
+        .stderr(contains(".env.example"))
+        .stderr(contains("unknown or malformed token"));
 
     assert!(!slot_dir(&checkout, "feat-thing").exists(), "the worktree must not be left behind");
     let worktrees = Command::new("git")
@@ -346,13 +381,13 @@ fn new_rolls_back_the_worktree_when_env_render_fails() {
         "git must not still track the rolled-back worktree"
     );
 
-    // fixing the missing template lets the SAME branch be retried — the
-    // rollback deleted the branch it had just created along with the
-    // worktree, so nothing from the failed attempt blocks the redo (hit for
-    // real migrating the blog repo: fix template, retry, "already exists")
-    std::fs::create_dir_all(checkout.join(".claude")).unwrap();
-    std::fs::write(checkout.join(".claude").join("slot-env.template"), "NAME=${tt:slot-name}\n")
-        .unwrap();
+    // fixing the template lets the SAME branch be retried — the rollback
+    // deleted the branch it had just created along with the worktree, so
+    // nothing from the failed attempt blocks the redo (hit for real
+    // migrating the blog repo: fix template, retry, "already exists")
+    std::fs::write(checkout.join(".env.example"), "NAME=${tt:slot-name}\n").unwrap();
+    git(&checkout, &["add", ".env.example"]);
+    git(&checkout, &["commit", "-m", "fix template"]);
     tt().args(["slot", "new", "-b", "feat/thing", "--root", &root_s]).assert().success();
 }
 

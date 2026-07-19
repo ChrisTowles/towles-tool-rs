@@ -132,9 +132,11 @@ Rules when working in a slot:
   from no branch or remote block removal by design.
 - **Ports come from the rendered `.env`** — `.env.example` is the template
   (`${tt:port A-B}` pool claims, `${tt:slot-name}`, `${tt:var NAME}`; a repo
-  without tokens uses the `.claude/slot-env.template` sidecar), and a manual
-  `.env.local` pin overrides it; shell env overrides both. Never hardcode a
-  port anywhere. The main checkout claims its ports the same way.
+  without tokens uses the `.claude/slot-env.template` sidecar, and a repo
+  with neither renders an empty `.env` — no template is required to create
+  slots), and a manual `.env.local` pin overrides it; shell env overrides
+  both. Never hardcode a port anywhere. The main checkout claims its ports
+  the same way.
 - **No setup scripts.** `tt slot new` runs the `TT_SLOT_SETUP` command
   declared in `.env.example` (spawned directly, no shell — `npm install`
   here), falling back to lockfile detection in repos that don't declare one.

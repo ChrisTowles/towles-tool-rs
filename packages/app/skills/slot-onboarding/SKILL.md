@@ -1,6 +1,6 @@
 ---
 name: slot-onboarding
-description: Onboard a git repo onto tt worktree slots — unique per-slot ports, env templating, and Claude Code worktree hooks. Use when the user asks to "onboard this repo for slots", "set up tt slots", "make worktrees get unique ports", "wire the worktree hooks", or when `tt slot new` fails with "no template". Requires the `tt` CLI on PATH.
+description: Onboard a git repo onto tt worktree slots — unique per-slot ports, env templating, and Claude Code worktree hooks. Use when the user asks to "onboard this repo for slots", "set up tt slots", "make worktrees get unique ports", "wire the worktree hooks", or when a repo's slots render an empty `.env` and it needs per-slot ports. Requires the `tt` CLI on PATH.
 ---
 
 # Onboard a repo onto tt worktree slots

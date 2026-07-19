@@ -59,11 +59,8 @@ pub enum OpsError {
     #[error("git: {0}")]
     Git(String),
 
-    #[error("no template: neither a tokenized .env.example in {slot} nor {sidecar}")]
-    NoTemplate { slot: String, sidecar: String },
-
-    #[error(transparent)]
-    Template(#[from] TemplateError),
+    #[error("env template {path}: {source}")]
+    Template { path: String, source: TemplateError },
 
     #[error("{0}")]
     Io(String),
@@ -431,9 +428,10 @@ pub fn template_sidecar_path(sr: &SlotRoot) -> PathBuf {
 }
 
 /// Create the [`TEMPLATE_SIDECAR`] for repos that don't commit a tokenized
-/// `.env.example` — the fix for [`OpsError::NoTemplate`]. A repo with
-/// nothing to template (no ports, no per-slot config) gets an empty sidecar
-/// with just an explanatory comment; slots still render (an empty `.env`).
+/// `.env.example` (`tt slot init`). Purely a starting point: a repo with no
+/// template at all still renders slots (an empty `.env` — see
+/// [`render_slot_env`]), so the sidecar exists to give `${tt:...}` tokens an
+/// obvious home when the repo later needs one.
 /// Idempotent: an existing sidecar is left untouched.
 pub fn init_template_sidecar(sr: &SlotRoot) -> Result<PathBuf> {
     let sidecar = template_sidecar_path(sr);
@@ -454,6 +452,7 @@ pub fn init_template_sidecar(sr: &SlotRoot) -> Result<PathBuf> {
     Ok(sidecar)
 }
 
+#[derive(Debug)]
 pub struct RenderSummary {
     pub ports: Vec<(String, u16)>,
     pub reused: usize,
@@ -489,21 +488,21 @@ pub fn render_slot_env(
 
     // template: the repo's own .env.example when it carries ${tt:...} tokens
     // (the committed convention), else the .claude/ sidecar (repos that
-    // don't commit tt tokens in their .env.example)
+    // don't commit tt tokens in their .env.example), else empty — a repo
+    // that declares nothing to template (no ports, no per-slot config) still
+    // renders (an empty .env), so any plain checkout is slot-capable with no
+    // onboarding step.
     let repo_template = dir.join(".env.example");
     let sidecar = template_sidecar_path(sr);
-    let template_path = match fs::read_to_string(&repo_template) {
-        Ok(text) if text.contains("${tt:") => repo_template,
-        _ if sidecar.is_file() => sidecar,
-        _ => {
-            return Err(OpsError::NoTemplate {
-                slot: name,
-                sidecar: sidecar.display().to_string(),
-            });
+    let (template_path, template) = match fs::read_to_string(&repo_template) {
+        Ok(text) if text.contains("${tt:") => (repo_template, text),
+        _ if sidecar.is_file() => {
+            let text = fs::read_to_string(&sidecar)
+                .map_err(|e| OpsError::Io(format!("cannot read {}: {e}", sidecar.display())))?;
+            (sidecar, text)
         }
+        _ => (PathBuf::new(), String::new()),
     };
-    let template = fs::read_to_string(&template_path)
-        .map_err(|e| OpsError::Io(format!("cannot read {}: {e}", template_path.display())))?;
 
     let _lock = ClaimLock::acquire(&sr.checkout)?;
 
@@ -531,8 +530,13 @@ pub fn render_slot_env(
         .or_else(|| new_slot_base.map(str::to_string))
         .unwrap_or_else(|| base_branch(&sr.checkout));
     let ctx = crate::SlotContext { slot_name: &name, base_branch: &ctx_base };
-    let outcome =
-        crate::render(&template, &ctx, &existing, &sibling_claims, |p| !port_occupied(p))?;
+    let outcome = crate::render(&template, &ctx, &existing, &sibling_claims, |p| !port_occupied(p))
+        .map_err(|source| OpsError::Template {
+            // an empty (no-template) render can't fail, so this always names
+            // a real file
+            path: template_path.display().to_string(),
+            source,
+        })?;
 
     let (merged, preserved) = envfile::merge_missing_keys(&outcome.text, &old_text);
     fs::write(&env_path, &merged)
@@ -871,7 +875,7 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     note_if_slow(&mut warnings, "git worktree add", worktree_start.elapsed());
 
     // From here on, any failure must remove the worktree just added above —
-    // otherwise (e.g. a missing env template) it leaves a half-set-up slot
+    // otherwise (e.g. a template render error) it leaves a half-set-up slot
     // behind: a real worktree with no rendered `.env`, invisible as "failed"
     // to `tt slot ls` and blocking a retry with `SlotExists`.
     let created = (|| -> Result<CreatedSlot> {
@@ -1523,6 +1527,37 @@ mod tests {
         let a = claim_lock_path(Path::new("/home/x/work/api"));
         let b = claim_lock_path(Path::new("/home/x/personal/api"));
         assert_ne!(a, b, "basename collisions must be separated by the path hash");
+    }
+
+    #[test]
+    fn render_slot_env_with_no_template_renders_an_empty_env() {
+        // A repo with neither a tokenized .env.example nor the sidecar — a
+        // plain checkout never onboarded — still renders: empty .env, no
+        // claims, and for a slot dir the marker. (The old behavior was a hard
+        // "no template" error, which made slot creation fail for any such
+        // repo.)
+        let (_tmp, sr) = temp_slot_root();
+        let slot = sr.slot_dir("feat-thing");
+        fs::create_dir_all(&slot).unwrap();
+
+        let summary = render_slot_env(&sr, &slot, Some("main")).unwrap();
+
+        assert!(summary.ports.is_empty());
+        assert_eq!(fs::read_to_string(slot.join(".env")).unwrap().trim(), "");
+        assert!(slot.join(layout::MARKER_FILE).is_file());
+    }
+
+    #[test]
+    fn render_slot_env_names_the_template_file_on_render_errors() {
+        let (_tmp, sr) = temp_slot_root();
+        fs::create_dir_all(sr.checkout.join(layout::CLAUDE_DIR)).unwrap();
+        fs::write(template_sidecar_path(&sr), "X=${tt:bogus}\n").unwrap();
+
+        let err = render_slot_env(&sr, &sr.checkout, None).unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains(TEMPLATE_SIDECAR), "error must name the template file: {msg}");
+        assert!(msg.contains("line 1"), "error must keep the line detail: {msg}");
     }
 
     #[test]

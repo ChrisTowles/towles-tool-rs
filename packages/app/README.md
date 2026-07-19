@@ -25,7 +25,9 @@ command).
   write the tokenized `.env.example` (or `.claude/slot-env.template`
   sidecar), then run the mechanical half with `tt slot init` and verify with
   a smoke slot. Triggers on "onboard this repo for slots" / "set up tt
-  slots" / a `tt slot new` "no template" error.
+  slots" / a repo whose slots render an empty `.env` but need per-slot
+  ports. (Slots work without any template — onboarding is only for repos
+  that need ports/env vars templated per slot.)
 
 ## Hooks
 
