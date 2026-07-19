@@ -14,6 +14,7 @@
 //! replacement, window teardown) aborts the server task and removes the
 //! lockfile.
 
+use std::collections::HashSet;
 use std::net::TcpListener as StdTcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -56,9 +57,16 @@ struct Shared {
     auth_token: String,
     /// Latest diff-pane selection; serves `getCurrentSelection`/`getLatestSelection`.
     selection: Mutex<Option<tt_ide::Selection>>,
-    /// The file open in the app's code viewer (path + dirty), if any —
-    /// what `getOpenEditors` / `checkDocumentDirty` report.
+    /// The file open in the app's code viewer (path + dirty), if any — the
+    /// Files tab has at most one at a time, so a set replaces the whole
+    /// value (`set_open_file`).
     open_file: Mutex<Option<tt_ide::OpenFile>>,
+    /// Paths the diff pane currently has unsaved edits in — unlike the Files
+    /// tab, several of these can be dirty at once, so this is an upsert/
+    /// remove set (`set_diff_file_dirty`), not a single replaced value.
+    /// [`Shared::context`] merges both into `ServerContext::open_files` for
+    /// `getOpenEditors` / `checkDocumentDirty`.
+    diff_dirty_files: Mutex<HashSet<String>>,
     /// Compiler-diagnostics hub, queried per message for this folder's
     /// current `getDiagnostics` payload.
     diagnostics: Arc<crate::diagnostics::DiagHub>,
@@ -69,11 +77,20 @@ struct Shared {
 
 impl Shared {
     fn context(&self) -> tt_ide::ServerContext {
+        let mut open_files: Vec<tt_ide::OpenFile> =
+            self.open_file.lock().unwrap().clone().into_iter().collect();
+        open_files.extend(
+            self.diff_dirty_files
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|path| tt_ide::OpenFile { path: path.clone(), dirty: true }),
+        );
         tt_ide::ServerContext {
             ide_name: IDE_NAME.to_string(),
             workspace_folder: self.cwd.clone(),
             selection: self.selection.lock().unwrap().clone(),
-            open_file: self.open_file.lock().unwrap().clone(),
+            open_files,
             diagnostics: self.diagnostics.wire_for(&self.cwd),
         }
     }
@@ -135,6 +152,7 @@ impl IdeServer {
             auth_token,
             selection: Mutex::new(None),
             open_file: Mutex::new(None),
+            diff_dirty_files: Mutex::new(HashSet::new()),
             diagnostics,
             out: Mutex::new(Vec::new()),
         });
@@ -186,6 +204,20 @@ impl IdeServer {
     /// Record which file the app's code viewer has open (None = closed).
     pub fn set_open_file(&self, open: Option<tt_ide::OpenFile>) {
         *self.shared.open_file.lock().unwrap() = open;
+    }
+
+    /// Record (or clear) one diff-pane file's unsaved-edit state. Unlike
+    /// [`Self::set_open_file`], this upserts a single path into a set rather
+    /// than replacing the whole value — the diff pane can have several files
+    /// dirty at once. A clean file (`dirty: false`) is simply removed: only
+    /// dirty files need to be visible to `getOpenEditors`/`checkDocumentDirty`.
+    pub fn set_diff_file_dirty(&self, path: String, dirty: bool) {
+        let mut files = self.shared.diff_dirty_files.lock().unwrap();
+        if dirty {
+            files.insert(path);
+        } else {
+            files.remove(&path);
+        }
     }
 }
 
@@ -707,6 +739,18 @@ pub fn ide_set_open_file(
         dirty: dirty.unwrap_or(false),
     });
     state.for_ide_servers(&dir, |server| server.set_open_file(open.clone()));
+}
+
+/// One diff-pane file's unsaved-edit state flipped — reflected to CLIs via
+/// `getOpenEditors`/`checkDocumentDirty` alongside whatever the Files tab has
+/// open. Unlike `ide_set_open_file`, `dir`+`file_path` together are just one
+/// entry in a set the diff pane maintains itself (several files can be dirty
+/// there at once); `dirty: false` removes it rather than replacing the set.
+#[tauri::command]
+pub fn ide_set_diff_dirty(state: State<TermState>, dir: String, file_path: String, dirty: bool) {
+    let path = PathBuf::from(&dir).join(file_path).to_string_lossy().into_owned();
+    state
+        .for_ide_servers(Path::new(&dir), |server| server.set_diff_file_dirty(path.clone(), dirty));
 }
 
 /// A viewer file read: the content plus the mtime the save path uses as its

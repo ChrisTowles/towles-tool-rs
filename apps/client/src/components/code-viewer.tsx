@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
 import { loadMonaco } from "@/lib/monaco";
 import {
   ideClearSelection,
@@ -7,7 +6,7 @@ import {
   ideReadFile,
   ideSetOpenFile,
   ideSetSelection,
-  ideWriteFile,
+  saveModelBuffer,
   type FileRead,
 } from "@/lib/ide";
 import { NotInTauri, errorMessage } from "@/lib/errors";
@@ -144,18 +143,11 @@ export function CodeViewer({
 
       const save = async () => {
         if (!model) return;
-        const versionAtSave = model.getAlternativeVersionId();
-        const written = await ideWriteFile(dir, path, model.getValue(), mtimeRef.current);
-        if (written.isErr()) {
-          // A refused save leaves the buffer dirty and the file untouched — the
-          // one failure here the user must never have to infer.
-          toast.error(`Couldn't save ${path} — ${written.error.message}`);
-          return;
-        }
-        if (!model || model.isDisposed()) return;
-        mtimeRef.current = written.value;
-        savedVersionRef.current = versionAtSave;
-        setDirty(model.getAlternativeVersionId() !== versionAtSave);
+        const result = await saveModelBuffer(dir, path, model, mtimeRef.current);
+        if (!result || model.isDisposed()) return;
+        mtimeRef.current = result.mtimeMs;
+        savedVersionRef.current = result.versionAtSave;
+        setDirty(model.getAlternativeVersionId() !== result.versionAtSave);
       };
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => void save());
 

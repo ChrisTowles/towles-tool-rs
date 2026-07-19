@@ -452,17 +452,12 @@ fn resolve_diff_base(dir: &str, mode: DiffMode, base_branch: Option<&str>) -> St
 /// One changed file in the diff pane's file list. `status` is git's
 /// name-status letter (`M`/`A`/`D`/`R`/`C`/`T`, or `?` for untracked);
 /// `old_path` is set on renames/copies (content at the base lives there).
-/// `staged` is the current index state (`git status --porcelain`'s X
-/// column), independent of `status`/`old_path` — a file can be "M" against
-/// the diff baseline while its working-tree edits are fully, partially, or
-/// not at all staged.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffFile {
     pub path: String,
     pub old_path: Option<String>,
     pub status: String,
-    pub staged: bool,
     pub lines_added: i64,
     pub lines_removed: i64,
 }
@@ -478,8 +473,8 @@ pub fn diff_files(dir: &str, mode: DiffMode, base_branch: Option<&str>) -> Vec<D
     let base = resolve_diff_base(dir, mode, base_branch);
     let name_status = git_out(dir, &["diff", "--name-status", "-M", &base]);
     let numstat = git_out(dir, &["diff", "--numstat", "-M", &base]);
-    let status_out = git_out(dir, &["status", "--porcelain"]);
-    parse_diff_files(&name_status, &numstat, &status_out)
+    let untracked_out = git_out(dir, &["status", "--porcelain"]);
+    parse_diff_files(&name_status, &numstat, &untracked_out)
 }
 
 /// A file's content at the diff baseline (`git show <base>:<path>`), for the
@@ -511,7 +506,7 @@ pub fn base_file_content(
 /// and append `git status --porcelain`'s `??` untracked entries. Both diff
 /// outputs are rename-aware (`-M`), so the numstat path arrow/brace forms are
 /// normalized to the post-rename path before matching.
-fn parse_diff_files(name_status: &str, numstat: &str, status_out: &str) -> Vec<DiffFile> {
+fn parse_diff_files(name_status: &str, numstat: &str, untracked_out: &str) -> Vec<DiffFile> {
     let mut counts: std::collections::HashMap<String, (i64, i64)> =
         std::collections::HashMap::new();
     for line in numstat.lines() {
@@ -525,7 +520,6 @@ fn parse_diff_files(name_status: &str, numstat: &str, status_out: &str) -> Vec<D
             (added.parse().unwrap_or(0), removed.parse().unwrap_or(0)),
         );
     }
-    let staged = staged_paths(status_out);
     let mut files = Vec::new();
     for line in name_status.lines() {
         let mut parts = line.split('\t');
@@ -542,81 +536,26 @@ fn parse_diff_files(name_status: &str, numstat: &str, status_out: &str) -> Vec<D
             _ => continue,
         };
         let (lines_added, lines_removed) = counts.get(&path).copied().unwrap_or((0, 0));
-        let is_staged = staged.contains(&path);
         files.push(DiffFile {
             path,
             old_path,
             status: status.to_string(),
-            staged: is_staged,
             lines_added,
             lines_removed,
         });
     }
-    for line in status_out.lines() {
+    for line in untracked_out.lines() {
         if let Some(path) = line.strip_prefix("??") {
             files.push(DiffFile {
                 path: path.trim().to_string(),
                 old_path: None,
                 status: "?".to_string(),
-                staged: false,
                 lines_added: 0,
                 lines_removed: 0,
             });
         }
     }
     files
-}
-
-/// Paths with index changes per `git status --porcelain`'s first (X) column
-/// — staged, as opposed to untracked (`?`) or clean in the index (` `). A
-/// rename's porcelain line is `XY old -> new`; the path after the last
-/// `" -> "` is the current (new) path, matching `DiffFile::path`.
-fn staged_paths(status_out: &str) -> HashSet<String> {
-    let mut staged = HashSet::new();
-    for line in status_out.lines() {
-        if line.len() < 3 {
-            continue;
-        }
-        let x = line.as_bytes()[0] as char;
-        if x == ' ' || x == '?' || x == '!' {
-            continue;
-        }
-        let rest = line[3..].trim();
-        let path = rest.rsplit(" -> ").next().unwrap_or(rest);
-        staged.insert(path.to_string());
-    }
-    staged
-}
-
-/// Timeout for the diff pane's stage/unstage mutations — plain index writes,
-/// fast even in a large repo.
-const STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// Stage `path`'s current working-tree state (`git add -- <path>`) for the
-/// diff pane's per-file checkbox — covers modified/untracked files and staged
-/// deletions alike.
-pub fn stage_file(dir: &str, path: &str) -> Result<(), String> {
-    git_mutate(dir, &["add", "--", path])
-}
-
-/// Unstage `path` (`git restore --staged -- <path>`), leaving working-tree
-/// edits in place.
-pub fn unstage_file(dir: &str, path: &str) -> Result<(), String> {
-    git_mutate(dir, &["restore", "--staged", "--", path])
-}
-
-/// Run a mutating git command in `dir`. Unlike [`git_out`], failures are not
-/// swallowed to empty/false: the checkbox that triggers these needs to know
-/// when a stage/unstage didn't happen (e.g. a bad pathspec).
-fn git_mutate(dir: &str, args: &[&str]) -> Result<(), String> {
-    if dir.is_empty() {
-        return Err("dir is required".to_string());
-    }
-    match tt_exec::run_with_timeout("git", &git_args(dir, args), STAGE_TIMEOUT) {
-        Ok(out) if out.ok() => Ok(()),
-        Ok(out) => Err(out.stderr.trim().to_string()),
-        Err(e) => Err(e.to_string()),
-    }
 }
 
 /// Normalize a `--numstat` rename path to the post-rename path: either the
@@ -1391,9 +1330,8 @@ mod tests {
         let name_status =
             "M\tsrc/a.rs\nA\tsrc/b.rs\nD\told.rs\nR087\tsrc/old_name.rs\tsrc/new_name.rs";
         let numstat = "3\t1\tsrc/a.rs\n10\t0\tsrc/b.rs\n0\t5\told.rs\n2\t2\tsrc/{old_name.rs => new_name.rs}\n-\t-\tbin.png";
-        // src/a.rs is unstaged (" M"); nothing else here is in the index yet.
-        let status_out = "?? notes.md\n M src/a.rs";
-        let files = parse_diff_files(name_status, numstat, status_out);
+        let untracked_out = "?? notes.md\n M src/a.rs";
+        let files = parse_diff_files(name_status, numstat, untracked_out);
         assert_eq!(files.len(), 5);
         assert_eq!(
             files[0],
@@ -1401,7 +1339,6 @@ mod tests {
                 path: "src/a.rs".into(),
                 old_path: None,
                 status: "M".into(),
-                staged: false,
                 lines_added: 3,
                 lines_removed: 1,
             }
@@ -1413,7 +1350,6 @@ mod tests {
                 path: "src/new_name.rs".into(),
                 old_path: Some("src/old_name.rs".into()),
                 status: "R".into(),
-                staged: false,
                 lines_added: 2,
                 lines_removed: 2,
             }
@@ -1424,31 +1360,10 @@ mod tests {
                 path: "notes.md".into(),
                 old_path: None,
                 status: "?".into(),
-                staged: false,
                 lines_added: 0,
                 lines_removed: 0,
             }
         );
-    }
-
-    #[test]
-    fn parse_diff_files_marks_index_column_as_staged() {
-        let name_status = "M\tsrc/a.rs\nA\tsrc/b.rs\nR087\told.rs\tnew.rs";
-        let numstat = "1\t1\tsrc/a.rs\n2\t0\tsrc/b.rs\n1\t1\told.rs => new.rs";
-        // src/a.rs: staged AND unstaged hunks ("MM"). src/b.rs: fully staged
-        // ("A "). old.rs -> new.rs: a staged rename ("R  old.rs -> new.rs").
-        let status_out = "MM src/a.rs\nA  src/b.rs\nR  old.rs -> new.rs";
-        let files = parse_diff_files(name_status, numstat, status_out);
-        assert!(files.iter().find(|f| f.path == "src/a.rs").unwrap().staged);
-        assert!(files.iter().find(|f| f.path == "src/b.rs").unwrap().staged);
-        assert!(files.iter().find(|f| f.path == "new.rs").unwrap().staged);
-    }
-
-    #[test]
-    fn staged_paths_ignores_untracked_and_clean() {
-        let status_out = "?? new.txt\n M unstaged.rs\nA  staged.rs\n!! ignored.txt";
-        let staged = staged_paths(status_out);
-        assert_eq!(staged, HashSet::from(["staged.rs".to_string()]));
     }
 
     #[test]

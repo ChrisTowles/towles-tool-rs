@@ -590,26 +590,6 @@ pub async fn ab_get_diff_files(
     .unwrap_or_default()
 }
 
-/// Stage a file for the diff pane's checkbox (`git add -- <path>`), covering
-/// modified/untracked files and staged deletions alike. Errors (e.g. a
-/// pathspec that no longer matches) surface as a toast, not a swallowed no-op
-/// — the checkbox needs to know when staging didn't happen.
-#[tauri::command]
-pub async fn ab_stage_file(dir: String, path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || tt_agentboard::stage_file(&dir, &path))
-        .await
-        .map_err(|e| format!("stage failed: {e}"))?
-}
-
-/// Unstage a file (`git restore --staged -- <path>`), leaving working-tree
-/// edits in place.
-#[tauri::command]
-pub async fn ab_unstage_file(dir: String, path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || tt_agentboard::unstage_file(&dir, &path))
-        .await
-        .map_err(|e| format!("unstage failed: {e}"))?
-}
-
 /// A file's content at the diff baseline (`git show`), the original side of
 /// the diff editor. `None` when the file doesn't exist at the base
 /// (added/untracked).

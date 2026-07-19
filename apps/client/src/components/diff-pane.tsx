@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, GitCompare, Pencil, RefreshCw } from "lucide-react";
 import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
 import { MonacoMultiDiff, type ChangedFile } from "@/components/diff-monaco";
@@ -25,46 +25,101 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 /** Compact navigation tree beside the multi-diff: same compact-folders
- * grouping as the Files pane; clicking a file scrolls its diff into view. */
-function DiffTreeRail({
+ * grouping as the Files pane; clicking a file scrolls its diff into view.
+ * Each row carries a "reviewed" checkbox — GitHub-review-style, not git
+ * staging — that collapses that file's diff in the Monaco pane so an
+ * approved file is out of the way; a folder's checkbox reflects and toggles
+ * every file beneath it at once. Memoized: DiffPane re-renders on state
+ * (refreshing, editingBase, reviews) this rail doesn't care about, and its
+ * props are stable references except when `files`/`reviewed` actually change. */
+const DiffTreeRail = memo(function DiffTreeRail({
   files,
+  reviewed,
+  dirty,
   onJump,
-  onToggleStage,
+  onToggleReviewed,
+  onToggleReviewedMany,
 }: {
   files: ChangedFile[];
+  /** Paths the reviewer has checked off. */
+  reviewed: ReadonlySet<string>;
+  /** Paths with unsaved edits made right in the diff pane — same signal the
+   * Files tab's dirty dot shows, mirrored here per file. */
+  dirty: ReadonlySet<string>;
   onJump: (path: string) => void;
-  /** Stage (`true`) or unstage (`false`) a file. */
-  onToggleStage: (path: string, staged: boolean) => void;
+  /** Toggle one file's reviewed flag. */
+  onToggleReviewed: (path: string) => void;
+  /** Set (or clear) every path in the list at once — a folder's checkbox. */
+  onToggleReviewedMany: (paths: string[], value: boolean) => void;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const tree = useMemo(() => buildDiffTree(files.map((f) => f.path)), [files]);
   const byPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files]);
+  // One bottom-up pass per file-set change, not a per-render re-walk of every
+  // folder's subtree — leafPaths() is O(subtree), and calling it fresh inside
+  // renderNodes for every folder node made a deeply nested tree (this repo's
+  // own apps/client/src/components/... shape) cost O(n²) on every render,
+  // including ones that only touch unrelated pane state (refreshing, mode).
+  const leafPathsByFolder = useMemo(() => {
+    const map = new Map<string, string[]>();
+    const walk = (node: DiffTreeNode): string[] => {
+      if (node.kind === "file") return [node.path];
+      const leaves = node.children.flatMap(walk);
+      map.set(node.path, leaves);
+      return leaves;
+    };
+    tree.forEach(walk);
+    return map;
+  }, [tree]);
 
   const renderNodes = (nodes: DiffTreeNode[], depth: number) =>
     nodes.map((node) => {
       const paddingLeft = 4 + depth * 12;
       if (node.kind === "folder") {
         const isCollapsed = collapsed.has(node.path);
+        const paths = leafPathsByFolder.get(node.path) ?? [];
+        const reviewedCount = paths.filter((p) => reviewed.has(p)).length;
+        const checked: boolean | "indeterminate" =
+          reviewedCount === 0 ? false : reviewedCount === paths.length ? true : "indeterminate";
         return (
           <li key={node.path}>
-            <button
-              type="button"
-              onClick={() =>
-                setCollapsed((prev) => {
-                  const next = new Set(prev);
-                  if (isCollapsed) next.delete(node.path);
-                  else next.add(node.path);
-                  return next;
-                })
-              }
-              style={{ paddingLeft }}
-              className="flex w-full items-center gap-1 py-0.5 text-left font-mono text-[11px] text-muted-foreground hover:text-foreground"
-            >
-              <ChevronRight
-                className={cn("size-3 shrink-0 transition-transform", !isCollapsed && "rotate-90")}
-              />
-              <span className="truncate">{node.name}</span>
-            </button>
+            <div style={{ paddingLeft }} className="flex w-full items-center gap-1 py-0.5">
+              {/* `<label htmlFor>`, not nested in the button below: Radix's
+               * Checkbox renders a button and buttons can't nest. See
+               * apps/client/CLAUDE.md. */}
+              <label
+                htmlFor={`reviewed-${node.path}`}
+                onClick={(e) => e.stopPropagation()}
+                className="flex shrink-0 items-center"
+                title="mark every file in this folder reviewed"
+              >
+                <Checkbox
+                  id={`reviewed-${node.path}`}
+                  checked={checked}
+                  onCheckedChange={(c) => onToggleReviewedMany(paths, c === true)}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() =>
+                  setCollapsed((prev) => {
+                    const next = new Set(prev);
+                    if (isCollapsed) next.delete(node.path);
+                    else next.add(node.path);
+                    return next;
+                  })
+                }
+                className="flex min-w-0 flex-1 items-center gap-1 text-left font-mono text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                <ChevronRight
+                  className={cn(
+                    "size-3 shrink-0 transition-transform",
+                    !isCollapsed && "rotate-90",
+                  )}
+                />
+                <span className="truncate">{node.name}</span>
+              </button>
+            </div>
             {!isCollapsed && <ul>{renderNodes(node.children, depth + 1)}</ul>}
           </li>
         );
@@ -76,19 +131,16 @@ function DiffTreeRail({
             style={{ paddingLeft: paddingLeft + 14 }}
             className="flex w-full items-center gap-1.5 py-0.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
           >
-            {/* `<label htmlFor>`, not nested in the button below: Radix's
-             * Checkbox renders a button and buttons can't nest. See
-             * apps/client/CLAUDE.md. */}
             <label
-              htmlFor={`stage-${node.path}`}
+              htmlFor={`reviewed-${node.path}`}
               onClick={(e) => e.stopPropagation()}
               className="flex shrink-0 items-center"
-              title="stage / unstage this file"
+              title="mark reviewed (collapses this file's diff)"
             >
               <Checkbox
-                id={`stage-${node.path}`}
-                checked={file?.staged ?? false}
-                onCheckedChange={(checked) => onToggleStage(node.path, checked === true)}
+                id={`reviewed-${node.path}`}
+                checked={reviewed.has(node.path)}
+                onCheckedChange={() => onToggleReviewed(node.path)}
               />
             </label>
             <button
@@ -101,6 +153,12 @@ function DiffTreeRail({
                 {file?.status ?? ""}
               </span>
               <span className="min-w-0 flex-1 truncate">{node.name}</span>
+              {dirty.has(node.path) && (
+                <span
+                  title="Unsaved changes — ⌘S saves"
+                  className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                />
+              )}
               {file && (file.linesAdded > 0 || file.linesRemoved > 0) && (
                 <span className="shrink-0 pr-1 text-[10px]">
                   <span className="text-emerald-500">+{file.linesAdded}</span>{" "}
@@ -114,7 +172,7 @@ function DiffTreeRail({
     });
 
   return <ul className="w-56 shrink-0 overflow-y-auto border-r pr-1">{renderNodes(tree, 0)}</ul>;
-}
+});
 
 const UNCOMMITTED_MODE = {
   key: "uncommitted" as const,
@@ -160,6 +218,9 @@ export function DiffPane({
   const registerReveal = useCallback((fn: ((path: string) => void) | null) => {
     revealRef.current = fn;
   }, []);
+  // Stable identity (unlike an inline arrow at the call site) so DiffTreeRail's
+  // memo() isn't defeated by a fresh callback prop on every DiffPane render.
+  const jumpTo = useCallback((path: string) => revealRef.current?.(path), []);
   const [editingBase, setEditingBase] = useState(false);
   // Claude's pending openDiff reviews for this folder (shown one at a time,
   // oldest first). Each carries the on-disk "before" for the DiffEditor.
@@ -221,13 +282,49 @@ export function DiffPane({
   };
   const modes = [mainMode, UNCOMMITTED_MODE];
 
+  // Files the reviewer has checked off — a GitHub-review-style "viewed" mark,
+  // purely client-side (not persisted, no git index involved). Checking a
+  // file collapses its diff in the Monaco pane; unchecking expands it again.
+  const [reviewed, setReviewed] = useState<Set<string>>(() => new Set());
+
+  // Files with unsaved edits made right in the Monaco pane — mirrors what
+  // MonacoMultiDiff also reports to the IDE bridge (`ideSetDiffDirty`), kept
+  // here too so the tree rail can show the same dirty dot the Files tab does.
+  const [dirty, setDirty] = useState<Set<string>>(() => new Set());
+  const handleDirtyChange = useCallback((path: string, isDirty: boolean) => {
+    setDirty((prev) => {
+      if (prev.has(path) === isDirty) return prev;
+      const next = new Set(prev);
+      if (isDirty) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+  }, []);
+
   const fetchDiff = useCallback(async () => {
     if (!dir) return;
     setRefreshing(true);
     const list = await invoke<ChangedFile[]>("ab_get_diff_files", { dir, mode, baseBranch });
-    setFiles(list.unwrapOr([]));
+    const nextFiles = list.unwrapOr([]);
+    setFiles(nextFiles);
+    // Prune reviewed marks for paths that dropped out of the change set
+    // (renamed/reverted/committed) — everything else keeps its mark across a
+    // refresh, so a poll mid-review doesn't quietly re-expand what's already
+    // been checked off.
+    const paths = new Set(nextFiles.map((f) => f.path));
+    setReviewed((prev) => {
+      const next = new Set([...prev].filter((p) => paths.has(p)));
+      return next.size === prev.size ? prev : next;
+    });
     setRefreshing(false);
   }, [dir, mode, baseBranch]);
+
+  // Switching folders starts a fresh review — marks from the last folder
+  // don't belong to this one's file set.
+  useEffect(() => {
+    setReviewed(new Set());
+    setDirty(new Set());
+  }, [dir]);
 
   // Refetch on mount and whenever the working tree measurably changes.
   const statsKey = folder
@@ -251,27 +348,29 @@ export function DiffPane({
     if (stored.isErr()) toast.error(`Couldn't set base branch — ${stored.error.message}`);
   }
 
-  // Shared by the tree rail's checkbox and the Monaco header's checkbox —
-  // stages/unstages via `git add` / `git restore --staged`. A successful
-  // mutation means the index now matches the requested `staged` value, so
-  // patch just that file's flag locally rather than re-running the
-  // name-status/numstat/status trio behind a full `fetchDiff()` — staging
-  // doesn't change a file's diff-baseline status or line counts anyway (in
-  // "uncommitted" mode it's already `git diff HEAD`, staged + unstaged
-  // combined).
-  const toggleStage = useCallback(
-    async (path: string, staged: boolean) => {
-      if (!dir) return false;
-      const done = await invoke(staged ? "ab_stage_file" : "ab_unstage_file", { dir, path });
-      if (done.isErr()) {
-        toast.error(`Couldn't ${staged ? "stage" : "unstage"} ${path} — ${done.error.message}`);
-        return false;
+  // Shared by the tree rail's checkboxes and the Monaco header's checkbox —
+  // toggles one file's reviewed mark.
+  const toggleReviewed = useCallback((path: string) => {
+    setReviewed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  // A folder's checkbox in the tree rail — set (or clear) every file beneath
+  // it at once.
+  const toggleReviewedMany = useCallback((paths: string[], value: boolean) => {
+    setReviewed((prev) => {
+      const next = new Set(prev);
+      for (const p of paths) {
+        if (value) next.add(p);
+        else next.delete(p);
       }
-      setFiles((prev) => prev && prev.map((f) => (f.path === path ? { ...f, staged } : f)));
-      return true;
-    },
-    [dir],
-  );
+      return next;
+    });
+  }, []);
 
   if (!folder) return <PanePlaceholder label="folder gone" focused={focused} onRemove={onClose} />;
 
@@ -362,8 +461,11 @@ export function DiffPane({
           <>
             <DiffTreeRail
               files={files}
-              onJump={(path) => revealRef.current?.(path)}
-              onToggleStage={(path, staged) => void toggleStage(path, staged)}
+              reviewed={reviewed}
+              dirty={dirty}
+              onJump={jumpTo}
+              onToggleReviewed={toggleReviewed}
+              onToggleReviewedMany={toggleReviewedMany}
             />
             <div className="min-w-0 flex-1">
               <MonacoMultiDiff
@@ -374,7 +476,9 @@ export function DiffPane({
                 refreshKey={statsKey}
                 connected={ideConnected}
                 registerReveal={registerReveal}
-                onToggleStage={toggleStage}
+                reviewed={reviewed}
+                onToggleReviewed={toggleReviewed}
+                onDirtyChange={handleDirtyChange}
               />
             </div>
           </>

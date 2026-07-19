@@ -118,9 +118,11 @@ pub fn at_mentioned_frame(file_path: &str, lines: Option<(u32, u32)>) -> String 
     json!({ "jsonrpc": "2.0", "method": "at_mentioned", "params": params }).to_string()
 }
 
-/// The file open in the app's code viewer: absolute path + whether the
-/// buffer has unsaved edits (feeds `getOpenEditors.isDirty` and
-/// `checkDocumentDirty`).
+/// One open editor buffer: absolute path + whether it has unsaved edits
+/// (feeds `getOpenEditors.isDirty` and `checkDocumentDirty`). The code
+/// viewer holds at most one at a time; the diff pane's editable modified
+/// sides can hold several concurrently — both funnel into
+/// [`ServerContext::open_files`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenFile {
     pub path: String,
@@ -137,9 +139,11 @@ pub struct ServerContext {
     pub workspace_folder: PathBuf,
     /// The latest selection made in the app's diff pane, if any.
     pub selection: Option<Selection>,
-    /// The file open in the app's code viewer, if any — preferred by
-    /// `getOpenEditors` over the selection's file.
-    pub open_file: Option<OpenFile>,
+    /// Files currently open (or, for the diff pane, dirty) in the app —
+    /// preferred by `getOpenEditors` over the selection's file. Usually 0 or
+    /// 1 entry (the Files tab's single viewer); the diff pane can add
+    /// several more when multiple files there have unsaved edits at once.
+    pub open_files: Vec<OpenFile>,
     /// Current compiler diagnostics for this folder, already in the
     /// `getDiagnostics` wire shape (`[{uri, diagnostics: [...]}]`, see
     /// [`diagnostics::to_wire`]). Empty array when no check has run.
@@ -210,15 +214,13 @@ fn tools_call(id: Value, request: &Value, ctx: &ServerContext) -> String {
     tool_result_response(id, &result)
 }
 
-/// `checkDocumentDirty`: dirty state of the viewer's open file, VS Code's
+/// `checkDocumentDirty`: dirty state of the matching open file, VS Code's
 /// answer shapes ("Document not open" for anything else).
 fn check_document_dirty(ctx: &ServerContext, args: &Value) -> Value {
     let requested = args.get("filePath").and_then(Value::as_str).unwrap_or_default();
-    match &ctx.open_file {
-        Some(open) if open.path == requested => {
-            json!({ "success": true, "filePath": open.path, "isDirty": open.dirty })
-        }
-        _ => json!({ "success": false, "message": format!("Document not open: {requested}") }),
+    match ctx.open_files.iter().find(|f| f.path == requested) {
+        Some(open) => json!({ "success": true, "filePath": open.path, "isDirty": open.dirty }),
+        None => json!({ "success": false, "message": format!("Document not open: {requested}") }),
     }
 }
 
@@ -249,13 +251,23 @@ fn workspace_folders(ctx: &ServerContext) -> Value {
     })
 }
 
-/// The app shows one file at a time (code viewer, else the diff pane's
-/// selected file); report it as the single active "tab" so `@`-mention file
-/// pickers have something to anchor on.
+/// Usually the app shows one file at a time (code viewer, else the diff
+/// pane's selected file), reported as the single active "tab" so
+/// `@`-mention file pickers have something to anchor on; falls back to the
+/// selection's file when nothing is explicitly open. The diff pane can also
+/// contribute several concurrently-dirty files at once — with more than one
+/// tab, none is marked active/group-active, since nothing here tracks which
+/// of them has focus.
 fn open_editors(ctx: &ServerContext) -> Value {
-    let open = ctx.open_file.clone().or_else(|| {
-        ctx.selection.as_ref().map(|sel| OpenFile { path: sel.file_path.clone(), dirty: false })
-    });
+    let open: Vec<OpenFile> = if ctx.open_files.is_empty() {
+        ctx.selection
+            .as_ref()
+            .map(|sel| vec![OpenFile { path: sel.file_path.clone(), dirty: false }])
+            .unwrap_or_default()
+    } else {
+        ctx.open_files.clone()
+    };
+    let single = open.len() == 1;
     let tabs: Vec<Value> = open
         .iter()
         .map(|OpenFile { path: file_path, dirty }| {
@@ -265,14 +277,14 @@ fn open_editors(ctx: &ServerContext) -> Value {
                 .unwrap_or_else(|| file_path.clone());
             json!({
                 "uri": format!("file://{file_path}"),
-                "isActive": true,
+                "isActive": single,
                 "isPinned": false,
                 "isPreview": false,
                 "isDirty": dirty,
                 "label": name,
                 "groupIndex": 0,
                 "viewColumn": 1,
-                "isGroupActive": true,
+                "isGroupActive": single,
                 "fileName": file_path,
             })
         })
@@ -437,7 +449,7 @@ mod tests {
             ide_name: "Towles Tool".to_string(),
             workspace_folder: PathBuf::from("/repo/slot-a"),
             selection,
-            open_file: None,
+            open_files: Vec::new(),
             diagnostics: json!([]),
         }
     }
@@ -566,8 +578,8 @@ mod tests {
         let selection =
             Selection::range(Path::new("/repo/slot-a/src/sel.rs"), 0, 0, 1, "x".to_string());
         let mut ctx = ctx_with(Some(selection));
-        ctx.open_file =
-            Some(OpenFile { path: "/repo/slot-a/src/open.rs".to_string(), dirty: true });
+        ctx.open_files =
+            vec![OpenFile { path: "/repo/slot-a/src/open.rs".to_string(), dirty: true }];
         let editors = call(&ctx, "getOpenEditors");
         assert_eq!(editors["tabs"][0]["fileName"], "/repo/slot-a/src/open.rs");
         assert_eq!(editors["tabs"][0]["label"], "open.rs");
@@ -578,7 +590,7 @@ mod tests {
     #[test]
     fn check_document_dirty_answers_for_the_open_file_only() {
         let mut ctx = ctx_with(None);
-        ctx.open_file = Some(OpenFile { path: "/repo/slot-a/a.rs".to_string(), dirty: true });
+        ctx.open_files = vec![OpenFile { path: "/repo/slot-a/a.rs".to_string(), dirty: true }];
 
         let request = |path: &str| {
             json!({
@@ -599,6 +611,47 @@ mod tests {
 
         let miss = parse(handle_message(&request("/repo/slot-a/b.rs"), &ctx).unwrap());
         assert_eq!(miss["success"], false);
+    }
+
+    #[test]
+    fn open_editors_reports_every_diff_pane_file_with_none_marked_active() {
+        // Unlike the single-viewer-file case, several files can be dirty in
+        // the diff pane at once — none of them has a real "active" signal.
+        let mut ctx = ctx_with(None);
+        ctx.open_files = vec![
+            OpenFile { path: "/repo/slot-a/src/a.rs".to_string(), dirty: true },
+            OpenFile { path: "/repo/slot-a/src/b.rs".to_string(), dirty: false },
+        ];
+        let editors = call(&ctx, "getOpenEditors");
+        let tabs = editors["tabs"].as_array().unwrap();
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[0]["fileName"], "/repo/slot-a/src/a.rs");
+        assert_eq!(tabs[0]["isDirty"], true);
+        assert_eq!(tabs[0]["isActive"], false);
+        assert_eq!(tabs[1]["fileName"], "/repo/slot-a/src/b.rs");
+        assert_eq!(tabs[1]["isDirty"], false);
+        assert_eq!(tabs[1]["isActive"], false);
+    }
+
+    #[test]
+    fn check_document_dirty_finds_any_of_several_open_files() {
+        let mut ctx = ctx_with(None);
+        ctx.open_files = vec![
+            OpenFile { path: "/repo/slot-a/src/a.rs".to_string(), dirty: true },
+            OpenFile { path: "/repo/slot-a/src/b.rs".to_string(), dirty: false },
+        ];
+        assert_eq!(
+            check_document_dirty(&ctx, &json!({ "filePath": "/repo/slot-a/src/a.rs" }))["isDirty"],
+            true
+        );
+        assert_eq!(
+            check_document_dirty(&ctx, &json!({ "filePath": "/repo/slot-a/src/b.rs" }))["isDirty"],
+            false
+        );
+        assert_eq!(
+            check_document_dirty(&ctx, &json!({ "filePath": "/repo/slot-a/src/c.rs" }))["success"],
+            false
+        );
     }
 
     #[test]

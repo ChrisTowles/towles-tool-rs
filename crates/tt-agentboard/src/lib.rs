@@ -70,7 +70,7 @@ pub use env_drift::PortDrift;
 pub use folder_meta::{FolderMeta, FolderMetaStore, default_folder_meta_path};
 pub use git_info::{
     CommitStat, DiffFile, DiffMode, GitInfo, GitInfoCache, base_file_content, commit_stats,
-    compute_git_info, diff_files, diff_patch, stage_file, unstage_file,
+    compute_git_info, diff_files, diff_patch,
 };
 pub use metadata::SessionMetadataStore;
 pub use notify::{NeedsYouEdge, NeedsYouWatch};
