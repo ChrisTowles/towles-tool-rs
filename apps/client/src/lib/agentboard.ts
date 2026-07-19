@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import type { Result } from "better-result";
+import type { z } from "zod";
 import type { PrItem } from "./data";
 import type { IpcError } from "./errors";
 import type { LaunchConfigStatus } from "./launch";
 import { OpenedSessionSchema } from "./schemas/agentboard";
+import { SlotBlockerSchema, SlotRemoveOutcomeSchema } from "./schemas/slots";
 import { invoke } from "./tauri";
 
 /**
@@ -837,6 +839,61 @@ export function folderRemovableSlot(
   return folder.isWorktree && !folder.dirMissing;
 }
 
+/** The guard kinds `RmBlocked::kind()` emits (`crates/tt-slots/src/guards.rs`).
+ * A blocker whose kind isn't one of these is a backend that grew a guard this
+ * frontend hasn't been taught yet — rendered generically rather than
+ * mislabeled, see `BlockerIcon`. */
+export const SLOT_BLOCKER_KINDS = ["dirtyTree", "unreachableCommits", "foreignPort"] as const;
+export type SlotBlockerKind = (typeof SLOT_BLOCKER_KINDS)[number];
+
+/** One reason `slot_remove` refused. Blocked is an `Ok` outcome there, not
+ * an error — an expected answer with a next step attached — so the UI gets
+ * typed rows to act on instead of a newline-joined error string.
+ *
+ * Inferred from the Zod schema that actually parses the IPC payload, so the
+ * validated shape and the type can't drift apart; the field-level rationale
+ * (why `kind` stays an open string, what `port` feeds) lives on the schema. */
+export type SlotBlocker = z.infer<typeof SlotBlockerSchema>;
+
+/** The `slot_remove` result: removed, or refused with reasons. */
+export type SlotRemoveOutcome = z.infer<typeof SlotRemoveOutcomeSchema>;
+
+/** What forcing past a blocker would discard, as a noun for the button. */
+const DISCARDED: Record<string, string> = {
+  dirtyTree: "changes",
+  unreachableCommits: "commits",
+};
+
+/** Label for the force button in the blocked-delete dialog.
+ *
+ * The consequence goes *in the button*, not only in the body text: the user
+ * already confirmed one dialog that promised the delete was guarded, so this
+ * click is where consent to lose work is actually given, and it's the last
+ * thing read before committing. When nothing would be lost (a stray listener
+ * is the only blocker — forcing orphans a process, it doesn't destroy work)
+ * the button says so rather than borrowing a scarier word than it earns.
+ *
+ * Names only the kinds it recognizes: an unfamiliar `losesWork` kind falls
+ * back to the unspecific label rather than asserting it's discarding
+ * "commits" because that was the last branch of a ternary. */
+export function forceDeleteLabel(blockers: SlotBlocker[]): string {
+  const nouns = blockers
+    .filter((b) => b.losesWork)
+    .map((b) => DISCARDED[b.kind])
+    .filter((noun): noun is string => noun !== undefined);
+  const unique = [...new Set(nouns)];
+  return unique.length > 0 ? `Delete and discard the ${unique.join(" and ")}` : "Delete anyway";
+}
+
+/** The port this blocker offers to clear, or `null` when there's nothing to
+ * act on. Only a `foreignPort` blocker is something `slot_stop_port` will
+ * touch, and only if its number survived — a port blocker without one still
+ * renders its remedy as text, it just gets no button. */
+export function stoppablePort(blocker: SlotBlocker): number | null {
+  if (blocker.kind !== "foreignPort") return null;
+  return typeof blocker.port === "number" ? blocker.port : null;
+}
+
 /** True when a PR's merge doesn't actually make its folder safe to delete:
  * the PR's content merged, but the checkout itself still has uncommitted
  * changes or commits that haven't landed on `comparedBase` yet
@@ -1565,6 +1622,12 @@ export type RepoCandidate = { name: string; dir: string; active: boolean };
 
 /** What a repo-remove confirmation (or immediate removal) needs to act on. */
 export type RemoveTarget = { label: string; dirs: string[]; sessionIds: string[] };
+
+/** A worktree deletion the removal guards refused. Keeps the original
+ * `target` so every remedy in the dialog (stop the port's process, force)
+ * retries the same removal — the user shouldn't have to find the row again
+ * after resolving what blocked it. */
+export type BlockedDelete = { target: RemoveTarget; name: string; blockers: SlotBlocker[] };
 
 /** A session about to get Claude launched in it, awaiting the "what are you
  * working toward?" prompt (see `commitStartClaude`). `restart` runs the

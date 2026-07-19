@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+use crate::guards::{ForeignPort, RmBlocked};
 use crate::{TemplateError, envfile, layout};
 
 pub const TEMPLATE_SIDECAR: &str = "slot-env.template";
@@ -79,8 +80,14 @@ pub enum OpsError {
     )]
     BrokenWorktree { name: String },
 
-    #[error("refused to remove {name}:\n  {}", .reasons.join("\n  "))]
-    RemovalBlocked { name: String, reasons: Vec<String> },
+    // NOTE: a guard refusal is deliberately NOT here — see [`RemoveOutcome`].
+    #[error(transparent)]
+    Port(#[from] crate::ports::PortError),
+
+    #[error(
+        "port {port} is not claimed by {name} — refusing to signal a process this slot does not own"
+    )]
+    PortNotClaimed { name: String, port: u16 },
 }
 
 pub type Result<T> = std::result::Result<T, OpsError>;
@@ -967,11 +974,38 @@ pub struct RemovedSlot {
     pub messages: Vec<String>,
 }
 
+/// How a removal ended.
+///
+/// A guard refusal is an `Ok` variant, not an [`OpsError`]: it is an expected
+/// answer with a next step attached (stash it, stop the dev server, re-run
+/// with force), not a failure. Modeling it as an error made every consumer
+/// destructure it straight back out — the app to build a dialog from it, the
+/// CLI to attach remedies, `clean_slots` to list it as a keep-reason — so
+/// three call sites each re-derived "this error isn't an error", and the one
+/// thing an error buys you (a `Display` for the boundary) went unused. Errors
+/// here stay for what the user genuinely cannot proceed past: a bad path, a
+/// broken worktree, git falling over.
+pub enum RemoveOutcome {
+    Removed(RemovedSlot),
+    Blocked {
+        name: String,
+        blocked: Vec<RmBlocked>,
+    },
+}
+
 /// Remove a slot: guarded (clean tree, no commits unreachable from a branch
 /// or remote, nothing foreign on its claimed ports), then docker compose
 /// down -v, anchored container/volume sweep, `git worktree remove`. Shared by
 /// `tt slot rm` and the app's `slot_remove` command.
-pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
+///
+/// `before_removal` runs once the guards have passed (or been forced) and the
+/// removal is really about to happen — after the last return that leaves the
+/// slot untouched, before the first destructive step. The app hangs its
+/// kill-the-slot's-PTYs step here so a *refused* removal never costs a live
+/// session; the CLI passes `|| {}`. Deliberately not part of `RemoveOpts`:
+/// it's a phase marker in this function's control flow, not a removal
+/// setting.
+pub fn remove_slot(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<RemoveOutcome> {
     let sr = discover_root(opts.root.as_deref())?;
     let name = opts.name.clone();
     if name == "primary" || sr.checkout.file_name().and_then(|n| n.to_str()) == Some(&name) {
@@ -1000,8 +1034,13 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
             .push("fetch --prune failed (offline?) — using local refs for guard checks".into()),
     }
 
+    // One `git status --porcelain` answers both questions below — whether git
+    // works in there at all, and how dirty the tree is. `clean_slots` calls
+    // this for every merged slot, so a second spawn here is per-slot waste.
+    let status = git_slot(&dir, &["status", "--porcelain"]).ok().filter(|o| o.ok());
+
     // broken worktree: git can't even report status
-    if git_slot(&dir, &["status", "--porcelain"]).map(|o| !o.ok()).unwrap_or(true) {
+    let Some(status) = status else {
         if !opts.force {
             return Err(OpsError::BrokenWorktree { name });
         }
@@ -1009,17 +1048,16 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
             "skipping guards (--force): worktree is broken — removing directory + registration"
                 .to_string(),
         );
+        before_removal();
         docker_cleanup(&name, &dir, &mut messages);
         fs::remove_dir_all(&dir)
             .map_err(|e| OpsError::Io(format!("cannot remove {dir_s}: {e}")))?;
         let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
         state_cleanup(state_scope.as_deref(), &mut messages);
-        return Ok(RemovedSlot { name, dir, messages });
-    }
+        return Ok(RemoveOutcome::Removed(RemovedSlot { name, dir, messages }));
+    };
 
-    let dirty = git_slot(&dir, &["status", "--porcelain"])
-        .map(|o| crate::guards::dirty_entry_count(&o.stdout))
-        .unwrap_or(0);
+    let dirty = crate::guards::dirty_entry_count(&status.stdout);
     let unreachable = git_slot(
         &dir,
         &[
@@ -1035,25 +1073,33 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
     .filter(|o| o.ok())
     .and_then(|o| crate::guards::unreachable_commit_count(&o.stdout))
     .unwrap_or(0);
-    let env_text = fs::read_to_string(dir.join(".env")).unwrap_or_default();
-    let foreign: Vec<u16> = envfile::port_claims(&env_text)
+    // Identify the holder of each foreign port, not just its number: the
+    // blocker is only actionable if the user can tell which process to stop
+    // (see `ports::holder`). Only for ports that actually block — naming the
+    // holder costs two subprocesses, and the common case is no foreign
+    // listener at all. On --force the guards are being skipped anyway, so
+    // the name would only decorate a "skipping guard" log line — not worth
+    // the spawns.
+    let foreign: Vec<ForeignPort> = claimed_ports(&dir)
         .into_iter()
         .filter(|&p| port_occupied(p) && !docker_owns_port(&name, p))
+        .map(|port| ForeignPort {
+            port,
+            holder: if opts.force { None } else { crate::ports::holder(port) },
+        })
         .collect();
 
     let blocked = crate::guards::check_removal(dirty, unreachable, &foreign);
     if !blocked.is_empty() {
         if !opts.force {
-            return Err(OpsError::RemovalBlocked {
-                name,
-                reasons: blocked.iter().map(ToString::to_string).collect(),
-            });
+            return Ok(RemoveOutcome::Blocked { name, blocked });
         }
         for reason in &blocked {
             messages.push(format!("skipping guard (--force): {reason}"));
         }
     }
 
+    before_removal();
     docker_cleanup(&name, &dir, &mut messages);
 
     let remove = if opts.force {
@@ -1078,7 +1124,42 @@ pub fn remove_slot(opts: &RemoveOpts) -> Result<RemovedSlot> {
     }
     let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
     state_cleanup(state_scope.as_deref(), &mut messages);
-    Ok(RemovedSlot { name, dir, messages })
+    Ok(RemoveOutcome::Removed(RemovedSlot { name, dir, messages }))
+}
+
+/// The ports a checkout claims, from its rendered `.env`.
+fn claimed_ports(dir: &Path) -> BTreeSet<u16> {
+    envfile::port_claims(&fs::read_to_string(dir.join(".env")).unwrap_or_default())
+}
+
+/// Stop whatever is listening on `port` in the slot named `name` under `root`
+/// — the remedy for [`RmBlocked::ForeignPortListener`], so a stale dev server
+/// can be cleared from the app instead of sending the user to a terminal.
+///
+/// Takes the slot's identity rather than [`RemoveOpts`]: this removes nothing,
+/// and threading a `force` flag through a function that ignores it invites a
+/// later caller to believe forcing means something here.
+///
+/// The claim check is the whole safety story and is not optional: `port` must
+/// appear in *this slot's* rendered `.env`. Ports are claimed per-checkout, so
+/// a claimed port that's occupied is this slot's own orphan by construction —
+/// while an unclaimed one is somebody else's, quite possibly a sibling slot's
+/// working dev server, and this function would kill its entire process group.
+/// Same reasoning as `scripts/slot-port.mjs`'s "never call `killPort` on a
+/// scanned/shared port".
+pub fn stop_slot_port(root: Option<&Path>, name: &str, port: u16) -> Result<crate::ports::Stopped> {
+    let sr = discover_root(root)?;
+    let dir = sr.slot_dir(name);
+    if !dir.is_dir() {
+        return Err(OpsError::NoSuchSlot {
+            name: name.to_string(),
+            slots_dir: sr.slots_dir().display().to_string(),
+        });
+    }
+    if !claimed_ports(&dir).contains(&port) {
+        return Err(OpsError::PortNotClaimed { name: name.to_string(), port });
+    }
+    Ok(crate::ports::stop_listeners(port)?)
 }
 
 /// Delete the removed slot's instance-state directories (agentboard
@@ -1267,8 +1348,8 @@ pub fn clean_slots(
             continue;
         }
         let rm = RemoveOpts { root: Some(sr.checkout.clone()), name: name.clone(), force: false };
-        match remove_slot(&rm) {
-            Ok(r) => {
+        match remove_slot(&rm, || {}) {
+            Ok(RemoveOutcome::Removed(r)) => {
                 let mut messages = r.messages;
                 match git_checkout(&sr.checkout, &["branch", "-D", &branch]) {
                     Ok(out) if out.ok() => messages.push(format!("deleted branch {branch}")),
@@ -1284,7 +1365,9 @@ pub fn clean_slots(
                     dir: r.dir,
                 });
             }
-            Err(OpsError::RemovalBlocked { reasons, .. }) => keep(name, branch, reasons),
+            Ok(RemoveOutcome::Blocked { blocked, .. }) => {
+                keep(name, branch, blocked.iter().map(ToString::to_string).collect())
+            }
             Err(e) => keep(name, branch, vec![e.to_string()]),
         }
     }

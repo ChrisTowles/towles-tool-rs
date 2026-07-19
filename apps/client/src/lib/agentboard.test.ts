@@ -14,6 +14,9 @@ import {
   fmtWaitingAge,
   folderActionableItems,
   folderRemovableSlot,
+  forceDeleteLabel,
+  stoppablePort,
+  type SlotBlocker,
   folderSafeToDelete,
   hydrateWins,
   isDiffPane,
@@ -188,6 +191,81 @@ describe("folderRemovableSlot", () => {
     expect(folderRemovableSlot(folder({ isWorktree: true }))).toBe(true);
     expect(folderRemovableSlot(folder({}))).toBe(false); // main checkout
     expect(folderRemovableSlot(folder({ isWorktree: true, dirMissing: true }))).toBe(false); // ghost
+  });
+});
+
+const blocker = (over: Partial<SlotBlocker> = {}): SlotBlocker => ({
+  kind: "dirtyTree",
+  message: "slot working tree is not clean (1 changed/untracked path(s))",
+  remedy: "Commit or stash the changes to keep them.",
+  losesWork: true,
+  ...over,
+});
+
+const portBlocker = (port: number | null): SlotBlocker =>
+  blocker({
+    kind: "foreignPort",
+    message: `port ${port} in use`,
+    remedy: "Stop it.",
+    losesWork: false,
+    port,
+  });
+
+describe("forceDeleteLabel", () => {
+  it("names what is discarded, so the consequence is in the button", () => {
+    expect(forceDeleteLabel([blocker()])).toBe("Delete and discard the changes");
+    expect(forceDeleteLabel([blocker({ kind: "unreachableCommits" })])).toBe(
+      "Delete and discard the commits",
+    );
+    expect(forceDeleteLabel([blocker(), blocker({ kind: "unreachableCommits" })])).toBe(
+      "Delete and discard the changes and commits",
+    );
+  });
+
+  it("does not claim work is lost when only a stray listener blocks", () => {
+    // Forcing past a dev server orphans a process; it destroys nothing, and
+    // borrowing the destructive wording here would train the user to ignore it.
+    const port = blocker({ kind: "foreignPort", losesWork: false, port: 4424 });
+    expect(forceDeleteLabel([port])).toBe("Delete anyway");
+    expect(forceDeleteLabel([])).toBe("Delete anyway");
+  });
+
+  it("keys off losesWork, not the kind", () => {
+    expect(forceDeleteLabel([blocker({ kind: "somethingNew", losesWork: false })])).toBe(
+      "Delete anyway",
+    );
+  });
+
+  it("stays unspecific about a guard it doesn't recognize", () => {
+    // A newer backend's losesWork guard must not be described as discarding
+    // "commits" just because that was the last branch available.
+    expect(forceDeleteLabel([blocker({ kind: "liveContainer", losesWork: true })])).toBe(
+      "Delete anyway",
+    );
+    // …but a recognized kind alongside it is still named.
+    expect(forceDeleteLabel([blocker({ kind: "liveContainer", losesWork: true }), blocker()])).toBe(
+      "Delete and discard the changes",
+    );
+  });
+
+  it("names each discarded noun once, however many blockers carry it", () => {
+    // Two dirty-tree blockers can't produce "the changes and changes".
+    expect(forceDeleteLabel([blocker(), blocker()])).toBe("Delete and discard the changes");
+  });
+});
+
+describe("stoppablePort", () => {
+  it("offers the port of a foreignPort blocker", () => {
+    expect(stoppablePort(portBlocker(4424))).toBe(4424);
+  });
+
+  it("offers nothing when there is nothing to pass to slot_stop_port", () => {
+    // A port blocker whose number didn't survive still renders its remedy as
+    // text — it just gets no button.
+    expect(stoppablePort(portBlocker(null))).toBeNull();
+    // And a port on a non-port blocker is not an action: only `foreignPort`
+    // is something `slot_stop_port` will act on.
+    expect(stoppablePort(blocker({ port: 4424 }))).toBeNull();
   });
 });
 

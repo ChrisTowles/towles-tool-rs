@@ -8,6 +8,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use tauri::Manager;
 
+use tt_slots::guards::RmBlocked;
 use tt_slots::ops::{self, CreateOpts, RemoveOpts};
 use tt_slots::pasted::{self, PastedImage};
 
@@ -221,23 +222,73 @@ pub async fn slot_run_setup(dir: String) -> Result<Option<String>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The wire form of [`ops::RemoveOutcome`] — see its doc for why a guard
+/// refusal is an `Ok` variant rather than an error. Serialized as a tagged
+/// union so the frontend gets real narrowing on `status`.
+#[derive(Serialize, Clone)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum SlotRemoveOutcome {
+    Removed {
+        name: String,
+        messages: Vec<String>,
+    },
+    Blocked {
+        name: String,
+        blockers: Vec<Blocker>,
+    },
+}
+
+/// One reason a removal was refused, with everything the UI needs to render
+/// it as an actionable row.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct SlotRemoved {
-    pub name: String,
-    pub messages: Vec<String>,
+pub struct Blocker {
+    /// Stable discriminant (`dirtyTree` / `unreachableCommits` /
+    /// `foreignPort`) — the UI branches on this, never on message text.
+    pub kind: String,
+    /// What's wrong. Already names the port's holder where there is one, so
+    /// there's no separate holder field — the UI renders these two strings
+    /// and nothing else.
+    pub message: String,
+    /// What to do about it.
+    pub remedy: String,
+    /// Whether forcing past this destroys work that exists nowhere else.
+    pub loses_work: bool,
+    /// Set for `foreignPort` — the argument to `slot_stop_port`.
+    pub port: Option<u16>,
+}
+
+impl From<&RmBlocked> for Blocker {
+    fn from(blocked: &RmBlocked) -> Self {
+        Blocker {
+            kind: blocked.kind().to_string(),
+            message: blocked.to_string(),
+            remedy: blocked.remedy(),
+            loses_work: blocked.loses_work(),
+            port: blocked.port(),
+        }
+    }
 }
 
 /// Remove the worktree slot at `dir`, guarded — a dirty tree, commits
 /// unreachable from any branch/remote, or a foreign listener on the slot's
-/// claimed ports block with an explanatory error (no force path in the app;
-/// use `tt slot rm --force`). Before touching the worktree, kills the
-/// folder's live PTYs (SIGHUPing any Claude Code session running inside,
-/// then SIGKILLing anything else still sharing the shell's session — see
-/// `terminal::kill_session_stragglers`) so a backgrounded job that dodged the
-/// shell's own signal forwarding doesn't survive as an orphan on a deleted
-/// cwd — but does NOT drop the session/window/pane records yet. Those are
-/// only removed (and persisted) once `ops::remove_slot` has actually
+/// claimed ports come back as [`SlotRemoveOutcome::Blocked`] with a typed
+/// blocker per reason, which the app renders as a dialog offering each one's
+/// remedy (stop the port's process via [`slot_stop_port`]) plus a force.
+/// `force: true` is that force — it skips every guard, so it discards
+/// uncommitted changes and unreachable commits for good; only call it behind
+/// an explicit confirmation that names what's being lost.
+/// Once the guards have passed and the removal is really happening — via
+/// `ops::remove_slot`'s `before_removal` hook, so a *refused* removal never
+/// costs a live session — kills the folder's live PTYs (SIGHUPing any Claude
+/// Code session running inside, then SIGKILLing anything else still sharing
+/// the shell's session — see `terminal::kill_session_stragglers`) so a
+/// backgrounded job that dodged the shell's own signal forwarding doesn't
+/// survive as an orphan on a deleted cwd. A side effect of killing only past
+/// the guards: a dev server running in the slot's own pane now surfaces as a
+/// `foreignPort` blocker (one "Stop it" click) instead of dying silently
+/// mid-removal. Does NOT drop the session/window/pane records yet — those
+/// are only removed (and persisted) once `ops::remove_slot` has actually
 /// succeeded: dropping them up front used to leave the rail looking like a
 /// clean removal — panes gone — while a blocked or failed removal left the
 /// worktree sitting on disk forever with nothing left on the rail to retry
@@ -246,7 +297,11 @@ pub struct SlotRemoved {
 /// resources, the worktree registration, and the slot's agentboard tracking.
 /// Long-running → off the main thread.
 #[tauri::command]
-pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemoved, String> {
+pub async fn slot_remove(
+    app: tauri::AppHandle,
+    dir: String,
+    force: bool,
+) -> Result<SlotRemoveOutcome, String> {
     use tracing::Instrument as _;
 
     // A span (not a bare event) so the event log carries this command's own
@@ -255,45 +310,81 @@ pub async fn slot_remove(app: tauri::AppHandle, dir: String) -> Result<SlotRemov
     // it, with no record of the command boundary itself. Correlate against
     // `window.focus_changed` to see whether an OS focus change landed inside
     // this window (see the worktree-delete-focus investigation).
-    let span = tracing::info_span!("slot_remove", dir = %dir, outcome = tracing::field::Empty);
+    //
+    // `outcome` distinguishes all three endings, not just ok/err: a guarded
+    // refusal is the one the user is most likely to ask about later ("why
+    // wouldn't it delete?"), and it looks identical to success in a log that
+    // only records `is_ok`. `force` rides along because a forced removal is
+    // the only entry in this log that can have destroyed uncommitted work.
+    let span = tracing::info_span!(
+        "slot_remove",
+        dir = %dir,
+        force,
+        outcome = tracing::field::Empty,
+        blockers = tracing::field::Empty,
+    );
     async move {
-        let result = slot_remove_inner(app, dir).await;
-        tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "err" });
+        let result = slot_remove_inner(app, dir, force).await;
+        let outcome = match &result {
+            Ok(SlotRemoveOutcome::Removed { .. }) => "ok",
+            Ok(SlotRemoveOutcome::Blocked { blockers, .. }) => {
+                let kinds: Vec<&str> = blockers.iter().map(|b| b.kind.as_str()).collect();
+                tracing::Span::current().record("blockers", kinds.join(","));
+                "blocked"
+            }
+            Err(_) => "err",
+        };
+        tracing::Span::current().record("outcome", outcome);
         result
     }
     .instrument(span)
     .await
 }
 
-async fn slot_remove_inner(app: tauri::AppHandle, dir: String) -> Result<SlotRemoved, String> {
+async fn slot_remove_inner(
+    app: tauri::AppHandle,
+    dir: String,
+    force: bool,
+) -> Result<SlotRemoveOutcome, String> {
     let mut messages = Vec::new();
-    {
-        let ab = app.state::<crate::agentboard::Ab>();
-        let ids = ab.engine.lock().unwrap().session_ids_for(&dir);
-        if !ids.is_empty() {
-            let term_state = app.state::<crate::terminal::TermState>();
-            for id in &ids {
-                term_state.kill(id);
+    let kill_app = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let (checkout, name) = resolve_slot(&dir)?;
+        let opts = RemoveOpts { root: Some(checkout), name, force };
+        // The PTY kill rides `before_removal`, not the top of this command:
+        // the guards run with the panes alive, so a refusal (the dialog the
+        // user can back out of) never costs a live Claude session — only a
+        // removal that is really happening does. Locks are scoped tight per
+        // this crate's rule: never hold the engine lock across a subprocess.
+        ops::remove_slot(&opts, || {
+            let ids = {
+                let ab = kill_app.state::<crate::agentboard::Ab>();
+                let engine = ab.engine.lock().unwrap();
+                engine.session_ids_for(&dir)
+            };
+            if !ids.is_empty() {
+                let term_state = kill_app.state::<crate::terminal::TermState>();
+                for id in &ids {
+                    term_state.kill(id);
+                }
             }
-        }
-    }
-
-    let removed = tauri::async_runtime::spawn_blocking(move || {
-        let path = PathBuf::from(&dir);
-        let sr = ops::discover_root(Some(&path)).map_err(|e| e.to_string())?;
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| format!("bad slot path {dir}"))?
-            .to_string();
-        if sr.slot_dir(&name) != path {
-            return Err(format!("{dir} is not a worktree slot of {}", sr.repo));
-        }
-        ops::remove_slot(&RemoveOpts { root: Some(sr.checkout.clone()), name, force: false })
-            .map_err(|e| e.to_string())
+        })
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("slot task failed: {e}"))??;
+
+    // A refusal ends here: nothing was removed, so none of the rail teardown
+    // below applies — the panes stay put for the user to retry from.
+    let removed = match outcome {
+        ops::RemoveOutcome::Removed(removed) => removed,
+        ops::RemoveOutcome::Blocked { name, blocked } => {
+            return Ok(SlotRemoveOutcome::Blocked {
+                name,
+                blockers: blocked.iter().map(Blocker::from).collect(),
+            });
+        }
+    };
 
     messages.extend(removed.messages);
     let ab = app.state::<crate::agentboard::Ab>();
@@ -316,5 +407,90 @@ async fn slot_remove_inner(app: tauri::AppHandle, dir: String) -> Result<SlotRem
     // off the rail on the next recompute, so don't make the user wait a poll.
     ab.emit.notify_one();
     refresh_all_git_info_in_background(&app);
-    Ok(SlotRemoved { name: removed.name, messages })
+    Ok(SlotRemoveOutcome::Removed { name: removed.name, messages })
+}
+
+/// Resolve a slot directory to its checkout root and slot name, rejecting
+/// anything that isn't a worktree slot of its own checkout — shared by
+/// `slot_remove` and `slot_stop_port` so both agree on what "this slot"
+/// means before either acts on it. Returns the identity only; `slot_remove`
+/// attaches its own `force` when building [`RemoveOpts`], so a non-removal
+/// caller never constructs a removal config with a meaningless flag.
+fn resolve_slot(dir: &str) -> Result<(PathBuf, String), String> {
+    let path = PathBuf::from(dir);
+    let sr = ops::discover_root(Some(&path)).map_err(|e| e.to_string())?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("bad slot path {dir}"))?
+        .to_string();
+    if sr.slot_dir(&name) != path {
+        return Err(format!("{dir} is not a worktree slot of {}", sr.repo));
+    }
+    Ok((sr.checkout.clone(), name))
+}
+
+/// Stop whatever is listening on `port` — the remedy the app offers for a
+/// `foreignPort` blocker, so a stale dev server doesn't send the user to a
+/// terminal to finish a delete they started in the app. Returns the note to
+/// show; the caller retries the removal afterwards.
+///
+/// `ops::stop_slot_port` refuses any port the slot doesn't claim in its own
+/// `.env`, which is what keeps this from being a "kill any port" primitive
+/// reachable from the UI. SIGTERM, then SIGKILL if the port is still held.
+#[tauri::command]
+pub async fn slot_stop_port(dir: String, port: u16) -> Result<String, String> {
+    use tracing::Instrument as _;
+
+    // A user-initiated action that signals processes: it gets its own record
+    // (see the telemetry rule in the root CLAUDE.md) — after the fact, "the
+    // dev server died" should be answerable from the log, not a repro.
+    // `.instrument` rather than a held `enter()` guard, same as `slot_remove`:
+    // an entered span across an `.await` stays entered while the task is
+    // parked, attributing whatever else runs on this thread to it.
+    let span = tracing::info_span!(
+        "slot_stop_port",
+        dir = %dir,
+        port,
+        outcome = tracing::field::Empty,
+        pgids = tracing::field::Empty,
+    );
+    async move {
+        let stopped = tauri::async_runtime::spawn_blocking(move || {
+            let (checkout, name) = resolve_slot(&dir)?;
+            ops::stop_slot_port(Some(&checkout), &name, port).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("slot task failed: {e}"))?;
+
+        let span = tracing::Span::current();
+        match stopped {
+            Ok(stopped) => {
+                let count = stopped.pgids.len();
+                let s = if count == 1 { "" } else { "s" };
+                // One decision for both the log field and the toast, so they
+                // can't drift into describing the same event differently.
+                // Nothing signaled = the port was already free, which happens
+                // when the user quit the dev server themselves after reading
+                // the blocker.
+                let (outcome, message) = if count == 0 {
+                    ("already_free", format!("Port {port} was already free"))
+                } else if stopped.graceful {
+                    ("terminated", format!("Port {port}: stopped {count} process group{s}"))
+                } else {
+                    ("killed", format!("Port {port}: force-killed {count} process group{s}"))
+                };
+                let pgids: Vec<String> = stopped.pgids.iter().map(i32::to_string).collect();
+                span.record("pgids", pgids.join(","));
+                span.record("outcome", outcome);
+                Ok(message)
+            }
+            Err(e) => {
+                span.record("outcome", "err");
+                Err(e)
+            }
+        }
+    }
+    .instrument(span)
+    .await
 }

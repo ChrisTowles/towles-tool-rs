@@ -11,7 +11,7 @@ use std::fs;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
-use tt_slots::ops::{self, CleanOpts, CreateOpts, OpsError, RemoveOpts, SlotRoot};
+use tt_slots::ops::{self, CleanOpts, CreateOpts, OpsError, RemoveOpts, RemoveOutcome, SlotRoot};
 use tt_slots::{envfile, guards};
 
 use crate::cli::SlotCommands;
@@ -131,7 +131,10 @@ fn cmd_hook_remove() -> Result<(), String> {
         return Ok(());
     }
     let opts = RemoveOpts { root: Some(path.clone()), name, force: false };
-    let removed = ops::remove_slot(&opts).map_err(|e| e.to_string())?;
+    let removed = match ops::remove_slot(&opts, || {}).map_err(|e| e.to_string())? {
+        RemoveOutcome::Removed(r) => r,
+        RemoveOutcome::Blocked { name, blocked } => return Err(refusal(&name, &blocked)),
+    };
     for message in &removed.messages {
         eprintln!("tt slot: {message}");
     }
@@ -326,7 +329,10 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
 
 fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
     let opts = RemoveOpts { root: root.map(Path::to_path_buf), name: name.to_string(), force };
-    let removed = ops::remove_slot(&opts).map_err(|e| e.to_string())?;
+    let removed = match ops::remove_slot(&opts, || {}).map_err(|e| e.to_string())? {
+        RemoveOutcome::Removed(r) => r,
+        RemoveOutcome::Blocked { name, blocked } => return Err(refusal(&name, &blocked)),
+    };
     for message in &removed.messages {
         ui::warning(message);
     }
@@ -343,6 +349,24 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
     }
     ui::success(&format!("removed {} (ports released with its .env)", removed.name));
     Ok(())
+}
+
+/// Render a guard refusal for the terminal: each reason paired with its
+/// remedy, then a closing note about `--force`. The reason alone says what's
+/// wrong but not what to do next, which is the difference between a dead end
+/// and a decision. Sole owner of this text — `RemoveOutcome::Blocked` carries
+/// typed reasons precisely so each shell can format them its own way.
+fn refusal(name: &str, blocked: &[tt_slots::RmBlocked]) -> String {
+    let mut out = format!("refused to remove {name}:");
+    for reason in blocked {
+        out.push_str(&format!("\n  {reason}\n    → {}", reason.remedy()));
+    }
+    let loses_work = blocked.iter().any(tt_slots::RmBlocked::loses_work);
+    out.push_str(&format!(
+        "\n  Re-run with --force to remove anyway{}.",
+        if loses_work { " — this discards the work above for good" } else { "" }
+    ));
+    out
 }
 
 fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), String> {

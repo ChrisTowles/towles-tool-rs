@@ -32,6 +32,7 @@ console = "0.15.11"
 dirs = "6.0.0"
 indexmap = "2.7.1"
 inquire = "0.7.5"
+libc = "0.2"
 # Builds libghostty-vt from source at the crate's pinned ghostty commit;
 # requires zig 0.15.x on PATH (dotfiles functions/18-zig.sh installs it).
 libghostty-vt = "0.2.0"

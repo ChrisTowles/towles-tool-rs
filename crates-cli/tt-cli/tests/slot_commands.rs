@@ -400,12 +400,17 @@ fn rm_guards_dirty_and_orphan_commits() {
     tt().args(["slot", "new", "-b", "feat/work", "--root", &root_s]).assert().success();
     let slot = slot_dir(&checkout, "feat-work");
 
-    // dirty tree refuses
+    // dirty tree refuses — and says what to do about it, not just what's
+    // wrong: a refusal with no next step is the dead end this output exists
+    // to avoid (the app's blocked-delete dialog renders the same two halves).
     std::fs::write(slot.join("junk.txt"), "wip").unwrap();
     tt().args(["slot", "rm", "feat-work", "--root", &root_s])
         .assert()
         .failure()
-        .stderr(contains("not clean"));
+        .stderr(contains("not clean"))
+        .stderr(contains("Commit or stash"))
+        .stderr(contains("--force"))
+        .stderr(contains("discards the work above"));
     std::fs::remove_file(slot.join("junk.txt")).unwrap();
 
     // a commit on a detached HEAD would be orphaned by removal → refused

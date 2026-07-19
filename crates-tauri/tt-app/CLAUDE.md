@@ -22,8 +22,11 @@ follows is a cross-cutting rule that spans multiple files.
   `TermState`'s lock as map-surgery-only — don't hold it across anything
   that can block.
 - **`slot_remove` kills a folder's PTYs before touching its worktree on
-  disk** (`slots.rs`) — do the same ordering for any new slot-mutating
-  command, or you'll orphan a shell pointed at a deleted cwd.
+  disk — but only once the removal guards have passed** (via
+  `ops::remove_slot`'s `before_removal` hook, `slots.rs`). Both halves are
+  load-bearing for any new slot-mutating command: kill before deleting or
+  you'll orphan a shell pointed at a deleted cwd; kill only past the guards
+  or a *refused* removal costs a live session the guard existed to protect.
 - **Task-status mutations must route through `spawn_gh_status_sync`**
   (`store.rs`) — the single call site for gh close/reopen, added after a
   real drift bug (#246). Don't add a second path that flips status without
