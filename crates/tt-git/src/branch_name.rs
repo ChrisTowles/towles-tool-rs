@@ -7,37 +7,31 @@
 /// `-`. Note the regex `[^0-9a-zA-Z_-]` is ASCII-only, so non-ASCII letters (e.g. `ü`)
 /// become `-` — matching the TS byte-for-byte.
 pub fn create_branch_name_from_issue(number: u64, title: &str) -> String {
-    let mut slug = title.to_lowercase();
-    let trimmed = slug.trim().to_string();
-    slug = trimmed.replace(' ', "-");
+    format!("feature/{number}-{}", slug(title))
+}
 
-    // Replace anything outside [0-9a-zA-Z_-] with '-'.
-    slug = slug
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
-        .collect();
-
-    // Collapse runs of '-'.
-    let mut collapsed = String::with_capacity(slug.len());
-    let mut prev_dash = false;
-    for c in slug.chars() {
-        if c == '-' {
-            if !prev_dash {
-                collapsed.push('-');
-            }
-            prev_dash = true;
-        } else {
-            collapsed.push(c);
-            prev_dash = false;
+/// The slug rules on their own, without a prefix: lowercase, trim, spaces to
+/// `-`, anything outside `[0-9a-zA-Z_-]` to `-`, collapse runs of `-`, strip
+/// trailing `-` (leading dashes are preserved, matching the TS).
+///
+/// Shared rather than re-derived: `tt-slots`' suggestion fallback and the
+/// new-task dialog's own branch field both want exactly this, and a slug rule
+/// maintained in parallel copies drifts.
+pub fn slug(text: &str) -> String {
+    let lowered = text.to_lowercase();
+    let mut out = String::with_capacity(lowered.len());
+    for c in lowered.trim().chars() {
+        let c = if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' };
+        // Collapse runs of '-'.
+        if c == '-' && out.ends_with('-') {
+            continue;
         }
+        out.push(c);
     }
-
-    // Strip trailing '-' (leading dashes are preserved, matching the TS).
-    while collapsed.ends_with('-') {
-        collapsed.pop();
+    while out.ends_with('-') {
+        out.pop();
     }
-
-    format!("feature/{number}-{collapsed}")
+    out
 }
 
 #[cfg(test)]

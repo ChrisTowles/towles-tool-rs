@@ -14,24 +14,22 @@
 //!
 //! The shape of the answer is the CLI's problem, not ours: `--json-schema`
 //! makes `claude` route the model through a structured-output tool and hand
-//! back a validated object in its `--output-format json` envelope. The text
-//! paths below only exist for a CLI that ignores those flags. And if the call
-//! fails outright, the branch/goal are derived locally rather than surfaced as
-//! an error — a "Suggest" button that can only ever fill the fields in.
+//! back a validated object in its `--output-format json` envelope, so there's
+//! no JSON-out-of-prose extraction here. Anything that still goes wrong lands
+//! on [`local_fallback`] instead of an error — a "Suggest" button that can
+//! only ever fill the fields in.
 
 use std::path::Path;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Generous — a cold `claude` CLI (auth check, MCP startup) can take a while,
 /// but this is a manual, one-shot user action, not a background poll.
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How much of the goal the local fallback slugs into a branch name — mirrors
-/// the dialog's own `BRANCH_SLUG_SOURCE_CHARS`, so a fallback branch looks
-/// like the one the field already had rather than a surprise.
+/// Mirrors the dialog's own `BRANCH_SLUG_SOURCE_CHARS`.
 const BRANCH_SLUG_SOURCE_CHARS: usize = 50;
 
 /// JSON Schema handed to `claude -p --json-schema`, which makes the CLI itself
@@ -48,7 +46,7 @@ const SUGGESTION_SCHEMA: &str = r#"{
   "additionalProperties": false
 }"#;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Suggestion {
     pub branch: String,
     pub goal: String,
@@ -58,8 +56,13 @@ pub struct Suggestion {
 /// `Some(why)` when `claude` couldn't be reached or answered unusably and the
 /// branch/goal were derived locally instead — the dialog shows that as a note,
 /// not an error, because the fields still got filled with something sane.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializes flat (`{branch, goal, fallback}`) so the Tauri command can hand
+/// it straight to the dialog instead of restating the fields in a parallel
+/// payload type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Suggested {
+    #[serde(flatten)]
     pub suggestion: Suggestion,
     pub fallback: Option<String>,
 }
@@ -85,11 +88,9 @@ pub type Result<T> = std::result::Result<T, SuggestError>;
 /// the prompt and reading them is explicitly allowed, unlike every other
 /// file.
 ///
-/// Never fails while the user gave us anything to work with: if `claude` is
-/// missing, times out, or answers unusably, the branch/goal are derived
-/// locally from the goal text and returned with a `fallback` note. Only an
-/// image-only brief — nothing to slug — can still error, and even then the
-/// dialog's typed fields are left untouched.
+/// Never fails while the user gave us anything to slug (see [`Suggested`]).
+/// Only an image-only brief can still error, and even then the dialog's typed
+/// fields are left untouched.
 pub fn suggest(cwd: &Path, goal: &str, images: &[String]) -> Result<Suggested> {
     match ask_claude(cwd, goal, images) {
         Ok(suggestion) => Ok(Suggested { suggestion, fallback: None }),
@@ -101,20 +102,27 @@ pub fn suggest(cwd: &Path, goal: &str, images: &[String]) -> Result<Suggested> {
 
 fn ask_claude(cwd: &Path, goal: &str, images: &[String]) -> Result<Suggestion> {
     let prompt = prompt_for(goal, images);
-    let args = [
-        "-p",
-        &prompt,
-        "--output-format",
-        "json",
-        "--json-schema",
-        SUGGESTION_SCHEMA,
-    ];
-    let out = tt_exec::run_in_dir_with_timeout("claude", &args, cwd, CLAUDE_TIMEOUT)
-        .map_err(|e| SuggestError::Exec(e.to_string()))?;
+    let out =
+        tt_exec::run_in_dir_with_timeout("claude", &claude_args(&prompt), cwd, CLAUDE_TIMEOUT)
+            .map_err(|e| SuggestError::Exec(e.to_string()))?;
     if !out.ok() {
         return Err(SuggestError::Failed(out.stderr.trim().to_string()));
     }
     parse_response(&out.stdout)
+}
+
+/// Split out so a test can assert the flags that make the answer's shape the
+/// CLI's problem — asserting against [`SUGGESTION_SCHEMA`] alone would pass
+/// even if `--json-schema` were dropped from the command.
+fn claude_args(prompt: &str) -> [&str; 6] {
+    [
+        "-p",
+        prompt,
+        "--output-format",
+        "json",
+        "--json-schema",
+        SUGGESTION_SCHEMA,
+    ]
 }
 
 /// The `--output-format json` envelope. Only the three fields that decide the
@@ -123,61 +131,44 @@ fn ask_claude(cwd: &Path, goal: &str, images: &[String]) -> Result<Suggestion> {
 struct Envelope {
     #[serde(default)]
     is_error: bool,
-    /// The schema-validated object, when the CLI enforced `--json-schema`.
+    /// The schema-validated object `--json-schema` guarantees.
     #[serde(default)]
     structured_output: Option<Suggestion>,
-    /// The assistant's final text — also the error message when `is_error`.
+    /// Only read for its error message, when `is_error`.
     #[serde(default)]
     result: Option<String>,
 }
 
-/// Prefer the CLI's schema-validated `structured_output`; fall back through
-/// the envelope's `result` text and then the raw stdout, so an older `claude`
-/// that ignores `--json-schema` (or prints plain text) still works.
+/// Read the envelope, and nothing else. A `claude` too old for these flags
+/// exits non-zero on the unknown argument and never reaches here, so there is
+/// no older-CLI text shape worth carrying — and a schema regression should
+/// surface as a fallback the user can see, not be silently rescued by a
+/// lenient re-read.
 fn parse_response(stdout: &str) -> Result<Suggestion> {
-    let Ok(env) = serde_json::from_str::<Envelope>(stdout.trim()) else {
-        return parse_suggestion(stdout).ok_or(SuggestError::Unparseable);
-    };
+    let env: Envelope =
+        serde_json::from_str(stdout.trim()).map_err(|_| SuggestError::Unparseable)?;
     if env.is_error {
         return Err(SuggestError::Failed(env.result.unwrap_or_default().trim().to_string()));
     }
     env.structured_output
-        .or_else(|| env.result.as_deref().and_then(parse_suggestion))
-        .filter(|s| !s.branch.trim().is_empty() && !s.goal.trim().is_empty())
         .map(|s| Suggestion {
             branch: s.branch.trim().to_string(),
             goal: s.goal.trim().to_string(),
         })
+        .filter(|s| !s.branch.is_empty() && !s.goal.is_empty())
         .ok_or(SuggestError::Unparseable)
 }
 
 /// Derive a suggestion without `claude` at all: the goal as typed, and the
-/// same `feat/<slug>` the dialog's branch field already derives. Not clever,
-/// but it's what the user would have shipped anyway — far better than an
-/// error that leaves the button looking broken.
+/// same `feat/<slug>` the dialog's branch field already derives — same rules
+/// and source-char budget, through the one shared slug helper, so the two
+/// can't disagree about what the branch should be.
 fn local_fallback(goal: &str) -> Option<Suggestion> {
     let goal = goal.trim();
-    let slug = slugify(goal.chars().take(BRANCH_SLUG_SOURCE_CHARS).collect::<String>().trim());
+    let slug =
+        tt_git::branch_name::slug(&goal.chars().take(BRANCH_SLUG_SOURCE_CHARS).collect::<String>());
     (!slug.is_empty())
         .then(|| Suggestion { branch: format!("feat/{slug}"), goal: goal.to_string() })
-}
-
-/// Lowercase, spaces to `-`, anything outside `[0-9a-z_-]` to `-`, collapse
-/// runs, strip trailing — the same rules as the dialog's `slugify` and
-/// tt-git's branch-name slug.
-fn slugify(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.to_lowercase().chars() {
-        let c = if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' };
-        if c == '-' && out.ends_with('-') {
-            continue;
-        }
-        out.push(c);
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    out
 }
 
 fn prompt_for(goal: &str, images: &[String]) -> String {
@@ -224,42 +215,9 @@ fn prompt_for(goal: &str, images: &[String]) -> String {
     )
 }
 
-/// Last-resort text path, only reached when the CLI didn't hand us a
-/// schema-validated object: strip an optional ```json fence, and failing that
-/// carve out the outermost `{...}` so a "Sure! {...}" preamble still parses.
-/// Strictness bought nothing here — the alternative to a lenient read is a
-/// dead button.
-fn parse_suggestion(raw: &str) -> Option<Suggestion> {
-    let text = raw.trim();
-    let text = text.strip_prefix("```json").or_else(|| text.strip_prefix("```")).unwrap_or(text);
-    let text = text.strip_suffix("```").unwrap_or(text).trim();
-    if let Ok(s) = serde_json::from_str::<Suggestion>(text) {
-        return Some(s);
-    }
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    serde_json::from_str(text.get(start..=end)?).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_bare_json() {
-        let s = parse_suggestion(r#"{"branch": "feat/add-thing", "goal": "add the thing"}"#);
-        assert_eq!(
-            s,
-            Some(Suggestion { branch: "feat/add-thing".into(), goal: "add the thing".into() })
-        );
-    }
-
-    #[test]
-    fn strips_a_json_code_fence() {
-        let raw = "```json\n{\"branch\": \"fix/bug\", \"goal\": \"fix the bug\"}\n```";
-        let s = parse_suggestion(raw);
-        assert_eq!(s, Some(Suggestion { branch: "fix/bug".into(), goal: "fix the bug".into() }));
-    }
 
     #[test]
     fn without_images_the_prompt_forbids_touching_anything() {
@@ -299,23 +257,31 @@ mod tests {
     }
 
     #[test]
-    fn prose_around_json_is_still_extracted() {
-        // The old behavior — refusing anything but bare JSON — is what put
-        // "couldn't parse a suggestion" in front of the user. This path only
-        // runs when the CLI didn't enforce the schema, so read it leniently.
-        let s = parse_suggestion("Sure! {\"branch\": \"x\", \"goal\": \"y\"} — hope that helps");
-        assert_eq!(s, Some(Suggestion { branch: "x".into(), goal: "y".into() }));
-    }
-
-    #[test]
-    fn the_call_asks_the_cli_to_enforce_the_schema() {
-        let schema: serde_json::Value = serde_json::from_str(SUGGESTION_SCHEMA).unwrap();
+    fn the_call_makes_the_cli_enforce_the_schema() {
+        // Asserting against SUGGESTION_SCHEMA alone would still pass with the
+        // flags dropped, so check the command that actually gets run.
+        let args = claude_args("the prompt");
+        assert_eq!(args[2..4], ["--output-format", "json"]);
+        assert_eq!(args[4], "--json-schema");
+        let schema: serde_json::Value = serde_json::from_str(args[5]).unwrap();
         assert_eq!(schema["required"], serde_json::json!(["branch", "goal"]));
         assert_eq!(schema["additionalProperties"], serde_json::json!(false));
     }
 
     #[test]
-    fn prefers_the_envelopes_validated_structured_output() {
+    fn serializes_flat_for_the_dialog() {
+        // The dialog reads {branch, goal, fallback}; `flatten` is what keeps
+        // the Tauri command from needing a parallel payload struct.
+        let s = Suggested {
+            suggestion: Suggestion { branch: "feat/a".into(), goal: "do a".into() },
+            fallback: None,
+        };
+        let json: serde_json::Value = serde_json::to_value(&s).unwrap();
+        assert_eq!(json, serde_json::json!({"branch": "feat/a", "goal": "do a", "fallback": null}));
+    }
+
+    #[test]
+    fn reads_the_envelopes_validated_structured_output() {
         let raw = r#"{"type":"result","is_error":false,
             "result":"{\"branch\":\"ignored\",\"goal\":\"ignored\"}",
             "structured_output":{"branch":"feat/a","goal":"do a"},
@@ -325,12 +291,13 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_the_envelopes_result_text() {
-        // An older CLI that ignores --json-schema still answers in `result`.
+    fn an_envelope_without_structured_output_is_unparseable() {
+        // Deliberately not re-read out of `result`: that hedge would silently
+        // paper over a schema regression. It falls through to the local
+        // fallback, which the user can see.
         let raw = r#"{"type":"result","is_error":false,
-            "result":"```json\n{\"branch\":\"fix/b\",\"goal\":\"fix b\"}\n```"}"#;
-        let s = parse_response(raw).unwrap();
-        assert_eq!(s, Suggestion { branch: "fix/b".into(), goal: "fix b".into() });
+            "result":"Sure! {\"branch\":\"fix/b\",\"goal\":\"fix b\"}"}"#;
+        assert!(matches!(parse_response(raw), Err(SuggestError::Unparseable)));
     }
 
     #[test]
