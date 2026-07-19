@@ -186,35 +186,107 @@ pub fn collect_issues(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> Coll
     };
     let summary =
         finish_sweep(store, "issues", outcome, write, |i| (i.repo.clone(), i.number), now_ms);
-    if let Err(e) = reconcile_linked_task_statuses(store, now_ms) {
-        log::warn!("reconcile_linked_task_statuses failed: {e}");
-    }
+    sync_task_links(store, &repo_dirs, now_ms);
     summary
 }
 
-/// Sync Board todos linked to a GitHub issue (`repo` + `issue_number` set)
-/// against the cached issue state `collect_issues` just refreshed: a closed
-/// issue moves its todo to `done`, a reopened issue moves a `done` todo back
-/// to `backlog`. A todo whose status already matches is left untouched, so
-/// this is safe (and cheap) to call on every poll — it never fights a manual
-/// move that isn't a done/not-done crossing.
+/// The Board↔GitHub read half for tasks (#339), run after every issues/PRs
+/// collect pass:
 ///
-/// This is the read half of the Board↔GitHub sync; the write half (closing
-/// or reopening the GitHub issue when a linked todo's status crosses the done
-/// boundary on the Board) lives in the Tauri app's `store_set_task_status`
-/// command, since that's where the status change originates.
-pub fn reconcile_linked_task_statuses(store: &Store, now_ms: i64) -> tt_store::Result<usize> {
+/// 1. copy snapshot state onto every issue/PR link row whose ref the sweep
+///    just refreshed;
+/// 2. targeted `gh <issue|pr> view` for still-`open` links *missing* from the
+///    snapshot — absence is ambiguous (closed? merged? merely reassigned away
+///    or aged out of the merged list?), so state is only ever learned from an
+///    actual fetch, never inferred. A failed fetch keeps the last state;
+/// 3. auto-attach collected PRs whose head branch matches a task's slot;
+/// 4. roll task statuses up ([`rollup_task_statuses`]).
+///
+/// Never panics and never fails the collect pass — each stage logs and moves
+/// on (the never-panic contract). The write half (closing/reopening linked
+/// issues when a task crosses the done boundary on the Board) lives in the
+/// Tauri app's `store_set_task_status` command.
+fn sync_task_links(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) {
+    if let Err(e) = store.refresh_link_states_from_cache(now_ms) {
+        log::warn!("refresh_link_states_from_cache failed: {e}");
+    }
+    let dir_by_repo = repo_dir_index(repo_dirs);
+    match store.open_issue_refs_missing_from_cache() {
+        Ok(refs) => {
+            for (repo, number) in refs {
+                let Some(dir) = dir_by_repo.get(&repo) else { continue };
+                match issues::fetch_issue_state(dir, number) {
+                    Ok(state) => {
+                        if let Err(e) = store.set_issue_link_state(&repo, number, &state, now_ms) {
+                            log::warn!("set_issue_link_state {repo}#{number} failed: {e}");
+                        }
+                    }
+                    Err(e) => log::warn!("issue state fetch {repo}#{number} failed: {e}"),
+                }
+            }
+        }
+        Err(e) => log::warn!("open_issue_refs_missing_from_cache failed: {e}"),
+    }
+    match store.open_pr_refs_missing_from_cache() {
+        Ok(refs) => {
+            for (repo, number) in refs {
+                let Some(dir) = dir_by_repo.get(&repo) else { continue };
+                match prs::fetch_pr_state(dir, number) {
+                    Ok(state) => {
+                        if let Err(e) =
+                            store.set_pr_link_state(&repo, number, &state, None, now_ms)
+                        {
+                            log::warn!("set_pr_link_state {repo}#{number} failed: {e}");
+                        }
+                    }
+                    Err(e) => log::warn!("pr state fetch {repo}#{number} failed: {e}"),
+                }
+            }
+        }
+        Err(e) => log::warn!("open_pr_refs_missing_from_cache failed: {e}"),
+    }
+    if let Err(e) = store.auto_attach_slot_prs(now_ms) {
+        log::warn!("auto_attach_slot_prs failed: {e}");
+    }
+    if let Err(e) = rollup_task_statuses(store, now_ms) {
+        log::warn!("rollup_task_statuses failed: {e}");
+    }
+}
+
+/// Map `owner/name` → repo dir for the swept dirs, so targeted fetches know
+/// where to run `gh`. A dir whose name lookup fails is skipped (its refs keep
+/// their cached state until a later pass).
+fn repo_dir_index(repo_dirs: &[PathBuf]) -> std::collections::HashMap<String, PathBuf> {
+    let mut index = std::collections::HashMap::new();
+    for dir in repo_dirs {
+        match gh::repo_name_with_owner(dir) {
+            Ok(name) => {
+                index.entry(name).or_insert_with(|| dir.clone());
+            }
+            Err(e) => log::debug!("repo name lookup failed for {}: {e}", dir.display()),
+        }
+    }
+    index
+}
+
+/// Roll linked tasks across the done boundary from their cached link states:
+/// a task with at least one link rolls to `done` once every linked issue is
+/// `closed` and every linked PR is `merged` or `closed`; a `done` task with a
+/// reopened ref falls back to `backlog`. Tasks with no links never auto-move,
+/// and statuses that already match are left untouched — safe to run on every
+/// poll without fighting manual board moves that aren't a done/not-done
+/// crossing.
+pub fn rollup_task_statuses(store: &Store, now_ms: i64) -> tt_store::Result<usize> {
     let mut changed = 0;
-    for task in store.linked_tasks()? {
-        let (Some(repo), Some(number)) = (task.repo.as_deref(), task.issue_number) else {
+    for task in store.all_tasks()? {
+        if task.issues.is_empty() && task.prs.is_empty() {
             continue;
-        };
-        let Some(issue) = store.get_issue(repo, number)? else {
-            continue;
-        };
-        let target = match (issue.state.as_str(), task.status.as_str()) {
-            ("closed", status) if status != "done" => Some("done"),
-            ("open", "done") => Some("backlog"),
+        }
+        let resolved = task.issues.iter().all(|l| l.state == "closed")
+            && task.prs.iter().all(|l| l.state == "merged" || l.state == "closed");
+        let target = match (resolved, task.status.as_str()) {
+            (true, status) if status != "done" => Some("done"),
+            (false, "done") => Some("backlog"),
             _ => None,
         };
         if let Some(status) = target {
@@ -235,7 +307,9 @@ pub fn collect_prs(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> Collect
         None => store.replace_prs(all),
         Some(repos) => store.replace_prs_for_repos(repos, all),
     };
-    finish_sweep(store, "prs", outcome, write, |p| (p.repo.clone(), p.number), now_ms)
+    let summary = finish_sweep(store, "prs", outcome, write, |p| (p.repo.clone(), p.number), now_ms);
+    sync_task_links(store, &repo_dirs, now_ms);
+    summary
 }
 
 /// Collect the watched Slack DM's latest state via the Slack Web API and
@@ -512,10 +586,9 @@ pub fn collect_repo_now(store: &Store, dir: &Path, now_ms: i64) -> Vec<CollectSu
         ];
     }
     let issues_summary = collect_repo_issues_now(store, dir, now_ms);
-    if let Err(e) = reconcile_linked_task_statuses(store, now_ms) {
-        log::warn!("reconcile_linked_task_statuses failed: {e}");
-    }
-    vec![issues_summary, collect_repo_prs_now(store, dir, now_ms)]
+    let prs_summary = collect_repo_prs_now(store, dir, now_ms);
+    sync_task_links(store, std::slice::from_ref(&dir.to_path_buf()), now_ms);
+    vec![issues_summary, prs_summary]
 }
 
 fn collect_repo_issues_now(store: &Store, dir: &Path, now_ms: i64) -> CollectSummary {
@@ -805,41 +878,69 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_moves_linked_task_to_done_when_issue_closes() {
+    fn rollup_moves_task_to_done_when_all_links_resolve() {
         let store = Store::open_in_memory().unwrap();
         store.replace_issues(&[issue("o/r", 1)]).unwrap();
-        let task = store.add_task("linked", None, None, None, 1).unwrap();
-        store.link_task_issue(task.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
+        let task = store.add_task("linked", "backlog", None, None, 1).unwrap();
+        store.attach_task_issue(task.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
+        store.attach_task_pr(task.id, "o/r", 10, "https://github.com/o/r/pull/10").unwrap();
 
-        // Matched state (open/not-done): no-op.
-        let changed = reconcile_linked_task_statuses(&store, 2).unwrap();
-        assert_eq!(changed, 0);
+        // Everything open: no-op.
+        store.refresh_link_states_from_cache(2).unwrap();
+        assert_eq!(rollup_task_statuses(&store, 2).unwrap(), 0);
         assert_eq!(store.get_task(task.id).unwrap().unwrap().status, "backlog");
 
-        // Issue closes on GitHub → linked todo follows to done.
+        // Issue closes but the PR is still open → card stays put.
         let mut closed = issue("o/r", 1);
         closed.state = "closed".to_string();
-        store.replace_issues(&[closed]).unwrap();
-        let changed = reconcile_linked_task_statuses(&store, 3).unwrap();
-        assert_eq!(changed, 1);
+        store.replace_issues(&[closed.clone()]).unwrap();
+        store.refresh_link_states_from_cache(3).unwrap();
+        assert_eq!(rollup_task_statuses(&store, 3).unwrap(), 0);
+        assert_eq!(store.get_task(task.id).unwrap().unwrap().status, "backlog");
+
+        // PR merges too (learned via targeted fetch) → all resolved → done.
+        store.set_pr_link_state("o/r", 10, "merged", None, 4).unwrap();
+        assert_eq!(rollup_task_statuses(&store, 4).unwrap(), 1);
         assert_eq!(store.get_task(task.id).unwrap().unwrap().status, "done");
 
-        // Reopened on GitHub → moves back to backlog.
+        // Issue reopens on GitHub → done task falls back to backlog.
         store.replace_issues(&[issue("o/r", 1)]).unwrap();
-        let changed = reconcile_linked_task_statuses(&store, 4).unwrap();
-        assert_eq!(changed, 1);
+        store.refresh_link_states_from_cache(5).unwrap();
+        assert_eq!(rollup_task_statuses(&store, 5).unwrap(), 1);
         assert_eq!(store.get_task(task.id).unwrap().unwrap().status, "backlog");
     }
 
     #[test]
-    fn reconcile_ignores_unlinked_tasks_and_manual_non_done_moves() {
+    fn rollup_ignores_linkless_tasks_and_manual_non_done_moves() {
         let store = Store::open_in_memory().unwrap();
-        let plain = store.add_task("plain", None, None, None, 1).unwrap();
+        let plain = store.add_task("plain", "backlog", None, None, 1).unwrap();
         store.set_task_status(plain.id, "doing", 1).unwrap();
 
-        let changed = reconcile_linked_task_statuses(&store, 2).unwrap();
-        assert_eq!(changed, 0);
+        assert_eq!(rollup_task_statuses(&store, 2).unwrap(), 0);
         assert_eq!(store.get_task(plain.id).unwrap().unwrap().status, "doing");
+    }
+
+    #[test]
+    fn absent_refs_are_never_inferred_closed() {
+        // The regression the old reconcile had: an issue that merely left the
+        // snapshot (reassigned away, collector failure) must not roll its task
+        // to done. State only changes via the snapshot or a targeted fetch.
+        let store = Store::open_in_memory().unwrap();
+        store.replace_issues(&[issue("o/r", 1)]).unwrap();
+        let task = store.add_task("linked", "doing", None, None, 1).unwrap();
+        store.attach_task_issue(task.id, "o/r", 1, "u").unwrap();
+        store.refresh_link_states_from_cache(2).unwrap();
+
+        // The ref vanishes from the snapshot entirely.
+        store.replace_issues(&[]).unwrap();
+        store.refresh_link_states_from_cache(3).unwrap();
+        assert_eq!(rollup_task_statuses(&store, 3).unwrap(), 0);
+        assert_eq!(store.get_task(task.id).unwrap().unwrap().status, "doing");
+        // …but it is reported for a targeted fetch.
+        assert_eq!(
+            store.open_issue_refs_missing_from_cache().unwrap(),
+            vec![("o/r".to_string(), 1)]
+        );
     }
 
     fn cal_event(ext: &str, start_ts: i64) -> EventInput {

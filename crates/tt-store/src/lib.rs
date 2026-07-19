@@ -1222,17 +1222,19 @@ impl Store {
         )?)
     }
 
-    /// Stamp the observed state (and checks) onto every link row for one PR ref.
+    /// Stamp the observed state onto every link row for one PR ref. `checks`
+    /// updates when given; `None` keeps the cached value (the targeted fetch
+    /// only learns the state).
     pub fn set_pr_link_state(
         &self,
         repo: &str,
         number: i64,
         state: &str,
-        checks: &str,
+        checks: Option<&str>,
         now_ms: i64,
     ) -> Result<usize> {
         Ok(self.conn.execute(
-            "UPDATE task_prs SET state = ?3, checks = ?4, state_ts = ?5
+            "UPDATE task_prs SET state = ?3, checks = COALESCE(?4, checks), state_ts = ?5
              WHERE repo = ?1 AND number = ?2",
             params![repo, number, state, checks, now_ms],
         )?)
@@ -1866,7 +1868,7 @@ mod tests {
         // A targeted fetch resolves the misses; terminal states stop being
         // reported even though they remain absent from the snapshot.
         s.set_issue_link_state("o/r", 2, "closed", 60).unwrap();
-        s.set_pr_link_state("o/r", 10, "merged", "passing", 60).unwrap();
+        s.set_pr_link_state("o/r", 10, "merged", None, 60).unwrap();
         assert!(s.open_issue_refs_missing_from_cache().unwrap().is_empty());
         assert!(s.open_pr_refs_missing_from_cache().unwrap().is_empty());
         let got = s.get_task(t.id).unwrap().unwrap();

@@ -40,6 +40,21 @@ pub(crate) fn collect_repo_issues(dir: &Path) -> Result<(String, Vec<IssueInput>
     Ok((repo, issues))
 }
 
+/// Targeted state fetch for one issue: the sweep only stores open-assigned
+/// issues, so a task-linked issue absent from that snapshot needs an explicit
+/// `gh issue view` to learn whether it closed (vs. merely being reassigned
+/// away). Returns the lowercased state (`open` | `closed`).
+pub(crate) fn fetch_issue_state(dir: &Path, number: i64) -> Result<String, String> {
+    let value = gh::run_json(dir, &["issue", "view", &number.to_string(), "--json", "state"])?;
+    parse_state_field(&value).ok_or_else(|| format!("gh issue view {number}: no state in JSON"))
+}
+
+/// Pull the lowercased `state` string out of a `gh … view --json state`
+/// payload. Factored out so both targeted fetchers unit-test without `gh`.
+pub(crate) fn parse_state_field(value: &serde_json::Value) -> Option<String> {
+    Some(value.get("state")?.as_str()?.to_ascii_lowercase())
+}
+
 /// Live fetch of open issues for the import picker: `assigned_to_me` toggles
 /// `--assignee @me`, `milestone` optionally scopes to one milestone title.
 /// Unlike [`collect_repo_issues`] this never writes the store — it's a
