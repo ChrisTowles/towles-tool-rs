@@ -2,7 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { loadMonaco } from "@/lib/monaco";
 import { invoke } from "@/lib/tauri";
 import { errorMessage } from "@/lib/errors";
-import { ideClearSelection, ideMention, ideReadFile, ideSetSelection } from "@/lib/ide";
+import {
+  ideClearSelection,
+  ideMention,
+  ideReadFile,
+  ideSetDiffDirty,
+  ideSetSelection,
+  saveModelBuffer,
+} from "@/lib/ide";
 import { IdeSelectionOverlay } from "@/components/ide-selection-chip";
 import {
   diffWorkPath,
@@ -18,9 +25,6 @@ export type ChangedFile = {
   oldPath: string | null;
   /** Git name-status letter (M/A/D/R/C/T), or "?" for untracked. */
   status: string;
-  /** Current index state (`git status --porcelain`'s X column) — independent
-   * of `status`, which is against the diff baseline, not HEAD. */
-  staged: boolean;
   linesAdded: number;
   linesRemoved: number;
 };
@@ -37,12 +41,15 @@ type TextModel = import("monaco-editor").editor.ITextModel;
  * VS Code's multi-diff editor over the whole change set: every file's diff
  * stacked in one scroll with sticky per-file headers, exactly the surface
  * VS Code uses for "view changes". Original sides come from the diff
- * baseline (`ab_get_base_file`), modified sides from the working tree —
- * read-only; edits belong in the Files tab. Selections on any modified side
- * stream to the folder's Claude session, and the selection chip (or ⌘⇧A)
- * mentions those lines explicitly — same contract as CodeViewer.
- * `refreshKey` refetches contents in place when the working tree measurably
- * changes; the set of files changing rebuilds the widget.
+ * baseline (`ab_get_base_file`), read-only — history isn't editable. Modified
+ * sides come from the working tree and are editable in place: Cmd/Ctrl+S
+ * saves the active file, same atomic/mtime-guarded write CodeViewer uses.
+ * Selections on any modified side stream to the folder's Claude session, and
+ * the selection chip (or ⌘⇧A) mentions those lines explicitly — same
+ * contract as CodeViewer. `refreshKey` refetches contents in place when the
+ * working tree measurably changes (skipped for a file with unsaved edits, so
+ * an external change never clobbers them); the set of files changing rebuilds
+ * the widget.
  */
 export function MonacoMultiDiff({
   dir,
@@ -52,7 +59,9 @@ export function MonacoMultiDiff({
   refreshKey,
   connected = false,
   registerReveal,
-  onToggleStage,
+  reviewed,
+  onToggleReviewed,
+  onDirtyChange,
 }: {
   dir: string;
   files: ChangedFile[];
@@ -65,9 +74,15 @@ export function MonacoMultiDiff({
    * teardown) — the diff pane's tree rail calls it to scroll a file's diff
    * into view. */
   registerReveal?: (reveal: ((path: string) => void) | null) => void;
-  /** Stage (`true`) or unstage (`false`) a file; resolves to whether it
-   * happened, so a checkbox that already flipped optimistically can revert. */
-  onToggleStage?: (path: string, staged: boolean) => Promise<boolean>;
+  /** Paths the reviewer has checked off — purely client-side (not persisted),
+   * shared with the tree rail's checkboxes. */
+  reviewed: ReadonlySet<string>;
+  /** Toggle one file's reviewed flag. */
+  onToggleReviewed?: (path: string) => void;
+  /** A file's unsaved-edit state flipped — mirrors what's also reported to
+   * the IDE bridge (`ideSetDiffDirty`), so the tree rail can show the same
+   * dirty dot the Files tab does. */
+  onDirtyChange?: (path: string, dirty: boolean) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,48 +94,77 @@ export function MonacoMultiDiff({
   const widgetRef = useRef<Widget | null>(null);
   const viewModelRef = useRef<ViewModel | null>(null);
   // Populated once the widget's diffs resolve; keyed by the same relative
-  // path used everywhere else (`ChangedFile.path`). Lets the staged-sync
+  // path used everywhere else (`ChangedFile.path`). Lets the reviewed-sync
   // effect below collapse/expand and check/uncheck a specific file without
   // rebuilding the whole widget.
   const itemsByPathRef = useRef<Map<string, DocItem> | null>(null);
   const checkboxesByPathRef = useRef<Map<string, HTMLInputElement>>(new Map());
   const modelsRef = useRef<Map<string, { original?: TextModel; modified?: TextModel }>>(new Map());
+  // mtime token (from `ideReadFile`/`saveModelBuffer`) and the modified
+  // model's `getAlternativeVersionId()` as of the last successful save, per
+  // file — together these say whether a file has unsaved edits and what a
+  // `saveModelBuffer` call should send as `expectedMtimeMs`.
+  const mtimesRef = useRef<Map<string, number | null>>(new Map());
+  const savedVersionsRef = useRef<Map<string, number>>(new Map());
+  // Paths currently reported to the IDE bridge (`ideSetDiffDirty`) as dirty —
+  // lets `reportDirty` below send a call only on an actual clean↔dirty
+  // transition instead of on every keystroke, and lets teardown clear
+  // exactly what it told the backend, never more or less.
+  const dirtyReportedRef = useRef<Set<string>>(new Set());
   // "Latest ref" for the imperative header checkboxes' change handler, which
   // closes over this once at widget-construction time and would otherwise see
   // a stale callback across parent re-renders that don't rebuild the widget.
-  const onToggleStageRef = useRef(onToggleStage);
-  onToggleStageRef.current = onToggleStage;
+  const onToggleReviewedRef = useRef(onToggleReviewed);
+  onToggleReviewedRef.current = onToggleReviewed;
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  onDirtyChangeRef.current = onDirtyChange;
   // "Latest ref" for the header checkboxes' `setUri`, which can fire on
   // virtualized-row reuse well after the widget-construction effect's own
-  // `files` closure has gone stale.
-  const filesRef = useRef(files);
-  filesRef.current = files;
+  // `reviewed` closure has gone stale.
+  const reviewedRef = useRef(reviewed);
+  reviewedRef.current = reviewed;
 
-  // Collapse/expand each file's diff to match its staged flag and keep its
+  // Collapse/expand each file's diff to match its reviewed flag and keep its
   // header checkbox's `.checked` in sync — shared by the post-construction
-  // initial sync and the staged-toggle effect below, since both need exactly
-  // this same per-file walk over the (viewModel item, checkbox) pair.
-  const applyStagedState = (currentFiles: ChangedFile[]) => {
+  // initial sync and the reviewed-toggle effect below, since both need
+  // exactly this same per-file walk over the (viewModel item, checkbox) pair.
+  const applyReviewedState = (
+    currentFiles: ChangedFile[],
+    currentReviewed: ReadonlySet<string>,
+  ) => {
     const viewModel = viewModelRef.current;
     const itemsByPath = itemsByPathRef.current;
     if (!viewModel || !itemsByPath) return;
     for (const f of currentFiles) {
+      const isReviewed = currentReviewed.has(f.path);
       const item = itemsByPath.get(f.path);
       if (item) {
-        if (f.staged) viewModel.collapse(item);
+        if (isReviewed) viewModel.collapse(item);
         else viewModel.expand(item);
       }
       const checkbox = checkboxesByPathRef.current.get(f.path);
-      if (checkbox) checkbox.checked = f.staged;
+      if (checkbox) checkbox.checked = isReviewed;
     }
+  };
+
+  // Tell the IDE bridge (`ideSetDiffDirty`) when a file's dirty state
+  // actually flips, so Claude's getOpenEditors/checkDocumentDirty see the
+  // diff pane's edits the same way they already see the Files tab's. Called
+  // from the modified model's onDidChangeContent and right after a save
+  // (which can race further typing during the write).
+  const reportDirty = (path: string, model: TextModel) => {
+    const isDirty = model.getAlternativeVersionId() !== savedVersionsRef.current.get(path);
+    const wasDirty = dirtyReportedRef.current.has(path);
+    if (isDirty === wasDirty) return;
+    if (isDirty) dirtyReportedRef.current.add(path);
+    else dirtyReportedRef.current.delete(path);
+    void ideSetDiffDirty(dir, path, isDirty);
+    onDirtyChangeRef.current?.(path, isDirty);
   };
 
   // The widget rebuilds only when the file *set* changes, not on every
   // content refresh — filesKey is stable across refetches of the same set.
   const filesKey = files.map((f) => `${f.status}:${f.path}`).join("\n");
-  // Collapse/expand + checkbox sync fire independently of a widget rebuild —
-  // staging a file doesn't change its status/path, so filesKey stays put.
-  const stagedKey = files.map((f) => `${f.path}:${f.staged}`).join("\n");
 
   useEffect(() => {
     let disposed = false;
@@ -143,6 +187,8 @@ export function MonacoMultiDiff({
         if (disposed || !containerRef.current) return;
 
         const models = new Map<string, { original?: TextModel; modified?: TextModel }>();
+        mtimesRef.current = new Map();
+        savedVersionsRef.current = new Map();
         const items = files.map((f, i) => {
           const baseUri = monaco.Uri.parse(`tt-diff-base:${dir}/${f.oldPath ?? f.path}`);
           const workUri = monaco.Uri.parse(`tt-diff-work:${dir}/${f.path}`);
@@ -154,12 +200,28 @@ export function MonacoMultiDiff({
           }
           if (contents[i].modified != null) {
             entry.modified = monaco.editor.createModel(contents[i].modified!, undefined, workUri);
+            mtimesRef.current.set(f.path, contents[i].modifiedMtimeMs);
+            savedVersionsRef.current.set(f.path, entry.modified.getAlternativeVersionId());
+            disposables.push(
+              entry.modified.onDidChangeContent(() => reportDirty(f.path, entry.modified!)),
+            );
           }
           models.set(f.path, entry);
           return {
             original: entry.original,
             modified: entry.modified,
-            options: { readOnly: true, originalEditable: false },
+            // Base side stays read-only (it's history); working-tree side is
+            // editable. Some workbench feature occasionally tries to resolve
+            // the synthetic tt-diff-work: URI through the full text-model
+            // resolver once a file's diff is active — that lookup has no
+            // registered provider and rejects, logged as a harmless one-time
+            // console error. Registering a content provider to quiet it was
+            // tried and reverted: it hands the resolver a reference-counted
+            // handle to a model this file already owns outright, and the
+            // resolver's own disposal of that handle raced ours and blanked
+            // the pane ("TextModel got disposed before DiffEditorWidget model
+            // got reset"). The rejection doesn't affect rendering or editing.
+            options: { readOnly: false, originalEditable: false },
           };
         });
         modelsRef.current = models;
@@ -173,7 +235,7 @@ export function MonacoMultiDiff({
               // Called twice per file: once for the primary (current-path)
               // label, once for the secondary (old-path, renames only) one.
               // VS Code marks the primary one with its own "modified" class
-              // — only that one gets a stage checkbox, or a renamed file
+              // — only that one gets a reviewed checkbox, or a renamed file
               // would show two.
               if (!element.classList.contains("modified")) {
                 return {
@@ -186,7 +248,7 @@ export function MonacoMultiDiff({
               const checkbox = document.createElement("input");
               checkbox.type = "checkbox";
               checkbox.className = "mr-1.5 size-3 shrink-0 cursor-pointer accent-emerald-500";
-              checkbox.title = "stage / unstage this file";
+              checkbox.title = "mark reviewed (collapses this file's diff)";
               // The header itself toggles collapse on click; stop that from
               // also firing when the click lands on the checkbox.
               checkbox.addEventListener("click", (e) => e.stopPropagation());
@@ -195,10 +257,7 @@ export function MonacoMultiDiff({
               let path: string | null = null;
               checkbox.addEventListener("change", () => {
                 if (!path) return;
-                const staged = checkbox.checked;
-                void onToggleStageRef.current?.(path, staged).then((ok) => {
-                  if (!ok) checkbox.checked = !staged;
-                });
+                onToggleReviewedRef.current?.(path);
               });
               return {
                 setUri(uri: { path: string } | undefined) {
@@ -208,7 +267,7 @@ export function MonacoMultiDiff({
                   checkbox.style.visibility = path ? "visible" : "hidden";
                   if (path) {
                     checkboxesByPathRef.current.set(path, checkbox);
-                    checkbox.checked = filesRef.current.find((f) => f.path === path)?.staged ?? false;
+                    checkbox.checked = reviewedRef.current.has(path);
                   }
                 },
                 dispose() {
@@ -233,9 +292,9 @@ export function MonacoMultiDiff({
         widget.setViewModel(viewModel);
         viewModelRef.current = viewModel;
 
-        // Per-file diff computation is async; apply the initial staged state
-        // (collapse + checkbox sync) once resolved, without blocking the
-        // rest of setup (registerReveal, selection wiring, the loading flag).
+        // Per-file diff computation is async; apply the initial reviewed
+        // state (collapse + checkbox sync) once resolved, without blocking
+        // the rest of setup (registerReveal, selection wiring, loading).
         void viewModel.waitForDiffOr1s().then(() => {
           if (disposed) return;
           const itemsByPath = new Map<string, DocItem>();
@@ -244,7 +303,7 @@ export function MonacoMultiDiff({
             if (p) itemsByPath.set(p, item);
           }
           itemsByPathRef.current = itemsByPath;
-          applyStagedState(files);
+          applyReviewedState(files, reviewedRef.current);
         });
 
         // The widget needs explicit layout; track the pane's size.
@@ -280,16 +339,45 @@ export function MonacoMultiDiff({
             await ideMention(dir, path, mentionRangeFrom(modified.getSelection()));
           };
           const sendFromThisEditor = () => void mention();
-          // Same ⌘⇧A chord as the file viewer. These are plain ICodeEditors
-          // inside the multi-diff, not standalone ones, so there's no
-          // addCommand — match the chord on the key event instead.
+
+          // Cmd/Ctrl+S saves this file's modified buffer — atomically,
+          // refused if the file changed on disk since it was read (an agent
+          // may be editing the same tree). Same contract as CodeViewer.
+          const save = async () => {
+            const model = modified.getModel();
+            const path = diffWorkPath(dir, model?.uri);
+            if (!model || !path) return;
+            const result = await saveModelBuffer(
+              dir,
+              path,
+              model,
+              mtimesRef.current.get(path) ?? null,
+            );
+            if (!result || model.isDisposed()) return;
+            mtimesRef.current.set(path, result.mtimeMs);
+            savedVersionsRef.current.set(path, result.versionAtSave);
+            // Reconciles against `model`'s *current* version, not
+            // `result.versionAtSave` — more may have been typed during the
+            // write, in which case the buffer is still dirty post-save.
+            reportDirty(path, model);
+          };
+
+          // Same ⌘⇧A / ⌘S chords as the file viewer. These are plain
+          // ICodeEditors inside the multi-diff, not standalone ones, so
+          // there's no addCommand — match the chord on the key event instead.
           disposables.push(
             modified.onKeyDown((e: import("monaco-editor").IKeyboardEvent) => {
-              if (e.keyCode !== monaco.KeyCode.KeyA || !e.shiftKey) return;
               if (!(e.ctrlKey || e.metaKey)) return;
+              const action =
+                e.keyCode === monaco.KeyCode.KeyA && e.shiftKey
+                  ? mention
+                  : e.keyCode === monaco.KeyCode.KeyS && !e.shiftKey
+                    ? save
+                    : null;
+              if (!action) return;
               e.preventDefault();
               e.stopPropagation();
-              void mention();
+              void action();
             }),
           );
 
@@ -374,11 +462,22 @@ export function MonacoMultiDiff({
         entry.modified?.dispose();
       }
       modelsRef.current = new Map();
+      mtimesRef.current = new Map();
+      savedVersionsRef.current = new Map();
+      // Clear exactly what this instance told the IDE bridge — and the tree
+      // rail — was dirty. Whether that's because the file set changed
+      // (rebuild) or the pane closed (unmount), nothing here is still an
+      // editable diff buffer, so nothing here should still read as dirty.
+      for (const path of dirtyReportedRef.current) {
+        void ideSetDiffDirty(dir, path, false);
+        onDirtyChangeRef.current?.(path, false);
+      }
+      dirtyReportedRef.current = new Set();
       mentionRef.current = () => {};
       setSelection(null);
       if (streamedPath != null) ideClearSelection(dir, streamedPath);
     };
-    // filesKey stands in for `files`; refreshKey/stagedKey are the in-place
+    // filesKey stands in for `files`; refreshKey/reviewed are the in-place
     // paths below. registerReveal is deliberately excluded too: it's an
     // unmemoized callback prop from the parent, so listing it would rebuild
     // this expensive widget on every parent render instead of only on a real
@@ -386,18 +485,22 @@ export function MonacoMultiDiff({
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [dir, filesKey, mode, baseBranch]);
 
-  // A file's staged status flipped without the file *set* changing (staging
-  // doesn't change its path or status letter) — collapse/expand its diff and
+  // A file's reviewed flag flipped without the file *set* changing (review
+  // doesn't touch its path or status letter) — collapse/expand its diff and
   // sync its header checkbox in place, without rebuilding the widget.
   useEffect(() => {
-    applyStagedState(files);
+    applyReviewedState(files, reviewed);
     // files is read fresh each render via closure, same as the refreshKey
-    // effect above — stagedKey is only the trigger.
+    // effect above — `reviewed`'s identity is only the trigger.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [stagedKey]);
+  }, [reviewed]);
 
   // Working tree changed under the pane — refresh contents in place so the
-  // scroll position and collapse states survive.
+  // scroll position and collapse states survive. A file with unsaved edits
+  // (its modified model's version has moved past the last save) is skipped:
+  // an external change must never clobber a buffer the reviewer is mid-edit
+  // on — the next save will surface the real conflict via `ideWriteFile`'s
+  // mtime check instead.
   useEffect(() => {
     if (!widgetRef.current) return;
     const models = modelsRef.current;
@@ -415,12 +518,18 @@ export function MonacoMultiDiff({
           ) {
             entry.original.setValue(sides.original);
           }
+          const dirty =
+            entry.modified &&
+            entry.modified.getAlternativeVersionId() !== savedVersionsRef.current.get(f.path);
           if (
+            !dirty &&
             entry.modified &&
             sides.modified != null &&
             entry.modified.getValue() !== sides.modified
           ) {
             entry.modified.setValue(sides.modified);
+            mtimesRef.current.set(f.path, sides.modifiedMtimeMs);
+            savedVersionsRef.current.set(f.path, entry.modified.getAlternativeVersionId());
           }
         } catch {
           // Transient refresh failure (file mid-write) — keep the last good
@@ -452,13 +561,18 @@ export function MonacoMultiDiff({
 }
 
 /** Both sides of one file's diff: base content (undefined for
- * added/untracked) and working-tree content (undefined for deleted). */
+ * added/untracked) and working-tree content (undefined for deleted), plus the
+ * working-tree read's mtime token — the save path's `expectedMtimeMs`. */
 async function fetchSides(
   dir: string,
   file: ChangedFile,
   mode: string,
   baseBranch: string | null,
-): Promise<{ original: string | undefined; modified: string | undefined }> {
+): Promise<{
+  original: string | undefined;
+  modified: string | undefined;
+  modifiedMtimeMs: number | null;
+}> {
   const added = file.status === "A" || file.status === "?";
   const [original, read] = await Promise.all([
     added
@@ -474,5 +588,6 @@ async function fetchSides(
   return {
     original: added ? undefined : (original ?? ""),
     modified: file.status === "D" ? undefined : (read?.map((f) => f.content).unwrapOr("") ?? ""),
+    modifiedMtimeMs: read?.map((f) => f.mtimeMs).unwrapOr(null) ?? null,
   };
 }
