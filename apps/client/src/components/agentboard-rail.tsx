@@ -343,7 +343,6 @@ export function RepoGroup({
   pendingSlots,
   onRetryPendingSlot,
   onDismissPendingSlot,
-  onCreateTemplateRetry,
 }: {
   repo: RepoData;
   now: number;
@@ -397,7 +396,6 @@ export function RepoGroup({
   pendingSlots: PendingSlot[];
   onRetryPendingSlot: (id: string) => void;
   onDismissPendingSlot: (id: string) => void;
-  onCreateTemplateRetry: (id: string) => void;
 }) {
   const solo = isSoloRepo(repo);
   const quiet = quietDirs ?? new Set<string>();
@@ -410,7 +408,6 @@ export function RepoGroup({
       now={now}
       onRetry={onRetryPendingSlot}
       onDismiss={onDismissPendingSlot}
-      onCreateTemplate={onCreateTemplateRetry}
     />
   ));
 

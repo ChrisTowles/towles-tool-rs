@@ -713,15 +713,12 @@ export function PendingSlotRow({
   now,
   onRetry,
   onDismiss,
-  onCreateTemplate,
 }: {
   pending: PendingSlot;
   now: number;
   onRetry: (id: string) => void;
   onDismiss: (id: string) => void;
-  onCreateTemplate: (id: string) => void;
 }) {
-  const noTemplate = pending.error?.startsWith("no template:") ?? false;
   return (
     <div
       className={cn(
@@ -756,25 +753,14 @@ export function PendingSlotRow({
       ) : (
         <div className="flex flex-wrap items-center gap-2 pl-[22px]">
           <span className="text-[11px] text-red-500">{pending.error}</span>
-          {noTemplate ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-5 gap-1 px-1.5 text-[10.5px]"
-              onClick={() => onCreateTemplate(pending.id)}
-            >
-              Create empty slot-env.template
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-5 gap-1 px-1.5 text-[10.5px]"
-              onClick={() => onRetry(pending.id)}
-            >
-              Retry
-            </Button>
-          )}
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-5 gap-1 px-1.5 text-[10.5px]"
+            onClick={() => onRetry(pending.id)}
+          >
+            Retry
+          </Button>
           <Button
             size="sm"
             variant="ghost"
