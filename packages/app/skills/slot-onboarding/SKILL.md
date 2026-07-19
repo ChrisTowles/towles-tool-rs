@@ -36,7 +36,7 @@ Claims are unique across a repo's own checkouts by construction, but there
 is no machine-wide registry — two repos with overlapping pool ranges can
 collide. Check the `${tt:port A-B}` ranges already used by the user's other
 onboarded repos (grep their `.env.example` / `.claude/slot-env.template`;
-tracked checkouts are listed by `tt agentboard repos` or the app rail) and
+tracked checkouts are listed in the app rail) and
 pick a distinct range per variable, sized ~20+ ports, ideally starting at
 the app's default port (e.g. vite → `5173-5272`).
 

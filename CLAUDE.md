@@ -10,7 +10,7 @@ Rust:
 
 ```sh
 cargo run -p tt-cli -- <args>       # run the CLI (binary `tt`)
-cargo run -p tt-cli -- doctor       # e.g. doctor, config, journal, gh, install
+cargo run -p tt-cli -- slot ls      # e.g. slot, journal, collect, mcp
 cargo fmt --check                   # formatting (rustfmt, 100-col)
 cargo clippy --all -- -D warnings   # lint; warnings are errors
 cargo test --all                    # unit + assert_cmd black-box tests
@@ -308,17 +308,20 @@ Cargo workspace + npm workspace (`apps/client` only):
   - `tt-agentboard` — agentboard watchers/engine: repo list, session tracking,
     needs-you synthesis (consumed by the app shell).
   - `tt-claude-code` — Claude Code transcript/session parsing models.
-  - `tt-doctor` — doctor checks logic (CLI + app screen both consume it).
+  - `tt-doctor` — doctor checks logic (app screen consumes it; the CLI command
+    was removed in the 2026-07-19 trim).
   - `tt-update` — checks GitHub Releases for a newer version than the running
     app. Uses `native-tls` (not rustls/webpki-roots) for the same
     Zscaler-proxy reason called out below.
-- `crates-cli/tt-cli` — `clap` 4 CLI, binary `tt`. Commands:
-  `config show|validate|schema|reset`, `doctor [--json --track --diff]`,
-  `journal daily-notes|note|meeting|list|search` (+ `today` alias),
-  `gh pr|branch|branch-clean|assign` (+ `pr` alias), `install [-o]`,
-  `agentboard repos|sessions` (+ `ag` alias),
-  `collect calendar|issues|prs|slack|all`, `mcp serve`,
-  `slot init|new|ls|rm|env|clean` (worktree slots — see the Worktree slots section).
+- `crates-cli/tt-cli` — `clap` 4 CLI, binary `tt`. Deliberately small after the
+  2026-07-19 trim (usage review showed everything else was dead or app-owned):
+  `journal daily-notes|note|meeting|jot|open|list|search` (+ `today` alias),
+  `slot init|new|ls|rm|env|clean` (worktree slots — see the Worktree slots
+  section), and the headless entry points `mcp serve` and
+  `collect calendar|issues|prs|slack|all|nudge|status` (both slated to move
+  into the app per the CLI redesign). The removed groups (`gh`, `config`,
+  `doctor`, `install`, `agentboard`) live in git history; don't reintroduce
+  CLI surfaces for app-owned features.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
   `npm run dev` (root) resolves the per-slot dev-server port from the
   checkout's rendered `.env` (`scripts/dev-port.mjs` / `slot-port.mjs`,

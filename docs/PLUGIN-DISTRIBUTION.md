@@ -1,5 +1,10 @@
 # Plugin Distribution Options
 
+> **Status note (2026-07-19):** `tt install` was removed in the CLI trim; the
+> references to it below describe behavior that shipped before that. Plugin
+> marketplace/MCP registration is moving to the app's setup flow (see the CLI
+> redesign). The URL-keying analysis below still holds.
+
 The `packages/core` plugin (`tt`) ships through a Claude Code **marketplace**. A
 user runs `claude plugin marketplace add https://github.com/ChrisTowles/towles-tool`,
 which fetches `.claude-plugin/marketplace.json` from that repo's root; that manifest
