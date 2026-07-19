@@ -37,13 +37,13 @@ inquire = "0.7.5"
 libghostty-vt = "0.2.0"
 notify = "6.1.1"
 # Encodes the raw RGBA the system clipboard hands back into a real PNG — see
-# `tt_slots::pasted::rgba_to_png`. Already in the tree via the clipboard
-# plugin's image support, so this pins no new transitive weight.
-png = "0.17"
+# `tt_slots::pasted::rgba_to_png`. Pinned to the same major the clipboard
+# plugin's `image` (and muda/tray-icon) already pull in, so the app links one
+# png, not two — 0.17 is build-time-only weight via tauri-codegen/ico.
+png = "0.18"
 portable-pty = "0.9.0"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 log = "0.4.29"
-regex = "1.11.1"
 schemars = { version = "0.8.22", features = ["chrono"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -60,7 +60,6 @@ tokio = "1.48.0"
 # nothing goes dark while seams are converted to spans incrementally.
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "tracing-log"] }
-ratatui = "0.29.0"
 ureq = { version = "2.12.1", default-features = false, features = ["json", "gzip", "native-tls"] }
 native-tls = "0.2.14"
 wait-timeout = "0.2.1"

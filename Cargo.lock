@@ -5397,7 +5397,6 @@ name = "tt-claude-sessions"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -5415,7 +5414,6 @@ dependencies = [
  "console",
  "dirs",
  "inquire",
- "log",
  "predicates",
  "serde",
  "serde_json",
@@ -5526,7 +5524,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.18",
  "tt-agentboard",
  "tt-collect",
  "tt-config",
@@ -5552,7 +5549,7 @@ name = "tt-slots"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "png 0.17.16",
+ "png 0.18.1",
  "serde",
  "serde_json",
  "tempfile",

@@ -362,9 +362,9 @@ mod tests {
         let encoded = rgba_to_png(2, 1, &rgba).unwrap();
 
         assert_eq!(&encoded[..8], b"\x89PNG\r\n\x1a\n", "not a PNG signature");
-        let decoder = png::Decoder::new(encoded.as_slice());
+        let decoder = png::Decoder::new(std::io::Cursor::new(&encoded));
         let mut reader = decoder.read_info().unwrap();
-        let mut buf = vec![0; reader.output_buffer_size()];
+        let mut buf = vec![0; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut buf).unwrap();
         assert_eq!((info.width, info.height), (2, 1));
         assert_eq!(&buf[..info.buffer_size()], &rgba[..]);
