@@ -91,11 +91,20 @@ pub async fn slot_suggest(
     .await
     .map_err(|e| format!("slot task failed: {e}"))?
     .map_err(|e| e.to_string());
-    let (outcome, reason) = match &result {
-        Ok(s) => (if s.fallback.is_some() { "fallback" } else { "ok" }, s.fallback.as_deref()),
-        Err(e) => ("error", Some(e.as_str())),
-    };
-    tracing::info!(images, outcome, reason = reason.unwrap_or(""), "slot_suggest");
+    // A hard failure stays at `warn` — merging the two log sites must not cost
+    // the severity an operator filters on.
+    match &result {
+        Ok(s) => {
+            let outcome = if s.fallback.is_some() { "fallback" } else { "ok" };
+            tracing::info!(
+                images,
+                outcome,
+                reason = s.fallback.as_deref().unwrap_or(""),
+                "slot_suggest"
+            );
+        }
+        Err(e) => tracing::warn!(images, outcome = "error", reason = e.as_str(), "slot_suggest"),
+    }
     result
 }
 

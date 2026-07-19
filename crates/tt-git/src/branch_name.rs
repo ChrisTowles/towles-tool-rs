@@ -1,18 +1,16 @@
 //! Branch-name generation, ported from `src/lib/git/branch-name.ts`.
 
-/// Build a branch name `feature/<number>-<slug>` from an issue number and title.
-///
-/// Mirrors `createBranchNameFromIssue`: lowercase, trim, spaces to `-`, replace any
-/// character outside `[0-9a-zA-Z_-]` with `-`, collapse runs of `-`, then strip trailing
-/// `-`. Note the regex `[^0-9a-zA-Z_-]` is ASCII-only, so non-ASCII letters (e.g. `ü`)
-/// become `-` — matching the TS byte-for-byte.
+/// Build a branch name `feature/<number>-<slug>` from an issue number and
+/// title. Mirrors `createBranchNameFromIssue`; the slug rules are [`slug`].
 pub fn create_branch_name_from_issue(number: u64, title: &str) -> String {
     format!("feature/{number}-{}", slug(title))
 }
 
 /// The slug rules on their own, without a prefix: lowercase, trim, spaces to
 /// `-`, anything outside `[0-9a-zA-Z_-]` to `-`, collapse runs of `-`, strip
-/// trailing `-` (leading dashes are preserved, matching the TS).
+/// trailing `-` (leading dashes are preserved, matching the TS). The character
+/// class is ASCII-only, so non-ASCII letters (e.g. `ü`) become `-` — matching
+/// the TS byte-for-byte.
 ///
 /// Shared rather than re-derived: `tt-slots`' suggestion fallback and the
 /// new-task dialog's own branch field both want exactly this, and a slug rule

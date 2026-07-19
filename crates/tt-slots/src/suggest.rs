@@ -95,8 +95,24 @@ pub fn suggest(cwd: &Path, goal: &str, images: &[String]) -> Result<Suggested> {
     match ask_claude(cwd, goal, images) {
         Ok(suggestion) => Ok(Suggested { suggestion, fallback: None }),
         Err(e) => local_fallback(goal)
-            .map(|suggestion| Suggested { suggestion, fallback: Some(e.to_string()) })
+            .map(|suggestion| Suggested { suggestion, fallback: Some(one_line(&e)) })
             .ok_or(e),
+    }
+}
+
+/// The `fallback` note renders as one short line in the dialog, but
+/// [`SuggestError::Failed`] carries raw multi-line stderr — enough to blow out
+/// the form. Keep its first non-empty line; the full text is still in the log.
+/// `Exec` and `Unparseable` are already one line, so they pass through.
+fn one_line(e: &SuggestError) -> String {
+    let SuggestError::Failed(stderr) = e else {
+        return e.to_string();
+    };
+    match stderr.lines().map(str::trim).find(|l| !l.is_empty()) {
+        Some(first) => format!("claude -p failed: {first}"),
+        // A non-zero exit with silent stderr — Display would give a bare
+        // "claude -p failed:" with nothing after the colon.
+        None => "claude -p exited non-zero with no output".to_string(),
     }
 }
 
@@ -322,8 +338,27 @@ mod tests {
 
     #[test]
     fn a_long_goal_only_slugs_its_opening() {
-        let s = local_fallback(&"word ".repeat(40)).unwrap();
-        assert!(s.branch.len() <= "feat/".len() + BRANCH_SLUG_SOURCE_CHARS, "{}", s.branch);
+        // Counted in chars, not bytes — the budget is `chars().take(..)`, so a
+        // byte-length assertion would pass on ASCII and miss a multi-byte
+        // overrun entirely.
+        for goal in [&"word ".repeat(40), &"wörd ".repeat(40)] {
+            let s = local_fallback(goal).unwrap();
+            let slug_chars = s.branch.chars().count() - "feat/".chars().count();
+            assert!(slug_chars <= BRANCH_SLUG_SOURCE_CHARS, "{} ({slug_chars} chars)", s.branch);
+        }
+    }
+
+    #[test]
+    fn a_fallback_note_stays_one_line() {
+        // The note is a single 11px line in the dialog; raw stderr is not.
+        let e = SuggestError::Failed("error: boom\n  at frame one\n  at frame two".into());
+        assert_eq!(one_line(&e), "claude -p failed: error: boom");
+        // Display would render a bare "claude -p failed:" with nothing after it.
+        assert_eq!(
+            one_line(&SuggestError::Failed(String::new())),
+            "claude -p exited non-zero with no output"
+        );
+        assert_eq!(one_line(&SuggestError::Unparseable), SuggestError::Unparseable.to_string());
     }
 
     #[test]
