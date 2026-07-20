@@ -84,6 +84,11 @@ const CALENDAR_KEY: &str = "claude:calendar";
 pub fn collect_calendar(store: &Store, sources: &[CalendarSource], now_ms: i64) -> CollectSummary {
     let enabled: Vec<&CalendarSource> = sources.iter().filter(|s| s.enabled).collect();
     if enabled.is_empty() {
+        // Still age out stale rows. Retention otherwise only runs as a side
+        // effect of a write, so turning the last calendar off would freeze
+        // whatever was in the table — leaving the countdown counting down from
+        // a meeting that happened weeks ago.
+        let _ = store.sweep_old_events(now_ms);
         let msg = "no calendar sources enabled".to_string();
         return finish(store, CALENDAR_KEY, true, 0, Some(msg), now_ms);
     }

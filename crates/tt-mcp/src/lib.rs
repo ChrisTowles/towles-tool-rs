@@ -398,11 +398,25 @@ impl Dispatcher {
             .map_err(|e| format!("invalid events payload: {e}"))?;
 
         let reference_ms = match args.get("day").and_then(Value::as_str) {
-            Some(day) => local_midnight_ms(day)
+            Some(day) => day_reference_ms(day)
                 .ok_or_else(|| format!("invalid day: {day} (expected YYYY-MM-DD)"))?,
             None => now_ms,
         };
         let (day_start, day_end) = Store::local_day_bounds(reference_ms);
+
+        // Refuse a day the store's retention sweep would immediately reclaim.
+        // Without this the tool accepts the write, reports `written: N`, and the
+        // very next calendar write from any source deletes those rows — a
+        // success return value with a one-tick shelf life. Better to say no than
+        // to be briefly, confidently wrong.
+        if day_end <= now_ms.saturating_sub(tt_store::EVENT_RETAIN_MS) {
+            return Err(format!(
+                "day {} is past the {}-day retention window — events that old are swept, so \
+                 writing them would report success and then silently drop them",
+                args.get("day").and_then(Value::as_str).unwrap_or("(derived)"),
+                tt_store::EVENT_RETAIN_MS / (24 * 60 * 60 * 1000),
+            ));
+        }
 
         let written = self
             .store
@@ -545,10 +559,17 @@ fn tool_error_response(id: Value, message: &str) -> String {
 /// Local midnight of a `YYYY-MM-DD` date as epoch ms, or `None` when the date
 /// does not parse or has no unambiguous local midnight. Only used to pick the
 /// reference instant handed to [`Store::local_day_bounds`].
-fn local_midnight_ms(day: &str) -> Option<i64> {
+fn day_reference_ms(day: &str) -> Option<i64> {
     let date = NaiveDate::parse_from_str(day.trim(), "%Y-%m-%d").ok()?;
-    let midnight = date.and_hms_opt(0, 0, 0)?;
-    Some(Local.from_local_datetime(&midnight).single()?.timestamp_millis())
+    // Local **noon**, not midnight. This value is only a reference instant —
+    // `Store::local_day_bounds` re-derives the real `[start, end)` edges from
+    // it — and midnight is the one time of day that can fail to exist or be
+    // ambiguous. Resolving it with `.single()` returned `None` on exactly the
+    // DST-transition dates in zones that switch at midnight (Havana, Santiago,
+    // São Paulo), so a perfectly valid date came back as "invalid day" and that
+    // day's calendar could never be pushed. Noon is unambiguous in every zone.
+    let noon = date.and_hms_opt(12, 0, 0)?;
+    Some(Local.from_local_datetime(&noon).earliest()?.timestamp_millis())
 }
 
 /// The calendar-lane refusal: names the rejected id and lists the configured
@@ -917,7 +938,7 @@ mod tests {
         let mut dispatcher = dispatcher();
         let day = Local.timestamp_millis_opt(NOW).single().unwrap().date_naive();
         let tomorrow = (day + Duration::days(1)).format("%Y-%m-%d").to_string();
-        let tomorrow_start = local_midnight_ms(&tomorrow).unwrap();
+        let tomorrow_start = Store::local_day_bounds(day_reference_ms(&tomorrow).unwrap()).0;
 
         let result = call_tool(
             &mut dispatcher,

@@ -830,8 +830,12 @@ function ToolTesterDialog({ tool, onClose }: { tool: McpToolDoc | null; onClose:
             onChange={(e) => setAsBrowser(e.target.checked)}
             className="size-3.5"
           />
-          Send as a browser would (adds an <span className="font-mono">Origin</span> header) — the
-          server must refuse this
+          {/* One flex child, not three: bare text nodes beside the inline
+              <span> would each become a flex item and lay out as columns. */}
+          <span>
+            Send as a browser would (adds an <span className="font-mono">Origin</span> header) — the
+            server must refuse this
+          </span>
         </label>
 
         <div className="flex items-center gap-2">

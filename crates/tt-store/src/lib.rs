@@ -48,11 +48,12 @@ const SCHEMA_VERSION: i64 = 9;
 const MCP_CALL_RETAIN: i64 = 500;
 
 /// How far back calendar events are kept, swept on each calendar write.
+/// Public so writers can refuse a backfill their own sweep would reclaim.
 ///
 /// Events are a cache in service of "when is my next meeting", so history has
 /// no value here — but a few days of slack means a clock skew or a late-running
 /// pull can't discard a meeting that hasn't happened yet.
-const EVENT_RETAIN_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+pub const EVENT_RETAIN_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 /// How many MCP call-log rows ride along in a [`Snapshot`] (newest first).
 const MCP_CALL_SNAPSHOT_LIMIT: usize = 100;
@@ -814,6 +815,26 @@ impl Store {
         }
     }
 
+    /// Drop calendar events older than the retention window, independent of any
+    /// write.
+    ///
+    /// [`Store::replace_events_for_source`] sweeps as a side effect, which is
+    /// enough while some calendar is still being pulled — but not when the last
+    /// one is switched off. Then no write ever happens again, the sweep never
+    /// runs, and whatever was in the table stays forever: `calendar_next` keeps
+    /// returning a meeting from the day the user turned collection off, with an
+    /// ever-more-negative `minutesUntil` feeding the countdown and the
+    /// meeting-start notification. The collector calls this even on the
+    /// nothing-to-do path for exactly that reason.
+    ///
+    /// Returns how many rows were removed.
+    pub fn sweep_old_events(&self, now_ms: i64) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM events WHERE start_ts < ?1",
+            params![now_ms.saturating_sub(EVENT_RETAIN_MS)],
+        )?)
+    }
+
     /// Replace one calendar's events within one day window, leaving every other
     /// calendar — and every other day — untouched.
     ///
@@ -861,6 +882,22 @@ impl Store {
             "DELETE FROM events WHERE start_ts < ?1",
             params![now_ms.saturating_sub(EVENT_RETAIN_MS)],
         )?;
+        // De-duplicate by external_id before inserting. The upsert below would
+        // otherwise let a repeated id overwrite its own earlier row inside this
+        // loop — one row lands, the other vanishes, and the returned count still
+        // claims both were written. A model emitting the same recurring-meeting
+        // instance twice is exactly how that happens, so collapse it here and
+        // report what actually landed. Last occurrence wins, matching the
+        // upsert's own semantics.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let deduped: Vec<&EventInput> = events
+            .iter()
+            .rev()
+            .filter(|e| seen.insert(e.external_id.as_str()))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO events
@@ -876,7 +913,7 @@ impl Store {
                    join_url = excluded.join_url,
                    updated_at = excluded.updated_at",
             )?;
-            for e in events {
+            for e in &deduped {
                 stmt.execute(params![
                     source,
                     e.external_id,
@@ -891,7 +928,7 @@ impl Store {
             }
         }
         tx.commit()?;
-        Ok(events.len())
+        Ok(deduped.len())
     }
 
     /// Replace only the named repos' issue rows, leaving other repos' rows
@@ -2109,6 +2146,56 @@ mod tests {
         let ids: Vec<String> =
             s.snapshot().unwrap().events.iter().map(|e| e.external_id.clone()).collect();
         assert_eq!(ids, vec!["today"], "the orphaned lane's stale row is gone");
+    }
+
+    /// A repeated `externalId` inside one payload used to have the upsert
+    /// overwrite its own earlier row mid-loop: one row landed, the other
+    /// vanished, and the returned count still claimed both were written.
+    #[test]
+    fn duplicate_external_ids_in_one_payload_are_collapsed_and_counted_honestly() {
+        let s = Store::open_in_memory().unwrap();
+        let now = 30 * EVENT_RETAIN_MS;
+        let mut first = event("abc", now + 1000);
+        first.title = "Standup (9am)".to_string();
+        let mut second = event("abc", now + 5000);
+        second.title = "Standup (2pm)".to_string();
+
+        let written = s
+            .replace_events_for_source("google", now, now + 86_400_000, &[first, second], now)
+            .unwrap();
+        assert_eq!(written, 1, "count reflects rows that landed, not payload length");
+        let events = s.snapshot().unwrap().events;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].title, "Standup (2pm)", "last occurrence wins, matching the upsert");
+    }
+
+    /// Retention can't be hostage to a write happening: switching the last
+    /// calendar off means no write ever runs again, so the sweep has to be
+    /// callable on its own or stale rows live forever.
+    #[test]
+    fn sweep_old_events_works_without_a_write() {
+        let s = Store::open_in_memory().unwrap();
+        let now = 30 * EVENT_RETAIN_MS;
+        s.replace_events_for_source(
+            "google",
+            0,
+            i64::MAX,
+            &[
+                event("stale", now - EVENT_RETAIN_MS - 1),
+                event("fresh", now),
+            ],
+            now,
+        )
+        .unwrap();
+        assert_eq!(s.snapshot().unwrap().events.len(), 2, "both written inside the window");
+
+        // Time passes; nothing writes. The sweep alone must still age it out.
+        let later = now + EVENT_RETAIN_MS;
+        let removed = s.sweep_old_events(later).unwrap();
+        assert_eq!(removed, 1);
+        let ids: Vec<String> =
+            s.snapshot().unwrap().events.iter().map(|e| e.external_id.clone()).collect();
+        assert_eq!(ids, vec!["fresh"]);
     }
 
     /// Retention must not eat a meeting that hasn't happened yet, nor the recent
