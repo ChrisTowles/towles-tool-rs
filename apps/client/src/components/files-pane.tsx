@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
   AtSign,
+  Code2,
   Columns2,
+  Eye,
   Files as FilesIcon,
   Maximize2,
   Minimize2,
@@ -20,6 +23,7 @@ import {
   setMonacoOpenHandler,
   setMonacoWorkspace,
 } from "@/lib/monaco";
+import { modeForPanels, panelsFor, type EditorViewMode } from "@/lib/editor-view-mode";
 import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
 import { folderStatsKey, type FolderData } from "@/lib/agentboard";
@@ -33,9 +37,9 @@ import { folderStatsKey, type FolderData } from "@/lib/agentboard";
  * mention explicitly: the header @ button sends the whole file, while the
  * viewer's selection chip (or ⌘⇧A) sends just the highlighted lines. Long
  * lines wrap by default (toggle in the
- * viewer toolbar); Markdown/HTML files get a second toggle that opens a
- * resizable split preview alongside the editor, and a third lifts the whole
- * pane out of the Agentboard tiling to fill the viewport (Escape returns it).
+ * viewer toolbar); Markdown/HTML files pick between code, a resizable split,
+ * and the rendered page alone, and any file can lift the whole pane out of
+ * the Agentboard tiling to fill the viewport (Escape returns it).
  */
 
 /** Claude called openFile — focus this file (new nonce per request). */
@@ -60,9 +64,17 @@ export function FilesPane({
   const [open, setOpen] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [wordWrap, setWordWrap] = useState(true);
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<EditorViewMode>("code");
   const [fullscreen, setFullscreen] = useState(false);
   const explorerRef = useRef<HTMLDivElement>(null);
+  const editorPanelRef = useRef<PanelImperativeHandle>(null);
+  const previewPanelRef = useRef<PanelImperativeHandle>(null);
+  // Set while the effect below is driving the panels, so the `onResize` echo
+  // of our own collapse/expand doesn't get read back as a user drag. Without
+  // it the two directions chase each other: expanding the preview for
+  // "preview" mode momentarily leaves both panels open, which reads as
+  // "split", which re-expands the editor we were about to collapse.
+  const drivingPanelsRef = useRef(false);
 
   // Reset on a genuine dir *change* only — skipping the initial mount keeps
   // this independent of the openRequest effect below, whose request may have
@@ -79,10 +91,10 @@ export function FilesPane({
     if (openRequest) setOpen(openRequest.path);
   }, [openRequest]);
 
-  // A newly-opened file starts with the preview pane closed — it only makes
-  // sense for the file that was previewable, not whatever's opened next.
+  // A newly-opened file starts on the code — the previous file's view mode
+  // says nothing about this one, which may not even have a preview.
   useEffect(() => {
-    setPreviewOpen(false);
+    setViewMode("code");
   }, [open]);
 
   // The only way back out of fullscreen is the header toggle, and the header
@@ -112,6 +124,46 @@ export function FilesPane({
   }, [fullscreen]);
 
   const previewKind = open ? previewKindFor(open) : null;
+
+  // Drive the panels from the mode. Split sizes explicitly rather than
+  // leaning on `expand()`, which restores a panel to its *most recent* size —
+  // and the preview's most recent size is 0 until the user has opened it once,
+  // so expanding alone lands on a useless sliver. The single-panel modes just
+  // collapse the other half and let it take the whole group.
+  useEffect(() => {
+    if (!previewKind) return;
+    const editor = editorPanelRef.current;
+    const preview = previewPanelRef.current;
+    if (!editor || !preview) return;
+    const want = panelsFor(viewMode);
+    drivingPanelsRef.current = true;
+    if (want.editor && want.preview) {
+      editor.expand();
+      preview.expand();
+      editor.resize("50%");
+      preview.resize("50%");
+    } else if (want.editor) {
+      editor.expand();
+      preview.collapse();
+    } else {
+      preview.expand();
+      editor.collapse();
+    }
+    const settled = setTimeout(() => {
+      drivingPanelsRef.current = false;
+    }, 0);
+    return () => clearTimeout(settled);
+  }, [viewMode, previewKind]);
+
+  // …and read the mode back off the panels when the *user* moves the handle,
+  // so dragging one shut lights the matching toolbar button.
+  const syncModeFromPanels = () => {
+    if (drivingPanelsRef.current) return;
+    const editor = editorPanelRef.current;
+    const preview = previewPanelRef.current;
+    if (!editor || !preview) return;
+    setViewMode(modeForPanels(!editor.isCollapsed(), !preview.isCollapsed()));
+  };
 
   // This pane is the VS Code workspace: the Explorer sidebar renders into
   // this pane's container, quick-open (Ctrl+P in the editor) searches this
@@ -210,16 +262,31 @@ export function FilesPane({
                 <WrapText className="size-3.5" />
               </IconBtn>
               {previewKind && (
-                <IconBtn
-                  title={previewOpen ? "Close preview" : `Open a ${previewKind} preview`}
-                  onClick={() => {
-                    setPreviewOpen((p) => !p);
-                    uiAction("files.preview", "agentboard", previewOpen ? "off" : "on");
-                  }}
-                  className={previewOpen ? "text-violet-500" : undefined}
-                >
-                  <Columns2 className="size-3.5" />
-                </IconBtn>
+                <span className="flex shrink-0 items-center gap-0.5">
+                  {(
+                    [
+                      { mode: "code", icon: Code2, title: "Code only" },
+                      {
+                        mode: "split",
+                        icon: Columns2,
+                        title: `Code and ${previewKind} side by side`,
+                      },
+                      { mode: "preview", icon: Eye, title: `Rendered ${previewKind} only` },
+                    ] as const
+                  ).map(({ mode, icon: Icon, title }) => (
+                    <IconBtn
+                      key={mode}
+                      title={title}
+                      onClick={() => {
+                        setViewMode(mode);
+                        uiAction("files.view_mode", "agentboard", mode);
+                      }}
+                      className={viewMode === mode ? "text-violet-500" : undefined}
+                    >
+                      <Icon className="size-3.5" />
+                    </IconBtn>
+                  ))}
+                </span>
               )}
               <IconBtn
                 title={fullscreen ? "Exit fullscreen (Escape)" : "Fill the window"}
@@ -252,9 +319,19 @@ export function FilesPane({
               </button>
             </div>
             <div className="min-h-0 flex-1">
-              {previewOpen && previewKind ? (
+              {previewKind ? (
+                // Both panels stay mounted in all three modes — see
+                // `lib/editor-view-mode.ts` for why collapsing beats
+                // unmounting.
                 <ResizablePanelGroup orientation="horizontal">
-                  <ResizablePanel defaultSize={50} minSize={20}>
+                  <ResizablePanel
+                    panelRef={editorPanelRef}
+                    defaultSize="50%"
+                    minSize="20%"
+                    collapsible
+                    collapsedSize="0%"
+                    onResize={syncModeFromPanels}
+                  >
                     <CodeViewer
                       dir={dir}
                       path={open}
@@ -269,7 +346,14 @@ export function FilesPane({
                     />
                   </ResizablePanel>
                   <ResizableHandle withHandle />
-                  <ResizablePanel defaultSize={50} minSize={20}>
+                  <ResizablePanel
+                    panelRef={previewPanelRef}
+                    defaultSize="50%"
+                    minSize="20%"
+                    collapsible
+                    collapsedSize="0%"
+                    onResize={syncModeFromPanels}
+                  >
                     <FilePreview dir={dir} path={open} kind={previewKind} />
                   </ResizablePanel>
                 </ResizablePanelGroup>
