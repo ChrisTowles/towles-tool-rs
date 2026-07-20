@@ -496,7 +496,6 @@ pub fn run() {
             agentboard::ab_rename_session,
             agentboard::ab_close_session,
             agentboard::ab_refresh,
-            agentboard::ab_set_folder_purpose,
             agentboard::ab_set_repo_meta,
             agentboard::ab_set_repo_order,
             agentboard::ab_set_folder_base_branch,

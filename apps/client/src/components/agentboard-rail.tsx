@@ -27,7 +27,6 @@ import {
   NeedsBadge,
   PortDriftBadge,
   PrChip,
-  PurposeRow,
   RepoMenu,
   SafeToDeleteBadge,
   BranchLabel,
@@ -554,9 +553,6 @@ export function RepoGroup({
           onOpenFiles={() => onOpenFiles(folder.dir)}
           onOpenPreview={() => onOpenPreview(folder.dir)}
         />
-        {/* The note is a folder label — visible under the header even when the
-            folder is collapsed (renders nothing when unset). */}
-        <PurposeRow folder={folder} />
         {slotFormOpen && (
           <InlineNewSlot
             repo={{ name: repo.name, dir: folder.dir, key: repo.key }}
@@ -701,9 +697,6 @@ export function RepoGroup({
                   onOpenFiles={() => onOpenFiles(folder.dir)}
                   onOpenPreview={() => onOpenPreview(folder.dir)}
                 />
-                {/* Note is a folder label — shown under the header even when the
-                    folder is collapsed (renders nothing when unset). */}
-                <PurposeRow folder={folder} />
                 {!fCollapsed && <div className="pb-1">{sessionRows(folder)}</div>}
               </motion.div>
             );
@@ -935,7 +928,6 @@ function FolderHeader({
             path={folder.dir}
             onRemove={onRemoveRepo}
             dir={folder.dir}
-            folder={folder}
             isWorktree={folder.isWorktree}
             onNewSlot={!missing ? onNewSlot : undefined}
             onDeleteWorktree={!missing ? onDeleteWorktree : undefined}

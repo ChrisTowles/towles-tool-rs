@@ -149,7 +149,6 @@ mod tests {
                     commits_unlanded: 0,
                     sessions,
                     needs: 0,
-                    purpose: None,
                     base_branch: None,
                     slot_base_branch: None,
                     compared_base: String::new(),

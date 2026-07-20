@@ -186,8 +186,10 @@ pub struct SessionData {
     pub agent_state: Option<AgentEvent>,
     /// All agent instances attributed to this PTY (newest-first).
     pub agents: Vec<AgentEvent>,
-    /// User-authored "what am I working toward here" — captured when
-    /// starting Claude (sessions.json).
+    /// Echo of the prompt Claude was launched with in this PTY, auto-captured
+    /// at launch and shown read-only as the row's hover tooltip
+    /// (sessions.json). Nothing user-authored — there is no editable
+    /// per-session or per-folder note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
     /// Ports this session's shell saw in the folder's `.env` at spawn time
@@ -247,9 +249,6 @@ pub struct FolderData {
     /// still unseen. Bubbles up to the repo. Computed app-side after
     /// shell-liveness stamping (`bridge::recompute_needs`).
     pub needs: i64,
-    /// User-authored "what am I working toward here" (folder_meta.json).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purpose: Option<String>,
     /// Branch this folder's diff pane compares against (`DiffMode::Main`),
     /// overriding the origin/main-or-master auto-detect (folder_meta.json).
     #[serde(default, skip_serializing_if = "Option::is_none")]
