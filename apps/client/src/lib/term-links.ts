@@ -5,7 +5,8 @@
  *
  * A cell may carry a real OSC 8 hyperlink URI (`Run.link`); when it does,
  * `linkAt` trusts it outright — the visible text needn't look like a URL at
- * all (e.g. `gh`/markdown-style link labels like "here"). Otherwise links are
+ * all (e.g. `gh`/markdown-style link labels like "here"). A `file://` URI
+ * comes back as a *path* link (`fileUrlToPath`), not a URL. Otherwise links are
  * found by regex over reconstructed row text. Rows are joined across soft
  * wraps using the engine's real per-row wrap flag (`RowUpdate.wrapped`, from
  * libghostty), which is how long links printed by CLIs (e.g. Claude Code)
@@ -102,6 +103,34 @@ export function rowLinks(runs: Run[], cols: number): (string | undefined)[] {
     for (let x = run.x; x < end; x++) out[x] = run.link;
   }
   return out;
+}
+
+/**
+ * Parse a `file://` hyperlink URI into a filesystem path + optional 1-based
+ * line, or null when the URI has another scheme. CLIs hyperlink the paths
+ * they print (Claude Code's tool headers do), and treating those as web URLs
+ * hands them to the system opener, which silently does nothing — a file URI
+ * is a *path* link. Handles an empty or `localhost` authority, %-encoding,
+ * and line carried as `&line=`/`?line=`/`#L` (Claude Code appends
+ * `&line={line}&column={column}` without a `?`).
+ */
+export function fileUrlToPath(url: string): { path: string; line: number | null } | null {
+  if (!url.startsWith("file://")) return null;
+  let rest = url.slice("file://".length);
+  const slash = rest.indexOf("/");
+  if (slash < 0) return null;
+  rest = rest.slice(slash); // drop the authority (empty or localhost)
+  const cut = rest.search(/[?&#]/);
+  const rawPath = cut < 0 ? rest : rest.slice(0, cut);
+  const suffix = cut < 0 ? "" : rest.slice(cut);
+  const m = suffix.match(/[?&#](?:line=|L)(\d+)/);
+  let path: string;
+  try {
+    path = decodeURIComponent(rawPath);
+  } catch {
+    path = rawPath;
+  }
+  return { path, line: m ? Number.parseInt(m[1], 10) : null };
 }
 
 /** Drop sentence punctuation and unbalanced closing brackets off a match
@@ -225,7 +254,10 @@ export function linkAt(
     while (start > 0 && linkRows[start - 1] === hyperlink) start--;
     let end = probe;
     while (end < linkRows.length - 1 && linkRows[end + 1] === hyperlink) end++;
-    return { kind: "url", url: hyperlink, segments: segmentsFor(start, end, startRow, cols) };
+    const segments = segmentsFor(start, end, startRow, cols);
+    const file = fileUrlToPath(hyperlink);
+    if (file) return { kind: "path", path: file.path, line: file.line, segments };
+    return { kind: "url", url: hyperlink, segments };
   }
 
   for (const m of joined.matchAll(URL_RE)) {

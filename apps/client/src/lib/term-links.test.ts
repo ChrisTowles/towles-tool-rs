@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { linkAt, linkLabel, rowLinks, rowText } from "@/lib/term-links";
+import { fileUrlToPath, linkAt, linkLabel, rowLinks, rowText } from "@/lib/term-links";
 import type { Run } from "@/lib/term-protocol";
 
 const COLS = 40;
@@ -149,7 +149,57 @@ describe("linkAt (urls)", () => {
   });
 });
 
+describe("fileUrlToPath", () => {
+  it("parses a plain file URI", () => {
+    expect(fileUrlToPath("file:///home/u/src/main.rs")).toEqual({
+      path: "/home/u/src/main.rs",
+      line: null,
+    });
+  });
+
+  it("parses Claude Code's &line=&column= suffix (no ?)", () => {
+    expect(fileUrlToPath("file:///home/u/a.rs&line=42&column=7")).toEqual({
+      path: "/home/u/a.rs",
+      line: 42,
+    });
+  });
+
+  it("handles ?line=, #L, a localhost authority, and %-encoding", () => {
+    expect(fileUrlToPath("file://localhost/x/y.ts?line=9")).toEqual({ path: "/x/y.ts", line: 9 });
+    expect(fileUrlToPath("file:///x/y.ts#L12")).toEqual({ path: "/x/y.ts", line: 12 });
+    expect(fileUrlToPath("file:///a/my%20file.md")).toEqual({ path: "/a/my file.md", line: null });
+  });
+
+  it("returns null for other schemes", () => {
+    expect(fileUrlToPath("https://example.com/a.rs")).toBeNull();
+  });
+});
+
 describe("linkAt (osc8 hyperlinks)", () => {
+  it("returns a file:// hyperlink as a path link, not a URL", () => {
+    // Claude Code hyperlinks the paths in its tool headers; opening those
+    // with the system URL opener silently does nothing.
+    const lines = [
+      {
+        runs: [
+          { x: 0, width: 7, text: "Update(" },
+          {
+            x: 7,
+            width: 9,
+            text: "launch.rs",
+            link: "file:///home/u/repo/launch.rs&line=8&column=1",
+          },
+          { x: 16, width: 1, text: ")" },
+        ],
+      },
+    ];
+    const link = pathAt(lines, COLS, 9, 0);
+    expect(link?.kind).toBe("path");
+    expect(link?.path).toBe("/home/u/repo/launch.rs");
+    expect(link?.line).toBe(8);
+    expect(link?.segments).toEqual([{ y: 0, start: 7, end: 15 }]);
+  });
+
   it("trusts a hyperlink whose visible text doesn't look like a URL", () => {
     const lines = [
       {
@@ -233,6 +283,11 @@ describe("linkAt (paths)", () => {
     const link = pathAt(lines, COLS, 10, 0);
     expect(link?.path).toBe("/home/ctowles/app.tsx");
     expect(link?.line).toBeNull();
+  });
+
+  it("matches a dotdir-relative path like .claude/worktrees/…", () => {
+    const lines = [row("Update(.claude/worktrees/x/src/launch.rs)")];
+    expect(pathAt(lines, COLS, 20, 0)?.path).toBe(".claude/worktrees/x/src/launch.rs");
   });
 
   it("matches ./ and ../ relative prefixes", () => {
