@@ -88,7 +88,7 @@ pub fn collect_calendar(store: &Store, sources: &[CalendarSource], now_ms: i64) 
         return finish(store, CALENDAR_KEY, true, 0, Some(msg), now_ms);
     }
 
-    let (day_start_ms, day_end_ms) = local_day_bounds(now_ms);
+    let (day_start_ms, day_end_ms) = Store::local_day_bounds(now_ms);
     let mut count = 0usize;
     let mut notes: Vec<String> = Vec::new();
     let mut ok = true;
@@ -178,33 +178,6 @@ fn has_future_events_today(
         .events_between(now_ms, day_end_ms)
         .map(|events| events.iter().any(|e| e.source == source))
         .map_err(|e| e.to_string())
-}
-
-/// The `[start, end)` epoch-ms bounds of the local calendar day containing
-/// `now_ms` — the window each source's write is scoped to.
-fn local_day_bounds(now_ms: i64) -> (i64, i64) {
-    use chrono::{Duration, Local, TimeZone};
-    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
-    let now = match Local.timestamp_millis_opt(now_ms) {
-        chrono::LocalResult::Single(dt) => dt,
-        // Ambiguous/nonexistent local instants are a DST edge; fall back to a
-        // ±1 day window so the guard stays conservative (keeps events) and the
-        // day sweep still covers today.
-        _ => return (now_ms - DAY_MS, now_ms + DAY_MS),
-    };
-    let midnight = |date: chrono::NaiveDate, fallback: i64| {
-        match now.timezone().from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap()) {
-            chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
-                dt.timestamp_millis()
-            }
-            // Midnight doesn't exist (spring-forward at 00:00, rare).
-            chrono::LocalResult::None => fallback,
-        }
-    };
-    let today = now.date_naive();
-    let start = midnight(today, now_ms - DAY_MS);
-    let end = midnight(today + Duration::days(1), now_ms + DAY_MS);
-    (start, end)
 }
 
 /// Collect open issues assigned to me across `repo_dirs` via `gh` and update the
@@ -994,7 +967,7 @@ mod tests {
     /// Write `events` into `source`'s lane for the local day containing `now`,
     /// the same way [`collect_calendar`] does.
     fn seed(store: &Store, source: &str, events: &[EventInput], now: i64) {
-        let (start, end) = local_day_bounds(now);
+        let (start, end) = Store::local_day_bounds(now);
         store.replace_events_for_source(source, start, end, events, now).unwrap();
     }
 
@@ -1006,14 +979,14 @@ mod tests {
         events: &[EventInput],
         now: i64,
     ) -> Result<usize, String> {
-        let (start, end) = local_day_bounds(now);
+        let (start, end) = Store::local_day_bounds(now);
         store_calendar_events(store, source, start, end, events, now)
     }
 
     #[test]
     fn local_day_bounds_bracket_now() {
         let now = local_noon_ms();
-        let (start, end) = local_day_bounds(now);
+        let (start, end) = Store::local_day_bounds(now);
         assert!(start <= now && now < end, "now falls inside its own local day");
         // A day is 23–25h wide depending on DST; noon is always well inside it.
         assert!(end - start >= 23 * 60 * 60 * 1000);

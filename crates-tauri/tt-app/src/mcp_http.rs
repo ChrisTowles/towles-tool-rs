@@ -77,7 +77,9 @@ pub fn mcp_status() -> serde_json::Value {
 /// The MCP endpoint path. A single route: this is not a REST API.
 const MCP_PATH: &str = "/mcp";
 
-/// Largest request body accepted, so a stray upload can't balloon memory. MCP
+/// Largest request body accepted. Enforced incrementally by `Limited` in
+/// [`read_body`] — the body is never buffered past this, so a stray upload
+/// can't balloon memory rather than merely being rejected after the fact. MCP
 /// requests are small; `calendar_set` pushing a full day of events is the
 /// biggest realistic payload and is far under this.
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -99,6 +101,10 @@ pub enum Refusal {
     MethodNotAllowed,
     /// Body exceeded [`MAX_BODY_BYTES`].
     TooLarge,
+    /// The body could not be read to the end (e.g. the client hung up).
+    /// Distinct from [`Refusal::TooLarge`] so the logs don't report a hangup as
+    /// an oversized upload.
+    Unreadable,
 }
 
 impl Refusal {
@@ -110,6 +116,7 @@ impl Refusal {
             Refusal::NotFound => 404,
             Refusal::MethodNotAllowed => 405,
             Refusal::TooLarge => 413,
+            Refusal::Unreadable => 400,
         }
     }
 
@@ -123,6 +130,7 @@ impl Refusal {
             Refusal::NotFound => "not found",
             Refusal::MethodNotAllowed => "method not allowed",
             Refusal::TooLarge => "request body too large",
+            Refusal::Unreadable => "could not read request body",
         }
     }
 }
@@ -372,23 +380,31 @@ async fn serve_connection(
                     // down for the rest of the session is the worse failure.
                     Err(poisoned) => poisoned.into_inner(),
                 };
-                dispatcher.handle(&body)
+                dispatcher.dispatch(&body)
             })
             .await;
 
             match reply {
                 // A notification: no response body. 202 is what MCP's
                 // streamable-HTTP transport specifies for this case.
-                Ok(None) => Ok(Response::builder()
+                Ok(handled) if handled.response.is_none() => Ok(Response::builder()
                     .status(StatusCode::ACCEPTED)
                     .body(String::new())
                     .unwrap_or_else(|_| Response::new(String::new()))),
-                Ok(Some(reply)) => {
-                    // Any successful call may have mutated the store, and the
-                    // dispatcher writes through its own connection, so the UI
-                    // would otherwise not notice until its next poll.
-                    crate::store::emit_snapshot_from_app(&app);
-                    Ok(json_response(reply))
+                Ok(handled) => {
+                    // Refresh the UI only for a call that actually wrote. The
+                    // dispatcher writes through its own connection, so the app
+                    // wouldn't otherwise notice — but `emit_snapshot_from_app`
+                    // rebuilds the *entire* snapshot and takes `StoreState`'s
+                    // lock, which is the lock this transport opened a second
+                    // connection to stay off. Doing that per read would hand
+                    // back the contention the separate connection bought, and a
+                    // session's opening `initialize` + `tools/list` alone would
+                    // pay for two full rebuilds that changed nothing.
+                    if handled.wrote {
+                        crate::store::emit_snapshot_from_app(&app);
+                    }
+                    Ok(json_response(handled.response.unwrap_or_default()))
                 }
                 Err(error) => {
                     tracing::error!(%error, "mcp.http: dispatch task failed");
@@ -407,15 +423,28 @@ async fn serve_connection(
     }
 }
 
-/// Read the whole request body, refusing anything past [`MAX_BODY_BYTES`].
+/// Read the whole request body, refusing anything past [`MAX_BODY_BYTES`]
+/// **without buffering it first**.
+///
+/// The cap is enforced by `Limited`, which stops reading once the budget is
+/// exhausted, rather than by checking the length after `collect()` — collecting
+/// first would materialize an oversized upload in full and only then reject it,
+/// which is the opposite of what the cap is for.
+///
+/// A read that fails for any other reason (a client hanging up mid-body) is
+/// reported as [`Refusal::Unreadable`], not as "too large" — mislabelling a
+/// hangup 413 would make the refusal logs actively misleading.
 async fn read_body(body: hyper::body::Incoming) -> Result<String, Refusal> {
-    use http_body_util::BodyExt;
+    use http_body_util::{BodyExt, Limited};
 
-    let collected = body.collect().await.map_err(|_| Refusal::TooLarge)?.to_bytes();
-    if collected.len() > MAX_BODY_BYTES {
-        return Err(Refusal::TooLarge);
+    let limited = Limited::new(body, MAX_BODY_BYTES);
+    match limited.collect().await {
+        Ok(collected) => Ok(String::from_utf8_lossy(&collected.to_bytes()).into_owned()),
+        // `Limited` surfaces the overflow as its own boxed error; anything else
+        // is a genuine transport failure.
+        Err(error) if error.is::<http_body_util::LengthLimitError>() => Err(Refusal::TooLarge),
+        Err(_) => Err(Refusal::Unreadable),
     }
-    Ok(String::from_utf8_lossy(&collected).into_owned())
 }
 
 fn json_response(body: String) -> hyper::Response<String> {
@@ -556,5 +585,6 @@ mod tests {
         assert_eq!(Refusal::NotFound.status(), 404);
         assert_eq!(Refusal::MethodNotAllowed.status(), 405);
         assert_eq!(Refusal::TooLarge.status(), 413);
+        assert_eq!(Refusal::Unreadable.status(), 400);
     }
 }

@@ -49,7 +49,7 @@
 
 use std::time::Instant;
 
-use chrono::{Duration, Local, NaiveDate, TimeZone};
+use chrono::{Local, NaiveDate, TimeZone};
 use serde_json::{Value, json};
 use tt_store::{EventInput, McpCallInput, Store};
 
@@ -72,6 +72,48 @@ pub struct Dispatcher {
     /// `None` and re-reads the shared agentboard `repos.json` on every
     /// `task_create`, so newly tracked repos are creatable without a restart.
     tracked_repos: Option<Vec<String>>,
+    /// Injected calendar-source ids (test hook), keeping `calendar_set`'s lane
+    /// validation off the real settings file. `None` re-reads settings per call.
+    calendar_sources: Option<Vec<String>>,
+}
+
+/// What one dispatched request produced: the reply to send back, and whether
+/// the call actually wrote to the store.
+///
+/// `wrote` is deliberately narrow — true only for a *successful* call to a tool
+/// the contract marks as writing. A refusal, a failed write, and every read all
+/// report false, so a transport can use it to skip work that only a real
+/// mutation justifies.
+pub struct Handled {
+    /// The response line, or `None` for a notification (which gets no reply).
+    pub response: Option<String>,
+    /// Whether this call committed a change to the store.
+    pub wrote: bool,
+}
+
+impl Handled {
+    /// A reply that changed nothing.
+    fn read(response: Option<String>) -> Handled {
+        Handled { response, wrote: false }
+    }
+}
+
+/// Whether a tool writes to the store, per the same `annotations.readOnlyHint`
+/// the contract advertises to clients.
+///
+/// Single source of truth on purpose: [`tool_definitions`] ships the flag to
+/// callers and this reads it back, so a new writing tool cannot be advertised
+/// as read-only to a client while silently skipping the app's refresh — the two
+/// can't disagree, because there is only one fact.
+pub fn tool_writes(name: &str) -> bool {
+    tool_definitions()
+        .as_array()
+        .map(|tools| {
+            tools.iter().any(|tool| {
+                tool["name"] == name && tool["annotations"]["readOnlyHint"] == json!(false)
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// The result of dispatching one request: the response line to write back, plus
@@ -104,7 +146,7 @@ impl Outcome {
 impl Dispatcher {
     /// Build a dispatcher over `store`.
     pub fn new(store: Store) -> Dispatcher {
-        Dispatcher { store, client: None, tracked_repos: None }
+        Dispatcher { store, client: None, tracked_repos: None, calendar_sources: None }
     }
 
     /// Build a dispatcher with a fixed tracked-repo list (test hook — keeps
@@ -112,6 +154,36 @@ impl Dispatcher {
     pub fn with_tracked_repos(mut self, repos: Vec<String>) -> Dispatcher {
         self.tracked_repos = Some(repos);
         self
+    }
+
+    /// Build a dispatcher with a fixed calendar-source list (test hook — keeps
+    /// `calendar_set`'s lane validation off the real settings file).
+    pub fn with_calendar_sources(mut self, sources: Vec<String>) -> Dispatcher {
+        self.calendar_sources = Some(sources);
+        self
+    }
+
+    /// The calendar-source ids `calendar_set` validates against: the injected
+    /// override if any, else re-read from the settings file every time, so a
+    /// calendar added in Settings is writable without restarting the server.
+    /// An unreadable settings file yields no ids, which fails closed — every
+    /// `calendar_set` is refused rather than allowed to mint a lane.
+    fn calendar_source_ids(&self) -> Vec<String> {
+        if let Some(ids) = &self.calendar_sources {
+            return ids.clone();
+        }
+        tt_config::load()
+            .map(|settings| {
+                settings
+                    .collectors
+                    .calendar
+                    .sources
+                    .into_iter()
+                    .map(|source| source.id)
+                    .filter(|id| !id.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The tracked-repo dirs `task_create` validates against: the injected
@@ -132,27 +204,48 @@ impl Dispatcher {
 
     /// Handle one request line with an injected `now_ms` (deterministic tests).
     pub fn handle_at(&mut self, request_json: &str, now_ms: i64) -> Option<String> {
+        self.dispatch_at(request_json, now_ms).response
+    }
+
+    /// Handle one request line and report what it did, not just what to send
+    /// back.
+    ///
+    /// A transport needs [`Handled::wrote`] to decide whether anything
+    /// downstream must be refreshed. Only the dispatcher can answer that
+    /// honestly — it knows which tool ran — and guessing costs real work: the
+    /// app rebuilds and broadcasts an entire store snapshot per refresh, so
+    /// treating every `ping` and `task_list` as a possible write means a full
+    /// snapshot per read, taken against the very lock the transport opened a
+    /// second SQLite connection to avoid contending with.
+    pub fn dispatch(&mut self, request_json: &str) -> Handled {
+        self.dispatch_at(request_json, now_ms())
+    }
+
+    /// [`Dispatcher::dispatch`] with an injected `now_ms` (deterministic tests).
+    pub fn dispatch_at(&mut self, request_json: &str, now_ms: i64) -> Handled {
         let value: Value = match serde_json::from_str(request_json) {
             Ok(value) => value,
-            Err(_) => return Some(error_response(Value::Null, -32700, "Parse error")),
+            Err(_) => {
+                return Handled::read(Some(error_response(Value::Null, -32700, "Parse error")));
+            }
         };
 
         // A top-level array is a JSON-RPC batch. MCP 2025-06-18 removed batching,
         // so reject it with a single Invalid Request instead of letting the `id`
         // lookup below miss and silently drop it (which hangs a waiting client).
         if value.is_array() {
-            return Some(error_response(Value::Null, -32600, "Invalid Request"));
+            return Handled::read(Some(error_response(Value::Null, -32600, "Invalid Request")));
         }
 
         // Requests carry an `id`; notifications do not, and receive no response.
         let id = match value.get("id") {
             Some(id) if !id.is_null() => id.clone(),
-            _ => return None,
+            _ => return Handled::read(None),
         };
 
         let method = match value.get("method").and_then(Value::as_str) {
             Some(method) => method,
-            None => return Some(error_response(id, -32600, "Invalid Request")),
+            None => return Handled::read(Some(error_response(id, -32600, "Invalid Request"))),
         };
 
         // `initialize` carries the caller's identity; stamp it onto this and every
@@ -191,7 +284,9 @@ impl Dispatcher {
             log::warn!("tt-mcp: failed to record call log: {error}");
         }
 
-        Some(outcome.response)
+        // A refused or failed call changed nothing, so it needs no refresh.
+        let wrote = call.ok && call.tool.as_deref().is_some_and(tool_writes);
+        Handled { response: Some(outcome.response), wrote }
     }
 
     /// Dispatch a `tools/call`: tool errors become an `isError` result (not a
@@ -232,7 +327,7 @@ impl Dispatcher {
     /// Events whose start falls within the local calendar day of `now_ms` —
     /// the shape of the day, for deciding where the focus blocks are.
     fn calendar_today(&self, now_ms: i64) -> Result<Value, String> {
-        let (start, end) = local_day_bounds(now_ms);
+        let (start, end) = Store::local_day_bounds(now_ms);
         let events = self.store.events_between(start, end).map_err(|e| e.to_string())?;
         Ok(json!({ "events": events, "now": now_ms }))
     }
@@ -262,14 +357,28 @@ impl Dispatcher {
     /// **The day window is derived here, never taken from the payload.** The
     /// caller may name a day (`day`, `YYYY-MM-DD`, local); with no `day` it is
     /// the local calendar day containing `now_ms`. Either way the actual
-    /// `[start, end)` bounds come from [`local_day_bounds`], so a client cannot
+    /// `[start, end)` bounds come from [`Store::local_day_bounds`], so a client cannot
     /// widen the delete beyond one day — a mis-stated window is the one way
     /// this tool could destroy calendar rows it was not asked to touch, and the
     /// events themselves are the least trustworthy part of the request.
     ///
-    /// `source` names the lane and is caller-assigned; [`EventInput`]
-    /// deliberately has no `source` field, so a model-authored event array
-    /// cannot pick which calendar it overwrites.
+    /// **`source` must name a calendar the user actually configured**, and is
+    /// checked against `collectors.calendar.sources` in the settings file the
+    /// same way `task_create` checks `repo` against tracked repos. Two distinct
+    /// things go wrong without that check, and neither is hypothetical:
+    ///
+    /// - A typo or hallucinated id (`"gcal"`, `"Google"`, `"personal"`) mints a
+    ///   lane nothing will ever write again. Its rows still feed
+    ///   `calendar_next`, and no sweep will ever remove them — precisely the
+    ///   orphan-lane failure the v9 migration destroyed data to avoid. Enforcing
+    ///   it only at migration time would leave the runtime free to recreate it.
+    /// - It bounds the blast radius of a hijacked session. This tool replaces a
+    ///   day of a lane, so `{source, events: []}` *clears* that day; restricting
+    ///   `source` to configured calendars at least means it can only affect
+    ///   calendars the user opted into, and the refusal names what exists.
+    ///
+    /// [`EventInput`] additionally has no `source` field, so a model-authored
+    /// event array cannot smuggle a different lane in per-event.
     fn calendar_set(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
         let source = args
             .get("source")
@@ -277,6 +386,10 @@ impl Dispatcher {
             .map(str::trim)
             .filter(|source| !source.is_empty())
             .ok_or_else(|| "missing required argument: source".to_string())?;
+        let configured = self.calendar_source_ids();
+        if !configured.iter().any(|id| id == source) {
+            return Err(unknown_calendar_source_message(source, &configured));
+        }
         let events_arg = args
             .get("events")
             .filter(|events| events.is_array())
@@ -289,7 +402,7 @@ impl Dispatcher {
                 .ok_or_else(|| format!("invalid day: {day} (expected YYYY-MM-DD)"))?,
             None => now_ms,
         };
-        let (day_start, day_end) = local_day_bounds(reference_ms);
+        let (day_start, day_end) = Store::local_day_bounds(reference_ms);
 
         let written = self
             .store
@@ -429,32 +542,31 @@ fn tool_error_response(id: Value, message: &str) -> String {
     )
 }
 
-/// The `[start, end)` epoch-ms bounds of the local calendar day containing
-/// `now_ms`. Falls back to the empty window `(now_ms, now_ms)` when the local
-/// time is ambiguous or nonexistent (a DST transition), so a fold in the clock
-/// yields no events rather than a wrong day.
-fn local_day_bounds(now_ms: i64) -> (i64, i64) {
-    let Some(now) = Local.timestamp_millis_opt(now_ms).single() else {
-        return (now_ms, now_ms);
-    };
-    let date = now.date_naive();
-    let start = date.and_hms_opt(0, 0, 0).and_then(|dt| Local.from_local_datetime(&dt).single());
-    let end = (date + Duration::days(1))
-        .and_hms_opt(0, 0, 0)
-        .and_then(|dt| Local.from_local_datetime(&dt).single());
-    match (start, end) {
-        (Some(start), Some(end)) => (start.timestamp_millis(), end.timestamp_millis()),
-        _ => (now_ms, now_ms),
-    }
-}
-
 /// Local midnight of a `YYYY-MM-DD` date as epoch ms, or `None` when the date
 /// does not parse or has no unambiguous local midnight. Only used to pick the
-/// reference instant handed to [`local_day_bounds`].
+/// reference instant handed to [`Store::local_day_bounds`].
 fn local_midnight_ms(day: &str) -> Option<i64> {
     let date = NaiveDate::parse_from_str(day.trim(), "%Y-%m-%d").ok()?;
     let midnight = date.and_hms_opt(0, 0, 0)?;
     Some(Local.from_local_datetime(&midnight).single()?.timestamp_millis())
+}
+
+/// The calendar-lane refusal: names the rejected id and lists the configured
+/// ones, so a caller can self-correct without another round trip. An empty
+/// configured set is called out separately — "no calendars are configured" is a
+/// settings problem, not a bad argument, and the two want different fixes.
+fn unknown_calendar_source_message(source: &str, configured: &[String]) -> String {
+    if configured.is_empty() {
+        return format!(
+            "unknown calendar source: {source} — no calendars are configured. Add one under \
+             Settings → Collectors → Calendar before pushing events."
+        );
+    }
+    format!(
+        "unknown calendar source: {source} — configured calendars are: {}. Writing to an \
+         unconfigured lane would strand rows nothing ever sweeps.",
+        configured.join(", ")
+    )
 }
 
 /// The repo-validation refusal: names the argument and lists what *is*
@@ -472,7 +584,7 @@ fn unknown_repo_message(repo: &str, entries: &[tt_agentboard::repos::RepoEntry])
 /// JSON Schema tool descriptors returned by `tools/list` — the MCP contract's
 /// single source of truth. Also called directly by the app's `mcp_tool_docs`
 /// command so the MCP screen's tool documentation can never drift from what
-/// `tt mcp serve` actually exposes.
+/// the server actually exposes.
 pub fn tool_definitions() -> Value {
     let no_args = || json!({ "type": "object", "properties": {}, "required": [] });
     json!([
@@ -493,6 +605,7 @@ pub fn tool_definitions() -> Value {
             },
         },
         {
+            "annotations": { "readOnlyHint": false },
             "name": "task_create",
             "description": "Create a board task in a tracked repo's swimlane. Writes to the board.",
             "inputSchema": {
@@ -517,6 +630,7 @@ pub fn tool_definitions() -> Value {
             "inputSchema": no_args(),
         },
         {
+            "annotations": { "readOnlyHint": false },
             "name": "calendar_set",
             "description": "Push one calendar's meetings for one local day into the local cache, replacing whatever that calendar previously had for that day. This is how the calendar gets filled — a scheduled pull writes here; nothing else reads your real calendar. Other calendars and other days are left untouched.",
             "inputSchema": {
@@ -551,6 +665,7 @@ pub fn tool_definitions() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     const NOW: i64 = 1_700_000_000_000; // fixed epoch ms for deterministic tests
 
@@ -566,7 +681,9 @@ mod tests {
     /// A dispatcher with one injected tracked repo, so no test touches the real
     /// agentboard repos.json.
     fn dispatcher() -> Dispatcher {
-        Dispatcher::new(seeded_store()).with_tracked_repos(vec![REPO_DIR.to_string()])
+        Dispatcher::new(seeded_store())
+            .with_tracked_repos(vec![REPO_DIR.to_string()])
+            .with_calendar_sources(vec!["google".to_string(), "outlook".to_string()])
     }
 
     /// Call a tool and return the parsed inner JSON result (the `text` payload).
@@ -684,7 +801,7 @@ mod tests {
 
     #[test]
     fn calendar_today_returns_only_the_local_day() {
-        let (day_start, day_end) = local_day_bounds(NOW);
+        let (day_start, day_end) = Store::local_day_bounds(NOW);
         let mut dispatcher = dispatcher();
         // One event inside today, one the previous day, one the next — all
         // inserted by the same call (the window only scopes the delete).
@@ -750,7 +867,7 @@ mod tests {
 
     #[test]
     fn calendar_set_replaces_one_source_and_leaves_the_others() {
-        let (day_start, _) = local_day_bounds(NOW);
+        let (day_start, _) = Store::local_day_bounds(NOW);
         let mut dispatcher = dispatcher();
         set_calendar(
             &mut dispatcher,
@@ -820,7 +937,7 @@ mod tests {
 
     #[test]
     fn calendar_set_clears_a_day_with_an_empty_array() {
-        let (day_start, _) = local_day_bounds(NOW);
+        let (day_start, _) = Store::local_day_bounds(NOW);
         let mut dispatcher = dispatcher();
         set_calendar(
             &mut dispatcher,
@@ -862,7 +979,7 @@ mod tests {
     fn calendar_set_ignores_a_source_field_smuggled_into_an_event() {
         // `source` is caller-assigned: an event carrying its own `source` must
         // not be able to write into a different lane.
-        let (day_start, _) = local_day_bounds(NOW);
+        let (day_start, _) = Store::local_day_bounds(NOW);
         let mut dispatcher = dispatcher();
         set_calendar(
             &mut dispatcher,
@@ -994,6 +1111,66 @@ mod tests {
         // Nothing was created.
         let open = call_tool(&mut dispatcher, "task_list", json!({}));
         assert_eq!(open["tasks"].as_array().unwrap().len(), 1, "only the seeded task remains");
+    }
+
+    /// The lane check is what stops a typo minting a calendar nothing will ever
+    /// write again — rows that still feed `calendar_next` and that no sweep
+    /// removes. Exactly the orphan-lane failure the v9 migration destroyed data
+    /// to avoid, so it has to hold at runtime too, not only at migration time.
+    #[test]
+    fn calendar_set_refuses_an_unconfigured_source() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({ "source": "gcal", "events": [] }),
+        );
+        assert!(message.contains("unknown calendar source: gcal"), "{message}");
+        assert!(message.contains("google"), "refusal lists configured lanes: {message}");
+    }
+
+    /// Fails closed: with nothing configured, every push is refused rather than
+    /// allowed to create the first lane implicitly.
+    #[test]
+    fn calendar_set_refuses_everything_when_no_calendars_are_configured() {
+        let mut dispatcher = Dispatcher::new(seeded_store()).with_calendar_sources(vec![]);
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({ "source": "google", "events": [] }),
+        );
+        assert!(message.contains("no calendars are configured"), "{message}");
+    }
+
+    /// A configured lane still works, including the empty-array clear.
+    #[test]
+    fn calendar_set_accepts_a_configured_source() {
+        let mut dispatcher = dispatcher();
+        let result =
+            call_tool(&mut dispatcher, "calendar_set", json!({ "source": "google", "events": [] }));
+        assert_eq!(result["source"], "google");
+        assert_eq!(result["written"], 0);
+    }
+
+    /// Writes are flagged in the contract, not inferred from the wording of a
+    /// description — the UI's write warning is the only signal a human gets
+    /// before a mutation now that the capability gate is gone, so it must not
+    /// depend on an adjective someone might reword.
+    #[test]
+    fn mutating_tools_are_flagged_read_only_false() {
+        let tools = tool_definitions();
+        let tools = tools.as_array().unwrap();
+        let flag = |name: &str| {
+            tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .and_then(|t| t["annotations"]["readOnlyHint"].as_bool())
+        };
+        assert_eq!(flag("task_create"), Some(false), "task_create writes");
+        assert_eq!(flag("calendar_set"), Some(false), "calendar_set writes");
+        // Reads carry no annotation at all rather than a redundant `true`.
+        assert_eq!(flag("task_list"), None);
+        assert_eq!(flag("calendar_next"), None);
     }
 
     #[test]

@@ -43,8 +43,76 @@ export function Panel({
   );
 }
 
-export function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="px-3 py-8 text-center text-sm text-muted-foreground">{children}</p>;
+/**
+ * "Nothing here" copy. The default fills a {@link Panel} body — centered, with
+ * enough padding to read as an empty region rather than a stray sentence.
+ * `inline` drops that framing for callers that are already inside a
+ * {@link Card}, which supplies its own padding.
+ */
+export function Empty({
+  children,
+  inline = false,
+}: {
+  children: React.ReactNode;
+  inline?: boolean;
+}) {
+  return (
+    <p className={cn("text-sm text-muted-foreground", !inline && "px-3 py-8 text-center")}>
+      {children}
+    </p>
+  );
+}
+
+/**
+ * Section shell: a bordered card with a title and an optional right-aligned
+ * note (usually a count or an age). Shared by the MCP and Claude Sessions
+ * consoles so their panels can't drift apart.
+ *
+ * `action` is a sibling of the title, for a header-level control (a search box,
+ * a button) that `note` can't express as text.
+ */
+export function Card({
+  title,
+  note,
+  action,
+  children,
+}: {
+  title: string;
+  note?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-3.5">
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <h3 className="text-sm font-medium text-foreground">{title}</h3>
+        {note && <span className="font-mono text-[11px] text-muted-foreground">{note}</span>}
+        {action}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** One headline number with its label and an optional sub-line. */
+export function StatTile({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card px-3.5 py-2.5">
+      <div className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-0.5 font-mono text-xl font-semibold text-foreground">{value}</div>
+      {detail && <div className="text-[11px] text-muted-foreground">{detail}</div>}
+    </div>
+  );
 }
 
 /** Icon + label per checks tone — the color itself comes from the shared PR

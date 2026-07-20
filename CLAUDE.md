@@ -340,9 +340,10 @@ Cargo workspace + npm workspace (`apps/client` only):
   2026-07-19 trim (usage review showed everything else was dead or app-owned):
   `journal daily-notes|note|meeting|jot|open|list|search` (+ `today` alias),
   `slot init|new|ls|rm|env|clean` (worktree slots — see the Worktree slots
-  section), and the headless entry points `mcp serve` and
-  `collect calendar|issues|prs|slack|all|nudge|status` (both slated to move
-  into the app per the CLI redesign). The removed groups (`gh`, `config`,
+  section), and the headless entry point
+  `collect calendar|issues|prs|slack|all|nudge|status` (slated to move into
+  the app per the CLI redesign). The MCP server is not a CLI surface — it
+  runs inside the app over loopback HTTP. The removed groups (`gh`, `config`,
   `doctor`, `install`, `agentboard`) live in git history; don't reintroduce
   CLI surfaces for app-owned features.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
@@ -407,8 +408,11 @@ plugins ship today:
 - `tt` (`packages/core`) — the map-vs-territory workflow commands/skills
   (`/tt:01-blindspot` … `/tt:22-memories`).
 - `towles-tool-app` (`packages/app`) — bridges Claude Code to the desktop
-  app itself: registers its `tt mcp serve` MCP server (board tasks:
-  `task_list`, `task_status`, gated `task_create`), ships the `slot-onboarding` skill
+  app itself: registers the app's MCP server with a static checked-in
+  `.mcp.json` (`{"type":"http","url":"http://127.0.0.1:8787/mcp"}` — board
+  tasks `task_list`/`task_status`/`task_create` plus the calendar family
+  `calendar_today`/`calendar_next`/`calendar_set`; the app must be running),
+  ships the `slot-onboarding` skill
   (guides onboarding any repo onto worktree slots — port discovery, template
   authoring, `tt slot init`), and a `PostToolUse` hook
   (`hooks/scripts/gh-pr-nudge.sh`) that nudges a running app instance to
@@ -481,7 +485,7 @@ etc.). The points below are repo-specific specializations of that doc.
   picks its natural surface. App-only features don't need a `tt` subcommand,
   and terminal-native tools (journal, gh, doctor) don't need app screens. The
   CLI remains the home for terminal workflows and headless entry points
-  (`mcp serve`, `collect`, `install`). Either way, the logic lands in a
+  (`collect`). Either way, the logic lands in a
   Tauri-free `crates/` library with unit tests — the e2e harness is not the
   primary correctness seam.
 - **Hard cutover, no back-compat shims** — replace, don't wrap. (No compat

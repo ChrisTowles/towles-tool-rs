@@ -47,6 +47,13 @@ const SCHEMA_VERSION: i64 = 9;
 /// How many MCP call-log rows are retained; older rows are pruned on insert.
 const MCP_CALL_RETAIN: i64 = 500;
 
+/// How far back calendar events are kept, swept on each calendar write.
+///
+/// Events are a cache in service of "when is my next meeting", so history has
+/// no value here — but a few days of slack means a clock skew or a late-running
+/// pull can't discard a meeting that hasn't happened yet.
+const EVENT_RETAIN_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
 /// How many MCP call-log rows ride along in a [`Snapshot`] (newest first).
 const MCP_CALL_SNAPSHOT_LIMIT: usize = 100;
 
@@ -126,7 +133,7 @@ CREATE TABLE IF NOT EXISTS dm_status (
 ";
 
 /// v5: the MCP server's incoming-call log (one row per JSON-RPC request the
-/// `tt mcp serve` dispatcher handled). `IF NOT EXISTS`, so `migrate` stays
+/// MCP dispatcher handled). `IF NOT EXISTS`, so `migrate` stays
 /// idempotent and pre-v5 dbs gain the table in place.
 const SCHEMA_MCP_CALLS_V5: &str = "\
 CREATE TABLE IF NOT EXISTS mcp_calls (
@@ -169,6 +176,33 @@ CREATE TABLE IF NOT EXISTS task_prs (
     PRIMARY KEY (task_id, repo, number)
 );
 ";
+
+/// Local midnight of `date` as epoch ms, resolving DST edges rather than
+/// giving up on them: an ambiguous midnight takes the earlier instant, and a
+/// nonexistent one (spring-forward at 00:00) walks forward to the first valid
+/// minute of that day. `None` only if the whole day is unrepresentable.
+fn local_midnight(date: chrono::NaiveDate) -> Option<i64> {
+    use chrono::{Local, LocalResult, TimeZone};
+
+    match date.and_hms_opt(0, 0, 0).map(|dt| Local.from_local_datetime(&dt)) {
+        Some(LocalResult::Single(dt)) => return Some(dt.timestamp_millis()),
+        // Fall-back fold: two instants map to this local time. Take the earlier
+        // so the day window still starts at the first occurrence of midnight.
+        Some(LocalResult::Ambiguous(earlier, _)) => return Some(earlier.timestamp_millis()),
+        _ => {}
+    }
+    // Spring-forward at 00:00: midnight doesn't exist. Step forward a minute at
+    // a time to the first instant that does — bounded, since a DST jump is
+    // never more than a couple of hours.
+    for minute in 1..=180 {
+        if let Some(dt) = date.and_hms_opt(0, 0, 0).map(|dt| dt + chrono::Duration::minutes(minute))
+            && let Some(resolved) = Local.from_local_datetime(&dt).earliest()
+        {
+            return Some(resolved.timestamp_millis());
+        }
+    }
+    None
+}
 
 // Column lists, kept in sync with the row-mapping closures below.
 const EVENT_COLS: &str =
@@ -338,7 +372,7 @@ pub struct DmItem {
 
 /// One handled MCP request: what came in (method, tool, compacted args), how it
 /// went (`ok`/`error`), how long the handler took, and which client sent it
-/// (from the session's `initialize`). Written by the `tt mcp serve` dispatcher,
+/// (from the session's `initialize`). Written by the MCP dispatcher,
 /// read by the app's MCP screen.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -742,6 +776,44 @@ impl Store {
 
     // --- Writes -----------------------------------------------------------
 
+    /// The `[start, end)` epoch-ms bounds of the local calendar day containing
+    /// `reference_ms` — the window callers pass to
+    /// [`Store::replace_events_for_source`].
+    ///
+    /// This lives here, beside the delete it scopes, because **every writer
+    /// must agree on it**. It previously existed twice — once in the collector,
+    /// once in the MCP tool — with different DST fallbacks: one widened to a
+    /// ±1-day window, the other collapsed to an empty one. Both fed the same
+    /// scoped `DELETE`, so on a DST-transition day the same calendar day would
+    /// sweep two days of rows when written by the collector and none when
+    /// written over MCP. One destructive window, one implementation.
+    ///
+    /// DST is handled rather than punted on:
+    /// - An **ambiguous** local midnight (a fall-back fold, real in zones like
+    ///   Brazil, Chile and Cuba that transition at midnight) resolves to the
+    ///   *earlier* instant, so the window still covers the whole civil day. The
+    ///   old code used `.single()` here, which returned `None` for this case and
+    ///   silently skipped the delete twice a year.
+    /// - A **nonexistent** local midnight (spring-forward at 00:00) walks
+    ///   forward to the first valid instant of that day.
+    /// - Only if both boundaries are unresolvable does it fall back — to the
+    ///   empty window, never a wider one. Deleting nothing leaves stale rows a
+    ///   later pull fixes; deleting too much destroys data no pull restores.
+    pub fn local_day_bounds(reference_ms: i64) -> (i64, i64) {
+        use chrono::{Duration, Local, TimeZone};
+
+        let Some(reference) = Local.timestamp_millis_opt(reference_ms).single() else {
+            return (reference_ms, reference_ms);
+        };
+        let date = reference.date_naive();
+        let start = local_midnight(date);
+        let end = local_midnight(date + Duration::days(1));
+        match (start, end) {
+            (Some(start), Some(end)) => (start, end),
+            _ => (reference_ms, reference_ms),
+        }
+    }
+
     /// Replace one calendar's events within one day window, leaving every other
     /// calendar — and every other day — untouched.
     ///
@@ -773,6 +845,21 @@ impl Store {
         tx.execute(
             "DELETE FROM events WHERE source = ?1 AND start_ts >= ?2 AND start_ts < ?3",
             params![source, day_start_ms, day_end_ms],
+        )?;
+        // Retention. The delete above is scoped to one lane and one day, so
+        // unlike the full-table swap it replaced it bounds nothing over time:
+        // yesterday's meetings, and every row belonging to a calendar the user
+        // has since renamed or removed, would otherwise accumulate forever.
+        // Sweeping by age (not by source) is what catches the orphaned-lane
+        // case, since no per-source write will ever visit those rows again.
+        // Cheap to run here — this path fires per collector tick, not per read.
+        // Measured against `now_ms`, not the written day: retention is about how
+        // old a row is in wall-clock terms, and a caller backfilling last
+        // month's calendar must not drag the cutoff back with it.
+        // `saturating_sub` because callers legitimately pass sentinel windows.
+        tx.execute(
+            "DELETE FROM events WHERE start_ts < ?1",
+            params![now_ms.saturating_sub(EVENT_RETAIN_MS)],
         )?;
         {
             let mut stmt = tx.prepare(
@@ -1909,6 +1996,43 @@ mod tests {
         assert!(!task_columns(&s).contains(&"repo".to_string()));
     }
 
+    /// `local_day_bounds` exists in one place because it scopes a DELETE, and
+    /// two implementations had already drifted apart on DST handling — one
+    /// widening to a ±1-day window, the other collapsing to an empty one, both
+    /// feeding the same destructive call. These pin the properties that make
+    /// the shared version safe to hand to a delete.
+    #[test]
+    fn local_day_bounds_is_a_single_day_that_contains_its_reference() {
+        // A few instants spread across the year, including both DST changeover
+        // weekends in the northern hemisphere.
+        for reference in [
+            1_700_000_000_000_i64, // Nov 2023
+            1_678_600_000_000,     // Mar 2023 (spring forward)
+            1_699_164_000_000,     // Nov 2023 (fall back)
+            1_719_000_000_000,     // Jun 2024
+            0,                     // epoch
+        ] {
+            let (start, end) = Store::local_day_bounds(reference);
+            assert!(start <= reference, "window starts at or before its reference ({reference})");
+            assert!(reference < end, "window contains its reference ({reference})");
+            let span = end - start;
+            // A civil day is 23, 24 or 25 hours long depending on DST. Never more.
+            assert!(
+                (23 * 3_600_000..=25 * 3_600_000).contains(&span),
+                "span {span}ms for {reference} is not one civil day"
+            );
+        }
+    }
+
+    /// The fallback direction is the safety property: if the boundary can't be
+    /// resolved, delete nothing rather than delete more. Stale rows are fixed by
+    /// the next pull; over-deleted rows are gone.
+    #[test]
+    fn local_day_bounds_never_widens_past_a_day() {
+        let (start, end) = Store::local_day_bounds(i64::MAX);
+        assert!(end - start <= 25 * 3_600_000, "degenerate input must not widen the delete");
+    }
+
     #[test]
     fn replace_events_swaps_within_one_source_and_day() {
         let s = Store::open_in_memory().unwrap();
@@ -1954,6 +2078,58 @@ mod tests {
         let events = s.snapshot().unwrap().events;
         let ids: Vec<&str> = events.iter().map(|e| e.external_id.as_str()).collect();
         assert_eq!(ids, vec!["today", "tomorrow"], "out-of-window row untouched");
+    }
+
+    /// The scoped delete bounds one lane and one day, so something else has to
+    /// bound the table over time — otherwise yesterday's meetings, and every row
+    /// from a calendar the user renamed or removed, accumulate forever. The old
+    /// full-table swap did that implicitly; this pins the replacement.
+    #[test]
+    fn old_events_are_swept_including_orphaned_lanes() {
+        let s = Store::open_in_memory().unwrap();
+        let now = 30 * EVENT_RETAIN_MS;
+        let stale = now - EVENT_RETAIN_MS - 1;
+
+        // A row from a lane that will never be written again (its source was
+        // removed from settings), old enough to be past retention.
+        s.replace_events_for_source(
+            "retired-calendar",
+            0,
+            i64::MAX,
+            &[event("ancient", stale)],
+            now,
+        )
+        .unwrap();
+        assert_eq!(s.snapshot().unwrap().events.len(), 1);
+
+        // A write to a *different* lane sweeps it — age, not source, is what
+        // catches an orphan, since no per-source write will ever visit it again.
+        s.replace_events_for_source("google", now, now + 86_400_000, &[event("today", now)], now)
+            .unwrap();
+        let ids: Vec<String> =
+            s.snapshot().unwrap().events.iter().map(|e| e.external_id.clone()).collect();
+        assert_eq!(ids, vec!["today"], "the orphaned lane's stale row is gone");
+    }
+
+    /// Retention must not eat a meeting that hasn't happened yet, nor the recent
+    /// past a countdown might still be reasoning about.
+    #[test]
+    fn retention_keeps_recent_and_future_events() {
+        let s = Store::open_in_memory().unwrap();
+        let now = 30 * EVENT_RETAIN_MS;
+        s.replace_events_for_source(
+            "google",
+            0,
+            i64::MAX,
+            &[
+                event("yesterday", now - 86_400_000),
+                event("next-week", now + 7 * 86_400_000),
+            ],
+            now,
+        )
+        .unwrap();
+        s.replace_events_for_source("outlook", now, now + 86_400_000, &[], now).unwrap();
+        assert_eq!(s.snapshot().unwrap().events.len(), 2, "both are inside the retention window");
     }
 
     /// Two providers can legitimately mint the same event id — that's why the

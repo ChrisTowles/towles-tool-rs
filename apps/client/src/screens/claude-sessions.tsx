@@ -37,6 +37,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Card, StatTile } from "@/components/store-bits";
 import { abOpenSessionForCwd, requestOpenSession } from "@/lib/agentboard";
 import {
   claudeSessionsBreakdown,
@@ -309,18 +310,6 @@ function RankedBarChart({ bars }: { bars: { label: string; totalTokens: number }
   if (bars.length === 0)
     return <p className="text-sm text-muted-foreground">No sessions in this range.</p>;
   return <div ref={ref} style={{ height: Math.max(120, bars.length * 36) }} />;
-}
-
-function StatTile({ label, value, detail }: { label: string; value: string; detail?: string }) {
-  return (
-    <div className="rounded-lg border border-border bg-card px-3.5 py-2.5">
-      <div className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
-        {label}
-      </div>
-      <div className="mt-0.5 font-mono text-xl font-semibold text-foreground">{value}</div>
-      {detail && <div className="text-[11px] text-muted-foreground">{detail}</div>}
-    </div>
-  );
 }
 
 type SessionSortKey = "title" | "project" | "date" | "billable" | "cacheRead" | "cacheWrite";
@@ -967,32 +956,27 @@ export function ClaudeSessionsScreen() {
 
             <div className="min-h-0 flex-1 overflow-y-auto">
               <TabsContent value="overview" className="flex flex-col gap-4 p-4">
-                <div className="rounded-lg border border-border bg-card p-3.5">
-                  <h3 className="mb-3 text-sm font-medium text-foreground">Tokens by day</h3>
+                <Card title="Tokens by day">
                   <DayStackChart days={summary.days} />
-                </div>
+                </Card>
 
                 <div className="grid gap-4 md:grid-cols-2">
-                  <div className="rounded-lg border border-border bg-card p-3.5">
-                    <h3 className="mb-3 text-sm font-medium text-foreground">By repo</h3>
+                  <Card title="By repo">
                     <RankedBarChart
                       bars={summary.byProject.map((b) => ({ label: b.project, ...b }))}
                     />
-                  </div>
-                  <div className="rounded-lg border border-border bg-card p-3.5">
-                    <h3 className="mb-3 text-sm font-medium text-foreground">By model</h3>
+                  </Card>
+                  <Card title="By model">
                     <RankedBarChart bars={summary.byModel.map((b) => ({ label: b.model, ...b }))} />
-                  </div>
+                  </Card>
                 </div>
               </TabsContent>
 
               <TabsContent value="sessions" className="p-4">
-                <div className="rounded-lg border border-border bg-card p-3.5">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <h3 className="text-sm font-medium text-foreground">
-                      {searching ? "Search results" : "Top sessions"}
-                    </h3>
-                    <div className="relative w-72">
+                <Card
+                  title={searching ? "Search results" : "Top sessions"}
+                  action={
+                    <div className="relative w-72 self-center">
                       <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                       <Input
                         value={query}
@@ -1001,7 +985,8 @@ export function ClaudeSessionsScreen() {
                         className="h-8 pl-8 text-sm"
                       />
                     </div>
-                  </div>
+                  }
+                >
                   <SessionTable sessions={sessions} searching={searching} />
                   <p className="mt-2 text-[11px] text-muted-foreground">
                     {searching
@@ -1010,7 +995,7 @@ export function ClaudeSessionsScreen() {
                     Click <TerminalSquare className="inline size-3 align-[-2px]" /> to resume a
                     session in Agentboard — adds the repo to the rail first if it isn't there yet.
                   </p>
-                </div>
+                </Card>
               </TabsContent>
 
               <TabsContent value="insights">

@@ -385,7 +385,7 @@ fn check_settings_parse() -> AgentBoardCheck {
     }
 }
 
-/// Whether the `tt` MCP server is registered with Claude Code (`claude mcp
+/// Whether the `towles-tool` MCP server is registered with Claude Code (`claude mcp
 /// list`). The `towles-tool-app` plugin registers it; a missing registration
 /// is a warning with the fix, not a hard failure.
 fn check_tt_mcp_registered() -> AgentBoardCheck {
@@ -395,7 +395,7 @@ fn check_tt_mcp_registered() -> AgentBoardCheck {
     };
 
     AgentBoardCheck {
-        name: "tt mcp server".to_string(),
+        name: "towles-tool MCP".to_string(),
         value: if registered { "registered" } else { "not registered" }.to_string(),
         ok: registered,
         warning: (!registered).then(|| "not registered with Claude Code".to_string()),

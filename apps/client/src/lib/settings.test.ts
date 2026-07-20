@@ -4,14 +4,9 @@ import { nextCalendarSourceId, type CalendarSource } from "./settings";
 const source = (id: string): CalendarSource => ({ id, label: id, enabled: false, prompt: "" });
 
 describe("nextCalendarSourceId", () => {
-  it("slugs the label", () => {
+  it("slugs the generated label", () => {
+    expect(nextCalendarSourceId([], "Calendar 1")).toBe("calendar-1");
     expect(nextCalendarSourceId([], "Work Outlook")).toBe("work-outlook");
-    expect(nextCalendarSourceId([], "  Team / Ops  ")).toBe("team-ops");
-  });
-
-  it("falls back to `calendar` when nothing is sluggable", () => {
-    expect(nextCalendarSourceId([], "…")).toBe("calendar");
-    expect(nextCalendarSourceId([], "")).toBe("calendar");
   });
 
   it("suffixes until the id is free, so a new lane never collides", () => {
@@ -19,7 +14,10 @@ describe("nextCalendarSourceId", () => {
     expect(nextCalendarSourceId(existing, "Google")).toBe("google-3");
   });
 
-  it("keeps ids short enough to stay readable in the store", () => {
-    expect(nextCalendarSourceId([], "a".repeat(80))).toHaveLength(32);
+  it("collides in practice when a source is removed and re-added", () => {
+    // Two sources exist, one is removed, and the next add regenerates the same
+    // label — the suffix is the only thing keeping the lanes apart.
+    const existing = [source("calendar-1")];
+    expect(nextCalendarSourceId(existing, "Calendar 1")).toBe("calendar-1-2");
   });
 });

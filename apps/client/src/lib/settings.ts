@@ -43,20 +43,16 @@ export type CalendarSource = {
 /**
  * A store-lane id for a newly added calendar, unique among `sources`.
  *
- * Slugged from the label so the id stays readable in the store, falling back to
- * `calendar` for a label with nothing sluggable, then suffixed until it's free.
- * Ids are assigned once and never edited afterwards: the id names the lane a
- * pull replaces, so changing it would orphan every row already stored under the
- * old one.
+ * Slugged from the generated label (`Calendar 3`) so the id stays readable in
+ * the store, then suffixed until it's free — a source can be removed and
+ * re-added, so the label's own number is no guarantee of uniqueness. Ids are
+ * assigned once and never edited afterwards: the id names the lane a pull
+ * replaces, so changing it would orphan every row already stored under the old
+ * one.
  */
 export function nextCalendarSourceId(sources: CalendarSource[], label: string): string {
   const taken = new Set(sources.map((s) => s.id));
-  const base =
-    label
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 32) || "calendar";
+  const base = label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   if (!taken.has(base)) return base;
   for (let n = 2; ; n += 1) {
     const candidate = `${base}-${n}`;

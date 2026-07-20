@@ -85,7 +85,7 @@ and telemetry configurability it is ahead of this repo.
 
 What Desktop lacks is a shorter list than it first appears. It runs
 interactive only, with no `--print` and no headless entry point, so there is no
-equivalent of `tt mcp serve` or `tt collect`. The Linux beta also has no
+equivalent of `tt collect`. The Linux beta also has no
 Computer Use, no dictation, and no self-update.
 
 ## What this is (and is not)
@@ -151,8 +151,8 @@ the zone while agents work:
   waste insights, and a turn/tool drill-down.
 
 **The CLI** (`tt`) is the terminal-native half, and deliberately small: journal
-and notes, worktree slots (`tt slot`), and the headless entry points everything
-else rides on — `mcp serve` and `collect`. There is deliberately no CLI/app
+and notes, worktree slots (`tt slot`), and the headless `collect` entry point
+the store rides on. There is deliberately no CLI/app
 parity: each feature lands on its natural surface, and the shared logic lives in
 Tauri-free crates that both consume.
 
@@ -225,8 +225,8 @@ Already installed? Pull the latest version with
 
 A second, separate plugin — `towles-tool-app` (in
 [`packages/app`](packages/app/README.md)) — bridges Claude Code to the
-desktop app itself: it registers the app's MCP server (`tt mcp serve` — day
-brief, needs-you, PR/issue status, board tasks, journal), ships the
+desktop app itself: it registers the app's MCP server over loopback HTTP
+(board tasks and the calendar family), ships the
 `slot-onboarding` skill (guides onboarding any repo onto worktree slots), and
 a hook that nudges a running app instance to refresh its PR or issue data
 immediately after a `gh pr`/`gh issue` mutation, instead of waiting for its
@@ -240,7 +240,6 @@ The CLI binary is `tt`. Run any command with `--help` for its flags.
 - `journal daily-notes|note|meeting|jot|open|list|search` — filesystem notes with date-token path templates (`today` is an alias for `daily-notes`; `jot` appends a timestamped bullet without opening an editor).
 - `slot init|new|ls|rm|env|clean` — manage worktree slots (see [Worktree slots](#worktree-slots) above). `hook-create`/`hook-remove` are the Claude Code `WorktreeCreate`/`WorktreeRemove` hook shells, not meant to be run by hand.
 - `collect calendar|issues|prs|slack|all|status|nudge <prs|issues>` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`, and a watched Slack DM; `status` reports each collector's health; `nudge <prs|issues>` makes a running app instance refresh that data immediately instead of waiting for its normal poll interval (used by the `towles-tool-app` plugin's `gh pr`/`gh issue` mutation hook).
-- `mcp serve` — stdio MCP server exposing the board's task family to any Claude session: `task_list` and `task_status` read, `task_create` mutates (register with `claude mcp add tt -- tt mcp serve`). The one mutation sits behind the `mcp.mutationsEnabled` setting, default off and re-read per call, so prompt injection cannot self-approve it. See `crates/tt-mcp`'s trust-boundary doc.
 
 ## Crates
 
@@ -259,7 +258,7 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-agentboard` — watched-repo and agent-session tracking behind the Agentboard screen.
 - `crates/tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and lockfile schema the app uses to pose as an IDE that Claude Code sessions connect to.
 - `crates/tt-vt` — libghostty-vt terminal-state engine driving the app's canvas terminals (needs zig 0.15.x).
-- `crates/tt-mcp` — stdio JSON-RPC MCP server over the store and live sessions.
+- `crates/tt-mcp` — the transport-free JSON-RPC MCP server over the store: board tasks (`task_list`, `task_status`, `task_create`) and the calendar family (`calendar_today`, `calendar_next`, `calendar_set`). The app serves it over loopback HTTP at `http://127.0.0.1:8787/mcp` (`mcp.port`), one instance per machine — app closed means no MCP. See the crate's trust-boundary doc.
 - `crates/tt-otel` — telemetry: the `tracing` subscriber and the local JSONL
   event log every subprocess and user action lands in.
 - `crates/tt-update` — GitHub Releases update check for the running app.

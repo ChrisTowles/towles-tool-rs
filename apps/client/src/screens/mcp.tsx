@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
-import { z } from "zod";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   BookOpen,
   CircleAlert,
@@ -29,13 +28,21 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Card, Empty, StatTile } from "@/components/store-bits";
 import { cn } from "@/lib/utils";
 import { fmtAge, useStoreSnapshot, type McpCall } from "@/lib/data";
 import { useNow } from "@/lib/now";
 import { errorMessage } from "@/lib/errors";
 import { invoke } from "@/lib/tauri";
 import { uiAction } from "@/lib/ui-action";
-import { McpToolDocsSchema, type McpToolDoc } from "@/lib/schemas/mcp";
+import {
+  McpStatusSchema,
+  McpTestResultSchema,
+  McpToolDocsSchema,
+  type McpStatus,
+  type McpTestResult,
+  type McpToolDoc,
+} from "@/lib/schemas/mcp";
 
 /**
  * MCP server — a four-area console for the towles-tool MCP server, mirroring
@@ -57,33 +64,6 @@ import { McpToolDocsSchema, type McpToolDoc } from "@/lib/schemas/mcp";
 const DEFAULT_MCP_PORT = 8787;
 
 const endpointFor = (port: number) => `http://127.0.0.1:${port}/mcp`;
-
-/** What the backend reports about this instance's MCP listener. */
-type McpStatus = {
-  /** Whether *this* instance won the bind race. */
-  serving: boolean;
-  port: number;
-};
-
-const McpStatusSchema = z.object({ serving: z.boolean(), port: z.number() });
-
-/** What one real round-trip against the MCP endpoint came back with. A refusal
- * is a result to display, not an error — the point is seeing what a client
- * would see. */
-type McpTestResult = {
-  status: number;
-  body: string;
-  durationMs: number;
-  /** Whether the request deliberately carried an `Origin` header. */
-  sentOrigin: boolean;
-};
-
-const McpTestResultSchema = z.object({
-  status: z.number(),
-  body: z.string(),
-  durationMs: z.number(),
-  sentOrigin: z.boolean(),
-});
 
 /**
  * The real bind outcome, not an inference from call recency.
@@ -111,12 +91,9 @@ function useMcpStatus() {
 const ACTIVE_WINDOW_MS = 5 * 60_000;
 
 /**
- * What to call the server's state.
- *
- * Prefers the backend's real bind outcome and only falls back to call-recency
- * when there is no backend to ask (browser dev). "Not serving" is a genuinely
- * different condition from "idle": another instance holds the port, so this
- * window's tools are unreachable no matter how healthy it looks.
+ * What to call the server's state. Prefers {@link useMcpStatus}'s real bind
+ * outcome for the reason spelled out there, and only falls back to call-recency
+ * when there is no backend to ask (browser dev).
  */
 function serverLabel(status: McpStatus | null, active: boolean): string {
   if (status) return status.serving ? "Serving" : "Not serving";
@@ -135,8 +112,8 @@ export function McpScreen() {
   const endpoint = endpointFor(port);
 
   const calls = snapshot.mcpCalls;
-  const failed = calls.filter((c) => !c.ok).length;
-  const clients = new Set(calls.map((c) => c.client).filter(Boolean)).size;
+  const failed = useMemo(() => calls.filter((c) => !c.ok).length, [calls]);
+  const clients = useMemo(() => clientNames(calls).length, [calls]);
   const newest = calls[0]?.ts;
   const active = newest !== undefined && now - newest < ACTIVE_WINDOW_MS;
 
@@ -277,41 +254,21 @@ function useMcpToolDocs(): { tools: McpToolDoc[] | null; reload: () => void } {
   return { tools, reload: () => setNonce((n) => n + 1) };
 }
 
-function StatTile({ label, value, detail }: { label: string; value: string; detail?: string }) {
-  return (
-    <div className="rounded-lg border border-border bg-card px-3.5 py-2.5">
-      <div className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
-        {label}
-      </div>
-      <div className="mt-0.5 font-mono text-xl font-semibold text-foreground">{value}</div>
-      {detail && <div className="text-[11px] text-muted-foreground">{detail}</div>}
-    </div>
-  );
+/**
+ * One settled telemetry event per search, never one per keystroke — continuous
+ * input is explicitly excluded from the event log (see the root CLAUDE.md).
+ */
+function useSearchTelemetry(query: string, action: string) {
+  useEffect(() => {
+    if (!query.trim()) return;
+    const t = setTimeout(() => uiAction(action, "mcp"), 400);
+    return () => clearTimeout(t);
+  }, [query, action]);
 }
 
-/** Section shell shared by every tab — matches the Claude Sessions card. */
-function Card({
-  title,
-  note,
-  children,
-}: {
-  title: string;
-  note?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-lg border border-border bg-card p-3.5">
-      <div className="mb-3 flex items-baseline justify-between gap-3">
-        <h3 className="text-sm font-medium text-foreground">{title}</h3>
-        {note && <span className="font-mono text-[11px] text-muted-foreground">{note}</span>}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="text-sm text-muted-foreground">{children}</p>;
+/** Distinct clients that identified themselves on `initialize`. */
+function clientNames(calls: McpCall[]): string[] {
+  return [...new Set(calls.map((c) => c.client).filter((c): c is string => !!c))];
 }
 
 // ── Overview ────────────────────────────────────────────────────────────────
@@ -343,13 +300,13 @@ function OverviewTab({
 }) {
   const usage = useMemo(() => toolUsage(calls), [calls]);
   const max = Math.max(1, ...usage.map((u) => u.total));
-  const clients = [...new Set(calls.map((c) => c.client).filter(Boolean))] as string[];
+  const clients = useMemo(() => clientNames(calls), [calls]);
   const recent = calls.slice(0, 6);
 
   if (calls.length === 0) {
     return (
       <Card title="No calls yet">
-        <Empty>
+        <Empty inline>
           Nothing has called this server. The towles-tool-app plugin registers it automatically —
           check the Setup tab if a client isn&apos;t connecting.
         </Empty>
@@ -391,7 +348,7 @@ function OverviewTab({
 
         <Card title="Callers" note={`${clients.length}`}>
           {clients.length === 0 ? (
-            <Empty>No client identified itself on initialize.</Empty>
+            <Empty inline>No client identified itself on initialize.</Empty>
           ) : (
             <div className="flex flex-col gap-1.5">
               {clients.map((c) => (
@@ -430,13 +387,14 @@ function OverviewTab({
 
 type CallFilter = "all" | "errors";
 
-function matchesQuery(call: McpCall, q: string): boolean {
-  if (!q) return true;
-  const hay = [call.method, call.tool, call.args, call.client, call.error]
+/** Everything about a call the search box looks at, lowercased once. Built per
+ * call when the log changes, not per keystroke and not per clock tick — the
+ * screen re-renders every second, and this is the only per-row string work. */
+function searchHaystack(call: McpCall): string {
+  return [call.method, call.tool, call.args, call.client, call.error]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
-  return hay.includes(q);
 }
 
 function CallsTab({
@@ -453,17 +411,39 @@ function CallsTab({
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<CallFilter>("all");
 
-  // One settled event per search, never one per keystroke — continuous input is
-  // explicitly excluded from the event log.
-  useEffect(() => {
-    const q = query.trim();
-    if (!q) return;
-    const t = setTimeout(() => uiAction("mcp.calls.search", "mcp"), 400);
-    return () => clearTimeout(t);
-  }, [query]);
+  useSearchTelemetry(query, "mcp.calls.search");
+
+  const indexed = useMemo(
+    () => calls.map((call) => ({ call, hay: searchHaystack(call) })),
+    [calls],
+  );
 
   const q = query.trim().toLowerCase();
-  const shown = calls.filter((c) => (filter === "errors" ? !c.ok : true) && matchesQuery(c, q));
+  const shown = useMemo(
+    () =>
+      indexed
+        .filter(
+          ({ call, hay }) => (filter === "errors" ? !call.ok : true) && (!q || hay.includes(q)),
+        )
+        .map(({ call }) => call),
+    [indexed, filter, q],
+  );
+
+  // The age string is computed here, not inside the row, so a tick that doesn't
+  // change a row's coarse age ("2m") produces identical props and `CallRow`'s
+  // `memo` skips it entirely.
+  const rows = useMemo(
+    () => shown.map((call) => ({ call, age: fmtAge(call.ts, now) })),
+    [shown, now],
+  );
+
+  const open = useCallback(
+    (call: McpCall) => {
+      uiAction("mcp.call.open", "mcp", call.tool ?? call.method);
+      onSelect(call);
+    },
+    [onSelect],
+  );
 
   return (
     <Card title="Incoming calls" note={`${shown.length} of ${calls.length}`}>
@@ -495,7 +475,7 @@ function CallsTab({
       </div>
 
       {shown.length === 0 ? (
-        <Empty>
+        <Empty inline>
           {calls.length === 0
             ? live
               ? "No MCP calls yet. See the Setup tab to point a client here."
@@ -504,16 +484,8 @@ function CallsTab({
         </Empty>
       ) : (
         <div className="-mx-1.5 flex flex-col">
-          {shown.map((call) => (
-            <CallRow
-              key={call.id}
-              call={call}
-              now={now}
-              onSelect={() => {
-                uiAction("mcp.call.open", "mcp", call.tool ?? call.method);
-                onSelect(call);
-              }}
-            />
+          {rows.map(({ call, age }) => (
+            <CallRow key={call.id} call={call} age={age} onSelect={open} />
           ))}
         </div>
       )}
@@ -528,12 +500,23 @@ function CallsTab({
  * a red left edge so a failure reads at a glance. The whole row opens the
  * drill-down — it holds no interactive children, so a real `<button>` is safe
  * here and gives the largest possible target.
+ *
+ * `memo`'d, and taking `age` pre-rendered rather than `now`, because the screen
+ * re-renders on a one-second clock and the log holds a hundred of these.
  */
-function CallRow({ call, now, onSelect }: { call: McpCall; now: number; onSelect: () => void }) {
+const CallRow = memo(function CallRow({
+  call,
+  age,
+  onSelect,
+}: {
+  call: McpCall;
+  age: string;
+  onSelect: (call: McpCall) => void;
+}) {
   return (
     <button
       type="button"
-      onClick={onSelect}
+      onClick={() => onSelect(call)}
       className={cn(
         "flex w-full flex-col gap-0.5 rounded-md border-l-2 border-transparent px-3 py-2 text-left hover:bg-accent/50",
         !call.ok && "border-l-red-500 bg-red-500/5",
@@ -549,7 +532,7 @@ function CallRow({ call, now, onSelect }: { call: McpCall; now: number; onSelect
         )}
         <div className="ml-auto flex shrink-0 items-center gap-3 font-mono text-[11px] text-muted-foreground">
           {call.durationMs !== undefined && <span>{call.durationMs}ms</span>}
-          <span>{fmtAge(call.ts, now)}</span>
+          <span>{age}</span>
         </div>
       </div>
       {call.args && call.args !== "{}" && (
@@ -564,7 +547,7 @@ function CallRow({ call, now, onSelect }: { call: McpCall; now: number; onSelect
       )}
     </button>
   );
-}
+});
 
 /** Full detail for one logged call — the args and error message in full, which
  * the row can only truncate. */
@@ -623,7 +606,7 @@ function CallDialog({
                   {call.args}
                 </pre>
               ) : (
-                <Empty>No arguments.</Empty>
+                <Empty inline>No arguments.</Empty>
               )}
             </section>
           </div>
@@ -662,25 +645,24 @@ function ToolsTab({ tools }: { tools: McpToolDoc[] | null }) {
   const [query, setQuery] = useState("");
   const [testing, setTesting] = useState<McpToolDoc | null>(null);
 
-  useEffect(() => {
-    if (!query.trim()) return;
-    const t = setTimeout(() => uiAction("mcp.tools.search", "mcp"), 400);
-    return () => clearTimeout(t);
-  }, [query]);
+  useSearchTelemetry(query, "mcp.tools.search");
+
+  const q = query.trim().toLowerCase();
+  const groups = useMemo(() => {
+    if (tools === null) return [];
+    const shown = q
+      ? tools.filter((t) => `${t.name} ${t.description}`.toLowerCase().includes(q))
+      : tools;
+    return groupTools(shown);
+  }, [tools, q]);
 
   if (tools === null) {
     return (
       <Card title="Tools">
-        <Empty>Not available outside the app.</Empty>
+        <Empty inline>Not available outside the app.</Empty>
       </Card>
     );
   }
-
-  const q = query.trim().toLowerCase();
-  const shown = q
-    ? tools.filter((t) => `${t.name} ${t.description}`.toLowerCase().includes(q))
-    : tools;
-  const groups = groupTools(shown);
 
   return (
     <div className="flex flex-col gap-4">
@@ -696,7 +678,7 @@ function ToolsTab({ tools }: { tools: McpToolDoc[] | null }) {
 
       {groups.length === 0 ? (
         <Card title="Tools">
-          <Empty>No tools match.</Empty>
+          <Empty inline>No tools match.</Empty>
         </Card>
       ) : (
         groups.map((group) => (
@@ -732,14 +714,22 @@ function ToolsTab({ tools }: { tools: McpToolDoc[] | null }) {
   );
 }
 
-/** Whether a tool writes to the store, inferred from its schema-free docs.
+/**
+ * Whether a tool writes — read off the MCP contract, never off its wording.
  *
- * There is no machine-readable "mutating" flag on the wire (the capability gate
- * that used to need one is gone), so this reads the description the server
- * itself ships. Presentation only — it warns before a write, it never blocks
- * one; the server is the authority on what a call does. */
+ * The server emits the spec's own `annotations.readOnlyHint: false` on the
+ * tools that mutate and ships no `annotations` block at all otherwise, so this
+ * is a declaration by the tool's author rather than a guess at what the
+ * description's prose implies. That distinction is load-bearing now: with the
+ * capability gate gone, the warning this drives is the only signal a human gets
+ * before a write, and a description reworded on the Rust side must not be able
+ * to silently turn it off.
+ *
+ * Strictly `=== false` — an absent hint means "no claim made", which is not the
+ * same as "declared read-only", and neither is a reason to warn.
+ */
 function isMutating(tool: McpToolDoc): boolean {
-  return /\bwrites?\b/i.test(tool.description);
+  return tool.annotations?.readOnlyHint === false;
 }
 
 /**
@@ -913,7 +903,7 @@ function prettyJson(body: string): string {
  * The `actions` slot is a sibling of the identity cluster, not a child of it,
  * so a per-tool control (e.g. a "test this tool" button) drops in without
  * nesting interactive elements — see apps/client/CLAUDE.md's clickable-rows
- * rule. Nothing renders it yet.
+ * rule.
  */
 function ToolRow({ tool, actions }: { tool: McpToolDoc; actions?: React.ReactNode }) {
   const params = Object.entries(tool.inputSchema.properties);

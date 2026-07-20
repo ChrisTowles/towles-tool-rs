@@ -5,6 +5,10 @@ edition = "2024"
 publish = false
 
 [dependencies]
+# Local-calendar-day arithmetic for `local_day_bounds` — the window that scopes
+# `replace_events_for_source`'s delete. It lives here so every writer computes
+# it identically; see that function's doc.
+chrono = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
