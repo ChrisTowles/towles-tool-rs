@@ -377,35 +377,25 @@ pub fn base_branch(checkout: &Path) -> String {
         .unwrap_or_else(|| "main".to_string())
 }
 
-/// If `base` is the checkout's checked-out branch and `origin/<base>` exists,
-/// fast-forward it to match — so a new slot branches from current history
-/// instead of stale local history, which otherwise means its first sync with
-/// base is an unnecessary rebase. The existence check (`rev-parse --verify
-/// --quiet`) mirrors how `tt-agentboard`'s Folder Rail stats and `tt-git`'s
-/// `gh sync` confirm a remote-tracking ref before comparing against it.
+/// Fast-forward `base` to `upstream` (its `origin/<base>` counterpart, per
+/// [`effective_origin_base`] — the caller decides applicability) — so a new
+/// slot branches from current history instead of stale local history, which
+/// otherwise means its first sync with base is an unnecessary rebase.
 /// `git merge --ff-only` is itself a no-op when already current, so this
 /// attempts it unconditionally rather than counting commits behind first.
-/// Only ever touches the main checkout's own branch: a `base` that's some other
-/// ref (a tag, a SHA, a branch checked out in a different worktree, or one
-/// with no `origin/<base>` upstream) is left alone, since moving a ref out
-/// from under another checkout would fight whatever's using it. A genuine
-/// divergence (or uncommitted local changes ff-only won't overwrite) warns
-/// rather than blocks creation — the slot still branches from local
-/// history.
-fn fast_forward_base_if_behind(sr: &SlotRoot, base: &str, warnings: &mut Vec<String>) {
-    if base_branch(&sr.checkout) != base {
-        return;
-    }
-    let upstream = format!("origin/{base}");
-    let Ok(verify_out) =
-        git_checkout(&sr.checkout, &["rev-parse", "--verify", "--quiet", &upstream])
-    else {
-        return;
-    };
-    if !verify_out.ok() {
-        return; // no origin/<base> to compare against (never pushed, etc.)
-    }
-    match git_checkout(&sr.checkout, &["merge", "--ff-only", &upstream]) {
+/// Only ever touches the main checkout's own branch — the predicate returns
+/// `None` for a tag, a SHA, a branch checked out in a different worktree, or
+/// one with no `origin/<base>` upstream, since moving a ref out from under
+/// another checkout would fight whatever's using it. A genuine divergence
+/// (or uncommitted local changes ff-only won't overwrite) warns rather than
+/// blocks creation — the slot still branches from local history.
+fn fast_forward_base_if_behind(
+    sr: &SlotRoot,
+    base: &str,
+    upstream: &str,
+    warnings: &mut Vec<String>,
+) {
+    match git_checkout(&sr.checkout, &["merge", "--ff-only", upstream]) {
         Ok(out) if out.ok() => {}
         Ok(out) => warnings.push(format!(
             "base branch '{base}' has diverged from {upstream} and could not be fast-forwarded \
@@ -417,8 +407,39 @@ fn fast_forward_base_if_behind(sr: &SlotRoot, base: &str, warnings: &mut Vec<Str
     }
 }
 
-/// Every local branch, default branch first, the rest sorted.
-pub fn checkout_branches(checkout: &Path) -> Result<Vec<String>> {
+/// The ref slot creation will *effectively* branch from when it applies the
+/// fast-forward above: `Some("origin/<base>")` exactly when `base` is the
+/// checkout's checked-out branch and that remote-tracking ref exists, `None`
+/// otherwise. The single copy of that rule, shared by
+/// [`fast_forward_base_if_behind`] (which acts on it) and
+/// [`checkout_branches`] (which labels the form with it) — two independent
+/// derivations here would let the form's label drift from what creation
+/// actually does, the exact bug the label exists to fix.
+fn effective_origin_base(checkout: &Path, base: &str) -> Option<String> {
+    if base_branch(checkout) != base {
+        return None;
+    }
+    let upstream = format!("origin/{base}");
+    let exists = git_checkout(checkout, &["rev-parse", "--verify", "--quiet", &upstream])
+        .map(|o| o.ok())
+        .unwrap_or(false);
+    exists.then_some(upstream)
+}
+
+/// One base-branch choice for the new-slot form. `name` is the local branch —
+/// what `create_slot` takes as `base` — and `label` is the ref creation will
+/// *effectively* branch from ([`effective_origin_base`]), which the UI should
+/// show instead of `name`: a form showing plain `main` when creation will
+/// branch from `origin/main` would be underselling what actually happens.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BaseBranch {
+    pub name: String,
+    pub label: String,
+}
+
+/// Every local branch as a [`BaseBranch`], default branch first, the rest
+/// sorted.
+pub fn checkout_branches(checkout: &Path) -> Result<Vec<BaseBranch>> {
     let default = base_branch(checkout);
     let out = git_checkout(checkout, &["for-each-ref", "refs/heads", "--format=%(refname:short)"])?;
     if !out.ok() {
@@ -432,8 +453,11 @@ pub fn checkout_branches(checkout: &Path) -> Result<Vec<String>> {
         .map(str::to_string)
         .collect();
     rest.sort();
-    let mut branches = vec![default];
-    branches.extend(rest);
+    // Only the default entry can earn an `origin/` label — the fast-forward
+    // only ever applies to the checkout's own checked-out branch.
+    let label = effective_origin_base(checkout, &default).unwrap_or_else(|| default.clone());
+    let mut branches = vec![BaseBranch { name: default, label }];
+    branches.extend(rest.into_iter().map(|b| BaseBranch { name: b.clone(), label: b }));
     Ok(branches)
 }
 
@@ -948,6 +972,10 @@ pub struct CreatedSlot {
     pub dir: PathBuf,
     pub branch: String,
     pub base: String,
+    /// The ref the slot effectively branched from — `origin/<base>` when the
+    /// creation-time fast-forward applied ([`effective_origin_base`]), else
+    /// `base`. Display/prompt honesty; `base` stays the branch-name value.
+    pub base_label: String,
     pub ports: Vec<(String, u16)>,
     pub inherited: usize,
     pub warnings: Vec<String>,
@@ -974,7 +1002,15 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     note_if_slow(&mut warnings, "fetch", fetch_start.elapsed());
 
     let base = opts.base.clone().unwrap_or_else(|| base_branch(&sr.checkout));
-    fast_forward_base_if_behind(&sr, &base, &mut warnings);
+    // The ref this slot effectively branches from — probed after the fetch so
+    // a just-created remote counterpart counts, and carried on the result as
+    // `base_label` so the UI and the dynamic-flow prompt name the same ref
+    // creation actually used (agreeing with `checkout_branches`' labels).
+    let effective = effective_origin_base(&sr.checkout, &base);
+    if let Some(upstream) = &effective {
+        fast_forward_base_if_behind(&sr, &base, upstream, &mut warnings);
+    }
+    let base_label = effective.unwrap_or_else(|| base.clone());
     let name = layout::slot_name_from_branch(&opts.branch)
         .ok_or_else(|| OpsError::BadBranchName(opts.branch.clone()))?;
     let dir = sr.slot_dir(&name);
@@ -1048,6 +1084,7 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
             dir,
             branch: opts.branch.clone(),
             base,
+            base_label,
             ports: summary.ports,
             inherited,
             warnings,

@@ -198,6 +198,7 @@ fn cmd_new(
             "dir": dir_s,
             "branch": created.branch,
             "base": created.base,
+            "baseLabel": created.base_label,
             "ports": ports,
             "inheritedKeys": created.inherited,
         });

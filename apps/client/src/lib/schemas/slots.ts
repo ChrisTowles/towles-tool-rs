@@ -10,10 +10,29 @@ export const SlotCreatedSchema = z.object({
   dir: z.string(),
   branch: z.string(),
   base: z.string(),
+  /** The ref the slot effectively branched from — `origin/<base>` when the
+   * creation-time fast-forward applied, else `base`. What the dynamic-flow
+   * prompt names as its rebase target. */
+  baseLabel: z.string(),
   warnings: z.array(z.string()),
 });
 
-export const BaseBranchesSchema = z.array(z.string());
+/** One base choice from `slot_base_branches`: `name` is the local branch the
+ * form submits as the base; `label` is the ref creation will effectively
+ * branch from (`origin/main` for a default branch with a remote counterpart —
+ * `slot_create` fetches and fast-forwards it first), shown instead of `name`
+ * so the form doesn't undersell what actually happens. Deliberately the
+ * opposite of `comparedBaseLabel` (lib/agentboard.ts), which *strips*
+ * `origin/` — there the local/origin distinction is noise, here it's the
+ * message. Don't "unify" them. */
+export const BaseBranchesSchema = z.array(
+  z.object({
+    name: z.string(),
+    label: z.string(),
+  }),
+);
+
+export type BaseBranch = z.infer<typeof BaseBranchesSchema>[number];
 
 /** `slot_write_pasted_images`' result: the absolute path of each staged
  * image, in paste order. These go straight into Claude's opening prompt, so a

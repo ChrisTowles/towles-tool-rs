@@ -97,7 +97,18 @@ pub fn port_listening(port: u16) -> bool {
         SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
     ]
     .iter()
-    .any(|addr| TcpStream::connect_timeout(addr, timeout).is_ok())
+    .any(|addr| match TcpStream::connect_timeout(addr, timeout) {
+        // A connect into the kernel's ephemeral range can "succeed" with no
+        // listener at all: TCP simultaneous open lets the socket connect to
+        // itself when the kernel picks source port == dest port on loopback.
+        // Such a stream has local == peer, which a real listener's accepted
+        // connection never does — treat it as not listening.
+        Ok(stream) => match (stream.local_addr(), stream.peer_addr()) {
+            (Ok(local), Ok(peer)) => local != peer,
+            _ => true, // connected but unreadable addrs: trust the connect
+        },
+        Err(_) => false,
+    })
 }
 
 #[cfg(test)]
@@ -204,12 +215,58 @@ mod tests {
         assert!(!has_launch_file(root.path()));
     }
 
+    /// Start of the kernel's ephemeral (auto-assigned) port range. Anything
+    /// below it is only ever bound by an explicit request, never handed out
+    /// by `bind(port 0)`.
+    fn ephemeral_range_start() -> u16 {
+        std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+            .ok()
+            .and_then(|s| s.split_whitespace().next()?.parse().ok())
+            .unwrap_or(32768)
+    }
+
+    /// Bind a listener *below* the ephemeral range, returning it with its port.
+    ///
+    /// Keeps the kernel from handing this port to an unrelated `bind(0)`
+    /// elsewhere in the test binary while the test is mid-flight.
+    fn bind_below_ephemeral_range() -> Option<(std::net::TcpListener, u16)> {
+        let start = ephemeral_range_start();
+        // Walk down from just under the range; skip anything already taken.
+        (1024..start)
+            .rev()
+            .take(500)
+            .find_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+            .map(|listener| {
+                let port = listener.local_addr().expect("bound listener has an addr").port();
+                (listener, port)
+            })
+    }
+
     #[test]
     fn port_listening_tracks_a_real_listener() {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        assert!(port_listening(port));
+        let Some((listener, port)) = bind_below_ephemeral_range() else {
+            // No free non-ephemeral port to borrow: skip rather than assert on
+            // a port the kernel may reassign underneath us.
+            return;
+        };
+        assert!(port_listening(port), "a bound listener must read as listening");
         drop(listener);
-        assert!(!port_listening(port));
+
+        // `drop` closes *our* descriptor, which does not necessarily close the
+        // socket: any subprocess forked while the listener was open inherits a
+        // duplicate and holds it in LISTEN until it execs or exits. This suite
+        // shells out to `git` from other tests constantly, so under a full
+        // parallel run that raced about half the time — and `port_listening`
+        // was right each time, because something really was still listening.
+        // The honest assertion is that the port frees up promptly once the
+        // last holder is gone, not that it is free the instant we let go.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while port_listening(port) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "port {port} still listening 10s after its listener was dropped"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
     }
 }

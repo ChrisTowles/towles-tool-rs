@@ -218,7 +218,12 @@ export type CommitStat = {
 
 /** `comparedBase` with its `origin/` prefix stripped for display, e.g.
  * `"origin/main"` → `"main"`. Falls back to `"main"` before the backend has
- * computed anything yet. */
+ * computed anything yet. Deliberately the opposite of the new-task form's
+ * base label (`BaseBranchesSchema` in lib/schemas/slots.ts), which *adds*
+ * `origin/`: here the compared ref is always the freshest one the backend
+ * found and the local/origin distinction is noise, while the form's whole
+ * point is that you'll branch from origin's tip, not stale local history.
+ * Don't "unify" them. */
 export function comparedBaseLabel(folder: Pick<FolderData, "comparedBase">): string {
   const base = folder.comparedBase?.trim();
   if (!base) return "main";
@@ -1386,7 +1391,12 @@ export function claudeCommand(prompt: string, options?: ClaudeLaunchOptions): st
  * plan is approved" is the user's interactive approval in the PTY — after
  * that gate the instructions carry the session all the way to a merged PR,
  * and the merged PR is what rolls the board task to done (PR auto-attach +
- * status rollup on collect). */
+ * status rollup on collect).
+ *
+ * `base` should be the *effective* base ref (`SlotCreated.baseLabel`, e.g.
+ * `origin/main`), not the local branch name: inside the slot's worktree a
+ * fetch never advances the local base ref, so "rebase onto main" would mean
+ * stale history. */
 export function dynamicFlowPrompt(goal: string, base: string): string {
   const trimmed = goal.trim();
   // Single line by construction — like `promptWithImages`, this is typed into

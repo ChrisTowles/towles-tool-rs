@@ -1369,6 +1369,14 @@ describe("dynamicFlowPrompt", () => {
     expect(prompt).not.toContain("main");
   });
 
+  it("carries an effective origin/ base ref through verbatim as the rebase target", () => {
+    // Callers pass `SlotCreated.baseLabel` (`origin/main`, not `main`) —
+    // inside the slot's worktree a fetch never advances local `main`, so the
+    // prompt must name the remote-tracking ref.
+    const prompt = dynamicFlowPrompt("fix", "origin/main");
+    expect(prompt).toContain("rebase this branch onto the latest origin/main");
+  });
+
   it("stands alone when the goal is empty (image-only ask)", () => {
     const prompt = dynamicFlowPrompt("  ", "main");
     expect(prompt.startsWith("This is a dynamic task")).toBe(true);

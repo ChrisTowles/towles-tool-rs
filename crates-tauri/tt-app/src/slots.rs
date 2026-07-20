@@ -40,13 +40,17 @@ pub struct SlotCreated {
     pub dir: String,
     pub branch: String,
     pub base: String,
+    /// The ref the slot effectively branched from (`ops::CreatedSlot::base_label`)
+    /// — what the dynamic-flow prompt names as its rebase/merge target.
+    pub base_label: String,
     pub warnings: Vec<String>,
 }
 
 /// Branches available as a base ref in the slot root containing `root`
-/// (a checkout dir or the root itself), default branch first.
+/// (a checkout dir or the root itself), default branch first. See
+/// [`ops::BaseBranch`] for the name-vs-label split the form renders.
 #[tauri::command]
-pub fn slot_base_branches(root: String) -> Result<Vec<String>, String> {
+pub fn slot_base_branches(root: String) -> Result<Vec<ops::BaseBranch>, String> {
     let sr = ops::discover_root(Some(&PathBuf::from(root))).map_err(|e| e.to_string())?;
     ops::checkout_branches(&sr.checkout).map_err(|e| e.to_string())
 }
@@ -141,6 +145,7 @@ pub async fn slot_create(
         dir: created.dir.to_string_lossy().to_string(),
         branch: created.branch,
         base: created.base,
+        base_label: created.base_label,
         warnings: created.warnings,
     })
 }
