@@ -22,24 +22,71 @@ Two reasons:
 2. **Existing tools were a good GUI or a good TUI, never both.** This app
    aims to be both: a real GUI around real terminals.
 
-## Wishlist: in towles-tool, not yet in Claude Desktop
+## Features: in towles-tool, not yet in Claude Desktop
 
-A running list of things this repo already has that Claude Desktop hasn't
-shipped yet, biggest first:
+Checked on 2026-07-19 against Claude Desktop **1.22209.0** (built 2026-07-16),
+using the published [docs](https://code.claude.com/docs/en/desktop) plus the
+installed bundle. Biggest gap first. Read the overlap list under it too: most
+of what this repo does, Desktop now does as well.
 
-- **Editor-selection context.** This repo's IDE-protocol integration
-  (`tt-ide`) lets a Claude Code CLI session see what's highlighted in a
-  connected editor, so you can select a block of code and point the model at
-  it directly instead of describing the fix in words. Claude Desktop doesn't
-  have this yet — I asked it straight out whether it could see the files I'd
-  highlighted, and it confirmed no, it has no visibility into an editor
-  selection at all.
+- **Full file editor.** The Files pane is a Monaco editor with rust-analyzer
+  bridged over Tauri IPC, so hover and completions work on Rust source, and a
+  file link printed in a terminal opens the file at the clicked line. Desktop's
+  file pane covers spot edits and save, then hands off to "Open in VS Code" for
+  anything more. The LSP bridge here is still a spike: it reports
+  `starting`/`ready`/`failed` in a chip, which is there to decide whether it
+  earns its keep.
+
+- **Editor-selection context.** `tt-ide` is an IDE-protocol server, so an
+  outside editor can feed a live selection to a CLI session running in the same
+  folder. Desktop only takes context from its own panes, via spot edits,
+  "Attach as context", and `@`-mention autocomplete.
 
   ![Claude Desktop confirming it can't see highlighted/selected code in an editor](docs/images/wishlist/claude-desktop-no-editor-selection.png)
+
+- **Cross-repo work board.** Board is a kanban of tasks spanning every watched
+  repo. Each task links 0..N issues, 0..N PRs, and usually a worktree slot,
+  and done rolls up from GitHub PR state. Desktop has nothing like it. Its
+  "tasks pane" holds background subagents inside a single session, and no
+  cross-repo surface exists.
+
+- **Always-on local event log.** Every subprocess and user action lands as
+  JSONL at `<data_dir>/telemetry/events-<date>.jsonl`, rotated daily, tagged
+  with `tt.slot`, queryable with `jq`, and never sent anywhere. Desktop's
+  OpenTelemetry surface is more configurable than this repo's, but it exports
+  to a collector you run. I found no sign of an on-disk log that is on by
+  default, though I read strings in the bundle rather than watching it run.
+
+- **Per-slot port isolation.** Both tools put worktrees in
+  `.claude/worktrees/`. The difference is that `${tt:port A-B}` claims in
+  `.env.example` render each slot its own `.env`, so ten slots run ten dev
+  servers without colliding. Desktop's `.worktreeinclude` copies gitignored
+  files verbatim, which hands every worktree the same port.
+
+- **Squash-merge-aware landing detection.** The `landed` module in `tt-slots`
+  separates uncommitted changes from commits that never reached base, and only
+  content-based proof authorizes `git branch -D`. Desktop auto-archives a
+  worktree once its PR merges or closes, which covers the common case but
+  never has to answer whether a branch with no PR still holds work.
 
 - ~~**Runs natively on Linux.** Only a community-hacked build of Claude
   Desktop ran on Linux before now.~~ Shipped as an official
   [beta](https://code.claude.com/docs/en/desktop-linux) on June 30, 2026.
+
+### Overlap: things Desktop already does
+
+Written down so this repo stops claiming them. Desktop ships automatic git
+worktrees at the same `.claude/worktrees/` path with auto-archive on PR merge,
+a real `node-pty` terminal, a file pane with editing and save-conflict
+detection, file-by-file diff review with batched per-line comments, PR CI
+monitoring with auto-fix and auto-merge, GUI plugin and MCP management,
+scheduled tasks, and a browser pane with element selection. On PR automation
+and telemetry configurability it is ahead of this repo.
+
+What Desktop lacks is a shorter list than it first appears. It runs
+interactive only, with no `--print` and no headless entry point, so there is no
+equivalent of `tt mcp serve` or `tt collect`. The Linux beta also has no
+Computer Use, no dictation, and no self-update.
 
 ## What this is (and is not)
 
@@ -103,18 +150,16 @@ the zone while agents work:
 - **Claude Sessions** — where the tokens went: per-session accounting, ranked
   waste insights, and a turn/tool drill-down.
 
-**The CLI** (`tt`) is the terminal-native half: journal/notes, GitHub helpers
-(branch-from-issue, PR creation, merged-branch cleanup), `doctor`, and the
-headless entry points everything else rides on — `mcp serve`, `collect`,
-`slot`, `install`. There is deliberately no CLI/app parity: each feature lands
-on its natural surface, and the shared logic lives in Tauri-free crates that
-both consume.
+**The CLI** (`tt`) is the terminal-native half, and deliberately small: journal
+and notes, worktree slots (`tt slot`), and the headless entry points everything
+else rides on — `mcp serve` and `collect`. There is deliberately no CLI/app
+parity: each feature lands on its natural surface, and the shared logic lives in
+Tauri-free crates that both consume.
 
-> **Status:** in progress. The scaffold plus config, doctor, journal, GitHub
-> helpers, install, the Claude Sessions screen, the data-hub store/collectors,
-> the MCP server, worktree slots (`tt slot`), and the Agentboard screens (with
-> live in-app terminals) are ported. Features land one at a time — see
-> [docs/MIGRATION.md](docs/MIGRATION.md).
+> **Status:** in progress. The journal, worktree slots, the data-hub
+> store/collectors, the MCP server, the Claude Sessions screen, and the
+> Agentboard screens (with live in-app terminals) are ported. Features land one
+> at a time — see [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ## Quick start
 
@@ -140,7 +185,7 @@ slots run concurrently.
 **Run the CLI**
 
 ```sh
-cargo run -p tt-cli -- doctor
+cargo run -p tt-cli -- slot ls
 ```
 
 ## Worktree slots
@@ -192,15 +237,10 @@ normal poll interval. Enable it the same way:
 
 The CLI binary is `tt`. Run any command with `--help` for its flags.
 
-- `config show|validate|schema|reset` — inspect, validate, print the schema for, or reset settings.
-- `doctor [--json] [--track] [--diff]` — check dependencies/environment; optionally save a run and diff against the last.
-- `journal daily-notes|note|meeting|list|search` — filesystem notes with date-token path templates (`today` is an alias for `daily-notes`).
-- `gh branch|branch-clean|pr|pr-list|assign|sync|co` — create a branch from a GitHub issue, delete merged branches, open a PR from the current branch, list your open PRs with CI status, assign an issue to a sibling slot, rebase the checkout onto `origin/main`, or check out a PR's branch by number (`pr`/`prs` are top-level aliases for `gh pr`/`gh pr-list`).
-- `install [-o/--observability]` — apply recommended Claude Code settings and ensure required plugins.
-- `agentboard repos|sessions` — manage the watched-repo list and per-folder PTY sessions the app and collectors read (`ag` is an alias).
+- `journal daily-notes|note|meeting|jot|open|list|search` — filesystem notes with date-token path templates (`today` is an alias for `daily-notes`; `jot` appends a timestamped bullet without opening an editor).
+- `slot init|new|ls|rm|env|clean` — manage worktree slots (see [Worktree slots](#worktree-slots) above). `hook-create`/`hook-remove` are the Claude Code `WorktreeCreate`/`WorktreeRemove` hook shells, not meant to be run by hand.
 - `collect calendar|issues|prs|slack|all|status|nudge <prs|issues>` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`, and a watched Slack DM; `status` reports each collector's health; `nudge <prs|issues>` makes a running app instance refresh that data immediately instead of waiting for its normal poll interval (used by the `towles-tool-app` plugin's `gh pr`/`gh issue` mutation hook).
-- `mcp serve` — stdio MCP server exposing read-only dashboard tools over the store (register with `claude mcp add tt -- tt mcp serve`). Read-only by construction — see `crates/tt-mcp`'s trust-boundary doc.
-- `slot init|new|ls|rm|env|clean` — manage worktree slots (see [Worktree slots](#worktree-slots) above).
+- `mcp serve` — stdio MCP server exposing the board's task family to any Claude session: `task_list` and `task_status` read, `task_create` mutates (register with `claude mcp add tt -- tt mcp serve`). The one mutation sits behind the `mcp.mutationsEnabled` setting, default off and re-read per call, so prompt injection cannot self-approve it. See `crates/tt-mcp`'s trust-boundary doc.
 
 ## Crates
 
@@ -211,7 +251,7 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-journal` — journal/note logic and date-token path templating.
 - `crates/tt-git` — git/GitHub helpers (branch names, PR content, issue parsing).
 - `crates/tt-claude-sessions` — session token accounting, ranked waste insights, and the per-session drill-down behind the app's Claude Sessions screen.
-- `crates/tt-doctor` — dependency/environment checks (CLI `doctor` and the app screen both consume it).
+- `crates/tt-doctor` — dependency/environment checks behind the app's Doctor screen.
 - `crates/tt-slots` — the worktree-slot convention: `${tt:...}` env-template renderer with port-pool claims, slot naming/layout, removal guards, and the shared `ops` orchestration behind `tt slot` and the app.
 - `crates/tt-claude-code` — shared Claude Code transcript parsing (session JSONL, titles, token usage, model table).
 - `crates/tt-store` — the data-hub SQLite store (events, board tasks with issue/PR links + slot bindings, issues, PR status, collector freshness).
