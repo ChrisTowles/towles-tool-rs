@@ -17,7 +17,10 @@ export const SlotCreatedSchema = z.object({
  * form submits as the base; `label` is the ref creation will effectively
  * branch from (`origin/main` for a default branch with a remote counterpart —
  * `slot_create` fetches and fast-forwards it first), shown instead of `name`
- * so the form doesn't undersell what actually happens. */
+ * so the form doesn't undersell what actually happens. Deliberately the
+ * opposite of `comparedBaseLabel` (lib/agentboard.ts), which *strips*
+ * `origin/` — there the local/origin distinction is noise, here it's the
+ * message. Don't "unify" them. */
 export const BaseBranchesSchema = z.array(
   z.object({
     name: z.string(),

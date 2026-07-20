@@ -393,18 +393,9 @@ pub fn base_branch(checkout: &Path) -> String {
 /// rather than blocks creation — the slot still branches from local
 /// history.
 fn fast_forward_base_if_behind(sr: &SlotRoot, base: &str, warnings: &mut Vec<String>) {
-    if base_branch(&sr.checkout) != base {
-        return;
-    }
-    let upstream = format!("origin/{base}");
-    let Ok(verify_out) =
-        git_checkout(&sr.checkout, &["rev-parse", "--verify", "--quiet", &upstream])
-    else {
-        return;
+    let Some(upstream) = effective_origin_base(&sr.checkout, base) else {
+        return; // not the checked-out branch, or no origin/<base> (never pushed, etc.)
     };
-    if !verify_out.ok() {
-        return; // no origin/<base> to compare against (never pushed, etc.)
-    }
     match git_checkout(&sr.checkout, &["merge", "--ff-only", &upstream]) {
         Ok(out) if out.ok() => {}
         Ok(out) => warnings.push(format!(
@@ -417,14 +408,30 @@ fn fast_forward_base_if_behind(sr: &SlotRoot, base: &str, warnings: &mut Vec<Str
     }
 }
 
+/// The ref slot creation will *effectively* branch from when it applies the
+/// fast-forward above: `Some("origin/<base>")` exactly when `base` is the
+/// checkout's checked-out branch and that remote-tracking ref exists, `None`
+/// otherwise. The single copy of that rule, shared by
+/// [`fast_forward_base_if_behind`] (which acts on it) and
+/// [`checkout_branches`] (which labels the form with it) — two independent
+/// derivations here would let the form's label drift from what creation
+/// actually does, the exact bug the label exists to fix.
+fn effective_origin_base(checkout: &Path, base: &str) -> Option<String> {
+    if base_branch(checkout) != base {
+        return None;
+    }
+    let upstream = format!("origin/{base}");
+    let exists = git_checkout(checkout, &["rev-parse", "--verify", "--quiet", &upstream])
+        .map(|o| o.ok())
+        .unwrap_or(false);
+    exists.then_some(upstream)
+}
+
 /// One base-branch choice for the new-slot form. `name` is the local branch —
 /// what `create_slot` takes as `base` — and `label` is the ref creation will
-/// *effectively* branch from, which the UI should show instead of `name`.
-/// They differ only for the checkout's checked-out default branch when
-/// `origin/<name>` exists: `create_slot` fetches and fast-forwards that branch
-/// to its origin counterpart before branching (`fast_forward_base_if_behind`),
-/// so a form showing plain `main` there would be underselling what actually
-/// happens.
+/// *effectively* branch from ([`effective_origin_base`]), which the UI should
+/// show instead of `name`: a form showing plain `main` when creation will
+/// branch from `origin/main` would be underselling what actually happens.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct BaseBranch {
     pub name: String,
@@ -447,31 +454,12 @@ pub fn checkout_branches(checkout: &Path) -> Result<Vec<BaseBranch>> {
         .map(str::to_string)
         .collect();
     rest.sort();
-    // Only the default entry can earn an `origin/` label — the fast-forward in
-    // `create_slot` only ever touches the checkout's own checked-out branch.
-    let default_has_origin = git_checkout(
-        checkout,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/origin/{default}"),
-        ],
-    )
-    .map(|o| o.ok())
-    .unwrap_or(false);
-    let mut branches = vec![base_branch_choice(&default, true, default_has_origin)];
-    branches.extend(rest.iter().map(|b| base_branch_choice(b, false, false)));
+    // Only the default entry can earn an `origin/` label — the fast-forward
+    // only ever applies to the checkout's own checked-out branch.
+    let label = effective_origin_base(checkout, &default).unwrap_or_else(|| default.clone());
+    let mut branches = vec![BaseBranch { name: default, label }];
+    branches.extend(rest.into_iter().map(|b| BaseBranch { name: b.clone(), label: b }));
     Ok(branches)
-}
-
-/// Pure labeling rule behind [`checkout_branches`]: the effective base is
-/// `origin/<name>` exactly when this is the default branch and that remote
-/// ref exists.
-fn base_branch_choice(name: &str, is_default: bool, origin_exists: bool) -> BaseBranch {
-    let label =
-        if is_default && origin_exists { format!("origin/{name}") } else { name.to_string() };
-    BaseBranch { name: name.to_string(), label }
 }
 
 /// Validate `branch` as a git ref via `git check-ref-format --branch` — git
@@ -1680,19 +1668,6 @@ mod tests {
         assert_eq!(setup_command(&env(&[]), |_| false), None);
         // declared-but-empty disables setup rather than running junk
         assert_eq!(setup_command(&env(&[(SETUP_ENV_KEY, "  ")]), |_| true), None);
-    }
-
-    #[test]
-    fn base_branch_choice_labels_only_the_default_with_an_origin() {
-        // The default branch with a remote counterpart is what creation
-        // actually branches from post-fetch/fast-forward — say so.
-        let choice = base_branch_choice("main", true, true);
-        assert_eq!(choice, BaseBranch { name: "main".into(), label: "origin/main".into() });
-        // Never-pushed default: plain local branch, plain label.
-        assert_eq!(base_branch_choice("main", true, false).label, "main");
-        // Non-default branches are used as local refs verbatim, even when an
-        // origin counterpart exists — `create_slot` never fast-forwards them.
-        assert_eq!(base_branch_choice("develop", false, false).label, "develop");
     }
 
     #[test]

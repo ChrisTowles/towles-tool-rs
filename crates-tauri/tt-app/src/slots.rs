@@ -44,11 +44,8 @@ pub struct SlotCreated {
 }
 
 /// Branches available as a base ref in the slot root containing `root`
-/// (a checkout dir or the root itself), default branch first. Each entry
-/// carries a `label` naming the ref creation will effectively use —
-/// `origin/<name>` for the default branch when that remote ref exists, since
-/// `create_slot` fetches and fast-forwards it before branching — which the
-/// form shows while still submitting the local `name` as the base.
+/// (a checkout dir or the root itself), default branch first. See
+/// [`ops::BaseBranch`] for the name-vs-label split the form renders.
 #[tauri::command]
 pub fn slot_base_branches(root: String) -> Result<Vec<ops::BaseBranch>, String> {
     let sr = ops::discover_root(Some(&PathBuf::from(root))).map_err(|e| e.to_string())?;

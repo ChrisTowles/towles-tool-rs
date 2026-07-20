@@ -51,8 +51,7 @@ import {
 } from "@/lib/agentboard";
 import { IssueItem, storeGhIssuesList } from "@/lib/data";
 import { errorMessage } from "@/lib/errors";
-import { BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
-import type { BaseBranch } from "@/lib/schemas/slots";
+import { type BaseBranch, BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
 import { invoke } from "@/lib/tauri";
 import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";

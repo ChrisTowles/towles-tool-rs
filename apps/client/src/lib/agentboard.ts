@@ -218,7 +218,12 @@ export type CommitStat = {
 
 /** `comparedBase` with its `origin/` prefix stripped for display, e.g.
  * `"origin/main"` → `"main"`. Falls back to `"main"` before the backend has
- * computed anything yet. */
+ * computed anything yet. Deliberately the opposite of the new-task form's
+ * base label (`BaseBranchesSchema` in lib/schemas/slots.ts), which *adds*
+ * `origin/`: here the compared ref is always the freshest one the backend
+ * found and the local/origin distinction is noise, while the form's whole
+ * point is that you'll branch from origin's tip, not stale local history.
+ * Don't "unify" them. */
 export function comparedBaseLabel(folder: Pick<FolderData, "comparedBase">): string {
   const base = folder.comparedBase?.trim();
   if (!base) return "main";
