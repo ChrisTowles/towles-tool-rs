@@ -319,30 +319,39 @@ impl CalendarSource {
 
 /// Default prompt for the personal Google calendar.
 ///
-/// Kept byte-identical to the constant this replaced, so upgrading changes
-/// nothing for an existing Google-provider setup. The JSON contract in the
-/// second half is what [`tt_store::EventInput`] parses — keep it in sync with
-/// [`DEFAULT_CALENDAR_PROMPT_OUTLOOK`] when editing.
+/// The JSON contract in the second half is what `tt_store::EventInput` parses —
+/// keep it in sync with [`DEFAULT_CALENDAR_PROMPT_OUTLOOK`] when editing.
+///
+/// **Times are asked for as RFC 3339, never epoch milliseconds.** That is a
+/// correctness choice before it is a readability one: computing a 13-digit
+/// epoch value is arithmetic a model cannot check, and a wrong one is
+/// indistinguishable from a right one until the countdown is hours off. An
+/// offset-bearing timestamp is something a calendar reports verbatim, and a
+/// malformed one is rejected at parse time instead of silently stored.
 pub const DEFAULT_CALENDAR_PROMPT_GOOGLE: &str = "\
 Using the Google Calendar MCP, list the events on my primary calendar for today \
 only, in my local timezone. Respond with ONLY a JSON array, no prose, no code \
 fences. Each element: {\"externalId\": string (stable event id), \"title\": \
-string, \"startTs\": integer (epoch milliseconds), \"endTs\": integer (epoch \
-milliseconds), \"attendees\": array of attendee display-name strings, \
-\"location\": string, \"joinUrl\": string}. Skip all-day events and events I \
-have declined. Omit any field whose value is null or unknown. If there are no \
-events, respond with [].";
+string, \"start\": string (RFC 3339 with UTC offset, e.g. \
+\"2026-07-20T15:00:00-05:00\"), \"end\": string (same format), \"attendees\": \
+array of attendee display-name strings, \"location\": string, \"joinUrl\": \
+string}. Report each time exactly as the calendar gives it, keeping its UTC \
+offset — do not convert to UTC and do not compute epoch numbers. Skip all-day \
+events and events I have declined. Omit any field whose value is null or \
+unknown. If there are no events, respond with [].";
 
 /// Default prompt for the work Outlook / Microsoft 365 calendar.
 pub const DEFAULT_CALENDAR_PROMPT_OUTLOOK: &str = "\
 Using the Outlook (Microsoft 365) MCP, list the events on my default calendar \
 for today only, in my local timezone. Respond with ONLY a JSON array, no prose, \
 no code fences. Each element: {\"externalId\": string (stable event id), \
-\"title\": string, \"startTs\": integer (epoch milliseconds), \"endTs\": \
-integer (epoch milliseconds), \"attendees\": array of attendee display-name \
-strings, \"location\": string, \"joinUrl\": string}. Skip all-day events and \
-events I have declined. Omit any field whose value is null or unknown. If there \
-are no events, respond with [].";
+\"title\": string, \"start\": string (RFC 3339 with UTC offset, e.g. \
+\"2026-07-20T15:00:00-05:00\"), \"end\": string (same format), \"attendees\": \
+array of attendee display-name strings, \"location\": string, \"joinUrl\": \
+string}. Report each time exactly as the calendar gives it, keeping its UTC \
+offset — do not convert to UTC and do not compute epoch numbers. Skip all-day \
+events and events I have declined. Omit any field whose value is null or \
+unknown. If there are no events, respond with [].";
 
 /// Working-hours gate for the calendar collector: a daily time window plus a
 /// weekday mask, evaluated in local time. When `enabled`, the collector runs
