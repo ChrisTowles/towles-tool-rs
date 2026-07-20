@@ -224,34 +224,117 @@ pub struct CollectorsSettings {
     pub slack: SlackDmCollector,
 }
 
-/// Calendar collector: shells out to `claude -p` against an MCP calendar, so it
+/// Calendar collector: shells out to `claude -p` per configured source, so it
 /// costs tokens — disabled by default; opt in per machine.
-/// `provider` selects the built-in prompt variant + MCP.
+///
+/// The collector's only purpose is **focus protection** — knowing when the next
+/// meeting is and how much focus time is left — not calendar management. Each
+/// [`CalendarSource`] is pulled and stored independently so a personal and a
+/// work calendar can be merged into one timeline without clobbering each other.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct CalendarCollector {
     pub enabled: bool,
-    /// `"google"` (home) or `"outlook"` (work). Unknown values fall back to Google.
-    pub provider: String,
     pub refresh_minutes: u64,
     /// Working-hours window that further gates *when* the (already token-costing)
     /// calendar collector may run. Skips nights and weekends when there's no
     /// meeting to count down to. Only narrows an already-`enabled` collector;
     /// disable it (`enabled = false`) to restore 24/7 running.
     pub quiet_hours: CalendarQuietHours,
+    /// Calendars to pull, each with its own prompt. Every enabled source is run
+    /// separately and written under its own `id`, so adding a second calendar
+    /// never displaces the first.
+    pub sources: Vec<CalendarSource>,
 }
 
 impl Default for CalendarCollector {
     fn default() -> Self {
         Self {
             enabled: false,
-            provider: "google".to_string(),
             refresh_minutes: 15,
             quiet_hours: CalendarQuietHours::default(),
+            sources: CalendarSource::defaults(),
         }
     }
 }
+
+/// One calendar the collector pulls, and the prompt it uses to do so.
+///
+/// The prompt is user-editable on purpose. The built-in defaults ask for a
+/// Google/Outlook MCP, but those MCP servers aren't necessarily configured on a
+/// given machine — pointing a source at whatever actually works there (a CLI
+/// like `gws calendar events list`, a different MCP, a script) is the intended
+/// escape hatch, and the reason the prompt lives in settings rather than in a
+/// compiled-in constant.
+///
+/// The JSON contract the prompt must produce is identical across sources so
+/// `tt_collect`'s lenient extraction and [`tt_store::EventInput`] stay the same:
+/// an array of `{externalId, title, startTs, endTs, attendees, location,
+/// joinUrl}`, or `[]`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", default)]
+pub struct CalendarSource {
+    /// Stable identifier, also written to the store's `events.source` column so
+    /// a re-pull replaces only this calendar's rows. Keep it short and stable
+    /// (`"google"`, `"outlook"`) — changing it orphans previously stored rows.
+    pub id: String,
+    /// Human label for the settings UI and event provenance.
+    pub label: String,
+    pub enabled: bool,
+    /// The `claude -p` prompt used to list today's events for this calendar.
+    pub prompt: String,
+}
+
+impl CalendarSource {
+    /// The built-in sources: personal Google (on) and work Outlook (off), each
+    /// carrying the prompt that used to be a compiled-in constant, so an
+    /// existing single-provider setup behaves the same after the upgrade.
+    pub fn defaults() -> Vec<Self> {
+        vec![
+            Self {
+                id: "google".to_string(),
+                label: "Google (personal)".to_string(),
+                enabled: true,
+                prompt: DEFAULT_CALENDAR_PROMPT_GOOGLE.to_string(),
+            },
+            Self {
+                id: "outlook".to_string(),
+                label: "Outlook (work)".to_string(),
+                enabled: false,
+                prompt: DEFAULT_CALENDAR_PROMPT_OUTLOOK.to_string(),
+            },
+        ]
+    }
+}
+
+/// Default prompt for the personal Google calendar.
+///
+/// Kept byte-identical to the constant this replaced, so upgrading changes
+/// nothing for an existing Google-provider setup. The JSON contract in the
+/// second half is what [`tt_store::EventInput`] parses — keep it in sync with
+/// [`DEFAULT_CALENDAR_PROMPT_OUTLOOK`] when editing.
+pub const DEFAULT_CALENDAR_PROMPT_GOOGLE: &str = "\
+Using the Google Calendar MCP, list the events on my primary calendar for today \
+only, in my local timezone. Respond with ONLY a JSON array, no prose, no code \
+fences. Each element: {\"externalId\": string (stable event id), \"title\": \
+string, \"startTs\": integer (epoch milliseconds), \"endTs\": integer (epoch \
+milliseconds), \"attendees\": array of attendee display-name strings, \
+\"location\": string, \"joinUrl\": string}. Skip all-day events and events I \
+have declined. Omit any field whose value is null or unknown. If there are no \
+events, respond with [].";
+
+/// Default prompt for the work Outlook / Microsoft 365 calendar.
+pub const DEFAULT_CALENDAR_PROMPT_OUTLOOK: &str = "\
+Using the Outlook (Microsoft 365) MCP, list the events on my default calendar \
+for today only, in my local timezone. Respond with ONLY a JSON array, no prose, \
+no code fences. Each element: {\"externalId\": string (stable event id), \
+\"title\": string, \"startTs\": integer (epoch milliseconds), \"endTs\": \
+integer (epoch milliseconds), \"attendees\": array of attendee display-name \
+strings, \"location\": string, \"joinUrl\": string}. Skip all-day events and \
+events I have declined. Omit any field whose value is null or unknown. If there \
+are no events, respond with [].";
 
 /// Working-hours gate for the calendar collector: a daily time window plus a
 /// weekday mask, evaluated in local time. When `enabled`, the collector runs
@@ -350,29 +433,44 @@ impl Default for IssueCollector {
     }
 }
 
-/// `tt-mcp`'s (`tt mcp serve`) capability gate — Rust-only. (Beware: the
-/// legacy TS CLI does not merely ignore this block — its `loadSettings`
-/// strips keys its zod schema doesn't model and rewrites the file, so any
-/// legacy-CLI run reverts this flag to its off default. Fail closed, but a
-/// hand-edited opt-in doesn't survive it.)
-/// `tt` is registered with Claude Code at user scope, so the MCP server is
-/// spawned for every session on the machine regardless of which project it's
-/// working in; nothing about that spawn distinguishes genuine user intent
-/// from an instruction the session picked up from injected content (a hostile
-/// issue/PR body, a fetched page). The flag therefore defaults `false`
-/// (secure by default) and is only flipped by editing this file directly —
-/// deliberately, no `tt-mcp` tool writes settings, so a hijacked session
-/// can't self-approve. See `crates/tt-mcp/src/lib.rs`'s module doc-comment
-/// for the full trust boundary this enforces. (The original gate died with
-/// the zero-use mutating tools in the 2026-07 datamine; `task_create`
-/// brought it back.)
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+/// `tt-mcp`'s HTTP transport — Rust-only. (Beware: the legacy TS CLI does not
+/// merely ignore this block — its `loadSettings` strips keys its zod schema
+/// doesn't model and rewrites the file, so any legacy-CLI run reverts this to
+/// its default port.)
+///
+/// The MCP server is served over loopback HTTP by the desktop app, not by a
+/// per-session stdio subprocess. There is **no bearer token**: a token only
+/// ever defended against browser-originated requests (any process running as
+/// this user can read the token straight out of this file, so it bought
+/// nothing against local malware), and it is replaced by the two mitigations
+/// the MCP spec recommends for local HTTP servers — rejecting any request
+/// carrying an `Origin` header, and requiring `Content-Type: application/json`
+/// so a page cannot dodge a CORS preflight. Those live in
+/// `crates-tauri/tt-app`; see `crates/tt-mcp/src/lib.rs`'s module doc-comment
+/// for the trust boundary they enforce.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct McpSettings {
-    /// Gates `task_create` — anything that mutates the store from an MCP
-    /// session.
-    pub mutations_enabled: bool,
+    /// Loopback TCP port the app serves MCP on.
+    ///
+    /// A **fixed default** rather than a `${tt:port}` pool claim, and that is
+    /// deliberate: the repo's no-hardcoded-ports rule exists because parallel
+    /// worktree slots collide over shared resources, but this server is a
+    /// machine-wide singleton acquired bind-or-skip — exactly one process ever
+    /// holds it, so there is nothing to collide with. A fixed port is also what
+    /// lets the `towles-tool-app` plugin ship a static, checked-in `.mcp.json`.
+    /// Override here only if something else on the machine wants this port.
+    pub port: u16,
+}
+
+/// Default loopback port for the app's MCP server. See [`McpSettings::port`].
+pub const DEFAULT_MCP_PORT: u16 = 8787;
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self { port: DEFAULT_MCP_PORT }
+    }
 }
 
 /// Top-level user settings, mirroring `UserSettingsSchema` in the TS CLI.
@@ -390,21 +488,20 @@ pub struct UserSettings {
     pub collectors: CollectorsSettings,
 
     /// Lenient on purpose: the docs invite hand-editing this block, and a slip
-    /// there (`"mcp": null`, a flag as the string `"true"`) must not fail the
+    /// there (`"mcp": null`, a port as the string `"8787"`) must not fail the
     /// whole settings file — every command loads it, so that would brick the
     /// app, doctor, journal, and collect at once. A malformed block instead
-    /// falls back to the all-off defaults: the gate fails closed and the rest
-    /// of the file keeps working.
+    /// falls back to the default port and the rest of the file keeps working.
     #[serde(default, deserialize_with = "lenient_mcp")]
     pub mcp: McpSettings,
 }
 
 /// Deserialize [`McpSettings`] but degrade any shape other than the documented
-/// object form to the (all-off) default — see the field's doc comment on
+/// object form to the default — see the field's doc comment on
 /// `UserSettings::mcp` for why. Non-object shapes are rejected outright rather
 /// than fed to serde: a struct happily deserializes from a JSON *array*
-/// positionally (`"mcp": [true]` would set `mutationsEnabled`), and a security
-/// flag must not be flippable through an undocumented shape.
+/// positionally (`"mcp": [9999]` would set the port), and the transport config
+/// must not be settable through an undocumented shape.
 fn lenient_mcp<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<McpSettings, D::Error> {
@@ -871,27 +968,27 @@ mod tests {
     }
 
     #[test]
-    fn malformed_mcp_block_falls_back_to_off_without_failing_the_file() {
+    fn malformed_mcp_block_falls_back_to_default_without_failing_the_file() {
         // The docs invite hand-editing the `mcp` block, so a slip there must
-        // not brick every settings consumer — it degrades to the all-off
-        // defaults (the gate fails closed) while the rest of the file loads.
+        // not brick every settings consumer — it degrades to the default port
+        // while the rest of the file loads.
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("towles-tool.settings.json");
         for bad_block in [
             r#"null"#,
-            r#"{"mutationsEnabled":"true"}"#, // string, not bool
-            r#"[true]"#,
+            r#"{"port":"8787"}"#, // string, not integer
+            r#"[9999]"#,          // array: must not set the port positionally
         ] {
             std::fs::write(&path, format!(r#"{{"preferredEditor":"vim","mcp":{bad_block}}}"#))
                 .unwrap();
             let loaded = load_from(&path).unwrap();
             assert_eq!(loaded.preferred_editor, "vim", "rest of the file still loads");
-            assert!(!loaded.mcp.mutations_enabled, "fails closed for {bad_block}");
+            assert_eq!(loaded.mcp.port, DEFAULT_MCP_PORT, "falls back for {bad_block}");
         }
 
         // A well-formed block still parses, of course.
-        std::fs::write(&path, r#"{"mcp":{"mutationsEnabled":true}}"#).unwrap();
-        assert!(load_from(&path).unwrap().mcp.mutations_enabled);
+        std::fs::write(&path, r#"{"mcp":{"port":9123}}"#).unwrap();
+        assert_eq!(load_from(&path).unwrap().mcp.port, 9123);
     }
 
     #[test]
@@ -935,8 +1032,16 @@ mod tests {
         let c = UserSettings::default().collectors;
         // Off by default: the calendar collector burns tokens (`claude -p`).
         assert!(!c.calendar.enabled);
-        assert_eq!(c.calendar.provider, "google");
         assert_eq!(c.calendar.refresh_minutes, 15);
+        // Two built-in sources; only the personal one is on, matching the
+        // single-provider default this replaced.
+        let ids: Vec<&str> = c.calendar.sources.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["google", "outlook"]);
+        assert!(c.calendar.sources[0].enabled, "google on by default");
+        assert!(!c.calendar.sources[1].enabled, "outlook opt-in");
+        // Each source carries its own editable prompt, seeded from the built-ins.
+        assert_eq!(c.calendar.sources[0].prompt, DEFAULT_CALENDAR_PROMPT_GOOGLE);
+        assert_eq!(c.calendar.sources[1].prompt, DEFAULT_CALENDAR_PROMPT_OUTLOOK);
         // Quiet hours default to 8:00–18:00 local, Mon–Fri, and are on.
         assert!(c.calendar.quiet_hours.enabled);
         assert_eq!(c.calendar.quiet_hours.start_hour, 8);
@@ -1068,7 +1173,12 @@ mod tests {
         assert!(defs.get("CollectorsSettings").is_some());
         let cal = &defs["CalendarCollector"]["properties"];
         assert!(cal.get("refreshMinutes").is_some());
-        assert!(cal.get("provider").is_some());
+        assert!(cal.get("sources").is_some());
+        // The per-source prompt is the user-facing escape hatch — it has to
+        // reach the schema, or the settings UI can't offer it.
+        let src = &defs["CalendarSource"]["properties"];
+        assert!(src.get("prompt").is_some());
+        assert!(src.get("enabled").is_some());
         let prs = &defs["PrCollector"]["properties"];
         assert!(prs.get("refreshSeconds").is_some());
     }

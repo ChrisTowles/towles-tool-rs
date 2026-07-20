@@ -350,6 +350,7 @@ mod tests {
     fn event(external_id: &str, start_ts: i64) -> CalEvent {
         CalEvent {
             id: 1,
+            source: "test".to_string(),
             external_id: external_id.to_string(),
             title: format!("Meeting {external_id}"),
             start_ts,
