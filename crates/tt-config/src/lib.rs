@@ -6,13 +6,11 @@
 //! file is shared, the model deliberately tolerates unknown fields and fills missing
 //! ones from defaults via `#[serde(default)]` — never `deny_unknown_fields`.
 //!
-//! The JSON schema ([`json_schema`]) is **derived from these structs** via
-//! `schemars` (`#[derive(JsonSchema)]`) rather than hand-maintained, so the
-//! schema cannot silently drift from the serde model. Two invariants keep the
-//! shared file safe and are enforced by tests: every schema property name is
-//! `camelCase` (matching what the TypeScript CLI reads/writes), and writes to
-//! the shared file go through [`save_merge`]/[`save_merge_to`] so TS-owned keys
-//! survive.
+//! Two invariants keep the shared file safe and are enforced by tests: every
+//! property name is `camelCase` (matching what the TypeScript CLI
+//! reads/writes; guarded by a test-only `schemars` schema derived from these
+//! structs), and writes to the shared file go through [`save_merge`] so
+//! TS-owned keys survive.
 //!
 //! ## Slot-scoped state
 //!
@@ -25,7 +23,6 @@
 //! defaults, so the shared settings file the TypeScript CLI also reads is
 //! untouched.
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -52,7 +49,8 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Position of the AgentBoard sidebar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarPosition {
     Left,
@@ -62,7 +60,8 @@ pub enum SidebarPosition {
 /// Journal path templates and base folders.
 ///
 /// Path template tokens follow Luxon formatting, e.g. `{yyyy}`, `{MM}`, `{dd}`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct JournalSettings {
     /// Base folder where all journal files are stored.
@@ -97,7 +96,8 @@ impl Default for JournalSettings {
 }
 
 /// AgentBoard UI preferences. Every field is optional; the TS CLI owns most of them.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentboardSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -198,26 +198,18 @@ pub const DEFAULT_NOTIFY_MEETING_START: bool = true;
 /// Built-in default for [`AgentboardSettings::notify_review_requested`]: on.
 pub const DEFAULT_NOTIFY_REVIEW_REQUESTED: bool = true;
 
-/// Built-in default for [`AgentboardSettings::copy_on_select`]: on.
-pub const DEFAULT_COPY_ON_SELECT: bool = true;
-
-/// Built-in default for [`AgentboardSettings::terminal_font_size`]: 13px.
-pub const DEFAULT_TERMINAL_FONT_SIZE: u8 = 13;
-
 /// Built-in default for [`AgentboardSettings::notify_stale_collector`]: on.
 pub const DEFAULT_NOTIFY_STALE_COLLECTOR: bool = true;
 
 /// Built-in default for [`AgentboardSettings::notify_checks_failed`]: on.
 pub const DEFAULT_NOTIFY_CHECKS_FAILED: bool = true;
 
-/// Built-in default for [`AgentboardSettings::shortcuts_work_in_terminal`]: on.
-pub const DEFAULT_SHORTCUTS_WORK_IN_TERMINAL: bool = true;
-
 /// Data-hub collector settings (the Rust CLI/app's tt.db collectors; the TS CLI
 /// ignores this block). Each collector is configured independently — enable
 /// flag, refresh cadence, and (for the claude-backed calendar) which MCP
 /// provider to drive so the same app works at home (Google) and work (Outlook).
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct CollectorsSettings {
     pub calendar: CalendarCollector,
@@ -229,7 +221,8 @@ pub struct CollectorsSettings {
 /// Calendar collector: shells out to `claude -p` against an MCP calendar, so it
 /// costs tokens — disabled by default; opt in per machine.
 /// `provider` selects the built-in prompt variant + MCP.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct CalendarCollector {
     pub enabled: bool,
@@ -262,7 +255,8 @@ impl Default for CalendarCollector {
 ///
 /// `weekdays` are day-of-week numbers with **0 = Monday … 6 = Sunday** (matching
 /// chrono's `num_days_from_monday`); the default is Mon–Fri.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct CalendarQuietHours {
     /// When false the gate is off entirely and the collector runs 24/7 on its
@@ -286,7 +280,8 @@ impl Default for CalendarQuietHours {
 }
 
 /// Pull-request collector (via `gh`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct PrCollector {
     pub enabled: bool,
@@ -302,7 +297,8 @@ impl Default for PrCollector {
 /// Slack DM watcher: polls one DM conversation (e.g. spouse) via the Slack Web
 /// API and surfaces unanswered messages in the app's attention banner. Needs a
 /// user OAuth token (`xoxp-…`) with `im:history` — disabled until one is set.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct SlackDmCollector {
     pub enabled: bool,
@@ -334,7 +330,8 @@ impl Default for SlackDmCollector {
 }
 
 /// Issue collector (via `gh`), feeding the cross-repo board.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct IssueCollector {
     pub enabled: bool,
@@ -363,7 +360,8 @@ impl Default for IssueCollector {
 /// for the full trust boundary this enforces. (The original gate died with
 /// the zero-use mutating tools in the 2026-07 datamine; `task_create`
 /// brought it back.)
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct McpSettings {
     /// Gates `task_create` — anything that mutates the store from an MCP
@@ -372,7 +370,8 @@ pub struct McpSettings {
 }
 
 /// Top-level user settings, mirroring `UserSettingsSchema` in the TS CLI.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct UserSettings {
     /// Preferred editor command (e.g. `code`).
@@ -565,7 +564,7 @@ fn shared_under(base: PathBuf) -> PathBuf {
 /// Config directory for shared stores (the settings file). Shared across
 /// checkouts: `~/.config/towles-tool` (matches the TS CLI on every platform);
 /// a forced `TT_STATE_SCOPE` nests it under `slots/<scope>`.
-pub fn config_dir() -> Result<PathBuf> {
+fn config_dir() -> Result<PathBuf> {
     Ok(shared_under(home_dir()?.join(".config").join(TOOL_NAME)))
 }
 
@@ -579,7 +578,7 @@ pub fn config_path() -> Result<PathBuf> {
 /// `<data_dir>/towles-tool` (e.g. `~/.local/share/towles-tool`). In a slot
 /// checkout: `…/towles-tool/slots/<scope>` — a branch's schema experiments
 /// must not touch the daily driver's database.
-pub fn data_dir() -> Result<PathBuf> {
+fn data_dir() -> Result<PathBuf> {
     Ok(instance_under(dirs::data_dir().ok_or(Error::NoDataDir)?.join(TOOL_NAME)))
 }
 
@@ -751,20 +750,12 @@ pub fn load_from(path: &Path) -> Result<UserSettings> {
     Ok(settings)
 }
 
-/// Save settings to the standard location, **serializing only the fields this
-/// model captures**. Any keys the shared TypeScript CLI owns that this model
-/// does not model are dropped — for writes to the shared settings file prefer
-/// [`save_merge`], which preserves them.
-pub fn save(settings: &UserSettings) -> Result<()> {
-    save_to(&config_path()?, settings)
-}
-
 /// Save settings to an explicit path, creating parent directories as needed.
 ///
 /// Writes only the modeled fields, so any unmodeled keys already on disk (e.g.
 /// keys the shared TypeScript CLI owns) are dropped. For the shared settings
 /// file use [`save_merge_to`] instead.
-pub fn save_to(path: &Path, settings: &UserSettings) -> Result<()> {
+fn save_to(path: &Path, settings: &UserSettings) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -783,7 +774,7 @@ pub fn save_merge(settings: &UserSettings) -> Result<()> {
 /// win; unknown fields on disk survive. Use this for writes to the shared settings
 /// file — unlike [`save_to`], which serializes only the modeled fields and would
 /// silently drop anything the other tool wrote.
-pub fn save_merge_to(path: &Path, settings: &UserSettings) -> Result<()> {
+fn save_merge_to(path: &Path, settings: &UserSettings) -> Result<()> {
     let mut base = if path.exists() {
         serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path)?)
             .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()))
@@ -811,16 +802,18 @@ fn merge_json(base: &mut serde_json::Value, incoming: &serde_json::Value) {
     }
 }
 
-/// JSON Schema for the settings file, as a `serde_json::Value`.
-pub fn json_schema() -> serde_json::Value {
-    let schema = schemars::schema_for!(UserSettings);
-    serde_json::to_value(schema).expect("settings JSON schema should serialize")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// JSON Schema derived from the settings structs (test-only: the schema is
+    /// no shipped API, but it's the drift guard that catches a struct whose
+    /// field names diverge from the shared file's `camelCase` convention).
+    fn json_schema() -> serde_json::Value {
+        let schema = schemars::schema_for!(UserSettings);
+        serde_json::to_value(schema).expect("settings JSON schema should serialize")
+    }
 
     #[test]
     fn defaults_match_ts_cli() {
@@ -973,8 +966,8 @@ mod tests {
         assert!(s.agentboard.copy_on_select.is_none());
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains("copyOnSelect"));
-        // …and unset means ON.
-        assert!(s.agentboard.copy_on_select.unwrap_or(DEFAULT_COPY_ON_SELECT));
+        // …and unset means ON (the frontend applies the default).
+        assert!(s.agentboard.copy_on_select.unwrap_or(true));
     }
 
     #[test]
@@ -984,10 +977,8 @@ mod tests {
         assert!(s.agentboard.shortcuts_work_in_terminal.is_none());
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains("shortcutsWorkInTerminal"));
-        // …and unset means ON.
-        assert!(
-            s.agentboard.shortcuts_work_in_terminal.unwrap_or(DEFAULT_SHORTCUTS_WORK_IN_TERMINAL)
-        );
+        // …and unset means ON (the frontend applies the default).
+        assert!(s.agentboard.shortcuts_work_in_terminal.unwrap_or(true));
     }
 
     #[test]
@@ -997,8 +988,8 @@ mod tests {
         assert!(s.agentboard.terminal_font_size.is_none());
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains("terminalFontSize"));
-        // …and unset means the 13px default.
-        assert_eq!(s.agentboard.terminal_font_size.unwrap_or(DEFAULT_TERMINAL_FONT_SIZE), 13);
+        // …and unset means the 13px default (the frontend applies it).
+        assert_eq!(s.agentboard.terminal_font_size.unwrap_or(13), 13);
     }
 
     #[test]

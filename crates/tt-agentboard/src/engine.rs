@@ -15,18 +15,24 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::metadata::{LogInput, ProgressInput, StatusInput};
+use crate::bridge::{StatePayload, assemble_state};
+use crate::git_info::GitInfoCache;
+use crate::metadata::{LogInput, ProgressInput, SessionMetadataStore, StatusInput};
 use crate::procenv::InstanceScope;
-use crate::session_order::ReorderDelta;
-use crate::types::{AgentEvent, AgentStatus, MetadataTone};
-use crate::{
-    AgentTracker, AgentWatcher, AmpAgentWatcher, ClaudeCodeAgentWatcher, CodexAgentWatcher,
-    GitInfoCache, OpenCodeAgentWatcher, RepoEntry, SessionMetadataStore, SessionOrder,
-    SessionRecord, SessionStore, StatePayload, WatcherContext, add_repo_persisted, assemble_state,
-    default_repos_path, default_sessions_path, instance_key, load_repos, load_scan_roots,
+use crate::repos::{
+    RepoEntry, add_repo_persisted, default_repos_path, load_repos, load_scan_roots,
     remove_repo_persisted, repo_entries, resolve_session_name, save_scan_roots,
     untrack_missing_persisted,
 };
+use crate::session_order::{ReorderDelta, SessionOrder};
+use crate::sessions::{SessionRecord, SessionStore, default_sessions_path};
+use crate::tracker::{AgentTracker, instance_key};
+use crate::types::{AgentEvent, AgentStatus, MetadataTone};
+use crate::watcher::{AgentWatcher, WatcherContext};
+use crate::watchers::amp::AmpAgentWatcher;
+use crate::watchers::claude_code::ClaudeCodeAgentWatcher;
+use crate::watchers::codex::CodexAgentWatcher;
+use crate::watchers::opencode::OpenCodeAgentWatcher;
 
 // Prune schedule constants (BRIDGE-SPEC §4).
 const STUCK_MS: i64 = 3 * 60 * 1000;
@@ -178,7 +184,7 @@ impl Engine {
         let projects_dir =
             dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude").join("projects");
         let repos_path = default_repos_path();
-        let order_path = crate::default_session_order_path();
+        let order_path = crate::session_order::default_session_order_path();
 
         let settings = tt_config::load().unwrap_or_default();
         let theme = settings.agentboard.theme.and_then(|v| v.as_str().map(str::to_string));
@@ -202,8 +208,12 @@ impl Engine {
             repo_meta: crate::repo_meta::RepoMetaStore::new(Some(
                 crate::repo_meta::default_repo_meta_path(),
             )),
-            windows: crate::windows::WindowsStore::new(Some(crate::default_windows_path())),
-            collapse: crate::collapse::CollapseStore::new(Some(crate::default_collapse_path())),
+            windows: crate::windows::WindowsStore::new(
+                Some(crate::windows::default_windows_path()),
+            ),
+            collapse: crate::collapse::CollapseStore::new(Some(
+                crate::collapse::default_collapse_path(),
+            )),
             git_cache: GitInfoCache::new(),
             watchers: vec![
                 Box::new(ClaudeCodeAgentWatcher::with_defaults(scope.clone())),
@@ -483,11 +493,6 @@ impl Engine {
             let _ = self.collapse.save();
         }
         changed
-    }
-
-    /// The current compact-nudge threshold (context-%).
-    pub fn compact_recommend_percent(&self) -> u8 {
-        self.compact_recommend_percent
     }
 
     /// Set the compact-nudge threshold and persist it to the shared settings

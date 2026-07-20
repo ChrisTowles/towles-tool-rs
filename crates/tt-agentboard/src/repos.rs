@@ -78,8 +78,11 @@ fn save_config(path: &Path, config: &ReposConfig) -> std::io::Result<()> {
 }
 
 /// Persist the repo-path list as `{"repoPaths":[...]}`. Any existing `scanRoots`
-/// on disk is preserved.
-pub fn save_repos(path: &Path, repo_paths: &[String]) -> std::io::Result<()> {
+/// on disk is preserved. Test-only file-seeding fixture — production writes go
+/// through the `*_persisted` helpers (the CLI shell that called this was
+/// removed in the 2026-07-19 trim).
+#[cfg(test)]
+fn save_repos(path: &Path, repo_paths: &[String]) -> std::io::Result<()> {
     let mut config = load_config(path);
     config.repo_paths = repo_paths.to_vec();
     save_config(path, &config)
