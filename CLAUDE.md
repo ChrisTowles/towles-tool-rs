@@ -220,8 +220,9 @@ Cargo workspace + npm workspace (`apps/client` only):
     Timestamps are epoch ms, passed in (`now_ms`) — never read the clock in
     logic.
   - `tt-collect` — collectors that fill tt.db: calendar via `claude -p`
-    (strict-JSON prompt + lenient extraction; `CalendarProvider` picks the
-    Google/Outlook prompt+MCP) — **off by default** since it burns tokens
+    (strict-JSON prompt + lenient extraction; one run per enabled
+    `CalendarSource`, each with its own user-editable prompt and its own store
+    lane) — **off by default** since it burns tokens
     per tick; issues + PRs via `gh`; a watched Slack DM via the Slack Web API
     (escalating banner in the app). Collector keys are `claude:calendar`,
     `issues`, `prs`, `slack:dm` — the frontend matches on them. Email was
@@ -229,19 +230,41 @@ Cargo workspace + npm workspace (`apps/client` only):
     [`crates/tt-collect/CLAUDE.md`](crates/tt-collect/CLAUDE.md) for the
     never-panic contract, per-repo isolation, and where the Slack
     protocol/socket split lives.
-  - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`tt mcp serve`)
-    exposing the board's task family to claude sessions: `task_list`,
-    `task_status` (reads), and `task_create` (the one mutation — creates a
-    #339 board task in a tracked repo's swimlane, same store path as the
-    app's `store_add_task`). It's registered at **user scope**, so every
-    session on the machine can reach it; mutations therefore sit behind the
-    `mcp.mutationsEnabled` capability gate in the shared settings file —
-    default off, re-read per call, failing closed, and not writable by any
-    exposed tool, so prompt injection can't self-approve (the crate's module
-    doc-comment has the threat model). The broader dashboard-read tools
-    (`day_brief`, `needs_you`, `snapshot`, PR/issue/DM/collector reads) were
-    pruned in the 2026-07 tool-surface review; a calendar family may return
-    later.
+  - `tt-mcp` — hand-rolled JSON-RPC MCP server, **transport-free** (the same
+    split as `tt-ide`): `Dispatcher::handle_at` takes a request string and an
+    injected `now_ms` and returns a response string, so the whole tool surface
+    is unit-testable with no server to stand up. The transport is
+    `crates-tauri/tt-app/src/mcp_http.rs` — read that module's doc before
+    touching either half. Tools: `task_list`, `task_status`, `task_create`
+    (a #339 board task in a tracked repo's swimlane, same store path as the
+    app's `store_add_task`), plus the calendar family `calendar_today`,
+    `calendar_next` and the push-model write `calendar_set`. The broader
+    dashboard-read tools (`day_brief`, `needs_you`, `snapshot`,
+    PR/issue/DM/collector reads) were pruned in the 2026-07 tool-surface
+    review and have not returned.
+
+    **Security posture changed on 2026-07-20 — don't reason from the old
+    shape.** There is no bearer token and no `mcp.mutationsEnabled` gate; both
+    are gone, not merely defaulted. What guards writes is entirely the
+    transport's request admission: **any request carrying an `Origin` header is
+    refused** (browsers always send one, real MCP clients never do — the
+    DNS-rebinding mitigation) and **`Content-Type: application/json` is
+    required** (not a CORS-simple type, so a page can't dodge a preflight).
+    Loopback binding alone does *not* keep web pages out, which is why those
+    checks exist and why they're pure functions with direct tests. A
+    consequence worth knowing before debugging: **the app's own webview cannot
+    call the endpoint** — its `fetch` carries an `Origin` — so the MCP screen's
+    tool tester issues its request from Rust (`mcp_test_call`). Both crates'
+    module docs carry the full threat model.
+
+    Served **one per machine, bind-or-skip**: whichever app instance takes the
+    port serves every session, the rest serve none, and the OS bind is the
+    mutex. App closed = MCP down; there is no headless fallback (the stdio
+    server and `tt mcp serve` were deleted). The port is a **fixed default**
+    (`mcp.port`, 8787) rather than a `${tt:port}` claim — the one legitimate
+    exception to the no-hardcoded-ports rule, because a machine-wide singleton
+    has nothing to collide with, and a stable port is what lets the
+    `towles-tool-app` plugin ship a static checked-in `.mcp.json`.
   - `tt-otel` — telemetry. `tt_otel::init` installs the global `tracing`
     subscriber for both binaries (it replaced `env_logger` — a hard cutover,
     no second logger), fanning out to stderr (filtered by `-v`/`RUST_LOG`) and
@@ -317,9 +340,10 @@ Cargo workspace + npm workspace (`apps/client` only):
   2026-07-19 trim (usage review showed everything else was dead or app-owned):
   `journal daily-notes|note|meeting|jot|open|list|search` (+ `today` alias),
   `slot init|new|ls|rm|env|clean` (worktree slots — see the Worktree slots
-  section), and the headless entry points `mcp serve` and
-  `collect calendar|issues|prs|slack|all|nudge|status` (both slated to move
-  into the app per the CLI redesign). The removed groups (`gh`, `config`,
+  section), and the headless entry point
+  `collect calendar|issues|prs|slack|all|nudge|status` (slated to move into
+  the app per the CLI redesign). The MCP server is not a CLI surface — it
+  runs inside the app over loopback HTTP. The removed groups (`gh`, `config`,
   `doctor`, `install`, `agentboard`) live in git history; don't reintroduce
   CLI surfaces for app-owned features.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
@@ -384,8 +408,11 @@ plugins ship today:
 - `tt` (`packages/core`) — the map-vs-territory workflow commands/skills
   (`/tt:01-blindspot` … `/tt:22-memories`).
 - `towles-tool-app` (`packages/app`) — bridges Claude Code to the desktop
-  app itself: registers its `tt mcp serve` MCP server (board tasks:
-  `task_list`, `task_status`, gated `task_create`), ships the `slot-onboarding` skill
+  app itself: registers the app's MCP server with a static checked-in
+  `.mcp.json` (`{"type":"http","url":"http://127.0.0.1:8787/mcp"}` — board
+  tasks `task_list`/`task_status`/`task_create` plus the calendar family
+  `calendar_today`/`calendar_next`/`calendar_set`; the app must be running),
+  ships the `slot-onboarding` skill
   (guides onboarding any repo onto worktree slots — port discovery, template
   authoring, `tt slot init`), and a `PostToolUse` hook
   (`hooks/scripts/gh-pr-nudge.sh`) that nudges a running app instance to
@@ -458,7 +485,7 @@ etc.). The points below are repo-specific specializations of that doc.
   picks its natural surface. App-only features don't need a `tt` subcommand,
   and terminal-native tools (journal, gh, doctor) don't need app screens. The
   CLI remains the home for terminal workflows and headless entry points
-  (`mcp serve`, `collect`, `install`). Either way, the logic lands in a
+  (`collect`). Either way, the logic lands in a
   Tauri-free `crates/` library with unit tests — the e2e harness is not the
   primary correctness seam.
 - **Hard cutover, no back-compat shims** — replace, don't wrap. (No compat

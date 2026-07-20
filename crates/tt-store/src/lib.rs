@@ -42,10 +42,18 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 /// How many MCP call-log rows are retained; older rows are pruned on insert.
 const MCP_CALL_RETAIN: i64 = 500;
+
+/// How far back calendar events are kept, swept on each calendar write.
+/// Public so writers can refuse a backfill their own sweep would reclaim.
+///
+/// Events are a cache in service of "when is my next meeting", so history has
+/// no value here — but a few days of slack means a clock skew or a late-running
+/// pull can't discard a meeting that hasn't happened yet.
+pub const EVENT_RETAIN_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 /// How many MCP call-log rows ride along in a [`Snapshot`] (newest first).
 const MCP_CALL_SNAPSHOT_LIMIT: usize = 100;
@@ -61,14 +69,16 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
-    external_id TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    external_id TEXT NOT NULL,
     title TEXT NOT NULL,
     start_ts INTEGER NOT NULL,
     end_ts INTEGER,
     attendees TEXT NOT NULL DEFAULT '[]',
     location TEXT,
     join_url TEXT,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    UNIQUE(source, external_id)
 );
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,7 +134,7 @@ CREATE TABLE IF NOT EXISTS dm_status (
 ";
 
 /// v5: the MCP server's incoming-call log (one row per JSON-RPC request the
-/// `tt mcp serve` dispatcher handled). `IF NOT EXISTS`, so `migrate` stays
+/// MCP dispatcher handled). `IF NOT EXISTS`, so `migrate` stays
 /// idempotent and pre-v5 dbs gain the table in place.
 const SCHEMA_MCP_CALLS_V5: &str = "\
 CREATE TABLE IF NOT EXISTS mcp_calls (
@@ -168,8 +178,36 @@ CREATE TABLE IF NOT EXISTS task_prs (
 );
 ";
 
+/// Local midnight of `date` as epoch ms, resolving DST edges rather than
+/// giving up on them: an ambiguous midnight takes the earlier instant, and a
+/// nonexistent one (spring-forward at 00:00) walks forward to the first valid
+/// minute of that day. `None` only if the whole day is unrepresentable.
+fn local_midnight(date: chrono::NaiveDate) -> Option<i64> {
+    use chrono::{Local, LocalResult, TimeZone};
+
+    match date.and_hms_opt(0, 0, 0).map(|dt| Local.from_local_datetime(&dt)) {
+        Some(LocalResult::Single(dt)) => return Some(dt.timestamp_millis()),
+        // Fall-back fold: two instants map to this local time. Take the earlier
+        // so the day window still starts at the first occurrence of midnight.
+        Some(LocalResult::Ambiguous(earlier, _)) => return Some(earlier.timestamp_millis()),
+        _ => {}
+    }
+    // Spring-forward at 00:00: midnight doesn't exist. Step forward a minute at
+    // a time to the first instant that does — bounded, since a DST jump is
+    // never more than a couple of hours.
+    for minute in 1..=180 {
+        if let Some(dt) = date.and_hms_opt(0, 0, 0).map(|dt| dt + chrono::Duration::minutes(minute))
+            && let Some(resolved) = Local.from_local_datetime(&dt).earliest()
+        {
+            return Some(resolved.timestamp_millis());
+        }
+    }
+    None
+}
+
 // Column lists, kept in sync with the row-mapping closures below.
-const EVENT_COLS: &str = "id, external_id, title, start_ts, end_ts, attendees, location, join_url";
+const EVENT_COLS: &str =
+    "id, source, external_id, title, start_ts, end_ts, attendees, location, join_url";
 const TASK_COLS: &str = "id, text, status, position, created_at, completed_at, notes, \
      slot_repo_root, slot_repo, slot_branch, slot_dir";
 const ISSUE_COLS: &str = "repo, number, title, labels, state, url, updated_ts";
@@ -193,6 +231,10 @@ ORDER BY CASE status
 #[serde(rename_all = "camelCase")]
 pub struct CalEvent {
     pub id: i64,
+    /// Which configured calendar this came from (`tt_config::CalendarSource::id`
+    /// — e.g. `"google"`, `"outlook"`). Provenance for the UI, and the scope key
+    /// for [`Store::replace_events_for_source`].
+    pub source: String,
     pub external_id: String,
     pub title: String,
     pub start_ts: i64,
@@ -331,7 +373,7 @@ pub struct DmItem {
 
 /// One handled MCP request: what came in (method, tool, compacted args), how it
 /// went (`ok`/`error`), how long the handler took, and which client sent it
-/// (from the session's `initialize`). Written by the `tt mcp serve` dispatcher,
+/// (from the session's `initialize`). Written by the MCP dispatcher,
 /// read by the app's MCP screen.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -495,6 +537,7 @@ impl Store {
         self.conn.execute_batch(SCHEMA_TASK_LINKS_V7)?;
         self.migrate_tasks_v7()?;
         self.migrate_tasks_v8_drop_due()?;
+        self.migrate_events_v9()?;
         self.conn.execute_batch(SCHEMA_MCP_CALLS_V5)?;
         self.migrate_collect_runs_v6()?;
         self.conn.execute(
@@ -659,6 +702,56 @@ impl Store {
         Ok(())
     }
 
+    /// v9: calendar events gained a `source` column so a personal and a work
+    /// calendar can be merged into one timeline without clobbering each other
+    /// (the old write path was a `DELETE FROM events` full-table swap, so
+    /// whichever calendar pushed second wiped the first).
+    ///
+    /// A rebuild — not `ALTER TABLE ADD COLUMN` — because the uniqueness rule
+    /// changes too: `external_id` was `UNIQUE` on its own, and two providers can
+    /// legitimately issue the same event id. SQLite cannot alter a constraint in
+    /// place.
+    ///
+    /// **Pre-v9 rows are dropped, not migrated.** There is no honest source to
+    /// attribute them to (the old schema didn't record one), and a wrong guess
+    /// is worse than no row: a row labelled with a source that never pushes
+    /// again is never replaced by anything, so it would linger in the countdown
+    /// forever. Events are a pure collector-owned cache, fully rebuilt on the
+    /// next pull, so the cost is at most one refresh interval of staleness.
+    /// Detected by column presence, so it's idempotent and a no-op on fresh dbs.
+    fn migrate_events_v9(&self) -> Result<()> {
+        let mut has_source = false;
+        {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(events)")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(1)?;
+                if name == "source" {
+                    has_source = true;
+                }
+            }
+        }
+        if !has_source {
+            self.conn.execute_batch(
+                "DROP TABLE IF EXISTS events;
+                 CREATE TABLE events (
+                     id INTEGER PRIMARY KEY,
+                     source TEXT NOT NULL,
+                     external_id TEXT NOT NULL,
+                     title TEXT NOT NULL,
+                     start_ts INTEGER NOT NULL,
+                     end_ts INTEGER,
+                     attendees TEXT NOT NULL DEFAULT '[]',
+                     location TEXT,
+                     join_url TEXT,
+                     updated_at INTEGER NOT NULL,
+                     UNIQUE(source, external_id)
+                 );",
+            )?;
+        }
+        Ok(())
+    }
+
     /// v8: due dates are gone from tasks (2026-07-19 — GitHub issues carry no
     /// native due date, and the Board leans on status + links for urgency), so
     /// drop the column from dbs that predate the removal. Detected by column
@@ -684,18 +777,141 @@ impl Store {
 
     // --- Writes -----------------------------------------------------------
 
-    /// Full-snapshot replace of all events.
-    pub fn replace_events(&self, events: &[EventInput], now_ms: i64) -> Result<usize> {
+    /// The `[start, end)` epoch-ms bounds of the local calendar day containing
+    /// `reference_ms` — the window callers pass to
+    /// [`Store::replace_events_for_source`].
+    ///
+    /// This lives here, beside the delete it scopes, because **every writer
+    /// must agree on it**. It previously existed twice — once in the collector,
+    /// once in the MCP tool — with different DST fallbacks: one widened to a
+    /// ±1-day window, the other collapsed to an empty one. Both fed the same
+    /// scoped `DELETE`, so on a DST-transition day the same calendar day would
+    /// sweep two days of rows when written by the collector and none when
+    /// written over MCP. One destructive window, one implementation.
+    ///
+    /// DST is handled rather than punted on:
+    /// - An **ambiguous** local midnight (a fall-back fold, real in zones like
+    ///   Brazil, Chile and Cuba that transition at midnight) resolves to the
+    ///   *earlier* instant, so the window still covers the whole civil day. The
+    ///   old code used `.single()` here, which returned `None` for this case and
+    ///   silently skipped the delete twice a year.
+    /// - A **nonexistent** local midnight (spring-forward at 00:00) walks
+    ///   forward to the first valid instant of that day.
+    /// - Only if both boundaries are unresolvable does it fall back — to the
+    ///   empty window, never a wider one. Deleting nothing leaves stale rows a
+    ///   later pull fixes; deleting too much destroys data no pull restores.
+    pub fn local_day_bounds(reference_ms: i64) -> (i64, i64) {
+        use chrono::{Duration, Local, TimeZone};
+
+        let Some(reference) = Local.timestamp_millis_opt(reference_ms).single() else {
+            return (reference_ms, reference_ms);
+        };
+        let date = reference.date_naive();
+        let start = local_midnight(date);
+        let end = local_midnight(date + Duration::days(1));
+        match (start, end) {
+            (Some(start), Some(end)) => (start, end),
+            _ => (reference_ms, reference_ms),
+        }
+    }
+
+    /// Drop calendar events older than the retention window, independent of any
+    /// write.
+    ///
+    /// [`Store::replace_events_for_source`] sweeps as a side effect, which is
+    /// enough while some calendar is still being pulled — but not when the last
+    /// one is switched off. Then no write ever happens again, the sweep never
+    /// runs, and whatever was in the table stays forever: `calendar_next` keeps
+    /// returning a meeting from the day the user turned collection off, with an
+    /// ever-more-negative `minutesUntil` feeding the countdown and the
+    /// meeting-start notification. The collector calls this even on the
+    /// nothing-to-do path for exactly that reason.
+    ///
+    /// Returns how many rows were removed.
+    pub fn sweep_old_events(&self, now_ms: i64) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM events WHERE start_ts < ?1",
+            params![now_ms.saturating_sub(EVENT_RETAIN_MS)],
+        )?)
+    }
+
+    /// Replace one calendar's events within one day window, leaving every other
+    /// calendar — and every other day — untouched.
+    ///
+    /// This is deliberately *not* a full-table swap. Several calendars (personal
+    /// Google, work Outlook) are pulled independently and merged into a single
+    /// timeline; a global `DELETE FROM events` meant whichever pulled second
+    /// erased the first. Scoping the delete to `(source, day)` makes each pull
+    /// idempotent within its own lane.
+    ///
+    /// `source` is assigned by the *caller*, never by the data: it identifies
+    /// which configured calendar this pull represents, and [`EventInput`]
+    /// therefore has no `source` field — a model-authored payload must not be
+    /// able to name the lane it writes into.
+    ///
+    /// The window is `[day_start_ms, day_end_ms)` against `start_ts`, passed in
+    /// rather than derived here so the local-day boundary (and DST) stays the
+    /// caller's decision and tests stay deterministic. Events outside it are
+    /// inserted but will not be swept by this call — pass a window that actually
+    /// contains them.
+    pub fn replace_events_for_source(
+        &self,
+        source: &str,
+        day_start_ms: i64,
+        day_end_ms: i64,
+        events: &[EventInput],
+        now_ms: i64,
+    ) -> Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM events", [])?;
+        tx.execute(
+            "DELETE FROM events WHERE source = ?1 AND start_ts >= ?2 AND start_ts < ?3",
+            params![source, day_start_ms, day_end_ms],
+        )?;
+        // Retention. The delete above is scoped to one lane and one day, so
+        // unlike the full-table swap it replaced it bounds nothing over time:
+        // yesterday's meetings, and every row belonging to a calendar the user
+        // has since renamed or removed, would otherwise accumulate forever.
+        // Sweeping by age (not by source) is what catches the orphaned-lane
+        // case, since no per-source write will ever visit those rows again.
+        // Cheap to run here — this path fires per collector tick, not per read.
+        // Delegated to `sweep_old_events` rather than repeating its SQL, so
+        // write-time and standalone sweeping cannot drift apart; `tx` is an
+        // `unchecked_transaction` on `self.conn`, so the call joins it.
+        self.sweep_old_events(now_ms)?;
+        // De-duplicate by external_id before inserting. The upsert below would
+        // otherwise let a repeated id overwrite its own earlier row inside this
+        // loop — one row lands, the other vanishes, and the returned count still
+        // claims both were written. A model emitting the same recurring-meeting
+        // instance twice is exactly how that happens, so collapse it here and
+        // report what actually landed. Last occurrence wins, matching the
+        // upsert's own semantics.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let deduped: Vec<&EventInput> = events
+            .iter()
+            .rev()
+            .filter(|e| seen.insert(e.external_id.as_str()))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO events
-                   (external_id, title, start_ts, end_ts, attendees, location, join_url, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                   (source, external_id, title, start_ts, end_ts, attendees, location, join_url,
+                    updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(source, external_id) DO UPDATE SET
+                   title = excluded.title,
+                   start_ts = excluded.start_ts,
+                   end_ts = excluded.end_ts,
+                   attendees = excluded.attendees,
+                   location = excluded.location,
+                   join_url = excluded.join_url,
+                   updated_at = excluded.updated_at",
             )?;
-            for e in events {
+            for e in &deduped {
                 stmt.execute(params![
+                    source,
                     e.external_id,
                     e.title,
                     e.start_ts,
@@ -708,7 +924,7 @@ impl Store {
             }
         }
         tx.commit()?;
-        Ok(events.len())
+        Ok(deduped.len())
     }
 
     /// Replace only the named repos' issue rows, leaving other repos' rows
@@ -1396,9 +1612,13 @@ impl Store {
     /// [`Store::open_tasks`] returns).
     pub fn task_by_id(&self, id: i64) -> Result<TaskItem> {
         self.query_tasks(&format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"), [id])?
+            // `TaskNotFound`, like every other id lookup in this module — not a
+            // fabricated `Sqlite(QueryReturnedNoRows)`. A caller has to be able
+            // to tell "this row does not exist" from "the database could not
+            // answer", and the `?` above already carries the genuine failures.
             .into_iter()
             .next()
-            .ok_or(Error::Sqlite(rusqlite::Error::QueryReturnedNoRows))
+            .ok_or(Error::TaskNotFound(id))
     }
 
     fn query_events(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<CalEvent>> {
@@ -1408,20 +1628,31 @@ impl Store {
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, Option<i64>>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, Option<String>>(6)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+                r.get::<_, String>(6)?,
                 r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<String>>(8)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, external_id, title, start_ts, end_ts, attendees_json, location, join_url) =
-                row?;
+            let (
+                id,
+                source,
+                external_id,
+                title,
+                start_ts,
+                end_ts,
+                attendees_json,
+                location,
+                join_url,
+            ) = row?;
             let attendees: Vec<String> = serde_json::from_str(&attendees_json)?;
             out.push(CalEvent {
                 id,
+                source,
                 external_id,
                 title,
                 start_ts,
@@ -1662,6 +1893,13 @@ mod tests {
         }
     }
 
+    /// Write events for tests that don't care about source/day scoping: one
+    /// source, a window wide enough to sweep everything. Tests that DO care
+    /// about the scoping call [`Store::replace_events_for_source`] directly.
+    fn put_events(s: &Store, events: &[EventInput], now_ms: i64) -> Result<usize> {
+        s.replace_events_for_source("test", i64::MIN, i64::MAX, events, now_ms)
+    }
+
     fn issue(repo: &str, number: i64, updated: i64) -> IssueInput {
         IssueInput {
             repo: repo.to_string(),
@@ -1795,16 +2033,212 @@ mod tests {
         assert!(!task_columns(&s).contains(&"repo".to_string()));
     }
 
+    /// `local_day_bounds` exists in one place because it scopes a DELETE, and
+    /// two implementations had already drifted apart on DST handling — one
+    /// widening to a ±1-day window, the other collapsing to an empty one, both
+    /// feeding the same destructive call. These pin the properties that make
+    /// the shared version safe to hand to a delete.
     #[test]
-    fn replace_events_is_full_swap() {
+    fn local_day_bounds_is_a_single_day_that_contains_its_reference() {
+        // A few instants spread across the year, including both DST changeover
+        // weekends in the northern hemisphere.
+        for reference in [
+            1_700_000_000_000_i64, // Nov 2023
+            1_678_600_000_000,     // Mar 2023 (spring forward)
+            1_699_164_000_000,     // Nov 2023 (fall back)
+            1_719_000_000_000,     // Jun 2024
+            0,                     // epoch
+        ] {
+            let (start, end) = Store::local_day_bounds(reference);
+            assert!(start <= reference, "window starts at or before its reference ({reference})");
+            assert!(reference < end, "window contains its reference ({reference})");
+            let span = end - start;
+            // A civil day is 23, 24 or 25 hours long depending on DST. Never more.
+            assert!(
+                (23 * 3_600_000..=25 * 3_600_000).contains(&span),
+                "span {span}ms for {reference} is not one civil day"
+            );
+        }
+    }
+
+    /// The fallback direction is the safety property: if the boundary can't be
+    /// resolved, delete nothing rather than delete more. Stale rows are fixed by
+    /// the next pull; over-deleted rows are gone.
+    #[test]
+    fn local_day_bounds_never_widens_past_a_day() {
+        let (start, end) = Store::local_day_bounds(i64::MAX);
+        assert!(end - start <= 25 * 3_600_000, "degenerate input must not widen the delete");
+    }
+
+    #[test]
+    fn replace_events_swaps_within_one_source_and_day() {
         let s = Store::open_in_memory().unwrap();
-        s.replace_events(&[event("a", 100), event("b", 200)], 1).unwrap();
+        s.replace_events_for_source("google", 0, 1000, &[event("a", 100), event("b", 200)], 1)
+            .unwrap();
         assert_eq!(s.snapshot().unwrap().events.len(), 2);
-        let n = s.replace_events(&[event("c", 300)], 2).unwrap();
+        let n = s.replace_events_for_source("google", 0, 1000, &[event("c", 300)], 2).unwrap();
         assert_eq!(n, 1);
         let events = s.snapshot().unwrap().events;
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 1, "the earlier pull for this source+day is swept");
         assert_eq!(events[0].external_id, "c");
+        assert_eq!(events[0].source, "google", "source is recorded for provenance");
+    }
+
+    /// The reason this method exists: two calendars are pulled independently and
+    /// merged into one timeline. Under the old full-table swap, whichever pulled
+    /// second erased the first.
+    #[test]
+    fn one_sources_pull_never_disturbs_another() {
+        let s = Store::open_in_memory().unwrap();
+        s.replace_events_for_source("google", 0, 1000, &[event("personal", 100)], 1).unwrap();
+        s.replace_events_for_source("outlook", 0, 1000, &[event("work", 200)], 1).unwrap();
+
+        let merged = s.snapshot().unwrap().events;
+        let ids: Vec<&str> = merged.iter().map(|e| e.external_id.as_str()).collect();
+        assert_eq!(ids, vec!["personal", "work"], "both calendars coexist, merged by start_ts");
+
+        // Re-pulling one source replaces only its own lane.
+        s.replace_events_for_source("google", 0, 1000, &[event("personal-v2", 100)], 2).unwrap();
+        let events = s.snapshot().unwrap().events;
+        let ids: Vec<&str> = events.iter().map(|e| e.external_id.as_str()).collect();
+        assert_eq!(ids, vec!["personal-v2", "work"], "the work calendar survives untouched");
+    }
+
+    /// The delete is scoped to the day window too, so pulling today never drops
+    /// a tomorrow's-events row that some other call stored.
+    #[test]
+    fn replace_events_leaves_other_days_alone() {
+        let s = Store::open_in_memory().unwrap();
+        s.replace_events_for_source("google", 0, i64::MAX, &[event("tomorrow", 5_000)], 1).unwrap();
+        s.replace_events_for_source("google", 0, 1000, &[event("today", 100)], 2).unwrap();
+
+        let events = s.snapshot().unwrap().events;
+        let ids: Vec<&str> = events.iter().map(|e| e.external_id.as_str()).collect();
+        assert_eq!(ids, vec!["today", "tomorrow"], "out-of-window row untouched");
+    }
+
+    /// The scoped delete bounds one lane and one day, so something else has to
+    /// bound the table over time — otherwise yesterday's meetings, and every row
+    /// from a calendar the user renamed or removed, accumulate forever. The old
+    /// full-table swap did that implicitly; this pins the replacement.
+    #[test]
+    fn old_events_are_swept_including_orphaned_lanes() {
+        let s = Store::open_in_memory().unwrap();
+        let now = 30 * EVENT_RETAIN_MS;
+        let stale = now - EVENT_RETAIN_MS - 1;
+
+        // A row from a lane that will never be written again (its source was
+        // removed from settings), old enough to be past retention.
+        s.replace_events_for_source(
+            "retired-calendar",
+            0,
+            i64::MAX,
+            &[event("ancient", stale)],
+            now,
+        )
+        .unwrap();
+        assert_eq!(s.snapshot().unwrap().events.len(), 1);
+
+        // A write to a *different* lane sweeps it — age, not source, is what
+        // catches an orphan, since no per-source write will ever visit it again.
+        s.replace_events_for_source("google", now, now + 86_400_000, &[event("today", now)], now)
+            .unwrap();
+        let ids: Vec<String> =
+            s.snapshot().unwrap().events.iter().map(|e| e.external_id.clone()).collect();
+        assert_eq!(ids, vec!["today"], "the orphaned lane's stale row is gone");
+    }
+
+    /// A repeated `externalId` inside one payload used to have the upsert
+    /// overwrite its own earlier row mid-loop: one row landed, the other
+    /// vanished, and the returned count still claimed both were written.
+    #[test]
+    fn duplicate_external_ids_in_one_payload_are_collapsed_and_counted_honestly() {
+        let s = Store::open_in_memory().unwrap();
+        let now = 30 * EVENT_RETAIN_MS;
+        let mut first = event("abc", now + 1000);
+        first.title = "Standup (9am)".to_string();
+        let mut second = event("abc", now + 5000);
+        second.title = "Standup (2pm)".to_string();
+
+        let written = s
+            .replace_events_for_source("google", now, now + 86_400_000, &[first, second], now)
+            .unwrap();
+        assert_eq!(written, 1, "count reflects rows that landed, not payload length");
+        let events = s.snapshot().unwrap().events;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].title, "Standup (2pm)", "last occurrence wins, matching the upsert");
+    }
+
+    /// Retention can't be hostage to a write happening: switching the last
+    /// calendar off means no write ever runs again, so the sweep has to be
+    /// callable on its own or stale rows live forever.
+    #[test]
+    fn sweep_old_events_works_without_a_write() {
+        let s = Store::open_in_memory().unwrap();
+        let now = 30 * EVENT_RETAIN_MS;
+        s.replace_events_for_source(
+            "google",
+            0,
+            i64::MAX,
+            &[
+                event("stale", now - EVENT_RETAIN_MS - 1),
+                event("fresh", now),
+            ],
+            now,
+        )
+        .unwrap();
+        assert_eq!(s.snapshot().unwrap().events.len(), 2, "both written inside the window");
+
+        // Time passes; nothing writes. The sweep alone must still age it out.
+        let later = now + EVENT_RETAIN_MS;
+        let removed = s.sweep_old_events(later).unwrap();
+        assert_eq!(removed, 1);
+        let ids: Vec<String> =
+            s.snapshot().unwrap().events.iter().map(|e| e.external_id.clone()).collect();
+        assert_eq!(ids, vec!["fresh"]);
+    }
+
+    /// Retention must not eat a meeting that hasn't happened yet, nor the recent
+    /// past a countdown might still be reasoning about.
+    #[test]
+    fn retention_keeps_recent_and_future_events() {
+        let s = Store::open_in_memory().unwrap();
+        let now = 30 * EVENT_RETAIN_MS;
+        s.replace_events_for_source(
+            "google",
+            0,
+            i64::MAX,
+            &[
+                event("yesterday", now - 86_400_000),
+                event("next-week", now + 7 * 86_400_000),
+            ],
+            now,
+        )
+        .unwrap();
+        s.replace_events_for_source("outlook", now, now + 86_400_000, &[], now).unwrap();
+        assert_eq!(s.snapshot().unwrap().events.len(), 2, "both are inside the retention window");
+    }
+
+    /// Two providers can legitimately mint the same event id — that's why the
+    /// uniqueness rule is `(source, external_id)` and not `external_id` alone.
+    #[test]
+    fn the_same_external_id_can_exist_in_two_sources() {
+        let s = Store::open_in_memory().unwrap();
+        s.replace_events_for_source("google", 0, 1000, &[event("shared-id", 100)], 1).unwrap();
+        s.replace_events_for_source("outlook", 0, 1000, &[event("shared-id", 200)], 1).unwrap();
+        assert_eq!(s.snapshot().unwrap().events.len(), 2, "no unique-constraint collision");
+    }
+
+    /// A row outside the swept window with a colliding id must upsert rather
+    /// than blow up the whole pull on a constraint violation.
+    #[test]
+    fn re_pushing_an_out_of_window_id_updates_it_instead_of_failing() {
+        let s = Store::open_in_memory().unwrap();
+        s.replace_events_for_source("google", 0, i64::MAX, &[event("e", 9_000)], 1).unwrap();
+        // Window doesn't cover 9_000, so the delete misses it; the insert collides.
+        s.replace_events_for_source("google", 0, 1000, &[event("e", 9_000)], 2).unwrap();
+        let events = s.snapshot().unwrap().events;
+        assert_eq!(events.len(), 1, "upserted, not duplicated");
     }
 
     #[test]
@@ -2357,7 +2791,7 @@ mod tests {
     #[test]
     fn events_between_windows_by_start() {
         let s = Store::open_in_memory().unwrap();
-        s.replace_events(&[event("a", 100), event("b", 300), event("c", 500)], 1).unwrap();
+        put_events(&s, &[event("a", 100), event("b", 300), event("c", 500)], 1).unwrap();
         let win = s.events_between(150, 500).unwrap();
         assert_eq!(win.iter().map(|e| e.external_id.as_str()).collect::<Vec<_>>(), vec!["b"]);
     }
@@ -2367,7 +2801,7 @@ mod tests {
         // The `event` helper spans [start, start + 1000). Two non-overlapping
         // meetings: "b" runs [300, 1300), "c" runs [1500, 2500).
         let s = Store::open_in_memory().unwrap();
-        s.replace_events(&[event("b", 300), event("c", 1500)], 1).unwrap();
+        put_events(&s, &[event("b", 300), event("c", 1500)], 1).unwrap();
 
         // Future: before it starts, "b" is the next meeting.
         assert_eq!(s.current_or_next_event(200).unwrap().unwrap().external_id, "b");
@@ -2384,7 +2818,8 @@ mod tests {
     #[test]
     fn current_or_next_event_without_end_is_a_point_in_time() {
         let s = Store::open_in_memory().unwrap();
-        s.replace_events(
+        put_events(
+            &s,
             &[EventInput {
                 external_id: "no-end".to_string(),
                 title: "Open-ended".to_string(),
@@ -2456,7 +2891,8 @@ mod tests {
     #[test]
     fn snapshot_serializes_camel_case() {
         let s = Store::open_in_memory().unwrap();
-        s.replace_events(
+        put_events(
+            &s,
             &[EventInput {
                 external_id: "x".to_string(),
                 title: "T".to_string(),
@@ -2604,7 +3040,8 @@ mod tests {
     #[test]
     fn events_between_is_start_inclusive_end_exclusive() {
         let s = Store::open_in_memory().unwrap();
-        s.replace_events(
+        put_events(
+            &s,
             &[
                 event("at-start", 100),
                 event("mid", 150),
@@ -2628,7 +3065,8 @@ mod tests {
     #[test]
     fn replace_events_round_trips_attendees_json() {
         let s = Store::open_in_memory().unwrap();
-        s.replace_events(
+        put_events(
+            &s,
             &[
                 EventInput {
                     external_id: "many".to_string(),
@@ -2734,6 +3172,55 @@ mod tests {
         assert_eq!(s.replace_prs(&[]).unwrap(), 0);
         assert!(s.issues().unwrap().is_empty());
         assert!(s.prs().unwrap().is_empty());
+    }
+
+    /// v9 rebuilds `events` for the `source` column and the composite unique
+    /// key. Pre-v9 rows are **intentionally dropped** — the old schema recorded
+    /// no source, and a row tagged with a guessed source would never be swept by
+    /// any real pull, lingering in the countdown forever. Pinned as a test so
+    /// the data loss stays a decision rather than a surprise.
+    #[test]
+    fn migrate_v9_rebuilds_events_and_drops_sourceless_rows() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tt.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE events (
+                    id INTEGER PRIMARY KEY,
+                    external_id TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL,
+                    start_ts INTEGER NOT NULL,
+                    end_ts INTEGER,
+                    attendees TEXT NOT NULL DEFAULT '[]',
+                    location TEXT,
+                    join_url TEXT,
+                    updated_at INTEGER NOT NULL
+                );
+                INSERT INTO events (external_id, title, start_ts, updated_at)
+                    VALUES ('legacy', 'Old meeting', 100, 1);",
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        let cols: Vec<String> = {
+            let mut stmt = s.conn.prepare("PRAGMA table_info(events)").unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert!(cols.contains(&"source".to_string()), "source column added");
+        assert!(s.snapshot().unwrap().events.is_empty(), "sourceless rows dropped, not guessed");
+
+        // The rebuilt table takes writes and enforces the new composite key.
+        s.replace_events_for_source("google", 0, 1000, &[event("a", 100)], 2).unwrap();
+        s.replace_events_for_source("outlook", 0, 1000, &[event("a", 200)], 2).unwrap();
+        assert_eq!(s.snapshot().unwrap().events.len(), 2);
+
+        // Idempotent: reopening doesn't rebuild again and lose the new rows.
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.snapshot().unwrap().events.len(), 2, "migration is a no-op on a v9 db");
     }
 
     #[test]

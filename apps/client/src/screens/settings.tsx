@@ -78,7 +78,12 @@ import { isEmptyQuery, matchesFilter } from "@/lib/settings-filter";
 import { settingsTargetStore, type SettingsTarget } from "@/lib/settings-target";
 import { NotInTauri } from "@/lib/errors";
 import { slackListUsers, type SlackUser } from "@/lib/slack";
-import { useUserSettings, type UserSettings } from "@/lib/settings";
+import {
+  nextCalendarSourceId,
+  useUserSettings,
+  type CalendarSource,
+  type UserSettings,
+} from "@/lib/settings";
 import { DEFAULT_TERMINAL_FONT_SIZE, clampTerminalFontSize } from "@/lib/terminal-prefs";
 import { SHORTCUTS, shortcutKeys, type ShortcutScope } from "@/lib/shortcuts";
 import { useAppVersion } from "@/lib/version";
@@ -647,6 +652,116 @@ function journalSections(settings: UserSettings, update: Update): FilterSection[
   ];
 }
 
+/**
+ * Editor for the calendar collector's per-source list: one card per calendar,
+ * each with its own enable switch, label, and `claude -p` prompt.
+ *
+ * The prompt is a plain textarea rather than a provider picker on purpose. The
+ * built-in prompts drive a Google/Outlook MCP, which isn't necessarily
+ * configured on this machine — the escape hatch is pointing a source at
+ * whatever does work here (a CLI like `gws`, a script, another MCP), so long as
+ * it answers with the documented JSON array. Each source writes into its own
+ * store lane keyed by `id`, so a second calendar never displaces the first;
+ * that's why ids are assigned once at creation and shown read-only.
+ */
+function CalendarSourcesEditor({
+  sources,
+  onChange,
+}: {
+  sources: CalendarSource[];
+  onChange: (sources: CalendarSource[]) => void;
+}) {
+  const patch = (index: number, next: Partial<CalendarSource>) =>
+    onChange(sources.map((s, i) => (i === index ? { ...s, ...next } : s)));
+
+  const add = () => {
+    const label = `Calendar ${sources.length + 1}`;
+    onChange([
+      ...sources,
+      { id: nextCalendarSourceId(sources, label), label, enabled: false, prompt: "" },
+    ]);
+    uiAction("calendar.source_added", "settings");
+  };
+
+  const remove = (index: number) => {
+    const removed = sources[index];
+    onChange(sources.filter((_, i) => i !== index));
+    uiAction("calendar.source_removed", "settings", removed?.id);
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <div className="text-sm font-medium">Calendars</div>
+        <div className="text-sm text-muted-foreground">
+          Each enabled calendar is pulled with its own <code>claude -p</code> prompt and stored
+          separately, so several calendars merge into one timeline. The prompt must answer with only
+          a JSON array of{" "}
+          <code>{"{externalId, title, startTs, endTs, attendees, location, joinUrl}"}</code>, or{" "}
+          <code>[]</code>.
+        </div>
+      </div>
+
+      {sources.length === 0 ? (
+        <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+          No calendars configured — the collector has nothing to pull.
+        </div>
+      ) : null}
+
+      {sources.map((source, index) => (
+        <div key={source.id} className="flex flex-col gap-2 rounded-md border p-3">
+          <div className="flex items-center gap-2">
+            <Switch
+              checked={source.enabled}
+              onCheckedChange={(v) => patch(index, { enabled: v })}
+              aria-label={`Pull ${source.label || source.id}`}
+            />
+            <Input
+              value={source.label}
+              onChange={(e) => patch(index, { label: e.target.value })}
+              placeholder="Label"
+              aria-label="Calendar label"
+              className="h-8 max-w-56"
+            />
+            <span className="font-mono text-xs text-muted-foreground" title="Store lane id">
+              {source.id}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto text-muted-foreground"
+              onClick={() => remove(index)}
+            >
+              Remove
+            </Button>
+          </div>
+          <Textarea
+            value={source.prompt}
+            onChange={(e) => patch(index, { prompt: e.target.value })}
+            placeholder="Prompt claude with how to list today's events for this calendar, and what JSON to answer with."
+            spellCheck={false}
+            rows={5}
+            className="font-mono text-xs"
+            aria-label={`Prompt for ${source.label || source.id}`}
+          />
+          {source.enabled && source.prompt.trim() === "" ? (
+            <div className="text-xs text-destructive">
+              This calendar is on but has no prompt — it will be reported as a failed run until you
+              write one.
+            </div>
+          ) : null}
+        </div>
+      ))}
+
+      <div>
+        <Button variant="outline" size="sm" onClick={add}>
+          Add calendar
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** Small, disable-while-running "Refresh now" button — forces the
  * issues/PRs/Slack collectors to run immediately instead of waiting for their
  * next scheduled tick (calendar stays on its cadence — it costs tokens). */
@@ -713,20 +828,13 @@ function collectorsSections(
           ),
         },
         {
-          label: "Provider",
-          keywords: ["google", "outlook", "mcp"],
+          label: "Calendars",
+          keywords: ["google", "outlook", "mcp", "prompt", "source", "gws", "sources"],
           node: (
-            <SettingRow label="Provider" description="Which calendar MCP to drive.">
-              <Select value={c.calendar.provider} onValueChange={(v) => setCal({ provider: v })}>
-                <SelectTrigger className="w-32">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="google">Google</SelectItem>
-                  <SelectItem value="outlook">Outlook</SelectItem>
-                </SelectContent>
-              </Select>
-            </SettingRow>
+            <CalendarSourcesEditor
+              sources={c.calendar.sources}
+              onChange={(sources) => setCal({ sources })}
+            />
           ),
         },
         {

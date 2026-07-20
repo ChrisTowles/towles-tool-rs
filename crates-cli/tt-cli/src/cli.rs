@@ -34,9 +34,6 @@ pub enum Commands {
     /// Collect dashboard data into the local store (calendar, issues, PRs)
     Collect(CollectArgs),
 
-    /// MCP server exposing the local store and agent sessions to claude
-    Mcp(McpArgs),
-
     /// Worktree slots: a primary checkout (<root>/<repo>-primary, always the
     /// default branch) plus branch-named worktrees under <root>/slots/, each
     /// with rendered per-slot ports/env so concurrent slots never collide
@@ -153,23 +150,6 @@ pub enum SlotCommands {
         /// Repo checkout (default: walk up from cwd to the nearest git checkout)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
-    },
-}
-
-#[derive(Args)]
-#[command(disable_help_subcommand = true)]
-pub struct McpArgs {
-    #[command(subcommand)]
-    pub command: McpCommands,
-}
-
-#[derive(Subcommand)]
-pub enum McpCommands {
-    /// Serve MCP over stdio (register with: `claude mcp add tt -- tt mcp serve`)
-    Serve {
-        /// Path to the store database (defaults to the standard tt.db location)
-        #[arg(long, value_name = "FILE")]
-        store: Option<PathBuf>,
     },
 }
 

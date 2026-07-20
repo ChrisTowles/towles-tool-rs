@@ -3,6 +3,7 @@ import { currentOrNextEvent, eventIsLive, fmtCountdown, type CalEvent } from "./
 
 const ev = (id: number, startTs: number, endTs?: number): CalEvent => ({
   id,
+  source: "google",
   externalId: `e${id}`,
   title: `Event ${id}`,
   startTs,

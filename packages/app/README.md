@@ -5,19 +5,29 @@ exposes and one hook that keeps its PR view fresh.
 
 ## MCP server
 
-Registers the app's own `tt mcp serve` (`crates/tt-mcp`), so any session with this
-plugin enabled gets these tools without manual `claude mcp add` setup:
+Points at the desktop app's own MCP server (`crates/tt-mcp`, served over
+loopback HTTP by `tt-app`), so any session with this plugin enabled gets these
+tools without manual `claude mcp add` setup:
 
-`task_list`, `task_status`, `task_create`.
+- **Board** — `task_list`, `task_status` (reads) and `task_create` (writes).
+- **Calendar** — `calendar_today`, `calendar_next` (reads) and `calendar_set`
+  (writes). These exist for *focus protection* — how long until the next
+  meeting, how much uninterrupted time is left — not calendar management.
 
-`task_list`/`task_status` read your own board; `task_create` is the one
-mutation and is gated off by default — opt in with
-`"mcp": {"mutationsEnabled": true}` in the shared settings file (no MCP tool
-can flip it; see the trust-boundary doc in `crates/tt-mcp`). The broader
-dashboard-read tools were pruned in the 2026-07 tool-surface review.
+The broader dashboard-read tools were pruned in the 2026-07 tool-surface review.
 
-Requires `tt` on `PATH` (see the root [README](../../README.md) / `install`
-command).
+**Requires the app to be running.** There is no headless fallback: the server
+lives in `tt-app`, so app closed means MCP down. Exactly one instance serves —
+whichever binds the port first — so with several worktree slots open, only one
+is reachable, by design.
+
+No token: the endpoint is loopback-only and refuses any request carrying an
+`Origin` header or a non-JSON `Content-Type`, which is what keeps a web page you
+visit from POSTing to it. That is the *whole* guard on writes — there is no
+capability gate any more. See the trust-boundary doc in `crates/tt-mcp`.
+
+Port defaults to `8787`; override with `"mcp": {"port": N}` in the shared
+settings file, and update this plugin's `.mcp.json` to match.
 
 ## Skills
 

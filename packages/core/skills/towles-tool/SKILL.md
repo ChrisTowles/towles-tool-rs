@@ -31,4 +31,4 @@ tt slot clean              # Remove every merged/gone slot
 ```
 
 Everything else (PR/issue flow, dashboards, collectors) lives in the desktop
-app; headless entry points are `tt mcp serve` and `tt collect`.
+app; `tt collect` is the one headless entry point.

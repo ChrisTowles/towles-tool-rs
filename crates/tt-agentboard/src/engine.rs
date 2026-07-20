@@ -1,7 +1,7 @@
 //! The agentboard engine: tracker + metadata + session-order + git cache +
 //! watchers behind one struct, host-agnostic. Extracted from
 //! `crates-tauri/tt-app/src/agentboard.rs` (phase T3 of the agentboard port)
-//! so every host (the Tauri app, `tt mcp serve`) shares it.
+//! so every host shares it.
 //!
 //! The engine is synchronous; hosts own scheduling (tokio tasks, debounces)
 //! and transport (Tauri events, MCP responses). Hosts guard it with a `Mutex`,

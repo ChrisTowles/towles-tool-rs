@@ -1,60 +1,57 @@
-//! A Model Context Protocol (MCP) server for towles-tool, spoken over stdio.
+//! A Model Context Protocol (MCP) server for towles-tool.
 //!
-//! The transport is newline-delimited JSON-RPC 2.0: one request object per line
-//! on stdin, one single-line response object per request on stdout (flushed
-//! after each write), diagnostics on stderr via `log`. There is no async
-//! runtime — [`serve`] is a hand-rolled blocking read loop over [`Dispatcher`],
-//! which is the testable core: [`Dispatcher::handle_at`] takes the request line
-//! plus an injected `now_ms` so tool logic never reads the clock itself.
+//! **This crate is the transport-free half.** It speaks JSON-RPC 2.0 as
+//! strings — [`Dispatcher::dispatch_at`] takes one request and returns one
+//! response (or `None` for a notification, which gets no reply) — and knows
+//! nothing about sockets, HTTP, ports, or the wall clock, all of which are
+//! passed in per call. The same split as [`tt_ide`]: the transport lives in the
+//! app shell (`crates-tauri/tt-app`), which serves this over loopback HTTP.
+//! That keeps the whole tool surface unit-testable by driving `dispatch_at`
+//! directly, with no server to stand up.
 //!
-//! Exposed tools surface the towles-tool board ([`tt_store`]'s tasks — the
-//! #339 unit of work): `task_list`, `task_status`, and the gated
-//! `task_create`. The broader dashboard-read tools (`day_brief`, `needs_you`,
-//! `snapshot`, `prs_status`, `issues_open`, `dm_status`, `collect_status`)
-//! were pruned in the 2026-07 tool-surface review — the task family is the
-//! surface a session actually needs; a calendar family may join it later.
+//! Exposed tools surface the towles-tool board ([`tt_store`]'s tasks — the #339
+//! unit of work) and the calendar: `task_list`, `task_status`, `task_create`,
+//! `calendar_today`, `calendar_next`, `calendar_set`. The broader
+//! dashboard-read tools (`day_brief`, `needs_you`, `snapshot`, `prs_status`,
+//! `issues_open`, `dm_status`, `collect_status`) were pruned in the 2026-07
+//! tool-surface review and have not come back.
 //!
 //! ## Trust boundary
 //!
-//! `tt` is registered with Claude Code at **user scope**
-//! (`claude mcp add --scope user`), so this server is spawned fresh for
-//! *every* Claude Code session on the machine, in any project, with no
-//! awareness of which one. The threat that matters here isn't an
-//! unauthenticated third party reaching the stdio pipe — it isn't
-//! network-reachable, so every call already comes from a genuinely local,
-//! genuinely-authenticated Claude Code process. It's that same legitimate
-//! process's model getting its instructions hijacked by content it reads
-//! mid-session (a hostile GitHub issue/PR body, a fetched web page) while
-//! working on something unrelated, then calling a tool whose reach is the
-//! whole machine.
+//! The server is registered with Claude Code at **user scope**, so it is
+//! reachable from *every* Claude Code session on the machine, in any project,
+//! with no awareness of which one. Two distinct threats, guarded in two
+//! different places:
 //!
-//! The posture is therefore **read-only by default**: the ungated tools read
-//! the user's own board, which is available to any of the user's own sessions
-//! by design. The one mutating tool, `task_create`, sits behind the
-//! capability gate ([`tt_config::McpSettings::mutations_enabled`]): a
-//! settings-file opt-in, default off, that no tool exposed here can flip — so
-//! prompt injection can't self-approve it — re-resolved from disk on every
-//! call (a settings edit needs no server restart) and failing closed when the
-//! file is unreadable. (This does not defend against a session with
-//! unrestricted shell access being instructed to edit the settings file
-//! directly and then call the gated tool — that session could just as well
-//! run `sqlite3` against tt.db itself.) The previous generation of mutating
-//! tools (`todo_*`, `journal_append`, `collect_refresh`) and the
-//! cross-session `agent_sessions` tool showed zero real use in telemetry, so
-//! the 2026-07 datamine removed them; `task_create` brought the gate
-//! machinery back.
+//! 1. **A hijacked session.** A legitimate local Claude Code process reads
+//!    hostile content mid-session (a GitHub issue body, a fetched page) and is
+//!    instructed to call a tool. There is deliberately **no capability gate**
+//!    against this any more (removed 2026-07-20). The gate it replaced was
+//!    off by default, which meant the one mutating tool had effectively never
+//!    worked, and it never defended much: the writes reachable here are local,
+//!    low-stakes and reversible (a board-task row, a calendar cache row), and
+//!    any session with shell access could run `sqlite3` against tt.db directly
+//!    regardless. The `mcp_calls` log is the audit trail instead.
+//!
+//! 2. **A web page in the user's browser.** This is the threat the transport
+//!    actually has to stop, and it grew teeth when the gate went away. Binding
+//!    to loopback does *not* keep pages out: any site the user visits can POST
+//!    to `127.0.0.1`, and while CORS stops it reading the response, a blind
+//!    write is the whole attack. A bearer token was considered and rejected —
+//!    it only ever addressed this one case, and any local process could read it
+//!    out of the settings file anyway. The transport in `tt-app` instead
+//!    applies the two mitigations the MCP spec recommends for local HTTP
+//!    servers: **reject any request carrying an `Origin` header** (real MCP
+//!    clients don't send one; browsers always do — this is the DNS-rebinding
+//!    mitigation) and **require `Content-Type: application/json`** (not a
+//!    CORS-simple type, so a page can't dodge a preflight). Those two checks
+//!    are now the only guard on writes and are unit-tested as such.
 
-use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use chrono::{Local, NaiveDate, TimeZone};
 use serde_json::{Value, json};
-use tt_store::{McpCallInput, Store};
-
-/// Tools gated behind [`tt_config::McpSettings::mutations_enabled`] — anything
-/// that writes the store. Everything else is a read of the user's own board
-/// and never touches the gate (or the settings file).
-const MUTATING_TOOLS: &[&str] = &["task_create"];
+use tt_store::{EventInput, McpCallInput, Store};
 
 /// Protocol version advertised when the client does not send one of its own.
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -64,27 +61,59 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 const CALL_LOG_ARGS_MAX: usize = 400;
 
 /// The stateful core of the server: owns the [`Store`] and dispatches JSON-RPC
-/// requests to tool handlers. Kept free of stdio so it can be driven directly in
-/// tests.
+/// requests to tool handlers. Kept free of any transport so it can be driven
+/// directly in tests.
 pub struct Dispatcher {
     store: Store,
     /// `clientInfo` from the session's `initialize` (e.g. `claude-code 2.1`),
     /// stamped onto call-log rows so the app's MCP screen can say who called.
     client: Option<String>,
-    /// Injected capability gate (test hook). The stdio/CLI path leaves it
-    /// `None` and re-resolves from disk on every gated call, so a settings
-    /// edit takes effect without restarting the server.
-    mcp_settings: Option<tt_config::McpSettings>,
-    /// When set, the capability gate loads this settings file instead of the
-    /// shared default — the CLI's global `--config-dir` flag lands here, so
-    /// `tt --config-dir <dir> mcp serve` really is isolated from the machine's
-    /// settings (and tests can exercise the real disk-resolution path against
-    /// a sandbox).
-    settings_path: Option<PathBuf>,
-    /// Injected tracked-repo dirs (test hook). The stdio/CLI path leaves it
+    /// Injected tracked-repo dirs (test hook). The serving path leaves it
     /// `None` and re-reads the shared agentboard `repos.json` on every
     /// `task_create`, so newly tracked repos are creatable without a restart.
     tracked_repos: Option<Vec<String>>,
+    /// Injected calendar-source ids (test hook), keeping `calendar_set`'s lane
+    /// validation off the real settings file. `None` re-reads settings per call.
+    calendar_sources: Option<Vec<String>>,
+}
+
+/// What one dispatched request produced: the reply to send back, and whether
+/// the call actually wrote to the store.
+///
+/// `wrote` is deliberately narrow — true only for a *successful* call to a tool
+/// the contract marks as writing. A refusal, a failed write, and every read all
+/// report false, so a transport can use it to skip work that only a real
+/// mutation justifies.
+pub struct Handled {
+    /// The response line, or `None` for a notification (which gets no reply).
+    pub response: Option<String>,
+    /// Whether this call committed a change to the store.
+    pub wrote: bool,
+}
+
+impl Handled {
+    /// A reply that changed nothing.
+    fn read(response: Option<String>) -> Handled {
+        Handled { response, wrote: false }
+    }
+}
+
+/// The tools that write to the store. One list, read two ways: [`tool_writes`]
+/// answers the transport's "must the UI refresh?" question from it, and
+/// [`tool_definitions`] stamps `annotations.readOnlyHint: false` from it — so
+/// the wire contract and the internal decision cannot disagree, because there
+/// is only one fact.
+///
+/// The direction matters. Deriving the *internal* answer by reading the
+/// *external* JSON back out would route control flow through an advisory client
+/// hint (and rebuild the whole tool contract per request to do it); a tool added
+/// to [`Dispatcher::call_tool`] but missed here is one edit away from a stale
+/// board either way, but here the fix is a single obvious list.
+const WRITING_TOOLS: &[&str] = &["task_create", "calendar_set"];
+
+/// Whether a tool writes to the store — see [`WRITING_TOOLS`].
+pub fn tool_writes(name: &str) -> bool {
+    WRITING_TOOLS.contains(&name)
 }
 
 /// The result of dispatching one request: the response line to write back, plus
@@ -117,27 +146,7 @@ impl Outcome {
 impl Dispatcher {
     /// Build a dispatcher over `store`.
     pub fn new(store: Store) -> Dispatcher {
-        Dispatcher {
-            store,
-            client: None,
-            mcp_settings: None,
-            settings_path: None,
-            tracked_repos: None,
-        }
-    }
-
-    /// Build a dispatcher with a fixed capability gate (test hook — keeps the
-    /// gate off the real settings file).
-    pub fn with_mcp_settings(mut self, settings: tt_config::McpSettings) -> Dispatcher {
-        self.mcp_settings = Some(settings);
-        self
-    }
-
-    /// Point the capability gate at an explicit settings file — how the CLI's
-    /// global `--config-dir` flag reaches the server.
-    pub fn with_settings_path(mut self, path: PathBuf) -> Dispatcher {
-        self.settings_path = Some(path);
-        self
+        Dispatcher { store, client: None, tracked_repos: None, calendar_sources: None }
     }
 
     /// Build a dispatcher with a fixed tracked-repo list (test hook — keeps
@@ -147,29 +156,38 @@ impl Dispatcher {
         self
     }
 
-    /// The capability gate to enforce for this call: the injected override if
-    /// any, else re-resolved from the settings file every time (so a settings
-    /// edit takes effect without restarting the server). Like every other
-    /// consumer of `tt_config`, a missing file is created with defaults on
-    /// first use.
-    fn mcp_capabilities(&self) -> Result<tt_config::McpSettings, String> {
-        match self.mcp_settings {
-            Some(settings) => Ok(settings),
-            None => match &self.settings_path {
-                Some(path) => Ok(tt_config::load_from(path).map_err(|e| e.to_string())?.mcp),
-                None => Ok(tt_config::load().map_err(|e| e.to_string())?.mcp),
-            },
-        }
+    /// Build a dispatcher with a fixed calendar-source list (test hook — keeps
+    /// `calendar_set`'s lane validation off the real settings file).
+    pub fn with_calendar_sources(mut self, sources: Vec<String>) -> Dispatcher {
+        self.calendar_sources = Some(sources);
+        self
     }
 
-    /// The settings-file path named in the gate's refusal messages, honoring
-    /// [`Dispatcher::with_settings_path`] so the hint points at the file the
-    /// gate actually read.
-    fn settings_hint(&self) -> String {
-        match &self.settings_path {
-            Some(path) => path.display().to_string(),
-            None => settings_path_hint(),
+    /// The calendar-source ids `calendar_set` validates against: the injected
+    /// override if any, else re-read from the settings file every time, so a
+    /// calendar added in Settings is writable without restarting the server.
+    /// An unreadable settings file yields no ids, which fails closed — every
+    /// `calendar_set` is refused rather than allowed to mint a lane.
+    fn calendar_source_ids(&self) -> Vec<String> {
+        if let Some(ids) = &self.calendar_sources {
+            return ids.clone();
         }
+        tt_config::load()
+            .map(|settings| {
+                settings
+                    .collectors
+                    .calendar
+                    .sources
+                    .into_iter()
+                    // Trimmed to match `calendar_set`, which trims the incoming
+                    // `source` before comparing: without this a settings id with
+                    // stray whitespace is listed as configured yet can never be
+                    // matched, so that lane is permanently unwritable.
+                    .map(|source| source.id.trim().to_string())
+                    .filter(|id| !id.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The tracked-repo dirs `task_create` validates against: the injected
@@ -182,35 +200,56 @@ impl Dispatcher {
         }
     }
 
-    /// Handle one request line, reading the wall clock at the boundary. Returns
-    /// the response line, or `None` for notifications (which get no response).
-    pub fn handle(&mut self, request_json: &str) -> Option<String> {
-        self.handle_at(request_json, now_ms())
+    /// [`Dispatcher::dispatch_at`] keeping only the response line — the shape
+    /// most tests assert on.
+    ///
+    /// Test-only: the transport needs [`Handled::wrote`], so discarding it is
+    /// never right in production. Gating it here is what keeps that from
+    /// becoming a second, lossy entry point someone reaches for by accident.
+    #[cfg(test)]
+    fn handle_at(&mut self, request_json: &str, now_ms: i64) -> Option<String> {
+        self.dispatch_at(request_json, now_ms).response
     }
 
-    /// Handle one request line with an injected `now_ms` (deterministic tests).
-    pub fn handle_at(&mut self, request_json: &str, now_ms: i64) -> Option<String> {
+    /// Handle one request line and report what it did, not just what to send
+    /// back.
+    ///
+    /// A transport needs [`Handled::wrote`] to decide whether anything
+    /// downstream must be refreshed. Only the dispatcher can answer that
+    /// honestly — it knows which tool ran — and guessing costs real work: the
+    /// app rebuilds and broadcasts an entire store snapshot per refresh, so
+    /// treating every `ping` and `task_list` as a possible write means a full
+    /// snapshot per read, taken against the very lock the transport opened a
+    /// second SQLite connection to avoid contending with.
+    pub fn dispatch(&mut self, request_json: &str) -> Handled {
+        self.dispatch_at(request_json, now_ms())
+    }
+
+    /// [`Dispatcher::dispatch`] with an injected `now_ms` (deterministic tests).
+    pub fn dispatch_at(&mut self, request_json: &str, now_ms: i64) -> Handled {
         let value: Value = match serde_json::from_str(request_json) {
             Ok(value) => value,
-            Err(_) => return Some(error_response(Value::Null, -32700, "Parse error")),
+            Err(_) => {
+                return Handled::read(Some(error_response(Value::Null, -32700, "Parse error")));
+            }
         };
 
         // A top-level array is a JSON-RPC batch. MCP 2025-06-18 removed batching,
         // so reject it with a single Invalid Request instead of letting the `id`
         // lookup below miss and silently drop it (which hangs a waiting client).
         if value.is_array() {
-            return Some(error_response(Value::Null, -32600, "Invalid Request"));
+            return Handled::read(Some(error_response(Value::Null, -32600, "Invalid Request")));
         }
 
         // Requests carry an `id`; notifications do not, and receive no response.
         let id = match value.get("id") {
             Some(id) if !id.is_null() => id.clone(),
-            _ => return None,
+            _ => return Handled::read(None),
         };
 
         let method = match value.get("method").and_then(Value::as_str) {
             Some(method) => method,
-            None => return Some(error_response(id, -32600, "Invalid Request")),
+            None => return Handled::read(Some(error_response(id, -32600, "Invalid Request"))),
         };
 
         // `initialize` carries the caller's identity; stamp it onto this and every
@@ -249,7 +288,9 @@ impl Dispatcher {
             log::warn!("tt-mcp: failed to record call log: {error}");
         }
 
-        Some(outcome.response)
+        // A refused or failed call changed nothing, so it needs no refresh.
+        let wrote = call.ok && call.tool.as_deref().is_some_and(tool_writes);
+        Handled { response: Some(outcome.response), wrote }
     }
 
     /// Dispatch a `tools/call`: tool errors become an `isError` result (not a
@@ -276,29 +317,161 @@ impl Dispatcher {
     }
 
     fn call_tool(&mut self, name: &str, args: &Value, now_ms: i64) -> Result<Value, String> {
-        // Only resolve the capability gate (a settings-file read) for the
-        // mutating tools — the read-only board tools never touch it. An
-        // unreadable settings file fails closed with an actionable refusal
-        // rather than leaking a raw parse error that reads as transient.
-        if MUTATING_TOOLS.contains(&name) {
-            match self.mcp_capabilities() {
-                Ok(caps) if caps.mutations_enabled => {}
-                Ok(_) => return Err(mutations_disabled_message(name, &self.settings_hint())),
-                Err(error) => {
-                    return Err(capabilities_unreadable_message(
-                        name,
-                        &error,
-                        &self.settings_hint(),
-                    ));
-                }
-            }
-        }
         match name {
             "task_list" => self.task_list(),
             "task_status" => self.task_status(args),
             "task_create" => self.task_create(args, now_ms),
+            "calendar_today" => self.calendar_today(now_ms),
+            "calendar_next" => self.calendar_next(now_ms),
+            "calendar_set" => self.calendar_set(args, now_ms),
             other => Err(format!("unknown tool: {other}")),
         }
+    }
+
+    /// Events whose start falls within the local calendar day of `now_ms` —
+    /// the shape of the day, for deciding where the focus blocks are.
+    fn calendar_today(&self, now_ms: i64) -> Result<Value, String> {
+        let (start, end) = Store::local_day_bounds(now_ms);
+        let events = self.store.events_between(start, end).map_err(|e| e.to_string())?;
+        Ok(json!({ "events": events, "now": now_ms }))
+    }
+
+    /// The meeting in progress at `now_ms`, or the next one still to start —
+    /// with minutes-until (negative while a meeting is live) and a `live` flag.
+    fn calendar_next(&self, now_ms: i64) -> Result<Value, String> {
+        match self.store.current_or_next_event(now_ms).map_err(|e| e.to_string())? {
+            Some(event) => {
+                // Floor, not truncate-toward-zero. Plain `/` would report `0`
+                // for the whole first minute of a live meeting, and the
+                // contract promises `minutesUntil` is *negative* while one is
+                // running — so a consumer distinguishing "starts now" from
+                // "already started" would be wrong for exactly the 59 seconds
+                // that distinction matters most.
+                let minutes_until = (event.start_ts - now_ms).div_euclid(60_000);
+                let live = event.start_ts <= now_ms && event.end_ts.is_some_and(|end| now_ms < end);
+                Ok(json!({
+                    "event": event,
+                    "minutesUntil": minutes_until,
+                    "live": live,
+                    "now": now_ms,
+                }))
+            }
+            None => Ok(json!({ "event": Value::Null, "now": now_ms })),
+        }
+    }
+
+    /// The push-model write path: replace one calendar's events for one local
+    /// day, leaving every other calendar and every other day untouched (see
+    /// [`Store::replace_events_for_source`]).
+    ///
+    /// **The day window is derived here, never taken from the payload.** The
+    /// caller may name a day (`day`, `YYYY-MM-DD`, local); with no `day` it is
+    /// the local calendar day containing `now_ms`. Either way the actual
+    /// `[start, end)` bounds come from [`Store::local_day_bounds`], so a client cannot
+    /// widen the delete beyond one day — a mis-stated window is the one way
+    /// this tool could destroy calendar rows it was not asked to touch, and the
+    /// events themselves are the least trustworthy part of the request.
+    ///
+    /// **`source` must name a calendar the user actually configured**, and is
+    /// checked against `collectors.calendar.sources` in the settings file the
+    /// same way `task_create` checks `repo` against tracked repos. Two distinct
+    /// things go wrong without that check, and neither is hypothetical:
+    ///
+    /// - A typo or hallucinated id (`"gcal"`, `"Google"`, `"personal"`) mints a
+    ///   lane nothing will ever write again. Its rows still feed
+    ///   `calendar_next`, and no sweep will ever remove them — precisely the
+    ///   orphan-lane failure the v9 migration destroyed data to avoid. Enforcing
+    ///   it only at migration time would leave the runtime free to recreate it.
+    /// - It bounds the blast radius of a hijacked session. This tool replaces a
+    ///   day of a lane, so `{source, events: []}` *clears* that day; restricting
+    ///   `source` to configured calendars at least means it can only affect
+    ///   calendars the user opted into, and the refusal names what exists.
+    ///
+    /// [`EventInput`] additionally has no `source` field, so a model-authored
+    /// event array cannot smuggle a different lane in per-event.
+    fn calendar_set(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
+        let source = args
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|source| !source.is_empty())
+            .ok_or_else(|| "missing required argument: source".to_string())?;
+        let configured = self.calendar_source_ids();
+        if !configured.iter().any(|id| id == source) {
+            return Err(unknown_calendar_source_message(source, &configured));
+        }
+        let events_arg = args
+            .get("events")
+            .filter(|events| events.is_array())
+            .ok_or_else(|| "missing required argument: events (an array)".to_string())?;
+        let events: Vec<EventInput> = serde_json::from_value(events_arg.clone())
+            .map_err(|e| format!("invalid events payload: {e}"))?;
+        // An event that ends before it starts is accepted by the schema and
+        // then read inconsistently: `calendar_today` windows on `start_ts` and
+        // lists it, while `current_or_next_event` matches on `end_ts > now` and
+        // drops it — so the meeting shows up in the day's shape but never in
+        // the countdown or the meeting-start notification. Swapped or
+        // timezone-slipped fields are exactly what a model gets wrong, so this
+        // is a refusal, not a silent repair.
+        if let Some(bad) = events.iter().find(|e| e.end_ts.is_some_and(|end| end < e.start_ts)) {
+            return Err(format!(
+                "event {} ends before it starts (startTs {}, endTs {}) — check the field order",
+                bad.external_id,
+                bad.start_ts,
+                bad.end_ts.unwrap_or_default(),
+            ));
+        }
+
+        let reference_ms = match args.get("day").and_then(Value::as_str) {
+            Some(day) => day_reference_ms(day)
+                .ok_or_else(|| format!("invalid day: {day} (expected YYYY-MM-DD)"))?,
+            None => now_ms,
+        };
+        let (day_start, day_end) = Store::local_day_bounds(reference_ms);
+
+        // Refuse a day the store's retention sweep would immediately reclaim.
+        // Without this the tool accepts the write, reports `written: N`, and the
+        // very next calendar write from any source deletes those rows — a
+        // success return value with a one-tick shelf life. Better to say no than
+        // to be briefly, confidently wrong.
+        if day_end <= now_ms.saturating_sub(tt_store::EVENT_RETAIN_MS) {
+            return Err(format!(
+                "day {} is past the {}-day retention window — events that old are swept, so \
+                 writing them would report success and then silently drop them",
+                args.get("day").and_then(Value::as_str).unwrap_or("(derived)"),
+                tt_store::EVENT_RETAIN_MS / (24 * 60 * 60 * 1000),
+            ));
+        }
+
+        // Every event must fall inside the day it is being pushed for.
+        // `replace_events_for_source` only deletes within `[day_start, day_end)`,
+        // and retention only sweeps the *past*, so a row landing outside the
+        // window is reachable by neither: no later push to this lane covers it,
+        // no sweep ages it out, and it feeds `calendar_next` as a phantom
+        // meeting until an event with the identical `externalId` happens to
+        // replace it. A model that mis-dates one entry (wrong day, wrong year,
+        // a timezone slip) is the likely author, so name the offender.
+        if let Some(stray) = events.iter().find(|e| e.start_ts < day_start || e.start_ts >= day_end)
+        {
+            return Err(format!(
+                "event {} starts at {}, outside the day being written [{}, {}) — push it with \
+                 that day's `day` argument instead; an event outside the window would be stored \
+                 where nothing can ever replace or sweep it",
+                stray.external_id, stray.start_ts, day_start, day_end,
+            ));
+        }
+
+        let written = self
+            .store
+            .replace_events_for_source(source, day_start, day_end, &events, now_ms)
+            .map_err(|e| e.to_string())?;
+        tracing::info!(%source, written, day_start, day_end, "calendar.set");
+        Ok(json!({
+            "source": source,
+            "written": written,
+            "dayStart": day_start,
+            "dayEnd": day_end,
+        }))
     }
 
     /// Open (not-done) board tasks in board order, each with its issue/PR
@@ -315,7 +488,14 @@ impl Dispatcher {
             .get("id")
             .and_then(Value::as_i64)
             .ok_or_else(|| "missing required argument: id".to_string())?;
-        let task = self.store.task_by_id(id).map_err(|_| format!("no task with id {id}"))?;
+        // Only a genuinely absent row is "no such task". Collapsing every store
+        // error into that message tells a caller the task does not exist when
+        // the truth is a busy-timeout, a disk error, or a corrupt page — and a
+        // session that believes its task vanished may go create a duplicate.
+        let task = self.store.task_by_id(id).map_err(|error| match error {
+            tt_store::Error::TaskNotFound(id) => format!("no task with id {id}"),
+            other => format!("could not read task {id}: {other}"),
+        })?;
         Ok(json!({ "task": task }))
     }
 
@@ -354,58 +534,6 @@ impl Dispatcher {
         tracing::info!(task_id = task.id, repo = %entry.dir, %status, "task.created");
         Ok(json!({ "task": task }))
     }
-}
-
-/// Run the stdio server: open the store (at `store_path` when given, else the
-/// default location), then read/dispatch/write until EOF. `settings_path`
-/// overrides where the capability gate reads settings (the CLI's global
-/// `--config-dir`). Returns a process exit code (0 on clean EOF, 1 on a fatal
-/// IO/store error).
-pub fn serve(store_path: Option<&Path>, settings_path: Option<&Path>) -> i32 {
-    let store = match store_path {
-        Some(path) => Store::open(path),
-        None => Store::open_default(),
-    };
-    let store = match store {
-        Ok(store) => store,
-        Err(error) => {
-            log::error!("tt-mcp: failed to open store: {error}");
-            return 1;
-        }
-    };
-    let mut dispatcher = Dispatcher::new(store);
-    if let Some(path) = settings_path {
-        dispatcher = dispatcher.with_settings_path(path.to_path_buf());
-    }
-    log::info!("tt-mcp: serving on stdio");
-
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
-    let stdout = io::stdout();
-    let mut writer = stdout.lock();
-    let mut line = String::new();
-    loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break, // clean EOF
-            Ok(_) => {
-                let request = line.trim_end();
-                if request.is_empty() {
-                    continue;
-                }
-                if let Some(response) = dispatcher.handle(request)
-                    && (writeln!(writer, "{response}").is_err() || writer.flush().is_err())
-                {
-                    break;
-                }
-            }
-            Err(error) => {
-                log::error!("tt-mcp: stdin read error: {error}");
-                return 1;
-            }
-        }
-    }
-    0
 }
 
 // ---------------------------------------------------------------------------
@@ -478,30 +606,37 @@ fn tool_error_response(id: Value, message: &str) -> String {
     )
 }
 
-/// Path to the shared settings file, for use in the refusal messages below —
-/// best-effort; falls back to a description if it can't be resolved.
-fn settings_path_hint() -> String {
-    tt_config::config_path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "your towles-tool.settings.json".to_string())
+/// Local midnight of a `YYYY-MM-DD` date as epoch ms, or `None` when the date
+/// does not parse or has no unambiguous local midnight. Only used to pick the
+/// reference instant handed to [`Store::local_day_bounds`].
+fn day_reference_ms(day: &str) -> Option<i64> {
+    let date = NaiveDate::parse_from_str(day.trim(), "%Y-%m-%d").ok()?;
+    // Local **noon**, not midnight. This value is only a reference instant —
+    // `Store::local_day_bounds` re-derives the real `[start, end)` edges from
+    // it — and midnight is the one time of day that can fail to exist or be
+    // ambiguous. Resolving it with `.single()` returned `None` on exactly the
+    // DST-transition dates in zones that switch at midnight (Havana, Santiago,
+    // São Paulo), so a perfectly valid date came back as "invalid day" and that
+    // day's calendar could never be pushed. Noon is unambiguous in every zone.
+    let noon = date.and_hms_opt(12, 0, 0)?;
+    Some(Local.from_local_datetime(&noon).earliest()?.timestamp_millis())
 }
 
-/// The gate's refusal when mutations are off (the default).
-fn mutations_disabled_message(tool: &str, path_hint: &str) -> String {
+/// The calendar-lane refusal: names the rejected id and lists the configured
+/// ones, so a caller can self-correct without another round trip. An empty
+/// configured set is called out separately — "no calendars are configured" is a
+/// settings problem, not a bad argument, and the two want different fixes.
+fn unknown_calendar_source_message(source: &str, configured: &[String]) -> String {
+    if configured.is_empty() {
+        return format!(
+            "unknown calendar source: {source} — no calendars are configured. Add one under \
+             Settings → Collectors → Calendar before pushing events."
+        );
+    }
     format!(
-        "{tool} is disabled: tt-mcp's mutating tools are off until you opt in. \
-         Set \"mcp\": {{\"mutationsEnabled\": true}} in {path_hint} — tt-mcp deliberately \
-         exposes no tool that can change that setting."
-    )
-}
-
-/// The gate's refusal when the settings file can't be read: fail closed with a
-/// hint at the file, rather than surfacing a raw parse error that reads as a
-/// transient failure worth retrying.
-fn capabilities_unreadable_message(tool: &str, error: &str, path_hint: &str) -> String {
-    format!(
-        "{tool} is disabled: the capability gate could not read {path_hint} ({error}). \
-         Mutations stay off until the settings file is readable."
+        "unknown calendar source: {source} — configured calendars are: {}. Writing to an \
+         unconfigured lane would strand rows nothing ever sweeps.",
+        configured.join(", ")
     )
 }
 
@@ -520,10 +655,10 @@ fn unknown_repo_message(repo: &str, entries: &[tt_agentboard::repos::RepoEntry])
 /// JSON Schema tool descriptors returned by `tools/list` — the MCP contract's
 /// single source of truth. Also called directly by the app's `mcp_tool_docs`
 /// command so the MCP screen's tool documentation can never drift from what
-/// `tt mcp serve` actually exposes.
+/// the server actually exposes.
 pub fn tool_definitions() -> Value {
     let no_args = || json!({ "type": "object", "properties": {}, "required": [] });
-    json!([
+    let mut tools = json!([
         {
             "name": "task_list",
             "description": "Open (not-done) board tasks in board order, each with its issue/PR links and repo/slot binding.",
@@ -542,7 +677,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "task_create",
-            "description": "Create a board task in a tracked repo's swimlane. Gated: requires \"mcp\": {\"mutationsEnabled\": true} in the settings file.",
+            "description": "Create a board task in a tracked repo's swimlane. Writes to the board.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -554,12 +689,63 @@ pub fn tool_definitions() -> Value {
                 "required": ["repo", "title"],
             },
         },
-    ])
+        {
+            "name": "calendar_today",
+            "description": "The shape of today: every meeting starting in today's local calendar day, in order. Use it to see where the uninterrupted stretches are before committing to deep work.",
+            "inputSchema": no_args(),
+        },
+        {
+            "name": "calendar_next",
+            "description": "How much focus time is left: the meeting in progress now, or the next one to start, with `minutesUntil` (negative while a meeting is live) and a `live` flag. The one calendar read that matters mid-task — nothing scheduled means keep working.",
+            "inputSchema": no_args(),
+        },
+        {
+            "name": "calendar_set",
+            "description": "Push one calendar's meetings for one local day into the local cache, replacing whatever that calendar previously had for that day. This is how the calendar gets filled — a scheduled pull writes here; nothing else reads your real calendar. Other calendars and other days are left untouched.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": { "type": "string", "description": "Which configured calendar this pull represents (e.g. \"google\", \"outlook\"). Only this calendar's rows for the day are replaced." },
+                    "day": { "type": "string", "description": "Local calendar day being pushed, YYYY-MM-DD. Defaults to today." },
+                    "events": {
+                        "type": "array",
+                        "description": "The meetings for that day. An empty array clears the day for this calendar.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "externalId": { "type": "string", "description": "The calendar provider's stable id for the event." },
+                                "title": { "type": "string", "description": "Meeting title." },
+                                "startTs": { "type": "integer", "description": "Start time, epoch milliseconds." },
+                                "endTs": { "type": "integer", "description": "End time, epoch milliseconds. Omit for a point-in-time entry." },
+                                "attendees": { "type": "array", "items": { "type": "string" }, "description": "Attendee names or addresses." },
+                                "location": { "type": "string", "description": "Room or place, if any." },
+                                "joinUrl": { "type": "string", "description": "Video-call link, if any." },
+                            },
+                            "required": ["externalId", "title", "startTs"],
+                        },
+                    },
+                },
+                "required": ["source", "events"],
+            },
+        },
+    ]);
+
+    // Stamp `readOnlyHint` from [`WRITING_TOOLS`] rather than hand-writing it
+    // per descriptor, so the flag a client sees and the flag the transport acts
+    // on are the same fact rather than two that agree today.
+    if let Some(entries) = tools.as_array_mut() {
+        for entry in entries {
+            let writes = entry["name"].as_str().is_some_and(tool_writes);
+            entry["annotations"] = json!({ "readOnlyHint": !writes });
+        }
+    }
+    tools
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     const NOW: i64 = 1_700_000_000_000; // fixed epoch ms for deterministic tests
 
@@ -572,12 +758,12 @@ mod tests {
         store
     }
 
-    /// A dispatcher with the gate ON and one tracked repo — both injected, so
-    /// no test touches the real settings file or agentboard repos.json.
+    /// A dispatcher with one injected tracked repo, so no test touches the real
+    /// agentboard repos.json.
     fn dispatcher() -> Dispatcher {
         Dispatcher::new(seeded_store())
-            .with_mcp_settings(tt_config::McpSettings { mutations_enabled: true })
             .with_tracked_repos(vec![REPO_DIR.to_string()])
+            .with_calendar_sources(vec!["google".to_string(), "outlook".to_string()])
     }
 
     /// Call a tool and return the parsed inner JSON result (the `text` payload).
@@ -654,7 +840,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_is_exactly_the_task_family() {
+    fn tools_list_is_exactly_the_task_and_calendar_families() {
         let mut dispatcher = dispatcher();
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }).to_string();
         let response: Value =
@@ -665,26 +851,304 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["task_list", "task_status", "task_create"]);
+        assert_eq!(
+            names,
+            vec![
+                "task_list",
+                "task_status",
+                "task_create",
+                "calendar_today",
+                "calendar_next",
+                "calendar_set",
+            ]
+        );
+    }
+
+    /// A `calendar_set` event payload, in the tool's camelCase wire shape.
+    fn event_json(external_id: &str, start_ts: i64, end_ts: i64) -> Value {
+        json!({
+            "externalId": external_id,
+            "title": external_id,
+            "startTs": start_ts,
+            "endTs": end_ts,
+        })
+    }
+
+    /// `calendar_set` one source's day, returning the tool result.
+    fn set_calendar(dispatcher: &mut Dispatcher, source: &str, events: Value) -> Value {
+        call_tool(dispatcher, "calendar_set", json!({ "source": source, "events": events }))
     }
 
     #[test]
-    fn every_mutating_tool_is_defined_and_flagged_gated() {
-        // MUTATING_TOOLS and tool_definitions can't drift: every gated name
-        // must be a real tool whose description says it is gated.
-        let tools = tool_definitions();
-        for name in MUTATING_TOOLS {
-            let tool = tools
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|tool| tool["name"] == *name)
-                .unwrap_or_else(|| panic!("{name} is gated but not defined"));
-            assert!(
-                tool["description"].as_str().unwrap().contains("Gated"),
-                "{name}'s description should say it is gated"
+    fn calendar_today_returns_only_the_local_day() {
+        let (day_start, day_end) = Store::local_day_bounds(NOW);
+        let mut dispatcher = dispatcher();
+        // Neighbouring days are pushed as their own days — the only way to
+        // store them, since a day's push refuses events outside its window.
+        let day_of = |ms: i64| {
+            Local.timestamp_millis_opt(ms).single().unwrap().format("%Y-%m-%d").to_string()
+        };
+        for (day_ms, event) in [
+            (day_start - 3_600_000, event_json("yesterday", day_start - 3_600_000, day_start - 1)),
+            (NOW, event_json("standup", day_start + 3_600_000, day_start + 5_400_000)),
+            (day_end + 3_600_000, event_json("tomorrow", day_end + 3_600_000, day_end + 5_400_000)),
+        ] {
+            call_tool(
+                &mut dispatcher,
+                "calendar_set",
+                json!({ "source": "google", "day": day_of(day_ms), "events": [event] }),
             );
         }
+
+        let result = call_tool(&mut dispatcher, "calendar_today", json!({}));
+        assert_eq!(result["now"], NOW);
+        let ids: Vec<&str> = result["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["externalId"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["standup"], "only today's event is in the window");
+    }
+
+    /// A row outside the day it is pushed for is reachable by nothing: the
+    /// lane's next write only deletes inside that day's window, and retention
+    /// only sweeps the past. It would feed the countdown as a phantom meeting
+    /// forever, so the push is refused rather than half-accepted.
+    #[test]
+    fn calendar_set_refuses_an_event_outside_the_day_being_written() {
+        let (_, day_end) = Store::local_day_bounds(NOW);
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({
+                "source": "google",
+                "events": [event_json("next-week", day_end + 6 * 86_400_000, day_end + 6 * 86_400_000 + 1_800_000)],
+            }),
+        );
+        assert!(message.contains("next-week"), "names the offending event: {message}");
+        assert!(message.contains("outside the day"), "says why: {message}");
+    }
+
+    /// `end < start` parses fine and then reads two different ways: it shows up
+    /// in `calendar_today` (which windows on `start_ts`) but never in
+    /// `calendar_next` (which matches `end_ts > now`), so the meeting is in the
+    /// day's shape and missing from the countdown.
+    #[test]
+    fn calendar_set_refuses_an_event_that_ends_before_it_starts() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({
+                "source": "google",
+                "events": [event_json("backwards", NOW + 3_600_000, NOW - 3_600_000)],
+            }),
+        );
+        assert!(message.contains("backwards"), "names the offending event: {message}");
+        assert!(message.contains("ends before it starts"), "says why: {message}");
+    }
+
+    /// The contract promises `minutesUntil` is negative while a meeting runs.
+    /// Truncating division would report `0` for the first 59 seconds — the
+    /// window where "starting now" vs "already started" matters most.
+    #[test]
+    fn calendar_next_minutes_until_is_negative_from_the_first_second() {
+        let mut dispatcher = dispatcher();
+        set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json("live", NOW - 30_000, NOW + 1_800_000)]),
+        );
+        let result = call_tool(&mut dispatcher, "calendar_next", json!({}));
+        assert_eq!(result["live"], true);
+        assert_eq!(result["minutesUntil"], -1, "30s in is already negative, not 0");
+    }
+
+    #[test]
+    fn calendar_next_flags_a_meeting_in_progress() {
+        let mut dispatcher = dispatcher();
+        // Started 10 minutes ago, runs for another 20.
+        set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json("in-progress", NOW - 600_000, NOW + 1_200_000)]),
+        );
+
+        let result = call_tool(&mut dispatcher, "calendar_next", json!({}));
+        assert_eq!(result["event"]["externalId"], "in-progress");
+        assert_eq!(result["live"], true);
+        assert_eq!(result["minutesUntil"], -10, "minutes go negative while live");
+        assert_eq!(result["now"], NOW);
+    }
+
+    #[test]
+    fn calendar_next_counts_down_to_the_next_meeting() {
+        let mut dispatcher = dispatcher();
+        set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json("upcoming", NOW + 1_800_000, NOW + 3_600_000)]),
+        );
+
+        let result = call_tool(&mut dispatcher, "calendar_next", json!({}));
+        assert_eq!(result["event"]["externalId"], "upcoming");
+        assert_eq!(result["live"], false);
+        assert_eq!(result["minutesUntil"], 30);
+    }
+
+    #[test]
+    fn calendar_next_on_an_empty_calendar_is_null() {
+        let mut dispatcher = dispatcher();
+        let result = call_tool(&mut dispatcher, "calendar_next", json!({}));
+        assert_eq!(result["event"], Value::Null);
+    }
+
+    #[test]
+    fn calendar_set_replaces_one_source_and_leaves_the_others() {
+        let (day_start, _) = Store::local_day_bounds(NOW);
+        let mut dispatcher = dispatcher();
+        set_calendar(
+            &mut dispatcher,
+            "outlook",
+            json!([event_json(
+                "work-sync",
+                day_start + 3_600_000,
+                day_start + 5_400_000
+            )]),
+        );
+        set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json(
+                "dentist",
+                day_start + 7_200_000,
+                day_start + 9_000_000
+            )]),
+        );
+
+        // Re-pushing google replaces only google's rows for the day.
+        let result = set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json(
+                "school-run",
+                day_start + 10_800_000,
+                day_start + 12_600_000
+            )]),
+        );
+        assert_eq!(result["source"], "google");
+        assert_eq!(result["written"], 1);
+        assert_eq!(result["dayStart"], day_start);
+
+        let today = call_tool(&mut dispatcher, "calendar_today", json!({}));
+        let ids: Vec<&str> = today["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["externalId"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["work-sync", "school-run"], "outlook's row survived");
+    }
+
+    #[test]
+    fn calendar_set_accepts_an_explicit_day() {
+        let mut dispatcher = dispatcher();
+        let day = Local.timestamp_millis_opt(NOW).single().unwrap().date_naive();
+        let tomorrow = (day + Duration::days(1)).format("%Y-%m-%d").to_string();
+        let tomorrow_start = Store::local_day_bounds(day_reference_ms(&tomorrow).unwrap()).0;
+
+        let result = call_tool(
+            &mut dispatcher,
+            "calendar_set",
+            json!({
+                "source": "google",
+                "day": tomorrow,
+                "events": [event_json("offsite", tomorrow_start + 3_600_000, tomorrow_start + 7_200_000)],
+            }),
+        );
+        assert_eq!(result["dayStart"], tomorrow_start);
+
+        // It is tomorrow's, so today's read does not see it.
+        let today = call_tool(&mut dispatcher, "calendar_today", json!({}));
+        assert!(today["events"].as_array().unwrap().is_empty(), "{today}");
+    }
+
+    #[test]
+    fn calendar_set_clears_a_day_with_an_empty_array() {
+        let (day_start, _) = Store::local_day_bounds(NOW);
+        let mut dispatcher = dispatcher();
+        set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json(
+                "cancelled",
+                day_start + 3_600_000,
+                day_start + 5_400_000
+            )]),
+        );
+        let result = set_calendar(&mut dispatcher, "google", json!([]));
+        assert_eq!(result["written"], 0);
+        let today = call_tool(&mut dispatcher, "calendar_today", json!({}));
+        assert!(today["events"].as_array().unwrap().is_empty(), "{today}");
+    }
+
+    #[test]
+    fn calendar_set_validates_its_arguments() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(&mut dispatcher, "calendar_set", json!({ "events": [] }));
+        assert!(message.contains("source"), "{message}");
+        let message = call_tool_err(&mut dispatcher, "calendar_set", json!({ "source": "google" }));
+        assert!(message.contains("events"), "{message}");
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({ "source": "google", "events": [{ "title": "no id" }] }),
+        );
+        assert!(message.contains("invalid events payload"), "{message}");
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({ "source": "google", "day": "not-a-date", "events": [] }),
+        );
+        assert!(message.contains("invalid day"), "{message}");
+    }
+
+    #[test]
+    fn calendar_set_ignores_a_source_field_smuggled_into_an_event() {
+        // `source` is caller-assigned: an event carrying its own `source` must
+        // not be able to write into a different lane.
+        let (day_start, _) = Store::local_day_bounds(NOW);
+        let mut dispatcher = dispatcher();
+        set_calendar(
+            &mut dispatcher,
+            "outlook",
+            json!([event_json(
+                "work-sync",
+                day_start + 3_600_000,
+                day_start + 5_400_000
+            )]),
+        );
+        call_tool(
+            &mut dispatcher,
+            "calendar_set",
+            json!({
+                "source": "google",
+                "events": [{
+                    "source": "outlook",
+                    "externalId": "work-sync",
+                    "title": "hijacked",
+                    "startTs": day_start + 3_600_000,
+                }],
+            }),
+        );
+
+        let today = call_tool(&mut dispatcher, "calendar_today", json!({}));
+        let events = today["events"].as_array().unwrap();
+        assert_eq!(events.len(), 2, "the outlook row was not overwritten: {today}");
+        let outlook = events.iter().find(|e| e["source"] == "outlook").unwrap();
+        assert_eq!(outlook["title"], "work-sync");
     }
 
     #[test]
@@ -757,9 +1221,7 @@ mod tests {
         assert!(message.contains("unknown repo: nope"), "{message}");
         assert!(message.contains("demo"), "error should list tracked repos: {message}");
 
-        let mut empty = Dispatcher::new(seeded_store())
-            .with_mcp_settings(tt_config::McpSettings { mutations_enabled: true })
-            .with_tracked_repos(vec![]);
+        let mut empty = Dispatcher::new(seeded_store()).with_tracked_repos(vec![]);
         let message =
             call_tool_err(&mut empty, "task_create", json!({ "repo": "demo", "title": "x" }));
         assert!(message.contains("no repos are tracked"), "{message}");
@@ -791,51 +1253,74 @@ mod tests {
         assert_eq!(open["tasks"].as_array().unwrap().len(), 1, "only the seeded task remains");
     }
 
+    /// The lane check is what stops a typo minting a calendar nothing will ever
+    /// write again — rows that still feed `calendar_next` and that no sweep
+    /// removes. Exactly the orphan-lane failure the v9 migration destroyed data
+    /// to avoid, so it has to hold at runtime too, not only at migration time.
     #[test]
-    fn task_create_is_gated_off_by_default() {
-        // A settings file in a sandbox dir with no mcp block: the gate reads
-        // the real disk-resolution path and refuses with the opt-in hint.
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("towles-tool.settings.json");
-        let mut dispatcher = Dispatcher::new(seeded_store())
-            .with_settings_path(path.clone())
-            .with_tracked_repos(vec![REPO_DIR.to_string()]);
-        let message =
-            call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "demo", "title": "x" }));
-        assert!(message.contains("mutationsEnabled"), "refusal carries the opt-in hint: {message}");
-        assert!(
-            message.contains(&path.display().to_string()),
-            "refusal names the settings file the gate read: {message}"
+    fn calendar_set_refuses_an_unconfigured_source() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({ "source": "gcal", "events": [] }),
         );
-        // Nothing was created, and the read tools still work ungated.
-        let open = call_tool(&mut dispatcher, "task_list", json!({}));
-        assert_eq!(open["tasks"].as_array().unwrap().len(), 1, "only the seeded task remains");
+        assert!(message.contains("unknown calendar source: gcal"), "{message}");
+        assert!(message.contains("google"), "refusal lists configured lanes: {message}");
     }
 
+    /// Fails closed: with nothing configured, every push is refused rather than
+    /// allowed to create the first lane implicitly.
     #[test]
-    fn task_create_honors_a_settings_file_opt_in() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("towles-tool.settings.json");
-        std::fs::write(&path, r#"{"mcp":{"mutationsEnabled":true}}"#).unwrap();
-        let mut dispatcher = Dispatcher::new(seeded_store())
-            .with_settings_path(path)
-            .with_tracked_repos(vec![REPO_DIR.to_string()]);
+    fn calendar_set_refuses_everything_when_no_calendars_are_configured() {
+        let mut dispatcher = Dispatcher::new(seeded_store()).with_calendar_sources(vec![]);
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({ "source": "google", "events": [] }),
+        );
+        assert!(message.contains("no calendars are configured"), "{message}");
+    }
+
+    /// A configured lane still works, including the empty-array clear.
+    #[test]
+    fn calendar_set_accepts_a_configured_source() {
+        let mut dispatcher = dispatcher();
         let result =
-            call_tool(&mut dispatcher, "task_create", json!({ "repo": "demo", "title": "opted" }));
-        assert_eq!(result["task"]["text"], "opted");
+            call_tool(&mut dispatcher, "calendar_set", json!({ "source": "google", "events": [] }));
+        assert_eq!(result["source"], "google");
+        assert_eq!(result["written"], 0);
     }
 
+    /// Writes are flagged in the contract, not inferred from the wording of a
+    /// description — the UI's write warning is the only signal a human gets
+    /// before a mutation now that the capability gate is gone, so it must not
+    /// depend on an adjective someone might reword.
     #[test]
-    fn task_create_fails_closed_when_settings_are_unreadable() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("towles-tool.settings.json");
-        std::fs::write(&path, "{ not json").unwrap();
-        let mut dispatcher = Dispatcher::new(seeded_store())
-            .with_settings_path(path)
-            .with_tracked_repos(vec![REPO_DIR.to_string()]);
-        let message =
-            call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "demo", "title": "x" }));
-        assert!(message.contains("could not read"), "fails closed, actionably: {message}");
+    fn mutating_tools_are_flagged_read_only_false() {
+        let tools = tool_definitions();
+        let tools = tools.as_array().unwrap();
+        let flag = |name: &str| {
+            tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .and_then(|t| t["annotations"]["readOnlyHint"].as_bool())
+        };
+        assert_eq!(flag("task_create"), Some(false), "task_create writes");
+        assert_eq!(flag("calendar_set"), Some(false), "calendar_set writes");
+        // Reads say so explicitly. The annotation is stamped from
+        // `WRITING_TOOLS`, so every tool carries the flag and a client never has
+        // to read "absent" as either answer.
+        assert_eq!(flag("task_list"), Some(true));
+        assert_eq!(flag("calendar_next"), Some(true));
+
+        // The wire flag and the transport's refresh decision come from one
+        // list, so they cannot disagree — this is the assertion that pins it.
+        for tool in tools {
+            let name = tool["name"].as_str().unwrap();
+            let read_only = tool["annotations"]["readOnlyHint"].as_bool().unwrap();
+            assert_eq!(read_only, !tool_writes(name), "{name}'s hint must match tool_writes");
+        }
     }
 
     #[test]
@@ -971,32 +1456,6 @@ mod tests {
         assert_eq!(calls[2].tool, None);
         assert!(calls[2].ok);
         assert_eq!(calls[2].client.as_deref(), Some("claude-code 2.1"));
-    }
-
-    #[test]
-    fn gate_refusals_land_in_the_call_log() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("towles-tool.settings.json");
-        let mut dispatcher = Dispatcher::new(seeded_store())
-            .with_settings_path(path)
-            .with_tracked_repos(vec![REPO_DIR.to_string()]);
-        drive(
-            &mut dispatcher,
-            json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": { "name": "task_create", "arguments": { "repo": "demo", "title": "x" } },
-            }),
-        );
-        let calls = dispatcher.store.mcp_calls(10).unwrap();
-        assert_eq!(calls[0].tool.as_deref(), Some("task_create"));
-        assert!(!calls[0].ok);
-        assert!(
-            calls[0].error.as_deref().is_some_and(|e| e.contains("mutationsEnabled")),
-            "the refusal is the recorded error: {:?}",
-            calls[0].error
-        );
     }
 
     #[test]

@@ -16,7 +16,6 @@ fn main() {
             commands::journal::run(JournalCommands::DailyNotes { no_open }, config_dir.as_deref())
         }
         Commands::Collect(args) => commands::collect::run(args.command, config_dir.as_deref()),
-        Commands::Mcp(args) => commands::mcp::run(args.command, config_dir.as_deref()),
         Commands::Slot(args) => commands::slot::run(args.command),
     };
 

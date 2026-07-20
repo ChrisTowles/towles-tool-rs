@@ -100,7 +100,7 @@ fn with_store<T>(
 }
 
 /// Epoch milliseconds from the local wall clock (write-boundary clock).
-fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     chrono::Local::now().timestamp_millis()
 }
 
@@ -115,6 +115,19 @@ pub fn emit_snapshot(app: &AppHandle, state: &StoreState) {
     if let Ok(snapshot) = snapshot_of(state) {
         let _ = app.emit(SNAPSHOT_EVENT, snapshot);
     }
+}
+
+/// Recompute and emit the snapshot given only an [`AppHandle`], for callers
+/// that hold no `State` handle of their own.
+///
+/// The MCP HTTP transport is the one such caller: its dispatcher writes through
+/// a *separate* SQLite connection, so a tool call that mutates the store would
+/// otherwise leave the UI showing stale data until its next poll. Same
+/// best-effort contract as [`emit_snapshot`] — a missing store or a failed emit
+/// is swallowed.
+pub fn emit_snapshot_from_app(app: &AppHandle) {
+    let state = app.state::<StoreState>();
+    emit_snapshot(app, &state);
 }
 
 /// Detach any task bound to a removed worktree: clears the task's `slot_dir`

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { UserSettingsSchema } from "./schemas/settings";
 import { invoke } from "./tauri";
+import { slugify } from "./slug";
 
 /**
  * Client-side view of the shared user settings (`crates/tt-config`), read/written
@@ -25,11 +26,49 @@ export type CalendarQuietHours = {
   weekdays: number[];
 };
 
+/**
+ * One calendar the collector pulls, with the `claude -p` prompt it uses. `id` is
+ * the store lane a pull replaces, so it must stay stable; the prompt is
+ * user-editable on purpose — the built-in defaults drive a Google/Outlook MCP,
+ * but a machine without those can point the source at whatever does work there
+ * (a CLI, a script, a different MCP), as long as it still answers with the same
+ * JSON array.
+ */
+export type CalendarSource = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  prompt: string;
+};
+
+/**
+ * A store-lane id for a newly added calendar, unique among `sources`.
+ *
+ * Slugged from the generated label (`Calendar 3`) so the id stays readable in
+ * the store, then suffixed until it's free — a source can be removed and
+ * re-added, so the label's own number is no guarantee of uniqueness. Ids are
+ * assigned once and never edited afterwards: the id names the lane a pull
+ * replaces, so changing it would orphan every row already stored under the old
+ * one.
+ */
+export function nextCalendarSourceId(sources: CalendarSource[], label: string): string {
+  const taken = new Set(sources.map((s) => s.id));
+  // The shared slug rule, not a second regex: this one produces a *permanent*
+  // store-lane key, so a variant that leaves a trailing `-` (as a hand-rolled
+  // `[^a-z0-9]+` does) bakes the difference into the database.
+  const base = slugify(label) || "calendar";
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
 export type CalendarCollector = {
   enabled: boolean;
-  provider: string;
   refreshMinutes: number;
   quietHours: CalendarQuietHours;
+  sources: CalendarSource[];
 };
 
 export type PrCollector = {

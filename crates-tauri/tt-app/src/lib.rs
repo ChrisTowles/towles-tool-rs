@@ -16,6 +16,7 @@ mod launch;
 mod linux_desktop;
 mod lsp;
 mod mcp;
+mod mcp_http;
 mod preview;
 mod resources;
 mod resume;
@@ -407,6 +408,16 @@ pub fn run() {
             // Emit the initial store snapshot for the dashboard's first mount.
             store::emit_snapshot(&app.handle().clone(), &store_state);
             app.manage(store_state);
+
+            // Serve MCP over loopback HTTP. Bind-or-skip: whichever instance
+            // takes the port serves every Claude Code session on the machine,
+            // and the rest serve none — the OS bind is the mutex. Deliberately
+            // after `manage(store_state)`, since a mutating call re-emits the
+            // snapshot through that state.
+            let mcp_port =
+                tt_config::load().map(|s| s.mcp.port).unwrap_or(tt_config::DEFAULT_MCP_PORT);
+            mcp_http::spawn(app.handle().clone(), mcp_port);
+
             // Overlap guard for the manual "refresh now" command.
             app.manage(store::CollectNowState::default());
             // Per-dir overlap guard for the rail's manual "Sync now" command.
@@ -546,6 +557,8 @@ pub fn run() {
             gh_actions::cockpit_create_issue_branch,
             store::store_dm_dismiss,
             mcp::mcp_tool_docs,
+            mcp_http::mcp_status,
+            mcp_http::mcp_test_call,
             slack::slack_dm_history,
             slack::slack_dm_send,
             slack::slack_dm_file,

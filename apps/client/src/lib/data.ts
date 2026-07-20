@@ -14,6 +14,12 @@ import { invoke, isTauri } from "./tauri";
 
 export type CalEvent = {
   id: number;
+  /**
+   * Which configured calendar this came from (`"google"`, `"outlook"`). Events
+   * from several calendars are merged into one timeline, so this is the only
+   * way to tell a personal meeting from a work one.
+   */
+  source: string;
   externalId: string;
   title: string;
   startTs: number;
@@ -142,8 +148,11 @@ export function dmsNeedingAttention(snapshot: StoreSnapshot): DmItem[] {
 }
 
 /**
- * One handled request against the towles-tool MCP server (`tt mcp serve`),
- * logged by the dispatcher. `method` is the JSON-RPC method (`initialize`,
+ * One handled request against the towles-tool MCP server, logged by the
+ * dispatcher. The server runs inside the desktop app over loopback HTTP
+ * (`http://127.0.0.1:8787/mcp`) — there is no CLI to start it, so an empty log
+ * means no app instance is holding the port. `method` is the JSON-RPC method
+ * (`initialize`,
  * `tools/call`, …); `tool` and `args` are set only for `tools/call` (args are a
  * compacted one-line rendering). `ok` is false for a JSON-RPC error or an
  * `isError` tool result, with the message in `error`. `client` is the caller's
@@ -196,6 +205,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
     events: [
       {
         id: 1,
+        source: "outlook",
         externalId: "mock-standup",
         title: "Team standup",
         startTs: now + 25 * MINUTE,
@@ -206,6 +216,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
       },
       {
         id: 2,
+        source: "outlook",
         externalId: "mock-design-review",
         title: "Design review",
         startTs: now + 90 * MINUTE,
@@ -215,6 +226,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
       },
       {
         id: 3,
+        source: "outlook",
         externalId: "mock-1on1",
         title: "1:1 with Sam",
         startTs: now + 150 * MINUTE,
@@ -223,6 +235,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
       },
       {
         id: 4,
+        source: "google",
         externalId: "mock-lunch",
         title: "Lunch & learn",
         startTs: now + 210 * MINUTE,
@@ -231,6 +244,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
       },
       {
         id: 5,
+        source: "outlook",
         externalId: "mock-planning",
         title: "Sprint planning",
         startTs: now + 270 * MINUTE,
@@ -239,6 +253,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
       },
       {
         id: 6,
+        source: "outlook",
         externalId: "mock-retro",
         title: "Retro",
         startTs: now + 360 * MINUTE,
