@@ -48,12 +48,65 @@ import {
  * mtime.
  */
 
-/** Text anchors from Claude's openFile tool: select startText..endText. */
+/** Where to land in the file: text anchors from Claude's openFile tool
+ * (select startText..endText), or a bare 1-based line from a terminal
+ * `path:line` link. Text anchors win when both are present. */
 export type ViewerAnchor = {
   startText?: string | null;
   endText?: string | null;
   selectToEndOfLine?: boolean | null;
+  line?: number | null;
 };
+
+/** Move the editor to an anchor: text anchors select and center the match;
+ * a bare line centers it with the cursor at column 1 (clamped to the file). */
+function applyViewerAnchor(
+  monaco: typeof import("monaco-editor"),
+  editor: import("monaco-editor").editor.IStandaloneCodeEditor,
+  anchor: ViewerAnchor,
+) {
+  const model = editor.getModel();
+  if (!model) return;
+  if (!anchor.startText) {
+    if (anchor.line == null) return;
+    const line = Math.max(1, Math.min(anchor.line, model.getLineCount()));
+    editor.setPosition({ lineNumber: line, column: 1 });
+    editor.revealLineInCenter(line);
+    editor.focus();
+    return;
+  }
+  const start = model.findMatches(anchor.startText, false, false, false, null, false, 1)[0];
+  if (!start) return;
+  let range = start.range;
+  if (anchor.endText) {
+    const after = model.findMatches(anchor.endText, false, false, false, null, false, 50);
+    const end = after.find(
+      (m) =>
+        m.range.startLineNumber > range.startLineNumber ||
+        (m.range.startLineNumber === range.startLineNumber &&
+          m.range.startColumn >= range.endColumn),
+    );
+    if (end) {
+      range = new monaco.Range(
+        range.startLineNumber,
+        range.startColumn,
+        end.range.endLineNumber,
+        end.range.endColumn,
+      );
+    }
+  }
+  if (anchor.selectToEndOfLine) {
+    range = new monaco.Range(
+      range.startLineNumber,
+      range.startColumn,
+      range.endLineNumber,
+      model.getLineMaxColumn(range.endLineNumber),
+    );
+  }
+  editor.setSelection(range);
+  editor.revealRangeInCenter(range);
+  editor.focus();
+}
 
 export function CodeViewer({
   dir,
@@ -93,6 +146,8 @@ export function CodeViewer({
   onDirtyRef.current = onDirtyChange;
   const wordWrapRef = useRef(wordWrap);
   wordWrapRef.current = wordWrap;
+  const anchorRef = useRef(anchor);
+  anchorRef.current = anchor;
 
   /** Explicit @-mention of whatever is selected right now — read live from the
    * editor, never from the debounced chip state, so the gesture can't fire
@@ -169,6 +224,10 @@ export function CodeViewer({
       editorRef.current = editor;
       savedVersionRef.current = model.getAlternativeVersionId();
       setLoading(false);
+      // The request that opened this file usually lands before the editor
+      // exists (the anchor effect above finds no editor and bails) — apply it
+      // now that the model is live.
+      if (anchorRef.current) applyViewerAnchor(monaco, editor, anchorRef.current);
       ideSetOpenFile(dir, path, false);
 
       const setDirty = (dirty: boolean) => {
@@ -396,48 +455,24 @@ export function CodeViewer({
     editorRef.current?.updateOptions({ wordWrap: wordWrap ? "on" : "off" });
   }, [wordWrap]);
 
-  // Claude's openFile can ask for a startText..endText selection — find the
-  // anchors in the buffer, select, and scroll them into view.
+  // An open request can ask for a landing spot (startText..endText selection,
+  // or a bare :line) — apply it against the live editor. The mount effect
+  // applies `anchorRef` itself once the model loads, covering the fresh-open
+  // case where this runs before the editor exists.
   useEffect(() => {
-    if (!anchor?.startText) return;
+    if (!anchor?.startText && anchor?.line == null) return;
     void (async () => {
       const monaco = await loadMonaco();
       const editor = editorRef.current;
-      const model = editor?.getModel();
-      if (!editor || !model) return;
-      const start = model.findMatches(anchor.startText!, false, false, false, null, false, 1)[0];
-      if (!start) return;
-      let range = start.range;
-      if (anchor.endText) {
-        const after = model.findMatches(anchor.endText, false, false, false, null, false, 50);
-        const end = after.find(
-          (m) =>
-            m.range.startLineNumber > range.startLineNumber ||
-            (m.range.startLineNumber === range.startLineNumber &&
-              m.range.startColumn >= range.endColumn),
-        );
-        if (end) {
-          range = new monaco.Range(
-            range.startLineNumber,
-            range.startColumn,
-            end.range.endLineNumber,
-            end.range.endColumn,
-          );
-        }
-      }
-      if (anchor.selectToEndOfLine) {
-        range = new monaco.Range(
-          range.startLineNumber,
-          range.startColumn,
-          range.endLineNumber,
-          model.getLineMaxColumn(range.endLineNumber),
-        );
-      }
-      editor.setSelection(range);
-      editor.revealRangeInCenter(range);
-      editor.focus();
+      if (!editor) return;
+      applyViewerAnchor(monaco, editor, {
+        startText: anchor?.startText,
+        endText: anchor?.endText,
+        selectToEndOfLine: anchor?.selectToEndOfLine,
+        line: anchor?.line,
+      });
     })();
-  }, [anchor?.nonce, anchor?.startText, anchor?.endText, anchor?.selectToEndOfLine]);
+  }, [anchor?.nonce, anchor?.startText, anchor?.endText, anchor?.selectToEndOfLine, anchor?.line]);
 
   if (error) {
     return <p className="p-3 text-sm text-muted-foreground">{error}</p>;

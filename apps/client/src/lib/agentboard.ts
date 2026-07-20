@@ -367,6 +367,22 @@ export function filesPaneDir(paneId: string): string | null {
   return isFilesPane(paneId) ? paneId.slice(FILES_PANE_PREFIX.length) : null;
 }
 
+/**
+ * Resolve a terminal file-link path to a files-pane path relative to the
+ * folder checkout, or null when the file lives outside it (the files pane can
+ * only browse the checkout — outside paths stay external-editor territory).
+ * Relative paths are trusted to be checkout-relative: the pane's shell starts
+ * in the folder dir, and that's also how agents print them.
+ */
+export function filesPanePathFor(folderDir: string, path: string): string | null {
+  if (path.startsWith(`${folderDir}/`)) return path.slice(folderDir.length + 1);
+  if (path.startsWith("/") || path.startsWith("~")) return null;
+  let rel = path;
+  while (rel.startsWith("./")) rel = rel.slice(2);
+  if (rel === "" || rel.startsWith("../")) return null;
+  return rel;
+}
+
 /** The (per-folder) pane id of the folder's live-preview pane — the task's own
  * dev server embedded beside its terminals, with draw-on-page feedback. */
 export function previewPaneId(folderDir: string): string {
