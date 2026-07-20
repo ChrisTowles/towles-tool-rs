@@ -1391,7 +1391,12 @@ export function claudeCommand(prompt: string, options?: ClaudeLaunchOptions): st
  * plan is approved" is the user's interactive approval in the PTY — after
  * that gate the instructions carry the session all the way to a merged PR,
  * and the merged PR is what rolls the board task to done (PR auto-attach +
- * status rollup on collect). */
+ * status rollup on collect).
+ *
+ * `base` should be the *effective* base ref (`SlotCreated.baseLabel`, e.g.
+ * `origin/main`), not the local branch name: inside the slot's worktree a
+ * fetch never advances the local base ref, so "rebase onto main" would mean
+ * stale history. */
 export function dynamicFlowPrompt(goal: string, base: string): string {
   const trimmed = goal.trim();
   // Single line by construction — like `promptWithImages`, this is typed into

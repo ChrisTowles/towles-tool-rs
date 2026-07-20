@@ -114,6 +114,8 @@ export type SlotCreated = {
   dir: string;
   branch: string;
   base: string;
+  /** The ref the slot effectively branched from — see `SlotCreatedSchema`. */
+  baseLabel: string;
   warnings: string[];
 };
 

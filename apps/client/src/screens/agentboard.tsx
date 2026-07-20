@@ -1060,8 +1060,13 @@ export function AgentboardScreen() {
       (imagePaths.length ? `attached ${imagePaths.length === 1 ? "image" : "images"}` : "");
     // A dynamic task wraps the goal with the post-plan-approval delivery
     // pipeline and launches in plan mode — the base comes from the resolved
-    // create (what the branch actually forked from), not the form field.
-    const goalPrompt = input.dynamic ? dynamicFlowPrompt(input.goal, created.base) : input.goal;
+    // create (what the branch actually forked from), not the form field, and
+    // uses `baseLabel` (`origin/main`, not `main`) because inside the slot's
+    // worktree a fetch never advances the *local* base ref: telling the
+    // session to rebase onto plain `main` would rebase onto stale history.
+    const goalPrompt = input.dynamic
+      ? dynamicFlowPrompt(input.goal, created.baseLabel)
+      : input.goal;
     const launchOptions: ClaudeLaunchOptions = input.dynamic
       ? { ...input.options, permissionMode: "plan" }
       : input.options;
