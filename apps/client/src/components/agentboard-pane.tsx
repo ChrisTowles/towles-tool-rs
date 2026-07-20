@@ -8,7 +8,6 @@ import {
   FilesButton,
   FolderLandedBadge,
   fmtMins,
-  Glyph,
   IconBtn,
   PreviewButton,
   PrChip,
@@ -16,6 +15,7 @@ import {
   BranchLabel,
 } from "@/components/agentboard-bits";
 import { DevServersButton } from "@/components/dev-servers";
+import { PaneChrome, PaneLens } from "@/components/pane-chrome";
 import type { NewSlotRepo } from "@/components/inline-new-slot";
 import {
   fmtElapsed,
@@ -368,57 +368,62 @@ export function PaneHeader({
   const agent = isAgent(session) && session.live;
   const waitingAge = fmtWaitingAge(session.needsSinceMs, now);
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
-      <Glyph agent={isAgent(session)} />
-      <Dot session={session} />
-      <span className="truncate text-xs text-foreground">{label}</span>
-      {!isAgent(session) && session.shellKind && (
-        <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/50">
-          {session.shellKind}
-        </span>
-      )}
-      <span className="ml-auto flex shrink-0 items-center gap-1.5">
-        {session.live && (
-          <span
-            className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70"
-            title="running for"
-          >
-            {fmtElapsed(now - session.createdAt)}
-          </span>
-        )}
-        {waitingAge && (
-          <span
-            className="shrink-0 font-mono text-[10.5px] text-amber-500/80"
-            title="how long this has been needing you"
-          >
-            {waitingAge}
-          </span>
-        )}
-        <PaneCacheInfo session={session} now={now} />
-        {agent && (
+    <PaneChrome
+      lens={
+        <>
+          <PaneLens
+            kind={isAgent(session) ? "agent" : "shell"}
+            label={isAgent(session) ? undefined : (session.shellKind ?? undefined)}
+          />
+          <Dot session={session} />
+        </>
+      }
+      subject={label}
+      subjectTitle={label}
+      actions={
+        <>
+          {session.live && (
+            <span
+              className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70"
+              title="running for"
+            >
+              {fmtElapsed(now - session.createdAt)}
+            </span>
+          )}
+          {waitingAge && (
+            <span
+              className="shrink-0 font-mono text-[10.5px] text-amber-500/80"
+              title="how long this has been needing you"
+            >
+              {waitingAge}
+            </span>
+          )}
+          <PaneCacheInfo session={session} now={now} />
+          {agent && (
+            <IconBtn
+              title="stop Claude (shell survives)"
+              onClick={() => actions.stopClaude(session)}
+              className="hover:text-red-500"
+            >
+              ■
+            </IconBtn>
+          )}
           <IconBtn
-            title="stop Claude (shell survives)"
-            onClick={() => actions.stopClaude(session)}
+            title="remove pane (session stays in the rail)"
+            onClick={onUngroup}
+            className="hover:text-sky-500"
+          >
+            ⊟
+          </IconBtn>
+          <IconBtn
+            title="kill session (PTY + record)"
+            onClick={() => actions.close(session.id)}
             className="hover:text-red-500"
           >
-            ■
+            ✕
           </IconBtn>
-        )}
-        <IconBtn
-          title="remove pane (session stays in the rail)"
-          onClick={onUngroup}
-          className="hover:text-sky-500"
-        >
-          ⊟
-        </IconBtn>
-        <IconBtn
-          title="kill session (PTY + record)"
-          onClick={() => actions.close(session.id)}
-          className="hover:text-red-500"
-        >
-          ✕
-        </IconBtn>
-      </span>
-    </div>
+        </>
+      }
+    />
   );
 }

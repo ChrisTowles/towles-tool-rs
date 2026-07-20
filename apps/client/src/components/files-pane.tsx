@@ -5,7 +5,6 @@ import {
   Code2,
   Columns2,
   Eye,
-  Files as FilesIcon,
   Maximize2,
   Minimize2,
   RefreshCw,
@@ -13,6 +12,7 @@ import {
 } from "lucide-react";
 import { CodeViewer, type ViewerAnchor } from "@/components/code-viewer";
 import { ClaudeBadge, IconBtn, LspBadge, PanePlaceholder } from "@/components/agentboard-bits";
+import { PaneChrome, PaneLens } from "@/components/pane-chrome";
 import { FilePreview, previewKindFor } from "@/components/file-preview";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ideMention, useIdeConnected } from "@/lib/ide";
@@ -56,13 +56,28 @@ export function FilesPane({
   dir,
   connected,
   openRequest,
+  onOpenFileChange,
 }: {
   dir: string;
   connected: boolean;
   openRequest?: FilesOpenRequest;
+  /** Reports the checkout-relative path of the file in the editor (and
+   * whether it has unsaved edits) so the pane header can name it. The header
+   * lives in `FolderFilesPane`, outside Monaco's subtree — without this the
+   * header has nothing to say but the folder name, which every other pane in
+   * the window already says. */
+  onOpenFileChange?: (open: { path: string; dirty: boolean } | null) => void;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  // Mirror the open file up to the pane header. Effect rather than a call in
+  // each setter: `open`/`dirty` move from several places (dir reset, an
+  // openRequest from Claude, a click in the explorer), and one effect can't
+  // drift out of sync with them the way four call sites would.
+  useEffect(() => {
+    onOpenFileChange?.(open ? { path: open, dirty } : null);
+  }, [open, dirty, onOpenFileChange]);
+
   const [wordWrap, setWordWrap] = useState(true);
   const [viewMode, setViewMode] = useState<EditorViewMode>("code");
   const [fullscreen, setFullscreen] = useState(false);
@@ -406,6 +421,7 @@ export function FolderFilesPane({
   openRequest?: FilesOpenRequest;
 }) {
   const ideConnected = useIdeConnected(folder?.dir);
+  const [openFile, setOpenFile] = useState<{ path: string; dirty: boolean } | null>(null);
 
   // The Explorer's provider has no disk watch (see `lib/monaco-fs.ts`), so a
   // file an agent creates or deletes never appears on its own. The folder's
@@ -447,11 +463,21 @@ export function FolderFilesPane({
         focused && "border-violet-500/60",
       )}
     >
-      <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
-        <FilesIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="truncate font-mono text-xs text-foreground">{folder.name}</span>
-        {ideConnected && <ClaudeBadge />}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+      <PaneChrome
+        lens={<PaneLens kind="files" />}
+        subject={
+          openFile ? (
+            <>
+              {openFile.path}
+              {openFile.dirty && <span className="text-amber-500"> •</span>}
+            </>
+          ) : (
+            <span className="text-muted-foreground">explorer</span>
+          )
+        }
+        subjectTitle={openFile?.path}
+        controls={ideConnected ? <ClaudeBadge /> : undefined}
+        actions={
           <IconBtn
             title="remove pane (files stay a click away on the folder)"
             onClick={onClose}
@@ -459,10 +485,15 @@ export function FolderFilesPane({
           >
             ⊟
           </IconBtn>
-        </span>
-      </div>
+        }
+      />
       <div className="flex min-h-0 flex-1 flex-col p-2">
-        <FilesPane dir={folder.dir} connected={ideConnected} openRequest={openRequest} />
+        <FilesPane
+          dir={folder.dir}
+          connected={ideConnected}
+          openRequest={openRequest}
+          onOpenFileChange={setOpenFile}
+        />
       </div>
     </div>
   );
