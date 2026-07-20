@@ -69,7 +69,7 @@ pub struct AgentBoardCheck {
 /// `zig` isn't in this list: it needs more than a presence probe (the `tt-vt`
 /// terminal engine requires a specific 0.15.x), so it has its own
 /// [`check_zig`], which is appended to the same `tools` row set.
-pub const TOOLS: &[(&str, &str, bool)] = &[
+const TOOLS: &[(&str, &str, bool)] = &[
     ("git", "--version", false),
     ("gh", "--version", false),
     ("node", "--version", false),
@@ -81,8 +81,8 @@ pub const TOOLS: &[(&str, &str, bool)] = &[
 /// The major.minor of zig required to build the `tt-vt` terminal engine.
 /// A machine on a different minor (0.14.x, 0.16.x) can't build it, so the check
 /// treats a mismatch as a hard failure, not just "zig missing".
-pub const ZIG_REQUIRED_MAJOR: u32 = 0;
-pub const ZIG_REQUIRED_MINOR: u32 = 15;
+const ZIG_REQUIRED_MAJOR: u32 = 0;
+const ZIG_REQUIRED_MINOR: u32 = 15;
 
 /// Everything one doctor run produced: the camelCase [`DoctorRunResult`]
 /// record plus the rich plugin/agentboard rows display surfaces render
@@ -115,7 +115,7 @@ pub fn run_report() -> DoctorReport {
 }
 
 /// Probe one tool's presence + version.
-pub fn check_tool(name: &str, version_arg: &str, optional: bool) -> CheckResult {
+fn check_tool(name: &str, version_arg: &str, optional: bool) -> CheckResult {
     match tt_exec::run(name, &[version_arg]) {
         Ok(output) if output.ok() => {
             let combined = format!("{}{}", output.stdout, output.stderr);
@@ -160,7 +160,7 @@ pub fn check_vt_parser(optimize_mode: &str) -> CheckResult {
 }
 
 /// Pull the first version-like token (`1.2.3`) out of arbitrary `--version` output.
-pub fn extract_version(text: &str) -> Option<String> {
+fn extract_version(text: &str) -> Option<String> {
     let start = text.find(|c: char| c.is_ascii_digit())?;
     let version: String =
         text[start..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
@@ -173,7 +173,7 @@ pub fn extract_version(text: &str) -> Option<String> {
 /// app's Doctor screen), but with real version gating: unlike [`check_tool`], a
 /// wrong minor is a failure, not a pass. `zig version` prints just the version
 /// (e.g. `0.15.2`), no `--` and no `zig ` prefix, unlike the other tools.
-pub fn check_zig() -> CheckResult {
+fn check_zig() -> CheckResult {
     match tt_exec::run("zig", &["version"]) {
         Ok(output) if output.ok() => {
             let combined = format!("{}{}", output.stdout, output.stderr);
@@ -195,7 +195,7 @@ fn zig_result(version: Option<String>) -> CheckResult {
 /// Whether a dotted version string is on the required zig major.minor. Extra
 /// patch/pre-release components (`0.15.0-dev.123`, already trimmed by
 /// [`extract_version`] to `0.15.0`) don't matter — only major and minor gate.
-pub fn zig_version_satisfies(version: &str) -> bool {
+fn zig_version_satisfies(version: &str) -> bool {
     let mut parts = version.split('.').map(|p| p.parse::<u32>().ok());
     matches!(
         (parts.next().flatten(), parts.next().flatten()),
@@ -208,12 +208,12 @@ pub fn zig_version_satisfies(version: &str) -> bool {
 /// The list is plain text, one server per line: `<name>: <command> - <status>`.
 /// We match the leading `<name>` field exactly against `tt` so a server whose
 /// command merely mentions `tt` (or a differently named server) doesn't count.
-pub fn tt_mcp_registered(list_output: &str) -> bool {
+fn tt_mcp_registered(list_output: &str) -> bool {
     list_output.lines().any(|line| line.split(':').next().map(str::trim) == Some("tt"))
 }
 
 /// Whether `gh auth status` reports an authenticated account.
-pub fn check_gh_auth() -> bool {
+fn check_gh_auth() -> bool {
     matches!(tt_exec::run("gh", &["auth", "status"]), Ok(out) if out.ok())
 }
 
@@ -255,7 +255,7 @@ const REQUIRED_PLUGINS: &[RequiredPlugin] = &[
 
 /// Claude plugins the workflows expect — see [`REQUIRED_PLUGINS`]. One shared
 /// `claude plugin list --json` call, checked against every required id.
-pub fn check_claude_plugins() -> Vec<PluginCheck> {
+fn check_claude_plugins() -> Vec<PluginCheck> {
     #[derive(Deserialize)]
     struct Entry {
         id: String,
@@ -285,7 +285,7 @@ pub fn check_claude_plugins() -> Vec<PluginCheck> {
 /// every collector and the rail read), and the data-hub db the day screens
 /// read. The old tmux-agentboard db/config checks were retired with that
 /// system.
-pub fn check_agentboard() -> Vec<AgentBoardCheck> {
+fn check_agentboard() -> Vec<AgentBoardCheck> {
     let mut results = Vec::new();
 
     // Which state scope this instance resolved to — makes it obvious when a slot
@@ -341,7 +341,7 @@ pub fn check_agentboard() -> Vec<AgentBoardCheck> {
 /// only surfaces when a command that loads it dies mid-run; this makes it a
 /// visible doctor row. A missing file is fine — it's created with defaults on
 /// first use — so only an existing-but-unparseable file fails.
-pub fn check_settings_parse() -> AgentBoardCheck {
+fn check_settings_parse() -> AgentBoardCheck {
     let path = match tt_config::config_path() {
         Ok(path) => path,
         Err(e) => {
@@ -386,7 +386,7 @@ pub fn check_settings_parse() -> AgentBoardCheck {
 /// Whether the `tt` MCP server is registered with Claude Code (`claude mcp
 /// list`). The `towles-tool-app` plugin registers it; a missing registration
 /// is a warning with the fix, not a hard failure.
-pub fn check_tt_mcp_registered() -> AgentBoardCheck {
+fn check_tt_mcp_registered() -> AgentBoardCheck {
     let registered = match tt_exec::run("claude", &["mcp", "list"]) {
         Ok(out) if out.ok() => tt_mcp_registered(&out.stdout),
         _ => false,
