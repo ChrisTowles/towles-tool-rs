@@ -61,8 +61,6 @@ export default defineConfig(({ command }) => ({
       "monaco-languageclient",
       "vscode-languageclient/browser",
       "vscode-jsonrpc",
-      "vscode-textmate",
-      "vscode-oniguruma",
     ],
     // importMetaUrlPlugin can't resolve @vscode/diff's `worker.js?esm` URL —
     // serve it unbundled instead of pre-optimizing it.

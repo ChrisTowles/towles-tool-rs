@@ -1724,6 +1724,38 @@ function RepoIdentityRow({
     setHex(canonical);
     void commit({ ...latest.current, color: canonical }, "repo.color_set", detail);
   };
+
+  // Autosave the typed hex, like every other control on this screen. A partial
+  // value is *silently* ignored rather than reported: this runs while you're
+  // still typing, and "#3b" is half-finished, not wrong. The error surfaces on
+  // blur (below) and on Enter, where the input really is final.
+  const hexTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editHex = (raw: string) => {
+    setHex(raw);
+    setHexError(null);
+    if (hexTimer.current !== null) clearTimeout(hexTimer.current);
+    hexTimer.current = setTimeout(() => {
+      if (normalizeHex(raw)) setColor(raw, "hex");
+    }, 600);
+  };
+  const commitHex = (detail: string) => {
+    if (hexTimer.current !== null) {
+      clearTimeout(hexTimer.current);
+      hexTimer.current = null;
+    }
+    // Leaving the field empty isn't an error — it just means "no custom color".
+    if (hex.trim() === "") {
+      setHexError(null);
+      return;
+    }
+    setColor(hex, detail);
+  };
+  useEffect(
+    () => () => {
+      if (hexTimer.current !== null) clearTimeout(hexTimer.current);
+    },
+    [],
+  );
   const setStyle = (tint: boolean) => {
     const style: RepoIdentityStyle = tint ? "tint" : "accent";
     void commit({ ...latest.current, style }, "repo.style_set", style);
@@ -1841,12 +1873,10 @@ function RepoIdentityRow({
           <div className="mt-2 flex items-center gap-1.5">
             <Input
               value={hex}
-              onChange={(e) => {
-                setHex(e.target.value);
-                setHexError(null);
-              }}
+              onChange={(e) => editHex(e.target.value)}
+              onBlur={() => commitHex("hex")}
               onKeyDown={(e) => {
-                if (e.key === "Enter") setColor(hex, "hex");
+                if (e.key === "Enter") commitHex("hex");
               }}
               placeholder="#3b82f6"
               spellCheck={false}
@@ -1854,9 +1884,6 @@ function RepoIdentityRow({
               aria-invalid={hexError !== null}
               className="h-7 flex-1 font-mono text-xs"
             />
-            <Button size="sm" className="h-7 px-2 text-xs" onClick={() => setColor(hex, "hex")}>
-              Set
-            </Button>
           </div>
           {hexError && <p className="mt-1 text-xs text-red-500">{hexError}</p>}
         </PopoverContent>
