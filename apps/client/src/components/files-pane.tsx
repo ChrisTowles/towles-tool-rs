@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { AtSign, Columns2, Files as FilesIcon, RefreshCw, WrapText } from "lucide-react";
+import {
+  AtSign,
+  Columns2,
+  Files as FilesIcon,
+  Maximize2,
+  Minimize2,
+  RefreshCw,
+  WrapText,
+} from "lucide-react";
 import { CodeViewer, type ViewerAnchor } from "@/components/code-viewer";
 import { ClaudeBadge, IconBtn, LspBadge, PanePlaceholder } from "@/components/agentboard-bits";
 import { FilePreview, previewKindFor } from "@/components/file-preview";
@@ -12,6 +20,7 @@ import {
   setMonacoOpenHandler,
   setMonacoWorkspace,
 } from "@/lib/monaco";
+import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
 import { folderStatsKey, type FolderData } from "@/lib/agentboard";
 
@@ -25,7 +34,8 @@ import { folderStatsKey, type FolderData } from "@/lib/agentboard";
  * viewer's selection chip (or ⌘⇧A) sends just the highlighted lines. Long
  * lines wrap by default (toggle in the
  * viewer toolbar); Markdown/HTML files get a second toggle that opens a
- * resizable split preview alongside the editor.
+ * resizable split preview alongside the editor, and a third lifts the whole
+ * pane out of the Agentboard tiling to fill the viewport (Escape returns it).
  */
 
 /** Claude called openFile — focus this file (new nonce per request). */
@@ -51,6 +61,7 @@ export function FilesPane({
   const [dirty, setDirty] = useState(false);
   const [wordWrap, setWordWrap] = useState(true);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const explorerRef = useRef<HTMLDivElement>(null);
 
   // Reset on a genuine dir *change* only — skipping the initial mount keeps
@@ -73,6 +84,32 @@ export function FilesPane({
   useEffect(() => {
     setPreviewOpen(false);
   }, [open]);
+
+  // The only way back out of fullscreen is the header toggle, and the header
+  // only renders while a file is open — so closing the file has to drop it too,
+  // or the pane is stuck covering the viewport with no affordance.
+  useEffect(() => {
+    if (!open) setFullscreen(false);
+  }, [open]);
+
+  // Escape leaves fullscreen, mirroring zen mode in `App.tsx`. Bubble phase and
+  // the `defaultPrevented` check are what keep this from stealing the key from
+  // Monaco: the editor consumes Escape (closing its find widget, dismissing a
+  // suggest popup) by preventing the default, so we only see the ones it
+  // ignored. An open Radix dialog — including Monaco's own dialog host — closes
+  // itself first for the same reason.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      e.preventDefault();
+      setFullscreen(false);
+      uiAction("files.fullscreen", "agentboard", "escape");
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [fullscreen]);
 
   const previewKind = open ? previewKindFor(open) : null;
 
@@ -114,7 +151,16 @@ export function FilesPane({
   const mention = (path: string) => void ideMention(dir, path, null);
 
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden rounded-lg border">
+    <div
+      className={cn(
+        "flex min-h-0 flex-1 overflow-hidden rounded-lg border",
+        // Fullscreen leaves the pane in the React tree — portalling it would
+        // remount `CodeViewer`, and rebuilding the Monaco model throws away the
+        // undo stack and scroll position. Nothing in the Agentboard tiling is
+        // transformed, so `fixed` still resolves against the viewport here.
+        fullscreen && "fixed inset-0 z-50 rounded-none border-0 bg-background",
+      )}
+    >
       <div className="flex w-64 shrink-0 flex-col border-r bg-card">
         <div className="flex shrink-0 items-center gap-1.5 border-b bg-card px-2 py-1.5">
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
@@ -166,12 +212,29 @@ export function FilesPane({
               {previewKind && (
                 <IconBtn
                   title={previewOpen ? "Close preview" : `Open a ${previewKind} preview`}
-                  onClick={() => setPreviewOpen((p) => !p)}
+                  onClick={() => {
+                    setPreviewOpen((p) => !p);
+                    uiAction("files.preview", "agentboard", previewOpen ? "off" : "on");
+                  }}
                   className={previewOpen ? "text-violet-500" : undefined}
                 >
                   <Columns2 className="size-3.5" />
                 </IconBtn>
               )}
+              <IconBtn
+                title={fullscreen ? "Exit fullscreen (Escape)" : "Fill the window"}
+                onClick={() => {
+                  setFullscreen((f) => !f);
+                  uiAction("files.fullscreen", "agentboard", fullscreen ? "off" : "on");
+                }}
+                className={fullscreen ? "text-violet-500" : undefined}
+              >
+                {fullscreen ? (
+                  <Minimize2 className="size-3.5" />
+                ) : (
+                  <Maximize2 className="size-3.5" />
+                )}
+              </IconBtn>
               <button
                 type="button"
                 title={
