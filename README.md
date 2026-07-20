@@ -24,22 +24,75 @@ Two reasons:
 
 ## Wishlist: in towles-tool, not yet in Claude Desktop
 
-A running list of things this repo already has that Claude Desktop hasn't
-shipped yet, biggest first:
+Checked against Claude Desktop **1.22209.0** (built 2026-07-16) on 2026-07-19,
+from the published [docs](https://code.claude.com/docs/en/desktop) plus the
+installed bundle. Biggest gap first. The overlap list below it matters just as
+much — most of what this repo does, Desktop now does too.
 
-- **Editor-selection context.** This repo's IDE-protocol integration
-  (`tt-ide`) lets a Claude Code CLI session see what's highlighted in a
-  connected editor, so you can select a block of code and point the model at
-  it directly instead of describing the fix in words. Claude Desktop doesn't
-  have this yet — I asked it straight out whether it could see the files I'd
-  highlighted, and it confirmed no, it has no visibility into an editor
-  selection at all.
+- **Cross-repo work board.** The Board screen is a kanban of tasks spanning
+  every watched repo, each linking 0..N issues, 0..N PRs, and usually a
+  worktree slot, with done rolling up from GitHub PR state. Desktop has no
+  equivalent: its "tasks pane" is background subagents inside a single
+  session, and there is no cross-repo surface at all.
+
+- **Issue queue.** Desktop reads PRs but not issues — no `gh issue` path
+  exists in the app. Cockpit's assigned-issue queue and the attach/promote
+  flow on Board have nothing to compare against.
+
+- **Token-spend archaeology.** The Claude Sessions screen scans
+  `~/.claude/projects/**/*.jsonl` for historical token totals by day, repo,
+  and model, then ranks waste findings (`TokenOutlier`, `RereadLoop`,
+  `CacheChurn`, `Marathon`) and drills into a session's turns and tools.
+  Desktop's usage ring shows current context-window and plan-percentage
+  usage — a live gauge, not a record you can mine after the fact.
+
+- **Always-on local event log.** Every subprocess and user action lands as
+  JSONL at `<data_dir>/telemetry/events-<date>.jsonl`, rotated daily, tagged
+  with `tt.slot`, queryable with `jq` and never leaving the machine. Desktop
+  ships a more configurable OpenTelemetry surface than this repo has, but it
+  exports to a collector *you* run; I found no evidence of an on-disk local
+  log that is on by default. Absence of evidence — I read strings, not
+  runtime behavior.
+
+- **Per-slot port isolation.** Both tools create worktrees at
+  `.claude/worktrees/`, but `${tt:port A-B}` claims in `.env.example` render
+  each slot a non-colliding `.env`, so N slots run N dev servers at once.
+  Desktop's `.worktreeinclude` copies gitignored files verbatim, which hands
+  every worktree the same port.
+
+- **Squash-merge-aware landing detection.** `tt-slots`'s `landed` module
+  separates uncommitted changes from commits that never reached base, and
+  only content-based proof authorizes `git branch -D`. Desktop auto-archives
+  a worktree after its PR merges or closes — the common case, but it never
+  has to answer "is there unlanded work here?" for a branch with no PR.
+
+- ~~**Editor-selection context.** A Claude Code CLI session can see what's
+  highlighted in a connected editor.~~ Still true of `tt-ide`, but no longer
+  much of a gap: Desktop's file pane does spot edits, "Attach as context",
+  and `@`-mention autocomplete. What remains is narrower — `tt-ide` is an
+  IDE-protocol *server*, so an outside editor can feed a live selection to a
+  CLI session; Desktop only sources context from its own panes.
 
   ![Claude Desktop confirming it can't see highlighted/selected code in an editor](docs/images/wishlist/claude-desktop-no-editor-selection.png)
 
 - ~~**Runs natively on Linux.** Only a community-hacked build of Claude
   Desktop ran on Linux before now.~~ Shipped as an official
   [beta](https://code.claude.com/docs/en/desktop-linux) on June 30, 2026.
+
+### Overlap: things Desktop already does
+
+Recorded so this repo stops claiming them. Desktop ships automatic git
+worktrees at the same `.claude/worktrees/` path (with auto-archive on PR
+merge), a real `node-pty` terminal, a file pane with editing and save-conflict
+detection, file-by-file diff review with batched per-line comments, PR CI
+monitoring with auto-fix and auto-merge, GUI plugin and MCP management,
+scheduled tasks, and a browser/preview pane with element selection. Desktop is
+ahead on PR automation and on telemetry configurability.
+
+Where Desktop is genuinely behind is narrower than it looks: it is interactive
+only (no `--print`, no headless entry point, so nothing like `tt mcp serve` or
+`tt collect`), and the Linux beta has no Computer Use, no dictation, and no
+self-update.
 
 ## What this is (and is not)
 
