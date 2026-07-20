@@ -156,8 +156,7 @@ the zone while agents work:
 and notes, worktree slots (`tt slot`), and the headless entry points everything
 else rides on — `mcp serve` and `collect`. There is deliberately no CLI/app
 parity: each feature lands on its natural surface, and the shared logic lives in
-Tauri-free crates that both consume. The 2026-07-19 trim removed every group
-that had drifted into being app-owned or unused.
+Tauri-free crates that both consume.
 
 > **Status:** in progress. The journal, worktree slots, the data-hub
 > store/collectors, the MCP server, the Claude Sessions screen, and the
@@ -245,10 +244,6 @@ The CLI binary is `tt`. Run any command with `--help` for its flags.
 - `collect calendar|issues|prs|slack|all|status|nudge <prs|issues>` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`, and a watched Slack DM; `status` reports each collector's health; `nudge <prs|issues>` makes a running app instance refresh that data immediately instead of waiting for its normal poll interval (used by the `towles-tool-app` plugin's `gh pr`/`gh issue` mutation hook).
 - `mcp serve` — stdio MCP server exposing the board's task family to any Claude session: `task_list` and `task_status` read, `task_create` mutates (register with `claude mcp add tt -- tt mcp serve`). The one mutation sits behind the `mcp.mutationsEnabled` setting, default off and re-read per call, so prompt injection cannot self-approve it. See `crates/tt-mcp`'s trust-boundary doc.
 
-The `gh`, `config`, `doctor`, `install`, and `agentboard` groups were removed on
-2026-07-19 once usage showed they were dead or belonged to the app. They live in
-git history; features the app owns do not get CLI surfaces back.
-
 ## Crates
 
 Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
@@ -258,7 +253,7 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-journal` — journal/note logic and date-token path templating.
 - `crates/tt-git` — git/GitHub helpers (branch names, PR content, issue parsing).
 - `crates/tt-claude-sessions` — session token accounting, ranked waste insights, and the per-session drill-down behind the app's Claude Sessions screen.
-- `crates/tt-doctor` — dependency/environment checks, consumed by the app's Doctor screen (the CLI command was removed in the 2026-07-19 trim).
+- `crates/tt-doctor` — dependency/environment checks behind the app's Doctor screen.
 - `crates/tt-slots` — the worktree-slot convention: `${tt:...}` env-template renderer with port-pool claims, slot naming/layout, removal guards, and the shared `ops` orchestration behind `tt slot` and the app.
 - `crates/tt-claude-code` — shared Claude Code transcript parsing (session JSONL, titles, token usage, model table).
 - `crates/tt-store` — the data-hub SQLite store (events, board tasks with issue/PR links + slot bindings, issues, PR status, collector freshness).
