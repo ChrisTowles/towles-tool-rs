@@ -100,7 +100,7 @@ fn with_store<T>(
 }
 
 /// Epoch milliseconds from the local wall clock (write-boundary clock).
-fn now_ms() -> i64 {
+pub fn now_ms() -> i64 {
     chrono::Local::now().timestamp_millis()
 }
 

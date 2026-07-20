@@ -206,12 +206,31 @@ fn zig_version_satisfies(version: &str) -> bool {
 /// Whether `claude mcp list` output lists the `towles-tool` MCP server.
 ///
 /// The list is plain text, one server per line: `<name>: <url-or-command> -
-/// <status>`. We match the leading `<name>` field exactly so a server whose
-/// command merely mentions the name (or a differently named server) doesn't
-/// count. Note the URL form contains colons (`http://127.0.0.1:8787/mcp`), which
-/// is why this splits once and compares only the first field.
+/// <status>`. Matching the *name* (never the command or URL) is the point — a
+/// server whose command merely mentions "towles-tool" must not count.
+///
+/// The name is everything left of the last colon that precedes the ` - `
+/// status, because both halves of the line carry colons of their own:
+///
+/// ```text
+/// towles-tool: http://127.0.0.1:8787/mcp - ✔ Connected
+/// plugin:towles-tool-app:towles-tool: tt mcp serve - ✔ Connected
+/// ```
+///
+/// The second form is what this repo's own plugin actually registers, and
+/// splitting on the *first* colon yields `plugin` — so the check could never
+/// pass for the very registration its fix hint tells the user to install.
+/// Plugin-registered names are `plugin:<plugin>:<server>`, so the server name
+/// is the last colon-delimited segment of the name field.
 fn tt_mcp_registered(list_output: &str) -> bool {
-    list_output.lines().any(|line| line.split(':').next().map(str::trim) == Some("towles-tool"))
+    list_output.lines().any(|line| {
+        // `": "` (with the space), not a bare colon: the name prefix and the
+        // URL both contain bare colons, and only this separates name from value.
+        let Some((name, _value)) = line.split_once(": ") else {
+            return false;
+        };
+        name.rsplit(':').next().map(str::trim) == Some("towles-tool")
+    })
 }
 
 /// Whether `gh auth status` reports an authenticated account.
@@ -535,6 +554,26 @@ chrome-devtools: npx chrome-devtools-mcp@latest - ✔ Connected
 towles-tool: http://127.0.0.1:8787/mcp - ✔ Connected
 ";
         assert!(tt_mcp_registered(listed));
+    }
+
+    /// The form `claude mcp list` actually prints for a plugin-registered
+    /// server — and the only form this repo's own plugin produces, since the
+    /// `towles-tool-app` plugin is how the server gets registered at all.
+    /// Matching the first colon-delimited field would see `plugin` here and
+    /// report "not registered" while the server sits there connected.
+    #[test]
+    fn tt_mcp_registered_matches_a_plugin_registered_server() {
+        let listed = "\
+plugin:data:bigquery: https://bigquery.googleapis.com/mcp (HTTP) - ✘ Failed to connect
+plugin:towles-tool-app:towles-tool: http://127.0.0.1:8787/mcp - ✔ Connected
+";
+        assert!(tt_mcp_registered(listed));
+    }
+
+    #[test]
+    fn tt_mcp_registered_ignores_a_command_that_merely_mentions_the_name() {
+        let listed = "somethingelse: npx towles-tool-shim - ✔ Connected\n";
+        assert!(!tt_mcp_registered(listed));
     }
 
     #[test]

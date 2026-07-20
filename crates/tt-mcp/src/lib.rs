@@ -1,12 +1,12 @@
 //! A Model Context Protocol (MCP) server for towles-tool.
 //!
 //! **This crate is the transport-free half.** It speaks JSON-RPC 2.0 as
-//! strings — [`Dispatcher::handle_at`] takes one request and returns one
+//! strings — [`Dispatcher::dispatch_at`] takes one request and returns one
 //! response (or `None` for a notification, which gets no reply) — and knows
 //! nothing about sockets, HTTP, ports, or the wall clock, all of which are
 //! passed in per call. The same split as [`tt_ide`]: the transport lives in the
 //! app shell (`crates-tauri/tt-app`), which serves this over loopback HTTP.
-//! That keeps the whole tool surface unit-testable by driving `handle_at`
+//! That keeps the whole tool surface unit-testable by driving `dispatch_at`
 //! directly, with no server to stand up.
 //!
 //! Exposed tools surface the towles-tool board ([`tt_store`]'s tasks — the #339
@@ -98,22 +98,22 @@ impl Handled {
     }
 }
 
-/// Whether a tool writes to the store, per the same `annotations.readOnlyHint`
-/// the contract advertises to clients.
+/// The tools that write to the store. One list, read two ways: [`tool_writes`]
+/// answers the transport's "must the UI refresh?" question from it, and
+/// [`tool_definitions`] stamps `annotations.readOnlyHint: false` from it — so
+/// the wire contract and the internal decision cannot disagree, because there
+/// is only one fact.
 ///
-/// Single source of truth on purpose: [`tool_definitions`] ships the flag to
-/// callers and this reads it back, so a new writing tool cannot be advertised
-/// as read-only to a client while silently skipping the app's refresh — the two
-/// can't disagree, because there is only one fact.
+/// The direction matters. Deriving the *internal* answer by reading the
+/// *external* JSON back out would route control flow through an advisory client
+/// hint (and rebuild the whole tool contract per request to do it); a tool added
+/// to [`Dispatcher::call_tool`] but missed here is one edit away from a stale
+/// board either way, but here the fix is a single obvious list.
+const WRITING_TOOLS: &[&str] = &["task_create", "calendar_set"];
+
+/// Whether a tool writes to the store — see [`WRITING_TOOLS`].
 pub fn tool_writes(name: &str) -> bool {
-    tool_definitions()
-        .as_array()
-        .map(|tools| {
-            tools.iter().any(|tool| {
-                tool["name"] == name && tool["annotations"]["readOnlyHint"] == json!(false)
-            })
-        })
-        .unwrap_or(false)
+    WRITING_TOOLS.contains(&name)
 }
 
 /// The result of dispatching one request: the response line to write back, plus
@@ -179,7 +179,11 @@ impl Dispatcher {
                     .calendar
                     .sources
                     .into_iter()
-                    .map(|source| source.id)
+                    // Trimmed to match `calendar_set`, which trims the incoming
+                    // `source` before comparing: without this a settings id with
+                    // stray whitespace is listed as configured yet can never be
+                    // matched, so that lane is permanently unwritable.
+                    .map(|source| source.id.trim().to_string())
                     .filter(|id| !id.is_empty())
                     .collect()
             })
@@ -196,14 +200,14 @@ impl Dispatcher {
         }
     }
 
-    /// Handle one request line, reading the wall clock at the boundary. Returns
-    /// the response line, or `None` for notifications (which get no response).
-    pub fn handle(&mut self, request_json: &str) -> Option<String> {
-        self.handle_at(request_json, now_ms())
-    }
-
-    /// Handle one request line with an injected `now_ms` (deterministic tests).
-    pub fn handle_at(&mut self, request_json: &str, now_ms: i64) -> Option<String> {
+    /// [`Dispatcher::dispatch_at`] keeping only the response line — the shape
+    /// most tests assert on.
+    ///
+    /// Test-only: the transport needs [`Handled::wrote`], so discarding it is
+    /// never right in production. Gating it here is what keeps that from
+    /// becoming a second, lossy entry point someone reaches for by accident.
+    #[cfg(test)]
+    fn handle_at(&mut self, request_json: &str, now_ms: i64) -> Option<String> {
         self.dispatch_at(request_json, now_ms).response
     }
 
@@ -337,7 +341,13 @@ impl Dispatcher {
     fn calendar_next(&self, now_ms: i64) -> Result<Value, String> {
         match self.store.current_or_next_event(now_ms).map_err(|e| e.to_string())? {
             Some(event) => {
-                let minutes_until = (event.start_ts - now_ms) / 60_000;
+                // Floor, not truncate-toward-zero. Plain `/` would report `0`
+                // for the whole first minute of a live meeting, and the
+                // contract promises `minutesUntil` is *negative* while one is
+                // running — so a consumer distinguishing "starts now" from
+                // "already started" would be wrong for exactly the 59 seconds
+                // that distinction matters most.
+                let minutes_until = (event.start_ts - now_ms).div_euclid(60_000);
                 let live = event.start_ts <= now_ms && event.end_ts.is_some_and(|end| now_ms < end);
                 Ok(json!({
                     "event": event,
@@ -396,6 +406,21 @@ impl Dispatcher {
             .ok_or_else(|| "missing required argument: events (an array)".to_string())?;
         let events: Vec<EventInput> = serde_json::from_value(events_arg.clone())
             .map_err(|e| format!("invalid events payload: {e}"))?;
+        // An event that ends before it starts is accepted by the schema and
+        // then read inconsistently: `calendar_today` windows on `start_ts` and
+        // lists it, while `current_or_next_event` matches on `end_ts > now` and
+        // drops it — so the meeting shows up in the day's shape but never in
+        // the countdown or the meeting-start notification. Swapped or
+        // timezone-slipped fields are exactly what a model gets wrong, so this
+        // is a refusal, not a silent repair.
+        if let Some(bad) = events.iter().find(|e| e.end_ts.is_some_and(|end| end < e.start_ts)) {
+            return Err(format!(
+                "event {} ends before it starts (startTs {}, endTs {}) — check the field order",
+                bad.external_id,
+                bad.start_ts,
+                bad.end_ts.unwrap_or_default(),
+            ));
+        }
 
         let reference_ms = match args.get("day").and_then(Value::as_str) {
             Some(day) => day_reference_ms(day)
@@ -415,6 +440,24 @@ impl Dispatcher {
                  writing them would report success and then silently drop them",
                 args.get("day").and_then(Value::as_str).unwrap_or("(derived)"),
                 tt_store::EVENT_RETAIN_MS / (24 * 60 * 60 * 1000),
+            ));
+        }
+
+        // Every event must fall inside the day it is being pushed for.
+        // `replace_events_for_source` only deletes within `[day_start, day_end)`,
+        // and retention only sweeps the *past*, so a row landing outside the
+        // window is reachable by neither: no later push to this lane covers it,
+        // no sweep ages it out, and it feeds `calendar_next` as a phantom
+        // meeting until an event with the identical `externalId` happens to
+        // replace it. A model that mis-dates one entry (wrong day, wrong year,
+        // a timezone slip) is the likely author, so name the offender.
+        if let Some(stray) = events.iter().find(|e| e.start_ts < day_start || e.start_ts >= day_end)
+        {
+            return Err(format!(
+                "event {} starts at {}, outside the day being written [{}, {}) — push it with \
+                 that day's `day` argument instead; an event outside the window would be stored \
+                 where nothing can ever replace or sweep it",
+                stray.external_id, stray.start_ts, day_start, day_end,
             ));
         }
 
@@ -445,7 +488,14 @@ impl Dispatcher {
             .get("id")
             .and_then(Value::as_i64)
             .ok_or_else(|| "missing required argument: id".to_string())?;
-        let task = self.store.task_by_id(id).map_err(|_| format!("no task with id {id}"))?;
+        // Only a genuinely absent row is "no such task". Collapsing every store
+        // error into that message tells a caller the task does not exist when
+        // the truth is a busy-timeout, a disk error, or a corrupt page — and a
+        // session that believes its task vanished may go create a duplicate.
+        let task = self.store.task_by_id(id).map_err(|error| match error {
+            tt_store::Error::TaskNotFound(id) => format!("no task with id {id}"),
+            other => format!("could not read task {id}: {other}"),
+        })?;
         Ok(json!({ "task": task }))
     }
 
@@ -608,7 +658,7 @@ fn unknown_repo_message(repo: &str, entries: &[tt_agentboard::repos::RepoEntry])
 /// the server actually exposes.
 pub fn tool_definitions() -> Value {
     let no_args = || json!({ "type": "object", "properties": {}, "required": [] });
-    json!([
+    let mut tools = json!([
         {
             "name": "task_list",
             "description": "Open (not-done) board tasks in board order, each with its issue/PR links and repo/slot binding.",
@@ -626,7 +676,6 @@ pub fn tool_definitions() -> Value {
             },
         },
         {
-            "annotations": { "readOnlyHint": false },
             "name": "task_create",
             "description": "Create a board task in a tracked repo's swimlane. Writes to the board.",
             "inputSchema": {
@@ -651,7 +700,6 @@ pub fn tool_definitions() -> Value {
             "inputSchema": no_args(),
         },
         {
-            "annotations": { "readOnlyHint": false },
             "name": "calendar_set",
             "description": "Push one calendar's meetings for one local day into the local cache, replacing whatever that calendar previously had for that day. This is how the calendar gets filled — a scheduled pull writes here; nothing else reads your real calendar. Other calendars and other days are left untouched.",
             "inputSchema": {
@@ -680,7 +728,18 @@ pub fn tool_definitions() -> Value {
                 "required": ["source", "events"],
             },
         },
-    ])
+    ]);
+
+    // Stamp `readOnlyHint` from [`WRITING_TOOLS`] rather than hand-writing it
+    // per descriptor, so the flag a client sees and the flag the transport acts
+    // on are the same fact rather than two that agree today.
+    if let Some(entries) = tools.as_array_mut() {
+        for entry in entries {
+            let writes = entry["name"].as_str().is_some_and(tool_writes);
+            entry["annotations"] = json!({ "readOnlyHint": !writes });
+        }
+    }
+    tools
 }
 
 #[cfg(test)]
@@ -824,17 +883,22 @@ mod tests {
     fn calendar_today_returns_only_the_local_day() {
         let (day_start, day_end) = Store::local_day_bounds(NOW);
         let mut dispatcher = dispatcher();
-        // One event inside today, one the previous day, one the next — all
-        // inserted by the same call (the window only scopes the delete).
-        set_calendar(
-            &mut dispatcher,
-            "google",
-            json!([
-                event_json("yesterday", day_start - 3_600_000, day_start - 1_800_000),
-                event_json("standup", day_start + 3_600_000, day_start + 5_400_000),
-                event_json("tomorrow", day_end + 3_600_000, day_end + 5_400_000),
-            ]),
-        );
+        // Neighbouring days are pushed as their own days — the only way to
+        // store them, since a day's push refuses events outside its window.
+        let day_of = |ms: i64| {
+            Local.timestamp_millis_opt(ms).single().unwrap().format("%Y-%m-%d").to_string()
+        };
+        for (day_ms, event) in [
+            (day_start - 3_600_000, event_json("yesterday", day_start - 3_600_000, day_start - 1)),
+            (NOW, event_json("standup", day_start + 3_600_000, day_start + 5_400_000)),
+            (day_end + 3_600_000, event_json("tomorrow", day_end + 3_600_000, day_end + 5_400_000)),
+        ] {
+            call_tool(
+                &mut dispatcher,
+                "calendar_set",
+                json!({ "source": "google", "day": day_of(day_ms), "events": [event] }),
+            );
+        }
 
         let result = call_tool(&mut dispatcher, "calendar_today", json!({}));
         assert_eq!(result["now"], NOW);
@@ -845,6 +909,61 @@ mod tests {
             .map(|event| event["externalId"].as_str().unwrap())
             .collect();
         assert_eq!(ids, vec!["standup"], "only today's event is in the window");
+    }
+
+    /// A row outside the day it is pushed for is reachable by nothing: the
+    /// lane's next write only deletes inside that day's window, and retention
+    /// only sweeps the past. It would feed the countdown as a phantom meeting
+    /// forever, so the push is refused rather than half-accepted.
+    #[test]
+    fn calendar_set_refuses_an_event_outside_the_day_being_written() {
+        let (_, day_end) = Store::local_day_bounds(NOW);
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({
+                "source": "google",
+                "events": [event_json("next-week", day_end + 6 * 86_400_000, day_end + 6 * 86_400_000 + 1_800_000)],
+            }),
+        );
+        assert!(message.contains("next-week"), "names the offending event: {message}");
+        assert!(message.contains("outside the day"), "says why: {message}");
+    }
+
+    /// `end < start` parses fine and then reads two different ways: it shows up
+    /// in `calendar_today` (which windows on `start_ts`) but never in
+    /// `calendar_next` (which matches `end_ts > now`), so the meeting is in the
+    /// day's shape and missing from the countdown.
+    #[test]
+    fn calendar_set_refuses_an_event_that_ends_before_it_starts() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({
+                "source": "google",
+                "events": [event_json("backwards", NOW + 3_600_000, NOW - 3_600_000)],
+            }),
+        );
+        assert!(message.contains("backwards"), "names the offending event: {message}");
+        assert!(message.contains("ends before it starts"), "says why: {message}");
+    }
+
+    /// The contract promises `minutesUntil` is negative while a meeting runs.
+    /// Truncating division would report `0` for the first 59 seconds — the
+    /// window where "starting now" vs "already started" matters most.
+    #[test]
+    fn calendar_next_minutes_until_is_negative_from_the_first_second() {
+        let mut dispatcher = dispatcher();
+        set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json("live", NOW - 30_000, NOW + 1_800_000)]),
+        );
+        let result = call_tool(&mut dispatcher, "calendar_next", json!({}));
+        assert_eq!(result["live"], true);
+        assert_eq!(result["minutesUntil"], -1, "30s in is already negative, not 0");
     }
 
     #[test]
@@ -1189,9 +1308,19 @@ mod tests {
         };
         assert_eq!(flag("task_create"), Some(false), "task_create writes");
         assert_eq!(flag("calendar_set"), Some(false), "calendar_set writes");
-        // Reads carry no annotation at all rather than a redundant `true`.
-        assert_eq!(flag("task_list"), None);
-        assert_eq!(flag("calendar_next"), None);
+        // Reads say so explicitly. The annotation is stamped from
+        // `WRITING_TOOLS`, so every tool carries the flag and a client never has
+        // to read "absent" as either answer.
+        assert_eq!(flag("task_list"), Some(true));
+        assert_eq!(flag("calendar_next"), Some(true));
+
+        // The wire flag and the transport's refresh decision come from one
+        // list, so they cannot disagree — this is the assertion that pins it.
+        for tool in tools {
+            let name = tool["name"].as_str().unwrap();
+            let read_only = tool["annotations"]["readOnlyHint"].as_bool().unwrap();
+            assert_eq!(read_only, !tool_writes(name), "{name}'s hint must match tool_writes");
+        }
     }
 
     #[test]

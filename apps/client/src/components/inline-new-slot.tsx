@@ -55,6 +55,7 @@ import { type BaseBranch, BaseBranchesSchema, PastedImagePathsSchema } from "@/l
 import { invoke } from "@/lib/tauri";
 import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
+import { slugify } from "@/lib/slug";
 
 /** The unset state of the model/effort selects: no `--model`/`--effort` is
  * passed at all, so the user's own Claude config decides. Its own option
@@ -189,18 +190,6 @@ function loadIssueScopeMine(repoKey: string): boolean {
 
 function saveIssueScopeMine(repoKey: string, mine: boolean): void {
   localStorage.setItem(issueScopeKey(repoKey), String(mine));
-}
-
-/** Lowercase, spaces and non `[0-9a-z_-]` to `-`, collapse runs, strip
- * trailing — mirrors tt-git's slug rules (`create_branch_name_from_issue`
- * and the TS CLI's `branch-name.ts` before it). Shared by `goalToBranch` and
- * `branchFromIssue` below. */
-function slugify(text: string): string {
-  let slug = text.toLowerCase().trim().replaceAll(" ", "-");
-  slug = slug.replace(/[^0-9a-z_-]/g, "-");
-  slug = slug.replace(/-+/g, "-");
-  slug = slug.replace(/-+$/, "");
-  return slug;
 }
 
 /** Goal → branch name: the first `BRANCH_SLUG_SOURCE_CHARS` of the goal,

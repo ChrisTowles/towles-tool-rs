@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { UserSettingsSchema } from "./schemas/settings";
 import { invoke } from "./tauri";
+import { slugify } from "./slug";
 
 /**
  * Client-side view of the shared user settings (`crates/tt-config`), read/written
@@ -52,7 +53,10 @@ export type CalendarSource = {
  */
 export function nextCalendarSourceId(sources: CalendarSource[], label: string): string {
   const taken = new Set(sources.map((s) => s.id));
-  const base = label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  // The shared slug rule, not a second regex: this one produces a *permanent*
+  // store-lane key, so a variant that leaves a trailing `-` (as a hand-rolled
+  // `[^a-z0-9]+` does) bakes the difference into the database.
+  const base = slugify(label) || "calendar";
   if (!taken.has(base)) return base;
   for (let n = 2; ; n += 1) {
     const candidate = `${base}-${n}`;

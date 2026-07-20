@@ -97,14 +97,38 @@ pub fn collect_calendar(store: &Store, sources: &[CalendarSource], now_ms: i64) 
     let mut count = 0usize;
     let mut notes: Vec<String> = Vec::new();
     let mut ok = true;
+    let mut wrote = false;
+    // Ids name store lanes, so a repeat isn't a harmless duplicate: the second
+    // pull's scoped DELETE removes the rows the first just wrote, and `count`
+    // would still claim both. Settings are hand-editable, so refuse the repeat
+    // rather than silently losing a calendar.
+    let mut seen_ids: Vec<&str> = Vec::new();
     for source in enabled {
+        let id = source.id.trim();
+        if !id.is_empty() && seen_ids.contains(&id) {
+            ok = false;
+            notes.push(format!("{id}: duplicate source id; only the first is pulled"));
+            continue;
+        }
+        seen_ids.push(id);
         match collect_calendar_source(store, source, day_start_ms, day_end_ms, now_ms) {
-            Ok(n) => count += n,
+            Ok(n) => {
+                count += n;
+                wrote = true;
+            }
             Err(msg) => {
                 ok = false;
                 notes.push(format!("{}: {msg}", source.id));
             }
         }
+    }
+
+    // Retention normally rides along with a successful write. If every source
+    // failed there was no write, and without this a permanently-broken calendar
+    // would keep yesterday's meetings in the countdown indefinitely — the same
+    // failure the no-sources branch above sweeps for.
+    if !wrote {
+        let _ = store.sweep_old_events(now_ms);
     }
 
     let message = if notes.is_empty() { None } else { Some(notes.join("; ")) };
@@ -123,7 +147,13 @@ fn collect_calendar_source(
     day_end_ms: i64,
     now_ms: i64,
 ) -> Result<usize, String> {
-    if source.id.trim().is_empty() {
+    // Trimmed, and the *trimmed* value is what reaches the store. `calendar_set`
+    // trims the `source` it validates and writes, so writing the raw id here
+    // would put a whitespace-padded settings entry into a second lane that the
+    // MCP push path can never target — one calendar, two lanes, neither
+    // sweeping the other, every meeting listed twice.
+    let id = source.id.trim();
+    if id.is_empty() {
         return Err("source has no id".to_string());
     }
     if source.prompt.trim().is_empty() {
@@ -132,7 +162,7 @@ fn collect_calendar_source(
     let value = run_claude(&source.prompt)?;
     let events = serde_json::from_value::<Vec<EventInput>>(value)
         .map_err(|e| format!("invalid calendar JSON: {e}"))?;
-    store_calendar_events(store, &source.id, day_start_ms, day_end_ms, &events, now_ms)
+    store_calendar_events(store, id, day_start_ms, day_end_ms, &events, now_ms)
 }
 
 /// Apply one source's parsed calendar result to the store, guarding against a

@@ -874,14 +874,10 @@ impl Store {
         // Sweeping by age (not by source) is what catches the orphaned-lane
         // case, since no per-source write will ever visit those rows again.
         // Cheap to run here — this path fires per collector tick, not per read.
-        // Measured against `now_ms`, not the written day: retention is about how
-        // old a row is in wall-clock terms, and a caller backfilling last
-        // month's calendar must not drag the cutoff back with it.
-        // `saturating_sub` because callers legitimately pass sentinel windows.
-        tx.execute(
-            "DELETE FROM events WHERE start_ts < ?1",
-            params![now_ms.saturating_sub(EVENT_RETAIN_MS)],
-        )?;
+        // Delegated to `sweep_old_events` rather than repeating its SQL, so
+        // write-time and standalone sweeping cannot drift apart; `tx` is an
+        // `unchecked_transaction` on `self.conn`, so the call joins it.
+        self.sweep_old_events(now_ms)?;
         // De-duplicate by external_id before inserting. The upsert below would
         // otherwise let a repeated id overwrite its own earlier row inside this
         // loop — one row lands, the other vanishes, and the returned count still
@@ -1616,9 +1612,13 @@ impl Store {
     /// [`Store::open_tasks`] returns).
     pub fn task_by_id(&self, id: i64) -> Result<TaskItem> {
         self.query_tasks(&format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"), [id])?
+            // `TaskNotFound`, like every other id lookup in this module — not a
+            // fabricated `Sqlite(QueryReturnedNoRows)`. A caller has to be able
+            // to tell "this row does not exist" from "the database could not
+            // answer", and the `?` above already carries the genuine failures.
             .into_iter()
             .next()
-            .ok_or(Error::Sqlite(rusqlite::Error::QueryReturnedNoRows))
+            .ok_or(Error::TaskNotFound(id))
     }
 
     fn query_events(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<CalEvent>> {

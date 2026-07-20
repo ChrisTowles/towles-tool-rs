@@ -20,6 +20,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -32,7 +34,7 @@ import { Card, Empty, StatTile } from "@/components/store-bits";
 import { cn } from "@/lib/utils";
 import { fmtAge, useStoreSnapshot, type McpCall } from "@/lib/data";
 import { useNow } from "@/lib/now";
-import { errorMessage } from "@/lib/errors";
+import { errorMessage, NotInTauri } from "@/lib/errors";
 import { invoke } from "@/lib/tauri";
 import { uiAction } from "@/lib/ui-action";
 import {
@@ -79,7 +81,16 @@ function useMcpStatus() {
     void invoke<McpStatus>("mcp_status", {}, { schema: McpStatusSchema }).then((r) =>
       r.match({
         ok: setStatus,
-        err: () => setStatus(null), // browser dev, or the command is unavailable
+        // `NotInTauri` is browser dev, not a failure — fall back to the
+        // call-recency wording silently. Anything else is the backend actually
+        // failing to answer, and this screen exists to report the bind outcome:
+        // swallowing it would leave the header saying "Active" for a server that
+        // may be serving nothing, which is precisely the inference this hook was
+        // added to replace.
+        err: (e) => {
+          setStatus(null);
+          if (!NotInTauri.is(e)) toast.error(`Could not read MCP status: ${errorMessage(e)}`);
+        },
       }),
     );
   }, []);
@@ -754,11 +765,14 @@ function ToolTesterDialog({ tool, onClose }: { tool: McpToolDoc | null; onClose:
 
   // Reset per tool, and seed the editor with a skeleton of its required args so
   // the common case is "fill in the values", not "recall the schema".
+  // `running` resets too: without it, switching tools mid-call leaves the new
+  // tool's Run button permanently disabled reading "Running…".
   useEffect(() => {
     if (!tool) return;
     setArgs(skeletonArgs(tool));
     setResult(null);
     setAsBrowser(false);
+    setRunning(false);
   }, [tool]);
 
   if (!tool) return null;
@@ -772,8 +786,15 @@ function ToolTesterDialog({ tool, onClose }: { tool: McpToolDoc | null; onClose:
       toast.error(`Arguments must be valid JSON: ${errorMessage(e)}`);
       return;
     }
+    // A slow call whose tool has since been switched away must not paint its
+    // result into the new tool's pane — the panes are identical, so a
+    // `calendar_set` status would read as `task_list`'s.
+    const issuedFor = tool.name;
     setRunning(true);
-    uiAction("mcp.tool.test_run", "mcp", asBrowser ? "as-browser" : tool.name);
+    // Both facts, always: which tool ran, and whether it was the browser
+    // simulation. Encoding one *or* the other lost the tool name for exactly
+    // the runs where the security boundary was being exercised.
+    uiAction("mcp.tool.test_run", "mcp", asBrowser ? `${tool.name} as-browser` : tool.name);
     const body = JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
@@ -785,6 +806,9 @@ function ToolTesterDialog({ tool, onClose }: { tool: McpToolDoc | null; onClose:
       { body, simulateBrowserOrigin: asBrowser },
       { schema: McpTestResultSchema },
     );
+    // `tool` is the current prop by the time this resolves; if it changed, this
+    // reply belongs to a pane nobody is looking at.
+    if (issuedFor !== tool?.name) return;
     setRunning(false);
     res.match({
       ok: setResult,
@@ -813,22 +837,21 @@ function ToolTesterDialog({ tool, onClose }: { tool: McpToolDoc | null; onClose:
           <label htmlFor="mcp-test-args" className="text-xs font-medium text-muted-foreground">
             Arguments (JSON)
           </label>
-          <textarea
+          <Textarea
             id="mcp-test-args"
             value={args}
             onChange={(e) => setArgs(e.target.value)}
             spellCheck={false}
             rows={6}
-            className="w-full rounded-md border border-border bg-background p-2 font-mono text-xs"
+            className="font-mono text-xs"
           />
         </div>
 
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
+        <label htmlFor="mcp-test-as-browser" className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Checkbox
+            id="mcp-test-as-browser"
             checked={asBrowser}
-            onChange={(e) => setAsBrowser(e.target.checked)}
-            className="size-3.5"
+            onCheckedChange={(v) => setAsBrowser(v === true)}
           />
           {/* One flex child, not three: bare text nodes beside the inline
               <span> would each become a flex item and lay out as columns. */}

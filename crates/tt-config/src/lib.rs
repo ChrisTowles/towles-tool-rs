@@ -289,8 +289,16 @@ pub struct CalendarSource {
 
 impl CalendarSource {
     /// The built-in sources: personal Google (on) and work Outlook (off), each
-    /// carrying the prompt that used to be a compiled-in constant, so an
-    /// existing single-provider setup behaves the same after the upgrade.
+    /// carrying the prompt that used to be a compiled-in constant.
+    ///
+    /// **These are defaults, not a migration.** The retired `provider` key is
+    /// an unknown field now, so a settings file that still carries
+    /// `"provider": "outlook"` and no `sources` gets this list — Google on,
+    /// Outlook off — and starts pulling the *other* calendar. That is the
+    /// hard-cutover cost, and it is a one-line fix in Settings → Collectors →
+    /// Calendar (or in the file), but it is silent: the collector succeeds
+    /// against a calendar the user didn't ask for. A machine configured for
+    /// Google is unaffected.
     pub fn defaults() -> Vec<Self> {
         vec![
             Self {

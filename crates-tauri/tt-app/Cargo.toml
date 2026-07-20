@@ -50,11 +50,16 @@ tokio = { workspace = true, features = ["time", "sync", "rt", "macros", "net", "
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "handshake", "native-tls"] }
 # Auth tokens for the per-terminal Claude Code IDE servers (see src/ide.rs).
 uuid = { version = "1", features = ["v4"] }
-# Loopback HTTP transport for the MCP server (see src/mcp_http.rs). Only the
-# HTTP/1.1 server half is enabled — one POST route on 127.0.0.1, no client, no
-# TLS (so the OS-trust-store rule that governs our outbound clients doesn't
-# apply here; nothing is dialled out). All three already came in transitively
-# via tauri, so this pulls no new crate into the build.
+# Loopback HTTP transport for the MCP server (see src/mcp_http.rs). HTTP/1.1
+# only, and both halves: `server` for the one POST route on 127.0.0.1, `client`
+# for `mcp_test_call`, which dials that same loopback route from Rust because
+# the webview's own `fetch` carries an `Origin` the admission check refuses.
+# **No TLS on either half** — plain HTTP to 127.0.0.1 and nowhere else — so the
+# OS-trust-store rule that governs our outbound clients has nothing to apply to
+# here. Extend `mcp_test_call` to reach any non-loopback or `https://` endpoint
+# and that stops being true; configure native-tls/OS roots at that point.
+# All of these already came in transitively via tauri, so this pulls no new
+# crate into the build.
 hyper = { version = "1", default-features = false, features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 http-body-util = "0.1"

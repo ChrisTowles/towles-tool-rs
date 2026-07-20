@@ -64,8 +64,16 @@ pub struct MeetingStartEdge {
 /// never fired: its countdown never "reached zero" on our watch.
 #[derive(Debug, Default)]
 pub struct MeetingStartWatch {
-    /// The meeting currently being tracked (its `external_id`), if any.
-    watching: Option<String>,
+    /// The meeting currently being tracked, as `(source, external_id)`.
+    ///
+    /// Both halves, because `external_id` alone stopped identifying a meeting
+    /// in schema v9: uniqueness is now `UNIQUE(source, external_id)`, and two
+    /// calendars legitimately carry the same id for the same invite (a work
+    /// meeting mirrored to a personal calendar keeps its iCalUID). Keyed on the
+    /// id alone, a swap from one calendar's row to another's looks like the
+    /// same meeting, so the tracking state is never reset and the second
+    /// meeting's start notification is silently swallowed.
+    watching: Option<(String, String)>,
     /// Whether `watching` was seen while still in the future (start_ts > now).
     seen_before_start: bool,
     /// Whether the start edge for `watching` has already fired.
@@ -86,8 +94,9 @@ impl MeetingStartWatch {
 
         // A different meeting than last tick (the previous one ended, or the
         // collector swapped in a new soonest): start tracking it fresh.
-        if self.watching.as_deref() != Some(&ev.external_id) {
-            self.watching = Some(ev.external_id.clone());
+        let key = (ev.source.clone(), ev.external_id.clone());
+        if self.watching.as_ref() != Some(&key) {
+            self.watching = Some(key);
             self.seen_before_start = ev.start_ts > now_ms;
             self.fired = false;
         }

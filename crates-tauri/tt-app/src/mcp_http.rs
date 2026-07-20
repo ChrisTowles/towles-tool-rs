@@ -212,6 +212,17 @@ pub async fn mcp_test_call(
     use hyper::Request;
     use hyper_util::rt::TokioIo;
 
+    // Refuse unless *this* instance is the one serving. `PORT` is set before the
+    // bind is attempted, so on an instance that lost the race it still names a
+    // live socket — belonging to a different app instance, whose `Store` is a
+    // different checkout's `tt.db`. Dialing it anyway would run a write tool
+    // against a board this window will never display, under a dialog that says
+    // the call succeeded.
+    if !SERVING.load(Ordering::Relaxed) {
+        return Err("this instance is not serving MCP (another instance holds the port), so \
+                    there is nothing here to test"
+            .to_string());
+    }
     let port = PORT.load(Ordering::Relaxed);
     if port == 0 {
         return Err("MCP port is not configured".to_string());
@@ -249,10 +260,13 @@ pub async fn mcp_test_call(
         .map_err(|e| format!("could not read response: {e}"))?
         .to_bytes();
 
+    let duration_ms = started.elapsed().as_millis() as u64;
+    tracing::info!(status, duration_ms, sent_origin = simulate_browser_origin, "mcp.test_call");
+
     Ok(serde_json::json!({
         "status": status,
         "body": String::from_utf8_lossy(&bytes),
-        "durationMs": started.elapsed().as_millis() as u64,
+        "durationMs": duration_ms,
         "sentOrigin": simulate_browser_origin,
     }))
 }
@@ -284,6 +298,15 @@ pub fn spawn(app: AppHandle, port: u16) {
         tracing::warn!(%error, "mcp.http: could not set non-blocking; not serving");
         return;
     }
+    // Re-read the port from the socket rather than trusting the requested one.
+    // `port: 0` is a legal `u16` that settings accepts, and binding it succeeds
+    // on an OS-assigned ephemeral port — so without this the UI would advertise
+    // `127.0.0.1:0` as the endpoint to paste into `.mcp.json`, and
+    // `mcp_test_call`'s `port == 0` sentinel would refuse to reach a server that
+    // is in fact listening.
+    if let Ok(bound) = listener.local_addr() {
+        PORT.store(bound.port(), Ordering::Relaxed);
+    }
 
     // The dispatcher owns its own SQLite connection rather than sharing the
     // app's `StoreState` mutex: MCP calls and UI reads then never block each
@@ -297,6 +320,15 @@ pub fn spawn(app: AppHandle, port: u16) {
             return;
         }
     };
+    // Age out stale calendar rows once at startup. Retention otherwise only runs
+    // as a side effect of a calendar *write*, and the push model this server
+    // exists to serve has no guaranteed writer: the pull collector is off by
+    // default, so a machine whose events all arrive over `calendar_set` sweeps
+    // nothing at all while nobody is pushing. Without this, an app reopened
+    // after a quiet week counts down to a meeting from the last day anything
+    // was written.
+    let _ = store.sweep_old_events(crate::store::now_ms());
+
     let dispatcher = Arc::new(Mutex::new(Dispatcher::new(store)));
 
     SERVING.store(true, Ordering::Relaxed);
@@ -308,14 +340,44 @@ pub fn spawn(app: AppHandle, port: u16) {
 
 /// Accept connections until the task is aborted. One failed connection recycles
 /// the loop rather than taking the server down.
+///
+/// That distinction is load-bearing here in a way it isn't for a typical server:
+/// this process holds the port for the whole machine, so returning from this
+/// loop takes MCP down for *every* Claude Code session with no other instance
+/// able to take over — while the socket stays bound, so nothing can even notice.
+/// `accept` fails for reasons that are per-connection and transient (the peer
+/// RSTs between SYN and accept; the process is momentarily out of file
+/// descriptors, plausible with a PTY per terminal plus `gh`/`git`/`claude`
+/// subprocesses), so those are logged and retried. `SERVING` is cleared on the
+/// paths that really do give up, so `mcp_status` stops claiming to serve.
 async fn accept_loop(app: AppHandle, listener: StdTcpListener, dispatcher: Arc<Mutex<Dispatcher>>) {
     let Ok(listener) = tokio::net::TcpListener::from_std(listener) else {
         tracing::warn!("mcp.http: listener could not join the runtime; not serving");
+        SERVING.store(false, Ordering::Relaxed);
         return;
     };
+    // Consecutive failures, reset by any success. A listener that is genuinely
+    // broken (its fd closed under us) would otherwise spin this loop hot.
+    let mut consecutive_errors = 0u32;
     loop {
-        let Ok((stream, _peer)) = listener.accept().await else {
-            return;
+        let (stream, _peer) = match listener.accept().await {
+            Ok(accepted) => {
+                consecutive_errors = 0;
+                accepted
+            }
+            Err(error) => {
+                consecutive_errors += 1;
+                tracing::warn!(%error, consecutive_errors, "mcp.http: accept failed");
+                if consecutive_errors >= 64 {
+                    tracing::error!("mcp.http: accept failing persistently; stopping");
+                    SERVING.store(false, Ordering::Relaxed);
+                    return;
+                }
+                // Yield before retrying so a hard-failing accept can't starve
+                // the runtime.
+                tokio::task::yield_now().await;
+                continue;
+            }
         };
         let app = app.clone();
         let dispatcher = dispatcher.clone();
@@ -333,7 +395,7 @@ async fn serve_connection(
     dispatcher: Arc<Mutex<Dispatcher>>,
 ) {
     use hyper::service::service_fn;
-    use hyper::{Request, Response, StatusCode};
+    use hyper::{Request, StatusCode};
     use hyper_util::rt::TokioIo;
 
     let io = TokioIo::new(stream);
@@ -391,10 +453,9 @@ async fn serve_connection(
             match reply {
                 // A notification: no response body. 202 is what MCP's
                 // streamable-HTTP transport specifies for this case.
-                Ok(handled) if handled.response.is_none() => Ok(Response::builder()
-                    .status(StatusCode::ACCEPTED)
-                    .body(String::new())
-                    .unwrap_or_else(|_| Response::new(String::new()))),
+                Ok(handled) if handled.response.is_none() => {
+                    Ok(status_response(StatusCode::ACCEPTED, String::new()))
+                }
                 Ok(handled) => {
                     // Refresh the UI only for a call that actually wrote. The
                     // dispatcher writes through its own connection, so the app
@@ -405,8 +466,19 @@ async fn serve_connection(
                     // back the contention the separate connection bought, and a
                     // session's opening `initialize` + `tools/list` alone would
                     // pay for two full rebuilds that changed nothing.
+                    //
+                    // Detached onto the blocking pool, and deliberately not
+                    // awaited: the rebuild is blocking SQLite work behind a
+                    // `std::sync::Mutex` that sync Tauri commands also hold, so
+                    // running it inline would park a tokio worker for the whole
+                    // contended hold — the very thing the `spawn_blocking` above
+                    // exists to avoid — and would make the caller wait on a UI
+                    // refresh it has no stake in.
                     if handled.wrote {
-                        crate::store::emit_snapshot_from_app(&app);
+                        let app = app.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            crate::store::emit_snapshot_from_app(&app);
+                        });
                     }
                     Ok(json_response(handled.response.unwrap_or_default()))
                 }
@@ -418,9 +490,17 @@ async fn serve_connection(
         }
     });
 
-    if let Err(error) =
-        hyper::server::conn::http1::Builder::new().serve_connection(io, service).await
-    {
+    // `.timer(...)` is not optional decoration: hyper's default 30s
+    // header-read timeout is silently dropped (with only an internal warning)
+    // when no timer is installed, and without it a peer that opens a socket and
+    // never finishes its request headers holds a task and an fd forever. On a
+    // machine-wide singleton that is enough to take MCP down for every session
+    // on the box, so the timeout is what bounds a half-open connection.
+    let mut builder = hyper::server::conn::http1::Builder::new();
+    builder
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(std::time::Duration::from_secs(30));
+    if let Err(error) = builder.serve_connection(io, service).await {
         // Client hangups are routine; log at debug so the event log keeps the
         // detail without the terminal turning into noise.
         tracing::debug!(%error, "mcp.http: connection ended");
@@ -451,20 +531,39 @@ async fn read_body(body: hyper::body::Incoming) -> Result<String, Refusal> {
     }
 }
 
+/// A response with an explicit status, built without a fallible step.
+///
+/// `Response::builder()` defers every error to `.body()`, and the natural
+/// `.unwrap_or_else(|_| Response::new(body))` fallback yields a **200 OK** —
+/// which would quietly turn a security refusal into an acceptance. Setting the
+/// parts on an already-constructed response has no failure mode, so there is no
+/// error left to mishandle.
+fn status_response(status: hyper::StatusCode, body: String) -> hyper::Response<String> {
+    let mut response = hyper::Response::new(body);
+    *response.status_mut() = status;
+    response
+}
+
 fn json_response(body: String) -> hyper::Response<String> {
-    hyper::Response::builder()
-        .status(200)
-        .header(hyper::header::CONTENT_TYPE, "application/json")
-        .body(body)
-        .unwrap_or_else(|_| hyper::Response::new(String::new()))
+    let mut response = status_response(hyper::StatusCode::OK, body);
+    response.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("application/json"),
+    );
+    response
 }
 
 fn text_response(status: u16, message: &str) -> hyper::Response<String> {
-    hyper::Response::builder()
-        .status(status)
-        .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(message.to_string())
-        .unwrap_or_else(|_| hyper::Response::new(String::new()))
+    // Fails *closed* if a status ever fails to convert: 500 says something went
+    // wrong, where the builder's default 200 would have said "admitted".
+    let status =
+        hyper::StatusCode::from_u16(status).unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
+    let mut response = status_response(status, message.to_string());
+    response.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    response
 }
 
 #[cfg(test)]
