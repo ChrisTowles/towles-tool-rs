@@ -1,60 +1,56 @@
-//! A Model Context Protocol (MCP) server for towles-tool, spoken over stdio.
+//! A Model Context Protocol (MCP) server for towles-tool.
 //!
-//! The transport is newline-delimited JSON-RPC 2.0: one request object per line
-//! on stdin, one single-line response object per request on stdout (flushed
-//! after each write), diagnostics on stderr via `log`. There is no async
-//! runtime — [`serve`] is a hand-rolled blocking read loop over [`Dispatcher`],
-//! which is the testable core: [`Dispatcher::handle_at`] takes the request line
-//! plus an injected `now_ms` so tool logic never reads the clock itself.
+//! **This crate is the transport-free half.** It speaks JSON-RPC 2.0 as
+//! strings — [`Dispatcher::handle_at`] takes one request and returns one
+//! response (or `None` for a notification, which gets no reply) — and knows
+//! nothing about sockets, HTTP, ports, or the wall clock, all of which are
+//! passed in per call. The same split as [`tt_ide`]: the transport lives in the
+//! app shell (`crates-tauri/tt-app`), which serves this over loopback HTTP.
+//! That keeps the whole tool surface unit-testable by driving `handle_at`
+//! directly, with no server to stand up.
 //!
-//! Exposed tools surface the towles-tool board ([`tt_store`]'s tasks — the
-//! #339 unit of work): `task_list`, `task_status`, and the gated
-//! `task_create`. The broader dashboard-read tools (`day_brief`, `needs_you`,
-//! `snapshot`, `prs_status`, `issues_open`, `dm_status`, `collect_status`)
-//! were pruned in the 2026-07 tool-surface review — the task family is the
-//! surface a session actually needs; a calendar family may join it later.
+//! Exposed tools surface the towles-tool board ([`tt_store`]'s tasks — the #339
+//! unit of work) and the calendar: `task_list`, `task_status`, `task_create`,
+//! `calendar_today`, `calendar_next`, `calendar_set`. The broader
+//! dashboard-read tools (`day_brief`, `needs_you`, `snapshot`, `prs_status`,
+//! `issues_open`, `dm_status`, `collect_status`) were pruned in the 2026-07
+//! tool-surface review and have not come back.
 //!
 //! ## Trust boundary
 //!
-//! `tt` is registered with Claude Code at **user scope**
-//! (`claude mcp add --scope user`), so this server is spawned fresh for
-//! *every* Claude Code session on the machine, in any project, with no
-//! awareness of which one. The threat that matters here isn't an
-//! unauthenticated third party reaching the stdio pipe — it isn't
-//! network-reachable, so every call already comes from a genuinely local,
-//! genuinely-authenticated Claude Code process. It's that same legitimate
-//! process's model getting its instructions hijacked by content it reads
-//! mid-session (a hostile GitHub issue/PR body, a fetched web page) while
-//! working on something unrelated, then calling a tool whose reach is the
-//! whole machine.
+//! The server is registered with Claude Code at **user scope**, so it is
+//! reachable from *every* Claude Code session on the machine, in any project,
+//! with no awareness of which one. Two distinct threats, guarded in two
+//! different places:
 //!
-//! The posture is therefore **read-only by default**: the ungated tools read
-//! the user's own board, which is available to any of the user's own sessions
-//! by design. The one mutating tool, `task_create`, sits behind the
-//! capability gate ([`tt_config::McpSettings::mutations_enabled`]): a
-//! settings-file opt-in, default off, that no tool exposed here can flip — so
-//! prompt injection can't self-approve it — re-resolved from disk on every
-//! call (a settings edit needs no server restart) and failing closed when the
-//! file is unreadable. (This does not defend against a session with
-//! unrestricted shell access being instructed to edit the settings file
-//! directly and then call the gated tool — that session could just as well
-//! run `sqlite3` against tt.db itself.) The previous generation of mutating
-//! tools (`todo_*`, `journal_append`, `collect_refresh`) and the
-//! cross-session `agent_sessions` tool showed zero real use in telemetry, so
-//! the 2026-07 datamine removed them; `task_create` brought the gate
-//! machinery back.
+//! 1. **A hijacked session.** A legitimate local Claude Code process reads
+//!    hostile content mid-session (a GitHub issue body, a fetched page) and is
+//!    instructed to call a tool. There is deliberately **no capability gate**
+//!    against this any more (removed 2026-07-20). The gate it replaced was
+//!    off by default, which meant the one mutating tool had effectively never
+//!    worked, and it never defended much: the writes reachable here are local,
+//!    low-stakes and reversible (a board-task row, a calendar cache row), and
+//!    any session with shell access could run `sqlite3` against tt.db directly
+//!    regardless. The `mcp_calls` log is the audit trail instead.
+//!
+//! 2. **A web page in the user's browser.** This is the threat the transport
+//!    actually has to stop, and it grew teeth when the gate went away. Binding
+//!    to loopback does *not* keep pages out: any site the user visits can POST
+//!    to `127.0.0.1`, and while CORS stops it reading the response, a blind
+//!    write is the whole attack. A bearer token was considered and rejected —
+//!    it only ever addressed this one case, and any local process could read it
+//!    out of the settings file anyway. The transport in `tt-app` instead
+//!    applies the two mitigations the MCP spec recommends for local HTTP
+//!    servers: **reject any request carrying an `Origin` header** (real MCP
+//!    clients don't send one; browsers always do — this is the DNS-rebinding
+//!    mitigation) and **require `Content-Type: application/json`** (not a
+//!    CORS-simple type, so a page can't dodge a preflight). Those two checks
+//!    are now the only guard on writes and are unit-tested as such.
 
-use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde_json::{Value, json};
 use tt_store::{McpCallInput, Store};
-
-/// Tools gated behind [`tt_config::McpSettings::mutations_enabled`] — anything
-/// that writes the store. Everything else is a read of the user's own board
-/// and never touches the gate (or the settings file).
-const MUTATING_TOOLS: &[&str] = &["task_create"];
 
 /// Protocol version advertised when the client does not send one of its own.
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -64,24 +60,14 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 const CALL_LOG_ARGS_MAX: usize = 400;
 
 /// The stateful core of the server: owns the [`Store`] and dispatches JSON-RPC
-/// requests to tool handlers. Kept free of stdio so it can be driven directly in
-/// tests.
+/// requests to tool handlers. Kept free of any transport so it can be driven
+/// directly in tests.
 pub struct Dispatcher {
     store: Store,
     /// `clientInfo` from the session's `initialize` (e.g. `claude-code 2.1`),
     /// stamped onto call-log rows so the app's MCP screen can say who called.
     client: Option<String>,
-    /// Injected capability gate (test hook). The stdio/CLI path leaves it
-    /// `None` and re-resolves from disk on every gated call, so a settings
-    /// edit takes effect without restarting the server.
-    mcp_settings: Option<tt_config::McpSettings>,
-    /// When set, the capability gate loads this settings file instead of the
-    /// shared default — the CLI's global `--config-dir` flag lands here, so
-    /// `tt --config-dir <dir> mcp serve` really is isolated from the machine's
-    /// settings (and tests can exercise the real disk-resolution path against
-    /// a sandbox).
-    settings_path: Option<PathBuf>,
-    /// Injected tracked-repo dirs (test hook). The stdio/CLI path leaves it
+    /// Injected tracked-repo dirs (test hook). The serving path leaves it
     /// `None` and re-reads the shared agentboard `repos.json` on every
     /// `task_create`, so newly tracked repos are creatable without a restart.
     tracked_repos: Option<Vec<String>>,
@@ -117,27 +103,7 @@ impl Outcome {
 impl Dispatcher {
     /// Build a dispatcher over `store`.
     pub fn new(store: Store) -> Dispatcher {
-        Dispatcher {
-            store,
-            client: None,
-            mcp_settings: None,
-            settings_path: None,
-            tracked_repos: None,
-        }
-    }
-
-    /// Build a dispatcher with a fixed capability gate (test hook — keeps the
-    /// gate off the real settings file).
-    pub fn with_mcp_settings(mut self, settings: tt_config::McpSettings) -> Dispatcher {
-        self.mcp_settings = Some(settings);
-        self
-    }
-
-    /// Point the capability gate at an explicit settings file — how the CLI's
-    /// global `--config-dir` flag reaches the server.
-    pub fn with_settings_path(mut self, path: PathBuf) -> Dispatcher {
-        self.settings_path = Some(path);
-        self
+        Dispatcher { store, client: None, tracked_repos: None }
     }
 
     /// Build a dispatcher with a fixed tracked-repo list (test hook — keeps
@@ -145,31 +111,6 @@ impl Dispatcher {
     pub fn with_tracked_repos(mut self, repos: Vec<String>) -> Dispatcher {
         self.tracked_repos = Some(repos);
         self
-    }
-
-    /// The capability gate to enforce for this call: the injected override if
-    /// any, else re-resolved from the settings file every time (so a settings
-    /// edit takes effect without restarting the server). Like every other
-    /// consumer of `tt_config`, a missing file is created with defaults on
-    /// first use.
-    fn mcp_capabilities(&self) -> Result<tt_config::McpSettings, String> {
-        match self.mcp_settings {
-            Some(settings) => Ok(settings),
-            None => match &self.settings_path {
-                Some(path) => Ok(tt_config::load_from(path).map_err(|e| e.to_string())?.mcp),
-                None => Ok(tt_config::load().map_err(|e| e.to_string())?.mcp),
-            },
-        }
-    }
-
-    /// The settings-file path named in the gate's refusal messages, honoring
-    /// [`Dispatcher::with_settings_path`] so the hint points at the file the
-    /// gate actually read.
-    fn settings_hint(&self) -> String {
-        match &self.settings_path {
-            Some(path) => path.display().to_string(),
-            None => settings_path_hint(),
-        }
     }
 
     /// The tracked-repo dirs `task_create` validates against: the injected
@@ -276,23 +217,6 @@ impl Dispatcher {
     }
 
     fn call_tool(&mut self, name: &str, args: &Value, now_ms: i64) -> Result<Value, String> {
-        // Only resolve the capability gate (a settings-file read) for the
-        // mutating tools — the read-only board tools never touch it. An
-        // unreadable settings file fails closed with an actionable refusal
-        // rather than leaking a raw parse error that reads as transient.
-        if MUTATING_TOOLS.contains(&name) {
-            match self.mcp_capabilities() {
-                Ok(caps) if caps.mutations_enabled => {}
-                Ok(_) => return Err(mutations_disabled_message(name, &self.settings_hint())),
-                Err(error) => {
-                    return Err(capabilities_unreadable_message(
-                        name,
-                        &error,
-                        &self.settings_hint(),
-                    ));
-                }
-            }
-        }
         match name {
             "task_list" => self.task_list(),
             "task_status" => self.task_status(args),
@@ -354,58 +278,6 @@ impl Dispatcher {
         tracing::info!(task_id = task.id, repo = %entry.dir, %status, "task.created");
         Ok(json!({ "task": task }))
     }
-}
-
-/// Run the stdio server: open the store (at `store_path` when given, else the
-/// default location), then read/dispatch/write until EOF. `settings_path`
-/// overrides where the capability gate reads settings (the CLI's global
-/// `--config-dir`). Returns a process exit code (0 on clean EOF, 1 on a fatal
-/// IO/store error).
-pub fn serve(store_path: Option<&Path>, settings_path: Option<&Path>) -> i32 {
-    let store = match store_path {
-        Some(path) => Store::open(path),
-        None => Store::open_default(),
-    };
-    let store = match store {
-        Ok(store) => store,
-        Err(error) => {
-            log::error!("tt-mcp: failed to open store: {error}");
-            return 1;
-        }
-    };
-    let mut dispatcher = Dispatcher::new(store);
-    if let Some(path) = settings_path {
-        dispatcher = dispatcher.with_settings_path(path.to_path_buf());
-    }
-    log::info!("tt-mcp: serving on stdio");
-
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
-    let stdout = io::stdout();
-    let mut writer = stdout.lock();
-    let mut line = String::new();
-    loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break, // clean EOF
-            Ok(_) => {
-                let request = line.trim_end();
-                if request.is_empty() {
-                    continue;
-                }
-                if let Some(response) = dispatcher.handle(request)
-                    && (writeln!(writer, "{response}").is_err() || writer.flush().is_err())
-                {
-                    break;
-                }
-            }
-            Err(error) => {
-                log::error!("tt-mcp: stdin read error: {error}");
-                return 1;
-            }
-        }
-    }
-    0
 }
 
 // ---------------------------------------------------------------------------
@@ -478,33 +350,6 @@ fn tool_error_response(id: Value, message: &str) -> String {
     )
 }
 
-/// Path to the shared settings file, for use in the refusal messages below —
-/// best-effort; falls back to a description if it can't be resolved.
-fn settings_path_hint() -> String {
-    tt_config::config_path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "your towles-tool.settings.json".to_string())
-}
-
-/// The gate's refusal when mutations are off (the default).
-fn mutations_disabled_message(tool: &str, path_hint: &str) -> String {
-    format!(
-        "{tool} is disabled: tt-mcp's mutating tools are off until you opt in. \
-         Set \"mcp\": {{\"mutationsEnabled\": true}} in {path_hint} — tt-mcp deliberately \
-         exposes no tool that can change that setting."
-    )
-}
-
-/// The gate's refusal when the settings file can't be read: fail closed with a
-/// hint at the file, rather than surfacing a raw parse error that reads as a
-/// transient failure worth retrying.
-fn capabilities_unreadable_message(tool: &str, error: &str, path_hint: &str) -> String {
-    format!(
-        "{tool} is disabled: the capability gate could not read {path_hint} ({error}). \
-         Mutations stay off until the settings file is readable."
-    )
-}
-
 /// The repo-validation refusal: names the argument and lists what *is*
 /// tracked, so a caller can self-correct without another round trip.
 fn unknown_repo_message(repo: &str, entries: &[tt_agentboard::repos::RepoEntry]) -> String {
@@ -542,7 +387,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "task_create",
-            "description": "Create a board task in a tracked repo's swimlane. Gated: requires \"mcp\": {\"mutationsEnabled\": true} in the settings file.",
+            "description": "Create a board task in a tracked repo's swimlane. Writes to the board.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -572,12 +417,10 @@ mod tests {
         store
     }
 
-    /// A dispatcher with the gate ON and one tracked repo — both injected, so
-    /// no test touches the real settings file or agentboard repos.json.
+    /// A dispatcher with one injected tracked repo, so no test touches the real
+    /// agentboard repos.json.
     fn dispatcher() -> Dispatcher {
-        Dispatcher::new(seeded_store())
-            .with_mcp_settings(tt_config::McpSettings { mutations_enabled: true })
-            .with_tracked_repos(vec![REPO_DIR.to_string()])
+        Dispatcher::new(seeded_store()).with_tracked_repos(vec![REPO_DIR.to_string()])
     }
 
     /// Call a tool and return the parsed inner JSON result (the `text` payload).
@@ -669,25 +512,6 @@ mod tests {
     }
 
     #[test]
-    fn every_mutating_tool_is_defined_and_flagged_gated() {
-        // MUTATING_TOOLS and tool_definitions can't drift: every gated name
-        // must be a real tool whose description says it is gated.
-        let tools = tool_definitions();
-        for name in MUTATING_TOOLS {
-            let tool = tools
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|tool| tool["name"] == *name)
-                .unwrap_or_else(|| panic!("{name} is gated but not defined"));
-            assert!(
-                tool["description"].as_str().unwrap().contains("Gated"),
-                "{name}'s description should say it is gated"
-            );
-        }
-    }
-
-    #[test]
     fn task_list_returns_seeded_task() {
         let mut dispatcher = dispatcher();
         let result = call_tool(&mut dispatcher, "task_list", json!({}));
@@ -757,9 +581,7 @@ mod tests {
         assert!(message.contains("unknown repo: nope"), "{message}");
         assert!(message.contains("demo"), "error should list tracked repos: {message}");
 
-        let mut empty = Dispatcher::new(seeded_store())
-            .with_mcp_settings(tt_config::McpSettings { mutations_enabled: true })
-            .with_tracked_repos(vec![]);
+        let mut empty = Dispatcher::new(seeded_store()).with_tracked_repos(vec![]);
         let message =
             call_tool_err(&mut empty, "task_create", json!({ "repo": "demo", "title": "x" }));
         assert!(message.contains("no repos are tracked"), "{message}");
@@ -789,53 +611,6 @@ mod tests {
         // Nothing was created.
         let open = call_tool(&mut dispatcher, "task_list", json!({}));
         assert_eq!(open["tasks"].as_array().unwrap().len(), 1, "only the seeded task remains");
-    }
-
-    #[test]
-    fn task_create_is_gated_off_by_default() {
-        // A settings file in a sandbox dir with no mcp block: the gate reads
-        // the real disk-resolution path and refuses with the opt-in hint.
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("towles-tool.settings.json");
-        let mut dispatcher = Dispatcher::new(seeded_store())
-            .with_settings_path(path.clone())
-            .with_tracked_repos(vec![REPO_DIR.to_string()]);
-        let message =
-            call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "demo", "title": "x" }));
-        assert!(message.contains("mutationsEnabled"), "refusal carries the opt-in hint: {message}");
-        assert!(
-            message.contains(&path.display().to_string()),
-            "refusal names the settings file the gate read: {message}"
-        );
-        // Nothing was created, and the read tools still work ungated.
-        let open = call_tool(&mut dispatcher, "task_list", json!({}));
-        assert_eq!(open["tasks"].as_array().unwrap().len(), 1, "only the seeded task remains");
-    }
-
-    #[test]
-    fn task_create_honors_a_settings_file_opt_in() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("towles-tool.settings.json");
-        std::fs::write(&path, r#"{"mcp":{"mutationsEnabled":true}}"#).unwrap();
-        let mut dispatcher = Dispatcher::new(seeded_store())
-            .with_settings_path(path)
-            .with_tracked_repos(vec![REPO_DIR.to_string()]);
-        let result =
-            call_tool(&mut dispatcher, "task_create", json!({ "repo": "demo", "title": "opted" }));
-        assert_eq!(result["task"]["text"], "opted");
-    }
-
-    #[test]
-    fn task_create_fails_closed_when_settings_are_unreadable() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("towles-tool.settings.json");
-        std::fs::write(&path, "{ not json").unwrap();
-        let mut dispatcher = Dispatcher::new(seeded_store())
-            .with_settings_path(path)
-            .with_tracked_repos(vec![REPO_DIR.to_string()]);
-        let message =
-            call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "demo", "title": "x" }));
-        assert!(message.contains("could not read"), "fails closed, actionably: {message}");
     }
 
     #[test]
@@ -971,32 +746,6 @@ mod tests {
         assert_eq!(calls[2].tool, None);
         assert!(calls[2].ok);
         assert_eq!(calls[2].client.as_deref(), Some("claude-code 2.1"));
-    }
-
-    #[test]
-    fn gate_refusals_land_in_the_call_log() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("towles-tool.settings.json");
-        let mut dispatcher = Dispatcher::new(seeded_store())
-            .with_settings_path(path)
-            .with_tracked_repos(vec![REPO_DIR.to_string()]);
-        drive(
-            &mut dispatcher,
-            json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": { "name": "task_create", "arguments": { "repo": "demo", "title": "x" } },
-            }),
-        );
-        let calls = dispatcher.store.mcp_calls(10).unwrap();
-        assert_eq!(calls[0].tool.as_deref(), Some("task_create"));
-        assert!(!calls[0].ok);
-        assert!(
-            calls[0].error.as_deref().is_some_and(|e| e.contains("mutationsEnabled")),
-            "the refusal is the recorded error: {:?}",
-            calls[0].error
-        );
     }
 
     #[test]
