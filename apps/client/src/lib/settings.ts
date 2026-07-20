@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { UserSettingsSchema } from "./schemas/settings";
 import { invoke } from "./tauri";
 import { slugify } from "./slug";
@@ -135,6 +135,12 @@ export type UserSettings = {
 
 export type SaveState = "idle" | "saving" | "saved" | "error";
 
+/** Debounce applied to `update(fn, { defer: true })` — long enough that typing a
+ * path template or pasting a token doesn't write a half-finished value to disk
+ * (which `settings_set` would hand straight to the live scheduler), short enough
+ * that pausing feels like it saved. */
+const DEFER_MS = 500;
+
 /** Fired on `window` after a successful `settings_set` — lets other in-app
  * consumers of a settings value (e.g. terminal prefs, the shortcuts registry)
  * refresh live instead of waiting for a `"focus"` event that no longer fires
@@ -163,40 +169,140 @@ export async function saveUserSettings(settings: UserSettings): Promise<boolean>
   return saved.isOk();
 }
 
+export type SettingsUpdater = (prev: UserSettings) => UserSettings;
+
 /**
- * Load the settings once, edit a local draft, and persist it. `update` takes an
- * immutable updater so nested edits stay simple; `save` writes the whole draft
- * (the backend merge preserves unknown keys). `settings` is `null` until loaded
- * and stays `null` in browser dev where the command returns `null`.
+ * The autosave engine behind {@link useUserSettings}, kept free of React so the
+ * ordering rules below are unit-testable without a DOM.
+ *
+ * Two invariants make concurrent writes safe, and both are easy to lose:
+ *
+ * 1. **Replay, don't overwrite.** A queued edit is stored as its *updater*, then
+ *    replayed against a fresh read of the file at write time — never applied to
+ *    a copy loaded earlier. The terminal's font-size zoom and the Board's
+ *    group-by toggle read-modify-write the same `agentboard` block from
+ *    elsewhere in the app, so writing a stale whole object would revert whichever
+ *    of them landed in between.
+ * 2. **One write at a time.** Flushes chain on `tail`. Without that, flipping two
+ *    toggles quickly races: the second flush reads the file before the first's
+ *    write lands, and its read-modify-write silently reverts the first change.
+ *
+ * `deferMs` debounces `queue(fn, { defer: true })` — used for anything typed, so
+ * a half-finished path template or token isn't written (and handed to the live
+ * scheduler) mid-keystroke.
+ */
+export function createSettingsWriter({
+  load,
+  save,
+  onState,
+  deferMs = DEFER_MS,
+}: {
+  load: () => Promise<UserSettings | null>;
+  save: (settings: UserSettings) => Promise<boolean>;
+  onState: (state: SaveState) => void;
+  deferMs?: number;
+}) {
+  let queued: SettingsUpdater[] = [];
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let tail: Promise<void> = Promise.resolve();
+
+  const drain = async () => {
+    const replay = queued;
+    if (replay.length === 0) return;
+    queued = [];
+    onState("saving");
+    const disk = await load();
+    if (!disk) {
+      onState("error");
+      return;
+    }
+    onState((await save(replay.reduce((acc, fn) => fn(acc), disk))) ? "saved" : "error");
+  };
+
+  const flush = (): Promise<void> => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    const run = tail.then(drain);
+    // Swallow only to keep the chain alive for the next write; `onState` has
+    // already reported the failure.
+    tail = run.catch(() => {});
+    return run;
+  };
+
+  return {
+    queue(fn: SettingsUpdater, opts?: { defer?: boolean }) {
+      queued.push(fn);
+      if (!opts?.defer) {
+        void flush();
+        return;
+      }
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => void flush(), deferMs);
+    },
+    flush,
+  };
+}
+
+/**
+ * Load the settings once and persist every edit as it happens — there is no
+ * explicit save.
+ *
+ * `update` applies an updater to the on-screen copy for instant feedback and
+ * hands the same updater to {@link createSettingsWriter}, which owns the write
+ * ordering. Pass `{ defer: true }` for anything typed, and call `flush` on blur
+ * to commit it without waiting out the debounce; toggles and selects omit it and
+ * save on the spot.
+ *
+ * `settings` is `null` until loaded and stays `null` in browser dev where the
+ * command returns `null`; edits are dropped rather than queued in that case,
+ * since there's no file to merge into.
  */
 export function useUserSettings() {
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
+  const live = useRef(false);
+  const [writer] = useState(() =>
+    createSettingsWriter({
+      load: loadUserSettings,
+      save: saveUserSettings,
+      onState: setSaveState,
+    }),
+  );
 
   useEffect(() => {
     let alive = true;
     void loadUserSettings().then((s) => {
-      if (alive) {
-        setSettings(s);
-        setLoaded(true);
-      }
+      if (!alive) return;
+      live.current = s !== null;
+      setSettings(s);
+      setLoaded(true);
     });
     return () => {
       alive = false;
     };
   }, []);
 
-  const update = useCallback((fn: (prev: UserSettings) => UserSettings) => {
-    setSettings((prev) => (prev ? fn(prev) : prev));
-    setSaveState("idle");
-  }, []);
+  // Commit a still-pending debounce on unmount, so an edit made and immediately
+  // navigated away from isn't lost. Post-unmount `setSaveState` calls are no-ops,
+  // which is fine — the write is the part that matters.
+  useEffect(
+    () => () => {
+      void writer.flush();
+    },
+    [writer],
+  );
 
-  const save = useCallback(async () => {
-    if (!settings) return;
-    setSaveState("saving");
-    setSaveState((await saveUserSettings(settings)) ? "saved" : "error");
-  }, [settings]);
+  const update = useCallback(
+    (fn: SettingsUpdater, opts?: { defer?: boolean }) => {
+      if (!live.current) return;
+      setSettings((prev) => (prev ? fn(prev) : prev));
+      writer.queue(fn, opts);
+    },
+    [writer],
+  );
 
-  return { settings, loaded, saveState, update, save };
+  return { settings, loaded, saveState, update, flush: writer.flush };
 }

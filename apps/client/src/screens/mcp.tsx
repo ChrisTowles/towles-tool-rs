@@ -847,7 +847,10 @@ function ToolTesterDialog({ tool, onClose }: { tool: McpToolDoc | null; onClose:
           />
         </div>
 
-        <label htmlFor="mcp-test-as-browser" className="flex items-center gap-2 text-xs text-muted-foreground">
+        <label
+          htmlFor="mcp-test-as-browser"
+          className="flex items-center gap-2 text-xs text-muted-foreground"
+        >
           <Checkbox
             id="mcp-test-as-browser"
             checked={asBrowser}
