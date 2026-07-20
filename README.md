@@ -69,6 +69,10 @@ of what this repo does, Desktop now does as well.
   worktree once its PR merges or closes, which covers the common case but
   never has to answer whether a branch with no PR still holds work.
 
+- ~~**Runs natively on Linux.** Only a community-hacked build of Claude
+  Desktop ran on Linux before now.~~ Shipped as an official
+  [beta](https://code.claude.com/docs/en/desktop-linux) on June 30, 2026.
+
 ### Overlap: things Desktop already does
 
 Written down so this repo stops claiming them. Desktop ships automatic git
