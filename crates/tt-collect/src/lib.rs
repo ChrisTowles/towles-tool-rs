@@ -3,7 +3,9 @@
 //! Each collector gathers one slice of state — calendar events, cross-repo
 //! issues, and pull-request status — and writes it into the shared
 //! [`tt_store::Store`]. The calendar collector shells out to `claude -p` (via
-//! [`tt_exec`]); the issue and PR collectors shell out to `gh`.
+//! [`tt_exec`]) once per configured [`tt_config::CalendarSource`], each source
+//! writing into its own store lane; the issue and PR collectors shell out to
+//! `gh`.
 //!
 //! Tauri-free (the shared-crate rule): both the CLI (`tt collect`) and the
 //! desktop app's scheduler drive this crate against the same [`CollectSummary`]
@@ -19,7 +21,6 @@
 
 mod gh;
 pub mod issues;
-mod prompts;
 mod prs;
 mod quiet_hours;
 mod slack;
@@ -39,6 +40,7 @@ pub use slack_socket::{
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use tt_config::CalendarSource;
 use tt_store::{EventInput, Store};
 
 /// Hard cap on a `claude -p` calendar run. Generous for MCP tool calls; without
@@ -46,31 +48,6 @@ use tt_store::{EventInput, Store};
 /// in the app that stalls every collector, since the scheduler awaits batches
 /// serially.
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(180);
-
-/// Which calendar backend the `claude -p` prompt should drive. Selected from
-/// config so the same app works at home (Google MCP) and work (Outlook MCP).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CalendarProvider {
-    Google,
-    Outlook,
-}
-
-impl CalendarProvider {
-    /// Parse a config string; defaults to Google for unknown values.
-    pub fn from_str_lenient(s: &str) -> CalendarProvider {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "outlook" => CalendarProvider::Outlook,
-            _ => CalendarProvider::Google,
-        }
-    }
-
-    fn prompt(self) -> &'static str {
-        match self {
-            CalendarProvider::Google => prompts::CALENDAR_GOOGLE,
-            CalendarProvider::Outlook => prompts::CALENDAR_OUTLOOK,
-        }
-    }
-}
 
 /// The outcome of a single collector run.
 #[derive(Debug, Clone, PartialEq)]
@@ -93,79 +70,141 @@ pub struct CollectSummary {
 /// The stable `record_run` key for the calendar collector.
 const CALENDAR_KEY: &str = "claude:calendar";
 
-/// Collect today's calendar events via `claude -p` (using the given provider's
-/// prompt) and replace the stored event set. Records `claude:calendar`.
-pub fn collect_calendar(store: &Store, provider: CalendarProvider, now_ms: i64) -> CollectSummary {
-    let events = match run_claude(provider.prompt()).and_then(|v| {
-        serde_json::from_value::<Vec<EventInput>>(v)
-            .map_err(|e| format!("invalid calendar JSON: {e}"))
-    }) {
-        Ok(events) => events,
-        Err(msg) => return finish(store, CALENDAR_KEY, false, 0, Some(msg), now_ms),
-    };
-    store_calendar_events(store, &events, now_ms)
-}
-
-/// Apply a parsed calendar result to the store, guarding against a suspicious
-/// empty sweep.
+/// Collect today's calendar events, running one `claude -p` per **enabled**
+/// [`CalendarSource`] and writing each into its own store lane. Records
+/// `claude:calendar`.
 ///
-/// `collect_calendar` normally does a full [`Store::replace_events`] snapshot,
-/// but a `claude -p` run can return a syntactically-valid empty `[]` when the
-/// model hedges or the calendar MCP is momentarily down. Replacing on that
-/// would wipe today's events and blank the Cockpit next-meeting countdown until
-/// the next tick. So when the result is empty *and* the store still holds
-/// events later today, treat the run as suspect: keep the existing rows and
-/// record `ok = false` with an explanatory message. A genuinely empty day (no
-/// future rows either) still clears normally and records `ok = true`.
-fn store_calendar_events(store: &Store, events: &[EventInput], now_ms: i64) -> CollectSummary {
-    if events.is_empty() {
-        match has_future_events_today(store, now_ms) {
-            Ok(true) => {
-                let msg = "calendar returned no events but future events remain for \
-                           today; kept existing events"
-                    .to_string();
-                return finish(store, CALENDAR_KEY, false, 0, Some(msg), now_ms);
+/// One run key covers every source deliberately: `claude:calendar` is what the
+/// frontend's collector-health list, the stale-collector watch, and the store's
+/// own run-pruning all match on, and the user-facing question ("is my calendar
+/// data fresh?") is answered per-collector, not per-calendar. Sources are still
+/// fully independent *underneath* it — each pulls and writes on its own, and a
+/// failing source contributes a `<id>: <error>` note and flips `ok` without
+/// costing the others their rows.
+pub fn collect_calendar(store: &Store, sources: &[CalendarSource], now_ms: i64) -> CollectSummary {
+    let enabled: Vec<&CalendarSource> = sources.iter().filter(|s| s.enabled).collect();
+    if enabled.is_empty() {
+        let msg = "no calendar sources enabled".to_string();
+        return finish(store, CALENDAR_KEY, true, 0, Some(msg), now_ms);
+    }
+
+    let (day_start_ms, day_end_ms) = local_day_bounds(now_ms);
+    let mut count = 0usize;
+    let mut notes: Vec<String> = Vec::new();
+    let mut ok = true;
+    for source in enabled {
+        match collect_calendar_source(store, source, day_start_ms, day_end_ms, now_ms) {
+            Ok(n) => count += n,
+            Err(msg) => {
+                ok = false;
+                notes.push(format!("{}: {msg}", source.id));
             }
-            Ok(false) => {}
-            Err(msg) => return finish(store, CALENDAR_KEY, false, 0, Some(msg), now_ms),
         }
     }
-    match store.replace_events(events, now_ms) {
-        Ok(count) => finish(store, CALENDAR_KEY, true, count, None, now_ms),
-        Err(e) => finish(store, CALENDAR_KEY, false, 0, Some(e.to_string()), now_ms),
-    }
+
+    let message = if notes.is_empty() { None } else { Some(notes.join("; ")) };
+    finish(store, CALENDAR_KEY, ok, count, message, now_ms)
 }
 
-/// Whether the store holds any event still upcoming today (local time).
+/// Pull one calendar source and write it into its own `(source, day)` lane.
+///
+/// Returns the number of events stored, or a human-readable error — the caller
+/// aggregates both into the single `claude:calendar` run record, so this never
+/// records a run of its own.
+fn collect_calendar_source(
+    store: &Store,
+    source: &CalendarSource,
+    day_start_ms: i64,
+    day_end_ms: i64,
+    now_ms: i64,
+) -> Result<usize, String> {
+    if source.id.trim().is_empty() {
+        return Err("source has no id".to_string());
+    }
+    if source.prompt.trim().is_empty() {
+        return Err("source has no prompt".to_string());
+    }
+    let value = run_claude(&source.prompt)?;
+    let events = serde_json::from_value::<Vec<EventInput>>(value)
+        .map_err(|e| format!("invalid calendar JSON: {e}"))?;
+    store_calendar_events(store, &source.id, day_start_ms, day_end_ms, &events, now_ms)
+}
+
+/// Apply one source's parsed calendar result to the store, guarding against a
+/// suspicious empty sweep.
+///
+/// A source normally replaces its whole `(source, today)` lane, but a
+/// `claude -p` run can return a syntactically-valid empty `[]` when the model
+/// hedges or the calendar MCP is momentarily down. Replacing on that would wipe
+/// today's events and blank the Cockpit next-meeting countdown until the next
+/// tick. So when the result is empty *and* **this source** still holds events
+/// later today, treat the run as suspect: keep the existing rows and report an
+/// error. A genuinely empty day (no future rows for this source either) still
+/// clears normally and succeeds.
+///
+/// The guard is scoped to `source` on both sides: one calendar returning empty
+/// neither consults nor protects another calendar's rows, so a flaky work
+/// calendar can't be masked by a healthy personal one (or vice versa).
+fn store_calendar_events(
+    store: &Store,
+    source: &str,
+    day_start_ms: i64,
+    day_end_ms: i64,
+    events: &[EventInput],
+    now_ms: i64,
+) -> Result<usize, String> {
+    if events.is_empty() && has_future_events_today(store, source, now_ms, day_end_ms)? {
+        return Err("returned no events but future events remain for today; \
+                    kept existing events"
+            .to_string());
+    }
+    store
+        .replace_events_for_source(source, day_start_ms, day_end_ms, events, now_ms)
+        .map_err(|e| e.to_string())
+}
+
+/// Whether `source` holds any event still upcoming today (local time).
 ///
 /// "Today" is the local calendar day containing `now_ms`; the window is
-/// `[now_ms, local midnight)`, so only still-to-start events count. Reads the
-/// system time zone for the day boundary but never the wall clock — the instant
-/// is always the injected `now_ms`.
-fn has_future_events_today(store: &Store, now_ms: i64) -> Result<bool, String> {
-    let end_ms = local_day_end_ms(now_ms);
-    store.events_between(now_ms, end_ms).map(|events| !events.is_empty()).map_err(|e| e.to_string())
+/// `[now_ms, day_end_ms)`, so only still-to-start events count. Rows from other
+/// sources are filtered out — the guard is per-lane by design.
+fn has_future_events_today(
+    store: &Store,
+    source: &str,
+    now_ms: i64,
+    day_end_ms: i64,
+) -> Result<bool, String> {
+    store
+        .events_between(now_ms, day_end_ms)
+        .map(|events| events.iter().any(|e| e.source == source))
+        .map_err(|e| e.to_string())
 }
 
-/// The epoch-ms instant of the next local midnight after `now_ms` — the
-/// exclusive end of the local calendar day containing `now_ms`.
-fn local_day_end_ms(now_ms: i64) -> i64 {
+/// The `[start, end)` epoch-ms bounds of the local calendar day containing
+/// `now_ms` — the window each source's write is scoped to.
+fn local_day_bounds(now_ms: i64) -> (i64, i64) {
     use chrono::{Duration, Local, TimeZone};
+    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
     let now = match Local.timestamp_millis_opt(now_ms) {
         chrono::LocalResult::Single(dt) => dt,
-        // Ambiguous/nonexistent local instants are a DST edge; fall back to
-        // one day out so the guard stays conservative (keeps events).
-        _ => return now_ms + Duration::days(1).num_milliseconds(),
+        // Ambiguous/nonexistent local instants are a DST edge; fall back to a
+        // ±1 day window so the guard stays conservative (keeps events) and the
+        // day sweep still covers today.
+        _ => return (now_ms - DAY_MS, now_ms + DAY_MS),
     };
-    let next_midnight = now.date_naive() + Duration::days(1);
-    match now.timezone().from_local_datetime(&next_midnight.and_hms_opt(0, 0, 0).unwrap()) {
-        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
-            dt.timestamp_millis()
+    let midnight = |date: chrono::NaiveDate, fallback: i64| {
+        match now.timezone().from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap()) {
+            chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
+                dt.timestamp_millis()
+            }
+            // Midnight doesn't exist (spring-forward at 00:00, rare).
+            chrono::LocalResult::None => fallback,
         }
-        // Midnight doesn't exist (spring-forward at 00:00, rare): step to the
-        // start of the following day instead.
-        chrono::LocalResult::None => now_ms + Duration::days(1).num_milliseconds(),
-    }
+    };
+    let today = now.date_naive();
+    let start = midnight(today, now_ms - DAY_MS);
+    let end = midnight(today + Duration::days(1), now_ms + DAY_MS);
+    (start, end)
 }
 
 /// Collect open issues assigned to me across `repo_dirs` via `gh` and update the
@@ -534,12 +573,12 @@ fn finish_sweep<T>(
 /// Run every collector: calendar, issues, then PRs.
 pub fn collect_all(
     store: &Store,
-    provider: CalendarProvider,
+    calendar_sources: &[CalendarSource],
     repo_dirs: &[PathBuf],
     now_ms: i64,
 ) -> Vec<CollectSummary> {
     vec![
-        collect_calendar(store, provider, now_ms),
+        collect_calendar(store, calendar_sources, now_ms),
         collect_issues(store, repo_dirs, now_ms),
         collect_prs(store, repo_dirs, now_ms),
     ]
@@ -816,14 +855,6 @@ mod tests {
     }
 
     #[test]
-    fn calendar_provider_parses_leniently() {
-        assert_eq!(CalendarProvider::from_str_lenient("outlook"), CalendarProvider::Outlook);
-        assert_eq!(CalendarProvider::from_str_lenient("Outlook"), CalendarProvider::Outlook);
-        assert_eq!(CalendarProvider::from_str_lenient("google"), CalendarProvider::Google);
-        assert_eq!(CalendarProvider::from_str_lenient("whatever"), CalendarProvider::Google);
-    }
-
-    #[test]
     fn collect_prs_no_repos_is_clean_noop() {
         let store = Store::open_in_memory().unwrap();
         let summary = collect_prs(&store, &[], 1);
@@ -960,19 +991,46 @@ mod tests {
         Local.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap().timestamp_millis()
     }
 
+    /// Write `events` into `source`'s lane for the local day containing `now`,
+    /// the same way [`collect_calendar`] does.
+    fn seed(store: &Store, source: &str, events: &[EventInput], now: i64) {
+        let (start, end) = local_day_bounds(now);
+        store.replace_events_for_source(source, start, end, events, now).unwrap();
+    }
+
+    /// Run the store half of one source's pull for the local day containing
+    /// `now` — what `collect_calendar_source` does after `claude -p` returns.
+    fn apply(
+        store: &Store,
+        source: &str,
+        events: &[EventInput],
+        now: i64,
+    ) -> Result<usize, String> {
+        let (start, end) = local_day_bounds(now);
+        store_calendar_events(store, source, start, end, events, now)
+    }
+
     #[test]
-    fn calendar_non_empty_result_replaces_events() {
+    fn local_day_bounds_bracket_now() {
+        let now = local_noon_ms();
+        let (start, end) = local_day_bounds(now);
+        assert!(start <= now && now < end, "now falls inside its own local day");
+        // A day is 23–25h wide depending on DST; noon is always well inside it.
+        assert!(end - start >= 23 * 60 * 60 * 1000);
+        assert!(end - start <= 25 * 60 * 60 * 1000);
+    }
+
+    #[test]
+    fn calendar_non_empty_result_replaces_that_sources_day() {
         let store = Store::open_in_memory().unwrap();
         let now = local_noon_ms();
-        store.replace_events(&[cal_event("old", now + 60 * 60 * 1000)], now).unwrap();
+        seed(&store, "google", &[cal_event("old", now + 60 * 60 * 1000)], now);
 
         let fresh = cal_event("new", now + 2 * 60 * 60 * 1000);
-        let summary = store_calendar_events(&store, std::slice::from_ref(&fresh), now);
+        assert_eq!(apply(&store, "google", std::slice::from_ref(&fresh), now).unwrap(), 1);
 
-        assert!(summary.ok);
-        assert_eq!(summary.count, 1);
         let stored = store.events_between(now, now + 24 * 60 * 60 * 1000).unwrap();
-        assert_eq!(stored.len(), 1, "full replace swapped the old row for the new one");
+        assert_eq!(stored.len(), 1, "the day's replace swapped the old row for the new one");
         assert_eq!(stored[0].external_id, "new");
     }
 
@@ -980,20 +1038,14 @@ mod tests {
     fn calendar_empty_result_with_future_events_preserves_and_fails() {
         let store = Store::open_in_memory().unwrap();
         let now = local_noon_ms();
-        store.replace_events(&[cal_event("keep", now + 60 * 60 * 1000)], now).unwrap();
+        seed(&store, "google", &[cal_event("keep", now + 60 * 60 * 1000)], now);
 
-        let summary = store_calendar_events(&store, &[], now);
+        let err = apply(&store, "google", &[], now).unwrap_err();
 
-        assert!(!summary.ok, "a suspicious empty result is recorded as a failed run");
-        assert_eq!(summary.count, 0);
-        assert!(summary.message.unwrap().contains("kept existing events"));
+        assert!(err.contains("kept existing events"));
         let stored = store.events_between(now, now + 24 * 60 * 60 * 1000).unwrap();
         assert_eq!(stored.len(), 1, "existing future events survive the empty sweep");
         assert_eq!(stored[0].external_id, "keep");
-        // The failed run is recorded under the calendar key.
-        let runs = store.runs().unwrap();
-        assert_eq!(runs[0].collector, "claude:calendar");
-        assert!(!runs[0].ok);
     }
 
     #[test]
@@ -1001,12 +1053,9 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let now = local_noon_ms();
         // Only a past event today; nothing still upcoming.
-        store.replace_events(&[cal_event("past", now - 60 * 60 * 1000)], now).unwrap();
+        seed(&store, "google", &[cal_event("past", now - 60 * 60 * 1000)], now);
 
-        let summary = store_calendar_events(&store, &[], now);
-
-        assert!(summary.ok, "a genuinely empty day is not suspect");
-        assert_eq!(summary.count, 0);
+        assert_eq!(apply(&store, "google", &[], now).unwrap(), 0, "a genuinely empty day is fine");
         assert!(
             store
                 .events_between(now - 24 * 60 * 60 * 1000, now + 24 * 60 * 60 * 1000)
@@ -1014,18 +1063,65 @@ mod tests {
                 .is_empty(),
             "the empty result clears the stale past row"
         );
-        let runs = store.runs().unwrap();
-        assert_eq!(runs[0].collector, "claude:calendar");
-        assert!(runs[0].ok);
     }
 
     #[test]
     fn calendar_empty_result_on_empty_store_is_clean_noop() {
         let store = Store::open_in_memory().unwrap();
         let now = local_noon_ms();
-        let summary = store_calendar_events(&store, &[], now);
+        assert_eq!(apply(&store, "google", &[], now).unwrap(), 0);
+    }
+
+    #[test]
+    fn one_sources_empty_sweep_neither_consults_nor_clears_another() {
+        // The whole point of per-source scoping: outlook coming back empty must
+        // not be excused by google's rows, and must not delete them either.
+        let store = Store::open_in_memory().unwrap();
+        let now = local_noon_ms();
+        seed(&store, "google", &[cal_event("personal", now + 60 * 60 * 1000)], now);
+
+        // Outlook has no rows of its own → its empty result is genuinely empty,
+        // even though google holds a future event.
+        assert_eq!(apply(&store, "outlook", &[], now).unwrap(), 0);
+
+        let stored = store.events_between(now, now + 24 * 60 * 60 * 1000).unwrap();
+        assert_eq!(stored.len(), 1, "google's row is untouched by outlook's pull");
+        assert_eq!(stored[0].external_id, "personal");
+    }
+
+    #[test]
+    fn calendar_with_no_enabled_sources_is_a_clean_noop() {
+        let store = Store::open_in_memory().unwrap();
+        let sources: Vec<CalendarSource> = CalendarSource::defaults()
+            .into_iter()
+            .map(|s| CalendarSource { enabled: false, ..s })
+            .collect();
+
+        let summary = collect_calendar(&store, &sources, local_noon_ms());
+
         assert!(summary.ok);
         assert_eq!(summary.count, 0);
+        assert_eq!(summary.message.as_deref(), Some("no calendar sources enabled"));
+        // Still recorded under the single aggregate key.
+        let runs = store.runs().unwrap();
+        assert_eq!(runs[0].collector, "claude:calendar");
+    }
+
+    #[test]
+    fn calendar_source_without_a_prompt_fails_without_spawning_claude() {
+        let store = Store::open_in_memory().unwrap();
+        let now = local_noon_ms();
+        let sources = vec![CalendarSource {
+            id: "google".to_string(),
+            label: "Google".to_string(),
+            enabled: true,
+            prompt: "   ".to_string(),
+        }];
+
+        let summary = collect_calendar(&store, &sources, now);
+
+        assert!(!summary.ok);
+        assert_eq!(summary.message.as_deref(), Some("google: source has no prompt"));
     }
 
     fn issue(repo: &str, number: i64) -> tt_store::IssueInput {

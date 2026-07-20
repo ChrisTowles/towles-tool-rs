@@ -220,8 +220,9 @@ Cargo workspace + npm workspace (`apps/client` only):
     Timestamps are epoch ms, passed in (`now_ms`) — never read the clock in
     logic.
   - `tt-collect` — collectors that fill tt.db: calendar via `claude -p`
-    (strict-JSON prompt + lenient extraction; `CalendarProvider` picks the
-    Google/Outlook prompt+MCP) — **off by default** since it burns tokens
+    (strict-JSON prompt + lenient extraction; one run per enabled
+    `CalendarSource`, each with its own user-editable prompt and its own store
+    lane) — **off by default** since it burns tokens
     per tick; issues + PRs via `gh`; a watched Slack DM via the Slack Web API
     (escalating banner in the app). Collector keys are `claude:calendar`,
     `issues`, `prs`, `slack:dm` — the frontend matches on them. Email was

@@ -25,11 +25,50 @@ export type CalendarQuietHours = {
   weekdays: number[];
 };
 
+/**
+ * One calendar the collector pulls, with the `claude -p` prompt it uses. `id` is
+ * the store lane a pull replaces, so it must stay stable; the prompt is
+ * user-editable on purpose — the built-in defaults drive a Google/Outlook MCP,
+ * but a machine without those can point the source at whatever does work there
+ * (a CLI, a script, a different MCP), as long as it still answers with the same
+ * JSON array.
+ */
+export type CalendarSource = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  prompt: string;
+};
+
+/**
+ * A store-lane id for a newly added calendar, unique among `sources`.
+ *
+ * Slugged from the label so the id stays readable in the store, falling back to
+ * `calendar` for a label with nothing sluggable, then suffixed until it's free.
+ * Ids are assigned once and never edited afterwards: the id names the lane a
+ * pull replaces, so changing it would orphan every row already stored under the
+ * old one.
+ */
+export function nextCalendarSourceId(sources: CalendarSource[], label: string): string {
+  const taken = new Set(sources.map((s) => s.id));
+  const base =
+    label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 32) || "calendar";
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
 export type CalendarCollector = {
   enabled: boolean;
-  provider: string;
   refreshMinutes: number;
   quietHours: CalendarQuietHours;
+  sources: CalendarSource[];
 };
 
 export type PrCollector = {

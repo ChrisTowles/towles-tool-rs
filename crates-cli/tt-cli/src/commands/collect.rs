@@ -13,7 +13,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use tt_collect::{CalendarProvider, CollectSummary};
+use tt_collect::CollectSummary;
 use tt_store::{CollectRun, Store};
 
 use crate::cli::{CollectCommands, CollectStatusArgs, NudgeTarget};
@@ -42,7 +42,6 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
     }
 
     let calendar = collectors.calendar;
-    let provider = CalendarProvider::from_str_lenient(&calendar.provider);
     let slack = slack_config(&collectors.slack);
 
     let summaries = match command {
@@ -51,7 +50,7 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
                 note_disabled();
                 return 0;
             }
-            vec![tt_collect::collect_calendar(&store, provider, now)]
+            vec![tt_collect::collect_calendar(&store, &calendar.sources, now)]
         }
         CollectCommands::Issues => {
             vec![tt_collect::collect_issues(
@@ -77,7 +76,7 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
         CollectCommands::All => {
             let mut summaries = Vec::new();
             if calendar.enabled {
-                summaries.push(tt_collect::collect_calendar(&store, provider, now));
+                summaries.push(tt_collect::collect_calendar(&store, &calendar.sources, now));
             } else {
                 note_disabled();
             }
@@ -243,7 +242,13 @@ fn status_rows(
     now: i64,
 ) -> Vec<StatusRow> {
     let enabled = [
-        ("claude:calendar", collectors.calendar.enabled),
+        // Enabled *and* something to pull: a calendar collector whose every
+        // source is switched off would never run, so reporting it as enabled
+        // would be a lie.
+        (
+            "claude:calendar",
+            collectors.calendar.enabled && collectors.calendar.sources.iter().any(|s| s.enabled),
+        ),
         ("issues", collectors.issues.enabled),
         ("prs", collectors.prs.enabled),
         ("slack:dm", collectors.slack.enabled && !collectors.slack.token.trim().is_empty()),

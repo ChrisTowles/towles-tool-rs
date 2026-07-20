@@ -117,6 +117,19 @@ pub fn emit_snapshot(app: &AppHandle, state: &StoreState) {
     }
 }
 
+/// Recompute and emit the snapshot given only an [`AppHandle`], for callers
+/// that hold no `State` handle of their own.
+///
+/// The MCP HTTP transport is the one such caller: its dispatcher writes through
+/// a *separate* SQLite connection, so a tool call that mutates the store would
+/// otherwise leave the UI showing stale data until its next poll. Same
+/// best-effort contract as [`emit_snapshot`] — a missing store or a failed emit
+/// is swallowed.
+pub fn emit_snapshot_from_app(app: &AppHandle) {
+    let state = app.state::<StoreState>();
+    emit_snapshot(app, &state);
+}
+
 /// Detach any task bound to a removed worktree: clears the task's `slot_dir`
 /// (branch + repo root stay as historical fact), re-emitting the snapshot
 /// when something changed. The slot-removal seam calls this right where it

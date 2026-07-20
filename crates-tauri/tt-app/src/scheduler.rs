@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use tokio::time::MissedTickBehavior;
-use tt_collect::CalendarProvider;
+use tt_config::CalendarSource;
 use tt_store::{
     ChecksFailedWatch, MeetingStartWatch, ReviewRequestedWatch, StaleCollectorWatch,
     WatchedCollector,
@@ -86,7 +86,11 @@ fn watched_collectors(collectors: &tt_config::CollectorsSettings) -> Vec<Watched
 enum Batch {
     Prs,
     Issues,
-    Calendar,
+    /// Carries the calendar sources to pull, snapshotted from settings when the
+    /// tick fired — the same way [`Batch::SlackDm`] carries its config — so the
+    /// batch is self-contained and a settings reload mid-run can't change what
+    /// it's pulling.
+    Calendar(Arc<Vec<CalendarSource>>),
     SlackDm(tt_collect::SlackDmConfig),
 }
 
@@ -148,7 +152,7 @@ fn changed_nudge_batches(dir: &Path, seen: &mut NudgeSeen) -> Vec<Batch> {
     changed
 }
 
-/// Spawn the scheduler loop. Collector cadence/enable/provider are re-read from
+/// Spawn the scheduler loop. Collector cadence/enable/sources are re-read from
 /// settings whenever `reload` is signalled (the `settings_set` command fires it),
 /// so edits in the Settings screen take effect live — no relaunch needed.
 pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
@@ -187,7 +191,7 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
             // Rebuilt each cycle so enable/cadence edits change what's watched;
             // the watch's edge state persists across the rebuild.
             let watched = watched_collectors(&collectors);
-            let provider = CalendarProvider::from_str_lenient(&collectors.calendar.provider);
+            let calendar_sources = Arc::new(collectors.calendar.sources.clone());
             let calendar_period_ms = collectors.calendar.refresh_minutes.max(1) as i64 * 60_000;
 
             let mut pr_tick =
@@ -223,10 +227,10 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                 tokio::select! {
                     _ = reload.notified() => break,
                     _ = pr_tick.tick(), if collectors.prs.enabled => {
-                        spawn_batch(&app, Batch::Prs, provider, calendar_period_ms, &guards.prs);
+                        spawn_batch(&app, Batch::Prs, calendar_period_ms, &guards.prs);
                     }
                     _ = issue_tick.tick(), if collectors.issues.enabled => {
-                        spawn_batch(&app, Batch::Issues, provider, calendar_period_ms, &guards.issues);
+                        spawn_batch(&app, Batch::Issues, calendar_period_ms, &guards.issues);
                     }
                     _ = calendar_tick.tick(), if collectors.calendar.enabled => {
                         // Quiet-hours gate: outside the configured working-hours
@@ -239,8 +243,7 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                         ) {
                             spawn_batch(
                                 &app,
-                                Batch::Calendar,
-                                provider,
+                                Batch::Calendar(calendar_sources.clone()),
                                 calendar_period_ms,
                                 &guards.calendar,
                             );
@@ -250,7 +253,6 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                         spawn_batch(
                             &app,
                             Batch::SlackDm(slack_config.clone()),
-                            provider,
                             calendar_period_ms,
                             &guards.slack,
                         );
@@ -263,7 +265,7 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                                     Batch::Issues if collectors.issues.enabled => &guards.issues,
                                     _ => continue,
                                 };
-                                spawn_batch(&app, batch, provider, calendar_period_ms, guard);
+                                spawn_batch(&app, batch, calendar_period_ms, guard);
                             }
                         }
                     }
@@ -288,43 +290,27 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
 /// collector's previous run is still in flight the tick is skipped; otherwise the
 /// guard is claimed, the batch runs on its own task (blocking work stays on the
 /// blocking pool inside `run_batch`), and the guard is released when it finishes.
-fn spawn_batch(
-    app: &AppHandle,
-    batch: Batch,
-    provider: CalendarProvider,
-    calendar_period_ms: i64,
-    guard: &Arc<AtomicBool>,
-) {
+fn spawn_batch(app: &AppHandle, batch: Batch, calendar_period_ms: i64, guard: &Arc<AtomicBool>) {
     if !claim_in_flight(guard) {
         return;
     }
     let app = app.clone();
     let guard = guard.clone();
     tauri::async_runtime::spawn(async move {
-        run_batch(&app, batch, provider, calendar_period_ms).await;
+        run_batch(&app, batch, calendar_period_ms).await;
         guard.store(false, Ordering::Release);
     });
 }
 
-async fn run_batch(
-    app: &AppHandle,
-    batch: Batch,
-    provider: CalendarProvider,
-    calendar_period_ms: i64,
-) {
+async fn run_batch(app: &AppHandle, batch: Batch, calendar_period_ms: i64) {
     let app = app.clone();
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        run_batch_blocking(&app, batch, provider, calendar_period_ms)
+        run_batch_blocking(&app, batch, calendar_period_ms)
     })
     .await;
 }
 
-fn run_batch_blocking(
-    app: &AppHandle,
-    batch: Batch,
-    provider: CalendarProvider,
-    calendar_period_ms: i64,
-) {
+fn run_batch_blocking(app: &AppHandle, batch: Batch, calendar_period_ms: i64) {
     // Data collected while the window is minimized has no audience; skip the
     // subprocess sweep (and, for calendar, the claude tokens). The next tick
     // after a restore refreshes everything.
@@ -350,7 +336,7 @@ fn run_batch_blocking(
             let repos = tt_collect::tracked_repo_dirs();
             log_failure(tt_collect::collect_issues(&store, &repos, now));
         }
-        Batch::Calendar => {
+        Batch::Calendar(sources) => {
             // Token-cost guard: an interval's first tick fires at startup, so a
             // relaunch inside half a refresh period would re-bill `claude -p`
             // for data we already have — and a run that just FAILED must back
@@ -359,7 +345,7 @@ fn run_batch_blocking(
             if claude_ran_within(&store, now, calendar_period_ms / 2) {
                 return;
             }
-            log_failure(tt_collect::collect_calendar(&store, provider, now));
+            log_failure(tt_collect::collect_calendar(&store, &sources, now));
         }
         Batch::SlackDm(config) => {
             log_failure(tt_collect::collect_slack_dm(&store, &config, now));
@@ -607,7 +593,7 @@ mod tests {
             .map(|b| match b {
                 Batch::Prs => "prs",
                 Batch::Issues => "issues",
-                Batch::Calendar => "calendar",
+                Batch::Calendar(_) => "calendar",
                 Batch::SlackDm(_) => "slack",
             })
             .collect()

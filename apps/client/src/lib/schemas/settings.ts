@@ -29,12 +29,21 @@ const CalendarQuietHoursSchema = z
   })
   .passthrough();
 
+const CalendarSourceSchema = z
+  .object({
+    id: z.string(),
+    label: z.string(),
+    enabled: z.boolean(),
+    prompt: z.string(),
+  })
+  .passthrough();
+
 const CalendarCollectorSchema = z
   .object({
     enabled: z.boolean(),
-    provider: z.string(),
     refreshMinutes: z.number(),
     quietHours: CalendarQuietHoursSchema,
+    sources: z.array(CalendarSourceSchema),
   })
   .passthrough();
 

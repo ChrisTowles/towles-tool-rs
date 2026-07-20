@@ -52,6 +52,33 @@ isn't a nice-to-have: the app's scheduler awaits collectors serially, so a
 wedged `claude` (stuck on an auth prompt, a dead MCP server) would otherwise
 block every other collector forever, not just the calendar one. If you add
 another `claude -p`-backed collector, give it the same kind of hard ceiling.
+Note the ceiling is **per source** and sources run serially, so N enabled
+calendars is an N×180s worst case — keep that in mind before adding
+concurrency-free work to this path.
+
+## Calendar sources are independent lanes
+
+One `claude -p` run per **enabled** `tt_config::CalendarSource`, each writing
+through `Store::replace_events_for_source(id, day_start, day_end, …)`. The
+delete is scoped to `(source, local day)` so a personal and a work calendar
+merge into one timeline instead of the second pull erasing the first, and the
+prompt lives in settings (not a compiled-in constant) so a machine without the
+Google/Outlook MCP can point a source at whatever does work there.
+
+Two invariants worth keeping:
+
+- **The suspicious-empty-sweep guard is per source.** A model that answers `[]`
+  when the MCP is momentarily down would otherwise blank the Cockpit countdown,
+  so an empty result that contradicts still-upcoming rows *for that source*
+  keeps the existing rows and reports an error. It must never consult or
+  protect another source's rows — a flaky work calendar excused by a healthy
+  personal one is exactly the bug the scoping exists to prevent.
+- **One run key for all sources.** Everything is recorded under the single
+  `claude:calendar` key (per-source failures become `<id>: <error>` notes in
+  the message). The frontend's collector list, the app's stale-collector watch
+  and the store's run-pruning all match that literal, so a per-source key
+  (`claude:calendar:google`) would need changes in all three before it could
+  work.
 
 ## Slack: this crate has the protocol, not the socket
 

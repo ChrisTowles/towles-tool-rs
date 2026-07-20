@@ -49,8 +49,9 @@
 
 use std::time::Instant;
 
+use chrono::{Duration, Local, NaiveDate, TimeZone};
 use serde_json::{Value, json};
-use tt_store::{McpCallInput, Store};
+use tt_store::{EventInput, McpCallInput, Store};
 
 /// Protocol version advertised when the client does not send one of its own.
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -221,8 +222,86 @@ impl Dispatcher {
             "task_list" => self.task_list(),
             "task_status" => self.task_status(args),
             "task_create" => self.task_create(args, now_ms),
+            "calendar_today" => self.calendar_today(now_ms),
+            "calendar_next" => self.calendar_next(now_ms),
+            "calendar_set" => self.calendar_set(args, now_ms),
             other => Err(format!("unknown tool: {other}")),
         }
+    }
+
+    /// Events whose start falls within the local calendar day of `now_ms` —
+    /// the shape of the day, for deciding where the focus blocks are.
+    fn calendar_today(&self, now_ms: i64) -> Result<Value, String> {
+        let (start, end) = local_day_bounds(now_ms);
+        let events = self.store.events_between(start, end).map_err(|e| e.to_string())?;
+        Ok(json!({ "events": events, "now": now_ms }))
+    }
+
+    /// The meeting in progress at `now_ms`, or the next one still to start —
+    /// with minutes-until (negative while a meeting is live) and a `live` flag.
+    fn calendar_next(&self, now_ms: i64) -> Result<Value, String> {
+        match self.store.current_or_next_event(now_ms).map_err(|e| e.to_string())? {
+            Some(event) => {
+                let minutes_until = (event.start_ts - now_ms) / 60_000;
+                let live = event.start_ts <= now_ms && event.end_ts.is_some_and(|end| now_ms < end);
+                Ok(json!({
+                    "event": event,
+                    "minutesUntil": minutes_until,
+                    "live": live,
+                    "now": now_ms,
+                }))
+            }
+            None => Ok(json!({ "event": Value::Null, "now": now_ms })),
+        }
+    }
+
+    /// The push-model write path: replace one calendar's events for one local
+    /// day, leaving every other calendar and every other day untouched (see
+    /// [`Store::replace_events_for_source`]).
+    ///
+    /// **The day window is derived here, never taken from the payload.** The
+    /// caller may name a day (`day`, `YYYY-MM-DD`, local); with no `day` it is
+    /// the local calendar day containing `now_ms`. Either way the actual
+    /// `[start, end)` bounds come from [`local_day_bounds`], so a client cannot
+    /// widen the delete beyond one day — a mis-stated window is the one way
+    /// this tool could destroy calendar rows it was not asked to touch, and the
+    /// events themselves are the least trustworthy part of the request.
+    ///
+    /// `source` names the lane and is caller-assigned; [`EventInput`]
+    /// deliberately has no `source` field, so a model-authored event array
+    /// cannot pick which calendar it overwrites.
+    fn calendar_set(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
+        let source = args
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|source| !source.is_empty())
+            .ok_or_else(|| "missing required argument: source".to_string())?;
+        let events_arg = args
+            .get("events")
+            .filter(|events| events.is_array())
+            .ok_or_else(|| "missing required argument: events (an array)".to_string())?;
+        let events: Vec<EventInput> = serde_json::from_value(events_arg.clone())
+            .map_err(|e| format!("invalid events payload: {e}"))?;
+
+        let reference_ms = match args.get("day").and_then(Value::as_str) {
+            Some(day) => local_midnight_ms(day)
+                .ok_or_else(|| format!("invalid day: {day} (expected YYYY-MM-DD)"))?,
+            None => now_ms,
+        };
+        let (day_start, day_end) = local_day_bounds(reference_ms);
+
+        let written = self
+            .store
+            .replace_events_for_source(source, day_start, day_end, &events, now_ms)
+            .map_err(|e| e.to_string())?;
+        tracing::info!(%source, written, day_start, day_end, "calendar.set");
+        Ok(json!({
+            "source": source,
+            "written": written,
+            "dayStart": day_start,
+            "dayEnd": day_end,
+        }))
     }
 
     /// Open (not-done) board tasks in board order, each with its issue/PR
@@ -350,6 +429,34 @@ fn tool_error_response(id: Value, message: &str) -> String {
     )
 }
 
+/// The `[start, end)` epoch-ms bounds of the local calendar day containing
+/// `now_ms`. Falls back to the empty window `(now_ms, now_ms)` when the local
+/// time is ambiguous or nonexistent (a DST transition), so a fold in the clock
+/// yields no events rather than a wrong day.
+fn local_day_bounds(now_ms: i64) -> (i64, i64) {
+    let Some(now) = Local.timestamp_millis_opt(now_ms).single() else {
+        return (now_ms, now_ms);
+    };
+    let date = now.date_naive();
+    let start = date.and_hms_opt(0, 0, 0).and_then(|dt| Local.from_local_datetime(&dt).single());
+    let end = (date + Duration::days(1))
+        .and_hms_opt(0, 0, 0)
+        .and_then(|dt| Local.from_local_datetime(&dt).single());
+    match (start, end) {
+        (Some(start), Some(end)) => (start.timestamp_millis(), end.timestamp_millis()),
+        _ => (now_ms, now_ms),
+    }
+}
+
+/// Local midnight of a `YYYY-MM-DD` date as epoch ms, or `None` when the date
+/// does not parse or has no unambiguous local midnight. Only used to pick the
+/// reference instant handed to [`local_day_bounds`].
+fn local_midnight_ms(day: &str) -> Option<i64> {
+    let date = NaiveDate::parse_from_str(day.trim(), "%Y-%m-%d").ok()?;
+    let midnight = date.and_hms_opt(0, 0, 0)?;
+    Some(Local.from_local_datetime(&midnight).single()?.timestamp_millis())
+}
+
 /// The repo-validation refusal: names the argument and lists what *is*
 /// tracked, so a caller can self-correct without another round trip.
 fn unknown_repo_message(repo: &str, entries: &[tt_agentboard::repos::RepoEntry]) -> String {
@@ -397,6 +504,45 @@ pub fn tool_definitions() -> Value {
                     "status": { "type": "string", "enum": ["backlog", "next", "doing", "review", "done"], "description": "Column to land in (default backlog)." },
                 },
                 "required": ["repo", "title"],
+            },
+        },
+        {
+            "name": "calendar_today",
+            "description": "The shape of today: every meeting starting in today's local calendar day, in order. Use it to see where the uninterrupted stretches are before committing to deep work.",
+            "inputSchema": no_args(),
+        },
+        {
+            "name": "calendar_next",
+            "description": "How much focus time is left: the meeting in progress now, or the next one to start, with `minutesUntil` (negative while a meeting is live) and a `live` flag. The one calendar read that matters mid-task — nothing scheduled means keep working.",
+            "inputSchema": no_args(),
+        },
+        {
+            "name": "calendar_set",
+            "description": "Push one calendar's meetings for one local day into the local cache, replacing whatever that calendar previously had for that day. This is how the calendar gets filled — a scheduled pull writes here; nothing else reads your real calendar. Other calendars and other days are left untouched.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": { "type": "string", "description": "Which configured calendar this pull represents (e.g. \"google\", \"outlook\"). Only this calendar's rows for the day are replaced." },
+                    "day": { "type": "string", "description": "Local calendar day being pushed, YYYY-MM-DD. Defaults to today." },
+                    "events": {
+                        "type": "array",
+                        "description": "The meetings for that day. An empty array clears the day for this calendar.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "externalId": { "type": "string", "description": "The calendar provider's stable id for the event." },
+                                "title": { "type": "string", "description": "Meeting title." },
+                                "startTs": { "type": "integer", "description": "Start time, epoch milliseconds." },
+                                "endTs": { "type": "integer", "description": "End time, epoch milliseconds. Omit for a point-in-time entry." },
+                                "attendees": { "type": "array", "items": { "type": "string" }, "description": "Attendee names or addresses." },
+                                "location": { "type": "string", "description": "Room or place, if any." },
+                                "joinUrl": { "type": "string", "description": "Video-call link, if any." },
+                            },
+                            "required": ["externalId", "title", "startTs"],
+                        },
+                    },
+                },
+                "required": ["source", "events"],
             },
         },
     ])
@@ -497,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_is_exactly_the_task_family() {
+    fn tools_list_is_exactly_the_task_and_calendar_families() {
         let mut dispatcher = dispatcher();
         let request = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }).to_string();
         let response: Value =
@@ -508,7 +654,244 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["task_list", "task_status", "task_create"]);
+        assert_eq!(
+            names,
+            vec![
+                "task_list",
+                "task_status",
+                "task_create",
+                "calendar_today",
+                "calendar_next",
+                "calendar_set",
+            ]
+        );
+    }
+
+    /// A `calendar_set` event payload, in the tool's camelCase wire shape.
+    fn event_json(external_id: &str, start_ts: i64, end_ts: i64) -> Value {
+        json!({
+            "externalId": external_id,
+            "title": external_id,
+            "startTs": start_ts,
+            "endTs": end_ts,
+        })
+    }
+
+    /// `calendar_set` one source's day, returning the tool result.
+    fn set_calendar(dispatcher: &mut Dispatcher, source: &str, events: Value) -> Value {
+        call_tool(dispatcher, "calendar_set", json!({ "source": source, "events": events }))
+    }
+
+    #[test]
+    fn calendar_today_returns_only_the_local_day() {
+        let (day_start, day_end) = local_day_bounds(NOW);
+        let mut dispatcher = dispatcher();
+        // One event inside today, one the previous day, one the next — all
+        // inserted by the same call (the window only scopes the delete).
+        set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([
+                event_json("yesterday", day_start - 3_600_000, day_start - 1_800_000),
+                event_json("standup", day_start + 3_600_000, day_start + 5_400_000),
+                event_json("tomorrow", day_end + 3_600_000, day_end + 5_400_000),
+            ]),
+        );
+
+        let result = call_tool(&mut dispatcher, "calendar_today", json!({}));
+        assert_eq!(result["now"], NOW);
+        let ids: Vec<&str> = result["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["externalId"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["standup"], "only today's event is in the window");
+    }
+
+    #[test]
+    fn calendar_next_flags_a_meeting_in_progress() {
+        let mut dispatcher = dispatcher();
+        // Started 10 minutes ago, runs for another 20.
+        set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json("in-progress", NOW - 600_000, NOW + 1_200_000)]),
+        );
+
+        let result = call_tool(&mut dispatcher, "calendar_next", json!({}));
+        assert_eq!(result["event"]["externalId"], "in-progress");
+        assert_eq!(result["live"], true);
+        assert_eq!(result["minutesUntil"], -10, "minutes go negative while live");
+        assert_eq!(result["now"], NOW);
+    }
+
+    #[test]
+    fn calendar_next_counts_down_to_the_next_meeting() {
+        let mut dispatcher = dispatcher();
+        set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json("upcoming", NOW + 1_800_000, NOW + 3_600_000)]),
+        );
+
+        let result = call_tool(&mut dispatcher, "calendar_next", json!({}));
+        assert_eq!(result["event"]["externalId"], "upcoming");
+        assert_eq!(result["live"], false);
+        assert_eq!(result["minutesUntil"], 30);
+    }
+
+    #[test]
+    fn calendar_next_on_an_empty_calendar_is_null() {
+        let mut dispatcher = dispatcher();
+        let result = call_tool(&mut dispatcher, "calendar_next", json!({}));
+        assert_eq!(result["event"], Value::Null);
+    }
+
+    #[test]
+    fn calendar_set_replaces_one_source_and_leaves_the_others() {
+        let (day_start, _) = local_day_bounds(NOW);
+        let mut dispatcher = dispatcher();
+        set_calendar(
+            &mut dispatcher,
+            "outlook",
+            json!([event_json(
+                "work-sync",
+                day_start + 3_600_000,
+                day_start + 5_400_000
+            )]),
+        );
+        set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json(
+                "dentist",
+                day_start + 7_200_000,
+                day_start + 9_000_000
+            )]),
+        );
+
+        // Re-pushing google replaces only google's rows for the day.
+        let result = set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json(
+                "school-run",
+                day_start + 10_800_000,
+                day_start + 12_600_000
+            )]),
+        );
+        assert_eq!(result["source"], "google");
+        assert_eq!(result["written"], 1);
+        assert_eq!(result["dayStart"], day_start);
+
+        let today = call_tool(&mut dispatcher, "calendar_today", json!({}));
+        let ids: Vec<&str> = today["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["externalId"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["work-sync", "school-run"], "outlook's row survived");
+    }
+
+    #[test]
+    fn calendar_set_accepts_an_explicit_day() {
+        let mut dispatcher = dispatcher();
+        let day = Local.timestamp_millis_opt(NOW).single().unwrap().date_naive();
+        let tomorrow = (day + Duration::days(1)).format("%Y-%m-%d").to_string();
+        let tomorrow_start = local_midnight_ms(&tomorrow).unwrap();
+
+        let result = call_tool(
+            &mut dispatcher,
+            "calendar_set",
+            json!({
+                "source": "google",
+                "day": tomorrow,
+                "events": [event_json("offsite", tomorrow_start + 3_600_000, tomorrow_start + 7_200_000)],
+            }),
+        );
+        assert_eq!(result["dayStart"], tomorrow_start);
+
+        // It is tomorrow's, so today's read does not see it.
+        let today = call_tool(&mut dispatcher, "calendar_today", json!({}));
+        assert!(today["events"].as_array().unwrap().is_empty(), "{today}");
+    }
+
+    #[test]
+    fn calendar_set_clears_a_day_with_an_empty_array() {
+        let (day_start, _) = local_day_bounds(NOW);
+        let mut dispatcher = dispatcher();
+        set_calendar(
+            &mut dispatcher,
+            "google",
+            json!([event_json(
+                "cancelled",
+                day_start + 3_600_000,
+                day_start + 5_400_000
+            )]),
+        );
+        let result = set_calendar(&mut dispatcher, "google", json!([]));
+        assert_eq!(result["written"], 0);
+        let today = call_tool(&mut dispatcher, "calendar_today", json!({}));
+        assert!(today["events"].as_array().unwrap().is_empty(), "{today}");
+    }
+
+    #[test]
+    fn calendar_set_validates_its_arguments() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(&mut dispatcher, "calendar_set", json!({ "events": [] }));
+        assert!(message.contains("source"), "{message}");
+        let message = call_tool_err(&mut dispatcher, "calendar_set", json!({ "source": "google" }));
+        assert!(message.contains("events"), "{message}");
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({ "source": "google", "events": [{ "title": "no id" }] }),
+        );
+        assert!(message.contains("invalid events payload"), "{message}");
+        let message = call_tool_err(
+            &mut dispatcher,
+            "calendar_set",
+            json!({ "source": "google", "day": "not-a-date", "events": [] }),
+        );
+        assert!(message.contains("invalid day"), "{message}");
+    }
+
+    #[test]
+    fn calendar_set_ignores_a_source_field_smuggled_into_an_event() {
+        // `source` is caller-assigned: an event carrying its own `source` must
+        // not be able to write into a different lane.
+        let (day_start, _) = local_day_bounds(NOW);
+        let mut dispatcher = dispatcher();
+        set_calendar(
+            &mut dispatcher,
+            "outlook",
+            json!([event_json(
+                "work-sync",
+                day_start + 3_600_000,
+                day_start + 5_400_000
+            )]),
+        );
+        call_tool(
+            &mut dispatcher,
+            "calendar_set",
+            json!({
+                "source": "google",
+                "events": [{
+                    "source": "outlook",
+                    "externalId": "work-sync",
+                    "title": "hijacked",
+                    "startTs": day_start + 3_600_000,
+                }],
+            }),
+        );
+
+        let today = call_tool(&mut dispatcher, "calendar_today", json!({}));
+        let events = today["events"].as_array().unwrap();
+        assert_eq!(events.len(), 2, "the outlook row was not overwritten: {today}");
+        let outlook = events.iter().find(|e| e["source"] == "outlook").unwrap();
+        assert_eq!(outlook["title"], "work-sync");
     }
 
     #[test]
