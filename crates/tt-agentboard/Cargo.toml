@@ -11,6 +11,9 @@ publish = false
 indexmap = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
+# jsonc-parser: `.claude/launch.json` is Claude Desktop's, written in the same
+# JSON-with-comments dialect as VS Code's launch.json — see `launch.rs`.
+jsonc-parser = { workspace = true }
 log = { workspace = true }
 # notify: fs-change accelerant so the bridge can trigger a low-latency rescan on
 # journal writes. Polling stays the reliable path; this is an optional supplement,

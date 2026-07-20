@@ -15,6 +15,13 @@
 //! parsing is deliberately tolerant: every field is defaulted, unknown fields
 //! are ignored, and a config we can't launch (empty executable) is kept by the
 //! parser and filtered by callers via [`LaunchConfig::launchable`].
+//!
+//! Tolerant of the *dialect*, too: like VS Code's `launch.json` (the file this
+//! one is modeled on), it may carry `//` and `/* */` comments and trailing
+//! commas — annotating a launch config is the normal thing to do to one.
+//! `serde_json` rejects all three, so [`read_launch_file`] parses through
+//! `jsonc-parser` instead and a hand-edited file no longer reads as
+//! "malformed".
 
 use std::path::{Path, PathBuf};
 
@@ -61,7 +68,7 @@ impl LaunchConfig {
 }
 
 /// The whole `launch.json`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchFile {
     #[serde(default)]
@@ -81,8 +88,40 @@ pub fn read_launch_file(dir: &Path) -> crate::Result<Option<LaunchFile>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err.into()),
     };
-    Ok(Some(serde_json::from_str(&text)?))
+    Ok(Some(parse_launch_json(&text)?))
 }
+
+/// Parse `launch.json`'s text (JSON, or JSONC as an editor would leave it).
+/// A file that parses to nothing — empty, or only comments — has no configs
+/// rather than being an error. Failures come back as [`crate::Error::Json`]:
+/// the dialect is an implementation detail, and the message already carries
+/// the line and column.
+fn parse_launch_json(text: &str) -> crate::Result<LaunchFile> {
+    // `Option<_>` because whitespace/comments-only input deserializes as null.
+    jsonc_parser::parse_to_serde_value::<Option<LaunchFile>>(text, &JSONC_OPTIONS)
+        .map(Option::unwrap_or_default)
+        .map_err(|e| crate::Error::Json(serde::de::Error::custom(e)))
+}
+
+/// Exactly the dialect an editor writes: JSON plus comments and trailing
+/// commas. `jsonc-parser`'s own defaults are far looser — single-quoted
+/// strings, unquoted keys, hex and `+`-prefixed numbers — and accepting those
+/// would quietly launch from a file Claude Desktop itself calls malformed,
+/// which is the opposite of the compatibility this module exists for.
+///
+/// `allow_missing_commas` only governs object keys; a missing comma between
+/// *array* elements is accepted by the parser either way. That one is
+/// lossless (both configs still parse), so it is left alone rather than
+/// hand-checked here.
+const JSONC_OPTIONS: jsonc_parser::ParseOptions = jsonc_parser::ParseOptions {
+    allow_comments: true,
+    allow_trailing_commas: true,
+    allow_loose_object_property_names: false,
+    allow_missing_commas: false,
+    allow_single_quoted_strings: false,
+    allow_hexadecimal_numbers: false,
+    allow_unary_plus_numbers: false,
+};
 
 /// Whether something is accepting TCP connections on localhost:`port` — the
 /// "already running" probe. A connect (not a bind test) so a listener that's
@@ -148,7 +187,7 @@ mod tests {
 
     #[test]
     fn parses_the_claude_desktop_fixture() {
-        let file: LaunchFile = serde_json::from_str(BLOG_FIXTURE).unwrap();
+        let file = parse_launch_json(BLOG_FIXTURE).unwrap();
         assert_eq!(file.version, "0.0.1");
         assert_eq!(file.configurations.len(), 3);
         let blog = &file.configurations[0];
@@ -163,7 +202,7 @@ mod tests {
 
     #[test]
     fn tolerates_unknown_fields_and_missing_optionals() {
-        let file: LaunchFile = serde_json::from_str(
+        let file = parse_launch_json(
             r#"{
               "version": "0.0.2",
               "futureTopLevel": true,
@@ -181,8 +220,7 @@ mod tests {
 
     #[test]
     fn empty_executable_is_kept_but_not_launchable() {
-        let file: LaunchFile =
-            serde_json::from_str(r#"{"configurations": [{"name": "broken"}]}"#).unwrap();
+        let file = parse_launch_json(r#"{"configurations": [{"name": "broken"}]}"#).unwrap();
         assert_eq!(file.configurations.len(), 1);
         assert!(!file.configurations[0].launchable());
     }
@@ -200,6 +238,72 @@ mod tests {
         let file = read_launch_file(root.path()).unwrap().unwrap();
         assert_eq!(file.configurations.len(), 3);
         assert!(has_launch_file(root.path()));
+    }
+
+    /// The dialect an editor actually leaves behind: `//` and `/* */`
+    /// comments plus trailing commas, all of which `serde_json` rejects.
+    #[test]
+    fn parses_comments_and_trailing_commas() {
+        let file = parse_launch_json(
+            r#"{
+              // Written by hand after Claude Desktop's version.
+              "version": "0.0.1",
+              "configurations": [
+                {
+                  "name": "blog", /* the site itself */
+                  "runtimeExecutable": "pnpm",
+                  "runtimeArgs": ["dev", "--host", ],
+                  "port": 3000,
+                },
+                /* Disabled for now — the mcp server moved.
+                {"name": "mcp", "runtimeExecutable": "pnpm"}
+                */
+              ],
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(file.version, "0.0.1");
+        assert_eq!(file.configurations.len(), 1);
+        assert_eq!(file.configurations[0].runtime_args, vec!["dev", "--host"]);
+        assert_eq!(file.configurations[0].port, Some(3000));
+    }
+
+    /// `//` and `/*` inside a string are content, not comments.
+    #[test]
+    fn comment_markers_inside_strings_survive() {
+        let file = parse_launch_json(
+            r#"{"configurations": [
+                 {"name": "docs", "runtimeExecutable": "npx",
+                  "runtimeArgs": ["serve", "https://example.com/x", "src/**/*.md"]}
+               ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            file.configurations[0].runtime_args,
+            vec!["serve", "https://example.com/x", "src/**/*.md"]
+        );
+    }
+
+    /// Only comments and trailing commas are allowed — the rest of
+    /// `jsonc-parser`'s permissive defaults would accept files Claude Desktop
+    /// itself rejects, so a config that runs here would not run there.
+    #[test]
+    fn other_loose_json_dialects_are_still_errors() {
+        for text in [
+            r#"{"version": '0.0.1'}"#,              // single-quoted string
+            r#"{configurations: []}"#,              // unquoted key
+            r#"{"configurations": [], "x": 0x10}"#, // hex number
+            r#"{"configurations": [], "x": +1}"#,   // unary plus
+            r#"{"a": 1} {"b": 2}"#,                 // trailing garbage
+        ] {
+            assert!(parse_launch_json(text).is_err(), "should not parse: {text}");
+        }
+    }
+
+    #[test]
+    fn a_comments_only_file_has_no_configs() {
+        let file = parse_launch_json("// nothing configured yet\n").unwrap();
+        assert!(file.configurations.is_empty());
     }
 
     #[test]
