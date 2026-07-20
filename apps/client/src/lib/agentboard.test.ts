@@ -12,12 +12,15 @@ import {
   dropPane,
   exitPaneId,
   exitPaneSession,
+  fmtContext,
+  fmtTokens,
   fmtWaitingAge,
   folderActionableItems,
   folderLanded,
   folderLandedButHasWork,
   folderRemovableSlot,
   forceDeleteLabel,
+  modelContextLabel,
   stoppablePort,
   type SlotBlocker,
   folderHoldsNoWork,
@@ -143,6 +146,63 @@ describe("filesPanePathFor", () => {
     expect(filesPanePathFor(dir, "~/notes/todo.md")).toBeNull();
     expect(filesPanePathFor(dir, "../sibling/file.rs")).toBeNull();
     expect(filesPanePathFor(dir, "./../file.rs")).toBeNull();
+  });
+});
+
+describe("fmtTokens", () => {
+  it("abbreviates to K and M", () => {
+    expect(fmtTokens(0)).toBe("0");
+    expect(fmtTokens(950)).toBe("950");
+    expect(fmtTokens(53_159)).toBe("53K");
+    expect(fmtTokens(412_000)).toBe("412K");
+    expect(fmtTokens(1_000_000)).toBe("1M");
+    expect(fmtTokens(1_500_000)).toBe("1.5M");
+  });
+
+  it("promotes to M on the rounded value, never reading '1000K'", () => {
+    expect(fmtTokens(999_499)).toBe("999K");
+    expect(fmtTokens(999_500)).toBe("1M");
+    expect(fmtTokens(999_999)).toBe("1M");
+  });
+
+  it("drops a trailing .0 after rounding", () => {
+    expect(fmtTokens(1_020_000)).toBe("1M");
+    expect(fmtTokens(1_049_999)).toBe("1M");
+    expect(fmtTokens(1_550_000)).toBe("1.6M");
+  });
+});
+
+describe("fmtContext", () => {
+  it("reads used against the window", () => {
+    expect(fmtContext({ contextUsed: 412_000, contextMax: 1_000_000 })).toBe("412K / 1M");
+  });
+
+  it("names the window rather than inventing a count", () => {
+    // The state after a journal rotation: the window survives, the counter doesn't.
+    expect(fmtContext({ contextMax: 200_000 })).toBe("200K window");
+  });
+
+  it("is null without a window, since a bare used-count answers nothing", () => {
+    expect(fmtContext({ contextUsed: 5_000 })).toBeNull();
+    expect(fmtContext(null)).toBeNull();
+  });
+});
+
+describe("modelContextLabel", () => {
+  it("joins model and context", () => {
+    expect(
+      modelContextLabel({ model: "claude-opus-4-8", contextUsed: 412_000, contextMax: 1_000_000 }),
+    ).toBe("claude-opus-4-8 · 412K / 1M");
+  });
+
+  it("drops the separator when only one side is known", () => {
+    expect(modelContextLabel({ model: "claude-opus-4-8" })).toBe("claude-opus-4-8");
+    expect(modelContextLabel({ contextUsed: 412_000, contextMax: 1_000_000 })).toBe("412K / 1M");
+  });
+
+  it("is null when nothing is known", () => {
+    expect(modelContextLabel({})).toBeNull();
+    expect(modelContextLabel(null)).toBeNull();
   });
 });
 
