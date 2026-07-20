@@ -29,22 +29,28 @@ using the published [docs](https://code.claude.com/docs/en/desktop) plus the
 installed bundle. Biggest gap first. Read the overlap list under it too: most
 of what this repo does, Desktop now does as well.
 
+- **Full file editor.** The Files pane is a Monaco editor with rust-analyzer
+  bridged over Tauri IPC, so hover and completions work on Rust source, and a
+  file link printed in a terminal opens the file at the clicked line. Desktop's
+  file pane covers spot edits and save, then hands off to "Open in VS Code" for
+  anything more. The LSP bridge here is still a spike: it reports
+  `starting`/`ready`/`failed` in a chip, which is there to decide whether it
+  earns its keep.
+
+- ~~**Editor-selection context.** A Claude Code CLI session can see what's
+  highlighted in a connected editor.~~ Still true of `tt-ide`, but barely a
+  gap now. Desktop's file pane does spot edits, "Attach as context", and
+  `@`-mention autocomplete. What is left is narrow: `tt-ide` is an
+  IDE-protocol server, so an outside editor can feed a live selection to a CLI
+  session, while Desktop only takes context from its own panes.
+
+  ![Claude Desktop confirming it can't see highlighted/selected code in an editor](docs/images/wishlist/claude-desktop-no-editor-selection.png)
+
 - **Cross-repo work board.** Board is a kanban of tasks spanning every watched
   repo. Each task links 0..N issues, 0..N PRs, and usually a worktree slot,
   and done rolls up from GitHub PR state. Desktop has nothing like it. Its
   "tasks pane" holds background subagents inside a single session, and no
   cross-repo surface exists.
-
-- **Issue queue.** Desktop reads PRs but not issues. There is no `gh issue`
-  path anywhere in the app, so Cockpit's assigned-issue queue and Board's
-  attach/promote flow have nothing to compare against.
-
-- **Token history.** The Claude Sessions screen scans
-  `~/.claude/projects/**/*.jsonl` for token totals by day, repo, and model,
-  ranks waste findings (`TokenOutlier`, `RereadLoop`, `CacheChurn`,
-  `Marathon`), and drills into a session's turns and tools. Desktop's usage
-  ring shows current context-window and plan usage. That is a live gauge, not
-  a record you can mine later.
 
 - **Always-on local event log.** Every subprocess and user action lands as
   JSONL at `<data_dir>/telemetry/events-<date>.jsonl`, rotated daily, tagged
@@ -64,15 +70,6 @@ of what this repo does, Desktop now does as well.
   content-based proof authorizes `git branch -D`. Desktop auto-archives a
   worktree once its PR merges or closes, which covers the common case but
   never has to answer whether a branch with no PR still holds work.
-
-- ~~**Editor-selection context.** A Claude Code CLI session can see what's
-  highlighted in a connected editor.~~ Still true of `tt-ide`, but barely a
-  gap now. Desktop's file pane does spot edits, "Attach as context", and
-  `@`-mention autocomplete. What is left is narrow: `tt-ide` is an
-  IDE-protocol server, so an outside editor can feed a live selection to a CLI
-  session, while Desktop only takes context from its own panes.
-
-  ![Claude Desktop confirming it can't see highlighted/selected code in an editor](docs/images/wishlist/claude-desktop-no-editor-selection.png)
 
 - ~~**Runs natively on Linux.** Only a community-hacked build of Claude
   Desktop ran on Linux before now.~~ Shipped as an official
