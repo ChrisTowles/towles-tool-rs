@@ -984,8 +984,9 @@ mod tests {
         EventInput {
             external_id: ext.to_string(),
             title: format!("event {ext}"),
-            start_ts,
-            end_ts: Some(start_ts + 30 * 60 * 1000),
+            start: chrono::DateTime::from_timestamp_millis(start_ts).unwrap().fixed_offset(),
+            end: chrono::DateTime::from_timestamp_millis(start_ts + 30 * 60 * 1000)
+                .map(|e| e.fixed_offset()),
             attendees: vec![],
             location: None,
             join_url: None,

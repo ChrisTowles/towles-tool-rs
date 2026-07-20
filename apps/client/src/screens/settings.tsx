@@ -697,8 +697,10 @@ function CalendarSourcesEditor({
           Each enabled calendar is pulled with its own <code>claude -p</code> prompt and stored
           separately, so several calendars merge into one timeline. The prompt must answer with only
           a JSON array of{" "}
-          <code>{"{externalId, title, startTs, endTs, attendees, location, joinUrl}"}</code>, or{" "}
-          <code>[]</code>.
+          <code>{"{externalId, title, start, end, attendees, location, joinUrl}"}</code>, or{" "}
+          <code>[]</code>. Times are RFC 3339 with the calendar's own UTC offset (
+          <code>2026-07-20T15:00:00-05:00</code>) — keep the offset rather than converting, so a
+          meeting booked as 3pm somewhere still reads that way.
         </div>
       </div>
 

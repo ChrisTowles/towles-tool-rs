@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { currentOrNextEvent, eventIsLive, fmtCountdown, type CalEvent } from "./data";
+import { currentOrNextEvent, eventIsLive, fmtCountdown, toCalEvents, type CalEvent } from "./data";
 
-const ev = (id: number, startTs: number, endTs?: number): CalEvent => ({
-  id,
-  source: "google",
-  externalId: `e${id}`,
-  title: `Event ${id}`,
-  startTs,
-  endTs,
-  attendees: [],
-});
+// Built through the real parser rather than hand-assembled, so these tests
+// also cover the ISO → epoch conversion the snapshot boundary performs.
+const ev = (id: number, startTs: number, endTs?: number): CalEvent =>
+  toCalEvents([
+    {
+      id,
+      source: "google",
+      externalId: `e${id}`,
+      title: `Event ${id}`,
+      start: new Date(startTs).toISOString(),
+      end: endTs === undefined ? undefined : new Date(endTs).toISOString(),
+      attendees: [],
+    },
+  ])[0]!;
 
 describe("currentOrNextEvent", () => {
   // "b" runs [300, 1300); "c" runs [1500, 2500).

@@ -2,14 +2,22 @@
 //! events, kanban todos, issues, PR status, and collector run bookkeeping.
 //!
 //! This crate is deliberately Tauri-free (the shared-crate rule): both the CLI and
-//! the Tauri app depend on it. All timestamps are epoch milliseconds (`i64`); clocks
-//! are injected as `now_ms` parameters so logic stays deterministic under test.
+//! the Tauri app depend on it. Clocks are injected as `now_ms` parameters (epoch
+//! milliseconds) so logic stays deterministic under test.
+//!
+//! **Calendar events are the one exception to epoch-ms storage.** Their
+//! `starts_at`/`ends_at` are RFC 3339 strings that keep the offset the calendar
+//! reported (`2026-07-20T15:00:00+01:00`), because an epoch integer throws that
+//! away — it can say *when* a meeting is but never that it was booked as 3pm
+//! London. Everything else here (`updated_at`, run timestamps, task times) is
+//! still epoch ms; see [`Store::replace_events_for_source`] for how the two meet.
 //!
 //! The public output structs serialize with `camelCase` keys to match the TypeScript
 //! contract consumed by the frontend / Tauri commands.
 
 use std::path::Path;
 
+use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -42,7 +50,47 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
+
+/// The sort/range key format for calendar events: UTC, fixed width, matching
+/// the `starts_at_utc`/`ends_at_utc` generated columns' `strftime` format
+/// **exactly**.
+///
+/// Fixed width is the whole point. These keys are compared lexically by SQLite's
+/// default `BINARY` collation, and that only equals chronological order when
+/// every value has identical shape and zone. `2026-07-20T09:00:00-05:00` sorts
+/// before `2026-07-20T10:00:00+01:00` byte-wise while being an hour *later* in
+/// real time — which is exactly why the authored column is never the sort key.
+/// If this format and the DDL's ever disagree, range queries silently return
+/// wrong rows, so the two are asserted equal in `utc_key_matches_the_generated_column`.
+const UTC_KEY_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3fZ";
+
+/// An instant as its `starts_at_utc` sort key — the bridge between the injected
+/// `now_ms` clock and the events table's text columns.
+fn utc_key(ms: i64) -> String {
+    match chrono::DateTime::from_timestamp_millis(ms) {
+        Some(dt) => dt.format(UTC_KEY_FORMAT).to_string(),
+        // Beyond what chrono can represent — callers pass `i64::MIN`/`i64::MAX`
+        // to mean "no bound". Clamp to a key that sorts outside every real
+        // value; collapsing to the epoch instead (the obvious `unwrap_or`)
+        // would turn an unbounded window into an empty one.
+        None if ms < 0 => "0000-01-01T00:00:00.000Z".to_string(),
+        None => "9999-12-31T23:59:59.999Z".to_string(),
+    }
+}
+
+/// Parse a stored event time, keeping its offset. `None` for anything that
+/// isn't RFC 3339 — see the call site in `query_events` for why that is skipped
+/// rather than propagated.
+fn parse_rfc3339(text: &str) -> Option<DateTime<FixedOffset>> {
+    DateTime::parse_from_rfc3339(text).ok()
+}
+
+/// One unparseable event row, logged so a hand-edit is discoverable instead of
+/// silently shrinking the calendar.
+fn log_unparseable_event(external_id: &str, value: &str) {
+    tracing::warn!(%external_id, %value, "tt-store: unparseable event time; row skipped");
+}
 
 /// How many MCP call-log rows are retained; older rows are pruned on insert.
 const MCP_CALL_RETAIN: i64 = 500;
@@ -72,8 +120,10 @@ CREATE TABLE IF NOT EXISTS events (
     source TEXT NOT NULL,
     external_id TEXT NOT NULL,
     title TEXT NOT NULL,
-    start_ts INTEGER NOT NULL,
-    end_ts INTEGER,
+    starts_at TEXT NOT NULL,
+    starts_at_utc TEXT GENERATED ALWAYS AS (strftime('%Y-%m-%dT%H:%M:%fZ', starts_at)) STORED,
+    ends_at TEXT,
+    ends_at_utc TEXT GENERATED ALWAYS AS (strftime('%Y-%m-%dT%H:%M:%fZ', ends_at)) STORED,
     attendees TEXT NOT NULL DEFAULT '[]',
     location TEXT,
     join_url TEXT,
@@ -207,7 +257,7 @@ fn local_midnight(date: chrono::NaiveDate) -> Option<i64> {
 
 // Column lists, kept in sync with the row-mapping closures below.
 const EVENT_COLS: &str =
-    "id, source, external_id, title, start_ts, end_ts, attendees, location, join_url";
+    "id, source, external_id, title, starts_at, ends_at, attendees, location, join_url";
 const TASK_COLS: &str = "id, text, status, position, created_at, completed_at, notes, \
      slot_repo_root, slot_repo, slot_branch, slot_dir";
 const ISSUE_COLS: &str = "repo, number, title, labels, state, url, updated_ts";
@@ -237,14 +287,28 @@ pub struct CalEvent {
     pub source: String,
     pub external_id: String,
     pub title: String,
-    pub start_ts: i64,
+    /// When the meeting starts, with the offset the calendar reported.
+    pub start: DateTime<FixedOffset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub end_ts: Option<i64>,
+    pub end: Option<DateTime<FixedOffset>>,
     pub attendees: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_url: Option<String>,
+}
+
+impl CalEvent {
+    /// The start instant as epoch ms, for arithmetic against an injected
+    /// `now_ms`. Lossy on purpose — the offset is presentation, not instant.
+    pub fn start_ms(&self) -> i64 {
+        self.start.timestamp_millis()
+    }
+
+    /// The end instant as epoch ms, when the event has one.
+    pub fn end_ms(&self) -> Option<i64> {
+        self.end.map(|end| end.timestamp_millis())
+    }
 }
 
 /// A task on the board (#339): the unit of work. Local by default; it can
@@ -417,15 +481,34 @@ pub struct Snapshot {
 pub struct EventInput {
     pub external_id: String,
     pub title: String,
-    pub start_ts: i64,
+    /// RFC 3339 with an offset (`2026-07-20T15:00:00+01:00` or `…Z`).
+    ///
+    /// A `DateTime`, not a `String`, so an unparseable value is rejected by
+    /// serde with a real message at the edge rather than reaching the store as
+    /// text nothing can order. `FixedOffset` (not `Utc`) because the offset is
+    /// data: normalizing on the way in would discard the one thing this type
+    /// exists to carry.
+    pub start: DateTime<FixedOffset>,
     #[serde(default)]
-    pub end_ts: Option<i64>,
+    pub end: Option<DateTime<FixedOffset>>,
     #[serde(default)]
     pub attendees: Vec<String>,
     #[serde(default)]
     pub location: Option<String>,
     #[serde(default)]
     pub join_url: Option<String>,
+}
+
+impl EventInput {
+    /// The start instant as epoch ms.
+    pub fn start_ms(&self) -> i64 {
+        self.start.timestamp_millis()
+    }
+
+    /// The end instant as epoch ms, when the event has one.
+    pub fn end_ms(&self) -> Option<i64> {
+        self.end.map(|end| end.timestamp_millis())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -538,6 +621,12 @@ impl Store {
         self.migrate_tasks_v7()?;
         self.migrate_tasks_v8_drop_due()?;
         self.migrate_events_v9()?;
+        self.migrate_events_v10_iso()?;
+        // After v10, never inside SCHEMA_V1: that batch runs before the
+        // migrations, so on an upgrading db the column would not exist yet.
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_events_starts_at_utc ON events(starts_at_utc);",
+        )?;
         self.conn.execute_batch(SCHEMA_MCP_CALLS_V5)?;
         self.migrate_collect_runs_v6()?;
         self.conn.execute(
@@ -752,6 +841,86 @@ impl Store {
         Ok(())
     }
 
+    /// v10: event times became RFC 3339 text that keeps its offset, replacing
+    /// the `start_ts`/`end_ts` epoch-ms integers.
+    ///
+    /// An epoch integer answers "when" and nothing else. The calendar knows a
+    /// meeting was booked as 3pm London; storing `1784732400000` discards that,
+    /// and every read then renders it in whatever zone the machine happens to be
+    /// in — so the same row reads differently after a flight.
+    ///
+    /// A rebuild, because SQLite cannot `ALTER TABLE ADD COLUMN` a **STORED**
+    /// generated column, and the sort key has to be stored to be indexable.
+    ///
+    /// **Rows are converted, not dropped** — unlike v9, which had no honest
+    /// source to attribute old rows to. Here the instant is known exactly; only
+    /// the authored offset is unknown, and `Z` states that truthfully rather
+    /// than inventing a zone. Dropping would blank the next-meeting countdown
+    /// until something writes, and with the pull collector off by default that
+    /// may not be until the user notices it is wrong.
+    ///
+    /// Detected by column presence, so it is idempotent and a no-op on fresh dbs.
+    fn migrate_events_v10_iso(&self) -> Result<()> {
+        let mut has_starts_at = false;
+        let mut has_source = false;
+        {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(events)")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(1)?;
+                match name.as_str() {
+                    "starts_at" => has_starts_at = true,
+                    "source" => has_source = true,
+                    _ => {}
+                }
+            }
+        }
+        // `has_source` false means the table is pre-v9 and `migrate_events_v9`
+        // just rebuilt it in the v9 shape; either way the epoch columns are what
+        // exist, so the conversion below is the same.
+        let _ = has_source;
+        if !has_starts_at {
+            self.conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE events_v10 (
+                     id INTEGER PRIMARY KEY,
+                     source TEXT NOT NULL,
+                     external_id TEXT NOT NULL,
+                     title TEXT NOT NULL,
+                     starts_at TEXT NOT NULL,
+                     starts_at_utc TEXT GENERATED ALWAYS AS
+                         (strftime('%Y-%m-%dT%H:%M:%fZ', starts_at)) STORED,
+                     ends_at TEXT,
+                     ends_at_utc TEXT GENERATED ALWAYS AS
+                         (strftime('%Y-%m-%dT%H:%M:%fZ', ends_at)) STORED,
+                     attendees TEXT NOT NULL DEFAULT '[]',
+                     location TEXT,
+                     join_url TEXT,
+                     updated_at INTEGER NOT NULL,
+                     UNIQUE(source, external_id)
+                 );
+                 -- Epoch ms -> RFC 3339 UTC. `Z` is the honest offset for a row
+                 -- whose authored zone was never recorded.
+                 INSERT INTO events_v10
+                     (id, source, external_id, title, starts_at, ends_at,
+                      attendees, location, join_url, updated_at)
+                 SELECT id, source, external_id, title,
+                        strftime('%Y-%m-%dT%H:%M:%fZ', start_ts / 1000.0, 'unixepoch'),
+                        CASE WHEN end_ts IS NULL THEN NULL
+                             ELSE strftime('%Y-%m-%dT%H:%M:%fZ', end_ts / 1000.0, 'unixepoch')
+                        END,
+                        attendees, location, join_url, updated_at
+                 FROM events;
+                 DROP TABLE events;
+                 ALTER TABLE events_v10 RENAME TO events;
+                 CREATE INDEX IF NOT EXISTS idx_events_starts_at_utc
+                     ON events(starts_at_utc);
+                 COMMIT;",
+            )?;
+        }
+        Ok(())
+    }
+
     /// v8: due dates are gone from tasks (2026-07-19 — GitHub issues carry no
     /// native due date, and the Board leans on status + links for urgency), so
     /// drop the column from dbs that predate the removal. Detected by column
@@ -830,8 +999,8 @@ impl Store {
     /// Returns how many rows were removed.
     pub fn sweep_old_events(&self, now_ms: i64) -> Result<usize> {
         Ok(self.conn.execute(
-            "DELETE FROM events WHERE start_ts < ?1",
-            params![now_ms.saturating_sub(EVENT_RETAIN_MS)],
+            "DELETE FROM events WHERE starts_at_utc < ?1",
+            params![utc_key(now_ms.saturating_sub(EVENT_RETAIN_MS))],
         )?)
     }
 
@@ -864,8 +1033,9 @@ impl Store {
     ) -> Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
-            "DELETE FROM events WHERE source = ?1 AND start_ts >= ?2 AND start_ts < ?3",
-            params![source, day_start_ms, day_end_ms],
+            "DELETE FROM events WHERE source = ?1
+               AND starts_at_utc >= ?2 AND starts_at_utc < ?3",
+            params![source, utc_key(day_start_ms), utc_key(day_end_ms)],
         )?;
         // Retention. The delete above is scoped to one lane and one day, so
         // unlike the full-table swap it replaced it bounds nothing over time:
@@ -897,13 +1067,13 @@ impl Store {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO events
-                   (source, external_id, title, start_ts, end_ts, attendees, location, join_url,
+                   (source, external_id, title, starts_at, ends_at, attendees, location, join_url,
                     updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT(source, external_id) DO UPDATE SET
                    title = excluded.title,
-                   start_ts = excluded.start_ts,
-                   end_ts = excluded.end_ts,
+                   starts_at = excluded.starts_at,
+                   ends_at = excluded.ends_at,
                    attendees = excluded.attendees,
                    location = excluded.location,
                    join_url = excluded.join_url,
@@ -914,8 +1084,8 @@ impl Store {
                     source,
                     e.external_id,
                     e.title,
-                    e.start_ts,
-                    e.end_ts,
+                    e.start.to_rfc3339(),
+                    e.end.map(|end| end.to_rfc3339()),
                     serde_json::to_string(&e.attendees)?,
                     e.location,
                     e.join_url,
@@ -1380,9 +1550,9 @@ impl Store {
         self.query_events(
             &format!(
                 "SELECT {EVENT_COLS} FROM events
-                 WHERE start_ts >= ?1 AND start_ts < ?2 ORDER BY start_ts ASC"
+                 WHERE starts_at_utc >= ?1 AND starts_at_utc < ?2 ORDER BY starts_at_utc ASC"
             ),
-            params![start_ms, end_ms],
+            params![utc_key(start_ms), utc_key(end_ms)],
         )
     }
 
@@ -1399,11 +1569,11 @@ impl Store {
             .query_events(
                 &format!(
                     "SELECT {EVENT_COLS} FROM events
-                     WHERE (end_ts IS NOT NULL AND end_ts > ?1)
-                        OR (end_ts IS NULL AND start_ts >= ?1)
-                     ORDER BY start_ts ASC LIMIT 1"
+                     WHERE (ends_at_utc IS NOT NULL AND ends_at_utc > ?1)
+                        OR (ends_at_utc IS NULL AND starts_at_utc >= ?1)
+                     ORDER BY starts_at_utc ASC LIMIT 1"
                 ),
-                [now_ms],
+                [utc_key(now_ms)],
             )?
             .into_iter()
             .next())
@@ -1594,8 +1764,10 @@ impl Store {
     /// can't produce a torn cross-table view.
     pub fn snapshot(&self) -> Result<Snapshot> {
         let tx = self.conn.unchecked_transaction()?;
-        let events = self
-            .query_events(&format!("SELECT {EVENT_COLS} FROM events ORDER BY start_ts ASC"), [])?;
+        let events = self.query_events(
+            &format!("SELECT {EVENT_COLS} FROM events ORDER BY starts_at_utc ASC"),
+            [],
+        )?;
         let tasks = self.all_tasks()?;
         let issues = self.issues()?;
         let prs = self.prs()?;
@@ -1629,8 +1801,8 @@ impl Store {
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, Option<i64>>(5)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<String>>(5)?,
                 r.get::<_, String>(6)?,
                 r.get::<_, Option<String>>(7)?,
                 r.get::<_, Option<String>>(8)?,
@@ -1643,20 +1815,28 @@ impl Store {
                 source,
                 external_id,
                 title,
-                start_ts,
-                end_ts,
+                starts_at,
+                ends_at,
                 attendees_json,
                 location,
                 join_url,
             ) = row?;
             let attendees: Vec<String> = serde_json::from_str(&attendees_json)?;
+            // Rows are written from a `DateTime`, so a value that no longer
+            // parses means the column was edited by hand or by another tool.
+            // Skip that row rather than failing the whole query: one bad row
+            // must not blank the countdown, and it ages out with retention.
+            let Some(start) = parse_rfc3339(&starts_at) else {
+                log_unparseable_event(&external_id, &starts_at);
+                continue;
+            };
             out.push(CalEvent {
                 id,
                 source,
                 external_id,
                 title,
-                start_ts,
-                end_ts,
+                start,
+                end: ends_at.as_deref().and_then(parse_rfc3339),
                 attendees,
                 location,
                 join_url,
@@ -1881,12 +2061,18 @@ mod tests {
             .unwrap()
     }
 
+    /// Epoch ms -> the `DateTime<FixedOffset>` the event types now hold. UTC,
+    /// since these tests assert on instants, not on presentation.
+    fn at(ms: i64) -> DateTime<FixedOffset> {
+        DateTime::from_timestamp_millis(ms).unwrap().fixed_offset()
+    }
+
     fn event(ext: &str, start: i64) -> EventInput {
         EventInput {
             external_id: ext.to_string(),
             title: format!("Event {ext}"),
-            start_ts: start,
-            end_ts: Some(start + 1000),
+            start: at(start),
+            end: Some(at(start + 1000)),
             attendees: vec!["a@example.com".to_string()],
             location: None,
             join_url: None,
@@ -2823,8 +3009,8 @@ mod tests {
             &[EventInput {
                 external_id: "no-end".to_string(),
                 title: "Open-ended".to_string(),
-                start_ts: 500,
-                end_ts: None,
+                start: at(500),
+                end: None,
                 attendees: vec![],
                 location: None,
                 join_url: None,
@@ -2896,8 +3082,8 @@ mod tests {
             &[EventInput {
                 external_id: "x".to_string(),
                 title: "T".to_string(),
-                start_ts: 1,
-                end_ts: Some(2),
+                start: at(1),
+                end: Some(at(2)),
                 attendees: vec!["a@b.com".to_string()],
                 location: Some("room".to_string()),
                 join_url: Some("https://meet".to_string()),
@@ -2935,7 +3121,7 @@ mod tests {
 
         let json = serde_json::to_string(&s.snapshot().unwrap()).unwrap();
         for key in [
-            "\"startTs\"",
+            "\"start\"",
             "\"externalId\"",
             "\"joinUrl\"",
             "\"createdAt\"",
@@ -2951,6 +3137,85 @@ mod tests {
         // snake_case must not leak through.
         assert!(!json.contains("start_ts"));
         assert!(!json.contains("review_state"));
+        // Event times are RFC 3339 on the wire, not epoch integers — this is
+        // the readability the format exists for, so pin the rendered shape.
+        // Note chrono's serde renders a zero offset as `Z` where `to_rfc3339`
+        // writes `+00:00`. Both are valid RFC 3339 and parse identically, and
+        // the generated sort column normalizes either — so this pins the shape
+        // without pretending the two spellings must match.
+        assert!(
+            json.contains("\"start\":\"1970-01-01T00:00:00.001Z\""),
+            "event start should be RFC 3339: {json}"
+        );
+    }
+
+    /// `utc_key` and the `starts_at_utc` generated column must produce byte-
+    /// identical strings. They are compared lexically, so a divergence in
+    /// width or precision does not error — it silently returns the wrong rows
+    /// from every range query. Pinned through SQLite itself rather than by
+    /// eyeballing two format strings that live in different languages.
+    #[test]
+    fn utc_key_matches_the_generated_column() {
+        let s = Store::open_in_memory().unwrap();
+        for ms in [0i64, 1, 999, 1_700_000_000_000, -86_400_000] {
+            s.replace_events_for_source("k", i64::MIN, i64::MAX, &[event("x", ms)], ms + 1)
+                .unwrap();
+            let stored: String = s
+                .conn
+                .query_row("SELECT starts_at_utc FROM events WHERE source = 'k'", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(stored, utc_key(ms), "format drift at {ms}");
+        }
+    }
+
+    /// The offset the calendar reported survives a write/read round trip —
+    /// the whole reason these columns are text and not integers.
+    #[test]
+    fn a_non_utc_offset_round_trips_and_still_sorts_by_instant() {
+        let s = Store::open_in_memory().unwrap();
+        let london = DateTime::parse_from_rfc3339("2026-07-20T15:00:00+01:00").unwrap();
+        let chicago = DateTime::parse_from_rfc3339("2026-07-20T09:30:00-05:00").unwrap();
+        // Chicago 09:30-05:00 is 14:30Z — half an hour *before* London 15:00+01:00
+        // (14:00Z)... no: 14:30Z is after 14:00Z. Instant order is london, chicago.
+        s.replace_events_for_source(
+            "tz",
+            i64::MIN,
+            i64::MAX,
+            &[
+                EventInput {
+                    external_id: "chicago".to_string(),
+                    title: "Standup".to_string(),
+                    start: chicago,
+                    end: None,
+                    attendees: vec![],
+                    location: None,
+                    join_url: None,
+                },
+                EventInput {
+                    external_id: "london".to_string(),
+                    title: "Review".to_string(),
+                    start: london,
+                    end: None,
+                    attendees: vec![],
+                    location: None,
+                    join_url: None,
+                },
+            ],
+            london.timestamp_millis(),
+        )
+        .unwrap();
+
+        let all = s.events_between(i64::MIN, i64::MAX).unwrap();
+        // Sorted by instant (14:00Z then 14:30Z), NOT by the authored strings —
+        // lexically "09:30-05:00" would come first and be wrong.
+        assert_eq!(
+            all.iter().map(|e| e.external_id.as_str()).collect::<Vec<_>>(),
+            vec!["london", "chicago"]
+        );
+        // ...and each keeps the offset it was written with.
+        let stored_london = all.iter().find(|e| e.external_id == "london").unwrap();
+        assert_eq!(stored_london.start.to_rfc3339(), "2026-07-20T15:00:00+01:00");
+        assert_eq!(stored_london.start.offset().local_minus_utc(), 3600);
     }
 
     fn mcp_call(method: &str, tool: Option<&str>, ok: bool) -> McpCallInput {
@@ -3071,8 +3336,8 @@ mod tests {
                 EventInput {
                     external_id: "many".to_string(),
                     title: "Sync".to_string(),
-                    start_ts: 100,
-                    end_ts: Some(200),
+                    start: at(100),
+                    end: Some(at(200)),
                     attendees: vec!["a@x.com".to_string(), "b@x.com".to_string()],
                     location: Some("Room 1".to_string()),
                     join_url: Some("https://meet/x".to_string()),
@@ -3080,8 +3345,8 @@ mod tests {
                 EventInput {
                     external_id: "none".to_string(),
                     title: "Solo".to_string(),
-                    start_ts: 300,
-                    end_ts: None,
+                    start: at(300),
+                    end: None,
                     attendees: vec![],
                     location: None,
                     join_url: None,
@@ -3096,7 +3361,7 @@ mod tests {
         assert_eq!(many.location.as_deref(), Some("Room 1"));
         let none = events.iter().find(|e| e.external_id == "none").unwrap();
         assert!(none.attendees.is_empty());
-        assert_eq!(none.end_ts, None);
+        assert_eq!(none.end, None);
     }
 
     #[test]
@@ -3172,6 +3437,65 @@ mod tests {
         assert_eq!(s.replace_prs(&[]).unwrap(), 0);
         assert!(s.issues().unwrap().is_empty());
         assert!(s.prs().unwrap().is_empty());
+    }
+
+    /// v10 converts epoch-ms event rows to RFC 3339 text **without losing
+    /// them**, unlike v9's deliberate drop. The instant is known exactly here;
+    /// only the authored offset isn't, and `Z` says that honestly. Dropping
+    /// instead would blank the next-meeting countdown until something writes —
+    /// and with the pull collector off by default, that may be a long time.
+    #[test]
+    fn migrate_v10_converts_epoch_rows_to_rfc3339_keeping_them() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tt.db");
+        // A v9-shaped db: has `source`, still epoch integers.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE events (
+                    id INTEGER PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    external_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    start_ts INTEGER NOT NULL,
+                    end_ts INTEGER,
+                    attendees TEXT NOT NULL DEFAULT '[]',
+                    location TEXT,
+                    join_url TEXT,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(source, external_id)
+                );
+                INSERT INTO events
+                    (source, external_id, title, start_ts, end_ts, updated_at)
+                    VALUES
+                    ('google', 'kept', 'Standup', 1700000000000, 1700001800000, 1),
+                    ('google', 'no-end', 'Reminder', 1700003600000, NULL, 1);",
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        let events = s.snapshot().unwrap().events;
+        assert_eq!(events.len(), 2, "rows are converted, not dropped");
+
+        let kept = events.iter().find(|e| e.external_id == "kept").unwrap();
+        assert_eq!(kept.start_ms(), 1_700_000_000_000, "the instant survives exactly");
+        assert_eq!(kept.end_ms(), Some(1_700_001_800_000));
+        // Unknown authored zone becomes UTC, stated as such rather than guessed.
+        assert_eq!(kept.start.offset().local_minus_utc(), 0);
+        assert_eq!(kept.start.to_rfc3339(), "2023-11-14T22:13:20+00:00");
+
+        let no_end = events.iter().find(|e| e.external_id == "no-end").unwrap();
+        assert_eq!(no_end.end, None, "a NULL end stays NULL, not epoch 0");
+
+        // The rebuilt table still writes, sorts and enforces its unique key.
+        s.replace_events_for_source("outlook", i64::MIN, i64::MAX, &[event("kept", 1)], 2).unwrap();
+        assert_eq!(s.snapshot().unwrap().events.len(), 3, "same id in another lane is fine");
+
+        // Idempotent: reopening must not rebuild again and lose the rows.
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.snapshot().unwrap().events.len(), 3, "no-op on a v10 db");
     }
 
     /// v9 rebuilds `events` for the `source` column and the composite unique

@@ -7,11 +7,42 @@ import { invoke, isTauri } from "./tauri";
  * Client-side view of the personal-HQ store (the Rust `tt-store` crate, surfaced
  * by the Tauri app). Mirrors the serialized snapshot (camelCase) that the
  * `store_snapshot` command returns and the `store://snapshot` event broadcasts.
- * Timestamps are epoch milliseconds. Before the store answers the hook holds an
+ * Timestamps are epoch milliseconds, except calendar events, whose `start`/`end`
+ * are RFC 3339 with the calendar's offset (see {@link CalEvent}). Before the
+ * store answers the hook holds an
  * empty snapshot with `live: false`; outside Tauri (plain-Vite browser dev) it
  * holds {@link mockSnapshot} instead, still with `live: false`.
  */
 
+/**
+ * A calendar event exactly as the backend sends it: `start`/`end` are RFC 3339
+ * strings carrying the offset the calendar reported
+ * (`"2026-07-20T15:00:00+01:00"`). Kept separate from {@link CalEvent} because
+ * nothing in the UI wants to do arithmetic on a string.
+ */
+export type WireCalEvent = {
+  id: number;
+  source: string;
+  externalId: string;
+  title: string;
+  start: string;
+  end?: string;
+  attendees: string[];
+  location?: string;
+  joinUrl?: string;
+};
+
+/**
+ * A calendar event as the screens use it: the wire shape plus epoch-ms
+ * `startTs`/`endTs`, parsed once at the snapshot boundary by
+ * {@link toCalEvent}.
+ *
+ * Both live here on purpose. Every consumer does instant arithmetic
+ * (`startTs - now`, sorting, "is it live"), which wants a number; but the
+ * original `start` string is the only thing that records the meeting was booked
+ * as 3pm *there*, so throwing it away at the boundary would discard exactly
+ * what the RFC 3339 change was made to preserve.
+ */
 export type CalEvent = {
   id: number;
   /**
@@ -22,12 +53,41 @@ export type CalEvent = {
   source: string;
   externalId: string;
   title: string;
+  /** RFC 3339 with the calendar's own offset — presentation and provenance. */
+  start: string;
+  end?: string;
+  /** `start` as epoch ms. Derived; the instant, with the offset dropped. */
   startTs: number;
+  /** `end` as epoch ms, when the event has one. */
   endTs?: number;
   attendees: string[];
   location?: string;
   joinUrl?: string;
 };
+
+/**
+ * Parse one wire event into the view shape.
+ *
+ * An unparseable `start` yields `NaN`, which would quietly poison every
+ * countdown and sort it touches, so such a row is dropped by
+ * {@link toCalEvents} instead — the backend only ever writes parseable values,
+ * so this means the row was hand-edited.
+ */
+function toCalEvent(e: WireCalEvent): CalEvent | null {
+  const startTs = Date.parse(e.start);
+  if (Number.isNaN(startTs)) return null;
+  const endMs = e.end === undefined ? undefined : Date.parse(e.end);
+  return {
+    ...e,
+    startTs,
+    endTs: endMs !== undefined && !Number.isNaN(endMs) ? endMs : undefined,
+  };
+}
+
+/** Parse a snapshot's events, dropping any row whose `start` doesn't parse. */
+export function toCalEvents(events: WireCalEvent[]): CalEvent[] {
+  return events.map(toCalEvent).filter((e): e is CalEvent => e !== null);
+}
 
 /** Kanban columns a todo can live in, in board order. */
 export const TASK_STATUSES = ["backlog", "next", "doing", "review", "done"] as const;
@@ -170,6 +230,17 @@ export type McpCall = {
   client?: string;
 };
 
+/** The snapshot exactly as the backend sends it — see {@link WireCalEvent}. */
+export type WireStoreSnapshot = Omit<StoreSnapshot, "events"> & { events: WireCalEvent[] };
+
+/**
+ * Turn a backend snapshot into the shape the screens use: the only place event
+ * times are parsed, so no consumer has to think about the wire format.
+ */
+export function toStoreSnapshot(wire: WireStoreSnapshot): StoreSnapshot {
+  return { ...wire, events: toCalEvents(wire.events) };
+}
+
 export type StoreSnapshot = {
   events: CalEvent[];
   tasks: TaskItem[];
@@ -201,15 +272,19 @@ export const EMPTY_SNAPSHOT: StoreSnapshot = {
  * still shows.
  */
 export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
+  // Authored in the wire shape and parsed by the real `toCalEvents`, so browser
+  // dev exercises the same conversion the app does rather than a parallel one
+  // that could drift from it.
+  const at = (ms: number) => new Date(ms).toISOString();
   return {
-    events: [
+    events: toCalEvents([
       {
         id: 1,
         source: "outlook",
         externalId: "mock-standup",
         title: "Team standup",
-        startTs: now + 25 * MINUTE,
-        endTs: now + 40 * MINUTE,
+        start: at(now + 25 * MINUTE),
+        end: at(now + 40 * MINUTE),
         attendees: [],
         location: "Meet",
         joinUrl: "https://meet.example.com/mock-standup",
@@ -219,8 +294,8 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         source: "outlook",
         externalId: "mock-design-review",
         title: "Design review",
-        startTs: now + 90 * MINUTE,
-        endTs: now + 120 * MINUTE,
+        start: at(now + 90 * MINUTE),
+        end: at(now + 120 * MINUTE),
         attendees: [],
         location: "Meet",
       },
@@ -229,8 +304,8 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         source: "outlook",
         externalId: "mock-1on1",
         title: "1:1 with Sam",
-        startTs: now + 150 * MINUTE,
-        endTs: now + 180 * MINUTE,
+        start: at(now + 150 * MINUTE),
+        end: at(now + 180 * MINUTE),
         attendees: [],
       },
       {
@@ -238,8 +313,8 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         source: "google",
         externalId: "mock-lunch",
         title: "Lunch & learn",
-        startTs: now + 210 * MINUTE,
-        endTs: now + 240 * MINUTE,
+        start: at(now + 210 * MINUTE),
+        end: at(now + 240 * MINUTE),
         attendees: [],
       },
       {
@@ -247,8 +322,8 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         source: "outlook",
         externalId: "mock-planning",
         title: "Sprint planning",
-        startTs: now + 270 * MINUTE,
-        endTs: now + 330 * MINUTE,
+        start: at(now + 270 * MINUTE),
+        end: at(now + 330 * MINUTE),
         attendees: [],
       },
       {
@@ -256,11 +331,11 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         source: "outlook",
         externalId: "mock-retro",
         title: "Retro",
-        startTs: now + 360 * MINUTE,
-        endTs: now + 390 * MINUTE,
+        start: at(now + 360 * MINUTE),
+        end: at(now + 390 * MINUTE),
         attendees: [],
       },
-    ],
+    ]),
     tasks: [],
     issues: [
       {
@@ -403,9 +478,9 @@ export function useStoreSnapshot(): { snapshot: StoreSnapshot; live: boolean } {
       try {
         const { listen } = await import("@tauri-apps/api/event");
 
-        const sub = await listen<StoreSnapshot>("store://snapshot", (e) => {
+        const sub = await listen<WireStoreSnapshot>("store://snapshot", (e) => {
           eventArrived = true;
-          setSnapshot(e.payload);
+          setSnapshot(toStoreSnapshot(e.payload));
           setLive(true);
         });
         if (disposed) {
@@ -418,9 +493,9 @@ export function useStoreSnapshot(): { snapshot: StoreSnapshot; live: boolean } {
         return;
       }
 
-      const initial = await invoke<StoreSnapshot>("store_snapshot");
+      const initial = await invoke<WireStoreSnapshot>("store_snapshot");
       if (initial.isOk() && !disposed && !eventArrived) {
-        setSnapshot(initial.value);
+        setSnapshot(toStoreSnapshot(initial.value));
         setLive(true);
       }
     })();

@@ -97,17 +97,17 @@ impl MeetingStartWatch {
         let key = (ev.source.clone(), ev.external_id.clone());
         if self.watching.as_ref() != Some(&key) {
             self.watching = Some(key);
-            self.seen_before_start = ev.start_ts > now_ms;
+            self.seen_before_start = ev.start_ms() > now_ms;
             self.fired = false;
         }
 
-        let started = ev.start_ts <= now_ms;
+        let started = ev.start_ms() <= now_ms;
         if started && self.seen_before_start && !self.fired {
             self.fired = true;
             return Some(MeetingStartEdge {
                 external_id: ev.external_id.clone(),
                 title: ev.title.clone(),
-                start_ts: ev.start_ts,
+                start_ts: ev.start_ms(),
             });
         }
         None
@@ -362,8 +362,10 @@ mod tests {
             source: "test".to_string(),
             external_id: external_id.to_string(),
             title: format!("Meeting {external_id}"),
-            start_ts,
-            end_ts: Some(start_ts + 1_800_000),
+            start: chrono::DateTime::from_timestamp_millis(start_ts).unwrap().fixed_offset(),
+            end: chrono::DateTime::from_timestamp_millis(start_ts + 1_800_000)
+                .map(|e| e.fixed_offset()),
+
             attendees: vec![],
             location: None,
             join_url: None,
@@ -446,7 +448,8 @@ mod tests {
 
         let mut refreshed = event("a", 1000);
         refreshed.title = "Meeting a (updated)".to_string();
-        refreshed.end_ts = Some(9_999_999);
+        refreshed.end =
+            chrono::DateTime::from_timestamp_millis(9_999_999).map(|e| e.fixed_offset());
         assert_eq!(w.observe(1100, Some(&refreshed)), None);
     }
 

@@ -347,8 +347,9 @@ impl Dispatcher {
                 // running — so a consumer distinguishing "starts now" from
                 // "already started" would be wrong for exactly the 59 seconds
                 // that distinction matters most.
-                let minutes_until = (event.start_ts - now_ms).div_euclid(60_000);
-                let live = event.start_ts <= now_ms && event.end_ts.is_some_and(|end| now_ms < end);
+                let minutes_until = (event.start_ms() - now_ms).div_euclid(60_000);
+                let live =
+                    event.start_ms() <= now_ms && event.end_ms().is_some_and(|end| now_ms < end);
                 Ok(json!({
                     "event": event,
                     "minutesUntil": minutes_until,
@@ -413,12 +414,12 @@ impl Dispatcher {
         // the countdown or the meeting-start notification. Swapped or
         // timezone-slipped fields are exactly what a model gets wrong, so this
         // is a refusal, not a silent repair.
-        if let Some(bad) = events.iter().find(|e| e.end_ts.is_some_and(|end| end < e.start_ts)) {
+        if let Some(bad) = events.iter().find(|e| e.end.is_some_and(|end| end < e.start)) {
             return Err(format!(
-                "event {} ends before it starts (startTs {}, endTs {}) — check the field order",
+                "event {} ends before it starts (start {}, end {}) — check the field order",
                 bad.external_id,
-                bad.start_ts,
-                bad.end_ts.unwrap_or_default(),
+                bad.start.to_rfc3339(),
+                bad.end.map(|e| e.to_rfc3339()).unwrap_or_default(),
             ));
         }
 
@@ -451,13 +452,17 @@ impl Dispatcher {
         // meeting until an event with the identical `externalId` happens to
         // replace it. A model that mis-dates one entry (wrong day, wrong year,
         // a timezone slip) is the likely author, so name the offender.
-        if let Some(stray) = events.iter().find(|e| e.start_ts < day_start || e.start_ts >= day_end)
+        if let Some(stray) =
+            events.iter().find(|e| e.start_ms() < day_start || e.start_ms() >= day_end)
         {
             return Err(format!(
                 "event {} starts at {}, outside the day being written [{}, {}) — push it with \
                  that day's `day` argument instead; an event outside the window would be stored \
                  where nothing can ever replace or sweep it",
-                stray.external_id, stray.start_ts, day_start, day_end,
+                stray.external_id,
+                stray.start.to_rfc3339(),
+                local_iso(day_start),
+                local_iso(day_end),
             ));
         }
 
@@ -465,12 +470,18 @@ impl Dispatcher {
             .store
             .replace_events_for_source(source, day_start, day_end, &events, now_ms)
             .map_err(|e| e.to_string())?;
-        tracing::info!(%source, written, day_start, day_end, "calendar.set");
+        tracing::info!(
+            %source,
+            written,
+            day_start = %local_iso(day_start),
+            day_end = %local_iso(day_end),
+            "calendar.set"
+        );
         Ok(json!({
             "source": source,
             "written": written,
-            "dayStart": day_start,
-            "dayEnd": day_end,
+            "dayStart": local_iso(day_start),
+            "dayEnd": local_iso(day_end),
         }))
     }
 
@@ -606,6 +617,20 @@ fn tool_error_response(id: Value, message: &str) -> String {
     )
 }
 
+/// An epoch-ms instant rendered in the machine's local zone, RFC 3339.
+///
+/// Used for the day-window bounds this tool reports and refuses on. They are
+/// computed as epoch ms (that is what `local_day_bounds` returns), but a caller
+/// reading `1784707200000` in a refusal cannot tell which day it was handed —
+/// which is the whole reason this tool speaks ISO.
+fn local_iso(ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| ms.to_string())
+}
+
 /// Local midnight of a `YYYY-MM-DD` date as epoch ms, or `None` when the date
 /// does not parse or has no unambiguous local midnight. Only used to pick the
 /// reference instant handed to [`Store::local_day_bounds`].
@@ -715,13 +740,13 @@ pub fn tool_definitions() -> Value {
                             "properties": {
                                 "externalId": { "type": "string", "description": "The calendar provider's stable id for the event." },
                                 "title": { "type": "string", "description": "Meeting title." },
-                                "startTs": { "type": "integer", "description": "Start time, epoch milliseconds." },
-                                "endTs": { "type": "integer", "description": "End time, epoch milliseconds. Omit for a point-in-time entry." },
+                                "start": { "type": "string", "description": "Start time, RFC 3339 with the calendar's UTC offset, e.g. \"2026-07-20T15:00:00+01:00\" (or \"...Z\"). Keep the offset the calendar reports — it records that the meeting was booked as 3pm there, which a UTC-only time cannot." },
+                                "end": { "type": "string", "description": "End time, same format. Omit for a point-in-time entry." },
                                 "attendees": { "type": "array", "items": { "type": "string" }, "description": "Attendee names or addresses." },
                                 "location": { "type": "string", "description": "Room or place, if any." },
                                 "joinUrl": { "type": "string", "description": "Video-call link, if any." },
                             },
-                            "required": ["externalId", "title", "startTs"],
+                            "required": ["externalId", "title", "start"],
                         },
                     },
                 },
@@ -864,13 +889,19 @@ mod tests {
         );
     }
 
-    /// A `calendar_set` event payload, in the tool's camelCase wire shape.
+    /// An epoch-ms instant as the RFC 3339 the tool now speaks, in local time
+    /// (which is what a real calendar would report).
+    fn iso(ms: i64) -> String {
+        Local.timestamp_millis_opt(ms).single().unwrap().to_rfc3339()
+    }
+
+    /// A `calendar_set` event payload, in the tool's wire shape.
     fn event_json(external_id: &str, start_ts: i64, end_ts: i64) -> Value {
         json!({
             "externalId": external_id,
             "title": external_id,
-            "startTs": start_ts,
-            "endTs": end_ts,
+            "start": iso(start_ts),
+            "end": iso(end_ts),
         })
     }
 
@@ -1040,7 +1071,7 @@ mod tests {
         );
         assert_eq!(result["source"], "google");
         assert_eq!(result["written"], 1);
-        assert_eq!(result["dayStart"], day_start);
+        assert_eq!(result["dayStart"], iso(day_start));
 
         let today = call_tool(&mut dispatcher, "calendar_today", json!({}));
         let ids: Vec<&str> = today["events"]
@@ -1068,7 +1099,7 @@ mod tests {
                 "events": [event_json("offsite", tomorrow_start + 3_600_000, tomorrow_start + 7_200_000)],
             }),
         );
-        assert_eq!(result["dayStart"], tomorrow_start);
+        assert_eq!(result["dayStart"], iso(tomorrow_start));
 
         // It is tomorrow's, so today's read does not see it.
         let today = call_tool(&mut dispatcher, "calendar_today", json!({}));
@@ -1139,7 +1170,7 @@ mod tests {
                     "source": "outlook",
                     "externalId": "work-sync",
                     "title": "hijacked",
-                    "startTs": day_start + 3_600_000,
+                    "start": iso(day_start + 3_600_000),
                 }],
             }),
         );

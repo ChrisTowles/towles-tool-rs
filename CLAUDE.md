@@ -218,7 +218,11 @@ Cargo workspace + npm workspace (`apps/client` only):
     events/issues/PRs and refresh link states; tasks are user-created
     (issues attachable/promotable via `gh`). The app UI and MCP server read.
     Timestamps are epoch ms, passed in (`now_ms`) — never read the clock in
-    logic.
+    logic. **Calendar events are the exception**: their `starts_at`/`ends_at`
+    are RFC 3339 text keeping the offset the calendar reported, with a
+    STORED generated `starts_at_utc` as the sort/range key — never sort or
+    range on the authored column, whose lexical order is not chronological
+    across offsets.
   - `tt-collect` — collectors that fill tt.db: calendar via `claude -p`
     (strict-JSON prompt + lenient extraction; one run per enabled
     `CalendarSource`, each with its own user-editable prompt and its own store
