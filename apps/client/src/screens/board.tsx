@@ -72,6 +72,7 @@ import { bucketByStatus, byBoardOrder, groupTasksByRepo, NO_REPO_GROUP } from "@
 import { useFocusTarget } from "@/lib/focus-target";
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
+import { PR_TONE, prTone } from "@/lib/pr-tone";
 import { useShortcuts } from "@/lib/shortcuts";
 import { toast } from "sonner";
 import type { Result } from "better-result";
@@ -906,30 +907,33 @@ function Card({
               #{link.number}
             </a>
           ))}
-          {task.prs.map((link) => (
-            <a
-              key={`p${link.repo}#${link.number}`}
-              href={link.url}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => {
-                e.preventDefault();
-                void openExternalUrl(link.url);
-              }}
-              title={`${link.repo}#${link.number} · ${link.state}${link.checks !== "none" ? ` · checks ${link.checks}` : ""}`}
-              className={cn(
-                "font-mono text-[11px] hover:underline",
-                link.state === "merged"
-                  ? "text-green-600 dark:text-green-400"
-                  : link.checks === "failing"
-                    ? "text-amber-600 dark:text-amber-400"
+          {task.prs.map((link) => {
+            // Compact link chips stay muted unless something is settled or
+            // wrong — running/passing/plain would be noise at this size.
+            const tone = prTone(link);
+            return (
+              <a
+                key={`p${link.repo}#${link.number}`}
+                href={link.url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => {
+                  e.preventDefault();
+                  void openExternalUrl(link.url);
+                }}
+                title={`${link.repo}#${link.number} · ${link.state}${link.checks !== "none" ? ` · checks ${link.checks}` : ""}`}
+                className={cn(
+                  "font-mono text-[11px] hover:underline",
+                  tone === "merged" || tone === "failed"
+                    ? PR_TONE[tone].text
                     : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              PR #{link.number}
-              {link.state === "merged" && " ✓"}
-            </a>
-          ))}
+                )}
+              >
+                PR #{link.number}
+                {link.state === "merged" && " ✓"}
+              </a>
+            );
+          })}
           {task.dueTs !== undefined && (
             <Badge
               variant="outline"

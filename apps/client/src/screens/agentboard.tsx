@@ -148,6 +148,7 @@ import { useFocusTarget } from "@/lib/focus-target";
 import { railRowMotion } from "@/lib/rail-motion";
 import { AnimatePresence, motion } from "motion/react";
 import { openExternalUrl } from "@/lib/open-url";
+import { PR_TONE } from "@/lib/pr-tone";
 import { useWorkspace } from "@/lib/workspace";
 import { untrackRepo } from "@/lib/repo-actions";
 import { uiAction } from "@/lib/ui-action";
@@ -1574,6 +1575,7 @@ export function AgentboardScreen() {
       kind: "pr" | "event";
       title: string;
       sub: string;
+      border: string;
       onClick: () => void;
     }[] = [];
     for (const p of snapshot.prs) {
@@ -1584,6 +1586,7 @@ export function AgentboardScreen() {
           kind: "pr",
           title: `${p.repo.split("/").pop()} #${p.number}`,
           sub: checksFailing ? "Checks failing" : "Review requested",
+          border: checksFailing ? PR_TONE.failed.border : PR_TONE.review.border,
           onClick: () => void openExternalUrl(p.url),
         });
       }
@@ -1597,6 +1600,7 @@ export function AgentboardScreen() {
         kind: "event",
         title: soon.title,
         sub: `Starts in ${fmtCountdown(soon.startTs - now)}`,
+        border: "border-l-blue-500",
         onClick: () => openTab("cockpit"),
       });
     }
@@ -1695,7 +1699,7 @@ export function AgentboardScreen() {
                           onClick={a.onClick}
                           className={cn(
                             "flex items-center gap-2 rounded-md border border-l-2 px-2 py-1.5 text-left hover:bg-accent/50",
-                            a.kind === "pr" ? "border-l-red-500" : "border-l-blue-500",
+                            a.border,
                           )}
                         >
                           {a.kind === "pr" ? (
