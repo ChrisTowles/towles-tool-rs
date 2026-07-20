@@ -98,10 +98,30 @@ pub fn read_launch_file(dir: &Path) -> crate::Result<Option<LaunchFile>> {
 /// the line and column.
 fn parse_launch_json(text: &str) -> crate::Result<LaunchFile> {
     // `Option<_>` because whitespace/comments-only input deserializes as null.
-    jsonc_parser::parse_to_serde_value::<Option<LaunchFile>>(text, &Default::default())
+    jsonc_parser::parse_to_serde_value::<Option<LaunchFile>>(text, &JSONC_OPTIONS)
         .map(Option::unwrap_or_default)
         .map_err(|e| crate::Error::Json(serde::de::Error::custom(e)))
 }
+
+/// Exactly the dialect an editor writes: JSON plus comments and trailing
+/// commas. `jsonc-parser`'s own defaults are far looser — single-quoted
+/// strings, unquoted keys, hex and `+`-prefixed numbers — and accepting those
+/// would quietly launch from a file Claude Desktop itself calls malformed,
+/// which is the opposite of the compatibility this module exists for.
+///
+/// `allow_missing_commas` only governs object keys; a missing comma between
+/// *array* elements is accepted by the parser either way. That one is
+/// lossless (both configs still parse), so it is left alone rather than
+/// hand-checked here.
+const JSONC_OPTIONS: jsonc_parser::ParseOptions = jsonc_parser::ParseOptions {
+    allow_comments: true,
+    allow_trailing_commas: true,
+    allow_loose_object_property_names: false,
+    allow_missing_commas: false,
+    allow_single_quoted_strings: false,
+    allow_hexadecimal_numbers: false,
+    allow_unary_plus_numbers: false,
+};
 
 /// Whether something is accepting TCP connections on localhost:`port` — the
 /// "already running" probe. A connect (not a bind test) so a listener that's
@@ -262,6 +282,22 @@ mod tests {
             file.configurations[0].runtime_args,
             vec!["serve", "https://example.com/x", "src/**/*.md"]
         );
+    }
+
+    /// Only comments and trailing commas are allowed — the rest of
+    /// `jsonc-parser`'s permissive defaults would accept files Claude Desktop
+    /// itself rejects, so a config that runs here would not run there.
+    #[test]
+    fn other_loose_json_dialects_are_still_errors() {
+        for text in [
+            r#"{"version": '0.0.1'}"#,              // single-quoted string
+            r#"{configurations: []}"#,              // unquoted key
+            r#"{"configurations": [], "x": 0x10}"#, // hex number
+            r#"{"configurations": [], "x": +1}"#,   // unary plus
+            r#"{"a": 1} {"b": 2}"#,                 // trailing garbage
+        ] {
+            assert!(parse_launch_json(text).is_err(), "should not parse: {text}");
+        }
     }
 
     #[test]
