@@ -37,12 +37,10 @@ of what this repo does, Desktop now does as well.
   `starting`/`ready`/`failed` in a chip, which is there to decide whether it
   earns its keep.
 
-- ~~**Editor-selection context.** A Claude Code CLI session can see what's
-  highlighted in a connected editor.~~ Still true of `tt-ide`, but barely a
-  gap now. Desktop's file pane does spot edits, "Attach as context", and
-  `@`-mention autocomplete. What is left is narrow: `tt-ide` is an
-  IDE-protocol server, so an outside editor can feed a live selection to a CLI
-  session, while Desktop only takes context from its own panes.
+- **Editor-selection context.** `tt-ide` is an IDE-protocol server, so an
+  outside editor can feed a live selection to a CLI session running in the same
+  folder. Desktop only takes context from its own panes, via spot edits,
+  "Attach as context", and `@`-mention autocomplete.
 
   ![Claude Desktop confirming it can't see highlighted/selected code in an editor](docs/images/wishlist/claude-desktop-no-editor-selection.png)
 
@@ -70,10 +68,6 @@ of what this repo does, Desktop now does as well.
   content-based proof authorizes `git branch -D`. Desktop auto-archives a
   worktree once its PR merges or closes, which covers the common case but
   never has to answer whether a branch with no PR still holds work.
-
-- ~~**Runs natively on Linux.** Only a community-hacked build of Claude
-  Desktop ran on Linux before now.~~ Shipped as an official
-  [beta](https://code.claude.com/docs/en/desktop-linux) on June 30, 2026.
 
 ### Overlap: things Desktop already does
 
