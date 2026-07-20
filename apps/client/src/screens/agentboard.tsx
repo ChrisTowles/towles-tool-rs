@@ -1985,6 +1985,7 @@ export function AgentboardScreen() {
                       {open.map((id) => {
                         const r = rectFor(id);
                         const s = sessionById.get(id);
+                        const termDir = folderOf.get(id)?.dir;
                         return (
                           <div
                             key={id}
@@ -2022,19 +2023,17 @@ export function AgentboardScreen() {
                               <div className="relative min-h-0 flex-1" data-term-host>
                                 <TerminalView
                                   termId={id}
-                                  cwd={folderOf.get(id)?.dir ?? cwds.current[id]}
+                                  cwd={termDir ?? cwds.current[id]}
                                   onExit={(exit) => handleExit(id, exit)}
                                   onTitle={onTitle}
-                                  onOpenPath={(() => {
-                                    // Only folder-owned terminals can route
-                                    // links into a files pane; others keep the
-                                    // external-editor default.
-                                    const dir = folderOf.get(id)?.dir;
-                                    return dir
-                                      ? (path: string, line: number | null) =>
-                                          openTerminalPath(dir, path, line)
-                                      : undefined;
-                                  })()}
+                                  // Only folder-owned terminals can route links
+                                  // into a files pane; others keep the
+                                  // external-editor default.
+                                  onOpenPath={
+                                    termDir
+                                      ? (path, line) => openTerminalPath(termDir, path, line)
+                                      : undefined
+                                  }
                                 />
                                 {s && (
                                   <ColdCacheOverlay

@@ -116,6 +116,15 @@ export function TerminalView({
   onTitleRef.current = onTitle;
   const onOpenPathRef = useRef(onOpenPath);
   onOpenPathRef.current = onOpenPath;
+  // The one place this component invokes the external editor — the bridge's
+  // no-handler fallback and the context menu's explicit "Open in editor" both
+  // land here. Relative paths resolve against this pane's `cwd` (the backend
+  // joins them). Ref'd like the callbacks above so the long-lived render
+  // effect reads it without listing a dep.
+  const openPathInEditor = (link: Extract<TermLink, { kind: "path" }>) =>
+    void invoke("term_open_path", { path: link.path, cwd, line: link.line });
+  const openPathInEditorRef = useRef(openPathInEditor);
+  openPathInEditorRef.current = openPathInEditor;
 
   // Scrollback search. The canvas paints from `searchRef` (mutable, read by
   // the render closure inside the effect); React state mirrors what the
@@ -808,13 +817,12 @@ export function TerminalView({
         clearScrollback: () => void invoke(TERM_CLEAR_COMMAND, { termId }),
         // Open a clicked file path, seeking to its `:line` if it had one:
         // through `onOpenPath` (the files pane) when the parent wired one,
-        // else in the preferred external editor. Relative paths resolve
-        // against this pane's `cwd` (the backend joins them). Report-only —
-        // this opens a viewer, it never writes to the PTY.
+        // else in the preferred external editor. Report-only — this opens a
+        // viewer, it never writes to the PTY.
         openPath: (link) => {
           const handler = onOpenPathRef.current;
           if (handler) handler(link.path, link.line);
-          else void invoke("term_open_path", { path: link.path, cwd, line: link.line });
+          else openPathInEditorRef.current(link);
         },
         linkAtPoint: (offsetX, offsetY) => {
           const x = Math.max(0, Math.min(grid.cols - 1, Math.floor(offsetX / cellW)));
@@ -1130,11 +1138,7 @@ export function TerminalView({
                     : "Open in editor"}
               </ContextMenuItem>
               {menuLink.kind === "path" && onOpenPath && (
-                <ContextMenuItem
-                  onSelect={() =>
-                    void invoke("term_open_path", { path: menuLink.path, cwd, line: menuLink.line })
-                  }
-                >
+                <ContextMenuItem onSelect={() => openPathInEditor(menuLink)}>
                   Open in editor
                 </ContextMenuItem>
               )}
