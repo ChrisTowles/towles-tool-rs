@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Check,
   ChevronsUpDown,
@@ -82,6 +82,7 @@ import {
   nextCalendarSourceId,
   useUserSettings,
   type CalendarSource,
+  type SaveState,
   type UserSettings,
 } from "@/lib/settings";
 import { DEFAULT_TERMINAL_FONT_SIZE, clampTerminalFontSize } from "@/lib/terminal-prefs";
@@ -158,7 +159,13 @@ function TabHeading({
   );
 }
 
-type Update = (fn: (prev: UserSettings) => UserSettings) => void;
+/** `defer` debounces the write — see `useUserSettings`. Set it for anything the
+ * user types into; leave it off for toggles, selects, and one-click choices. */
+type Update = (fn: (prev: UserSettings) => UserSettings, opts?: { defer?: boolean }) => void;
+
+/** Commits a pending deferred write immediately — wired to the blur of every
+ * input that defers, so tabbing out of a field saves it. */
+type Flush = () => Promise<void>;
 
 /** Stacked label + description above a full-width control (text/number rows). */
 function FieldRow({
@@ -207,12 +214,15 @@ function CadenceRow({
   value,
   unit,
   onValue,
+  onCommit,
 }: {
   label: string;
   description: string;
   value: number;
   unit: string;
   onValue: (n: number) => void;
+  /** Commit the debounced write now (blur) rather than waiting out the delay. */
+  onCommit?: () => void;
 }) {
   return (
     <SettingRow label={label} description={description}>
@@ -225,6 +235,7 @@ function CadenceRow({
             const n = Number(e.target.value);
             if (Number.isFinite(n) && n >= 1) onValue(Math.floor(n));
           }}
+          onBlur={onCommit}
           className="w-20"
         />
         <span className="text-sm text-muted-foreground">{unit}</span>
@@ -249,10 +260,13 @@ function RevealInput({
   value,
   onChange,
   placeholder,
+  onCommit,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
+  /** Commit the debounced write now (blur) rather than waiting out the delay. */
+  onCommit?: () => void;
 }) {
   const [shown, setShown] = useState(false);
   return (
@@ -261,6 +275,7 @@ function RevealInput({
         type={shown ? "text" : "password"}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onBlur={onCommit}
         placeholder={placeholder}
         className="pr-9 font-mono text-xs"
         spellCheck={false}
@@ -329,11 +344,14 @@ function SlackUserPicker({
   userName,
   onPick,
   onIdChange,
+  onIdCommit,
 }: {
   userId: string;
   userName: string;
   onPick: (user: SlackUser) => void;
   onIdChange: (id: string) => void;
+  /** Commits the debounced write behind the typed-member-id fallback below. */
+  onIdCommit?: () => void;
 }) {
   const [users, setUsers] = useState<SlackUser[] | null>(null);
   const [failed, setFailed] = useState(false);
@@ -357,6 +375,7 @@ function SlackUserPicker({
       <Input
         value={userId}
         onChange={(e) => onIdChange(e.target.value)}
+        onBlur={onIdCommit}
         className="font-mono text-xs"
         placeholder="U0123ABCD"
         spellCheck={false}
@@ -494,7 +513,7 @@ function FilteredContent({
   );
 }
 
-function generalSections(settings: UserSettings, update: Update): FilterSection[] {
+function generalSections(settings: UserSettings, update: Update, flush: Flush): FilterSection[] {
   return [
     {
       rows: [
@@ -508,7 +527,10 @@ function generalSections(settings: UserSettings, update: Update): FilterSection[
             >
               <Input
                 value={settings.preferredEditor}
-                onChange={(e) => update((s) => ({ ...s, preferredEditor: e.target.value }))}
+                onChange={(e) =>
+                  update((s) => ({ ...s, preferredEditor: e.target.value }), { defer: true })
+                }
+                onBlur={() => void flush()}
                 placeholder="code"
                 className="max-w-xs font-mono text-xs"
                 spellCheck={false}
@@ -589,13 +611,17 @@ function appearanceSections(
   ];
 }
 
-function journalSections(settings: UserSettings, update: Update): FilterSection[] {
+function journalSections(settings: UserSettings, update: Update, flush: Flush): FilterSection[] {
   const j = settings.journalSettings;
+  // Every field here is free text, so all of them defer.
   const setJournal = (patch: Partial<UserSettings["journalSettings"]>) =>
-    update((s) => ({
-      ...s,
-      journalSettings: { ...s.journalSettings, ...patch },
-    }));
+    update(
+      (s) => ({
+        ...s,
+        journalSettings: { ...s.journalSettings, ...patch },
+      }),
+      { defer: true },
+    );
   const field = (
     key: keyof UserSettings["journalSettings"],
     label: string,
@@ -609,6 +635,7 @@ function journalSections(settings: UserSettings, update: Update): FilterSection[
         <Input
           value={j[key]}
           onChange={(e) => setJournal({ [key]: e.target.value })}
+          onBlur={() => void flush()}
           className="font-mono text-xs"
           spellCheck={false}
         />
@@ -667,12 +694,18 @@ function journalSections(settings: UserSettings, update: Update): FilterSection[
 function CalendarSourcesEditor({
   sources,
   onChange,
+  onCommit,
 }: {
   sources: CalendarSource[];
-  onChange: (sources: CalendarSource[]) => void;
+  onChange: (sources: CalendarSource[], opts?: { defer?: boolean }) => void;
+  /** Commits the debounced write behind the typed label/prompt fields. */
+  onCommit?: () => void;
 }) {
-  const patch = (index: number, next: Partial<CalendarSource>) =>
-    onChange(sources.map((s, i) => (i === index ? { ...s, ...next } : s)));
+  const patch = (index: number, next: Partial<CalendarSource>, opts?: { defer?: boolean }) =>
+    onChange(
+      sources.map((s, i) => (i === index ? { ...s, ...next } : s)),
+      opts,
+    );
 
   const add = () => {
     const label = `Calendar ${sources.length + 1}`;
@@ -718,7 +751,8 @@ function CalendarSourcesEditor({
             />
             <Input
               value={source.label}
-              onChange={(e) => patch(index, { label: e.target.value })}
+              onChange={(e) => patch(index, { label: e.target.value }, { defer: true })}
+              onBlur={onCommit}
               placeholder="Label"
               aria-label="Calendar label"
               className="h-8 max-w-56"
@@ -737,7 +771,8 @@ function CalendarSourcesEditor({
           </div>
           <Textarea
             value={source.prompt}
-            onChange={(e) => patch(index, { prompt: e.target.value })}
+            onChange={(e) => patch(index, { prompt: e.target.value }, { defer: true })}
+            onBlur={onCommit}
             placeholder="Prompt claude with how to list today's events for this calendar, and what JSON to answer with."
             spellCheck={false}
             rows={5}
@@ -787,28 +822,45 @@ function collectorsSections(
   update: Update,
   run: (key: string) => CollectRun | undefined,
   now: number,
+  flush: Flush,
 ): FilterSection[] {
   const c = settings.collectors;
+  // `typed` marks a patch as coming from a keystroke, so the write debounces
+  // instead of handing the scheduler a partial cadence or half-pasted token.
+  const typed = { defer: true };
   const setCollector = <K extends keyof UserSettings["collectors"]>(
     key: K,
     patch: Partial<UserSettings["collectors"][K]>,
+    opts?: { defer?: boolean },
   ) =>
-    update((s) => ({
-      ...s,
-      collectors: {
-        ...s.collectors,
-        [key]: { ...s.collectors[key], ...patch },
-      },
-    }));
-  const setCal = (patch: Partial<UserSettings["collectors"]["calendar"]>) =>
-    setCollector("calendar", patch);
-  const setCalQuiet = (patch: Partial<UserSettings["collectors"]["calendar"]["quietHours"]>) =>
-    setCal({ quietHours: { ...c.calendar.quietHours, ...patch } });
-  const setPrs = (patch: Partial<UserSettings["collectors"]["prs"]>) => setCollector("prs", patch);
-  const setIssues = (patch: Partial<UserSettings["collectors"]["issues"]>) =>
-    setCollector("issues", patch);
-  const setSlack = (patch: Partial<UserSettings["collectors"]["slack"]>) =>
-    setCollector("slack", patch);
+    update(
+      (s) => ({
+        ...s,
+        collectors: {
+          ...s.collectors,
+          [key]: { ...s.collectors[key], ...patch },
+        },
+      }),
+      opts,
+    );
+  const setCal = (
+    patch: Partial<UserSettings["collectors"]["calendar"]>,
+    opts?: { defer?: boolean },
+  ) => setCollector("calendar", patch, opts);
+  const setCalQuiet = (
+    patch: Partial<UserSettings["collectors"]["calendar"]["quietHours"]>,
+    opts?: { defer?: boolean },
+  ) => setCal({ quietHours: { ...c.calendar.quietHours, ...patch } }, opts);
+  const setPrs = (patch: Partial<UserSettings["collectors"]["prs"]>, opts?: { defer?: boolean }) =>
+    setCollector("prs", patch, opts);
+  const setIssues = (
+    patch: Partial<UserSettings["collectors"]["issues"]>,
+    opts?: { defer?: boolean },
+  ) => setCollector("issues", patch, opts);
+  const setSlack = (
+    patch: Partial<UserSettings["collectors"]["slack"]>,
+    opts?: { defer?: boolean },
+  ) => setCollector("slack", patch, opts);
 
   return [
     {
@@ -833,7 +885,8 @@ function collectorsSections(
           node: (
             <CalendarSourcesEditor
               sources={c.calendar.sources}
-              onChange={(sources) => setCal({ sources })}
+              onChange={(sources, opts) => setCal({ sources }, opts)}
+              onCommit={() => void flush()}
             />
           ),
         },
@@ -846,7 +899,8 @@ function collectorsSections(
               description="How often to re-fetch the calendar."
               value={c.calendar.refreshMinutes}
               unit="min"
-              onValue={(n) => setCal({ refreshMinutes: n })}
+              onValue={(n) => setCal({ refreshMinutes: n }, typed)}
+              onCommit={() => void flush()}
             />
           ),
         },
@@ -876,7 +930,8 @@ function collectorsSections(
                   min={0}
                   max={23}
                   value={c.calendar.quietHours.startHour}
-                  onChange={(e) => setCalQuiet({ startHour: clampHour(e.target.value) })}
+                  onChange={(e) => setCalQuiet({ startHour: clampHour(e.target.value) }, typed)}
+                  onBlur={() => void flush()}
                   disabled={!c.calendar.quietHours.enabled}
                   className="w-16"
                 />
@@ -886,7 +941,8 @@ function collectorsSections(
                   min={0}
                   max={23}
                   value={c.calendar.quietHours.endHour}
-                  onChange={(e) => setCalQuiet({ endHour: clampHour(e.target.value) })}
+                  onChange={(e) => setCalQuiet({ endHour: clampHour(e.target.value) }, typed)}
+                  onBlur={() => void flush()}
                   disabled={!c.calendar.quietHours.enabled}
                   className="w-16"
                 />
@@ -933,7 +989,8 @@ function collectorsSections(
               description="How often to re-poll PRs."
               value={c.prs.refreshSeconds}
               unit="sec"
-              onValue={(n) => setPrs({ refreshSeconds: n })}
+              onValue={(n) => setPrs({ refreshSeconds: n }, typed)}
+              onCommit={() => void flush()}
             />
           ),
         },
@@ -964,7 +1021,8 @@ function collectorsSections(
               description="How often to re-poll issues."
               value={c.issues.refreshMinutes}
               unit="min"
-              onValue={(n) => setIssues({ refreshMinutes: n })}
+              onValue={(n) => setIssues({ refreshMinutes: n }, typed)}
+              onCommit={() => void flush()}
             />
           ),
         },
@@ -995,7 +1053,8 @@ function collectorsSections(
             >
               <RevealInput
                 value={c.slack.token}
-                onChange={(v) => setSlack({ token: v })}
+                onChange={(v) => setSlack({ token: v }, typed)}
+                onCommit={() => void flush()}
                 placeholder="xoxp-…"
               />
             </FieldRow>
@@ -1011,7 +1070,8 @@ function collectorsSections(
             >
               <RevealInput
                 value={c.slack.appToken}
-                onChange={(v) => setSlack({ appToken: v })}
+                onChange={(v) => setSlack({ appToken: v }, typed)}
+                onCommit={() => void flush()}
                 placeholder="xapp-…"
               />
             </FieldRow>
@@ -1029,7 +1089,8 @@ function collectorsSections(
                 userId={c.slack.watchUserId}
                 userName={c.slack.watchName}
                 onPick={(u) => setSlack({ watchUserId: u.id, watchName: u.name })}
-                onIdChange={(id) => setSlack({ watchUserId: id })}
+                onIdChange={(id) => setSlack({ watchUserId: id }, typed)}
+                onIdCommit={() => void flush()}
               />
             </FieldRow>
           ),
@@ -1044,7 +1105,8 @@ function collectorsSections(
             >
               <Input
                 value={c.slack.watchName}
-                onChange={(e) => setSlack({ watchName: e.target.value })}
+                onChange={(e) => setSlack({ watchName: e.target.value }, typed)}
+                onBlur={() => void flush()}
                 placeholder="Sarah"
                 spellCheck={false}
               />
@@ -1060,7 +1122,8 @@ function collectorsSections(
               description="How often to poll the DM (min 30s)."
               value={c.slack.refreshSeconds}
               unit="sec"
-              onValue={(n) => setSlack({ refreshSeconds: n })}
+              onValue={(n) => setSlack({ refreshSeconds: n }, typed)}
+              onCommit={() => void flush()}
             />
           ),
         },
@@ -1069,7 +1132,11 @@ function collectorsSections(
   ];
 }
 
-function agentboardSections(settings: UserSettings | null, update: Update): FilterSection[] {
+function agentboardSections(
+  settings: UserSettings | null,
+  update: Update,
+  flush: Flush,
+): FilterSection[] {
   const rows: FilterRow[] = [
     {
       label: "Scan roots",
@@ -1193,14 +1260,18 @@ function agentboardSections(settings: UserSettings | null, update: Update): Filt
               settings.agentboard?.compactRecommendPercent ?? DEFAULT_COMPACT_RECOMMEND_PERCENT
             }
             onValue={(n) =>
-              update((s) => ({
-                ...s,
-                agentboard: {
-                  ...s.agentboard,
-                  compactRecommendPercent: Math.min(100, Math.max(1, n)),
-                },
-              }))
+              update(
+                (s) => ({
+                  ...s,
+                  agentboard: {
+                    ...s.agentboard,
+                    compactRecommendPercent: Math.min(100, Math.max(1, n)),
+                  },
+                }),
+                { defer: true },
+              )
             }
+            onCommit={() => void flush()}
           />
         ),
       },
@@ -1231,11 +1302,15 @@ function agentboardSections(settings: UserSettings | null, update: Update): Filt
             unit="px"
             value={settings.agentboard?.terminalFontSize ?? DEFAULT_TERMINAL_FONT_SIZE}
             onValue={(n) =>
-              update((s) => ({
-                ...s,
-                agentboard: { ...s.agentboard, terminalFontSize: clampTerminalFontSize(n) },
-              }))
+              update(
+                (s) => ({
+                  ...s,
+                  agentboard: { ...s.agentboard, terminalFontSize: clampTerminalFontSize(n) },
+                }),
+                { defer: true },
+              )
             }
+            onCommit={() => void flush()}
           />
         ),
       },
@@ -1270,25 +1345,55 @@ function agentboardSections(settings: UserSettings | null, update: Update): Filt
 function AgentboardSettings() {
   const [roots, setRoots] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pending = useRef<string | null>(null);
 
   useEffect(() => {
     void invoke<string[]>("ab_get_scan_roots").then((r) => setRoots(r.unwrapOr([]).join("\n")));
   }, []);
 
-  const save = async () => {
-    const list = (roots ?? "")
+  // Autosave, like the rest of this screen. Deliberately does *not* write the
+  // normalized list back into the textarea: this fires mid-typing, and replacing
+  // the value would eat the blank line you just opened and jump the cursor.
+  const persist = useCallback(async () => {
+    if (timer.current !== null) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    const raw = pending.current;
+    if (raw === null) return;
+    pending.current = null;
+    const list = raw
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
     const stored = await invoke("ab_set_scan_roots", { roots: list });
     if (stored.isErr()) {
-      toast.error(`Couldn't save scan roots — ${stored.error.message}`);
+      if (!NotInTauri.is(stored.error)) {
+        toast.error(`Couldn't save scan roots — ${stored.error.message}`);
+      }
       return;
     }
-    setRoots(list.join("\n"));
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1500);
+  }, []);
+
+  const edit = (next: string) => {
+    setRoots(next);
+    pending.current = next;
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = setTimeout(() => void persist(), 600);
   };
+
+  // Commit a pending edit if the pane unmounts (Radix drops it on tab switch).
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
+  useEffect(
+    () => () => {
+      void persistRef.current();
+    },
+    [],
+  );
 
   if (roots === null) {
     return <div className="text-sm text-muted-foreground">Loading…</div>;
@@ -1306,18 +1411,14 @@ function AgentboardSettings() {
       </div>
       <Textarea
         value={roots}
-        onChange={(e) => setRoots(e.target.value)}
+        onChange={(e) => edit(e.target.value)}
+        onBlur={() => void persist()}
         rows={5}
         placeholder="~/code"
         className="font-mono text-xs"
         spellCheck={false}
       />
-      <div className="flex items-center gap-3">
-        <Button size="sm" onClick={() => void save()}>
-          Save
-        </Button>
-        {saved && <span className="text-xs text-muted-foreground">Saved.</span>}
-      </div>
+      {saved && <span className="text-xs text-muted-foreground">Saved.</span>}
     </div>
   );
 }
@@ -1894,9 +1995,27 @@ function resolveTarget(target: SettingsTarget | null): {
   return { tab: known ? target.tab : "general", filter: target.filter ?? "" };
 }
 
+/**
+ * Footer readout for the autosave. With no Save button there's nothing for the
+ * user to retry, so a failure has to stay on screen and say plainly that the
+ * change didn't land — the idle/saved states can be quiet, this one can't.
+ */
+function SaveStatus({ state }: { state: SaveState }) {
+  if (state === "error") {
+    return (
+      <span className="text-xs text-destructive">
+        Couldn&rsquo;t save — your last change wasn&rsquo;t written to disk.
+      </span>
+    );
+  }
+  const label =
+    state === "saving" ? "Saving…" : state === "saved" ? "Saved." : "Changes save automatically.";
+  return <span className="text-xs text-muted-foreground">{label}</span>;
+}
+
 export function SettingsScreen() {
   const { theme, setTheme, colorTheme, setColorTheme } = useTheme();
-  const { settings, saveState, update, save } = useUserSettings();
+  const { settings, saveState, update, flush } = useUserSettings();
   const { snapshot } = useStoreSnapshot();
   const now = useNow();
   const version = useAppVersion();
@@ -1936,7 +2055,7 @@ export function SettingsScreen() {
 
   const collectorsPrelude = (
     <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-      Changes take effect as soon as you Save — the scheduler re-reads its cadence live.
+      Changes save as you make them — the scheduler re-reads its cadence live.
     </div>
   );
 
@@ -1982,7 +2101,7 @@ export function SettingsScreen() {
           <TabsContent value="general" className="flex flex-col gap-5 p-4">
             <TabHeading title="General" note="Editor used to open repos." />
             {settings ? (
-              <FilteredContent query={query} sections={generalSections(settings, update)} />
+              <FilteredContent query={query} sections={generalSections(settings, update, flush)} />
             ) : (
               <SettingsLoading />
             )}
@@ -1998,7 +2117,7 @@ export function SettingsScreen() {
 
           <TabsContent value="agentboard" className="flex flex-col gap-5 p-4">
             <TabHeading title="Agentboard" note="Repo discovery and needs-you notifications." />
-            <FilteredContent query={query} sections={agentboardSections(settings, update)} />
+            <FilteredContent query={query} sections={agentboardSections(settings, update, flush)} />
           </TabsContent>
 
           <TabsContent value="journal" className="flex flex-col gap-5 p-4">
@@ -2007,7 +2126,7 @@ export function SettingsScreen() {
               note="Where notes live and how their file paths are templated."
             />
             {settings ? (
-              <FilteredContent query={query} sections={journalSections(settings, update)} />
+              <FilteredContent query={query} sections={journalSections(settings, update, flush)} />
             ) : (
               <SettingsLoading />
             )}
@@ -2022,7 +2141,7 @@ export function SettingsScreen() {
             {settings ? (
               <FilteredContent
                 query={query}
-                sections={collectorsSections(settings, update, run, now)}
+                sections={collectorsSections(settings, update, run, now, flush)}
                 prelude={collectorsPrelude}
               />
             ) : (
@@ -2046,15 +2165,7 @@ export function SettingsScreen() {
       </Tabs>
 
       <footer className="flex items-center justify-end gap-3 border-t border-border bg-card px-4 py-3">
-        {saveState === "saved" && <span className="text-xs text-muted-foreground">Saved.</span>}
-        {saveState === "error" && <span className="text-xs text-destructive">Save failed.</span>}
-        <Button
-          size="sm"
-          onClick={() => void save()}
-          disabled={!settings || saveState === "saving"}
-        >
-          {saveState === "saving" ? "Saving…" : "Save"}
-        </Button>
+        <SaveStatus state={saveState} />
       </footer>
     </div>
   );
