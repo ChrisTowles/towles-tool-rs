@@ -77,7 +77,6 @@ export type TaskItem = {
   text: string;
   status: TaskStatus;
   position: number;
-  dueTs?: number;
   createdAt: number;
   completedAt?: number;
   /** Free-form context attached to the task. */
@@ -428,14 +427,6 @@ export function fmtClock(ms: number): string {
   });
 }
 
-/** `Jul 15` — calendar day for an epoch-ms timestamp (used for due dates). */
-export function fmtDay(ms: number): string {
-  return new Date(ms).toLocaleDateString([], {
-    month: "short",
-    day: "numeric",
-  });
-}
-
 /** Below this span the countdown switches to `m:ss` and (in the Cockpit) ticks
  * every second, so the final approach reads "1:30 … 0:59 … 0:05" instead of a
  * coarse "1m" that the 15s shared clock can leave stale 20s out. */
@@ -517,8 +508,8 @@ export function useAppSlot(): string | null {
 }
 
 /** Create a task; resolves to its id. `status` defaults to Backlog backend-side. */
-export const storeAddTask = (text: string, opts?: { status?: TaskStatus; dueTs?: number }) =>
-  invoke<number>("store_add_task", { text, status: opts?.status, dueTs: opts?.dueTs });
+export const storeAddTask = (text: string, opts?: { status?: TaskStatus }) =>
+  invoke<number>("store_add_task", { text, status: opts?.status });
 
 /** Move a task to another board column (appended at the end of it). */
 export const storeSetTaskStatus = (id: number, status: TaskStatus) =>
@@ -529,8 +520,8 @@ export const storeSetTaskPosition = (id: number, status: TaskStatus, index: numb
   invoke<void>("store_set_task_position", { id, status, index });
 
 /** Overwrite a task's editable fields. */
-export const storeUpdateTask = (id: number, text: string, notes?: string, dueTs?: number) =>
-  invoke<void>("store_update_task", { id, text, notes, dueTs });
+export const storeUpdateTask = (id: number, text: string, notes?: string) =>
+  invoke<void>("store_update_task", { id, text, notes });
 
 /** Delete a task outright. */
 export const storeDeleteTask = (id: number) => invoke<void>("store_delete_task", { id });

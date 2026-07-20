@@ -184,6 +184,12 @@ pub struct AgentboardSettings {
     /// settings file stays clean for the TS CLI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shortcuts_work_in_terminal: Option<bool>,
+
+    /// Group the Board kanban's tasks into per-repo swimlanes. `None` = the
+    /// built-in default (on). Only written once the user changes it, so the
+    /// shared settings file stays clean for the TS CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board_group_by_repo: Option<bool>,
 }
 
 /// Built-in default for [`AgentboardSettings::compact_recommend_percent`].

@@ -1,6 +1,5 @@
 import { Fragment, useCallback, useMemo, useRef, useState } from "react";
 import {
-  CalendarPlus,
   FolderGit2,
   GripVertical,
   ListTodo,
@@ -34,11 +33,13 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Switch } from "@/components/ui/switch";
 import { ownerRepoFromOrigin, useAgentboardState } from "@/lib/agentboard";
 import { repoAccentStyles, repoIcon, type RepoMeta } from "@/lib/repo-identity";
+import { useBoardGroupByRepo } from "@/lib/board-prefs";
+import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
 import {
-  fmtDay,
   storeAttachTaskIssue,
   storeAttachTaskPr,
   storeClearDone,
@@ -66,11 +67,18 @@ import {
   reorderedPosition,
   TASK_DRAG_TYPE,
 } from "@/lib/kanban-dnd";
-import { countByStatus, dueState, overdueByStatus } from "@/lib/board-metrics";
+import { countByStatus } from "@/lib/board-metrics";
 import { matchesTaskFilter } from "@/lib/board-filter";
-import { bucketByStatus, byBoardOrder, groupTasksByRepo, NO_REPO_GROUP } from "@/lib/board-groups";
+import {
+  bucketByStatus,
+  byBoardOrder,
+  groupTasksByRepo,
+  NO_REPO_GROUP,
+  railRepoKeyForTask,
+  repoGroupLabel,
+  taskRepoKey,
+} from "@/lib/board-groups";
 import { useFocusTarget } from "@/lib/focus-target";
-import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
 import { PR_TONE, prTone } from "@/lib/pr-tone";
 import { useShortcuts } from "@/lib/shortcuts";
@@ -89,9 +97,9 @@ async function commit(mutation: Promise<Result<unknown, IpcError>>, what: string
   if (done.isErr()) toast.error(`Couldn't ${what} — ${done.error.message}`);
 }
 
-/** Optimistic edits (text/notes/due) applied over a snapshot todo until it
+/** Optimistic edits (text/notes) applied over a snapshot todo until it
  * re-arrives. */
-type TaskEdit = { text?: string; notes?: string | undefined; dueTs?: number | undefined };
+type TaskEdit = { text?: string; notes?: string | undefined };
 
 /** Optimistic status + fractional position from a drag-reorder, until re-arrival. */
 type PosOverride = { status: TaskStatus; position: number };
@@ -99,41 +107,31 @@ type PosOverride = { status: TaskStatus; position: number };
 /** The slot a card would drop into: before `beforeId`, or at a column's end. */
 type DropSlot = { status: TaskStatus; beforeId: number | "end" };
 
-/** `YYYY-MM-DD` (local) for an `<input type="date">` value. */
-function toDateInputValue(ms: number): string {
-  const d = new Date(ms);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-/** Parse an `<input type="date">` value to epoch ms at the end of that local
- * day, so a due-today card is not overdue until the day actually ends. */
-function dueDateToMs(value: string): number | undefined {
-  const [y, m, d] = value.split("-").map(Number);
-  if (!y || !m || !d) return undefined;
-  return new Date(y, m - 1, d, 23, 59, 59, 999).getTime();
-}
+/** The synthetic lane key when swimlane grouping is toggled off — one unnamed
+ * lane holding every card. Never a real repo key (`taskRepoKey` returns
+ * `owner/name`, a path basename, or `NO_REPO_GROUP`). */
+const ALL_TASKS_LANE = "__all_tasks__";
 
 /**
  * Board — the cross-repo kanban for finding and watching work in flight.
  *
  * Columns are the five task statuses; rows are automatic per-repo swimlanes
  * derived from each task's repo binding (see `lib/board-groups.ts`), so a lane
- * appears and disappears with its work rather than being managed by hand.
+ * appears and disappears with its work rather than being managed by hand. The
+ * header's Swimlanes switch (persisted as `agentboard.boardGroupByRepo`)
+ * flattens the board to one unnamed lane; cards carry their repo's identity
+ * (icon/color/tint) either way.
  *
  * **This screen does not create tasks** — the Agentboard's `+` flow is the only
  * creator, so a task and the repo it belongs to are established together at
- * submit. Here a card can be moved, reordered, renamed, given a due date,
+ * submit. Here a card can be moved, reordered, renamed,
  * linked to issues/PRs, promoted to a GitHub issue, or deleted. Read-only over
  * the snapshot with local optimistic overlays for moves, edits and deletes
  * until the next `store://snapshot` arrives.
  */
 export function BoardScreen() {
   const { snapshot } = useStoreSnapshot();
-  const { activeTab } = useWorkspace();
-  const now = useNow();
+  const { activeTab, openTabWithFocus } = useWorkspace();
   // Deep-link focus: a promoted-todo / board deep link scrolls the card here.
   const focusRef = useFocusTarget<HTMLDivElement>("board");
   const filterInputRef = useRef<HTMLInputElement>(null);
@@ -227,20 +225,27 @@ export function BoardScreen() {
   // there is nothing to create, name, or clean up. The only bucketing pass:
   // header totals come from `counts`, and `reorder` sorts the one column it
   // needs at drop time, so nothing here re-buckets the whole board.
-  const lanes = useMemo(
-    () => groupTasksByRepo(visible).map((g) => ({ ...g, columns: bucketByStatus(g.tasks) })),
-    [visible],
-  );
+  const grouped = useMemo(() => groupTasksByRepo(visible), [visible]);
+
+  // Swimlanes are a preference: toggled off, the board is one unnamed lane
+  // holding every card (each card keeps its repo glyph, so identity survives
+  // the flattening). Persisted in the shared settings file.
+  const [groupByRepo, setGroupByRepo] = useBoardGroupByRepo();
+  const lanes = useMemo(() => {
+    const groups = groupByRepo ? grouped : [{ key: ALL_TASKS_LANE, label: "", tasks: visible }];
+    return groups.map((g) => ({ ...g, columns: bucketByStatus(g.tasks) }));
+  }, [grouped, groupByRepo, visible]);
 
   // Real repos only — the "No repo" lane is a bucket, not a repo, and must
-  // not inflate the header's repo count.
-  const repoLaneCount = useMemo(() => lanes.filter((l) => l.key !== NO_REPO_GROUP).length, [lanes]);
+  // not inflate the header's repo count. Counted from the real grouping so
+  // the swimlane toggle never changes what the header claims.
+  const repoLaneCount = useMemo(
+    () => grouped.filter((l) => l.key !== NO_REPO_GROUP).length,
+    [grouped],
+  );
 
   // Per-status totals for the sticky header (and the Clear-done gate).
   const counts = useMemo(() => countByStatus(visible), [visible]);
-
-  // Overdue cards per column, for the header's red load pip.
-  const overdue = useMemo(() => overdueByStatus(visible, now), [visible, now]);
 
   function move(id: number, status: TaskStatus) {
     setStatusOverrides((prev) => ({ ...prev, [id]: status }));
@@ -304,22 +309,15 @@ export function BoardScreen() {
     void commit(storeDetachTaskPr(id, link.repo, link.number), "detach that PR");
   }
 
-  // Rename and due-date edits both re-send the todo's other free-form fields
-  // (`storeUpdateTask` is a full replace of text/notes/due), reading them from
-  // `merged` so chained optimistic edits compose.
+  // Rename re-sends the todo's notes too (`storeUpdateTask` is a full replace
+  // of text/notes), reading them from `merged` so chained optimistic edits
+  // compose.
   function rename(id: number, text: string) {
     const trimmed = text.trim();
     const current = merged.find((t) => t.id === id);
     if (!current || !trimmed || trimmed === current.text) return;
     setEditOverrides((prev) => ({ ...prev, [id]: { ...prev[id], text: trimmed } }));
-    void commit(storeUpdateTask(id, trimmed, current.notes, current.dueTs), "rename that todo");
-  }
-
-  function setDue(id: number, dueTs: number | undefined) {
-    const current = merged.find((t) => t.id === id);
-    if (!current) return;
-    setEditOverrides((prev) => ({ ...prev, [id]: { ...prev[id], dueTs } }));
-    void commit(storeUpdateTask(id, current.text, current.notes, dueTs), "set that due date");
+    void commit(storeUpdateTask(id, trimmed, current.notes), "rename that todo");
   }
 
   function setNotes(id: number, notes: string) {
@@ -328,7 +326,7 @@ export function BoardScreen() {
     // Empty/whitespace-only notes clear the field back to unset.
     const value = notes.trim() === "" ? undefined : notes;
     setEditOverrides((prev) => ({ ...prev, [id]: { ...prev[id], notes: value } }));
-    void commit(storeUpdateTask(id, current.text, value, current.dueTs), "save those notes");
+    void commit(storeUpdateTask(id, current.text, value), "save those notes");
   }
 
   function remove(id: number) {
@@ -339,6 +337,18 @@ export function BoardScreen() {
   function clearDone() {
     void commit(storeClearDone(), "clear the Done column");
   }
+
+  // Jump to a card's repo on the Agentboard: same focus primitive the
+  // needs-you popover uses — land on the screen, scroll the rail row into
+  // view, flash it. `railKey` is resolved per card at render, so a card whose
+  // repo isn't on the rail simply doesn't offer the jump.
+  const openOnAgentboard = useCallback(
+    (railKey: string) => {
+      uiAction("board.open_agentboard", "board");
+      openTabWithFocus({ screen: "agentboard", kind: "repo", id: railKey });
+    },
+    [openTabWithFocus],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -351,6 +361,21 @@ export function BoardScreen() {
           <span className="text-xs text-muted-foreground">{hiddenCount} hidden</span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
+          {/* `htmlFor`, never a wrapping label: the switch is a <button>, and a
+              label wrapped around it forwards each click back into it — two
+              toggles per click, net nothing. */}
+          <label htmlFor="board-swimlanes" className="cursor-pointer text-xs text-muted-foreground">
+            Swimlanes
+          </label>
+          <Switch
+            id="board-swimlanes"
+            checked={groupByRepo}
+            onCheckedChange={(v) => {
+              setGroupByRepo(v);
+              uiAction("board.group_by_repo", "board", v ? "on" : "off");
+            }}
+            aria-label="Group tasks into repo swimlanes"
+          />
           {counts.done > 0 && (
             <Button
               variant="ghost"
@@ -406,120 +431,140 @@ export function BoardScreen() {
                   <span className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     {TASK_STATUS_LABEL[status]}
                   </span>
-                  <span className="flex items-center gap-1">
-                    {overdue[status] > 0 && (
-                      <span
-                        title={`${overdue[status]} overdue`}
-                        className="rounded-full bg-red-500/15 px-1.5 font-mono text-[10px] text-red-600 dark:text-red-400"
-                      >
-                        {overdue[status]} late
-                      </span>
-                    )}
-                    <span className="rounded-full bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
-                      {counts[status]}
-                    </span>
+                  <span className="rounded-full bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
+                    {counts[status]}
                   </span>
                 </div>
               ))}
             </div>
 
             <div className="flex flex-col gap-4">
-              {lanes.map((lane) => (
-                <section key={lane.key}>
-                  <div className="flex items-center gap-1.5 pb-1.5">
-                    <LaneGlyph meta={repoMetaByKey.get(lane.key)} />
-                    <span
-                      className={cn(
-                        // `pr-px`: the italic variant's final glyph overhangs
-                        // its content box, and `truncate`'s overflow:hidden
-                        // clips the overhang without ever showing an ellipsis.
-                        "truncate pr-px text-sm font-semibold",
-                        lane.key === NO_REPO_GROUP && "font-normal italic text-muted-foreground",
-                      )}
-                      title={lane.key === NO_REPO_GROUP ? undefined : lane.key}
-                    >
-                      {lane.label}
-                    </span>
-                    <span className="rounded-full bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
-                      {lane.tasks.length}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-5 gap-3">
-                    {TASK_STATUSES.map((status) => (
+              {lanes.map((lane) => {
+                const laneMeta =
+                  lane.key === ALL_TASKS_LANE ? undefined : repoMetaByKey.get(lane.key);
+                const laneAccent = repoAccentStyles(laneMeta);
+                return (
+                  <section key={lane.key}>
+                    {/* Flat mode's single lane is every repo's, so it gets no
+                      header — the sticky status row above is enough. */}
+                    {lane.key !== ALL_TASKS_LANE && (
                       <div
-                        key={status}
-                        onDragOver={(e) => {
-                          if (!isTaskDrag(e.dataTransfer.types)) return;
-                          e.preventDefault();
-                          e.dataTransfer.dropEffect = "move";
-                          // Over a cell's empty tail (cards handle their own
-                          // hover and stop propagation) — append to the column.
-                          // Keep identity when unchanged: dragover fires
-                          // continuously, and a fresh object every event would
-                          // re-render all lanes for the whole drag.
-                          setDropSlot((cur) =>
-                            cur?.status === status && cur.beforeId === "end"
-                              ? cur
-                              : { status, beforeId: "end" },
-                          );
-                        }}
-                        onDragLeave={(e) => {
-                          // Ignore moves between children of the same cell.
-                          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-                          setDropSlot((cur) => (cur?.status === status ? null : cur));
-                        }}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          setDropSlot(null);
-                          const payload = decodeTaskDrag(e.dataTransfer.getData(TASK_DRAG_TYPE));
-                          if (payload) reorder(payload.id, status, "end");
-                        }}
-                        className={cn(
-                          "flex min-h-12 flex-col gap-2 rounded-lg border bg-muted/30 p-2",
-                          // Highlights the status across every lane, because
-                          // that is what a drop actually changes: a card's repo
-                          // comes from its slot/links, so dropping into another
-                          // repo's lane can't move it there.
-                          dropSlot?.status === status &&
-                            "border-violet-500/60 bg-violet-500/5 dark:bg-violet-500/10",
-                        )}
+                        // The lane header is the repo-identity surface on this
+                        // screen: colored edge always (when themed), plus the
+                        // soft wash for `style: "tint"`. Transparent edge keeps
+                        // unthemed lanes aligned with themed ones.
+                        className="mb-1 flex items-center gap-1.5 rounded-md border-l-2 border-l-transparent px-1.5 py-1"
+                        style={{ ...laneAccent.edgeStyle, ...laneAccent.surfaceStyle }}
                       >
-                        {lane.columns[status].map((task, i) => (
-                          <Fragment key={task.id}>
-                            <DropLine
-                              active={dropSlot?.status === status && dropSlot.beforeId === task.id}
-                            />
-                            <Card
-                              task={task}
-                              now={now}
-                              repos={repos}
-                              openIssues={snapshot.issues}
-                              openPrs={snapshot.prs}
-                              nextId={lane.columns[status][i + 1]?.id ?? null}
-                              onMove={move}
-                              onReorderHover={setDropSlot}
-                              onReorder={reorder}
-                              onPromote={promote}
-                              onAttachIssue={attachIssue}
-                              onDetachIssue={detachIssue}
-                              onAttachPr={attachPr}
-                              onDetachPr={detachPr}
-                              onRename={rename}
-                              onSetDue={setDue}
-                              onSetNotes={setNotes}
-                              onDelete={remove}
-                              onDragEnd={clearDropSlot}
-                            />
-                          </Fragment>
-                        ))}
-                        <DropLine
-                          active={dropSlot?.status === status && dropSlot.beforeId === "end"}
-                        />
+                        <LaneGlyph meta={laneMeta} />
+                        <span
+                          className={cn(
+                            // `pr-px`: the italic variant's final glyph overhangs
+                            // its content box, and `truncate`'s overflow:hidden
+                            // clips the overhang without ever showing an ellipsis.
+                            "truncate pr-px text-sm font-semibold",
+                            lane.key === NO_REPO_GROUP &&
+                              "font-normal italic text-muted-foreground",
+                          )}
+                          title={lane.key === NO_REPO_GROUP ? undefined : lane.key}
+                        >
+                          {lane.label}
+                        </span>
+                        <span className="rounded-full bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
+                          {lane.tasks.length}
+                        </span>
                       </div>
-                    ))}
-                  </div>
-                </section>
-              ))}
+                    )}
+                    <div className="grid grid-cols-5 gap-3">
+                      {TASK_STATUSES.map((status) => (
+                        <div
+                          key={status}
+                          onDragOver={(e) => {
+                            if (!isTaskDrag(e.dataTransfer.types)) return;
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                            // Over a cell's empty tail (cards handle their own
+                            // hover and stop propagation) — append to the column.
+                            // Keep identity when unchanged: dragover fires
+                            // continuously, and a fresh object every event would
+                            // re-render all lanes for the whole drag.
+                            setDropSlot((cur) =>
+                              cur?.status === status && cur.beforeId === "end"
+                                ? cur
+                                : { status, beforeId: "end" },
+                            );
+                          }}
+                          onDragLeave={(e) => {
+                            // Ignore moves between children of the same cell.
+                            if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                            setDropSlot((cur) => (cur?.status === status ? null : cur));
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setDropSlot(null);
+                            const payload = decodeTaskDrag(e.dataTransfer.getData(TASK_DRAG_TYPE));
+                            if (payload) reorder(payload.id, status, "end");
+                          }}
+                          className={cn(
+                            "flex min-h-12 flex-col gap-2 rounded-lg border bg-muted/30 p-2",
+                            // Highlights the status across every lane, because
+                            // that is what a drop actually changes: a card's repo
+                            // comes from its slot/links, so dropping into another
+                            // repo's lane can't move it there.
+                            dropSlot?.status === status &&
+                              "border-violet-500/60 bg-violet-500/5 dark:bg-violet-500/10",
+                          )}
+                        >
+                          {lane.columns[status].map((task, i) => {
+                            const repoKey = taskRepoKey(task);
+                            const railKey = railRepoKeyForTask(agentState.repos, task);
+                            return (
+                              <Fragment key={task.id}>
+                                <DropLine
+                                  active={
+                                    dropSlot?.status === status && dropSlot.beforeId === task.id
+                                  }
+                                />
+                                <Card
+                                  task={task}
+                                  repos={repos}
+                                  repoMeta={repoMetaByKey.get(repoKey)}
+                                  repoLabel={
+                                    groupByRepo || repoKey === NO_REPO_GROUP
+                                      ? undefined
+                                      : repoGroupLabel(repoKey)
+                                  }
+                                  onOpenAgentboard={
+                                    railKey ? () => openOnAgentboard(railKey) : undefined
+                                  }
+                                  openIssues={snapshot.issues}
+                                  openPrs={snapshot.prs}
+                                  nextId={lane.columns[status][i + 1]?.id ?? null}
+                                  onMove={move}
+                                  onReorderHover={setDropSlot}
+                                  onReorder={reorder}
+                                  onPromote={promote}
+                                  onAttachIssue={attachIssue}
+                                  onDetachIssue={detachIssue}
+                                  onAttachPr={attachPr}
+                                  onDetachPr={detachPr}
+                                  onRename={rename}
+                                  onSetNotes={setNotes}
+                                  onDelete={remove}
+                                  onDragEnd={clearDropSlot}
+                                />
+                              </Fragment>
+                            );
+                          })}
+                          <DropLine
+                            active={dropSlot?.status === status && dropSlot.beforeId === "end"}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
             </div>
           </div>
         </ScrollArea>
@@ -557,9 +602,7 @@ function NotesField({
 }
 
 /** A swimlane's repo glyph: the repo's chosen icon tinted with its color, or
- * the plain folder glyph when it has no identity set. The lane header is where
- * repo identity belongs on this screen — every card beneath it is that repo's,
- * so a per-card glyph would repeat the header once per row. */
+ * the plain folder glyph when it has no identity set. */
 function LaneGlyph({ meta }: { meta?: RepoMeta }) {
   if (!meta) {
     return <FolderGit2 aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />;
@@ -582,8 +625,10 @@ function DropLine({ active }: { active: boolean }) {
 
 function Card({
   task,
-  now,
   repos,
+  repoMeta,
+  repoLabel,
+  onOpenAgentboard,
   openIssues,
   openPrs,
   nextId,
@@ -596,17 +641,23 @@ function Card({
   onAttachPr,
   onDetachPr,
   onRename,
-  onSetDue,
   onSetNotes,
   onDelete,
   onDragEnd,
 }: {
   task: TaskItem;
-  now: number;
   repos: string[];
-  /** The chosen icon/color of the repo this task's slot lives in, when that
-   * repo has one. Undefined (no slot, or an unthemed repo) renders the card
+  /** The chosen icon/color of the repo this task resolved to, when that repo
+   * has one. Undefined (no repo, or an unthemed repo) renders the card
    * exactly as it did before repo identity existed. */
+  repoMeta?: RepoMeta;
+  /** The repo name to print on the card — set only in flat (no-swimlane) mode,
+   * where no lane header identifies the repo. Undefined in grouped mode and
+   * for no-repo tasks. */
+  repoLabel?: string;
+  /** Jump to this task's repo row on the Agentboard rail. Undefined when the
+   * repo isn't on the rail — the affordances don't render. */
+  onOpenAgentboard?: () => void;
   /** Collected open issues — the "Attach issue…" candidates. */
   openIssues: IssueItem[];
   /** Collected PRs — the "Attach PR…" candidates. */
@@ -622,7 +673,6 @@ function Card({
   onAttachPr: (id: number, pr: PrItem) => void;
   onDetachPr: (id: number, link: TaskPrLink) => void;
   onRename: (id: number, text: string) => void;
-  onSetDue: (id: number, dueTs: number | undefined) => void;
   onSetNotes: (id: number, notes: string) => void;
   onDelete: (id: number) => void;
   onDragEnd: () => void;
@@ -632,8 +682,6 @@ function Card({
   const [editValue, setEditValue] = useState(task.text);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  // A shipped card is never "late", so done cards carry no due accent.
-  const due = task.status === "done" ? "none" : dueState(task.dueTs, now);
   const hasNotes = (task.notes ?? "").trim() !== "";
   // Attach candidates: collected refs not already linked to this task.
   const attachableIssues = openIssues.filter(
@@ -643,6 +691,18 @@ function Card({
     (p) => !task.prs.some((l) => l.repo === p.repo && l.number === p.number),
   );
   const hasLinks = task.issues.length > 0 || task.prs.length > 0;
+  // Repo identity on the card: tinted glyph, colored edge, and (for
+  // `style: "tint"`) a background wash mixed into the card's own opaque
+  // background.
+  const accent = repoAccentStyles(repoMeta, "var(--background)");
+  const RepoGlyph = repoMeta ? repoIcon(repoMeta) : null;
+  const identityStyle = { ...accent.edgeStyle, ...accent.surfaceStyle };
+  // The identity row's text: `repo · ⎇ branch`, either part optional.
+  const branch = task.slot?.branch;
+  const detached = branch !== undefined && !task.slot?.dir;
+  const identityRowText = [repoLabel, branch && `⎇ ${branch}${detached ? " · detached" : ""}`]
+    .filter(Boolean)
+    .join(" · ");
 
   function startRename() {
     setEditValue(task.text);
@@ -698,17 +758,23 @@ function Card({
       className={cn(
         "group rounded-md border border-l-2 bg-background p-2.5 text-sm shadow-sm",
         "cursor-grab active:cursor-grabbing",
-        due === "overdue" && "border-l-red-500 bg-red-500/[0.03] dark:bg-red-500/[0.07]",
-        due === "today" && "border-l-amber-500 bg-amber-500/[0.03] dark:bg-amber-500/[0.07]",
         task.status === "done" && "opacity-60",
         dragging && "opacity-40",
       )}
+      style={identityStyle}
     >
       <div className="flex items-start gap-1.5">
         <GripVertical
           aria-hidden
           className="-ml-1 mt-0.5 size-3.5 shrink-0 text-muted-foreground/40 opacity-0 transition-opacity group-hover:opacity-100"
         />
+        {RepoGlyph && (
+          <RepoGlyph
+            aria-hidden
+            className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+            style={accent.iconStyle}
+          />
+        )}
         {editing ? (
           <Input
             ref={inputRef}
@@ -743,35 +809,13 @@ function Card({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
+            {onOpenAgentboard && (
+              <>
+                <DropdownMenuItem onSelect={onOpenAgentboard}>Open on Agentboard</DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
             <DropdownMenuItem onSelect={startRename}>Rename</DropdownMenuItem>
-            <DropdownMenuLabel className="pb-0.5 pt-1 text-muted-foreground">
-              Due date
-            </DropdownMenuLabel>
-            <div
-              className="flex items-center gap-1 px-2 py-1"
-              // Keep the menu open and stop its typeahead from eating keystrokes.
-              onKeyDown={(e) => e.stopPropagation()}
-            >
-              <Input
-                type="date"
-                value={task.dueTs !== undefined ? toDateInputValue(task.dueTs) : ""}
-                onChange={(e) =>
-                  onSetDue(task.id, e.target.value ? dueDateToMs(e.target.value) : undefined)
-                }
-                className="h-7 flex-1 px-1.5 text-xs"
-                aria-label="Set due date"
-              />
-              {task.dueTs !== undefined && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => onSetDue(task.id, undefined)}
-                >
-                  Clear
-                </Button>
-              )}
-            </div>
             <DropdownMenuLabel className="pb-0.5 pt-1 text-muted-foreground">
               Notes
             </DropdownMenuLabel>
@@ -869,24 +913,37 @@ function Card({
         </DropdownMenu>
       </div>
 
-      {/* Only a task that actually has a branch shows this row. A task bound to
-          its repo but never given a worktree ("task only") has no branch, and
-          rendering it here would read as a nameless detached slot. */}
-      {task.slot?.branch && (
+      {/* The identity row: the repo name in flat mode (where no lane header
+          says it), plus the slot branch when one exists — a branchless task in
+          grouped mode renders nothing here, its lane header already identifies
+          it. Clickable when the repo has an Agentboard rail row. */}
+      {(repoLabel !== undefined || branch) && (
         <div
           className={cn(
-            "mt-1.5 flex items-center gap-1 font-mono text-[11px] text-muted-foreground",
-            !task.slot.dir && "italic text-muted-foreground/70",
+            "mt-1.5 flex items-center font-mono text-[11px] text-muted-foreground",
+            detached && "italic text-muted-foreground/70",
           )}
-          title={task.slot.dir ?? `worktree removed — branch ${task.slot.branch}`}
         >
-          <span className="truncate">
-            ⎇ {task.slot.branch}
-            {!task.slot.dir && " · detached"}
-          </span>
+          {onOpenAgentboard ? (
+            <button
+              type="button"
+              onClick={onOpenAgentboard}
+              title={`Open on Agentboard${task.slot?.dir ? ` — ${task.slot.dir}` : ""}`}
+              className="min-w-0 truncate text-left hover:text-foreground hover:underline"
+            >
+              {identityRowText}
+            </button>
+          ) : (
+            <span
+              className="min-w-0 truncate"
+              title={task.slot?.dir ?? (branch ? `worktree removed — branch ${branch}` : undefined)}
+            >
+              {identityRowText}
+            </span>
+          )}
         </div>
       )}
-      {(hasLinks || task.dueTs !== undefined || hasNotes) && (
+      {(hasLinks || hasNotes) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           {task.issues.map((link) => (
             <a
@@ -934,21 +991,6 @@ function Card({
               </a>
             );
           })}
-          {task.dueTs !== undefined && (
-            <Badge
-              variant="outline"
-              className={cn(
-                "gap-1 text-[10px]",
-                due === "overdue" &&
-                  "border-transparent bg-red-500/15 text-red-600 dark:text-red-400",
-                due === "today" &&
-                  "border-transparent bg-amber-500/15 text-amber-600 dark:text-amber-400",
-              )}
-            >
-              <CalendarPlus aria-hidden className="size-3" />
-              {fmtDay(task.dueTs)}
-            </Badge>
-          )}
           {hasNotes && (
             <Badge
               variant="outline"

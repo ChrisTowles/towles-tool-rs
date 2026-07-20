@@ -155,13 +155,10 @@ pub fn store_add_task(
     state: State<StoreState>,
     text: String,
     status: Option<String>,
-    due_ts: Option<i64>,
 ) -> Result<i64, String> {
     let status = status.unwrap_or_else(|| "backlog".to_string());
     let task = with_store(&state, |store| {
-        store
-            .add_task(&text, &status, due_ts, None, now_ms())
-            .map_err(|e| format!("add_task failed: {e}"))
+        store.add_task(&text, &status, None, now_ms()).map_err(|e| format!("add_task failed: {e}"))
     })?;
     tracing::info!(task_id = task.id, %status, "task.created");
     emit_snapshot(&app, &state);
@@ -405,8 +402,8 @@ pub fn store_set_task_position(
     Ok(())
 }
 
-/// Edit a todo's text, notes, and due date (a full replace of those fields —
-/// `null` clears notes/due), then re-emit the snapshot.
+/// Edit a todo's text and notes (a full replace of both fields — `null`
+/// clears notes), then re-emit the snapshot.
 #[tauri::command]
 pub fn store_update_task(
     app: AppHandle,
@@ -414,11 +411,10 @@ pub fn store_update_task(
     id: i64,
     text: String,
     notes: Option<String>,
-    due_ts: Option<i64>,
 ) -> Result<(), String> {
     with_store(&state, |store| {
         store
-            .update_task(id, &text, notes.as_deref(), due_ts)
+            .update_task(id, &text, notes.as_deref())
             .map(|_| ())
             .map_err(|e| format!("update_task failed: {e}"))
     })?;
@@ -487,7 +483,7 @@ pub async fn store_promote_task_to_issue(
             .get_task(id)
             .map_err(|e| format!("get_task failed: {e}"))?
             .ok_or_else(|| format!("no todo with id {id}"))?;
-        Ok((task.text, render_promoted_issue_body(task.notes.as_deref(), task.due_ts)))
+        Ok((task.text, render_promoted_issue_body(task.notes.as_deref())))
     })?;
 
     let gh_repo = repo.clone();
@@ -562,20 +558,15 @@ fn create_gh_issue(repo: &str, title: &str, body: &str) -> Result<(i64, String),
 }
 
 /// Render the GitHub issue body for a todo promoted from the tt board: the
-/// todo's `notes` verbatim (dropped when blank), a footer marking the origin,
-/// and — when the todo has one — its due date. `due_ts` is epoch milliseconds
-/// passed in by the caller; the clock is never read here, so this stays pure
-/// and unit-testable.
-fn render_promoted_issue_body(notes: Option<&str>, due_ts: Option<i64>) -> String {
+/// todo's `notes` verbatim (dropped when blank) and a footer marking the
+/// origin. Pure and unit-testable.
+fn render_promoted_issue_body(notes: Option<&str>) -> String {
     let mut body = String::new();
     if let Some(notes) = notes.map(str::trim).filter(|n| !n.is_empty()) {
         body.push_str(notes);
         body.push_str("\n\n");
     }
     body.push_str("Promoted from tt board");
-    if let Some(due) = due_ts.and_then(chrono::DateTime::from_timestamp_millis) {
-        body.push_str(&format!("\nDue: {}", due.format("%Y-%m-%d")));
-    }
     body
 }
 
@@ -814,25 +805,14 @@ mod tests {
 
     #[test]
     fn promoted_body_carries_notes_verbatim() {
-        let body = render_promoted_issue_body(Some("line one\nline two"), None);
+        let body = render_promoted_issue_body(Some("line one\nline two"));
         assert_eq!(body, "line one\nline two\n\nPromoted from tt board");
     }
 
     #[test]
     fn promoted_body_footer_only_when_notes_blank() {
-        assert_eq!(render_promoted_issue_body(None, None), "Promoted from tt board");
-        assert_eq!(render_promoted_issue_body(Some("   \n  "), None), "Promoted from tt board");
-    }
-
-    #[test]
-    fn promoted_body_appends_due_date_when_set() {
-        // 2026-07-15T00:00:00Z in epoch ms.
-        let due_ts = 1_784_073_600_000;
-        let body = render_promoted_issue_body(Some("ship it"), Some(due_ts));
-        assert_eq!(body, "ship it\n\nPromoted from tt board\nDue: 2026-07-15");
-
-        let body_no_notes = render_promoted_issue_body(None, Some(due_ts));
-        assert_eq!(body_no_notes, "Promoted from tt board\nDue: 2026-07-15");
+        assert_eq!(render_promoted_issue_body(None), "Promoted from tt board");
+        assert_eq!(render_promoted_issue_body(Some("   \n  ")), "Promoted from tt board");
     }
 
     #[test]
@@ -847,7 +827,7 @@ mod tests {
     #[test]
     fn snapshot_reflects_writes() {
         let store = Store::open_in_memory().unwrap();
-        store.add_task("buy milk", "backlog", Some(500), None, 1).unwrap();
+        store.add_task("buy milk", "backlog", None, 1).unwrap();
         let state = StoreState::from_option(Some(store));
         let snap = snapshot_of(&state).unwrap();
         assert_eq!(snap.tasks.len(), 1);
@@ -857,16 +837,15 @@ mod tests {
     #[test]
     fn snapshot_reflects_task_edit_and_delete() {
         let store = Store::open_in_memory().unwrap();
-        let a = store.add_task("draft", "backlog", None, None, 1).unwrap();
-        let b = store.add_task("scrap", "backlog", None, None, 2).unwrap();
-        store.update_task(a.id, "final", Some("done"), Some(700)).unwrap();
+        let a = store.add_task("draft", "backlog", None, 1).unwrap();
+        let b = store.add_task("scrap", "backlog", None, 2).unwrap();
+        store.update_task(a.id, "final", Some("done")).unwrap();
         store.delete_task(b.id).unwrap();
         let state = StoreState::from_option(Some(store));
         let snap = snapshot_of(&state).unwrap();
         assert_eq!(snap.tasks.len(), 1);
         assert_eq!(snap.tasks[0].text, "final");
         assert_eq!(snap.tasks[0].notes.as_deref(), Some("done"));
-        assert_eq!(snap.tasks[0].due_ts, Some(700));
     }
 
     #[test]

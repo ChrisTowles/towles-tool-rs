@@ -1,3 +1,4 @@
+import { ownerRepoFromOrigin } from "@/lib/agentboard";
 import { TASK_STATUSES, type TaskItem, type TaskStatus } from "@/lib/data";
 
 /** The bucket for tasks with no discoverable repo. Sorts last. */
@@ -53,6 +54,39 @@ export function taskRepoKey(task: TaskItem): string {
   }
 
   return NO_REPO_GROUP;
+}
+
+/** The slice of an Agentboard rail repo row this module resolves against —
+ * structural so tests don't have to build full `RepoData` values. */
+export type RailRepoRow = {
+  key: string;
+  dir: string;
+  originUrl?: string | null;
+  folders: { dir: string }[];
+};
+
+/**
+ * The Agentboard rail row a task belongs to, as the row's focus key
+ * (`RepoData.key`) — the id `openTabWithFocus({ screen: "agentboard", kind:
+ * "repo" })` scrolls to. `null` when the task's repo isn't on the rail.
+ *
+ * Path evidence outranks GitHub identity: a task's slot dir / repo root names
+ * one specific checkout group, while `owner/name` could match a fork tracked
+ * under a different local path. Untracked-repo tasks fall through to `null`
+ * rather than guessing.
+ */
+export function railRepoKeyForTask(repos: RailRepoRow[], task: TaskItem): string | null {
+  const dirs = [task.slot?.dir, task.slot?.repoRoot].filter((d): d is string => !!d?.trim());
+  for (const repo of repos) {
+    if (dirs.some((d) => d === repo.dir || repo.folders.some((f) => f.dir === d))) return repo.key;
+  }
+
+  const ghKey = taskRepoKey(task);
+  if (ghKey === NO_REPO_GROUP) return null;
+  for (const repo of repos) {
+    if (ownerRepoFromOrigin(repo.originUrl) === ghKey) return repo.key;
+  }
+  return null;
 }
 
 /** The lane header text for a grouping key: `owner/name` renders as `name`.

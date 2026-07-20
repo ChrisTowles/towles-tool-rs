@@ -3,8 +3,10 @@ import {
   bucketByStatus,
   groupTasksByRepo,
   NO_REPO_GROUP,
+  railRepoKeyForTask,
   repoGroupLabel,
   taskRepoKey,
+  type RailRepoRow,
 } from "@/lib/board-groups";
 import type { TaskItem } from "@/lib/data";
 
@@ -125,6 +127,55 @@ describe("groupTasksByRepo", () => {
 
   it("produces no lanes for no tasks", () => {
     expect(groupTasksByRepo([])).toEqual([]);
+  });
+});
+
+describe("railRepoKeyForTask", () => {
+  const rail: RailRepoRow[] = [
+    {
+      key: "path:/code/p/tt-rs",
+      dir: "/code/p/tt-rs",
+      originUrl: "git@github.com:ChrisTowles/towles-tool-rs.git",
+      folders: [{ dir: "/code/p/tt-rs" }, { dir: "/code/p/tt-rs/.claude/worktrees/feat-x" }],
+    },
+    {
+      key: "path:/code/p/dawn",
+      dir: "/code/p/dawn",
+      originUrl: "https://github.com/ChrisTowles/dawncaster-re",
+      folders: [{ dir: "/code/p/dawn" }],
+    },
+  ];
+
+  it("matches the slot's worktree dir to a rail folder", () => {
+    const t = task({
+      slot: {
+        repoRoot: "/elsewhere",
+        dir: "/code/p/tt-rs/.claude/worktrees/feat-x",
+        branch: "feat/x",
+      },
+    });
+    expect(railRepoKeyForTask(rail, t)).toBe("path:/code/p/tt-rs");
+  });
+
+  it("matches a detached task's repo root after the worktree dir is gone", () => {
+    const t = task({ slot: { repoRoot: "/code/p/dawn", repo: "other/fork", branch: "b" } });
+    expect(railRepoKeyForTask(rail, t)).toBe("path:/code/p/dawn");
+  });
+
+  it("falls back to GitHub owner/name from an issue link when no path matches", () => {
+    const t = task({
+      issues: [{ repo: "ChrisTowles/dawncaster-re", number: 3, url: "u", state: "open" }],
+    });
+    expect(railRepoKeyForTask(rail, t)).toBe("path:/code/p/dawn");
+  });
+
+  it("returns null for a task whose repo isn't on the rail", () => {
+    const t = task({ slot: { repoRoot: "/code/p/unrelated", repo: "o/unrelated" } });
+    expect(railRepoKeyForTask(rail, t)).toBeNull();
+  });
+
+  it("returns null for a no-repo task", () => {
+    expect(railRepoKeyForTask(rail, task())).toBeNull();
   });
 });
 
