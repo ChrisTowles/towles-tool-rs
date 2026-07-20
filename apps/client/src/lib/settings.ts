@@ -77,7 +77,8 @@ export type UserSettings = {
    * `terminalFontSize` (canvas terminal font px; unset = 13), and
    * `shortcutsWorkInTerminal` (board-wide action shortcuts, e.g. jump to
    * next/prev session needing you, fire even while a terminal has focus;
-   * unset = on).
+   * unset = on), and `boardGroupByRepo` (the Board kanban groups tasks into
+   * per-repo swimlanes; unset = on).
    */
   agentboard?: {
     notifyNeedsYou?: boolean;
@@ -89,6 +90,7 @@ export type UserSettings = {
     copyOnSelect?: boolean;
     terminalFontSize?: number;
     shortcutsWorkInTerminal?: boolean;
+    boardGroupByRepo?: boolean;
   } & Record<string, unknown>;
 };
 
