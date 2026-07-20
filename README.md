@@ -22,7 +22,7 @@ Two reasons:
 2. **Existing tools were a good GUI or a good TUI, never both.** This app
    aims to be both: a real GUI around real terminals.
 
-## Wishlist: in towles-tool, not yet in Claude Desktop
+## Features: in towles-tool, not yet in Claude Desktop
 
 Checked against Claude Desktop **1.22209.0** (built 2026-07-16) on 2026-07-19,
 from the published [docs](https://code.claude.com/docs/en/desktop) plus the
