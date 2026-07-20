@@ -17,6 +17,7 @@ import { fmtAge, useStoreSnapshot } from "@/lib/data";
 import { pickTopTask } from "@/lib/day-top-task";
 import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
+import { PR_TONE } from "@/lib/pr-tone";
 import { useWorkspace } from "@/lib/workspace";
 
 /**
@@ -135,8 +136,8 @@ const STATE_LABEL: Record<CollectorState, string> = {
 /** Icon + accent (paired dark variant) per attention kind. */
 const KIND_META: Record<AttentionKind, { icon: LucideIcon; tone: string }> = {
   dm: { icon: MessageCircleHeart, tone: "text-rose-500 dark:text-rose-400" },
-  "pr-ci": { icon: CircleX, tone: "text-red-500 dark:text-red-400" },
-  "pr-review": { icon: GitPullRequest, tone: "text-blue-500 dark:text-blue-400" },
+  "pr-ci": { icon: CircleX, tone: PR_TONE.failed.text },
+  "pr-review": { icon: GitPullRequest, tone: PR_TONE.review.text },
   agent: { icon: CircleAlert, tone: "text-amber-500 dark:text-amber-400" },
 };
 

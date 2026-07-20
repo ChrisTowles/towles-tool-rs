@@ -1,7 +1,16 @@
-import { CircleCheck, CircleDot, CircleX, Clock, ExternalLink } from "lucide-react";
+import {
+  CircleCheck,
+  CircleDot,
+  CircleX,
+  Clock,
+  ExternalLink,
+  type LucideIcon,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { fmtAge, type CollectRun, type IssueItem, type PrItem } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
+import { checksTone, PR_TONE, type ChecksTone } from "@/lib/pr-tone";
+import { cn } from "@/lib/utils";
 
 /**
  * Shared atoms for screens rendering store-snapshot data (Cockpit, Pull
@@ -38,33 +47,28 @@ export function Empty({ children }: { children: React.ReactNode }) {
   return <p className="px-3 py-8 text-center text-sm text-muted-foreground">{children}</p>;
 }
 
+/** Icon + label per checks tone — the color itself comes from the shared PR
+ * tone map (`lib/pr-tone.ts`), so cyan means running everywhere, never
+ * red/amber, which are reserved for genuine failure/needs-you. */
+const CHECKS_FACE: Record<ChecksTone, { icon: LucideIcon; label: string }> = {
+  passing: { icon: CircleCheck, label: "passing" },
+  failed: { icon: CircleX, label: "failing" },
+  plain: { icon: CircleDot, label: "no checks" },
+  running: { icon: Clock, label: "pending" },
+};
+
 /**
  * CI check-rollup badge for a PR row. One variant per collector state
- * (`passing | failing | pending | none`); unknown strings render as pending so
- * a new collector value degrades visibly instead of vanishing.
+ * (`passing | failing | pending | none`); `checksTone` renders unknown strings
+ * as pending so a new collector value degrades visibly instead of vanishing.
+ * Deliberately ignores PR state — a merged PR's checks still read "passing".
  */
 export function ChecksBadge({ checks }: { checks: string }) {
-  if (checks === "passing")
-    return (
-      <Badge className="shrink-0 bg-green-500/15 text-green-700 dark:bg-green-500/20 dark:text-green-400">
-        <CircleCheck className="size-3" /> passing
-      </Badge>
-    );
-  if (checks === "failing")
-    return (
-      <Badge className="shrink-0 bg-red-500/15 text-red-700 dark:bg-red-500/20 dark:text-red-400">
-        <CircleX className="size-3" /> failing
-      </Badge>
-    );
-  if (checks === "none")
-    return (
-      <Badge className="shrink-0 bg-muted text-muted-foreground">
-        <CircleDot className="size-3" /> no checks
-      </Badge>
-    );
+  const tone = checksTone(checks);
+  const { icon: Icon, label } = CHECKS_FACE[tone];
   return (
-    <Badge className="shrink-0 bg-amber-500/15 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
-      <Clock className="size-3" /> pending
+    <Badge className={cn("shrink-0", PR_TONE[tone].badge)}>
+      <Icon className="size-3" /> {label}
     </Badge>
   );
 }
@@ -123,9 +127,7 @@ export function PrRow({
         </div>
       </a>
       {reviewRequested && (
-        <Badge className="shrink-0 bg-blue-500/15 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400">
-          review you
-        </Badge>
+        <Badge className={cn("shrink-0", PR_TONE.review.badge)}>review you</Badge>
       )}
       <ChecksBadge checks={pr.checks} />
       {actions ?? (

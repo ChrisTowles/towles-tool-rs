@@ -51,6 +51,7 @@ import {
 } from "@/lib/agentboard";
 import type { PrItem } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
+import { PR_TONE, prTone } from "@/lib/pr-tone";
 import { shortcutHint } from "@/lib/shortcuts";
 import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -634,15 +635,16 @@ function unsafeToDeleteReason(
   return reasons.join("; and ");
 }
 
-/** Clickable `#N` chip for the folder's PR, tinted by its checks state (red
- * failing · green passing · yellow pending · gray none). Once merged the
- * chip normally turns purple — the slot is done, time to `tt slot rm` it —
- * but merged only means the *PR's* content is safe; it says nothing about
- * this checkout. If `stats` shows uncommitted changes or commits that
- * haven't landed on the base branch yet (`folderHoldsNoWork`), the chip
- * turns amber (this app's needs-you hue) instead, since removing the slot
- * would lose that work despite the PR being merged — see the adjacent
- * `SafeToDeleteBadge` for the positive case. Opens GitHub. */
+/** Clickable `#N` chip for the folder's PR, tinted by the shared PR tone map
+ * (`lib/pr-tone.ts`: cyan CI running · red failed/closed · green passing ·
+ * gray no checks). Once merged the chip normally turns purple — the slot is
+ * done, time to `tt slot rm` it — but merged only means the *PR's* content
+ * is safe; it says nothing about this checkout. If `stats` shows uncommitted
+ * changes or commits that haven't landed on the base branch yet
+ * (`folderHoldsNoWork`), the chip turns amber (this app's needs-you hue)
+ * instead, since removing the slot would lose that work despite the PR being
+ * merged — see the adjacent `SafeToDeleteBadge` for the positive case.
+ * Opens GitHub. */
 export function PrChip({
   pr,
   stats,
@@ -655,15 +657,7 @@ export function PrChip({
   const base = comparedBaseLabel(stats);
   const tone = hasLocalWork
     ? "border-amber-500/50 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
-    : merged
-      ? "border-purple-500/50 bg-purple-500/10 text-purple-600 hover:bg-purple-500/20 dark:text-purple-400"
-      : pr.checks === "failing"
-        ? "border-red-500/50 bg-red-500/10 text-red-600 hover:bg-red-500/20 dark:text-red-400"
-        : pr.checks === "passing"
-          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
-          : pr.checks === "pending"
-            ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-600 hover:bg-yellow-500/20 dark:text-yellow-400"
-            : "border-border/70 text-muted-foreground hover:bg-accent hover:text-foreground";
+    : PR_TONE[prTone(pr)].chip;
   return (
     <button
       type="button"
