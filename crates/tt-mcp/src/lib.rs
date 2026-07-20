@@ -562,7 +562,6 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_700_000_000_000; // fixed epoch ms for deterministic tests
-    const HOUR_MS: i64 = 3_600_000;
 
     /// The tracked-repo dir every test dispatcher knows about.
     const REPO_DIR: &str = "/home/u/code/demo";
