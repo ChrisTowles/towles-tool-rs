@@ -1139,6 +1139,41 @@ export function ctxPct(d: AgentEventDetails | null | undefined): number {
   return Math.round((d.contextUsed / d.contextMax) * 100);
 }
 
+/** Token counts at a glance: `53K`, `412K`, `1M`. Context windows are round
+ * numbers and the exact token count is never actionable, so this trades the
+ * digits for something readable at 10px. */
+export function fmtTokens(n: number): string {
+  if (n < 1_000) return `${n}`;
+  const k = Math.round(n / 1_000);
+  // Promote on the *rounded* value, not the raw one: 999_500 rounds to 1000K,
+  // which has to read as 1M.
+  if (k < 1_000) return `${k}K`;
+  const m = Math.round(n / 100_000) / 10;
+  // 1M, not 1.0M — but keep 1.5M's fraction. Tested after rounding, so 1_020_000
+  // reads as 1M rather than 1.0M.
+  return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+}
+
+/** `412K / 1M` — what a session is holding against what it can hold. Null when
+ * the window size is unknown, since a bare used-count answers nothing.
+ *
+ * The window outlives the counter (a journal rotation clears what's used but
+ * not how much fits), so an unknown count reads as `1M window` rather than a
+ * `0` we'd be inventing. */
+export function fmtContext(d: AgentEventDetails | null | undefined): string | null {
+  if (!d?.contextMax) return null;
+  if (!d.contextUsed) return `${fmtTokens(d.contextMax)} window`;
+  return `${fmtTokens(d.contextUsed)} / ${fmtTokens(d.contextMax)}`;
+}
+
+/** `claude-opus-4-8 · 412K / 1M` — what a cold resume would cost, in one line:
+ * which model, and how much context it would re-send. Null when neither is
+ * known, so a caller can render nothing rather than a stray separator. */
+export function modelContextLabel(d: AgentEventDetails | null | undefined): string | null {
+  const parts = [d?.model, fmtContext(d)].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 /** A session is cache-cold when it never had cache activity or the TTL lapsed. */
 export function isCold(d: AgentEventDetails | null | undefined, now: number): boolean {
   return !d?.cacheExpiresAt || now >= d.cacheExpiresAt;

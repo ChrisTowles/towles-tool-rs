@@ -25,6 +25,7 @@ import {
   isAgent,
   isCacheExpiring,
   isCold,
+  modelContextLabel,
   pathScope,
   type ActionableItem,
   type ActionableKind,
@@ -316,6 +317,14 @@ export function ColdCacheOverlay({
           <span className="text-xs text-muted-foreground">
             resuming re-reads the full transcript at full price — any message re-warms it
           </span>
+          {/* What that re-read would actually cost: which model, and how much
+              context it would re-send — the two facts the compact-or-continue
+              decision below turns on. */}
+          {modelContextLabel(d) && (
+            <span className="mt-0.5 font-mono text-[10.5px] text-muted-foreground/70">
+              {modelContextLabel(d)}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button
