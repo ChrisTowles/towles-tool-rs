@@ -96,6 +96,7 @@ import {
   onAgentboardNavRequest,
   onOpenSessionRequest,
   paneRects,
+  abSetSessionPurpose,
   filesPanePathFor,
   nextOpenFileNonce,
   nextWindowId,
@@ -1037,6 +1038,7 @@ export function AgentboardScreen() {
         imagePaths: input.imagePaths,
         taskId,
         dynamic: input.dynamic,
+        launchClaude: input.launchClaude,
         repoOriginUrl: repo.originUrl,
         startedAt: Date.now(),
         status: "creating",
@@ -1089,7 +1091,10 @@ export function AgentboardScreen() {
     const launchOptions: ClaudeLaunchOptions = input.dynamic
       ? { ...input.options, permissionMode: "plan" }
       : input.options;
-    await slotCreated(created, promptWithImages(goalPrompt, imagePaths), launchOptions, label);
+    // "Start Claude on the goal" unchecked → no prompt, which is already how
+    // `slotCreated` says "don't type anything into the PTY".
+    const prompt = input.launchClaude ? promptWithImages(goalPrompt, imagePaths) : "";
+    await slotCreated(created, prompt, launchOptions, label);
   }
 
   function retryPendingSlot(id: string) {
@@ -1108,6 +1113,7 @@ export function AgentboardScreen() {
         issues: [],
         worktree: true,
         dynamic: p.dynamic,
+        launchClaude: p.launchClaude,
         taskId: p.taskId,
       },
     );
@@ -1145,6 +1151,13 @@ export function AgentboardScreen() {
       rec = added.value;
     }
     mountSession(created.dir, rec.id);
+    // Label the session before deciding whether to launch: the goal is why
+    // this session exists either way, and a slot created with "Start Claude"
+    // unchecked would otherwise sit in the rail as an unnamed shell.
+    if (label) void abSetSessionPurpose(rec.id, label);
+    // An empty prompt is the one signal for "leave the PTY at a bare shell" —
+    // both a goal-less submit and an unchecked "Start Claude on the goal"
+    // arrive here the same way.
     if (prompt) {
       // `launchClaudeIn` waits for the PTY's first frame itself — a proxy for
       // "the shell is actually reading input", since a successful term_write
@@ -1176,10 +1189,12 @@ export function AgentboardScreen() {
     target: StartClaudeTarget,
     prompt: string,
     options?: ClaudeLaunchOptions,
-    /** What the toast and the session's rail purpose show, when that should
-     * differ from what's actually typed into the PTY — the new-slot flow
-     * appends attached-image paths to `prompt` that would only be noise
-     * here. Defaults to `prompt` for every other caller. */
+    /** What the toast shows, when that should differ from what's actually
+     * typed into the PTY — the new-slot flow appends attached-image paths to
+     * `prompt` that would only be noise here. Defaults to `prompt` for every
+     * other caller. Setting the session's rail purpose is the caller's job,
+     * not this function's: a session's purpose is why it exists, which is
+     * equally true of the slots this never launches anything into. */
     label?: string,
   ) {
     const { folderDir, sessionId, sessionName, restart } = target;
@@ -1187,7 +1202,6 @@ export function AgentboardScreen() {
     setOverlay(sessionId, "busy");
     const verb = restart ? "starting over — fresh Claude session" : "starting Claude";
     toast(shown ? `✦ ${verb} in ${sessionName}: ${shown}` : `✦ ${verb} in ${sessionName}`);
-    if (shown) void invoke("ab_set_session_purpose", { id: sessionId, text: shown });
     await withLiveSession(
       sessionId,
       async () => {
@@ -1219,7 +1233,7 @@ export function AgentboardScreen() {
     const rec = added.value;
     const command = launchCommand(cfg);
     toast(`▶ ${command} — in ${rec.name}`);
-    void invoke("ab_set_session_purpose", { id: rec.id, text: command });
+    void abSetSessionPurpose(rec.id, command);
     await withLiveSession(
       rec.id,
       async () => {
@@ -1243,6 +1257,9 @@ export function AgentboardScreen() {
     setStartClaudeTarget(null);
     const prompt = startClaudePrompt.trim();
     setStartClaudePrompt("");
+    // The typed prompt is why this session exists — blank just leaves it
+    // unlabeled, same as before.
+    if (prompt) void abSetSessionPurpose(target.sessionId, prompt);
     void launchClaudeIn(target, prompt);
   }
 

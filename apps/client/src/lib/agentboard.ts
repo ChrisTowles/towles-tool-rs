@@ -41,6 +41,14 @@ export type RepoSyncResult = {
  * (e.g. `gh` auth expired) comes back as `ok: false` with `message` instead. */
 export const abSyncRepo = (dir: string) => invoke<RepoSyncResult>("store_sync_repo", { dir });
 
+/** Label a session in the rail with what it exists for — the task's goal, the
+ * prompt Claude was started on, or the dev-server command. A session's purpose
+ * is a property of the session, not of whatever started it: every caller that
+ * knows why a session was opened sets it, including the ones that never launch
+ * anything into the PTY. */
+export const abSetSessionPurpose = (id: string, text: string | null) =>
+  invoke("ab_set_session_purpose", { id, text });
+
 export type AgentStatus = "idle" | "busy" | "complete" | "error" | "waiting" | "interrupted";
 
 /** Per-agent live details from the transcript tail (tokens, cache, model).

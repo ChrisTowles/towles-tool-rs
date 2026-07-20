@@ -107,6 +107,10 @@ export type NewTaskSubmit = {
    * user approves the plan in the PTY it delivers all the way to a merged
    * PR (`dynamicFlowPrompt`) — the merge is what closes the board task. */
   dynamic: boolean;
+  /** False to create the worktree and its session but leave the PTY at a
+   * bare shell — no `claude` line typed. For work you want the slot for but
+   * intend to drive yourself. Forces `dynamic` off. */
+  launchClaude: boolean;
 };
 
 /** Mirrors the Rust `SlotCreated` payload from `slot_create`. */
@@ -161,6 +165,9 @@ export type PendingSlot = {
   taskId?: number;
   /** Carried so a retry launches the same flow the submit asked for. */
   dynamic: boolean;
+  /** Carried for the same reason — a retry of a no-Claude create must not
+   * suddenly start one. */
+  launchClaude: boolean;
   /** The repo's origin URL, for the task slot binding's `owner/name`. */
   repoOriginUrl?: string | null;
   startedAt: number;
@@ -244,6 +251,9 @@ export function InlineNewSlot({
   // grant than "start Claude on a goal" — opting in is per-task, never
   // remembered, so it's always a deliberate choice.
   const [dynamic, setDynamic] = useState(false);
+  // Launching Claude on the goal is the whole point of the flow, so it's on
+  // by default; unchecking it is the "I just want the worktree" escape hatch.
+  const [launchClaude, setLaunchClaude] = useState(true);
   const [branches, setBranches] = useState<BaseBranch[]>([]);
   const [baseOpen, setBaseOpen] = useState(false);
   // One slot for whatever the form has to say — an error (nothing happened)
@@ -521,10 +531,14 @@ export function InlineNewSlot({
       return;
     }
     const isDynamic = worktree && dynamic;
-    uiAction(
-      worktree ? (isDynamic ? "task.start_dynamic" : "task.start") : "task.create_only",
-      "agentboard",
-    );
+    const action = !worktree
+      ? "task.create_only"
+      : isDynamic
+        ? "task.start_dynamic"
+        : launchClaude
+          ? "task.start"
+          : "task.start_no_claude";
+    uiAction(action, "agentboard");
     onSubmit({
       goal: goal.trim(),
       branch,
@@ -537,6 +551,7 @@ export function InlineNewSlot({
       issues: selectedIssues,
       worktree,
       dynamic: isDynamic,
+      launchClaude,
     });
   }
 
@@ -811,17 +826,40 @@ export function InlineNewSlot({
         </Select>
       </div>
       <label
-        htmlFor="new-slot-dynamic"
+        htmlFor="new-slot-launch-claude"
         className="flex cursor-pointer items-start gap-2"
+        title="Off: create the worktree and its terminal session but leave it at a bare shell — nothing is typed into the PTY. The goal still becomes the board card and the session's label."
+      >
+        <Checkbox
+          id="new-slot-launch-claude"
+          checked={launchClaude}
+          onCheckedChange={(v) => {
+            const on = v === true;
+            setLaunchClaude(on);
+            // Clear the subordinate option rather than masking it at every
+            // read: a dynamic task *is* a Claude session, so leaving it set
+            // while it renders unchecked would silently restore it here.
+            if (!on) setDynamic(false);
+          }}
+          className="mt-0.5"
+        />
+        <span className="text-[11px] leading-snug text-muted-foreground">
+          Start Claude on the goal — off leaves the new slot at a bare shell
+        </span>
+      </label>
+      <label
+        htmlFor="new-slot-dynamic"
+        className="flex cursor-pointer items-start gap-2 has-disabled:cursor-not-allowed"
         title="Launches Claude in plan mode. Once you approve its plan in the terminal, it implements the work, runs /code-review low --fix and /simplify, rebases on the base branch, opens the PR, and merges it — the board task closes when the merge lands."
       >
         <Checkbox
           id="new-slot-dynamic"
           checked={dynamic}
+          disabled={!launchClaude}
           onCheckedChange={(v) => setDynamic(v === true)}
           className="mt-0.5"
         />
-        <span className="text-[11px] leading-snug text-muted-foreground">
+        <span className="text-[11px] leading-snug text-muted-foreground peer-disabled:opacity-50">
           Dynamic — after you approve the plan: review, simplify, rebase, PR, merge
         </span>
       </label>
