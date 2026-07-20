@@ -8,10 +8,11 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { ChevronRight, GitCompare, Pencil, RefreshCw } from "lucide-react";
+import { ChevronRight, Pencil, RefreshCw } from "lucide-react";
 import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
 import { MonacoMultiDiff, type ChangedFile } from "@/components/diff-monaco";
 import { ClaudeBadge, IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
+import { PaneChrome, PaneLens } from "@/components/pane-chrome";
 import { Checkbox } from "@/components/ui/checkbox";
 import { folderStatsKey, type FolderData } from "@/lib/agentboard";
 import { buildDiffTree, type DiffTreeNode } from "@/lib/diff";
@@ -419,77 +420,83 @@ export function DiffPane({
         focused && "border-violet-500/60",
       )}
     >
-      <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
-        <GitCompare className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="truncate font-mono text-xs text-foreground">{folder.name}</span>
-        {ideConnected && <ClaudeBadge />}
-        {editingBase ? (
-          <input
-            autoFocus
-            defaultValue={baseBranch ?? ""}
-            placeholder={
-              slotBaseBranch
-                ? `branch to compare against (blank = this slot's base, "${slotBaseBranch}")`
-                : "branch to compare against (blank = auto-detect main)"
-            }
-            onBlur={(e) => void commitBaseBranch(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void commitBaseBranch((e.target as HTMLInputElement).value);
-              if (e.key === "Escape") setEditingBase(false);
-            }}
-            className="w-48 rounded-sm border border-input bg-background px-1.5 py-0.5 font-mono text-[10.5px] outline-none"
-          />
-        ) : (
-          <span className="flex shrink-0 items-center rounded-md border border-border/70 p-0.5">
-            {modes.map((m) => (
-              <button
-                key={m.key}
-                type="button"
-                title={m.hint}
-                aria-pressed={mode === m.key}
-                onClick={() => setMode(m.key)}
-                className={cn(
-                  "rounded-[5px] px-1.5 py-px font-mono text-[10.5px] transition-colors",
-                  mode === m.key
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
+      <PaneChrome
+        lens={<PaneLens kind="diff" />}
+        controls={
+          <>
+            {ideConnected && <ClaudeBadge />}
+            {editingBase ? (
+              <input
+                autoFocus
+                defaultValue={baseBranch ?? ""}
+                placeholder={
+                  slotBaseBranch
+                    ? `branch to compare against (blank = this slot's base, "${slotBaseBranch}")`
+                    : "branch to compare against (blank = auto-detect main)"
+                }
+                onBlur={(e) => void commitBaseBranch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter")
+                    void commitBaseBranch((e.target as HTMLInputElement).value);
+                  if (e.key === "Escape") setEditingBase(false);
+                }}
+                className="w-48 rounded-sm border border-input bg-background px-1.5 py-0.5 font-mono text-[10.5px] outline-none"
+              />
+            ) : (
+              <span className="flex shrink-0 items-center rounded-md border border-border/70 p-0.5">
+                {modes.map((m) => (
+                  <button
+                    key={m.key}
+                    type="button"
+                    title={m.hint}
+                    aria-pressed={mode === m.key}
+                    onClick={() => setMode(m.key)}
+                    className={cn(
+                      "rounded-[5px] px-1.5 py-px font-mono text-[10.5px] transition-colors",
+                      mode === m.key
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </span>
+            )}
+            {!editingBase && mode === "main" && (
+              <IconBtn
+                title={
+                  slotBaseBranch
+                    ? `set the parent branch this folder compares against (default: this slot's base, "${slotBaseBranch}")`
+                    : "set the parent branch this folder compares against (default: origin/main)"
+                }
+                onClick={() => setEditingBase(true)}
+                className="hover:text-sky-500"
               >
-                {m.label}
-              </button>
-            ))}
-          </span>
-        )}
-        {!editingBase && mode === "main" && (
-          <IconBtn
-            title={
-              slotBaseBranch
-                ? `set the parent branch this folder compares against (default: this slot's base, "${slotBaseBranch}")`
-                : "set the parent branch this folder compares against (default: origin/main)"
-            }
-            onClick={() => setEditingBase(true)}
-            className="hover:text-sky-500"
-          >
-            <Pencil className="size-3" />
-          </IconBtn>
-        )}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          <IconBtn
-            title="refresh diff"
-            onClick={() => void fetchDiff()}
-            className="hover:text-sky-500"
-          >
-            <RefreshCw className={refreshing ? "size-3 animate-spin" : "size-3"} />
-          </IconBtn>
-          <IconBtn
-            title="remove pane (diff stays a click away on the folder)"
-            onClick={onClose}
-            className="hover:text-red-500"
-          >
-            ⊟
-          </IconBtn>
-        </span>
-      </div>
+                <Pencil className="size-3" />
+              </IconBtn>
+            )}
+          </>
+        }
+        actions={
+          <>
+            <IconBtn
+              title="refresh diff"
+              onClick={() => void fetchDiff()}
+              className="hover:text-sky-500"
+            >
+              <RefreshCw className={refreshing ? "size-3 animate-spin" : "size-3"} />
+            </IconBtn>
+            <IconBtn
+              title="remove pane (diff stays a click away on the folder)"
+              onClick={onClose}
+              className="hover:text-red-500"
+            >
+              ⊟
+            </IconBtn>
+          </>
+        }
+      />
       <div className="relative flex min-h-0 flex-1 p-2">
         {files == null ? (
           <p className="p-2 text-sm text-muted-foreground">Loading…</p>

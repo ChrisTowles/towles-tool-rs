@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Glyph, IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
+import { PaneChrome, PaneLens } from "@/components/pane-chrome";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -341,76 +342,81 @@ export function PreviewPane({
       )}
     >
       {/* Header: title + URL/server + reload/external + close */}
-      <div className="flex shrink-0 items-center gap-2 border-b bg-card px-2 py-1">
-        <AppWindow className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="shrink-0 truncate font-mono text-xs text-foreground">{folder.name}</span>
-        {servers.length > 0 && (
-          <Select
-            value={servers.find((s) => s.url === url)?.key ?? ""}
-            onValueChange={(key) => {
-              const s = servers.find((x) => x.key === key);
-              if (s) navigate(s.url, "config");
-            }}
-          >
-            <SelectTrigger size="sm" className="h-6 w-40 text-[11px]">
-              <SelectValue placeholder="Dev server" />
-            </SelectTrigger>
-            <SelectContent>
-              {servers.map((s) => (
-                <SelectItem key={s.key} value={s.key}>
-                  <span
-                    className={cn(
-                      "size-2 rounded-full",
-                      s.listening ? "bg-green-500" : "bg-muted-foreground/40",
-                    )}
-                  />
-                  {s.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-        <Input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && input.trim()) navigate(input.trim(), "manual");
-          }}
-          placeholder="http://localhost:<port>/"
-          className="h-6 min-w-0 flex-1 font-mono text-[11px]"
-        />
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          <IconBtn
-            title="reload preview"
-            disabled={!url}
-            className="hover:text-sky-500"
-            onClick={() => {
-              setFrameKey((k) => k + 1);
-              uiAction("preview.reload", "agentboard");
-            }}
-          >
-            <RotateCw className="size-3" />
-          </IconBtn>
-          <IconBtn
-            title="open in browser"
-            disabled={!url}
-            className="hover:text-sky-500"
-            onClick={() => {
-              uiAction("preview.open_external", "agentboard");
-              void openExternalUrl(url);
-            }}
-          >
-            <ExternalLink className="size-3" />
-          </IconBtn>
-          <IconBtn
-            title="remove pane (preview stays a click away on the folder)"
-            className="hover:text-red-500"
-            onClick={onClose}
-          >
-            ⊟
-          </IconBtn>
-        </span>
-      </div>
+      <PaneChrome
+        lens={<PaneLens kind="web" />}
+        controls={
+          <>
+            {servers.length > 0 && (
+              <Select
+                value={servers.find((s) => s.url === url)?.key ?? ""}
+                onValueChange={(key) => {
+                  const s = servers.find((x) => x.key === key);
+                  if (s) navigate(s.url, "config");
+                }}
+              >
+                <SelectTrigger size="sm" className="h-6 w-40 text-[11px]">
+                  <SelectValue placeholder="Dev server" />
+                </SelectTrigger>
+                <SelectContent>
+                  {servers.map((s) => (
+                    <SelectItem key={s.key} value={s.key}>
+                      <span
+                        className={cn(
+                          "size-2 rounded-full",
+                          s.listening ? "bg-green-500" : "bg-muted-foreground/40",
+                        )}
+                      />
+                      {s.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <Input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && input.trim()) navigate(input.trim(), "manual");
+              }}
+              placeholder="http://localhost:<port>/"
+              className="h-6 min-w-0 flex-1 font-mono text-[11px]"
+            />
+          </>
+        }
+        actions={
+          <>
+            <IconBtn
+              title="reload preview"
+              disabled={!url}
+              className="hover:text-sky-500"
+              onClick={() => {
+                setFrameKey((k) => k + 1);
+                uiAction("preview.reload", "agentboard");
+              }}
+            >
+              <RotateCw className="size-3" />
+            </IconBtn>
+            <IconBtn
+              title="open in browser"
+              disabled={!url}
+              className="hover:text-sky-500"
+              onClick={() => {
+                uiAction("preview.open_external", "agentboard");
+                void openExternalUrl(url);
+              }}
+            >
+              <ExternalLink className="size-3" />
+            </IconBtn>
+            <IconBtn
+              title="remove pane (preview stays a click away on the folder)"
+              className="hover:text-red-500"
+              onClick={onClose}
+            >
+              ⊟
+            </IconBtn>
+          </>
+        }
+      />
 
       {/* Surface: iframe + annotation canvas */}
       <div ref={surfaceRef} className="relative min-h-0 flex-1 overflow-hidden bg-background">
