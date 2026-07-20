@@ -96,6 +96,7 @@ import {
   onAgentboardNavRequest,
   onOpenSessionRequest,
   paneRects,
+  filesPanePathFor,
   nextOpenFileNonce,
   nextWindowId,
   placePane,
@@ -566,6 +567,24 @@ export function AgentboardScreen() {
     }));
     openFiles(dir);
   };
+  // A file link clicked in a folder's terminal → the same files-pane route as
+  // Claude's openFile, landing on the `:line` when the link carried one. Links
+  // pointing outside the checkout keep the old behavior (external editor via
+  // `term_open_path` — the files pane can only browse the checkout).
+  function openTerminalPath(dir: string, path: string, line: number | null) {
+    uiAction("terminal.link_open_file", "agentboard");
+    const rel = filesPanePathFor(dir, path);
+    if (rel == null) {
+      void invoke("term_open_path", { path, cwd: dir, line });
+      return;
+    }
+    setFilesOpenRequests((prev) => ({
+      ...prev,
+      [dir]: { path: rel, anchor: { line }, nonce: nextOpenFileNonce() },
+    }));
+    openFiles(dir);
+  }
+
   useEffect(() => {
     if (!isTauri()) return;
     let disposed = false;
@@ -2006,6 +2025,16 @@ export function AgentboardScreen() {
                                   cwd={folderOf.get(id)?.dir ?? cwds.current[id]}
                                   onExit={(exit) => handleExit(id, exit)}
                                   onTitle={onTitle}
+                                  onOpenPath={(() => {
+                                    // Only folder-owned terminals can route
+                                    // links into a files pane; others keep the
+                                    // external-editor default.
+                                    const dir = folderOf.get(id)?.dir;
+                                    return dir
+                                      ? (path: string, line: number | null) =>
+                                          openTerminalPath(dir, path, line)
+                                      : undefined;
+                                  })()}
                                 />
                                 {s && (
                                   <ColdCacheOverlay

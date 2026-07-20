@@ -53,6 +53,14 @@ export function FilesPane({
   const [previewOpen, setPreviewOpen] = useState(false);
   const explorerRef = useRef<HTMLDivElement>(null);
 
+  // Ordered before the openRequest effect below: on a fresh mount both run,
+  // and the request that just *created* this pane must win over the reset —
+  // effects fire in declaration order.
+  useEffect(() => {
+    setOpen(null);
+    setDirty(false);
+  }, [dir]);
+
   useEffect(() => {
     if (openRequest) setOpen(openRequest.path);
   }, [openRequest]);
@@ -64,11 +72,6 @@ export function FilesPane({
   }, [open]);
 
   const previewKind = open ? previewKindFor(open) : null;
-
-  useEffect(() => {
-    setOpen(null);
-    setDirty(false);
-  }, [dir]);
 
   // This pane is the VS Code workspace: the Explorer sidebar renders into
   // this pane's container, quick-open (Ctrl+P in the editor) searches this

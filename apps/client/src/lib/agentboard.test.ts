@@ -28,6 +28,7 @@ import {
   isFilesPane,
   filesPaneDir,
   filesPaneId,
+  filesPanePathFor,
   folderPaneDir,
   isCacheExpiring,
   claudeCommand,
@@ -119,6 +120,31 @@ function pr(overrides: Partial<PrItem>): PrItem {
     ...overrides,
   };
 }
+
+describe("filesPanePathFor", () => {
+  const dir = "/home/u/code/repo";
+
+  it("keeps checkout-relative paths as-is", () => {
+    expect(filesPanePathFor(dir, "crates/tt-vt/src/lib.rs")).toBe("crates/tt-vt/src/lib.rs");
+  });
+
+  it("strips a ./ prefix", () => {
+    expect(filesPanePathFor(dir, "./src/main.rs")).toBe("src/main.rs");
+    expect(filesPanePathFor(dir, "././src/main.rs")).toBe("src/main.rs");
+  });
+
+  it("relativizes an absolute path inside the checkout", () => {
+    expect(filesPanePathFor(dir, `${dir}/apps/client/src/App.tsx`)).toBe("apps/client/src/App.tsx");
+  });
+
+  it("rejects paths outside the checkout", () => {
+    expect(filesPanePathFor(dir, "/etc/hosts.conf")).toBeNull();
+    expect(filesPanePathFor(dir, "/home/u/code/other-repo/src/main.rs")).toBeNull();
+    expect(filesPanePathFor(dir, "~/notes/todo.md")).toBeNull();
+    expect(filesPanePathFor(dir, "../sibling/file.rs")).toBeNull();
+    expect(filesPanePathFor(dir, "./../file.rs")).toBeNull();
+  });
+});
 
 describe("pathScope", () => {
   it("extracts the ~/code/<scope>/ prefix", () => {
