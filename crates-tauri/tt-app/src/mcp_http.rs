@@ -141,19 +141,25 @@ impl Refusal {
 /// the module doc), so it is exercised directly by unit tests rather than only
 /// through a live socket.
 ///
-/// `origin` is the raw `Origin` header if the request carried one *at all*;
-/// `Some("")` still counts as carrying it. `content_type` is the raw
-/// `Content-Type` header.
+/// `origin_present` is deliberately a **bool, not the header's value**. The
+/// rule is presence, so the type says presence — passing the parsed value
+/// invites the fail-open this signature now makes unrepresentable: reading the
+/// header with `.to_str().ok()` yields `None` for a present-but-non-UTF8
+/// `Origin`, which would have been admitted as though the header were absent.
+/// Callers must ask `headers().contains_key(ORIGIN)` and nothing else.
+///
+/// `content_type` is the raw `Content-Type` header, where the value *does*
+/// matter.
 pub fn check_admission(
     method: &str,
     path: &str,
-    origin: Option<&str>,
+    origin_present: bool,
     content_type: Option<&str>,
 ) -> Result<(), Refusal> {
     // Origin first: a browser-originated request is refused whatever else it
     // says, and answering it with a more specific error would leak which of the
     // other checks it passed.
-    if origin.is_some() {
+    if origin_present {
         return Err(Refusal::BrowserOrigin);
     }
     if path != MCP_PATH {
@@ -337,11 +343,9 @@ async fn serve_connection(
         async move {
             let method = req.method().as_str().to_string();
             let path = req.uri().path().to_string();
-            let origin = req
-                .headers()
-                .get(hyper::header::ORIGIN)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
+            // Presence only — a header we can't decode is still a header, and
+            // treating it as absent would admit the request.
+            let origin_present = req.headers().contains_key(hyper::header::ORIGIN);
             let content_type = req
                 .headers()
                 .get(hyper::header::CONTENT_TYPE)
@@ -349,7 +353,7 @@ async fn serve_connection(
                 .map(str::to_string);
 
             if let Err(refusal) =
-                check_admission(&method, &path, origin.as_deref(), content_type.as_deref())
+                check_admission(&method, &path, origin_present, content_type.as_deref())
             {
                 tracing::warn!(
                     %method, %path, refusal = ?refusal,
@@ -472,7 +476,7 @@ mod tests {
 
     #[test]
     fn a_normal_mcp_client_request_is_admitted() {
-        assert_eq!(check_admission("POST", "/mcp", None, Some("application/json")), Ok(()));
+        assert_eq!(check_admission("POST", "/mcp", false, Some("application/json")), Ok(()));
     }
 
     #[test]
@@ -484,7 +488,7 @@ mod tests {
             "application/json;charset=UTF-8",
         ] {
             assert_eq!(
-                check_admission("POST", "/mcp", None, Some(value)),
+                check_admission("POST", "/mcp", false, Some(value)),
                 Ok(()),
                 "should admit {value}"
             );
@@ -494,15 +498,23 @@ mod tests {
     /// The DNS-rebinding mitigation: refuse on the header's *presence*. A real
     /// MCP client never sends one, so there is nothing to allowlist — and an
     /// allowlist would mean trusting an attacker-controlled string.
+    /// The DNS-rebinding mitigation refuses on the header's *presence*, so
+    /// there is nothing to allowlist — and an allowlist would mean trusting an
+    /// attacker-controlled string.
+    ///
+    /// The signature takes a bool rather than the header value precisely so the
+    /// fail-open this used to have is unrepresentable: reading the header with
+    /// `.to_str().ok()` yields `None` for a present-but-non-UTF8 `Origin`, and
+    /// passing that through would have admitted the request as though no header
+    /// were sent. Presence is the rule, so presence is the parameter.
     #[test]
-    fn any_origin_header_is_refused() {
-        for origin in ["https://evil.example", "null", "http://localhost:5173", ""] {
-            assert_eq!(
-                check_admission("POST", "/mcp", Some(origin), Some("application/json")),
-                Err(Refusal::BrowserOrigin),
-                "should refuse Origin: {origin:?}"
-            );
-        }
+    fn a_present_origin_header_is_refused_whatever_its_value() {
+        assert_eq!(
+            check_admission("POST", "/mcp", true, Some("application/json")),
+            Err(Refusal::BrowserOrigin)
+        );
+        // …and an absent one is the only way through.
+        assert_eq!(check_admission("POST", "/mcp", false, Some("application/json")), Ok(()));
     }
 
     /// `text/plain` is the one content type a page can POST without a preflight,
@@ -517,7 +529,7 @@ mod tests {
             "application/json-patch+json",
         ] {
             assert_eq!(
-                check_admission("POST", "/mcp", None, Some(value)),
+                check_admission("POST", "/mcp", false, Some(value)),
                 Err(Refusal::NotJson),
                 "should refuse {value}"
             );
@@ -526,7 +538,7 @@ mod tests {
 
     #[test]
     fn a_missing_content_type_is_refused() {
-        assert_eq!(check_admission("POST", "/mcp", None, None), Err(Refusal::NotJson));
+        assert_eq!(check_admission("POST", "/mcp", false, None), Err(Refusal::NotJson));
     }
 
     /// Both browser defenses have to hold together: a page that omits
@@ -536,13 +548,13 @@ mod tests {
     fn a_browser_request_is_refused_by_whichever_check_it_trips() {
         // Simple request: no preflight, but text/plain.
         assert_eq!(
-            check_admission("POST", "/mcp", Some("https://evil.example"), Some("text/plain")),
+            check_admission("POST", "/mcp", true, Some("text/plain")),
             Err(Refusal::BrowserOrigin)
         );
         // Even if some future client somehow omitted Origin, the content type
         // a no-preflight page can send is still refused.
         assert_eq!(
-            check_admission("POST", "/mcp", None, Some("text/plain")),
+            check_admission("POST", "/mcp", false, Some("text/plain")),
             Err(Refusal::NotJson)
         );
     }
@@ -550,19 +562,19 @@ mod tests {
     #[test]
     fn only_post_to_the_mcp_path_is_served() {
         assert_eq!(
-            check_admission("GET", "/mcp", None, Some("application/json")),
+            check_admission("GET", "/mcp", false, Some("application/json")),
             Err(Refusal::MethodNotAllowed)
         );
         assert_eq!(
-            check_admission("POST", "/", None, Some("application/json")),
+            check_admission("POST", "/", false, Some("application/json")),
             Err(Refusal::NotFound)
         );
         assert_eq!(
-            check_admission("POST", "/mcp/extra", None, Some("application/json")),
+            check_admission("POST", "/mcp/extra", false, Some("application/json")),
             Err(Refusal::NotFound)
         );
         // Method casing is not meaningful in HTTP routing here.
-        assert_eq!(check_admission("post", "/mcp", None, Some("application/json")), Ok(()));
+        assert_eq!(check_admission("post", "/mcp", false, Some("application/json")), Ok(()));
     }
 
     /// An OPTIONS preflight must not be answered with anything permissive —
@@ -571,11 +583,8 @@ mod tests {
     /// silently undo the whole defense.
     #[test]
     fn preflight_is_not_specially_accommodated() {
-        assert_eq!(
-            check_admission("OPTIONS", "/mcp", Some("https://evil.example"), None),
-            Err(Refusal::BrowserOrigin)
-        );
-        assert_eq!(check_admission("OPTIONS", "/mcp", None, None), Err(Refusal::MethodNotAllowed));
+        assert_eq!(check_admission("OPTIONS", "/mcp", true, None), Err(Refusal::BrowserOrigin));
+        assert_eq!(check_admission("OPTIONS", "/mcp", false, None), Err(Refusal::MethodNotAllowed));
     }
 
     #[test]
