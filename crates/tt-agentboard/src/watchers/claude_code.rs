@@ -321,9 +321,23 @@ fn mtime_ms(path: &Path) -> Option<i64> {
 
 // --- Details assembly (§6, unchanged) ---
 
+/// Claude Code labels entries it generated itself — an interrupt notice, for
+/// one — with a bracketed placeholder model id (`<synthetic>`) and a fully
+/// zeroed `usage` block. They are structurally ordinary assistant entries, so
+/// [`extract_usage_summary`] happily returns one when it is the newest; taking
+/// its identity would relabel a 1M Sonnet session as `<synthetic>` on the
+/// default 200K window. Real model ids are never bracketed, so this rejects
+/// the placeholders without also rejecting a model too new for the table.
+fn is_placeholder_model(model: &str) -> bool {
+    model.starts_with('<')
+}
+
 fn summary_to_details(s: &ClaudeUsageSummary) -> AgentEventDetails {
     AgentEventDetails {
-        model: Some(s.model.clone()),
+        // An entry with no `model` field parses to an empty string; report that
+        // as "unknown" rather than an empty model name, so the session's known
+        // model (carried on `SessionState`) can fill it in instead.
+        model: Some(s.model.clone()).filter(|m| !m.is_empty()),
         context_used: Some(s.context_used),
         context_max: Some(s.context_max),
         cache_expires_at: s.cache_expires_at,
@@ -434,6 +448,18 @@ struct SessionState {
     journal_path: Option<PathBuf>,
     thread_name: Option<String>,
     usage: Option<ClaudeUsageSummary>,
+    /// Which model this session runs, and how big its context window is —
+    /// session-level facts, unlike everything else derived from the transcript
+    /// tail. Both are only ever *stated* inside an assistant `usage` entry, so
+    /// the rotation reset below (which drops `usage` wholesale, since its
+    /// counters were read off bytes that no longer exist) would otherwise blank
+    /// the UI's model/context readout until the session's next reply — which,
+    /// on an idle session, may be never. Neither actually changes when the
+    /// journal is replaced, so they are kept rather than re-derived.
+    ///
+    /// Carried the same way `thread_name` is, and for the same reason.
+    model: Option<String>,
+    context_max: Option<i64>,
     last_tool: Option<String>,
     subagents: Vec<SubagentInfo>,
     subagent_sig: String,
@@ -459,6 +485,8 @@ impl Default for SessionState {
             journal_path: None,
             thread_name: None,
             usage: None,
+            model: None,
+            context_max: None,
             last_tool: None,
             subagents: Vec::new(),
             subagent_sig: String::new(),
@@ -472,12 +500,42 @@ impl Default for SessionState {
 
 impl SessionState {
     fn details(&self) -> Option<AgentEventDetails> {
-        build_details(
+        let from_tail = build_details(
             self.usage.as_ref(),
             self.last_tool.as_deref(),
             &self.subagents,
             self.loop_state.as_ref(),
-        )
+        );
+        // Knowing the model alone is worth an event: just after a rotation
+        // there is nothing else to report yet, and reporting `None` would blank
+        // a readout we can still answer correctly.
+        let mut d = match from_tail {
+            Some(d) => d,
+            None if self.model.is_some() => AgentEventDetails::default(),
+            None => return None,
+        };
+        if d.model.is_none() {
+            d.model.clone_from(&self.model);
+        }
+        if d.context_max.is_none() {
+            d.context_max = self.context_max;
+        }
+        Some(d)
+    }
+
+    /// Record the session-level facts a fresh usage summary states. Silence is
+    /// never an update: a summary that names no usable model leaves the known
+    /// one in place rather than clearing it.
+    ///
+    /// The two are recorded together on purpose — the window is derived from
+    /// the model this same entry named, so accepting them independently could
+    /// pair one entry's model with another's window.
+    fn remember_identity(&mut self, usage: &ClaudeUsageSummary) {
+        if usage.model.is_empty() || is_placeholder_model(&usage.model) {
+            return;
+        }
+        self.model = Some(usage.model.clone());
+        self.context_max = Some(usage.context_max);
     }
 }
 
@@ -573,6 +631,9 @@ impl ClaudeCodeAgentWatcher {
             state.last_tool = None;
             state.loop_state = None;
             state.head.clear();
+            // `model`/`context_max` deliberately survive: a replaced journal is
+            // still the same session on the same model, and re-deriving them
+            // costs a full assistant turn (see the field docs).
         }
         state.file_id = file_id;
         if size == state.file_offset {
@@ -608,6 +669,7 @@ impl ClaudeCodeAgentWatcher {
             }
         }
         if let Some(usage) = extract_usage_summary(&parsed) {
+            state.remember_identity(&usage);
             state.usage = Some(usage);
         }
         if let Some(tool) = extract_last_tool(&parsed) {
@@ -689,11 +751,15 @@ impl AgentWatcher for ClaudeCodeAgentWatcher {
             // loop wake, usage — adopted fix #2) captured as a signature.
             let status_changed = state.emitted_status != Some(status);
             let sig = format!(
-                "{}|{:?}|{:?}|{:?}",
+                "{}|{:?}|{:?}|{:?}|{:?}",
                 state.subagent_sig,
                 state.loop_state.as_ref().map(|l| l.next_wake_at),
                 state.usage.as_ref().map(|u| (u.context_used, u.cache_expires_at)),
                 state.thread_name,
+                // Part of the emitted details in its own right (it outlives the
+                // usage summary it came from), so a newly-learned model has to
+                // open the gate on its own.
+                (&state.model, state.context_max),
             );
             let details_changed = state.last_emit_sig.as_deref() != Some(sig.as_str());
 
@@ -823,6 +889,61 @@ mod tests {
         let details = ev.details.as_ref().unwrap();
         assert_eq!(details.model.as_deref(), Some("claude-sonnet-5"));
         assert_eq!(details.last_tool.as_deref(), Some("Bash"));
+    }
+
+    /// An interrupt makes Claude Code append a `<synthetic>` assistant entry
+    /// with an all-zero usage block. It is the newest entry with `usage`, so it
+    /// wins `extract_usage_summary` — but it must not be allowed to relabel the
+    /// session, or a 1M Sonnet run reads as `<synthetic>` on a 200K window for
+    /// the rest of its life.
+    #[test]
+    fn a_synthetic_entry_never_restates_the_model() {
+        // Shape copied from a real journal (message.model = "<synthetic>").
+        const SYNTHETIC_LINE: &str = r#"{"timestamp":"2026-07-03T10:00:30.000Z","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"[Request interrupted]"}],"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        let mut f = fixture();
+        write_journal(&f.projects, "/home/u/proj", "sid-s", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(100, "/home/u/proj", "sid-s", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/proj".into(), "proj".into()));
+        f.watcher.scan(&mut ctx, 1_000);
+        let window = ctx.events.last().unwrap().details.as_ref().unwrap().context_max.unwrap();
+
+        // Interrupt lands, then the journal is replaced — the path where the
+        // remembered identity is all that's left to report.
+        write_journal(
+            &f.projects,
+            "/home/u/proj",
+            "sid-s",
+            &[USER_LINE, RUNNING_LINE, SYNTHETIC_LINE],
+        );
+        f.watcher.scan(&mut ctx, 2_000);
+        write_journal(&f.projects, "/home/u/proj", "sid-s", &[USER_LINE]);
+        f.watcher.scan(&mut ctx, 3_000);
+
+        let d = ctx.events.last().unwrap().details.as_ref().unwrap();
+        assert_eq!(d.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(d.context_max, Some(window));
+    }
+
+    /// A journal replaced wholesale still describes the same running session on
+    /// the same model — only the counters read off the old bytes are stale.
+    #[test]
+    fn model_survives_a_journal_rotation() {
+        let mut f = fixture();
+        write_journal(&f.projects, "/home/u/proj", "sid-r", &[USER_LINE, RUNNING_LINE]);
+        *f.agents.lock().unwrap() = vec![cli_agent(100, "/home/u/proj", "sid-r", "busy")];
+        let mut ctx = Ctx::new();
+        ctx.by_dir.push(("/home/u/proj".into(), "proj".into()));
+        f.watcher.scan(&mut ctx, 1_000);
+
+        // Shorter file with a different head → the rotation reset path.
+        write_journal(&f.projects, "/home/u/proj", "sid-r", &[USER_LINE]);
+        f.watcher.scan(&mut ctx, 2_000);
+
+        let d = ctx.events.last().unwrap().details.as_ref().unwrap();
+        assert_eq!(d.model.as_deref(), Some("claude-sonnet-5"));
+        // The counters are position-dependent, so they *should* be gone.
+        assert_eq!(d.context_used, None);
     }
 
     #[test]
