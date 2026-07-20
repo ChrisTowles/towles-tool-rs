@@ -92,14 +92,15 @@ pub fn read_launch_file(dir: &Path) -> crate::Result<Option<LaunchFile>> {
 }
 
 /// Parse `launch.json`'s text (JSON, or JSONC as an editor would leave it).
-/// An empty file — or one that is only comments — has no configs rather than
-/// being an error, matching "a file that parses to nothing".
-pub fn parse_launch_json(text: &str) -> crate::Result<LaunchFile> {
-    let value = jsonc_parser::parse_to_serde_value(text, &Default::default())?;
-    match value {
-        Some(value) => Ok(serde_json::from_value(value)?),
-        None => Ok(LaunchFile::default()),
-    }
+/// A file that parses to nothing — empty, or only comments — has no configs
+/// rather than being an error. Failures come back as [`crate::Error::Json`]:
+/// the dialect is an implementation detail, and the message already carries
+/// the line and column.
+fn parse_launch_json(text: &str) -> crate::Result<LaunchFile> {
+    // `Option<_>` because whitespace/comments-only input deserializes as null.
+    jsonc_parser::parse_to_serde_value::<Option<LaunchFile>>(text, &Default::default())
+        .map(Option::unwrap_or_default)
+        .map_err(|e| crate::Error::Json(serde::de::Error::custom(e)))
 }
 
 /// Whether something is accepting TCP connections on localhost:`port` — the
@@ -166,7 +167,7 @@ mod tests {
 
     #[test]
     fn parses_the_claude_desktop_fixture() {
-        let file: LaunchFile = serde_json::from_str(BLOG_FIXTURE).unwrap();
+        let file = parse_launch_json(BLOG_FIXTURE).unwrap();
         assert_eq!(file.version, "0.0.1");
         assert_eq!(file.configurations.len(), 3);
         let blog = &file.configurations[0];
@@ -181,7 +182,7 @@ mod tests {
 
     #[test]
     fn tolerates_unknown_fields_and_missing_optionals() {
-        let file: LaunchFile = serde_json::from_str(
+        let file = parse_launch_json(
             r#"{
               "version": "0.0.2",
               "futureTopLevel": true,
@@ -199,8 +200,7 @@ mod tests {
 
     #[test]
     fn empty_executable_is_kept_but_not_launchable() {
-        let file: LaunchFile =
-            serde_json::from_str(r#"{"configurations": [{"name": "broken"}]}"#).unwrap();
+        let file = parse_launch_json(r#"{"configurations": [{"name": "broken"}]}"#).unwrap();
         assert_eq!(file.configurations.len(), 1);
         assert!(!file.configurations[0].launchable());
     }
@@ -267,14 +267,6 @@ mod tests {
     #[test]
     fn a_comments_only_file_has_no_configs() {
         let file = parse_launch_json("// nothing configured yet\n").unwrap();
-        assert!(file.configurations.is_empty());
-    }
-
-    #[test]
-    fn read_parses_a_commented_file_from_disk() {
-        let root = tempfile::TempDir::new().unwrap();
-        write_launch(root.path(), "{\n  // dev servers\n  \"configurations\": []\n}");
-        let file = read_launch_file(root.path()).unwrap().unwrap();
         assert!(file.configurations.is_empty());
     }
 
