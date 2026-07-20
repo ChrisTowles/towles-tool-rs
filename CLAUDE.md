@@ -230,19 +230,41 @@ Cargo workspace + npm workspace (`apps/client` only):
     [`crates/tt-collect/CLAUDE.md`](crates/tt-collect/CLAUDE.md) for the
     never-panic contract, per-repo isolation, and where the Slack
     protocol/socket split lives.
-  - `tt-mcp` — hand-rolled stdio JSON-RPC MCP server (`tt mcp serve`)
-    exposing the board's task family to claude sessions: `task_list`,
-    `task_status` (reads), and `task_create` (the one mutation — creates a
-    #339 board task in a tracked repo's swimlane, same store path as the
-    app's `store_add_task`). It's registered at **user scope**, so every
-    session on the machine can reach it; mutations therefore sit behind the
-    `mcp.mutationsEnabled` capability gate in the shared settings file —
-    default off, re-read per call, failing closed, and not writable by any
-    exposed tool, so prompt injection can't self-approve (the crate's module
-    doc-comment has the threat model). The broader dashboard-read tools
-    (`day_brief`, `needs_you`, `snapshot`, PR/issue/DM/collector reads) were
-    pruned in the 2026-07 tool-surface review; a calendar family may return
-    later.
+  - `tt-mcp` — hand-rolled JSON-RPC MCP server, **transport-free** (the same
+    split as `tt-ide`): `Dispatcher::handle_at` takes a request string and an
+    injected `now_ms` and returns a response string, so the whole tool surface
+    is unit-testable with no server to stand up. The transport is
+    `crates-tauri/tt-app/src/mcp_http.rs` — read that module's doc before
+    touching either half. Tools: `task_list`, `task_status`, `task_create`
+    (a #339 board task in a tracked repo's swimlane, same store path as the
+    app's `store_add_task`), plus the calendar family `calendar_today`,
+    `calendar_next` and the push-model write `calendar_set`. The broader
+    dashboard-read tools (`day_brief`, `needs_you`, `snapshot`,
+    PR/issue/DM/collector reads) were pruned in the 2026-07 tool-surface
+    review and have not returned.
+
+    **Security posture changed on 2026-07-20 — don't reason from the old
+    shape.** There is no bearer token and no `mcp.mutationsEnabled` gate; both
+    are gone, not merely defaulted. What guards writes is entirely the
+    transport's request admission: **any request carrying an `Origin` header is
+    refused** (browsers always send one, real MCP clients never do — the
+    DNS-rebinding mitigation) and **`Content-Type: application/json` is
+    required** (not a CORS-simple type, so a page can't dodge a preflight).
+    Loopback binding alone does *not* keep web pages out, which is why those
+    checks exist and why they're pure functions with direct tests. A
+    consequence worth knowing before debugging: **the app's own webview cannot
+    call the endpoint** — its `fetch` carries an `Origin` — so the MCP screen's
+    tool tester issues its request from Rust (`mcp_test_call`). Both crates'
+    module docs carry the full threat model.
+
+    Served **one per machine, bind-or-skip**: whichever app instance takes the
+    port serves every session, the rest serve none, and the OS bind is the
+    mutex. App closed = MCP down; there is no headless fallback (the stdio
+    server and `tt mcp serve` were deleted). The port is a **fixed default**
+    (`mcp.port`, 8787) rather than a `${tt:port}` claim — the one legitimate
+    exception to the no-hardcoded-ports rule, because a machine-wide singleton
+    has nothing to collide with, and a stable port is what lets the
+    `towles-tool-app` plugin ship a static checked-in `.mcp.json`.
   - `tt-otel` — telemetry. `tt_otel::init` installs the global `tracing`
     subscriber for both binaries (it replaced `env_logger` — a hard cutover,
     no second logger), fanning out to stderr (filtered by `-v`/`RUST_LOG`) and
