@@ -252,7 +252,6 @@ fn build_folder(
         landed: git.landed.clone(),
         sessions: session_data,
         needs,
-        purpose: folder_meta.purpose_for(&entry.dir).map(str::to_string),
         base_branch: folder_meta.base_branch_for(&entry.dir).map(str::to_string),
         slot_base_branch: git.slot_base_branch.clone(),
         compared_base: git.compared_base.clone(),

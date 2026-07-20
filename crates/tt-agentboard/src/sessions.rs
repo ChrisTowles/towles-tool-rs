@@ -150,7 +150,8 @@ impl SessionStore {
         false
     }
 
-    /// Set (or clear with `None`/blank) the session's user-authored purpose.
+    /// Set (or clear with `None`/blank) the session's launch-prompt echo —
+    /// written by the app at launch, never typed by the user.
     /// Returns whether it changed. Caller persists on `true`.
     pub fn set_purpose(&mut self, id: &str, purpose: Option<&str>) -> bool {
         let normalized = purpose.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);

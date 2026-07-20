@@ -1,7 +1,8 @@
-//! Persisted per-folder metadata (Folder Rail): today just the user-authored
-//! *purpose* — "what am I working toward in this checkout". Stored in the app's
-//! own file, `~/.config/towles-tool/agentboard/folder_meta.json`, keyed by the
-//! folder's absolute dir (same per-file pattern as [`crate::sessions`]).
+//! Persisted per-folder metadata (Folder Rail): today just the *base-branch
+//! override* — what this checkout's diff/ahead-behind stats compare against.
+//! Stored in the app's own file,
+//! `~/.config/towles-tool/agentboard/folder_meta.json`, keyed by the folder's
+//! absolute dir (same per-file pattern as [`crate::sessions`]).
 //! Path-parameterized so tests use a tempdir.
 
 use std::collections::{HashMap, HashSet};
@@ -9,13 +10,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Metadata for one folder. A struct (not a bare string) so future per-folder
-/// fields land here without a file-format break.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Metadata for one folder. A struct rather than a bare string so the on-disk
+/// value stays a named object — a second field can land without rewriting
+/// every existing file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderMeta {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purpose: Option<String>,
     /// Branch this folder's diff/ahead-behind stats compare against, overriding
     /// the origin/main-or-master auto-detect — for a long-running branch that
     /// didn't fork from main (e.g. a release line).
@@ -23,7 +23,7 @@ pub struct FolderMeta {
     pub base_branch: Option<String>,
 }
 
-/// On-disk shape: `{ "folders": { "<folderDir>": { "purpose": "..." } } }`.
+/// On-disk shape: `{ "folders": { "<folderDir>": { "baseBranch": "..." } } }`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct FolderMetaConfig {
     #[serde(default)]
@@ -58,34 +58,6 @@ impl FolderMetaStore {
         Self { path, folders, dirty: HashSet::new() }
     }
 
-    /// The purpose text for a folder, if one is set (empty counts as unset).
-    pub fn purpose_for(&self, dir: &str) -> Option<&str> {
-        self.folders.get(dir).and_then(|m| m.purpose.as_deref()).filter(|p| !p.is_empty())
-    }
-
-    /// Set (or clear with `None`/blank) a folder's purpose. Returns whether it
-    /// changed. Caller persists on `true`.
-    pub fn set_purpose(&mut self, dir: &str, purpose: Option<&str>) -> bool {
-        let normalized = purpose.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
-        let current = self.folders.get(dir).and_then(|m| m.purpose.clone());
-        if current == normalized {
-            return false;
-        }
-        match normalized {
-            Some(p) => self.folders.entry(dir.to_string()).or_default().purpose = Some(p),
-            None => {
-                if let Some(meta) = self.folders.get_mut(dir) {
-                    meta.purpose = None;
-                    if *meta == FolderMeta::default() {
-                        self.folders.remove(dir);
-                    }
-                }
-            }
-        }
-        self.dirty.insert(dir.to_string());
-        true
-    }
-
     /// The base-branch override for a folder, if one is set (empty counts as unset).
     pub fn base_branch_for(&self, dir: &str) -> Option<&str> {
         self.folders.get(dir).and_then(|m| m.base_branch.as_deref()).filter(|b| !b.is_empty())
@@ -101,13 +73,10 @@ impl FolderMetaStore {
         }
         match normalized {
             Some(b) => self.folders.entry(dir.to_string()).or_default().base_branch = Some(b),
+            // The only field, so clearing it empties the entry outright rather
+            // than leaving a `{}` behind for every folder ever overridden.
             None => {
-                if let Some(meta) = self.folders.get_mut(dir) {
-                    meta.base_branch = None;
-                    if *meta == FolderMeta::default() {
-                        self.folders.remove(dir);
-                    }
-                }
+                self.folders.remove(dir);
             }
         }
         self.dirty.insert(dir.to_string());
@@ -165,44 +134,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn set_and_read_purpose() {
+    fn set_and_read_base_branch() {
         let mut store = FolderMetaStore::new(None);
-        assert_eq!(store.purpose_for("/r/a"), None);
-        assert!(store.set_purpose("/r/a", Some("ship the checkout flow")));
-        assert_eq!(store.purpose_for("/r/a"), Some("ship the checkout flow"));
+        assert_eq!(store.base_branch_for("/r/a"), None);
+        assert!(store.set_base_branch("/r/a", Some("release/2.0")));
+        assert_eq!(store.base_branch_for("/r/a"), Some("release/2.0"));
         // Unchanged write reports false.
-        assert!(!store.set_purpose("/r/a", Some("ship the checkout flow")));
+        assert!(!store.set_base_branch("/r/a", Some("release/2.0")));
     }
 
     #[test]
     fn blank_or_none_clears() {
         let mut store = FolderMetaStore::new(None);
-        store.set_purpose("/r/a", Some("x"));
-        assert!(store.set_purpose("/r/a", Some("   ")));
-        assert_eq!(store.purpose_for("/r/a"), None);
-        store.set_purpose("/r/a", Some("y"));
-        assert!(store.set_purpose("/r/a", None));
-        assert_eq!(store.purpose_for("/r/a"), None);
+        store.set_base_branch("/r/a", Some("develop"));
+        assert!(store.set_base_branch("/r/a", Some("   ")));
+        assert_eq!(store.base_branch_for("/r/a"), None);
+        store.set_base_branch("/r/a", Some("develop"));
+        assert!(store.set_base_branch("/r/a", None));
+        assert_eq!(store.base_branch_for("/r/a"), None);
         // Clearing an unset folder is a no-op.
-        assert!(!store.set_purpose("/r/b", None));
+        assert!(!store.set_base_branch("/r/b", None));
     }
 
     #[test]
     fn trims_whitespace() {
         let mut store = FolderMetaStore::new(None);
-        store.set_purpose("/r/a", Some("  fix webhooks  "));
-        assert_eq!(store.purpose_for("/r/a"), Some("fix webhooks"));
+        store.set_base_branch("/r/a", Some("  release/2.0  "));
+        assert_eq!(store.base_branch_for("/r/a"), Some("release/2.0"));
     }
 
     #[test]
     fn prune_drops_removed_dirs() {
         let mut store = FolderMetaStore::new(None);
-        store.set_purpose("/r/a", Some("a"));
-        store.set_purpose("/r/b", Some("b"));
+        store.set_base_branch("/r/a", Some("develop"));
+        store.set_base_branch("/r/b", Some("release/2.0"));
         let keep: std::collections::HashSet<String> = ["/r/a".to_string()].into();
         store.prune(&keep);
-        assert_eq!(store.purpose_for("/r/a"), Some("a"));
-        assert_eq!(store.purpose_for("/r/b"), None);
+        assert_eq!(store.base_branch_for("/r/a"), Some("develop"));
+        assert_eq!(store.base_branch_for("/r/b"), None);
     }
 
     #[test]
@@ -210,36 +179,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tt-folder-meta-{}", std::process::id()));
         let path = dir.join("folder_meta.json");
         let mut store = FolderMetaStore::new(Some(path.clone()));
-        store.set_purpose("/r/a", Some("ship it"));
+        store.set_base_branch("/r/a", Some("develop"));
         store.save().unwrap();
 
         let reloaded = FolderMetaStore::new(Some(path));
-        assert_eq!(reloaded.purpose_for("/r/a"), Some("ship it"));
+        assert_eq!(reloaded.base_branch_for("/r/a"), Some("develop"));
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn set_and_read_base_branch() {
-        let mut store = FolderMetaStore::new(None);
-        assert_eq!(store.base_branch_for("/r/a"), None);
-        assert!(store.set_base_branch("/r/a", Some("release/2.0")));
-        assert_eq!(store.base_branch_for("/r/a"), Some("release/2.0"));
-        assert!(!store.set_base_branch("/r/a", Some("release/2.0")));
-        assert!(store.set_base_branch("/r/a", None));
-        assert_eq!(store.base_branch_for("/r/a"), None);
-    }
-
-    #[test]
-    fn purpose_and_base_branch_are_independent() {
-        let mut store = FolderMetaStore::new(None);
-        store.set_purpose("/r/a", Some("ship it"));
-        store.set_base_branch("/r/a", Some("develop"));
-        assert_eq!(store.purpose_for("/r/a"), Some("ship it"));
-        assert_eq!(store.base_branch_for("/r/a"), Some("develop"));
-        // Clearing one leaves the other intact.
-        store.set_purpose("/r/a", None);
-        assert_eq!(store.purpose_for("/r/a"), None);
-        assert_eq!(store.base_branch_for("/r/a"), Some("develop"));
     }
 
     #[test]
@@ -251,15 +196,15 @@ mod tests {
         let mut a = FolderMetaStore::new(Some(path.clone()));
         let mut b = FolderMetaStore::new(Some(path.clone()));
 
-        a.set_purpose("/r/a", Some("ship it"));
+        a.set_base_branch("/r/a", Some("develop"));
         a.save().unwrap();
 
-        b.set_purpose("/r/b", Some("fix it"));
+        b.set_base_branch("/r/b", Some("release/2.0"));
         b.save().unwrap();
 
         let reloaded = FolderMetaStore::new(Some(path));
-        assert_eq!(reloaded.purpose_for("/r/a"), Some("ship it"));
-        assert_eq!(reloaded.purpose_for("/r/b"), Some("fix it"));
+        assert_eq!(reloaded.base_branch_for("/r/a"), Some("develop"));
+        assert_eq!(reloaded.base_branch_for("/r/b"), Some("release/2.0"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

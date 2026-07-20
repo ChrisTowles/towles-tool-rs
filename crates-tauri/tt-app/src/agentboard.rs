@@ -417,15 +417,6 @@ pub fn ab_refresh(state: State<Ab>) {
     state.emit.notify_one();
 }
 
-/// Set (or clear with `None`/blank) a folder's user-authored purpose.
-#[tauri::command]
-pub fn ab_set_folder_purpose(state: State<Ab>, dir: String, text: Option<String>) {
-    let changed = state.engine.lock().unwrap().set_folder_purpose(&dir, text.as_deref());
-    if changed {
-        state.emit.notify_one();
-    }
-}
-
 /// Set the rail's repo order to `dirs` (the user dragging a row in Settings →
 /// Agentboard → Repos). Tolerant of a stale list — see `reorder_repos`.
 #[tauri::command]

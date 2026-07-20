@@ -94,8 +94,9 @@ export type SessionData = {
   needsSinceMs?: number | null;
   agentState?: AgentEvent | null;
   agents: AgentEvent[];
-  /** User-authored "what am I working toward here" — captured when starting
-   * Claude, so the rail can explain why this session exists. */
+  /** Echo of the prompt Claude was launched with, auto-captured at launch so
+   * the rail's hover tooltip can explain why this session exists. Read-only —
+   * nothing in the UI edits it. */
   purpose?: string | null;
   /** Ports this session's shell saw at spawn time that its folder's `.env`
    * now claims differently (stamped by the app). Omitted from the wire
@@ -172,8 +173,6 @@ export type FolderData = {
   landed: LandedVia | null;
   sessions: SessionData[];
   needs: number;
-  /** User-authored "what am I working toward here" (persisted per folder). */
-  purpose?: string | null;
   /** Branch the diff pane's "vs main" mode compares against, overriding the
    * origin/main-or-master auto-detect (persisted per folder). */
   baseBranch?: string | null;

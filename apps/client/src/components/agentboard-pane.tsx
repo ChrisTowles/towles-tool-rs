@@ -12,7 +12,6 @@ import {
   IconBtn,
   PreviewButton,
   PrChip,
-  PurposeRow,
   RepoMenu,
   BranchLabel,
 } from "@/components/agentboard-bits";
@@ -39,12 +38,12 @@ import { openExternalUrl } from "@/lib/open-url";
 import { shortcutHint } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 
-/** The working-context band atop the main pane: *where am I working and why*.
- * Leads with the focused checkout name — large, first, the anchor of the whole
+/** The working-context band atop the main pane: *where am I working*. Leads
+ * with the focused checkout name — large, first, the anchor of the whole
  * screen — with the repo and branch (plus git facts: worktree badge, diff
- * button, PR chip) on a quieter line below it, then the folder's purpose line.
- * One glance answers which checkout the terminals below belong to and what you
- * set out to do there. The trailing action cluster mirrors the rail's options
+ * button, PR chip) on a quieter line below it. One glance answers which
+ * checkout the terminals below belong to; *what you set out to do there* is
+ * the Board task's job. The trailing action cluster mirrors the rail's options
  * for this checkout — new session, new slot, and the shared "···" RepoMenu —
  * so every repo-rail option stays reachable atop the panes even when the rail
  * is collapsed or the folder's row is scrolled out of view. */
@@ -128,7 +127,6 @@ export function WorkingContext({
           <RepoMenu
             path={folder.dir}
             dir={folder.dir}
-            folder={folder}
             isWorktree={folder.isWorktree}
             onNewSlot={!missing ? newSlot : undefined}
             onDeleteWorktree={
@@ -152,7 +150,6 @@ export function WorkingContext({
           {pr && <PrChip pr={pr} stats={folder} />}
           <FolderLandedBadge folder={folder} pr={pr} />
         </div>
-        <PurposeRow folder={folder} variant="band" />
         {!missing && (
           <ActionableCallouts
             items={folderActionableItems(folder, pr)}

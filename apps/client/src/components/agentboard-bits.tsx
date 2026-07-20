@@ -12,7 +12,6 @@ import {
   Loader2,
   MoreVertical,
   RefreshCw,
-  StickyNote,
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -914,108 +913,17 @@ export function AgentStatusLine({
   );
 }
 
-/** The folder's user-authored purpose — the "why am I here". Click to edit
- * inline (Enter saves, Esc cancels; blank clears).
- *
- * `rail` variant: a faint one-liner under the folder header, shown only when a
- * note is set. When unset it renders nothing at all (not even on hover) so the
- * folder row keeps a fixed height and the rail never jumps as the mouse moves
- * across it — set a note from the folder's "…" menu instead.
- * `band` variant: lives in the working-context band — always visible, unset
- * state included, because the band exists to answer "where am I and why". */
-export function PurposeRow({
-  folder,
-  variant = "rail",
-}: {
-  folder: FolderData;
-  variant?: "rail" | "band";
-}) {
-  const [editing, setEditing] = useState(false);
-  const purpose = folder.purpose?.trim() ?? "";
-  const rail = variant === "rail";
-  const pad = rail ? "py-0.5 pr-3 pl-9 text-[11px]" : "text-xs";
-
-  async function commit(text: string) {
-    setEditing(false);
-    const trimmed = text.trim();
-    if (trimmed === purpose) return;
-    const stored = await invoke("ab_set_folder_purpose", {
-      dir: folder.dir,
-      text: trimmed || null,
-    });
-    // The rail re-renders from the backend snapshot, so a dropped write silently
-    // reverts to the old text — say so rather than letting it look like a typo.
-    if (stored.isErr()) toast.error(`Couldn't save purpose — ${stored.error.message}`);
-  }
-
-  if (editing) {
-    return (
-      <div className={cn(rail && "py-0.5 pr-3 pl-9")}>
-        <input
-          autoFocus
-          defaultValue={purpose}
-          placeholder="what are you working toward here?"
-          onBlur={(e) => void commit(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void commit((e.target as HTMLInputElement).value);
-            if (e.key === "Escape") setEditing(false);
-          }}
-          className={cn(
-            "w-full rounded-sm border border-input bg-background px-1.5 py-0.5 outline-none",
-            rail ? "text-[11px]" : "text-xs",
-          )}
-        />
-      </div>
-    );
-  }
-
-  if (!purpose) {
-    // Rail: no note → no row (a stable-height folder that doesn't resize on
-    // hover). The note is set from the folder's "…" menu.
-    if (rail) return null;
-    return (
-      <button
-        type="button"
-        onClick={() => setEditing(true)}
-        title="Edit folder purpose"
-        className={cn(
-          "block w-full truncate text-left text-muted-foreground/50 hover:text-muted-foreground",
-          pad,
-        )}
-      >
-        + what are you working toward here?
-      </button>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={() => setEditing(true)}
-      title="Edit folder purpose"
-      className={cn(
-        "block w-full truncate text-left text-muted-foreground hover:text-foreground",
-        pad,
-      )}
-    >
-      {purpose}
-    </button>
-  );
-}
-
 /** "···" overflow menu for a checkout — the one place every secondary action
  * lives, shared verbatim by the rail's repo/folder headers and the
  * working-context band atop the panes (so the two surfaces never diverge):
- * full folder path (when given), "New slot…" (slot-convention repos),
- * "Delete worktree…" (worktree checkouts, guarded `slot_remove`),
- * "Set/Edit note…" (when a `folder` is given — the note shown under the
- * folder in the rail), "Create issue…" (shells `gh issue create` in `dir`),
- * and "Remove from rail". */
+ * full folder path (when given), "New task…" (slot-convention repos),
+ * "Delete worktree…" (worktree checkouts, guarded `slot_remove`), "Sync now",
+ * "Create issue…" (shells `gh issue create` in `dir`), and "Remove from
+ * rail". */
 export function RepoMenu({
   path,
   onRemove,
   dir,
-  folder,
   isWorktree,
   onNewSlot,
   onDeleteWorktree,
@@ -1023,8 +931,6 @@ export function RepoMenu({
   path?: string;
   onRemove: () => void;
   dir: string;
-  /** When set, the menu offers note editing for this checkout. */
-  folder?: FolderData;
   /** Worktree checkouts have no "Remove from rail" — meaningless (they are
    * auto-discovered from the primary and would reappear next poll); deletion
    * is the "Delete worktree…" item instead. */
@@ -1037,9 +943,6 @@ export function RepoMenu({
 }) {
   const [issueOpen, setIssueOpen] = useState(false);
   const [issueTitle, setIssueTitle] = useState("");
-  const [noteOpen, setNoteOpen] = useState(false);
-  const [noteText, setNoteText] = useState("");
-  const purpose = folder?.purpose?.trim() ?? "";
 
   async function createIssue() {
     const title = issueTitle.trim();
@@ -1066,14 +969,6 @@ export function RepoMenu({
       },
       err: (e) => toast.error(e.message),
     });
-  }
-
-  async function saveNote() {
-    setNoteOpen(false);
-    const trimmed = noteText.trim();
-    if (trimmed === purpose) return;
-    const stored = await invoke("ab_set_folder_purpose", { dir, text: trimmed || null });
-    if (stored.isErr()) toast.error(`Couldn't save note — ${stored.error.message}`);
   }
 
   return (
@@ -1115,17 +1010,6 @@ export function RepoMenu({
             </DropdownMenuItem>
           )}
           {(onNewSlot || onDeleteWorktree) && <DropdownMenuSeparator />}
-          {folder && (
-            <DropdownMenuItem
-              onSelect={() => {
-                setNoteText(purpose);
-                setNoteOpen(true);
-              }}
-              className="whitespace-nowrap"
-            >
-              <StickyNote className="size-3.5" /> {purpose ? "Edit note…" : "Set note…"}
-            </DropdownMenuItem>
-          )}
           <DropdownMenuItem onSelect={() => void syncNow()} className="whitespace-nowrap">
             <RefreshCw className="size-3.5" /> Sync now
           </DropdownMenuItem>
@@ -1143,23 +1027,6 @@ export function RepoMenu({
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      <Dialog open={noteOpen} onOpenChange={setNoteOpen}>
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>{purpose ? "Edit note" : "Set note"}</DialogTitle>
-          </DialogHeader>
-          <Input
-            autoFocus
-            value={noteText}
-            onChange={(e) => setNoteText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void saveNote();
-              if (e.key === "Escape") setNoteOpen(false);
-            }}
-            placeholder="what are you working toward here? (blank clears)"
-          />
-        </DialogContent>
-      </Dialog>
       <Dialog open={issueOpen} onOpenChange={setIssueOpen}>
         <DialogContent showCloseButton={false}>
           <DialogHeader>

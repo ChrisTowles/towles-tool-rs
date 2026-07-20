@@ -446,15 +446,6 @@ impl Engine {
         changed
     }
 
-    /// Set (or clear) a folder's user-authored purpose. Persists on change.
-    pub fn set_folder_purpose(&mut self, dir: &str, purpose: Option<&str>) -> bool {
-        let changed = self.folder_meta.set_purpose(dir, purpose);
-        if changed {
-            let _ = self.folder_meta.save();
-        }
-        changed
-    }
-
     /// Set (or clear) a folder's base-branch override. Persists on change.
     pub fn set_folder_base_branch(&mut self, dir: &str, base_branch: Option<&str>) -> bool {
         let changed = self.folder_meta.set_base_branch(dir, base_branch);
