@@ -346,8 +346,7 @@ impl Dispatcher {
             .find(|entry| entry.dir == repo_arg || entry.name == repo_arg)
             .ok_or_else(|| unknown_repo_message(repo_arg, &entries))?;
 
-        let task =
-            self.store.add_task(title, status, None, notes, now_ms).map_err(|e| e.to_string())?;
+        let task = self.store.add_task(title, status, notes, now_ms).map_err(|e| e.to_string())?;
         self.store
             .set_task_slot(task.id, &entry.dir, None, None, None)
             .map_err(|e| e.to_string())?;
@@ -570,7 +569,7 @@ mod tests {
 
     fn seeded_store() -> Store {
         let store = Store::open_in_memory().unwrap();
-        store.add_task("open task", "backlog", Some(NOW + HOUR_MS), None, NOW).unwrap();
+        store.add_task("open task", "backlog", None, NOW).unwrap();
         store
     }
 
@@ -696,13 +695,12 @@ mod tests {
         let tasks = result["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["text"], "open task");
-        assert_eq!(tasks[0]["dueTs"], NOW + HOUR_MS);
     }
 
     #[test]
     fn task_status_returns_one_task_including_done() {
         let store = seeded_store();
-        let done = store.add_task("shipped", "done", None, None, NOW).unwrap();
+        let done = store.add_task("shipped", "done", None, NOW).unwrap();
         let mut dispatcher = Dispatcher::new(store);
         let result = call_tool(&mut dispatcher, "task_status", json!({ "id": done.id }));
         assert_eq!(result["task"]["text"], "shipped");

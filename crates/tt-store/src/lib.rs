@@ -42,7 +42,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// How many MCP call-log rows are retained; older rows are pruned on insert.
 const MCP_CALL_RETAIN: i64 = 500;
@@ -75,7 +75,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     text TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'backlog',
     position INTEGER NOT NULL DEFAULT 0,
-    due_ts INTEGER,
     created_at INTEGER NOT NULL,
     completed_at INTEGER,
     notes TEXT,
@@ -171,7 +170,7 @@ CREATE TABLE IF NOT EXISTS task_prs (
 
 // Column lists, kept in sync with the row-mapping closures below.
 const EVENT_COLS: &str = "id, external_id, title, start_ts, end_ts, attendees, location, join_url";
-const TASK_COLS: &str = "id, text, status, position, due_ts, created_at, completed_at, notes, \
+const TASK_COLS: &str = "id, text, status, position, created_at, completed_at, notes, \
      slot_repo_root, slot_repo, slot_branch, slot_dir";
 const ISSUE_COLS: &str = "repo, number, title, labels, state, url, updated_ts";
 const PR_COLS: &str = "repo, number, title, branch, state, checks, review_state, url, updated_ts";
@@ -216,8 +215,6 @@ pub struct TaskItem {
     pub text: String,
     pub status: String,
     pub position: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub due_ts: Option<i64>,
     pub created_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<i64>,
@@ -497,6 +494,7 @@ impl Store {
         self.migrate_tasks_notes_v4()?;
         self.conn.execute_batch(SCHEMA_TASK_LINKS_V7)?;
         self.migrate_tasks_v7()?;
+        self.migrate_tasks_v8_drop_due()?;
         self.conn.execute_batch(SCHEMA_MCP_CALLS_V5)?;
         self.migrate_collect_runs_v6()?;
         self.conn.execute(
@@ -661,6 +659,29 @@ impl Store {
         Ok(())
     }
 
+    /// v8: due dates are gone from tasks (2026-07-19 — GitHub issues carry no
+    /// native due date, and the Board leans on status + links for urgency), so
+    /// drop the column from dbs that predate the removal. Detected by column
+    /// presence, so it's idempotent and a no-op on fresh dbs; `due_ts` was
+    /// nullable and unindexed, so a plain `DROP COLUMN` is safe.
+    fn migrate_tasks_v8_drop_due(&self) -> Result<()> {
+        let mut has_due = false;
+        {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(tasks)")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(1)?;
+                if name == "due_ts" {
+                    has_due = true;
+                }
+            }
+        }
+        if has_due {
+            self.conn.execute("ALTER TABLE tasks DROP COLUMN due_ts", [])?;
+        }
+        Ok(())
+    }
+
     // --- Writes -----------------------------------------------------------
 
     /// Full-snapshot replace of all events.
@@ -757,7 +778,6 @@ impl Store {
         &self,
         text: &str,
         status: &str,
-        due_ts: Option<i64>,
         notes: Option<&str>,
         now_ms: i64,
     ) -> Result<TaskItem> {
@@ -773,9 +793,9 @@ impl Store {
         )?;
         let completed_at: Option<i64> = if status == "done" { Some(now_ms) } else { None };
         self.conn.execute(
-            "INSERT INTO tasks (text, status, position, due_ts, notes, created_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![text, status, position, due_ts, notes, now_ms, completed_at],
+            "INSERT INTO tasks (text, status, position, notes, created_at, completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![text, status, position, notes, now_ms, completed_at],
         )?;
         self.task_by_id(self.conn.last_insert_rowid())
     }
@@ -855,21 +875,15 @@ impl Store {
         Ok(())
     }
 
-    /// Edit a todo's free-form fields: its `text`, optional `notes`, and optional
-    /// `due_ts`. This is a full replace of those three fields — passing `None`
-    /// for `notes` or `due_ts` clears them (there is no "leave unchanged"
-    /// sentinel). Status, position, and any issue link are left untouched.
-    /// Returns the updated todo, or [`Error::TaskNotFound`] when no todo has `id`.
-    pub fn update_task(
-        &self,
-        id: i64,
-        text: &str,
-        notes: Option<&str>,
-        due_ts: Option<i64>,
-    ) -> Result<TaskItem> {
+    /// Edit a todo's free-form fields: its `text` and optional `notes`. This
+    /// is a full replace of both fields — passing `None` for `notes` clears it
+    /// (there is no "leave unchanged" sentinel). Status, position, and any
+    /// issue link are left untouched. Returns the updated todo, or
+    /// [`Error::TaskNotFound`] when no todo has `id`.
+    pub fn update_task(&self, id: i64, text: &str, notes: Option<&str>) -> Result<TaskItem> {
         let affected = self.conn.execute(
-            "UPDATE tasks SET text = ?1, notes = ?2, due_ts = ?3 WHERE id = ?4",
-            params![text, notes, due_ts, id],
+            "UPDATE tasks SET text = ?1, notes = ?2 WHERE id = ?3",
+            params![text, notes, id],
         )?;
         if affected == 0 {
             return Err(Error::TaskNotFound(id));
@@ -1423,10 +1437,10 @@ impl Store {
     fn query_tasks(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<TaskItem>> {
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map(params, |r| {
-            let slot_repo_root: Option<String> = r.get(8)?;
-            let slot_repo: Option<String> = r.get(9)?;
-            let slot_branch: Option<String> = r.get(10)?;
-            let slot_dir: Option<String> = r.get(11)?;
+            let slot_repo_root: Option<String> = r.get(7)?;
+            let slot_repo: Option<String> = r.get(8)?;
+            let slot_branch: Option<String> = r.get(9)?;
+            let slot_dir: Option<String> = r.get(10)?;
             // Keyed on `repo_root` alone: a repo-bound task with no worktree
             // yet still has a slot binding, and dropping it here would hide
             // the task's repo from the Board's swimlanes.
@@ -1441,10 +1455,9 @@ impl Store {
                 text: r.get(1)?,
                 status: r.get(2)?,
                 position: r.get(3)?,
-                due_ts: r.get(4)?,
-                created_at: r.get(5)?,
-                completed_at: r.get(6)?,
-                notes: r.get(7)?,
+                created_at: r.get(4)?,
+                completed_at: r.get(5)?,
+                notes: r.get(6)?,
                 slot,
                 issues: Vec::new(),
                 prs: Vec::new(),
@@ -1667,7 +1680,7 @@ mod tests {
         let path = dir.path().join("tt.db");
         {
             let s = Store::open(&path).unwrap();
-            s.add_task("survives", "backlog", None, None, 1).unwrap();
+            s.add_task("survives", "backlog", None, 1).unwrap();
         }
         // Re-open: migrate runs again without error, data intact.
         let s = Store::open(&path).unwrap();
@@ -1715,7 +1728,7 @@ mod tests {
 
         // Writes must work too: the legacy NOT-NULL `source` column has to be
         // gone, or every INSERT that omits it fails.
-        let added = s.add_task("new todo", "backlog", None, None, 3).unwrap();
+        let added = s.add_task("new todo", "backlog", None, 3).unwrap();
         assert_eq!(added.status, "backlog");
         assert!(!task_columns(&s).contains(&"source".to_string()));
 
@@ -1777,7 +1790,7 @@ mod tests {
         assert_eq!(t.issues[0].repo, "o/r");
         assert_eq!(t.issues[0].number, 7);
         assert_eq!(t.issues[0].state, "open");
-        s.add_task("post-repair todo", "backlog", None, None, 9).unwrap();
+        s.add_task("post-repair todo", "backlog", None, 9).unwrap();
         assert!(!task_columns(&s).contains(&"source".to_string()));
         assert!(!task_columns(&s).contains(&"repo".to_string()));
     }
@@ -1831,8 +1844,8 @@ mod tests {
     fn attach_detach_issue_links_and_get_issue() {
         let s = Store::open_in_memory().unwrap();
         s.replace_issues(&[issue("o/r", 1, 100)]).unwrap();
-        let plain = s.add_task("plain task", "backlog", None, None, 1).unwrap();
-        let linked = s.add_task("linked task", "backlog", None, None, 2).unwrap();
+        let plain = s.add_task("plain task", "backlog", None, 1).unwrap();
+        let linked = s.add_task("linked task", "backlog", None, 2).unwrap();
         s.attach_task_issue(linked.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
         s.attach_task_issue(linked.id, "o/r", 2, "https://github.com/o/r/issues/2").unwrap();
 
@@ -1863,7 +1876,7 @@ mod tests {
     #[test]
     fn slot_binding_set_lookup_and_detach() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("slot-backed", "doing", None, None, 1).unwrap();
+        let t = s.add_task("slot-backed", "doing", None, 1).unwrap();
         assert!(t.slot.is_none());
         s.set_task_slot(
             t.id,
@@ -1907,7 +1920,7 @@ mod tests {
     #[test]
     fn refresh_link_states_from_cache_and_missing_refs() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("t", "doing", None, None, 1).unwrap();
+        let t = s.add_task("t", "doing", None, 1).unwrap();
         s.attach_task_issue(t.id, "o/r", 1, "u1").unwrap();
         s.attach_task_issue(t.id, "o/r", 2, "u2").unwrap();
         s.attach_task_pr(t.id, "o/r", 10, "p10").unwrap();
@@ -1944,9 +1957,9 @@ mod tests {
             updated_ts: 1,
         };
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("slot task", "doing", None, None, 1).unwrap();
+        let t = s.add_task("slot task", "doing", None, 1).unwrap();
         s.set_task_slot(t.id, "/repos/x", Some("o/x"), Some("feat/y"), Some("/w")).unwrap();
-        let other = s.add_task("no slot", "backlog", None, None, 2).unwrap();
+        let other = s.add_task("no slot", "backlog", None, 2).unwrap();
 
         s.replace_prs(&[pr("feat/y", 7), pr("other-branch", 8)]).unwrap();
         let n = s.auto_attach_slot_prs(9).unwrap();
@@ -2020,8 +2033,8 @@ mod tests {
     #[test]
     fn add_task_lands_in_backlog_and_orders_by_position() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("first", "backlog", None, None, 100).unwrap();
-        let b = s.add_task("second", "backlog", None, None, 200).unwrap();
+        let a = s.add_task("first", "backlog", None, 100).unwrap();
+        let b = s.add_task("second", "backlog", None, 200).unwrap();
         assert_eq!(a.status, "backlog");
         assert_eq!(a.position, 0);
         assert_eq!(b.position, 1);
@@ -2033,7 +2046,7 @@ mod tests {
     #[test]
     fn set_task_status_moves_columns_and_stamps_done() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("ship it", "backlog", None, None, 1).unwrap();
+        let t = s.add_task("ship it", "backlog", None, 1).unwrap();
         s.set_task_status(t.id, "doing", 5).unwrap();
         let doing = s.open_tasks().unwrap();
         assert_eq!(doing[0].status, "doing");
@@ -2055,9 +2068,9 @@ mod tests {
     #[test]
     fn clear_done_tasks_sweeps_only_old_done() {
         let s = Store::open_in_memory().unwrap();
-        let old = s.add_task("old done", "backlog", None, None, 1).unwrap();
-        let recent = s.add_task("recent done", "backlog", None, None, 2).unwrap();
-        let open = s.add_task("still open", "backlog", None, None, 3).unwrap();
+        let old = s.add_task("old done", "backlog", None, 1).unwrap();
+        let recent = s.add_task("recent done", "backlog", None, 2).unwrap();
+        let open = s.add_task("still open", "backlog", None, 3).unwrap();
         s.set_task_status(old.id, "done", 100).unwrap();
         s.set_task_status(recent.id, "done", 5_000).unwrap();
         s.set_task_status(open.id, "doing", 4).unwrap();
@@ -2078,16 +2091,16 @@ mod tests {
     #[test]
     fn add_task_stores_notes_and_lands_in_requested_status() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("port the CLI", "backlog", None, Some("start with doctor"), 1).unwrap();
+        let t = s.add_task("port the CLI", "backlog", Some("start with doctor"), 1).unwrap();
         assert_eq!(t.notes.as_deref(), Some("start with doctor"));
         assert!(t.issues.is_empty() && t.prs.is_empty() && t.slot.is_none());
         // A slot-backed task is born straight into `doing`.
-        let d = s.add_task("agent already running", "doing", None, None, 2).unwrap();
+        let d = s.add_task("agent already running", "doing", None, 2).unwrap();
         assert_eq!(d.status, "doing");
         assert_eq!(d.completed_at, None);
         // Unknown statuses are rejected.
-        assert!(s.add_task("nope", "bogus", None, None, 3).is_err());
-        let bare = s.add_task("no context", "backlog", None, None, 4).unwrap();
+        assert!(s.add_task("nope", "bogus", None, 3).is_err());
+        let bare = s.add_task("no context", "backlog", None, 4).unwrap();
         assert_eq!(bare.notes, None);
     }
 
@@ -2121,7 +2134,7 @@ mod tests {
         let existing = s.open_tasks().unwrap();
         assert_eq!(existing[0].text, "pre-v4 todo");
         assert_eq!(existing[0].notes, None);
-        let t = s.add_task("with notes", "backlog", None, Some("context"), 2).unwrap();
+        let t = s.add_task("with notes", "backlog", Some("context"), 2).unwrap();
         assert_eq!(t.notes.as_deref(), Some("context"));
     }
 
@@ -2151,9 +2164,9 @@ mod tests {
     #[test]
     fn set_task_status_appends_to_end_of_target_column() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("a", "backlog", None, None, 1).unwrap();
-        let b = s.add_task("b", "backlog", None, None, 2).unwrap();
-        let c = s.add_task("c", "backlog", None, None, 3).unwrap();
+        let a = s.add_task("a", "backlog", None, 1).unwrap();
+        let b = s.add_task("b", "backlog", None, 2).unwrap();
+        let c = s.add_task("c", "backlog", None, 3).unwrap();
 
         // Moving into an empty column starts at 0; the next arrival lands after it.
         s.set_task_status(a.id, "doing", 10).unwrap();
@@ -2178,7 +2191,7 @@ mod tests {
     #[test]
     fn set_task_status_rejects_unknown() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("x", "backlog", None, None, 1).unwrap();
+        let t = s.add_task("x", "backlog", None, 1).unwrap();
         assert!(s.set_task_status(t.id, "bogus", 2).is_err());
     }
 
@@ -2197,9 +2210,9 @@ mod tests {
     #[test]
     fn set_task_position_reorders_within_a_column() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("a", "backlog", None, None, 1).unwrap();
-        let b = s.add_task("b", "backlog", None, None, 2).unwrap();
-        let c = s.add_task("c", "backlog", None, None, 3).unwrap();
+        let a = s.add_task("a", "backlog", None, 1).unwrap();
+        let b = s.add_task("b", "backlog", None, 2).unwrap();
+        let c = s.add_task("c", "backlog", None, 3).unwrap();
         // Column starts [a, b, c] at positions 0,1,2.
         assert_eq!(column_ids(&s, "backlog"), vec![a.id, b.id, c.id]);
 
@@ -2227,12 +2240,12 @@ mod tests {
     #[test]
     fn set_task_position_moves_across_columns_preserving_order() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("a", "backlog", None, None, 1).unwrap();
-        let b = s.add_task("b", "backlog", None, None, 2).unwrap();
+        let a = s.add_task("a", "backlog", None, 1).unwrap();
+        let b = s.add_task("b", "backlog", None, 2).unwrap();
         s.set_task_status(a.id, "doing", 3).unwrap();
         s.set_task_status(b.id, "doing", 4).unwrap();
         // doing = [a, b].
-        let c = s.add_task("c", "backlog", None, None, 5).unwrap();
+        let c = s.add_task("c", "backlog", None, 5).unwrap();
 
         // Drop c between a and b.
         s.set_task_position(c.id, "doing", 1, 6).unwrap();
@@ -2243,7 +2256,7 @@ mod tests {
     #[test]
     fn set_task_position_stamps_and_clears_done() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("ship", "backlog", None, None, 1).unwrap();
+        let t = s.add_task("ship", "backlog", None, 1).unwrap();
         s.set_task_position(t.id, "done", 0, 20).unwrap();
         let done = s.snapshot().unwrap().tasks.into_iter().find(|x| x.id == t.id).unwrap();
         assert_eq!(done.status, "done");
@@ -2258,9 +2271,9 @@ mod tests {
     #[test]
     fn set_task_position_is_stable_under_repeated_moves() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("a", "backlog", None, None, 1).unwrap();
-        let b = s.add_task("b", "backlog", None, None, 2).unwrap();
-        let c = s.add_task("c", "backlog", None, None, 3).unwrap();
+        let a = s.add_task("a", "backlog", None, 1).unwrap();
+        let b = s.add_task("b", "backlog", None, 2).unwrap();
+        let c = s.add_task("c", "backlog", None, 3).unwrap();
         // Dropping a card onto its own slot leaves the order unchanged.
         for _ in 0..5 {
             s.set_task_position(b.id, "backlog", 1, 10).unwrap();
@@ -2271,7 +2284,7 @@ mod tests {
     #[test]
     fn set_task_position_rejects_unknown_status_and_missing_id() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("x", "backlog", None, None, 1).unwrap();
+        let t = s.add_task("x", "backlog", None, 1).unwrap();
         assert!(s.set_task_position(t.id, "bogus", 0, 2).is_err());
         assert!(matches!(
             s.set_task_position(9999, "backlog", 0, 2),
@@ -2282,7 +2295,7 @@ mod tests {
     #[test]
     fn attach_task_issue_stores_reference() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("wire up board", "backlog", None, None, 1).unwrap();
+        let t = s.add_task("wire up board", "backlog", None, 1).unwrap();
         s.attach_task_issue(t.id, "o/r", 42, "https://github.com/o/r/issues/42").unwrap();
         let linked = s.open_tasks().unwrap()[0].clone();
         assert_eq!(linked.issues.len(), 1);
@@ -2292,13 +2305,12 @@ mod tests {
     }
 
     #[test]
-    fn update_task_edits_text_notes_and_due() {
+    fn update_task_edits_text_and_notes() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("rough draft", "backlog", None, None, 1).unwrap();
-        let updated = s.update_task(t.id, "polished", Some("ship friday"), Some(500)).unwrap();
+        let t = s.add_task("rough draft", "backlog", None, 1).unwrap();
+        let updated = s.update_task(t.id, "polished", Some("ship friday")).unwrap();
         assert_eq!(updated.text, "polished");
         assert_eq!(updated.notes.as_deref(), Some("ship friday"));
-        assert_eq!(updated.due_ts, Some(500));
         // Status/position are untouched by an edit.
         assert_eq!(updated.status, "backlog");
         assert_eq!(updated.position, t.position);
@@ -2307,29 +2319,27 @@ mod tests {
     }
 
     #[test]
-    fn update_task_can_set_and_clear_due_date() {
+    fn update_task_none_notes_clears_them() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("call dentist", "backlog", None, None, 1).unwrap();
-        assert_eq!(t.due_ts, None);
-        let with_due = s.update_task(t.id, "call dentist", None, Some(900)).unwrap();
-        assert_eq!(with_due.due_ts, Some(900));
-        // Passing None clears it back out.
-        let cleared = s.update_task(t.id, "call dentist", None, None).unwrap();
-        assert_eq!(cleared.due_ts, None);
+        let t = s.add_task("call dentist", "backlog", Some("weds am"), 1).unwrap();
+        assert_eq!(t.notes.as_deref(), Some("weds am"));
+        // Passing None clears notes back out — a full replace, no sentinel.
+        let cleared = s.update_task(t.id, "call dentist", None).unwrap();
+        assert_eq!(cleared.notes, None);
     }
 
     #[test]
     fn update_task_nonexistent_errors() {
         let s = Store::open_in_memory().unwrap();
-        let err = s.update_task(999, "ghost", None, None).unwrap_err();
+        let err = s.update_task(999, "ghost", None).unwrap_err();
         assert!(matches!(err, Error::TaskNotFound(999)));
     }
 
     #[test]
     fn delete_task_removes_row() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("keep", "backlog", None, None, 1).unwrap();
-        let b = s.add_task("toss", "backlog", None, None, 2).unwrap();
+        let a = s.add_task("keep", "backlog", None, 1).unwrap();
+        let b = s.add_task("toss", "backlog", None, 2).unwrap();
         s.delete_task(b.id).unwrap();
         let open = s.open_tasks().unwrap();
         assert_eq!(open.len(), 1);
@@ -2459,7 +2469,7 @@ mod tests {
             1,
         )
         .unwrap();
-        s.add_task("do thing", "backlog", Some(9), None, 1).unwrap();
+        s.add_task("do thing", "backlog", None, 1).unwrap();
         s.replace_issues(&[issue("o/r", 5, 6)]).unwrap();
         s.replace_prs(&[PrInput {
             repo: "o/r".to_string(),
@@ -2492,7 +2502,6 @@ mod tests {
             "\"startTs\"",
             "\"externalId\"",
             "\"joinUrl\"",
-            "\"dueTs\"",
             "\"createdAt\"",
             "\"updatedTs\"",
             "\"reviewState\"",
@@ -2583,7 +2592,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        let normal = s.add_task("normal done", "backlog", None, None, 2).unwrap();
+        let normal = s.add_task("normal done", "backlog", None, 2).unwrap();
         s.set_task_status(normal.id, "done", 10).unwrap();
 
         let deleted = s.clear_done_tasks(1_000_000).unwrap();
@@ -2655,11 +2664,11 @@ mod tests {
     #[test]
     fn open_tasks_orders_across_columns_by_board_order() {
         let s = Store::open_in_memory().unwrap();
-        s.add_task("backlog item", "backlog", None, None, 1).unwrap();
-        let review = s.add_task("review item", "backlog", None, None, 2).unwrap();
-        let doing = s.add_task("doing item", "backlog", None, None, 3).unwrap();
-        let next = s.add_task("next item", "backlog", None, None, 4).unwrap();
-        let done = s.add_task("done item", "backlog", None, None, 5).unwrap();
+        s.add_task("backlog item", "backlog", None, 1).unwrap();
+        let review = s.add_task("review item", "backlog", None, 2).unwrap();
+        let doing = s.add_task("doing item", "backlog", None, 3).unwrap();
+        let next = s.add_task("next item", "backlog", None, 4).unwrap();
+        let done = s.add_task("done item", "backlog", None, 5).unwrap();
         s.set_task_status(review.id, "review", 10).unwrap();
         s.set_task_status(doing.id, "doing", 11).unwrap();
         s.set_task_status(next.id, "next", 12).unwrap();
@@ -2681,8 +2690,8 @@ mod tests {
     #[test]
     fn snapshot_tasks_place_done_column_last() {
         let s = Store::open_in_memory().unwrap();
-        let d = s.add_task("finish", "backlog", None, None, 1).unwrap();
-        s.add_task("start", "backlog", None, None, 2).unwrap();
+        let d = s.add_task("finish", "backlog", None, 1).unwrap();
+        s.add_task("start", "backlog", None, 2).unwrap();
         s.set_task_status(d.id, "done", 10).unwrap();
         // Snapshot keeps done rows but orders them after open columns regardless
         // of insertion/completion order.
@@ -2730,10 +2739,10 @@ mod tests {
     #[test]
     fn update_task_leaves_links_and_slot_intact() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("wire board", "backlog", None, None, 1).unwrap();
+        let t = s.add_task("wire board", "backlog", None, 1).unwrap();
         s.attach_task_issue(t.id, "o/r", 7, "https://github.com/o/r/issues/7").unwrap();
         s.set_task_slot(t.id, "/repos/r", Some("o/r"), Some("feat/wire"), Some("/w")).unwrap();
-        let updated = s.update_task(t.id, "wire board v2", Some("note"), None).unwrap();
+        let updated = s.update_task(t.id, "wire board v2", Some("note")).unwrap();
         assert_eq!(updated.text, "wire board v2");
         // Editing free-form fields must not disturb links or the slot binding.
         assert_eq!(updated.issues.len(), 1);
@@ -2744,7 +2753,7 @@ mod tests {
     #[test]
     fn attach_task_issue_accumulates_links() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("multi-issue", "backlog", None, None, 1).unwrap();
+        let t = s.add_task("multi-issue", "backlog", None, 1).unwrap();
         s.attach_task_issue(t.id, "o/a", 1, "https://github.com/o/a/issues/1").unwrap();
         s.attach_task_issue(t.id, "o/b", 2, "https://github.com/o/b/issues/2").unwrap();
         let got = s.get_task(t.id).unwrap().unwrap();
@@ -2757,8 +2766,8 @@ mod tests {
     #[test]
     fn delete_and_clear_done_cascade_link_rows() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("a", "backlog", None, None, 1).unwrap();
-        let b = s.add_task("b", "backlog", None, None, 2).unwrap();
+        let a = s.add_task("a", "backlog", None, 1).unwrap();
+        let b = s.add_task("b", "backlog", None, 2).unwrap();
         s.attach_task_issue(a.id, "o/r", 1, "u").unwrap();
         s.attach_task_pr(a.id, "o/r", 2, "u").unwrap();
         s.attach_task_issue(b.id, "o/r", 3, "u").unwrap();
@@ -2829,5 +2838,48 @@ mod tests {
         let s = Store::open(&path).unwrap();
         let linked = s.all_tasks().unwrap().into_iter().find(|t| t.text == "linked").unwrap();
         assert_eq!(linked.issues.len(), 1);
+    }
+
+    #[test]
+    fn migrate_v8_drops_due_column_keeping_rows() {
+        // A v7-era db: current shape plus the retired due_ts column.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tt.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'backlog',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    due_ts INTEGER,
+                    created_at INTEGER NOT NULL,
+                    completed_at INTEGER,
+                    notes TEXT,
+                    slot_repo_root TEXT,
+                    slot_repo TEXT,
+                    slot_branch TEXT,
+                    slot_dir TEXT
+                );
+                INSERT INTO tasks (text, status, position, due_ts, created_at, notes)
+                    VALUES ('was due', 'doing', 1, 1752200000000, 1, 'ctx'),
+                           ('never due', 'backlog', 0, NULL, 2, NULL);",
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        assert!(!task_columns(&s).contains(&"due_ts".to_string()), "due_ts should be dropped");
+        let tasks = s.all_tasks().unwrap();
+        assert_eq!(tasks.len(), 2);
+        let kept = tasks.iter().find(|t| t.text == "was due").unwrap();
+        assert_eq!(kept.status, "doing");
+        assert_eq!(kept.notes.as_deref(), Some("ctx"));
+
+        // Idempotent: a second open finds no due_ts column and is a no-op.
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.all_tasks().unwrap().len(), 2);
     }
 }

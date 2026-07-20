@@ -1,6 +1,5 @@
 import { Fragment, useCallback, useMemo, useRef, useState } from "react";
 import {
-  CalendarPlus,
   FolderGit2,
   GripVertical,
   ListTodo,
@@ -41,7 +40,6 @@ import { useBoardGroupByRepo } from "@/lib/board-prefs";
 import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
 import {
-  fmtDay,
   storeAttachTaskIssue,
   storeAttachTaskPr,
   storeClearDone,
@@ -69,7 +67,7 @@ import {
   reorderedPosition,
   TASK_DRAG_TYPE,
 } from "@/lib/kanban-dnd";
-import { countByStatus, dueState, overdueByStatus } from "@/lib/board-metrics";
+import { countByStatus } from "@/lib/board-metrics";
 import { matchesTaskFilter } from "@/lib/board-filter";
 import {
   bucketByStatus,
@@ -81,7 +79,6 @@ import {
   taskRepoKey,
 } from "@/lib/board-groups";
 import { useFocusTarget } from "@/lib/focus-target";
-import { useNow } from "@/lib/now";
 import { openExternalUrl } from "@/lib/open-url";
 import { PR_TONE, prTone } from "@/lib/pr-tone";
 import { useShortcuts } from "@/lib/shortcuts";
@@ -100,9 +97,9 @@ async function commit(mutation: Promise<Result<unknown, IpcError>>, what: string
   if (done.isErr()) toast.error(`Couldn't ${what} — ${done.error.message}`);
 }
 
-/** Optimistic edits (text/notes/due) applied over a snapshot todo until it
+/** Optimistic edits (text/notes) applied over a snapshot todo until it
  * re-arrives. */
-type TaskEdit = { text?: string; notes?: string | undefined; dueTs?: number | undefined };
+type TaskEdit = { text?: string; notes?: string | undefined };
 
 /** Optimistic status + fractional position from a drag-reorder, until re-arrival. */
 type PosOverride = { status: TaskStatus; position: number };
@@ -114,23 +111,6 @@ type DropSlot = { status: TaskStatus; beforeId: number | "end" };
  * lane holding every card. Never a real repo key (`taskRepoKey` returns
  * `owner/name`, a path basename, or `NO_REPO_GROUP`). */
 const ALL_TASKS_LANE = "__all_tasks__";
-
-/** `YYYY-MM-DD` (local) for an `<input type="date">` value. */
-function toDateInputValue(ms: number): string {
-  const d = new Date(ms);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-/** Parse an `<input type="date">` value to epoch ms at the end of that local
- * day, so a due-today card is not overdue until the day actually ends. */
-function dueDateToMs(value: string): number | undefined {
-  const [y, m, d] = value.split("-").map(Number);
-  if (!y || !m || !d) return undefined;
-  return new Date(y, m - 1, d, 23, 59, 59, 999).getTime();
-}
 
 /**
  * Board — the cross-repo kanban for finding and watching work in flight.
@@ -144,7 +124,7 @@ function dueDateToMs(value: string): number | undefined {
  *
  * **This screen does not create tasks** — the Agentboard's `+` flow is the only
  * creator, so a task and the repo it belongs to are established together at
- * submit. Here a card can be moved, reordered, renamed, given a due date,
+ * submit. Here a card can be moved, reordered, renamed,
  * linked to issues/PRs, promoted to a GitHub issue, or deleted. Read-only over
  * the snapshot with local optimistic overlays for moves, edits and deletes
  * until the next `store://snapshot` arrives.
@@ -152,7 +132,6 @@ function dueDateToMs(value: string): number | undefined {
 export function BoardScreen() {
   const { snapshot } = useStoreSnapshot();
   const { activeTab, openTabWithFocus } = useWorkspace();
-  const now = useNow();
   // Deep-link focus: a promoted-todo / board deep link scrolls the card here.
   const focusRef = useFocusTarget<HTMLDivElement>("board");
   const filterInputRef = useRef<HTMLInputElement>(null);
@@ -268,9 +247,6 @@ export function BoardScreen() {
   // Per-status totals for the sticky header (and the Clear-done gate).
   const counts = useMemo(() => countByStatus(visible), [visible]);
 
-  // Overdue cards per column, for the header's red load pip.
-  const overdue = useMemo(() => overdueByStatus(visible, now), [visible, now]);
-
   function move(id: number, status: TaskStatus) {
     setStatusOverrides((prev) => ({ ...prev, [id]: status }));
     // A plain column move appends; drop any stale reorder slot for this card.
@@ -333,22 +309,15 @@ export function BoardScreen() {
     void commit(storeDetachTaskPr(id, link.repo, link.number), "detach that PR");
   }
 
-  // Rename and due-date edits both re-send the todo's other free-form fields
-  // (`storeUpdateTask` is a full replace of text/notes/due), reading them from
-  // `merged` so chained optimistic edits compose.
+  // Rename re-sends the todo's notes too (`storeUpdateTask` is a full replace
+  // of text/notes), reading them from `merged` so chained optimistic edits
+  // compose.
   function rename(id: number, text: string) {
     const trimmed = text.trim();
     const current = merged.find((t) => t.id === id);
     if (!current || !trimmed || trimmed === current.text) return;
     setEditOverrides((prev) => ({ ...prev, [id]: { ...prev[id], text: trimmed } }));
-    void commit(storeUpdateTask(id, trimmed, current.notes, current.dueTs), "rename that todo");
-  }
-
-  function setDue(id: number, dueTs: number | undefined) {
-    const current = merged.find((t) => t.id === id);
-    if (!current) return;
-    setEditOverrides((prev) => ({ ...prev, [id]: { ...prev[id], dueTs } }));
-    void commit(storeUpdateTask(id, current.text, current.notes, dueTs), "set that due date");
+    void commit(storeUpdateTask(id, trimmed, current.notes), "rename that todo");
   }
 
   function setNotes(id: number, notes: string) {
@@ -357,7 +326,7 @@ export function BoardScreen() {
     // Empty/whitespace-only notes clear the field back to unset.
     const value = notes.trim() === "" ? undefined : notes;
     setEditOverrides((prev) => ({ ...prev, [id]: { ...prev[id], notes: value } }));
-    void commit(storeUpdateTask(id, current.text, value, current.dueTs), "save those notes");
+    void commit(storeUpdateTask(id, current.text, value), "save those notes");
   }
 
   function remove(id: number) {
@@ -462,18 +431,8 @@ export function BoardScreen() {
                   <span className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     {TASK_STATUS_LABEL[status]}
                   </span>
-                  <span className="flex items-center gap-1">
-                    {overdue[status] > 0 && (
-                      <span
-                        title={`${overdue[status]} overdue`}
-                        className="rounded-full bg-red-500/15 px-1.5 font-mono text-[10px] text-red-600 dark:text-red-400"
-                      >
-                        {overdue[status]} late
-                      </span>
-                    )}
-                    <span className="rounded-full bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
-                      {counts[status]}
-                    </span>
+                  <span className="rounded-full bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
+                    {counts[status]}
                   </span>
                 </div>
               ))}
@@ -568,7 +527,6 @@ export function BoardScreen() {
                                 />
                                 <Card
                                   task={task}
-                                  now={now}
                                   repos={repos}
                                   repoMeta={repoMetaByKey.get(repoKey)}
                                   repoLabel={
@@ -591,7 +549,6 @@ export function BoardScreen() {
                                   onAttachPr={attachPr}
                                   onDetachPr={detachPr}
                                   onRename={rename}
-                                  onSetDue={setDue}
                                   onSetNotes={setNotes}
                                   onDelete={remove}
                                   onDragEnd={clearDropSlot}
@@ -668,7 +625,6 @@ function DropLine({ active }: { active: boolean }) {
 
 function Card({
   task,
-  now,
   repos,
   repoMeta,
   repoLabel,
@@ -685,13 +641,11 @@ function Card({
   onAttachPr,
   onDetachPr,
   onRename,
-  onSetDue,
   onSetNotes,
   onDelete,
   onDragEnd,
 }: {
   task: TaskItem;
-  now: number;
   repos: string[];
   /** The chosen icon/color of the repo this task resolved to, when that repo
    * has one. Undefined (no repo, or an unthemed repo) renders the card
@@ -719,7 +673,6 @@ function Card({
   onAttachPr: (id: number, pr: PrItem) => void;
   onDetachPr: (id: number, link: TaskPrLink) => void;
   onRename: (id: number, text: string) => void;
-  onSetDue: (id: number, dueTs: number | undefined) => void;
   onSetNotes: (id: number, notes: string) => void;
   onDelete: (id: number) => void;
   onDragEnd: () => void;
@@ -729,8 +682,6 @@ function Card({
   const [editValue, setEditValue] = useState(task.text);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  // A shipped card is never "late", so done cards carry no due accent.
-  const due = task.status === "done" ? "none" : dueState(task.dueTs, now);
   const hasNotes = (task.notes ?? "").trim() !== "";
   // Attach candidates: collected refs not already linked to this task.
   const attachableIssues = openIssues.filter(
@@ -742,12 +693,10 @@ function Card({
   const hasLinks = task.issues.length > 0 || task.prs.length > 0;
   // Repo identity on the card: tinted glyph, colored edge, and (for
   // `style: "tint"`) a background wash mixed into the card's own opaque
-  // background. The due-state accents own the edge and wash when present —
-  // identity never outranks attention — so both apply only when due is quiet.
+  // background.
   const accent = repoAccentStyles(repoMeta, "var(--background)");
   const RepoGlyph = repoMeta ? repoIcon(repoMeta) : null;
-  const identityStyle =
-    due === "none" ? { ...accent.edgeStyle, ...accent.surfaceStyle } : undefined;
+  const identityStyle = { ...accent.edgeStyle, ...accent.surfaceStyle };
   // The identity row's text: `repo · ⎇ branch`, either part optional.
   const branch = task.slot?.branch;
   const detached = branch !== undefined && !task.slot?.dir;
@@ -809,8 +758,6 @@ function Card({
       className={cn(
         "group rounded-md border border-l-2 bg-background p-2.5 text-sm shadow-sm",
         "cursor-grab active:cursor-grabbing",
-        due === "overdue" && "border-l-red-500 bg-red-500/[0.03] dark:bg-red-500/[0.07]",
-        due === "today" && "border-l-amber-500 bg-amber-500/[0.03] dark:bg-amber-500/[0.07]",
         task.status === "done" && "opacity-60",
         dragging && "opacity-40",
       )}
@@ -869,34 +816,6 @@ function Card({
               </>
             )}
             <DropdownMenuItem onSelect={startRename}>Rename</DropdownMenuItem>
-            <DropdownMenuLabel className="pb-0.5 pt-1 text-muted-foreground">
-              Due date
-            </DropdownMenuLabel>
-            <div
-              className="flex items-center gap-1 px-2 py-1"
-              // Keep the menu open and stop its typeahead from eating keystrokes.
-              onKeyDown={(e) => e.stopPropagation()}
-            >
-              <Input
-                type="date"
-                value={task.dueTs !== undefined ? toDateInputValue(task.dueTs) : ""}
-                onChange={(e) =>
-                  onSetDue(task.id, e.target.value ? dueDateToMs(e.target.value) : undefined)
-                }
-                className="h-7 flex-1 px-1.5 text-xs"
-                aria-label="Set due date"
-              />
-              {task.dueTs !== undefined && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => onSetDue(task.id, undefined)}
-                >
-                  Clear
-                </Button>
-              )}
-            </div>
             <DropdownMenuLabel className="pb-0.5 pt-1 text-muted-foreground">
               Notes
             </DropdownMenuLabel>
@@ -1024,7 +943,7 @@ function Card({
           )}
         </div>
       )}
-      {(hasLinks || task.dueTs !== undefined || hasNotes) && (
+      {(hasLinks || hasNotes) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           {task.issues.map((link) => (
             <a
@@ -1072,21 +991,6 @@ function Card({
               </a>
             );
           })}
-          {task.dueTs !== undefined && (
-            <Badge
-              variant="outline"
-              className={cn(
-                "gap-1 text-[10px]",
-                due === "overdue" &&
-                  "border-transparent bg-red-500/15 text-red-600 dark:text-red-400",
-                due === "today" &&
-                  "border-transparent bg-amber-500/15 text-amber-600 dark:text-amber-400",
-              )}
-            >
-              <CalendarPlus aria-hidden className="size-3" />
-              {fmtDay(task.dueTs)}
-            </Badge>
-          )}
           {hasNotes && (
             <Badge
               variant="outline"
