@@ -15,6 +15,13 @@
 //! parsing is deliberately tolerant: every field is defaulted, unknown fields
 //! are ignored, and a config we can't launch (empty executable) is kept by the
 //! parser and filtered by callers via [`LaunchConfig::launchable`].
+//!
+//! Tolerant of the *dialect*, too: like VS Code's `launch.json` (the file this
+//! one is modeled on), it may carry `//` and `/* */` comments and trailing
+//! commas — annotating a launch config is the normal thing to do to one.
+//! `serde_json` rejects all three, so [`read_launch_file`] parses through
+//! `jsonc-parser` instead and a hand-edited file no longer reads as
+//! "malformed".
 
 use std::path::{Path, PathBuf};
 
@@ -61,7 +68,7 @@ impl LaunchConfig {
 }
 
 /// The whole `launch.json`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchFile {
     #[serde(default)]
@@ -81,7 +88,18 @@ pub fn read_launch_file(dir: &Path) -> crate::Result<Option<LaunchFile>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err.into()),
     };
-    Ok(Some(serde_json::from_str(&text)?))
+    Ok(Some(parse_launch_json(&text)?))
+}
+
+/// Parse `launch.json`'s text (JSON, or JSONC as an editor would leave it).
+/// An empty file — or one that is only comments — has no configs rather than
+/// being an error, matching "a file that parses to nothing".
+pub fn parse_launch_json(text: &str) -> crate::Result<LaunchFile> {
+    let value = jsonc_parser::parse_to_serde_value(text, &Default::default())?;
+    match value {
+        Some(value) => Ok(serde_json::from_value(value)?),
+        None => Ok(LaunchFile::default()),
+    }
 }
 
 /// Whether something is accepting TCP connections on localhost:`port` — the
@@ -200,6 +218,64 @@ mod tests {
         let file = read_launch_file(root.path()).unwrap().unwrap();
         assert_eq!(file.configurations.len(), 3);
         assert!(has_launch_file(root.path()));
+    }
+
+    /// The dialect an editor actually leaves behind: `//` and `/* */`
+    /// comments plus trailing commas, all of which `serde_json` rejects.
+    #[test]
+    fn parses_comments_and_trailing_commas() {
+        let file = parse_launch_json(
+            r#"{
+              // Written by hand after Claude Desktop's version.
+              "version": "0.0.1",
+              "configurations": [
+                {
+                  "name": "blog", /* the site itself */
+                  "runtimeExecutable": "pnpm",
+                  "runtimeArgs": ["dev", "--host", ],
+                  "port": 3000,
+                },
+                /* Disabled for now — the mcp server moved.
+                {"name": "mcp", "runtimeExecutable": "pnpm"}
+                */
+              ],
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(file.version, "0.0.1");
+        assert_eq!(file.configurations.len(), 1);
+        assert_eq!(file.configurations[0].runtime_args, vec!["dev", "--host"]);
+        assert_eq!(file.configurations[0].port, Some(3000));
+    }
+
+    /// `//` and `/*` inside a string are content, not comments.
+    #[test]
+    fn comment_markers_inside_strings_survive() {
+        let file = parse_launch_json(
+            r#"{"configurations": [
+                 {"name": "docs", "runtimeExecutable": "npx",
+                  "runtimeArgs": ["serve", "https://example.com/x", "src/**/*.md"]}
+               ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            file.configurations[0].runtime_args,
+            vec!["serve", "https://example.com/x", "src/**/*.md"]
+        );
+    }
+
+    #[test]
+    fn a_comments_only_file_has_no_configs() {
+        let file = parse_launch_json("// nothing configured yet\n").unwrap();
+        assert!(file.configurations.is_empty());
+    }
+
+    #[test]
+    fn read_parses_a_commented_file_from_disk() {
+        let root = tempfile::TempDir::new().unwrap();
+        write_launch(root.path(), "{\n  // dev servers\n  \"configurations\": []\n}");
+        let file = read_launch_file(root.path()).unwrap().unwrap();
+        assert!(file.configurations.is_empty());
     }
 
     #[test]

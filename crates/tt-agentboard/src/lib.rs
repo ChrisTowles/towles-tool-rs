@@ -60,6 +60,11 @@ pub enum Error {
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// A JSON-with-comments file (`.claude/launch.json`) that isn't valid
+    /// JSONC either — the message carries the line/column.
+    #[error("JSONC error: {0}")]
+    Jsonc(#[from] jsonc_parser::errors::ParseError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
