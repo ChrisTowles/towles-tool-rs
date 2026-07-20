@@ -141,6 +141,21 @@ function isPathLike(raw: string): boolean {
   return raw.includes("/") || /:\d/.test(raw);
 }
 
+/**
+ * A bare `name.ext` (no `/`, no `:line`) is still a path when it is the whole
+ * argument of an agent tool-call header — `Update(README.md)`,
+ * `Write(vitest.config.ts)` — which is how Claude Code prints root-level
+ * files. Anchoring on the `CapitalizedWord(…)` wrapper keeps prose
+ * (`example.com`, `1.2.3`, `e.g.`) unlinked. `start`/`end` are the match's
+ * inclusive offsets into `text`.
+ */
+function isToolHeaderArg(text: string, start: number, end: number): boolean {
+  if (text[start - 1] !== "(" || text[end + 1] !== ")") return false;
+  let i = start - 2;
+  while (i >= 0 && /[A-Za-z]/.test(text[i])) i--;
+  return /^[A-Z][A-Za-z]+$/.test(text.slice(i + 1, start - 1));
+}
+
 /** Split a matched path into its filesystem path and 1-based line (paths never
  * contain `:`, so the first colon starts the `:line[:col]` suffix). */
 function splitPathLine(raw: string): { path: string; line: number | null } {
@@ -225,9 +240,9 @@ export function linkAt(
   const masked = maskUrls(joined);
   for (const m of masked.matchAll(PATH_RE)) {
     const raw = trimTrailing(m[0]);
-    if (!isPathLike(raw)) continue;
     const start = m.index;
     const end = start + raw.length - 1; // inclusive
+    if (!isPathLike(raw) && !isToolHeaderArg(masked, start, end)) continue;
     if (probe < start || probe > end) continue;
     const { path, line } = splitPathLine(raw);
     return { kind: "path", path, line, segments: segmentsFor(start, end, startRow, cols) };

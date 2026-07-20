@@ -246,6 +246,20 @@ describe("linkAt (paths)", () => {
     expect(linkAt([row("open search.rs here")], COLS, 7, 0)).toBeNull();
   });
 
+  it("accepts a bare filename as a tool-call header argument", () => {
+    // Claude Code prints root-level files as `Update(README.md)` — the
+    // CapitalizedWord(…) wrapper anchors what a bare filename can't.
+    const link = pathAt([row("● Update(README.md)")], COLS, 12, 0);
+    expect(link?.path).toBe("README.md");
+    expect(link?.line).toBeNull();
+    expect(pathAt([row("Write(vitest.config.ts)")], COLS, 8, 0)?.path).toBe("vitest.config.ts");
+  });
+
+  it("rejects a bare filename in parens without a tool-name anchor", () => {
+    expect(linkAt([row("stale files (search.rs) remain")], COLS, 15, 0)).toBeNull();
+    expect(linkAt([row("lowercase(search.rs) call")], COLS, 12, 0)).toBeNull();
+  });
+
   it("ignores dotted prose that is not a path", () => {
     expect(linkAt([row("visit example.com for info")], COLS, 8, 0)).toBeNull();
     expect(linkAt([row("bumped to 1.2.3 today")], COLS, 11, 0)).toBeNull();
