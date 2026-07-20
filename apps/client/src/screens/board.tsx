@@ -76,6 +76,8 @@ import {
   byBoardOrder,
   groupTasksByRepo,
   NO_REPO_GROUP,
+  railRepoKeyForTask,
+  repoGroupLabel,
   taskRepoKey,
 } from "@/lib/board-groups";
 import { useFocusTarget } from "@/lib/focus-target";
@@ -149,7 +151,7 @@ function dueDateToMs(value: string): number | undefined {
  */
 export function BoardScreen() {
   const { snapshot } = useStoreSnapshot();
-  const { activeTab } = useWorkspace();
+  const { activeTab, openTabWithFocus } = useWorkspace();
   const now = useNow();
   // Deep-link focus: a promoted-todo / board deep link scrolls the card here.
   const focusRef = useFocusTarget<HTMLDivElement>("board");
@@ -367,6 +369,18 @@ export function BoardScreen() {
     void commit(storeClearDone(), "clear the Done column");
   }
 
+  // Jump to a card's repo on the Agentboard: same focus primitive the
+  // needs-you popover uses — land on the screen, scroll the rail row into
+  // view, flash it. `railKey` is resolved per card at render, so a card whose
+  // repo isn't on the rail simply doesn't offer the jump.
+  const openOnAgentboard = useCallback(
+    (railKey: string) => {
+      uiAction("board.open_agentboard", "board");
+      openTabWithFocus({ screen: "agentboard", kind: "repo", id: railKey });
+    },
+    [openTabWithFocus],
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2.5">
@@ -542,37 +556,49 @@ export function BoardScreen() {
                               "border-violet-500/60 bg-violet-500/5 dark:bg-violet-500/10",
                           )}
                         >
-                          {lane.columns[status].map((task, i) => (
-                            <Fragment key={task.id}>
-                              <DropLine
-                                active={
-                                  dropSlot?.status === status && dropSlot.beforeId === task.id
-                                }
-                              />
-                              <Card
-                                task={task}
-                                now={now}
-                                repos={repos}
-                                repoMeta={repoMetaByKey.get(taskRepoKey(task))}
-                                openIssues={snapshot.issues}
-                                openPrs={snapshot.prs}
-                                nextId={lane.columns[status][i + 1]?.id ?? null}
-                                onMove={move}
-                                onReorderHover={setDropSlot}
-                                onReorder={reorder}
-                                onPromote={promote}
-                                onAttachIssue={attachIssue}
-                                onDetachIssue={detachIssue}
-                                onAttachPr={attachPr}
-                                onDetachPr={detachPr}
-                                onRename={rename}
-                                onSetDue={setDue}
-                                onSetNotes={setNotes}
-                                onDelete={remove}
-                                onDragEnd={clearDropSlot}
-                              />
-                            </Fragment>
-                          ))}
+                          {lane.columns[status].map((task, i) => {
+                            const repoKey = taskRepoKey(task);
+                            const railKey = railRepoKeyForTask(agentState.repos, task);
+                            return (
+                              <Fragment key={task.id}>
+                                <DropLine
+                                  active={
+                                    dropSlot?.status === status && dropSlot.beforeId === task.id
+                                  }
+                                />
+                                <Card
+                                  task={task}
+                                  now={now}
+                                  repos={repos}
+                                  repoMeta={repoMetaByKey.get(repoKey)}
+                                  repoLabel={
+                                    groupByRepo || repoKey === NO_REPO_GROUP
+                                      ? undefined
+                                      : repoGroupLabel(repoKey)
+                                  }
+                                  onOpenAgentboard={
+                                    railKey ? () => openOnAgentboard(railKey) : undefined
+                                  }
+                                  openIssues={snapshot.issues}
+                                  openPrs={snapshot.prs}
+                                  nextId={lane.columns[status][i + 1]?.id ?? null}
+                                  onMove={move}
+                                  onReorderHover={setDropSlot}
+                                  onReorder={reorder}
+                                  onPromote={promote}
+                                  onAttachIssue={attachIssue}
+                                  onDetachIssue={detachIssue}
+                                  onAttachPr={attachPr}
+                                  onDetachPr={detachPr}
+                                  onRename={rename}
+                                  onSetDue={setDue}
+                                  onSetNotes={setNotes}
+                                  onDelete={remove}
+                                  onDragEnd={clearDropSlot}
+                                />
+                              </Fragment>
+                            );
+                          })}
                           <DropLine
                             active={dropSlot?.status === status && dropSlot.beforeId === "end"}
                           />
@@ -645,6 +671,8 @@ function Card({
   now,
   repos,
   repoMeta,
+  repoLabel,
+  onOpenAgentboard,
   openIssues,
   openPrs,
   nextId,
@@ -669,6 +697,13 @@ function Card({
    * has one. Undefined (no repo, or an unthemed repo) renders the card
    * exactly as it did before repo identity existed. */
   repoMeta?: RepoMeta;
+  /** The repo name to print on the card — set only in flat (no-swimlane) mode,
+   * where no lane header identifies the repo. Undefined in grouped mode and
+   * for no-repo tasks. */
+  repoLabel?: string;
+  /** Jump to this task's repo row on the Agentboard rail. Undefined when the
+   * repo isn't on the rail — the affordances don't render. */
+  onOpenAgentboard?: () => void;
   /** Collected open issues — the "Attach issue…" candidates. */
   openIssues: IssueItem[];
   /** Collected PRs — the "Attach PR…" candidates. */
@@ -713,6 +748,12 @@ function Card({
   const RepoGlyph = repoMeta ? repoIcon(repoMeta) : null;
   const identityStyle =
     due === "none" ? { ...accent.edgeStyle, ...accent.surfaceStyle } : undefined;
+  // The identity row's text: `repo · ⎇ branch`, either part optional.
+  const branch = task.slot?.branch;
+  const detached = branch !== undefined && !task.slot?.dir;
+  const identityRowText = [repoLabel, branch && `⎇ ${branch}${detached ? " · detached" : ""}`]
+    .filter(Boolean)
+    .join(" · ");
 
   function startRename() {
     setEditValue(task.text);
@@ -821,6 +862,12 @@ function Card({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
+            {onOpenAgentboard && (
+              <>
+                <DropdownMenuItem onSelect={onOpenAgentboard}>Open on Agentboard</DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
             <DropdownMenuItem onSelect={startRename}>Rename</DropdownMenuItem>
             <DropdownMenuLabel className="pb-0.5 pt-1 text-muted-foreground">
               Due date
@@ -947,21 +994,34 @@ function Card({
         </DropdownMenu>
       </div>
 
-      {/* Only a task that actually has a branch shows this row. A task bound to
-          its repo but never given a worktree ("task only") has no branch, and
-          rendering it here would read as a nameless detached slot. */}
-      {task.slot?.branch && (
+      {/* The identity row: the repo name in flat mode (where no lane header
+          says it), plus the slot branch when one exists — a branchless task in
+          grouped mode renders nothing here, its lane header already identifies
+          it. Clickable when the repo has an Agentboard rail row. */}
+      {(repoLabel !== undefined || branch) && (
         <div
           className={cn(
-            "mt-1.5 flex items-center gap-1 font-mono text-[11px] text-muted-foreground",
-            !task.slot.dir && "italic text-muted-foreground/70",
+            "mt-1.5 flex items-center font-mono text-[11px] text-muted-foreground",
+            detached && "italic text-muted-foreground/70",
           )}
-          title={task.slot.dir ?? `worktree removed — branch ${task.slot.branch}`}
         >
-          <span className="truncate">
-            ⎇ {task.slot.branch}
-            {!task.slot.dir && " · detached"}
-          </span>
+          {onOpenAgentboard ? (
+            <button
+              type="button"
+              onClick={onOpenAgentboard}
+              title={`Open on Agentboard${task.slot?.dir ? ` — ${task.slot.dir}` : ""}`}
+              className="min-w-0 truncate text-left hover:text-foreground hover:underline"
+            >
+              {identityRowText}
+            </button>
+          ) : (
+            <span
+              className="min-w-0 truncate"
+              title={task.slot?.dir ?? (branch ? `worktree removed — branch ${branch}` : undefined)}
+            >
+              {identityRowText}
+            </span>
+          )}
         </div>
       )}
       {(hasLinks || task.dueTs !== undefined || hasNotes) && (
