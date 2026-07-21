@@ -18,8 +18,14 @@ import type { IssueItem } from "@/lib/data";
 import { cn } from "@/lib/utils";
 
 /** Typography/box metrics shared by the textarea and its highlight mirror.
- * Any change here must stay in both — that's the whole point of the constant. */
-const SHARED_BOX = "px-2.5 py-2 text-xs leading-normal";
+ * Any change here must stay in both — that's the whole point of the constant.
+ *
+ * `md:text-xs` is not redundant: shadcn's Textarea base ends in `md:text-sm`,
+ * and tailwind-merge only dedupes classes within the same modifier, so a bare
+ * `text-xs` loses to it above 768px. The textarea would then render a size
+ * larger than the mirror and the caret would drift further right with every
+ * character typed. */
+const SHARED_BOX = "px-2.5 py-2 text-xs leading-normal md:text-xs";
 
 export function GoalEditor({
   value,
