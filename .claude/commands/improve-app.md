@@ -1,5 +1,5 @@
 ---
-description: Brainstorm 15 graded app improvements — "review" publishes an artifact of options; "build" ships the top 5 as parallel-slot PRs
+description: Brainstorm 15 graded app improvements — "review" publishes an artifact of options; "build" ships the top 5 as parallel-task PRs
 argument-hint: review|build [optional theme, e.g. "terminal polish"]
 ---
 
@@ -23,7 +23,7 @@ Run /tt:01-blindspot on this task first. Then:
    in CLAUDE.md and memory (no agent-TUI recreation, no repo auto-discovery,
    calendar = next-meeting only, hard cutover / no back-compat).
 
-2. Grade each idea 1–10 on: value to my daily flow, effort (favor ≤ 1 slot-day),
+2. Grade each idea 1–10 on: value to my daily flow, effort (favor ≤ 1 task-day),
    risk of merge conflicts with the other picks, and fit with the
    get-in-the-zone product direction.
 
@@ -48,8 +48,8 @@ and note that I can name substitutions if I disagree with the top 5.
 ## Mode: build
 
 Implement the top 5 (or the 5 I named when invoking build) in parallel using
-worktree slots (`tt slot new -b <branch>`, see CLAUDE.md's Worktree slots
-section) with subagents — one idea per slot, each on its own branch off main.
+worktrees (`tt task new "<goal>" --repo <r> -b <branch>`, see CLAUDE.md's Worktree tasks
+section) with subagents — one idea per task, each on its own branch off main.
 Do not stop to ask me anything; my only involvement is reviewing the finished
 PRs.
 

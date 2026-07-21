@@ -45,16 +45,16 @@ describe("matchesTaskFilter", () => {
     expect(matchesTaskFilter(task({ text: "Fix the bug" }), "tool-rs")).toBe(false);
   });
 
-  it("matches against the slot branch", () => {
-    const slotted = task(
+  it("matches against the worktree branch", () => {
+    const bound = task(
       { text: "Rate limits" },
-      { slot: { repoRoot: "/r", branch: "fix/rate-limit-backoff" } },
+      { worktree: { repoRoot: "/r", branch: "fix/rate-limit-backoff" } },
     );
-    expect(matchesTaskFilter(slotted, "rate-limit")).toBe(true);
+    expect(matchesTaskFilter(bound, "rate-limit")).toBe(true);
   });
 
-  it("matches against the slot repo — often a card's only repo identity", () => {
-    const bound = task({ text: "Ship it" }, { slot: { repoRoot: "/r", repo: "octo/blog" } });
+  it("matches against the worktree repo — often a card's only repo identity", () => {
+    const bound = task({ text: "Ship it" }, { worktree: { repoRoot: "/r", repo: "octo/blog" } });
     expect(matchesTaskFilter(bound, "blog")).toBe(true);
     expect(matchesTaskFilter(task({ text: "Ship it" }), "blog")).toBe(false);
   });

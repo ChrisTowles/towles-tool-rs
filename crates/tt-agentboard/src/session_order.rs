@@ -19,7 +19,7 @@ pub enum ReorderDelta {
 }
 
 /// Default persisted-order path: `<agentboard_dir>/session-order.json`
-/// (slot-scoped in a slot checkout; see [`tt_config::agentboard_dir`]).
+/// (task-scoped in a task checkout; see [`tt_config::agentboard_dir`]).
 pub fn default_session_order_path() -> PathBuf {
     tt_config::agentboard_dir_lossy().join("session-order.json")
 }

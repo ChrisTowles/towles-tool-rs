@@ -242,11 +242,11 @@ export function DiffPane({
 }) {
   const dir = folder?.dir;
   const baseBranch = folder?.baseBranch?.trim() || null;
-  // The worktree slot's own creation base (`.tt-slot`'s `base=`), when this
-  // folder is a slot and nothing overrides it — what the backend actually
+  // The worktree's own creation base (`.tt-task`'s `base=`), when this
+  // folder is a task and nothing overrides it — what the backend actually
   // auto-compares against instead of always defaulting to main.
-  const slotBaseBranch = folder?.slotBaseBranch?.trim() || null;
-  const effectiveBase = baseBranch ?? slotBaseBranch;
+  const taskBaseBranch = folder?.taskBaseBranch?.trim() || null;
+  const effectiveBase = baseBranch ?? taskBaseBranch;
   const [mode, setMode] = useState<DiffMode>("main");
   const [files, setFiles] = useState<ChangedFile[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -312,8 +312,8 @@ export function DiffPane({
     label: effectiveBase ? `vs ${effectiveBase}` : "vs main",
     hint: baseBranch
       ? `Everything on this branch vs where it forked from "${baseBranch}" (your override) — committed and uncommitted work alike`
-      : slotBaseBranch
-        ? `Everything on this branch vs where it forked from "${slotBaseBranch}" (this slot's creation base) — committed and uncommitted work alike`
+      : taskBaseBranch
+        ? `Everything on this branch vs where it forked from "${taskBaseBranch}" (this task's creation base) — committed and uncommitted work alike`
         : "Everything on this branch vs where it forked from origin/main — committed and uncommitted work alike",
   };
   const modes = [mainMode, UNCOMMITTED_MODE];
@@ -430,8 +430,8 @@ export function DiffPane({
                 autoFocus
                 defaultValue={baseBranch ?? ""}
                 placeholder={
-                  slotBaseBranch
-                    ? `branch to compare against (blank = this slot's base, "${slotBaseBranch}")`
+                  taskBaseBranch
+                    ? `branch to compare against (blank = this task's base, "${taskBaseBranch}")`
                     : "branch to compare against (blank = auto-detect main)"
                 }
                 onBlur={(e) => void commitBaseBranch(e.target.value)}
@@ -466,8 +466,8 @@ export function DiffPane({
             {!editingBase && mode === "main" && (
               <IconBtn
                 title={
-                  slotBaseBranch
-                    ? `set the parent branch this folder compares against (default: this slot's base, "${slotBaseBranch}")`
+                  taskBaseBranch
+                    ? `set the parent branch this folder compares against (default: this task's base, "${taskBaseBranch}")`
                     : "set the parent branch this folder compares against (default: origin/main)"
                 }
                 onClick={() => setEditingBase(true)}

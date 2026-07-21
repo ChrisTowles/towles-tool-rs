@@ -1,7 +1,7 @@
 //! Telemetry for the `tt` CLI and the desktop app: `tracing` instrumentation
 //! plus an event-log sink that streams every span and event to disk as JSONL.
 //!
-//! The point is answering questions *later*. "Which slot spawned that `gh`
+//! The point is answering questions *later*. "Which task spawned that `gh`
 //! call, how long did it take, and what did it exit with?" should be a `jq`
 //! away, without reproducing the problem under a debugger. So the sink is
 //! always on, always flushed, and always local.
@@ -14,7 +14,7 @@
 //!   `RUST_LOG` used to drive under `env_logger`.
 //! - An [`layer::EventLogLayer`] writes the structured record to
 //!   `<data_dir>/telemetry/events-<date>.jsonl`, instance-scoped so each
-//!   worktree slot gets its own log.
+//!   worktree gets its own log.
 //!
 //! `tracing-subscriber`'s `tracing-log` feature captures the `log::` macros
 //! still in the tree, so existing call sites keep reporting while individual
@@ -53,7 +53,7 @@ const DISABLE_ENV: &str = "TT_TELEMETRY";
 const DISK_FILTER: &str = "warn,tt=debug,tt_agentboard=debug,tt_app=debug,tt_cli=debug,\
                            tt_collect=debug,tt_config=debug,tt_exec=debug,tt_git=debug,\
                            tt_ide=debug,tt_journal=debug,tt_mcp=debug,tt_otel=debug,\
-                           tt_slots=debug,tt_store=debug,tt_update=debug,tt_vt=debug";
+                           tt_tasks=debug,tt_store=debug,tt_update=debug,tt_vt=debug";
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -73,7 +73,7 @@ fn disk_sink_disabled() -> bool {
 
 /// Resource attributes stamped on every record, in OpenTelemetry naming.
 ///
-/// `tt.slot` is the load-bearing one: several checkouts of this repo run
+/// `tt.task` is the load-bearing one: several checkouts of this repo run
 /// concurrently, so a record is only interpretable if it says which one
 /// produced it.
 fn resource(service: &str) -> Map<String, Value> {
@@ -82,7 +82,7 @@ fn resource(service: &str) -> Map<String, Value> {
     attrs.insert("service.version".into(), Value::from(env!("CARGO_PKG_VERSION")));
     attrs.insert("process.pid".into(), Value::from(std::process::id()));
     attrs.insert(
-        "tt.slot".into(),
+        "tt.task".into(),
         match tt_config::state_scope() {
             Some(scope) => Value::from(scope),
             None => Value::Null,
@@ -135,7 +135,7 @@ mod tests {
         let attrs = resource("tt");
         assert_eq!(attrs["service.name"], "tt");
         assert_eq!(attrs["process.pid"], Value::from(std::process::id()));
-        assert!(attrs.contains_key("tt.slot"), "every record must be attributable to a slot");
+        assert!(attrs.contains_key("tt.task"), "every record must be attributable to a task");
     }
 }
 

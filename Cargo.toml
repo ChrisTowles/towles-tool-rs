@@ -14,7 +14,7 @@ members = [
   "crates/tt-journal",
   "crates/tt-mcp",
   "crates/tt-otel",
-  "crates/tt-slots",
+  "crates/tt-tasks",
   "crates/tt-store",
   "crates/tt-update",
   "crates/tt-vt",
@@ -42,7 +42,7 @@ libc = "0.2"
 libghostty-vt = "0.2.0"
 notify = "6.1.1"
 # Encodes the raw RGBA the system clipboard hands back into a real PNG — see
-# `tt_slots::pasted::rgba_to_png`. Pinned to the same major the clipboard
+# `tt_tasks::pasted::rgba_to_png`. Pinned to the same major the clipboard
 # plugin's `image` (and muda/tray-icon) already pull in, so the app links one
 # png, not two — 0.17 is build-time-only weight via tauri-codegen/ico.
 png = "0.18"
@@ -82,7 +82,7 @@ tt-ide = { path = "crates/tt-ide" }
 tt-journal = { path = "crates/tt-journal" }
 tt-mcp = { path = "crates/tt-mcp" }
 tt-otel = { path = "crates/tt-otel" }
-tt-slots = { path = "crates/tt-slots" }
+tt-tasks = { path = "crates/tt-tasks" }
 tt-store = { path = "crates/tt-store" }
 tt-update = { path = "crates/tt-update" }
 tt-vt = { path = "crates/tt-vt" }

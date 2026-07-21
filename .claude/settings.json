@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-slot-pkill.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-task-pkill.sh\""
           },
           {
             "type": "command",
@@ -39,10 +39,10 @@
       }
     ],
     "WorktreeCreate": [
-      { "hooks": [{ "type": "command", "command": "tt slot hook-create" }] }
+      { "hooks": [{ "type": "command", "command": "tt task hook-create" }] }
     ],
     "WorktreeRemove": [
-      { "hooks": [{ "type": "command", "command": "tt slot hook-remove" }] }
+      { "hooks": [{ "type": "command", "command": "tt task hook-remove" }] }
     ],
     "Stop": [
       {

@@ -739,7 +739,7 @@ impl Engine {
         removed
     }
 
-    /// Session ids scoped to `dir`, without removing anything — a slot
+    /// Session ids scoped to `dir`, without removing anything — a task
     /// removal must kill live PTYs *before* attempting the (fallible)
     /// worktree removal, but must not drop the records until removal has
     /// actually succeeded (see [`Self::close_folder`]).
@@ -761,7 +761,7 @@ impl Engine {
     }
 
     /// Tear a folder's live rail state down immediately, ahead of its
-    /// checkout disappearing (a slot removal): drop every session record and
+    /// checkout disappearing (a task removal): drop every session record and
     /// every window/pane scoped to it, persisting both right away instead of
     /// waiting for the next poll's repo-keyed prune in
     /// [`Self::compute_payload_with`]. Returns the removed session ids so the
@@ -851,11 +851,11 @@ mod merge_worktree_dirs_tests {
 
     #[test]
     fn dedupes_a_worktree_already_configured_explicitly() {
-        // e.g. towles-tool-rs-slot-2 manually added even though it's also a
-        // worktree of towles-tool-rs-slot-1 — must not appear twice.
-        let repo_paths = vec!["/repo/slot-1".to_string(), "/repo/slot-2".to_string()];
+        // e.g. towles-tool-rs-task-2 manually added even though it's also a
+        // worktree of towles-tool-rs-task-1 — must not appear twice.
+        let repo_paths = vec!["/repo/task-1".to_string(), "/repo/task-2".to_string()];
         let all = merge_worktree_dirs(&repo_paths, |dir| match dir {
-            "/repo/slot-1" => vec!["/repo/slot-2".to_string()],
+            "/repo/task-1" => vec!["/repo/task-2".to_string()],
             _ => vec![],
         });
         assert_eq!(all, repo_paths);

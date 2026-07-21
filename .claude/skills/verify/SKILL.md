@@ -24,7 +24,7 @@ until node scripts/drive.mjs status; do sleep 3; done   # blocks until the autom
 ```
 
 `node scripts/drive.mjs status` → `{"ready": true}` once up. Ports are
-per-slot/deterministic (`TT_DEV_PORT`-derived); `drive.mjs` finds them with no
+per-task/deterministic (`TT_DEV_PORT`-derived); `drive.mjs` finds them with no
 args, so nothing needs manual configuration.
 
 ## Drive it

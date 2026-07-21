@@ -1,20 +1,20 @@
 //! Renderer for the `${tt:...}` env-template grammar.
 //!
 //! Tokens (anywhere in a non-comment line):
-//! - `${tt:port A-B}`  — port-pool claim: reuse the slot's existing in-range
+//! - `${tt:port A-B}`  — port-pool claim: reuse the task's existing in-range
 //!   claim when no sibling holds it, else the first port in `A..=B` that no
 //!   sibling claims and that passes the caller's `port_free` probe.
-//! - `${tt:slot-name}` — the checkout directory basename, e.g. `slot-migrate`
-//! - `${tt:base}`      — the base branch this slot's work PRs into
+//! - `${tt:task-name}` — the checkout directory basename, e.g. `task-migrate`
+//! - `${tt:base}`      — the base branch this task's work PRs into
 //! - `${tt:var NAME}`  — the rendered value of `NAME` from an earlier line
 //!
 //! Unknown or malformed tokens are hard errors (typos must not render as
 //! literal text into a config file). Comment lines pass through untouched so
 //! templates can show example tokens without claiming ports.
 //!
-//! Rendering is idempotent by construction: the caller passes the slot's
+//! Rendering is idempotent by construction: the caller passes the task's
 //! current `.env` assignments as `existing`, and in-range claims are reused
-//! instead of re-picked — re-rendering a slot never rotates its ports.
+//! instead of re-picked — re-rendering a task never rotates its ports.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,14 +37,14 @@ pub enum TemplateError {
     UnknownToken { line: usize, token: String },
 }
 
-/// Identity of the checkout being rendered (a slot or the primary).
-pub struct SlotContext<'a> {
-    pub slot_name: &'a str,
+/// Identity of the checkout being rendered (a task or the primary).
+pub struct TaskContext<'a> {
+    pub task_name: &'a str,
     pub base_branch: &'a str,
 }
 
 /// A finished render: the output text plus which ports were freshly claimed
-/// and which were reused from the slot's existing `.env`.
+/// and which were reused from the task's existing `.env`.
 #[derive(Debug, Default)]
 pub struct RenderOutcome {
     pub text: String,
@@ -52,16 +52,16 @@ pub struct RenderOutcome {
     pub reused: Vec<(String, u16)>,
 }
 
-/// Render `template` for one slot. `existing` is the slot's current `.env`
-/// (reuse source), `sibling_claims` the union of every *other* slot's port
-/// claims — the caller must exclude the slot itself, or re-renders would see
+/// Render `template` for one task. `existing` is the task's current `.env`
+/// (reuse source), `sibling_claims` the union of every *other* task's port
+/// claims — the caller must exclude the task itself, or re-renders would see
 /// their own claims as taken and rotate every port. `port_free` is the
 /// machine-level availability probe (a real bind test at the CLI layer);
-/// it is consulted only for fresh claims, never for reuses (the slot's own
+/// it is consulted only for fresh claims, never for reuses (the task's own
 /// running server would otherwise block its own re-render).
 pub fn render(
     template: &str,
-    ctx: &SlotContext<'_>,
+    ctx: &TaskContext<'_>,
     existing: &BTreeMap<String, String>,
     sibling_claims: &BTreeSet<u16>,
     mut port_free: impl FnMut(u16) -> bool,
@@ -121,8 +121,8 @@ pub fn render(
                         p.to_string()
                     }
                 }
-            } else if inner == "slot-name" {
-                ctx.slot_name.to_string()
+            } else if inner == "task-name" {
+                ctx.task_name.to_string()
             } else if inner == "base" {
                 ctx.base_branch.to_string()
             } else if let Some(name) = inner.strip_prefix("var ") {
@@ -189,8 +189,8 @@ fn pick_port(
 mod tests {
     use super::*;
 
-    fn ctx() -> SlotContext<'static> {
-        SlotContext { slot_name: "slot-migrate", base_branch: "main" }
+    fn ctx() -> TaskContext<'static> {
+        TaskContext { task_name: "task-migrate", base_branch: "main" }
     }
 
     fn render_ok(
@@ -207,20 +207,20 @@ mod tests {
     #[test]
     fn claims_first_free_port_and_substitutes_identity() {
         let out = render_ok(
-            "UI_PORT=${tt:port 3000-3009}\nNAME=${tt:slot-name}\nBASE=${tt:base}\n",
+            "UI_PORT=${tt:port 3000-3009}\nNAME=${tt:task-name}\nBASE=${tt:base}\n",
             &[],
             &[3000, 3001],
         )
         .unwrap();
         assert!(out.text.contains("UI_PORT=3002"));
-        assert!(out.text.contains("NAME=slot-migrate"));
+        assert!(out.text.contains("NAME=task-migrate"));
         assert!(out.text.contains("BASE=main"));
         assert_eq!(out.claimed, vec![("UI_PORT".to_string(), 3002)]);
     }
 
     #[test]
     fn rerender_reuses_existing_claim_even_when_listening() {
-        // port_free = false everywhere: the slot's own server is listening on
+        // port_free = false everywhere: the task's own server is listening on
         // 3005, but reuse must still win — re-renders never rotate ports.
         let existing: BTreeMap<String, String> =
             [("UI_PORT".to_string(), "3005".to_string())].into();

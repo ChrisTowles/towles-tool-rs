@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// `files_changed`/`lines_added`/`lines_removed` and `commits_ahead`/
 /// `commits_behind` all measure against the *same* baseline: `compared_base`
-/// (see [`resolve_base_ref`]) — a per-folder override, else a worktree slot's
+/// (see [`resolve_base_ref`]) — a per-folder override, else a worktree's
 /// own creation base, else origin/main-or-master. They agree by construction,
 /// unlike the old design where the two used different baselines (a branch's
 /// own upstream vs. always origin/main) and could silently disagree.
@@ -52,7 +52,7 @@ pub struct GitInfo {
     /// Squash needs more than the `git cherry` patch-id comparison this used
     /// to be: a squash replaces N commits with one whose diff matches none of
     /// them individually, so `cherry` reported every commit of a merged branch
-    /// as outstanding. [`tt_slots::landed`] combines the signals that actually
+    /// as outstanding. [`tt_tasks::landed`] combines the signals that actually
     /// cover all three landing shapes; see its module docs.
     pub commits_unlanded: i64,
     /// How this branch's work reached `compared_base` — `"merged"`,
@@ -69,7 +69,7 @@ pub struct GitInfo {
     /// Absolute path to `git rev-parse --git-common-dir` (canonicalized), empty
     /// for a non-repo dir or before this folder's git info has ever been
     /// computed. Identical across every linked `git worktree` of one repo
-    /// (main + slots) and nowhere else — this is what
+    /// (main + tasks) and nowhere else — this is what
     /// [`crate::bridge::assemble_state`] groups [`crate::types::FolderData`]s
     /// into one [`crate::types::RepoData`] by, regardless of whether each
     /// checkout is separately tracked in `repos.json` or only discovered via
@@ -78,11 +78,11 @@ pub struct GitInfo {
     pub common_dir: String,
     /// Absolute paths of this repo's OTHER `git worktree` checkouts (this dir
     /// excluded), from `git worktree list`: the main checkout plus every
-    /// *managed* slot (unmanaged linked worktrees are hidden). Not part of the
+    /// *managed* task (unmanaged linked worktrees are hidden). Not part of the
     /// wire payload — the engine uses it to auto-discover sibling checkouts
     /// that aren't in `repoPaths` yet, in both directions: a tracked primary
-    /// pulls in its slots, and a tracked slot pulls in its primary, so a repo
-    /// group always has its main checkout even when only slots were ever
+    /// pulls in its tasks, and a tracked task pulls in its primary, so a repo
+    /// group always has its main checkout even when only tasks were ever
     /// tracked.
     pub worktree_dirs: Vec<String>,
     /// True when `dir` doesn't exist on disk (a tracked repo whose checkout was
@@ -90,14 +90,14 @@ pub struct GitInfo {
     /// present-but-non-git one — both otherwise yield an empty [`GitInfo`].
     /// [`crate::bridge::build_folder`] copies this onto the wire `FolderData`.
     pub dir_missing: bool,
-    /// For a worktree slot only: the ref it was actually created from, read
-    /// from its `.tt-slot` marker (see [`tt_slots::read_slot_base`]). `None`
-    /// for a non-slot checkout. Lets the diff pane (and [`resolve_base_ref`])
+    /// For a worktree only: the ref it was actually created from, read
+    /// from its `.tt-task` marker (see [`tt_tasks::read_task_base`]). `None`
+    /// for a non-task checkout. Lets the diff pane (and [`resolve_base_ref`])
     /// know what to auto-compare against without the user typing an override.
-    pub slot_base_branch: Option<String>,
+    pub task_base_branch: Option<String>,
     /// The ref every stat on this struct (`files_changed`, `commits_ahead`,
     /// …) was actually compared against — [`resolve_base_ref`]'s result, e.g.
-    /// `"origin/main"` or `"origin/docs/readme-slot-clean"`. Lets the Folder
+    /// `"origin/main"` or `"origin/docs/readme-task-clean"`. Lets the Folder
     /// Rail label its stats with what they mean instead of always implying
     /// "vs main". Empty when `compute_git_info` never ran (default/missing).
     pub compared_base: String,
@@ -243,7 +243,7 @@ pub fn compute_git_info(dir: &str, base_branch_override: Option<&str>) -> GitInf
     info.origin_url = (!origin_url.is_empty()).then_some(origin_url);
     info.common_dir = git_common_dir(dir);
     info.worktree_dirs = list_other_worktrees(dir);
-    info.slot_base_branch = tt_slots::read_slot_base(std::path::Path::new(dir));
+    info.task_base_branch = tt_tasks::read_task_base(std::path::Path::new(dir));
     info.has_launch_config = crate::launch::has_launch_file(std::path::Path::new(dir));
     // Only worth the extra shell-outs once there's something to check —
     // nothing ahead trivially means nothing unlanded.
@@ -263,12 +263,12 @@ pub fn compute_git_info(dir: &str, base_branch_override: Option<&str>) -> GitInf
         // story. The uncommitted and orphaned axes are passed as 0 because
         // this struct reports the first as `dirty` and does not carry the
         // second; only the landing half of `WorkState` is read below.
-        let refs = tt_slots::ops::BaseRefs {
+        let refs = tt_tasks::ops::BaseRefs {
             base: compared_base.clone(),
             local: compared_base.clone(),
             remote: None,
         };
-        let work = tt_slots::ops::work_state(&refs, std::path::Path::new(dir), "HEAD", 0, 0);
+        let work = tt_tasks::ops::work_state(&refs, std::path::Path::new(dir), "HEAD", 0, 0);
         info.commits_unlanded = work.unlanded as i64;
         info.landed = work.landed.map(|via| via.label().to_string());
     } else {
@@ -279,7 +279,7 @@ pub fn compute_git_info(dir: &str, base_branch_override: Option<&str>) -> GitInf
 }
 
 /// Fetch `origin` for each distinct repo among `dirs`, deduped by common git
-/// dir so N worktrees of the same repo (the common slot pattern) trigger one
+/// dir so N worktrees of the same repo (the common task pattern) trigger one
 /// network call, not N. Network I/O, so a longer timeout than [`git_out`]'s
 /// 5s; failures (offline, no origin, auth prompt) are swallowed the same
 /// way — this only refreshes the `origin/main` ref that [`compute_git_info`]
@@ -316,11 +316,11 @@ fn git_common_dir(dir: &str) -> String {
 }
 
 /// This repo's other checkouts worth showing in the rail (`dir` itself
-/// excluded): the main checkout — no managed slot, but kept so a tracked slot
+/// excluded): the main checkout — no managed task, but kept so a tracked task
 /// pulls its primary into the rail even when the primary was never tracked —
-/// plus every `tt slot`-managed worktree. An unmanaged *linked* worktree
-/// ([`tt_slots::is_managed_slot`] says no — one Claude Code created via an
-/// unwired `WorktreeCreate` hook, or added by hand outside the slot
+/// plus every `tt task`-managed worktree. An unmanaged *linked* worktree
+/// ([`tt_tasks::is_managed_task`] says no — one Claude Code created via an
+/// unwired `WorktreeCreate` hook, or added by hand outside the task
 /// convention) must not auto-populate the Folder Rail unprompted. This is the
 /// only place auto-discovered worktree paths enter the engine's discovery
 /// pipeline ([`crate::engine::Engine::expand_with_worktrees`] reads nothing
@@ -334,7 +334,7 @@ fn list_other_worktrees(dir: &str) -> Vec<String> {
     parse_worktree_list(&out)
         .into_iter()
         .filter(|w| {
-            w.dir != dir && (w.is_main || tt_slots::is_managed_slot(std::path::Path::new(&w.dir)))
+            w.dir != dir && (w.is_main || tt_tasks::is_managed_task(std::path::Path::new(&w.dir)))
         })
         .map(|w| w.dir)
         .collect()
@@ -375,21 +375,21 @@ fn resolve_origin_main(dir: &str) -> String {
 /// 1. `base_branch` — a per-folder override for a long-running branch that
 ///    didn't fork from main, set via
 ///    [`crate::folder_meta::FolderMetaStore::set_base_branch`].
-/// 2. The worktree slot's own `.tt-slot` marker `base=` field (see
-///    [`tt_slots::read_slot_base`]) — the ref the slot was actually created
-///    from, which may not be main. Not present for a non-slot checkout.
+/// 2. The worktree's own `.tt-task` marker `base=` field (see
+///    [`tt_tasks::read_task_base`]) — the ref the task was actually created
+///    from, which may not be main. Not present for a non-task checkout.
 /// 3. The origin/main-or-master auto-detect.
 ///
 /// Whichever name wins resolves to `origin/<name>`, never the local branch:
 /// both the local ref and its origin remote-tracking ref may have moved since
-/// the slot was created, and the diff pane wants the current pushed baseline,
+/// the task was created, and the diff pane wants the current pushed baseline,
 /// matching [`resolve_origin_main`]. Falls back to the local branch only when
 /// no `origin/<name>` ref exists at all (e.g. a base branch never pushed).
 fn resolve_base_ref(dir: &str, base_branch: Option<&str>) -> String {
     let candidates = [base_branch.map(str::trim).filter(|n| !n.is_empty()).map(str::to_string)]
         .into_iter()
         .flatten()
-        .chain(tt_slots::read_slot_base(std::path::Path::new(dir)));
+        .chain(tt_tasks::read_task_base(std::path::Path::new(dir)));
     for name in candidates {
         let name = name.trim_start_matches("origin/");
         let remote = format!("origin/{name}");
@@ -435,7 +435,7 @@ pub fn compute_git_info_from_outputs(
         // `compute_git_info` fills this in — it needs `compared_base`, which
         // this pure parser never sees.
         commits_unlanded: 0,
-        // The pure parser has no origin/common-dir/worktree-list/slot-marker/
+        // The pure parser has no origin/common-dir/worktree-list/task-marker/
         // base-ref knowledge; `compute_git_info` fills all of these in.
         // Existence is decided before shelling out, so a parsed result is
         // never "missing".
@@ -443,7 +443,7 @@ pub fn compute_git_info_from_outputs(
         common_dir: String::new(),
         worktree_dirs: Vec::new(),
         dir_missing: false,
-        slot_base_branch: None,
+        task_base_branch: None,
         compared_base: String::new(),
         has_launch_config: false,
     }
@@ -1034,7 +1034,7 @@ mod tests {
         run(&main, &["add", "f.txt"]);
         run(&main, &["commit", "--quiet", "-m", "init"]);
 
-        // A managed slot: at `.claude/worktrees/<name>` with a `.tt-slot` marker.
+        // A managed task: at `.claude/worktrees/<name>` with a `.tt-task` marker.
         let managed = main.join(".claude").join("worktrees").join("thing");
         std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
         run(
@@ -1049,8 +1049,8 @@ mod tests {
             ],
         );
         std::fs::write(
-            managed.join(tt_slots::MARKER_FILE),
-            tt_slots::marker_contents("thing", "main", "main"),
+            managed.join(tt_tasks::MARKER_FILE),
+            tt_tasks::marker_contents("thing", "main", "main"),
         )
         .unwrap();
 
@@ -1073,10 +1073,10 @@ mod tests {
         let dirs = list_other_worktrees(main.to_str().unwrap());
         assert_eq!(dirs, vec![managed.to_str().unwrap().to_string()]);
 
-        // From the slot's perspective the primary checkout is discovered too —
-        // it has no `.tt-slot` marker, but it's the main worktree, not an
+        // From the task's perspective the primary checkout is discovered too —
+        // it has no `.tt-task` marker, but it's the main worktree, not an
         // unmanaged linked one. This is what keeps a repo group's main
-        // checkout in the rail when only slots were ever tracked in
+        // checkout in the rail when only tasks were ever tracked in
         // repos.json. The unmanaged linked worktree stays hidden either way.
         let dirs = list_other_worktrees(managed.to_str().unwrap());
         assert_eq!(dirs, vec![main.to_str().unwrap().to_string()]);
@@ -1120,7 +1120,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_base_ref_uses_the_slots_own_creation_base_over_main() {
+    fn resolve_base_ref_uses_the_tasks_own_creation_base_over_main() {
         let root = tempfile::TempDir::new().unwrap();
         let repo = root.path();
         let run = |args: &[&str]| {
@@ -1147,17 +1147,17 @@ mod tests {
         run(&["update-ref", "refs/remotes/origin/main", "main"]);
 
         std::fs::write(
-            repo.join(tt_slots::MARKER_FILE),
-            tt_slots::marker_contents("slot-name", "develop", "main"),
+            repo.join(tt_tasks::MARKER_FILE),
+            tt_tasks::marker_contents("task-name", "develop", "main"),
         )
         .unwrap();
 
         let dir = repo.to_str().unwrap();
-        // No explicit override: the slot's own marker base wins over the
+        // No explicit override: the task's own marker base wins over the
         // origin/main auto-detect, and resolves to the origin remote copy.
         assert_eq!(resolve_base_ref(dir, None), "origin/develop");
         // An explicit per-folder override still takes priority over the
-        // slot's recorded creation base.
+        // task's recorded creation base.
         run(&["branch", "release"]);
         run(&["update-ref", "refs/remotes/origin/release", "release"]);
         assert_eq!(resolve_base_ref(dir, Some("release")), "origin/release");
@@ -1187,7 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_reads_slot_base_branch_from_marker() {
+    fn compute_reads_task_base_branch_from_marker() {
         let root = tempfile::TempDir::new().unwrap();
         let repo = root.path();
         let run = |args: &[&str]| {
@@ -1208,19 +1208,19 @@ mod tests {
         run(&["add", "f.txt"]);
         run(&["commit", "--quiet", "-m", "init"]);
 
-        // A non-slot checkout has no marker: no slot base surfaced.
+        // A non-task checkout has no marker: no task base surfaced.
         let info = compute_git_info(repo.to_str().unwrap(), None);
-        assert_eq!(info.slot_base_branch, None);
+        assert_eq!(info.task_base_branch, None);
 
-        // Writing the `.tt-slot` marker surfaces its `base=` field, so the
-        // diff pane can show what a slot auto-compares against.
+        // Writing the `.tt-task` marker surfaces its `base=` field, so the
+        // diff pane can show what a task auto-compares against.
         std::fs::write(
-            repo.join(tt_slots::MARKER_FILE),
-            tt_slots::marker_contents("s", "develop", "main"),
+            repo.join(tt_tasks::MARKER_FILE),
+            tt_tasks::marker_contents("s", "develop", "main"),
         )
         .unwrap();
         let info = compute_git_info(repo.to_str().unwrap(), None);
-        assert_eq!(info.slot_base_branch, Some("develop".to_string()));
+        assert_eq!(info.task_base_branch, Some("develop".to_string()));
     }
 
     /// The bug this module used to have: `commits_ahead`/`files_changed` were
@@ -1375,7 +1375,7 @@ mod tests {
     /// The rail's headline false alarm. A squash merge collapses the branch's
     /// commits into one new commit whose diff matches none of them
     /// individually, so the `git cherry` patch-id check this used to rely on
-    /// reported *every* commit as outstanding — a merged slot looked like it
+    /// reported *every* commit as outstanding — a merged task looked like it
     /// still held work, and "safe to delete" could never fire.
     #[test]
     fn commits_unlanded_reaches_zero_after_a_squash_merge() {

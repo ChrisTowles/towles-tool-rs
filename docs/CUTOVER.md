@@ -33,7 +33,7 @@ Local-first (it's a personal tool):
 
 ## Cutover preconditions (checklist)
 
-- [ ] All slot-N clones' in-flight branches merged or parked (the TS repo goes
+- [ ] All task-N clones' in-flight branches merged or parked (the TS repo goes
       read-only for feature work).
 - [ ] Agentboard daily-driven from the desktop app for long enough to trust it
       (the tmux sidebar has been removed — confirm the desktop app fully covers

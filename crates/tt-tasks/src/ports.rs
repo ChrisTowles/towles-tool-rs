@@ -7,7 +7,7 @@
 //! hand. Asking the OS who holds it turns that into a name to recognize and a
 //! process to stop.
 //!
-//! Mirrors `scripts/slot-port.mjs`'s `killPort`, which solves the identical
+//! Mirrors `scripts/task-port.mjs`'s `killPort`, which solves the identical
 //! problem for the dev-server launcher, and for the same reasons:
 //! - `lsof` for the listeners — it's what the launcher already relies on, and
 //!   its absence is indistinguishable from "nothing listening" for our
@@ -71,10 +71,10 @@ pub fn holder(port: u16) -> Option<PortHolder> {
 /// moves the race.
 ///
 /// `pub(crate)` on purpose: this is a "kill whatever holds this port"
-/// primitive, and the only thing keeping it from killing a sibling slot's
-/// legitimate dev server is the claim check in [`crate::ops::stop_slot_port`]
+/// primitive, and the only thing keeping it from killing a sibling task's
+/// legitimate dev server is the claim check in [`crate::ops::stop_task_port`]
 /// — its sole caller, and the only door into it from outside the crate. Every
-/// port on the machine that this slot did not claim belongs to somebody else.
+/// port on the machine that this task did not claim belongs to somebody else.
 pub(crate) fn stop_listeners(port: u16) -> Result<Stopped, PortError> {
     if !cfg!(unix) {
         return Err(PortError::Unsupported);
@@ -181,7 +181,7 @@ fn parse_ps_row(row: &str) -> Option<ProcInfo> {
 ///
 /// From `argv[0]`, not `ps -o comm=`: on Linux `comm` is the *thread* name
 /// from `/proc/<pid>/comm`, and Node renames its main thread to `MainThread`
-/// — so the single likeliest holder of a slot's port, a `vite`/`npm run dev`
+/// — so the single likeliest holder of a task's port, a `vite`/`npm run dev`
 /// server, would introduce itself as "MainThread (pid 1234)".
 ///
 /// Deliberately not the whole command line — a `cargo`/`node` dev server's

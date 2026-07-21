@@ -17,7 +17,7 @@ const PR_LIST_FIELDS: &str =
     "number,title,headRefName,state,statusCheckRollup,reviewDecision,url,updatedAt";
 
 /// Page cap for the recently-merged authored PRs fetch — just enough to catch
-/// a just-merged branch before its worktree slot is removed, without pulling a
+/// a just-merged branch before its worktree is removed, without pulling a
 /// repo's whole merge history.
 const MERGED_LIST_LIMIT: &str = "20";
 

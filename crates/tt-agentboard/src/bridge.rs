@@ -10,7 +10,7 @@
 //!   stats and its 1..N PTY [`SessionData`]s.
 //! - Folders group into one [`RepoData`] row by [`GitInfo::common_dir`] — the
 //!   shared `.git` common dir every linked `git worktree` of one repo (main +
-//!   slots) reports identically. This holds regardless of whether each
+//!   tasks) reports identically. This holds regardless of whether each
 //!   checkout is separately tracked in `repos.json` or only discovered via
 //!   `git worktree list` (see `Engine::expand_with_worktrees`): "is this a
 //!   worktree of that other checkout" is a structural git fact, not a
@@ -20,7 +20,7 @@
 //!   false`) always leads its group's folder list, whatever order the
 //!   group's entries otherwise arrive in — and also owns the row's `key`
 //!   (and `name`/`origin_url` when nothing else has named it yet), so a
-//!   worktree slot that merely sorted alphabetically ahead of the primary
+//!   worktree that merely sorted alphabetically ahead of the primary
 //!   never leaves the row keyed to a folder a later poll can rename or
 //!   remove.
 //! - Each folder's agent events (from the tracker, keyed by folder name) are
@@ -74,7 +74,7 @@ pub struct StatePayload {
 ///   group, and never has later entries join it.
 /// - Within a group, the actual checkout (`is_worktree == false`) always
 ///   leads the folder list — inserted at the front whenever it's seen, since
-///   `entries` is name-sorted and may put a worktree slot ahead of its
+///   `entries` is name-sorted and may put a worktree ahead of its
 ///   primary checkout alphabetically. Everything else appends in arrival
 ///   order.
 ///
@@ -129,7 +129,7 @@ pub fn assemble_state(
                     // arrives first) — and re-anchors the row's identity
                     // (`key`, and `name`/`origin_url` when no worktree
                     // already supplied them) to itself. Without this, a
-                    // worktree slot that merely sorted alphabetically ahead
+                    // worktree that merely sorted alphabetically ahead
                     // of the primary (a branch-slug folder name can fall
                     // anywhere in the alphabet) would leave the row keyed to
                     // a folder that a later poll can rename or remove out
@@ -192,7 +192,7 @@ fn build_folder(
     // Bucket each agent onto the session it ran in. A positively attributed
     // agent renders only on that exact record: an id that isn't one of this
     // folder's records means the agent runs in some *other* app instance's
-    // session (sessions.json is shared across windows/slots), and dropping it
+    // session (sessions.json is shared across windows/tasks), and dropping it
     // beats pinning someone else's agent — name, cache chip and all — onto an
     // unrelated pane. Only agents with no attribution machinery at all (kinds
     // without a pid→TT_SESSION_ID path, non-Linux hosts) fall back to the
@@ -253,7 +253,7 @@ fn build_folder(
         sessions: session_data,
         needs,
         base_branch: folder_meta.base_branch_for(&entry.dir).map(str::to_string),
-        slot_base_branch: git.slot_base_branch.clone(),
+        task_base_branch: git.task_base_branch.clone(),
         compared_base: git.compared_base.clone(),
         metadata: metadata.get(&entry.name).cloned(),
         has_port_drift: false, // stamped by the app from its terminal registry
@@ -534,7 +534,7 @@ mod tests {
             GitInfo { common_dir: "/r/demo/.git".into(), is_worktree: true, ..Default::default() },
         );
         // Entries arrive name-sorted (as the engine does), which puts the
-        // slot ("apple") ahead of the main checkout — nesting must still
+        // task ("apple") ahead of the main checkout — nesting must still
         // lead with the primary checkout regardless of entries order.
         let entries = vec![
             RepoEntry { name: "apple".into(), dir: "/r/demo/.claude/worktrees/apple".into() },
@@ -561,19 +561,19 @@ mod tests {
 
     #[test]
     fn worktree_siblings_row_key_and_name_anchor_to_primary_not_alpha_sort() {
-        // Regression test: a repo with several worktree slots (branch-slug
+        // Regression test: a repo with several worktrees (branch-slug
         // folder names can fall anywhere in the alphabet) must not have its
-        // row's `key`/`name` decided by whichever slot happens to sort first
+        // row's `key`/`name` decided by whichever task happens to sort first
         // — that made the row's rail position and its collapse-state
-        // persistence (both keyed on `repo.key`) shuffle every time a slot
+        // persistence (both keyed on `repo.key`) shuffle every time a task
         // with an earlier-sorting name was created or removed. No origin URL
         // here, so `name` also has to come from the primary's own entry, not
-        // whichever slot seeded the row.
+        // whichever task seeded the row.
         let tracker = AgentTracker::new();
         let metadata = SessionMetadataStore::new();
         let mut store = SessionStore::new(None);
         store.ensure_default("/r/towles-tool-rs", 1);
-        store.ensure_default("/r/towles-tool-rs/.claude/worktrees/aardvark-slot", 1);
+        store.ensure_default("/r/towles-tool-rs/.claude/worktrees/aardvark-task", 1);
         let mut git = HashMap::new();
         git.insert(
             "/r/towles-tool-rs".to_string(),
@@ -584,19 +584,19 @@ mod tests {
             },
         );
         git.insert(
-            "/r/towles-tool-rs/.claude/worktrees/aardvark-slot".to_string(),
+            "/r/towles-tool-rs/.claude/worktrees/aardvark-task".to_string(),
             GitInfo {
                 common_dir: "/r/towles-tool-rs/.git".into(),
                 is_worktree: true,
                 ..Default::default()
             },
         );
-        // Name-sorted entries (as the engine feeds them) put the slot well
+        // Name-sorted entries (as the engine feeds them) put the task well
         // ahead of the primary checkout.
         let entries = vec![
             RepoEntry {
-                name: "aardvark-slot".into(),
-                dir: "/r/towles-tool-rs/.claude/worktrees/aardvark-slot".into(),
+                name: "aardvark-task".into(),
+                dir: "/r/towles-tool-rs/.claude/worktrees/aardvark-task".into(),
             },
             RepoEntry { name: "towles-tool-rs".into(), dir: "/r/towles-tool-rs".into() },
         ];
@@ -621,18 +621,18 @@ mod tests {
 
     #[test]
     fn explicitly_tracked_worktree_siblings_still_nest_by_common_dir() {
-        // /r/slot-0 and /r/slot-1 are both explicitly tracked (repos.json),
+        // /r/task-0 and /r/task-1 are both explicitly tracked (repos.json),
         // but they're git-worktree siblings of each other — nesting is a
         // structural git fact (`common_dir`), not a function of how each
         // checkout got onto the rail, so they must still merge into one row.
         let tracker = AgentTracker::new();
         let metadata = SessionMetadataStore::new();
         let mut store = SessionStore::new(None);
-        store.ensure_default("/r/slot-0", 1);
-        store.ensure_default("/r/slot-1", 1);
+        store.ensure_default("/r/task-0", 1);
+        store.ensure_default("/r/task-1", 1);
         let mut git = HashMap::new();
         git.insert(
-            "/r/slot-0".to_string(),
+            "/r/task-0".to_string(),
             GitInfo {
                 common_dir: "/r/shared/.git".into(),
                 is_worktree: false,
@@ -640,7 +640,7 @@ mod tests {
             },
         );
         git.insert(
-            "/r/slot-1".to_string(),
+            "/r/task-1".to_string(),
             GitInfo {
                 common_dir: "/r/shared/.git".into(),
                 is_worktree: true,
@@ -648,8 +648,8 @@ mod tests {
             },
         );
         let entries = vec![
-            RepoEntry { name: "slot-0".into(), dir: "/r/slot-0".into() },
-            RepoEntry { name: "slot-1".into(), dir: "/r/slot-1".into() },
+            RepoEntry { name: "task-0".into(), dir: "/r/task-0".into() },
+            RepoEntry { name: "task-1".into(), dir: "/r/task-1".into() },
         ];
         let payload = assemble_state(
             &entries,

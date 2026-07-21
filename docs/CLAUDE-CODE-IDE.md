@@ -130,10 +130,10 @@ crates/tt-ide                       Tauri-free protocol core: lockfile schema,
 ```
 
 - **One server per terminal.** `term_start` binds `127.0.0.1:0` (OS-assigned
-  port — never hardcoded, per the multi-slot rule), writes
+  port — never hardcoded, per the multi-task rule), writes
   `~/.claude/ide/<port>.lock` with `workspaceFolders = [terminal cwd]`, and
   stamps `CLAUDE_CODE_SSE_PORT` into that PTY's env. A `claude` started in the
-  pane therefore pairs with exactly that pane — no cwd guessing across slots.
+  pane therefore pairs with exactly that pane — no cwd guessing across tasks.
   The env stamp happens *after* `tt_exec::scrub_app_instance_env`, which
   deliberately strips any inherited `CLAUDE_CODE_SSE_PORT` (issue #39's nested
   session-identity scrub) — the scrub removes the outer world's value, then we

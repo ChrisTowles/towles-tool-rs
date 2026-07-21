@@ -18,7 +18,7 @@ The broader dashboard-read tools were pruned in the 2026-07 tool-surface review.
 
 **Requires the app to be running.** There is no headless fallback: the server
 lives in `tt-app`, so app closed means MCP down. Exactly one instance serves —
-whichever binds the port first — so with several worktree slots open, only one
+whichever binds the port first — so with several worktree tasks open, only one
 is reachable, by design.
 
 No token: the endpoint is loopback-only and refuses any request carrying an
@@ -31,15 +31,15 @@ settings file, and update this plugin's `.mcp.json` to match.
 
 ## Skills
 
-- **`slot-onboarding`** — walks a repo through adopting tt worktree slots:
-  discover what the repo needs per-slot (dev ports, docker names, setup),
+- **`task-onboarding`** — walks a repo through adopting tt worktree tasks:
+  discover what the repo needs per-task (dev ports, docker names, setup),
   pick `${tt:port A-B}` pools that don't overlap other onboarded repos,
-  write the tokenized `.env.example` (or `.claude/slot-env.template`
-  sidecar), then run the mechanical half with `tt slot init` and verify with
-  a smoke slot. Triggers on "onboard this repo for slots" / "set up tt
-  slots" / a repo whose slots render an empty `.env` but need per-slot
-  ports. (Slots work without any template — onboarding is only for repos
-  that need ports/env vars templated per slot.)
+  write the tokenized `.env.example` (or `.claude/task-env.template`
+  sidecar), then run the mechanical half with `tt task init` and verify with
+  a smoke task. Triggers on "onboard this repo for tasks" / "set up tt
+  tasks" / a repo whose tasks render an empty `.env` but need per-task
+  ports. (Tasks work without any template — onboarding is only for repos
+  that need ports/env vars templated per task.)
 
 ## Hooks
 

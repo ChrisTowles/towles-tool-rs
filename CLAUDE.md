@@ -10,7 +10,7 @@ Rust:
 
 ```sh
 cargo run -p tt-cli -- <args>       # run the CLI (binary `tt`)
-cargo run -p tt-cli -- slot ls      # e.g. slot, journal, collect, mcp
+cargo run -p tt-cli -- task ls      # e.g. task, journal, collect, mcp
 cargo fmt --check                   # formatting (rustfmt, 100-col)
 cargo clippy --all -- -D warnings   # lint; warnings are errors
 cargo test --all                    # unit + assert_cmd black-box tests
@@ -51,9 +51,9 @@ the mock dev server:
   the rebuild.
 
 Both are gated behind the `wdio` cargo feature + `VITE_WDIO` flag, so nothing
-ships in normal/release builds. Ports come from the env files (`TT_DEV_PORT` in `.env.local`, or `.env` rendered by `tt slot`;
-webdriver = the `TT_E2E_WEBDRIVER_PORT` claim, falling back to `+3000`); `dev:drive` and `e2e` share a slot's ports, so don't run
-both at once in one slot. Full docs + Linux gotchas: [e2e/README.md](e2e/README.md).
+ships in normal/release builds. Ports come from the env files (`TT_DEV_PORT` in `.env.local`, or `.env` rendered by `tt task`;
+webdriver = the `TT_E2E_WEBDRIVER_PORT` claim, falling back to `+3000`); `dev:drive` and `e2e` share a task's ports, so don't run
+both at once in one task. Full docs + Linux gotchas: [e2e/README.md](e2e/README.md).
 
 **After finishing a task that touches the app, leave it running for Chris to
 check.** Once the change builds/lints/tests clean, launch `npm start`
@@ -71,25 +71,27 @@ the app to look at (CLI-only, docs-only, crate-internal refactors with no
 > happened 2026-07-13 — hard cutover, no `ttr` alias left behind (see
 > [docs/CUTOVER.md](docs/CUTOVER.md)).
 
-## Worktree slots — you are probably working in one
+## Worktree tasks — you are probably working in one
 
-Slots are branch-named git worktrees nested **inside** the checkout at
+Tasks are branch-named git worktrees nested **inside** the checkout at
 `<checkout>/.claude/worktrees/<name>/` — Claude Code's native worktree
-location — one per parallel line of work (a `.tt-slot` marker file sits at
-each slot's root). Any plain git checkout is slot-capable with no
-restructuring: just run `tt slot new` from inside it. Slots are ephemeral:
+location — one per parallel line of work (a `.tt-task` marker file sits at
+each task's root). Any plain git checkout is task-capable with no
+restructuring: point `tt task new` at it with `--repo`. Tasks are ephemeral:
 created for a branch, removed when the branch merges. Manage them with
-`tt slot` — never raw `git worktree` or new clones. (`git clean -fdx` at the
+`tt task` — never raw `git worktree` or new clones. (`git clean -fdx` at the
 checkout root is safe — git skips nested repositories without a second `-f`.)
 
 ```sh
-tt slot init                              # onboard a repo: template, .gitignore, worktree hooks, primary .env
-tt slot new -b feat/thing [--base <ref>]  # creates .claude/worktrees/feat-thing on that branch
-tt slot ls [--json]                       # fleet: main checkout + slots, branch, dirty, ports
-tt slot env <name>                        # (re)render .env — idempotent, keeps claims
-tt slot env primary                       # same, for the main checkout
-tt slot rm <name> [--force]               # guarded removal + docker cleanup
-tt slot clean [--dry-run]                 # rm every merged/gone slot + sweep stale state
+tt task init                              # onboard a repo: template, .gitignore, worktree hooks, primary .env
+tt task new "<title>" --repo <name|dir> [-b feat/thing] [--base <ref>] [--status doing] [--notes ...]
+                                          # board task + .claude/worktrees/<branch-slug> in one shot
+                                          # (branch defaults to a slug of the title)
+tt task ls [--json]                       # fleet: main checkout + tasks, branch, dirty, ports
+tt task env <name>                        # (re)render .env — idempotent, keeps claims
+tt task env primary                       # same, for the main checkout
+tt task rm <name> [--force]               # guarded removal + docker cleanup
+tt task clean [--dry-run]                 # rm every merged/gone task + sweep stale state
 ```
 
 Claude Code's own worktree surfaces (`claude --worktree`, background
@@ -98,16 +100,16 @@ machinery when the repo's `.claude/settings.json` wires the hooks:
 
 ```json
 "hooks": {
-  "WorktreeCreate": [{ "hooks": [{ "type": "command", "command": "tt slot hook-create" }] }],
-  "WorktreeRemove":  [{ "hooks": [{ "type": "command", "command": "tt slot hook-remove" }] }]
+  "WorktreeCreate": [{ "hooks": [{ "type": "command", "command": "tt task hook-create" }] }],
+  "WorktreeRemove":  [{ "hooks": [{ "type": "command", "command": "tt task hook-remove" }] }]
 }
 ```
 
-`hook-create` reads the hook JSON on stdin and prints the slot path (its one
+`hook-create` reads the hook JSON on stdin and prints the task path (its one
 line of stdout — the hook contract); the requested worktree name IS the
 branch, verbatim (`claude -w feat/thing` → branch `feat/thing`, folder
 `feat-thing`), never Claude Code's `worktree-<name>` scheme. `hook-remove` runs the same
-guarded removal as `tt slot rm`. Hooks execute from the *session checkout's
+guarded removal as `tt task rm`. Hooks execute from the *session checkout's
 committed copy* of `.claude/`, so hook config edits only take effect in new
 worktrees once committed. The blog repo (`~/code/p/blog`) is wired this way
 and is the reference example.
@@ -115,51 +117,52 @@ and is the reference example.
 The Agentboard rail shows the whole fleet automatically (worktrees of any
 tracked checkout are discovered per poll), and the `+` button on the repo
 header opens the same creation flow as a modal: goal → branch → base, then
-Claude starts on the goal in the new slot's terminal.
+Claude starts on the goal in the new task's terminal.
 
-Rules when working in a slot:
+Rules when working in a task:
 
-- **The main checkout is load-bearing.** Every slot's git state lives in its
-  `.git` — never delete, move, or re-clone it. Slots never work on the
+- **The main checkout is load-bearing.** Every task's git state lives in its
+  `.git` — never delete, move, or re-clone it. Tasks never work on the
   default branch directly (git itself blocks a second checkout of it while
   the main checkout holds it).
-- **One branch per slot, named after it.** `tt slot new -b feat/thing`
+- **One branch per task, named after it.**
+  `tt task new "Thing" --repo <r> -b feat/thing`
   creates `.claude/worktrees/feat-thing` (the folder is the slugged branch —
   one-way; the branch is always read from git, never parsed back from the
   folder) (`--base` when not branching off the
-  default). A slot whose PR merged is done — `tt slot rm` it (or
-  `tt slot clean`, which finds every merged/gone slot); commits reachable
+  default). A task whose PR merged is done — `tt task rm` it (or
+  `tt task clean`, which finds every merged/gone task); commits reachable
   from no branch or remote block removal by design.
 - **Ports come from the rendered `.env`** — `.env.example` is the template
-  (`${tt:port A-B}` pool claims, `${tt:slot-name}`, `${tt:var NAME}`; a repo
-  without tokens uses the `.claude/slot-env.template` sidecar, and a repo
+  (`${tt:port A-B}` pool claims, `${tt:task-name}`, `${tt:var NAME}`; a repo
+  without tokens uses the `.claude/task-env.template` sidecar, and a repo
   with neither renders an empty `.env` — no template is required to create
-  slots), and a manual `.env.local` pin overrides it; shell env overrides
+  tasks), and a manual `.env.local` pin overrides it; shell env overrides
   both. Never hardcode a port anywhere. The main checkout claims its ports
   the same way.
-- **No setup scripts.** `tt slot new` runs the `TT_SLOT_SETUP` command
+- **No setup scripts.** `tt task new` runs the `TT_TASK_SETUP` command
   declared in `.env.example` (spawned directly, no shell — `npm install`
   here), falling back to lockfile detection in repos that don't declare one.
-- **Never touch sibling slot directories** — other agents work there
+- **Never touch sibling task directories** — other agents work there
   concurrently. Instance state (tt.db, sessions/windows) is scoped per
   checkout via `tt_config::state_scope()`; shared stores (settings, tracked
   repos) are one machine-wide copy.
-- Slot logic lives in `crates/tt-slots` (template grammar, removal guards,
-  pure decisions) with shared orchestration in `tt_slots::ops`; the CLI and
-  the app's `slot_create` command are thin shells over it. Change behavior
+- Task logic lives in `crates/tt-tasks` (template grammar, removal guards,
+  pure decisions) with shared orchestration in `tt_tasks::ops`; the CLI and
+  the app's `task_create` command are thin shells over it. Change behavior
   there, not in the shells.
 - **Migration state:** this repo's own checkouts still use the retired
   sibling layout (`~/code/p/towles-tool-repos/towles-tool-rs-primary` +
-  `slots/`). Running from an old-layout slot still anchors correctly (the
+  `tasks/`). Running from an old-layout task still anchors correctly (the
   `.git` file's worktree pointer resolves to the main checkout), but new
-  slots land in `<checkout>/.claude/worktrees/`; old slots drain as their
+  tasks land in `<checkout>/.claude/worktrees/`; old tasks drain as their
   branches merge.
-- **Any code path that removes a slot checkout must also untrack its dir
+- **Any code path that removes a task checkout must also untrack its dir
   from the shared `repos.json`** (`tt_agentboard::repos::remove_repo_persisted`),
-  the same way `tt slot rm`'s CLI shell and the app's `slot_remove` command
-  already do right after `ops::remove_slot`/`ops::clean_slots` returns —
-  `FinishedSlot`/`RemovedSlot` carry `dir` for exactly this. Skip it and a
-  removed slot's stale path lingers in the tracked-repos list forever, and
+  the same way `tt task rm`'s CLI shell and the app's `task_remove` command
+  already do right after `ops::remove_task`/`ops::clean_tasks` returns —
+  `FinishedTask`/`RemovedTask` carry `dir` for exactly this. Skip it and a
+  removed task's stale path lingers in the tracked-repos list forever, and
   the scheduler's `prs`/`issues` collectors retry `gh`/`git` against a
   directory with no `.git` on every tick.
 
@@ -179,7 +182,7 @@ Cargo workspace + npm workspace (`apps/client` only):
     two: **shared stores** (settings, agentboard `repos.json` — facts about
     the user/machine) are one machine-wide copy from every checkout, while
     **instance state** (`tt.db`, agentboard sessions/windows/collapse — one
-    running checkout's world) nests under `…/towles-tool/slots/<scope>/…` when
+    running checkout's world) nests under `…/towles-tool/tasks/<scope>/…` when
     `state_scope()` detects the process runs from a checkout of this repo (cwd
     walks up to a dir containing `crates/tt-config`; `.claude/worktrees/<name>`
     checkouts get repo-qualified scopes). A branch's schema experiments therefore never
@@ -196,15 +199,15 @@ Cargo workspace + npm workspace (`apps/client` only):
     session-JSONL token accounting, the single-parse ledger scan/search path,
     ranked waste insights (`insights`), and the per-session turn/tool
     drill-down (`breakdown`).
-  - `tt-slots` — the worktree-slot convention (see the Worktree slots section):
+  - `tt-tasks` — the worktree-task convention (see the Worktree tasks section):
     the `${tt:...}` env-template renderer with port-pool claims, dotenv-lite
-    parse/merge, slot naming/layout, removal guards, and the shared
-    orchestration in `ops` that both `tt slot` and the app's `slot_create`
-    call. **`landed` is the one answer to "has this slot's work reached the
-    base branch"** — `tt slot ls`/`rm`/`clean` and the Agentboard rail all go
+    parse/merge, task naming/layout, removal guards, and the shared
+    orchestration in `ops` that both `tt task` and the app's `task_create`
+    call. **`landed` is the one answer to "has this task's work reached the
+    base branch"** — `tt task ls`/`rm`/`clean` and the Agentboard rail all go
     through `ops::work_state`, never their own git checks, because no single
     git signal covers all three landing shapes (a squash merge is invisible to
-    both `--merged` and `git cherry`, which is what used to make merged slots
+    both `--merged` and `git cherry`, which is what used to make merged tasks
     look like they still held work). It keeps *uncommitted changes* and
     *commits that never reached the base* as separate counts: only the first
     dies with the worktree, and only content-based evidence
@@ -213,7 +216,7 @@ Cargo workspace + npm workspace (`apps/client` only):
     unmerged. Read the module docs before touching the detection.
   - `tt-store` — the data-hub SQLite store (`~/.local/share/towles-tool/tt.db`):
     events, board tasks (#339: the unit of work — 0..N issue links + 0..N PR
-    links in `task_issues`/`task_prs`, plus an optional worktree-slot
+    links in `task_issues`/`task_prs`, plus an optional worktree-task
     binding), issues, PR status, collector freshness. Collectors write
     events/issues/PRs and refresh link states; tasks are user-created
     (issues attachable/promotable via `gh`). The app UI and MCP server read.
@@ -276,7 +279,7 @@ Cargo workspace + npm workspace (`apps/client` only):
     `<data_dir>/telemetry/events-<date>.jsonl`, rotated daily, 14 days kept.
     The disk sink records at `debug` regardless of `RUST_LOG` — a quiet
     terminal must not mean a useless log — and every record carries OTel
-    resource attributes including `tt.slot`, so a line is attributable to the
+    resource attributes including `tt.task`, so a line is attributable to the
     checkout that produced it. `TT_TELEMETRY=0` disables the disk sink.
     **Every subprocess is logged**, in one of two shapes depending on its
     lifecycle. Run-to-completion spawns (`gh`, `git`, `claude` — everything
@@ -316,7 +319,7 @@ Cargo workspace + npm workspace (`apps/client` only):
     (`WindowEvent::Focused` in `lib.rs`), a native notification actually
     firing (`agentboard::notify_needs_you`) — get the same treatment, since
     they're exactly the kind of thing that's impossible to reconstruct after
-    the fact otherwise (a real incident: `slot_remove`'s ~1-minute worktree
+    the fact otherwise (a real incident: `task_remove`'s ~1-minute worktree
     removal appeared to "steal focus" on completion, and there was no way to
     tell from the log alone whether the window itself ever regained OS focus,
     an unrelated needs-you notification fired at the same moment, or neither
@@ -343,7 +346,7 @@ Cargo workspace + npm workspace (`apps/client` only):
 - `crates-cli/tt-cli` — `clap` 4 CLI, binary `tt`. Deliberately small after the
   2026-07-19 trim (usage review showed everything else was dead or app-owned):
   `journal daily-notes|note|meeting|jot|open|list|search` (+ `today` alias),
-  `slot init|new|ls|rm|env|clean` (worktree slots — see the Worktree slots
+  `task init|new|ls|rm|env|clean` (worktrees — see the Worktree tasks
   section), and the headless entry point
   `collect calendar|issues|prs|slack|all|nudge|status` (slated to move into
   the app per the CLI redesign). The MCP server is not a CLI surface — it
@@ -351,17 +354,17 @@ Cargo workspace + npm workspace (`apps/client` only):
   `doctor`, `install`, `agentboard`) live in git history; don't reintroduce
   CLI surfaces for app-owned features.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
-  `npm run dev` (root) resolves the per-slot dev-server port from the
-  checkout's rendered `.env` (`scripts/dev-port.mjs` / `slot-port.mjs`,
-  running `tt slot env` automatically when the checkout has no claim yet) —
+  `npm run dev` (root) resolves the per-task dev-server port from the
+  checkout's rendered `.env` (`scripts/dev-port.mjs` / `task-port.mjs`,
+  running `tt task env` automatically when the checkout has no claim yet) —
   the `${tt:port}` claims in `.env.example` are the single source of truth,
   never a hardcoded 1420 or a derived/hashed port; anything already
-  listening on the claimed port (almost always this slot's own orphaned
-  session) is killed first rather than scanned past. Pin a slot to a fixed
+  listening on the claimed port (almost always this task's own orphaned
+  session) is killed first rather than scanned past. Pin a task to a fixed
   port with `TT_DEV_PORT` in a gitignored root `.env.local` (dev-port reads
   it and passes it through to vite). Each window is
-  labeled by slot: the title bar reads `Towles Tool — <slot>` and the app
-  header shows a colored slot badge (`app_slot` command). See
+  labeled by task: the title bar reads `Towles Tool — <task>` and the app
+  header shows a colored task badge (`app_task` command). See
   [`crates-tauri/tt-app/CLAUDE.md`](crates-tauri/tt-app/CLAUDE.md) for the
   crate's internal locking/ordering/singleton invariants — it's the largest
   crate in the repo and the easiest one to introduce a subtle bug in.
@@ -374,16 +377,16 @@ Cargo workspace + npm workspace (`apps/client` only):
   Screens live in `src/screens/`; the three "Focus" screens are **Cockpit**
   (default day home — next-meeting countdown + PRs + issue queue), **Board**
   (cross-repo kanban of tasks — #339's unit of work: issue/PR link chips,
-  slot branch, attach/detach + promote-to-issue; done rolls up from GitHub),
+  task branch, attach/detach + promote-to-issue; done rolls up from GitHub),
   and **Agentboard** (repos + per-repo terminals; its `+` flow creates a
-  task whose worktree slot is an attribute of the task). The `+` form's
-  **Dynamic** option launches the slot's Claude session in plan mode with the
+  task whose worktree is an attribute of the task). The `+` form's
+  **Dynamic** option launches the task's Claude session in plan mode with the
   goal wrapped by `dynamicFlowPrompt` (`apps/client/src/lib/agentboard.ts`):
   once the user approves the plan in the PTY, the session implements, runs
   `/code-review low --fix` and `/simplify`, rebases onto the base branch,
   opens the PR, and merges it — the merged PR then auto-attaches to the task
   and rolls it to `done` via the existing collect-side
-  `auto_attach_slot_prs`/`rollup_task_statuses` path (no new backend state).
+  `auto_attach_worktree_prs`/`rollup_task_statuses` path (no new backend state).
   Terminals are a canvas renderer over **libghostty-vt** terminal state in
   Rust (`crates/tt-vt`); the PTY host
   (`crates-tauri/tt-app/src/terminal.rs`) spawns shells with portable-pty and
@@ -416,9 +419,9 @@ plugins ship today:
   `.mcp.json` (`{"type":"http","url":"http://127.0.0.1:8787/mcp"}` — board
   tasks `task_list`/`task_status`/`task_create` plus the calendar family
   `calendar_today`/`calendar_next`/`calendar_set`; the app must be running),
-  ships the `slot-onboarding` skill
-  (guides onboarding any repo onto worktree slots — port discovery, template
-  authoring, `tt slot init`), and a `PostToolUse` hook
+  ships the `task-onboarding` skill
+  (guides onboarding any repo onto worktrees — port discovery, template
+  authoring, `tt task init`), and a `PostToolUse` hook
   (`hooks/scripts/gh-pr-nudge.sh`) that nudges a running app instance to
   refresh its PR or issue data immediately after a `gh pr`/`gh issue`
   mutation via `tt collect nudge prs`/`tt collect nudge issues`, rather than
@@ -430,7 +433,7 @@ plugins ship today:
 
 A new hook/skill/MCP entry belongs in one of these plugin packages, not
 loose in `.claude/` — `.claude/hooks/` is reserved for hooks scoped to
-*this repo's own* Claude Code sessions (e.g. `guard-slot-pkill.sh`), not
+*this repo's own* Claude Code sessions (e.g. `guard-task-pkill.sh`), not
 things meant to ship to other checkouts.
 
 Any commit touching a plugin package is auto-checked by the
@@ -495,10 +498,10 @@ etc.). The points below are repo-specific specializations of that doc.
 - **Hard cutover, no back-compat shims** — replace, don't wrap. (No compat
   layers, no dual-name aliases — the `ttr`→`tt` rename left no `ttr` behind.)
 - **Dev tooling must not hardcode ports/paths.** Chris runs multiple worktree
-  slots of this repo concurrently (see the Worktree slots section above), so
+  tasks of this repo concurrently (see the Worktree tasks section above), so
   a fixed port, lockfile path, or other singleton resource makes copies
   collide. Ports belong in `.env.example` as `${tt:port A-B}` claims rendered
-  per checkout by `tt slot env` (what `scripts/dev-port.mjs` resolves) —
+  per checkout by `tt task env` (what `scripts/dev-port.mjs` resolves) —
   never a hardcoded value like `1420`, and never a second derivation scheme
   outside the claim system.
 - **No planning/implementation-notes docs committed to the repo** (e.g.

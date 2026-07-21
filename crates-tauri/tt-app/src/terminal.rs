@@ -160,8 +160,8 @@ impl TermState {
     }
 
     /// Kill, reap, and drop the session with `term_id`, if any. The kill/wait
-    /// runs after the map lock is released. `pub(crate)` so slot removal
-    /// (`slots.rs`) can tear down a folder's live PTYs before its worktree is
+    /// runs after the map lock is released. `pub(crate)` so task removal
+    /// (`tasks.rs`) can tear down a folder's live PTYs before its worktree is
     /// deleted. Also sweeps every other process sharing the shell's POSIX
     /// session (see [`kill_session_stragglers`]) — SIGHUP to the shell alone
     /// only reaches jobs the shell still tracks, so this is what actually
@@ -405,7 +405,7 @@ fn term_start_blocking(
     // scrub above already dropped any *inherited* CLAUDE_CODE_SSE_PORT (that
     // one stamps nested-session identity, issue #39); this is our own. An env
     // port match short-circuits Claude Code's lockfile pid/cwd checks, so the
-    // pairing is deterministic even with several slots' panes open at once.
+    // pairing is deterministic even with several tasks' panes open at once.
     if let Some(ide) = &ide {
         cmd.env("CLAUDE_CODE_SSE_PORT", ide.port().to_string());
     }
@@ -1057,7 +1057,7 @@ pub fn term_focus(state: State<TermState>, term_id: String, focused: bool) {
 /// explicit close).
 #[tauri::command]
 pub fn term_kill(app: AppHandle, term_id: String) {
-    // Signals the shell's processes (SIGHUP/SIGKILL); like `slot_stop_port` it
+    // Signals the shell's processes (SIGHUP/SIGKILL); like `task_stop_port` it
     // gets its own record so "which pane did the user close, and when" is a log
     // query, not a repro. The PTY *spawn* is recorded in `term_start`.
     tracing::info!(%term_id, "terminal.killed");

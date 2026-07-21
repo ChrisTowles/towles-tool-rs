@@ -178,7 +178,7 @@ check — see below.
 because Radix keeps a closing element mounted until its animation ends.
 
 Nothing else has that luxury. The agentboard rail renders a backend snapshot
-(`agentboard://state`), so a removed repo/slot/session is just absent from the
+(`agentboard://state`), so a removed repo/task/session is just absent from the
 next payload and React unmounts the row before any CSS can run. That case uses
 `motion`: `<AnimatePresence>` holds the departed row on screen, and `layout`
 slides the survivors into the space it frees. Config lives in

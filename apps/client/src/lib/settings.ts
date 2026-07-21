@@ -68,7 +68,7 @@ export function nextCalendarSourceId(sources: CalendarSource[], label: string): 
  * A **prompt improver**: one button in the new-task form that rewrites the goal
  * you typed before the task starts (Direct / Plan / Brainstorm by default).
  *
- * Clicking one runs `claude -p` (the `slot_suggest` command) with `prompt` as
+ * Clicking one runs `claude -p` (the `task_suggest` command) with `prompt` as
  * the *instruction*, and fills the form's goal + branch fields with the result —
  * editable, with Undo. Because the improved text lands in the field, what you
  * see is what the session launches with: nothing is wrapped at launch time and

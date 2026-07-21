@@ -155,7 +155,7 @@ export function ResumePicker() {
   );
 }
 
-/** Last two path segments — enough to tell slots of one repo apart. */
+/** Last two path segments — enough to tell tasks of one repo apart. */
 function folderLabel(dir: string): string {
   return dir.split("/").filter(Boolean).slice(-2).join("/");
 }

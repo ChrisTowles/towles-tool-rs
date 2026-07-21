@@ -8,7 +8,7 @@ use std::path::Path;
 ///
 /// Also forces `TT_STATE_SCOPE=` empty so state-path resolution stays *unscoped*
 /// (the daily-driver defaults) even though the test binary runs from inside a
-/// slot checkout, whose cwd would otherwise auto-derive a slot scope. These
+/// task checkout, whose cwd would otherwise auto-derive a task scope. These
 /// black-box tests assert on the documented default paths.
 pub fn cli_cmd(config_dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("tt").expect("binary `tt` should build");

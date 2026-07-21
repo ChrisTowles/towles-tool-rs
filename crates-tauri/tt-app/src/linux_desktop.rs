@@ -1,22 +1,22 @@
-//! Self-registers a `.desktop` entry + icon per slot so each checkout shows up
+//! Self-registers a `.desktop` entry + icon per task so each checkout shows up
 //! as its own entry in the GNOME/COSMIC app launcher/search, with the right
-//! icon and an `Exec` pointing at that slot's own binary. `tauri build`
+//! icon and an `Exec` pointing at that task's own binary. `tauri build`
 //! normally writes both as part of its Linux packaging step (deb/rpm/
 //! AppImage), but the daily-driver flow (`npm start`) runs `tauri build
 //! --no-bundle` and execs the raw binary — packaging never happens, so
 //! nothing installs them. Idempotent: only touches disk when the content
-//! actually differs, so every slot's binary can call this on startup without
+//! actually differs, so every task's binary can call this on startup without
 //! fighting over the file.
 //!
 //! `StartupWMClass` is deliberately the constant binary name (`tt-app`), not
 //! `app_id`: `enableGTKAppId` is off (see `tauri.conf.json`'s history and
 //! `lib.rs`'s `app_identifier` doc — a real GTK/D-Bus app-id made every
-//! worktree slot's window a D-Bus-activatable singleton, and any activation
+//! worktree's window a D-Bus-activatable singleton, and any activation
 //! — a dock click, `gio launch`, systemd — crashed the already-running
 //! process re-entering Tauri's internal setup()), so every running window's
 //! actual WM_CLASS is GTK's default (the binary's prgname). Matching
 //! `app_id` here would never resolve; this way the dock/taskbar can still
-//! find *an* icon for the running window, just not a per-slot one.
+//! find *an* icon for the running window, just not a per-task one.
 
 use std::path::Path;
 

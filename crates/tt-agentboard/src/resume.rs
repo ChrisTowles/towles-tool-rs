@@ -61,7 +61,7 @@ pub enum PriorRun {
 }
 
 /// `<agentboard_dir>/runtime.json` — instance-scoped like the rest of the
-/// agentboard run state (a slot's crash is not the daily driver's crash).
+/// agentboard run state (a task's crash is not the daily driver's crash).
 pub fn default_runtime_path() -> PathBuf {
     tt_config::agentboard_dir_lossy().join("runtime.json")
 }

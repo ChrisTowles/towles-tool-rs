@@ -37,7 +37,7 @@ jobs:
         run: npm ci
         working-directory: .
 
-      # Dev-tooling scripts (per-slot port derivation) — run from the repo root.
+      # Dev-tooling scripts (per-task port derivation) — run from the repo root.
       # `.mjs` sources, typechecked via JSDoc + checkJs (scripts/tsconfig.json).
       - name: typecheck scripts
         run: npm run typecheck:scripts

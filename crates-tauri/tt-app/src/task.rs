@@ -1,21 +1,21 @@
-//! `slot_*` commands: worktree-slot creation/removal from the app
-//! (Agentboard's new-slot modal and the rail's delete-worktree action). Thin
-//! over `tt_slots::ops`, which is shared with the `tt slot` CLI — the app
-//! never reimplements slot logic.
+//! `task_*` commands: worktree-task creation/removal from the app
+//! (Agentboard's new-task modal and the rail's delete-worktree action). Thin
+//! over `tt_tasks::ops`, which is shared with the `tt task` CLI — the app
+//! never reimplements task logic.
 
 use base64::Engine as _;
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::Manager;
 
-use tt_slots::guards::RmBlocked;
-use tt_slots::ops::{self, CreateOpts, RemoveOpts};
-use tt_slots::pasted::{self, PastedImage};
-use tt_slots::suggest::Suggested;
+use tt_tasks::guards::RmBlocked;
+use tt_tasks::ops::{self, CreateOpts, RemoveOpts};
+use tt_tasks::pasted::{self, PastedImage};
+use tt_tasks::suggest::Suggested;
 
 /// Fire-and-forget `git fetch` across every tracked repo (deduped, see
 /// [`tt_agentboard::git_info::fetch_all`]), then nudge the rail to re-emit.
-/// Slot lifecycle events (create/remove) are a natural moment to check
+/// Task lifecycle events (create/remove) are a natural moment to check
 /// whether main has moved elsewhere in the fleet too — cheaper than waiting
 /// out the periodic poll in `lib.rs`, and kept off the command's own
 /// response path so a slow/offline fetch never delays create/remove.
@@ -35,22 +35,22 @@ fn refresh_all_git_info_in_background(app: &tauri::AppHandle) {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct SlotCreated {
+pub struct TaskCreated {
     pub name: String,
     pub dir: String,
     pub branch: String,
     pub base: String,
-    /// The ref the slot effectively branched from (`ops::CreatedSlot::base_label`)
+    /// The ref the task effectively branched from (`ops::CreatedTask::base_label`)
     /// — what the dynamic-flow prompt names as its rebase/merge target.
     pub base_label: String,
     pub warnings: Vec<String>,
 }
 
-/// Branches available as a base ref in the slot root containing `root`
+/// Branches available as a base ref in the task root containing `root`
 /// (a checkout dir or the root itself), default branch first. See
 /// [`ops::BaseBranch`] for the name-vs-label split the form renders.
 #[tauri::command]
-pub fn slot_base_branches(root: String) -> Result<Vec<ops::BaseBranch>, String> {
+pub fn task_base_branches(root: String) -> Result<Vec<ops::BaseBranch>, String> {
     let sr = ops::discover_root(Some(&PathBuf::from(root))).map_err(|e| e.to_string())?;
     ops::checkout_branches(&sr.checkout).map_err(|e| e.to_string())
 }
@@ -63,17 +63,17 @@ pub struct BranchCheck {
     pub error: Option<String>,
 }
 
-/// Preflight the new-slot dialog's branch field: is it a legal git ref, and
-/// would its derived slot name collide with an existing one? Read-only —
+/// Preflight the new-task dialog's branch field: is it a legal git ref, and
+/// would its derived task name collide with an existing one? Read-only —
 /// safe to call on every keystroke (debounced by the caller).
 #[tauri::command]
-pub fn slot_check_branch(root: String, branch: String) -> Result<BranchCheck, String> {
+pub fn task_check_branch(root: String, branch: String) -> Result<BranchCheck, String> {
     let sr = ops::discover_root(Some(&PathBuf::from(root))).map_err(|e| e.to_string())?;
     let check = ops::check_branch(&sr, branch.trim());
     Ok(BranchCheck { name: check.name, taken: check.taken, error: check.error })
 }
 
-/// A **prompt improver** button in the new-slot dialog: ask `claude -p` (cwd =
+/// A **prompt improver** button in the new-task dialog: ask `claude -p` (cwd =
 /// `dir`, the repo checkout the dialog is open for, so it sees real repo
 /// context) to rewrite the text the user typed and propose a branch name for
 /// it. `instruction` is the clicked improver's prompt from settings — it
@@ -83,10 +83,10 @@ pub fn slot_check_branch(root: String, branch: String) -> Result<BranchCheck, St
 /// restores) — nothing here writes anything or is called automatically.
 /// Long-running (a cold `claude` CLI) → off the main thread.
 ///
-/// Returns `tt_slots::Suggested`, which serializes flat as
+/// Returns `tt_tasks::Suggested`, which serializes flat as
 /// `{branch, goal, fallback}`.
 #[tauri::command]
-pub async fn slot_suggest(
+pub async fn task_suggest(
     dir: String,
     goal: String,
     image_paths: Vec<String>,
@@ -95,10 +95,10 @@ pub async fn slot_suggest(
     let images = image_paths.len();
     let instruction = instruction.unwrap_or_default();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        tt_slots::suggest(&PathBuf::from(dir), &goal, &image_paths, &instruction)
+        tt_tasks::suggest(&PathBuf::from(dir), &goal, &image_paths, &instruction)
     })
     .await
-    .map_err(|e| format!("slot task failed: {e}"))?
+    .map_err(|e| format!("worktree task failed: {e}"))?
     .map_err(|e| e.to_string());
     // A hard failure stays at `warn` — merging the two log sites must not cost
     // the severity an operator filters on.
@@ -109,27 +109,27 @@ pub async fn slot_suggest(
                 images,
                 outcome,
                 reason = s.fallback.as_deref().unwrap_or(""),
-                "slot_suggest"
+                "task_suggest"
             );
         }
-        Err(e) => tracing::warn!(images, outcome = "error", reason = e.as_str(), "slot_suggest"),
+        Err(e) => tracing::warn!(images, outcome = "error", reason = e.as_str(), "task_suggest"),
     }
     result
 }
 
-/// Create the slot for `branch` off `base` (empty base = the primary's
+/// Create the task for `branch` off `base` (empty base = the primary's
 /// branch). Long-running — fetch, worktree add, the install setup step — so
 /// it runs off the main thread.
 #[tauri::command]
-pub async fn slot_create(
+pub async fn task_create(
     app: tauri::AppHandle,
     root: String,
     branch: String,
     base: String,
-) -> Result<SlotCreated, String> {
+) -> Result<TaskCreated, String> {
     let branch = branch.trim().to_string();
     if branch.is_empty() {
-        return Err("a slot needs a branch — slots are named after their branch".to_string());
+        return Err("a task needs a branch — tasks are named after their branch".to_string());
     }
     let opts = CreateOpts {
         root: Some(PathBuf::from(root)),
@@ -140,19 +140,19 @@ pub async fn slot_create(
         },
         run_setup: true,
     };
-    let created = tauri::async_runtime::spawn_blocking(move || ops::create_slot(&opts))
+    let created = tauri::async_runtime::spawn_blocking(move || ops::create_task(&opts))
         .await
-        .map_err(|e| format!("slot task failed: {e}"))?
+        .map_err(|e| format!("worktree task failed: {e}"))?
         .map_err(|e| e.to_string())?;
     tracing::info!(
         name = %created.name,
         branch = %created.branch,
         base = %created.base_label,
         warnings = created.warnings.len(),
-        "slot.created"
+        "task.created"
     );
     refresh_all_git_info_in_background(&app);
-    Ok(SlotCreated {
+    Ok(TaskCreated {
         name: created.name,
         dir: created.dir.to_string_lossy().to_string(),
         branch: created.branch,
@@ -163,7 +163,7 @@ pub async fn slot_create(
 }
 
 /// The system clipboard's image, as a base64 PNG the webview can preview and
-/// hand back to `slot_write_pasted_images`. `Ok(None)` = the clipboard holds
+/// hand back to `task_write_pasted_images`. `Ok(None)` = the clipboard holds
 /// no image (text, or nothing) — an ordinary outcome, not an error.
 ///
 /// This exists because **the DOM can't see an image paste on Linux**: a
@@ -205,20 +205,20 @@ pub async fn read_clipboard_image(app: tauri::AppHandle) -> Result<Option<Pasted
     .map_err(|e| format!("clipboard task failed: {e}"))?
 }
 
-/// Stage the images pasted into the new-slot form as files, returning their
+/// Stage the images pasted into the new-task form as files, returning their
 /// absolute paths for the caller to name in Claude's opening prompt. They
 /// land in `tt_config::pasted_images_dir()`, *not* in the repo — see
-/// `tt_slots::pasted` for why (short version: Claude Code reads an
+/// `tt_tasks::pasted` for why (short version: Claude Code reads an
 /// out-of-workspace path without prompting, so there's nothing to gain from
 /// writing user content into a checkout).
 ///
-/// Called before `slot_create`, so a failure here means no slot was created
+/// Called before `task_create`, so a failure here means no task was created
 /// and the caller's normal retry path still applies.
 ///
 /// Decoding + writing a handful of megabytes → off the main thread, which on
 /// Linux is the GTK thread every other sync command dispatches on.
 #[tauri::command]
-pub async fn slot_write_pasted_images(
+pub async fn task_write_pasted_images(
     repo: String,
     branch: String,
     images: Vec<PastedImage>,
@@ -233,22 +233,22 @@ pub async fn slot_write_pasted_images(
         pasted::write_images(&base, &scope, &images, now_ms)
     })
     .await
-    .map_err(|e| format!("slot task failed: {e}"))?
+    .map_err(|e| format!("worktree task failed: {e}"))?
     .map(|paths| paths.iter().map(|p| p.to_string_lossy().to_string()).collect())
     .map_err(|e| e.to_string())
 }
 
-/// Re-run a checkout's setup step (declared `TT_SLOT_SETUP` or lockfile
+/// Re-run a checkout's setup step (declared `TT_TASK_SETUP` or lockfile
 /// detection) — the retry affordance for a setup failure surfaced from
-/// `slot_create`. `Ok(None)` = nothing to run or it succeeded this time;
-/// `Ok(Some)` carries the same warning text `slot_create` would have shown.
+/// `task_create`. `Ok(None)` = nothing to run or it succeeded this time;
+/// `Ok(Some)` carries the same warning text `task_create` would have shown.
 /// Long-running (an install can take a minute) → off the main thread.
 #[tauri::command]
-pub async fn slot_run_setup(dir: String) -> Result<Option<String>, String> {
-    tracing::info!(%dir, "slot.setup_rerun");
+pub async fn task_run_setup(dir: String) -> Result<Option<String>, String> {
+    tracing::info!(%dir, "task.setup_rerun");
     tauri::async_runtime::spawn_blocking(move || ops::run_setup(&PathBuf::from(dir)))
         .await
-        .map_err(|e| format!("slot task failed: {e}"))?
+        .map_err(|e| format!("worktree task failed: {e}"))?
         .map_err(|e| e.to_string())
 }
 
@@ -257,7 +257,7 @@ pub async fn slot_run_setup(dir: String) -> Result<Option<String>, String> {
 /// union so the frontend gets real narrowing on `status`.
 #[derive(Serialize, Clone)]
 #[serde(tag = "status", rename_all = "camelCase")]
-pub enum SlotRemoveOutcome {
+pub enum TaskRemoveOutcome {
     Removed {
         name: String,
         messages: Vec<String>,
@@ -291,7 +291,7 @@ pub struct Blocker {
     pub remedy: String,
     /// Whether forcing past this destroys work that exists nowhere else.
     pub loses_work: bool,
-    /// Set for `foreignPort` — the argument to `slot_stop_port`.
+    /// Set for `foreignPort` — the argument to `task_stop_port`.
     pub port: Option<u16>,
 }
 
@@ -307,38 +307,38 @@ impl From<&RmBlocked> for Blocker {
     }
 }
 
-/// Remove the worktree slot at `dir`, guarded — a dirty tree, commits
-/// unreachable from any branch/remote, or a foreign listener on the slot's
-/// claimed ports come back as [`SlotRemoveOutcome::Blocked`] with a typed
+/// Remove the worktree at `dir`, guarded — a dirty tree, commits
+/// unreachable from any branch/remote, or a foreign listener on the task's
+/// claimed ports come back as [`TaskRemoveOutcome::Blocked`] with a typed
 /// blocker per reason, which the app renders as a dialog offering each one's
-/// remedy (stop the port's process via [`slot_stop_port`]) plus a force.
+/// remedy (stop the port's process via [`task_stop_port`]) plus a force.
 /// `force: true` is that force — it skips every guard, so it discards
 /// uncommitted changes and unreachable commits for good; only call it behind
 /// an explicit confirmation that names what's being lost.
 /// Once the guards have passed and the removal is really happening — via
-/// `ops::remove_slot`'s `before_removal` hook, so a *refused* removal never
+/// `ops::remove_task`'s `before_removal` hook, so a *refused* removal never
 /// costs a live session — kills the folder's live PTYs (SIGHUPing any Claude
 /// Code session running inside, then SIGKILLing anything else still sharing
 /// the shell's session — see `terminal::kill_session_stragglers`) so a
 /// backgrounded job that dodged the shell's own signal forwarding doesn't
 /// survive as an orphan on a deleted cwd. A side effect of killing only past
-/// the guards: a dev server running in the slot's own pane now surfaces as a
+/// the guards: a dev server running in the task's own pane now surfaces as a
 /// `foreignPort` blocker (one "Stop it" click) instead of dying silently
 /// mid-removal. Does NOT drop the session/window/pane records yet — those
-/// are only removed (and persisted) once `ops::remove_slot` has actually
+/// are only removed (and persisted) once `ops::remove_task` has actually
 /// succeeded: dropping them up front used to leave the rail looking like a
 /// clean removal — panes gone — while a blocked or failed removal left the
 /// worktree sitting on disk forever with nothing left on the rail to retry
 /// from. On failure the killed-but-still-tracked sessions surface as dead
-/// panes so the user can see the slot is still there. Then cleans up docker
-/// resources, the worktree registration, and the slot's agentboard tracking.
+/// panes so the user can see the task is still there. Then cleans up docker
+/// resources, the worktree registration, and the task's agentboard tracking.
 /// Long-running → off the main thread.
 #[tauri::command]
-pub async fn slot_remove(
+pub async fn task_remove(
     app: tauri::AppHandle,
     dir: String,
     force: bool,
-) -> Result<SlotRemoveOutcome, String> {
+) -> Result<TaskRemoveOutcome, String> {
     use tracing::Instrument as _;
 
     // A span (not a bare event) so the event log carries this command's own
@@ -354,17 +354,17 @@ pub async fn slot_remove(
     // only records `is_ok`. `force` rides along because a forced removal is
     // the only entry in this log that can have destroyed uncommitted work.
     let span = tracing::info_span!(
-        "slot_remove",
+        "task_remove",
         dir = %dir,
         force,
         outcome = tracing::field::Empty,
         blockers = tracing::field::Empty,
     );
     async move {
-        let result = slot_remove_inner(app, dir, force).await;
+        let result = task_remove_inner(app, dir, force).await;
         let outcome = match &result {
-            Ok(SlotRemoveOutcome::Removed { .. }) => "ok",
-            Ok(SlotRemoveOutcome::Blocked { blockers, .. }) => {
+            Ok(TaskRemoveOutcome::Removed { .. }) => "ok",
+            Ok(TaskRemoveOutcome::Blocked { blockers, .. }) => {
                 let kinds: Vec<&str> = blockers.iter().map(|b| b.kind.as_str()).collect();
                 tracing::Span::current().record("blockers", kinds.join(","));
                 "blocked"
@@ -378,22 +378,22 @@ pub async fn slot_remove(
     .await
 }
 
-async fn slot_remove_inner(
+async fn task_remove_inner(
     app: tauri::AppHandle,
     dir: String,
     force: bool,
-) -> Result<SlotRemoveOutcome, String> {
+) -> Result<TaskRemoveOutcome, String> {
     let mut messages = Vec::new();
     let kill_app = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let (checkout, name) = resolve_slot(&dir)?;
+        let (checkout, name) = resolve_task(&dir)?;
         let opts = RemoveOpts { root: Some(checkout), name, force };
         // The PTY kill rides `before_removal`, not the top of this command:
         // the guards run with the panes alive, so a refusal (the dialog the
         // user can back out of) never costs a live Claude session — only a
         // removal that is really happening does. Locks are scoped tight per
         // this crate's rule: never hold the engine lock across a subprocess.
-        ops::remove_slot(&opts, || {
+        ops::remove_task(&opts, || {
             let ids = {
                 let ab = kill_app.state::<crate::agentboard::Ab>();
                 let engine = ab.engine.lock().unwrap();
@@ -409,7 +409,7 @@ async fn slot_remove_inner(
         .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("slot task failed: {e}"))??;
+    .map_err(|e| format!("worktree task failed: {e}"))??;
 
     // A refusal ends here: nothing was removed, so none of the rail teardown
     // below applies — the panes stay put for the user to retry from.
@@ -417,7 +417,7 @@ async fn slot_remove_inner(
         ops::RemoveOutcome::Removed(removed) => removed,
         ops::RemoveOutcome::Blocked { name, blocked, messages: notes } => {
             messages.extend(notes);
-            return Ok(SlotRemoveOutcome::Blocked {
+            return Ok(TaskRemoveOutcome::Blocked {
                 name,
                 blockers: blocked.iter().map(Blocker::from).collect(),
                 messages,
@@ -442,33 +442,33 @@ async fn slot_remove_inner(
     if untracked {
         messages.push("untracked from the agentboard rail".to_string());
     }
-    let detached = crate::store::detach_task_slot_dir(&app, &removed.dir.to_string_lossy());
+    let detached = crate::store::detach_task_worktree_dir(&app, &removed.dir.to_string_lossy());
     if detached > 0 {
         messages.push("detached the board task from the removed worktree".to_string());
     }
-    // Re-emit either way: a fleet-discovered (never-tracked) slot also drops
+    // Re-emit either way: a fleet-discovered (never-tracked) task also drops
     // off the rail on the next recompute, so don't make the user wait a poll.
     ab.emit.notify_one();
     refresh_all_git_info_in_background(&app);
-    Ok(SlotRemoveOutcome::Removed { name: removed.name, messages })
+    Ok(TaskRemoveOutcome::Removed { name: removed.name, messages })
 }
 
-/// Resolve a slot directory to its checkout root and slot name, rejecting
-/// anything that isn't a worktree slot of its own checkout — shared by
-/// `slot_remove` and `slot_stop_port` so both agree on what "this slot"
-/// means before either acts on it. Returns the identity only; `slot_remove`
+/// Resolve a task directory to its checkout root and task name, rejecting
+/// anything that isn't a worktree of its own checkout — shared by
+/// `task_remove` and `task_stop_port` so both agree on what "this task"
+/// means before either acts on it. Returns the identity only; `task_remove`
 /// attaches its own `force` when building [`RemoveOpts`], so a non-removal
 /// caller never constructs a removal config with a meaningless flag.
-fn resolve_slot(dir: &str) -> Result<(PathBuf, String), String> {
+fn resolve_task(dir: &str) -> Result<(PathBuf, String), String> {
     let path = PathBuf::from(dir);
     let sr = ops::discover_root(Some(&path)).map_err(|e| e.to_string())?;
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
-        .ok_or_else(|| format!("bad slot path {dir}"))?
+        .ok_or_else(|| format!("bad task path {dir}"))?
         .to_string();
-    if sr.slot_dir(&name) != path {
-        return Err(format!("{dir} is not a worktree slot of {}", sr.repo));
+    if sr.task_dir(&name) != path {
+        return Err(format!("{dir} is not a worktree of {}", sr.repo));
     }
     Ok((sr.checkout.clone(), name))
 }
@@ -478,21 +478,21 @@ fn resolve_slot(dir: &str) -> Result<(PathBuf, String), String> {
 /// terminal to finish a delete they started in the app. Returns the note to
 /// show; the caller retries the removal afterwards.
 ///
-/// `ops::stop_slot_port` refuses any port the slot doesn't claim in its own
+/// `ops::stop_task_port` refuses any port the task doesn't claim in its own
 /// `.env`, which is what keeps this from being a "kill any port" primitive
 /// reachable from the UI. SIGTERM, then SIGKILL if the port is still held.
 #[tauri::command]
-pub async fn slot_stop_port(dir: String, port: u16) -> Result<String, String> {
+pub async fn task_stop_port(dir: String, port: u16) -> Result<String, String> {
     use tracing::Instrument as _;
 
     // A user-initiated action that signals processes: it gets its own record
     // (see the telemetry rule in the root CLAUDE.md) — after the fact, "the
     // dev server died" should be answerable from the log, not a repro.
-    // `.instrument` rather than a held `enter()` guard, same as `slot_remove`:
+    // `.instrument` rather than a held `enter()` guard, same as `task_remove`:
     // an entered span across an `.await` stays entered while the task is
     // parked, attributing whatever else runs on this thread to it.
     let span = tracing::info_span!(
-        "slot_stop_port",
+        "task_stop_port",
         dir = %dir,
         port,
         outcome = tracing::field::Empty,
@@ -500,11 +500,11 @@ pub async fn slot_stop_port(dir: String, port: u16) -> Result<String, String> {
     );
     async move {
         let stopped = tauri::async_runtime::spawn_blocking(move || {
-            let (checkout, name) = resolve_slot(&dir)?;
-            ops::stop_slot_port(Some(&checkout), &name, port).map_err(|e| e.to_string())
+            let (checkout, name) = resolve_task(&dir)?;
+            ops::stop_task_port(Some(&checkout), &name, port).map_err(|e| e.to_string())
         })
         .await
-        .map_err(|e| format!("slot task failed: {e}"))?;
+        .map_err(|e| format!("worktree task failed: {e}"))?;
 
         let span = tracing::Span::current();
         match stopped {

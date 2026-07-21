@@ -24,12 +24,12 @@ export type TaskGroup = {
  * Resolution order matters, and every GitHub-identity source is tried before
  * any filesystem path:
  *
- * 1. `slot.repo` — the `owner/name` bound at submit. It survives the worktree
- *    being removed (`slot_repo`/`slot_repo_root` are kept as historical fact
- *    when `slot_dir` is cleared), so a finished task stays in its lane instead
- *    of jumping to "No repo" the moment its slot is cleaned up.
- * 2. The first issue, then PR link — for tasks that were never slot-bound.
- * 3. `slot.repoRoot`'s basename, last and only as a weak guess: it's a local
+ * 1. `task.repo` — the `owner/name` bound at submit. It survives the worktree
+ *    being removed (`task_repo`/`task_repo_root` are kept as historical fact
+ *    when `task_dir` is cleared), so a finished task stays in its lane instead
+ *    of jumping to "No repo" the moment its task is cleaned up.
+ * 2. The first issue, then PR link — for tasks that were never task-bound.
+ * 3. `task.repoRoot`'s basename, last and only as a weak guess: it's a local
  *    directory name, not `owner/name`, so tasks resolved this way can't merge
  *    into a lane keyed by GitHub identity. It only exists so a task bound to a
  *    repo with no parseable GitHub origin still gets a named lane.
@@ -38,13 +38,13 @@ export type TaskGroup = {
  * [`groupTasksByRepo`].
  */
 export function taskRepoKey(task: TaskItem): string {
-  const slotRepo = task.slot?.repo?.trim();
-  if (slotRepo) return slotRepo;
+  const taskRepo = task.worktree?.repo?.trim();
+  if (taskRepo) return taskRepo;
 
   const linked = task.issues[0]?.repo ?? task.prs[0]?.repo;
   if (linked) return linked;
 
-  const root = task.slot?.repoRoot?.trim();
+  const root = task.worktree?.repoRoot?.trim();
   if (root) {
     const base = root
       .replace(/[/\\]+$/, "")
@@ -70,13 +70,15 @@ export type RailRepoRow = {
  * (`RepoData.key`) — the id `openTabWithFocus({ screen: "agentboard", kind:
  * "repo" })` scrolls to. `null` when the task's repo isn't on the rail.
  *
- * Path evidence outranks GitHub identity: a task's slot dir / repo root names
+ * Path evidence outranks GitHub identity: a task's worktree dir / repo root names
  * one specific checkout group, while `owner/name` could match a fork tracked
  * under a different local path. Untracked-repo tasks fall through to `null`
  * rather than guessing.
  */
 export function railRepoKeyForTask(repos: RailRepoRow[], task: TaskItem): string | null {
-  const dirs = [task.slot?.dir, task.slot?.repoRoot].filter((d): d is string => !!d?.trim());
+  const dirs = [task.worktree?.dir, task.worktree?.repoRoot].filter(
+    (d): d is string => !!d?.trim(),
+  );
   for (const repo of repos) {
     if (dirs.some((d) => d === repo.dir || repo.folders.some((f) => f.dir === d))) return repo.key;
   }

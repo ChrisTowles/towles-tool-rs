@@ -16,7 +16,7 @@ import {
 } from "@/components/agentboard-bits";
 import { DevServersButton } from "@/components/dev-servers";
 import { PaneChrome, PaneLens } from "@/components/pane-chrome";
-import type { NewSlotRepo } from "@/components/inline-new-slot";
+import type { NewTaskRepo } from "@/components/inline-new-task";
 import {
   fmtElapsed,
   fmtWaitingAge,
@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
  * button, PR chip) on a quieter line below it. One glance answers which
  * checkout the terminals below belong to; *what you set out to do there* is
  * the Board task's job. The trailing action cluster mirrors the rail's options
- * for this checkout — new session, new slot, and the shared "···" RepoMenu —
+ * for this checkout — new session, new task, and the shared "···" RepoMenu —
  * so every repo-rail option stays reachable atop the panes even when the rail
  * is collapsed or the folder's row is scrolled out of view. */
 export function WorkingContext({
@@ -56,7 +56,7 @@ export function WorkingContext({
   onOpenFiles,
   onOpenPreview,
   onNewSession,
-  onNewSlot,
+  onNewTask,
   onRemoveRepo,
   onDeleteWorktree,
 }: {
@@ -74,25 +74,25 @@ export function WorkingContext({
   onOpenPreview: (dir: string) => void;
   /** Starts a new session (shell) in this checkout. */
   onNewSession: (dir: string) => void;
-  /** Toggles the inline new-slot form open/closed for this repo (worktree
-   * hub) — never a blocking modal, see InlineNewSlot. The form itself still
+  /** Toggles the inline new-task form open/closed for this repo (worktree
+   * hub) — never a blocking modal, see InlineNewTask. The form itself still
    * renders in the rail under the repo's header, so this only opens it when
    * the rail is expanded; the caller is responsible for expanding a
    * collapsed rail first if it wants the form to be visible. */
-  onNewSlot: (repo: NewSlotRepo) => void;
+  onNewTask: (repo: NewTaskRepo) => void;
   /** Untracks this checkout from the rail. */
   onRemoveRepo: (dirs: string[], label: string) => void;
-  /** Deletes a worktree slot from disk (guarded `slot_remove`). */
+  /** Deletes a worktree from disk (guarded `task_remove`). */
   onDeleteWorktree: (dir: string, label: string) => void;
 }) {
   const scope = pathScope(folder.dir);
-  // A slot/worktree has a distinct checkout name; a lone clone shares the
+  // A task/worktree has a distinct checkout name; a lone clone shares the
   // repo's, so we don't repeat it on the line below.
   const repoDistinct = folder.name !== repo.name;
-  // Same gating as the rail headers: no session/slot actions on a ghost
+  // Same gating as the rail headers: no session/task actions on a ghost
   // checkout whose directory is gone.
   const missing = folder.dirMissing;
-  const newSlot = () => onNewSlot({ name: repo.name, dir: repo.folders[0].dir, key: repo.key });
+  const newTask = () => onNewTask({ name: repo.name, dir: repo.folders[0].dir, key: repo.key });
   return (
     <div className="flex items-start gap-3 border-b bg-card px-4 py-2.5">
       <FolderGit2 className="mt-0.5 size-5 shrink-0 text-violet-500" />
@@ -117,8 +117,8 @@ export function WorkingContext({
           )}
           {!missing && (
             <IconBtn
-              title={`New task — goal, issues, branch (${shortcutHint("ab-new-slot")})`}
-              onClick={newSlot}
+              title={`New task — goal, issues, branch (${shortcutHint("ab-new-task")})`}
+              onClick={newTask}
               className="hover:text-violet-500"
             >
               <FolderPlus className="size-3.5" />
@@ -128,7 +128,7 @@ export function WorkingContext({
             path={folder.dir}
             dir={folder.dir}
             isWorktree={folder.isWorktree}
-            onNewSlot={!missing ? newSlot : undefined}
+            onNewTask={!missing ? newTask : undefined}
             onDeleteWorktree={
               !missing && folder.isWorktree
                 ? () => onDeleteWorktree(folder.dir, folder.name)

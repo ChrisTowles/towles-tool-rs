@@ -1,13 +1,13 @@
-//! Removal guards for `tt slot rm` — a slot must never take work with it.
+//! Removal guards for `tt task rm` — a task must never take work with it.
 //!
 //! Pure functions (this crate's rule): the CLI gathers git output, bind-test
-//! results, and docker listings in the slot's directory and hands the raw
-//! data here for the decision, mirroring `tt_git::slot_assign`.
+//! results, and docker listings in the task's directory and hands the raw
+//! data here for the decision, mirroring `tt_git::task_assign`.
 //!
 //! Notes from the blog-repos probe that shaped these guards:
 //! - Stashes are repo-global in a worktree hub (they live in the shared
-//!   `.git`), so a per-slot stash guard is meaningless here — unlike the
-//!   clone-era `slot_assign` guard.
+//!   `.git`), so a per-task stash guard is meaningless here — unlike the
+//!   clone-era `task_assign` guard.
 //! - The commit guard means *reachable from no branch and no remote*
 //!   (`git rev-list --count HEAD --not --branches --remotes`): removing a
 //!   worktree never deletes branches (they live in the hub), so only
@@ -42,7 +42,7 @@ impl PortHolder {
     }
 }
 
-/// A claimed port that something outside the slot's own containers is
+/// A claimed port that something outside the task's own containers is
 /// listening on, with whatever we could learn about the holder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForeignPort {
@@ -52,7 +52,7 @@ pub struct ForeignPort {
     pub holder: Option<PortHolder>,
 }
 
-/// Why a slot may NOT be removed.
+/// Why a task may NOT be removed.
 ///
 /// Kept as a typed value all the way to both shells rather than flattened to
 /// a message at the guard: the CLI wants one line per reason, and the app
@@ -60,7 +60,7 @@ pub struct ForeignPort {
 /// a port, its own "stop it" button). A joined string can do neither.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RmBlocked {
-    #[error("slot working tree is not clean ({entries} changed/untracked path(s))")]
+    #[error("task working tree is not clean ({entries} changed/untracked path(s))")]
     DirtyTree { entries: usize },
 
     #[error(
@@ -69,9 +69,9 @@ pub enum RmBlocked {
     UnreachableCommits { count: u64 },
 
     #[error(
-        "port {port} (claimed by this slot) is in use by {} — a dev server may be running",
+        "port {port} (claimed by this task) is in use by {} — a dev server may be running",
         .holder.as_ref().map_or_else(
-            || "a process outside the slot's containers".to_string(),
+            || "a process outside the task's containers".to_string(),
             PortHolder::describe,
         )
     )]
@@ -106,9 +106,9 @@ impl RmBlocked {
             }
             Self::ForeignPortListener { holder, .. } => match holder {
                 Some(h) => {
-                    format!("Stop {} — it's probably a dev server in this slot.", h.describe())
+                    format!("Stop {} — it's probably a dev server in this task.", h.describe())
                 }
-                None => "Stop whatever is using the port — probably a dev server in this slot."
+                None => "Stop whatever is using the port — probably a dev server in this task."
                     .to_string(),
             },
         }
@@ -149,7 +149,7 @@ pub fn unreachable_commit_count(rev_list_output: &str) -> Option<u64> {
 
 /// Every reason removal is blocked, given the gathered state. Empty = safe.
 /// `foreign_ports` are claimed ports in use by something *other than* the
-/// slot's own docker containers (the containers are about to be removed
+/// task's own docker containers (the containers are about to be removed
 /// anyway; a foreign listener means a dev server is still running), each
 /// carrying whatever [`crate::ports::holder`] could learn about the process —
 /// so the blocker can name what to stop, not just which port is taken.
@@ -173,11 +173,11 @@ pub fn check_removal(
     blocked
 }
 
-/// Whether a docker container/volume name belongs to `slot_name`. Anchored:
-/// `blog-slot-1-postgres` and `blog-slot-1_data` match `blog-slot-1`;
-/// `blog-slot-10-postgres` does NOT (substring filters caught it in the probe).
-pub fn docker_resource_matches(resource: &str, slot_name: &str) -> bool {
-    match resource.strip_prefix(slot_name) {
+/// Whether a docker container/volume name belongs to `task_name`. Anchored:
+/// `blog-task-1-postgres` and `blog-task-1_data` match `blog-task-1`;
+/// `blog-task-10-postgres` does NOT (substring filters caught it in the probe).
+pub fn docker_resource_matches(resource: &str, task_name: &str) -> bool {
+    match resource.strip_prefix(task_name) {
         Some("") => true,
         Some(rest) => rest.starts_with(['-', '_', '.']),
         None => false,
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_slot_passes() {
+    fn clean_task_passes() {
         assert!(check_removal(0, 0, &[]).is_empty());
     }
 
@@ -235,7 +235,7 @@ mod tests {
         let [only] = &blocked[..] else {
             panic!("expected one blocker, got {blocked:?}")
         };
-        assert!(only.to_string().contains("a process outside the slot's containers"), "{only}");
+        assert!(only.to_string().contains("a process outside the task's containers"), "{only}");
         assert!(!only.remedy().is_empty());
     }
 
@@ -269,10 +269,10 @@ mod tests {
 
     #[test]
     fn docker_matching_is_anchored() {
-        assert!(docker_resource_matches("blog-slot-1-postgres_5433", "blog-slot-1"));
-        assert!(docker_resource_matches("blog-slot-1_postgres_data", "blog-slot-1"));
-        assert!(docker_resource_matches("blog-slot-1", "blog-slot-1"));
-        assert!(!docker_resource_matches("blog-slot-10-postgres", "blog-slot-1"));
-        assert!(!docker_resource_matches("other-blog-slot-1", "blog-slot-1"));
+        assert!(docker_resource_matches("blog-task-1-postgres_5433", "blog-task-1"));
+        assert!(docker_resource_matches("blog-task-1_postgres_data", "blog-task-1"));
+        assert!(docker_resource_matches("blog-task-1", "blog-task-1"));
+        assert!(!docker_resource_matches("blog-task-10-postgres", "blog-task-1"));
+        assert!(!docker_resource_matches("other-blog-task-1", "blog-task-1"));
     }
 }

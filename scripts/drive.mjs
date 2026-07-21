@@ -38,7 +38,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { Result } from "better-result";
 import { RemoteRejected, RequestFailed } from "./errors.mjs";
-import { requireDevPort, resolveWebdriverPort } from "./slot-port.mjs";
+import { requireDevPort, resolveWebdriverPort } from "./task-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf";

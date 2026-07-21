@@ -246,7 +246,7 @@ pub fn collect_issues(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> Coll
 ///    snapshot — absence is ambiguous (closed? merged? merely reassigned away
 ///    or aged out of the merged list?), so state is only ever learned from an
 ///    actual fetch, never inferred. A failed fetch keeps the last state;
-/// 3. auto-attach collected PRs whose head branch matches a task's slot;
+/// 3. auto-attach collected PRs whose head branch matches a task's worktree;
 /// 4. roll task statuses up ([`rollup_task_statuses`]).
 ///
 /// Never panics and never fails the collect pass — each stage logs and moves
@@ -295,8 +295,8 @@ fn sync_task_links(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) {
         }
         Err(e) => log::warn!("open_pr_refs_missing_from_cache failed: {e}"),
     }
-    if let Err(e) = store.auto_attach_slot_prs(now_ms) {
-        log::warn!("auto_attach_slot_prs failed: {e}");
+    if let Err(e) = store.auto_attach_worktree_prs(now_ms) {
+        log::warn!("auto_attach_worktree_prs failed: {e}");
     }
     if let Err(e) = rollup_task_statuses(store, now_ms) {
         log::warn!("rollup_task_statuses failed: {e}");
@@ -446,9 +446,9 @@ fn sweep_repos<T: Send>(
 /// Dedupe tracked repo dirs by their resolved GitHub `owner/repo`, keeping the
 /// first dir seen for each.
 ///
-/// Every worktree slot of a repo is its own tracked directory but shares one
+/// Every worktree of a repo is its own tracked directory but shares one
 /// GitHub identity; sweeping all of them fires byte-identical `gh` queries
-/// once per slot straight into the GraphQL budget, which is per-token, not
+/// once per worktree straight into the GraphQL budget, which is per-token, not
 /// per-directory (#322). Resolution reuses [`gh::repo_name_with_owner`]'s
 /// process-lifetime cache, so after a dir's first tick this costs nothing —
 /// the win is in the sweep this feeds skipping the expensive per-repo `gh`
@@ -535,7 +535,7 @@ where
 /// `write(all, None)` performs a full-table replace; `write(all, Some(repos))`
 /// replaces only the named repos' rows. `key_of` yields the `(repo, number)`
 /// identity used to dedup items collected from two checkouts of one repo
-/// (parallel worktree slots).
+/// (parallel worktrees).
 fn finish_sweep<T>(
     store: &Store,
     key: &str,
@@ -1314,15 +1314,15 @@ mod tests {
     #[test]
     fn dedupe_resolved_keeps_first_dir_per_resolved_repo() {
         let deduped = dedupe_resolved(vec![
-            (PathBuf::from("/slots/repo-a"), Ok("o/repo".to_string())),
-            (PathBuf::from("/slots/repo-b"), Ok("o/repo".to_string())),
-            (PathBuf::from("/slots/other"), Ok("o/other".to_string())),
+            (PathBuf::from("/worktrees/repo-a"), Ok("o/repo".to_string())),
+            (PathBuf::from("/worktrees/repo-b"), Ok("o/repo".to_string())),
+            (PathBuf::from("/worktrees/other"), Ok("o/other".to_string())),
         ]);
         assert_eq!(
             deduped,
             vec![
-                PathBuf::from("/slots/repo-a"),
-                PathBuf::from("/slots/other")
+                PathBuf::from("/worktrees/repo-a"),
+                PathBuf::from("/worktrees/other")
             ]
         );
     }
@@ -1333,10 +1333,10 @@ mod tests {
         // proven a duplicate of anything, so it must survive the dedup pass —
         // its error still needs to surface from the real collect call.
         let deduped = dedupe_resolved(vec![
-            (PathBuf::from("/slots/a"), Err("gh: not a git repo".to_string())),
-            (PathBuf::from("/slots/b"), Err("gh: not a git repo".to_string())),
+            (PathBuf::from("/worktrees/a"), Err("gh: not a git repo".to_string())),
+            (PathBuf::from("/worktrees/b"), Err("gh: not a git repo".to_string())),
         ]);
-        assert_eq!(deduped, vec![PathBuf::from("/slots/a"), PathBuf::from("/slots/b")]);
+        assert_eq!(deduped, vec![PathBuf::from("/worktrees/a"), PathBuf::from("/worktrees/b")]);
     }
 
     #[test]
@@ -1404,7 +1404,7 @@ mod tests {
     #[test]
     fn sweep_dedups_same_repo_from_two_checkouts() {
         let store = Store::open_in_memory().unwrap();
-        // Two worktree slots of one repo both succeed and report the same issue.
+        // Two worktrees of one repo both succeed and report the same issue.
         let sweep = Sweep {
             successes: vec![
                 ("o/a".to_string(), vec![issue("o/a", 1)]),

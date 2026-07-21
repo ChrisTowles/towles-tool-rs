@@ -227,7 +227,7 @@ pub fn ab_remove_repo(state: State<Ab>, dir: String) {
 }
 
 /// Untrack every tracked repo whose directory is gone from disk (the rail's
-/// "missing" ghosts — e.g. removed worktree slots). Returns the dropped dirs
+/// "missing" ghosts — e.g. removed worktrees). Returns the dropped dirs
 /// so the client can toast a count.
 #[tauri::command]
 pub fn ab_untrack_missing(state: State<Ab>) -> Vec<String> {

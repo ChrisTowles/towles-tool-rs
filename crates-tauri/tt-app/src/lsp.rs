@@ -3,7 +3,7 @@
 //! The webview's `monaco-languageclient` speaks LSP over Tauri IPC instead of
 //! a WebSocket: `lsp_start` spawns a server (rust-analyzer) for a workspace
 //! dir, a reader thread reframes its stdout into `lsp://msg` events, and
-//! `lsp_send` writes framed messages to its stdin. No ports involved — slot
+//! `lsp_send` writes framed messages to its stdin. No ports involved — task
 //! port claims stay untouched.
 
 use std::collections::HashMap;

@@ -1,19 +1,19 @@
-//! Images pasted into the new-slot form, staged as files a Claude prompt can
+//! Images pasted into the new-task form, staged as files a Claude prompt can
 //! point at.
 //!
 //! The goal typed in that form reaches Claude as a shell-quoted argv entry
-//! (`claude '<goal>'`, typed into the slot's PTY) — a string, with nowhere to
+//! (`claude '<goal>'`, typed into the task's PTY) — a string, with nowhere to
 //! put bytes. So a pasted image becomes a *file*, and the goal grows a
 //! reference to its path; Claude's Read tool handles images, so a path in the
 //! opening prompt is the attachment.
 //!
 //! **These files live outside the repo**, under a `tt_config`-resolved
-//! staging dir in the OS temp dir. Putting them *inside* the new slot was
+//! staging dir in the OS temp dir. Putting them *inside* the new task was
 //! tried first, on the assumption that Claude Code would prompt for an
 //! out-of-workspace read — it doesn't (verified: a `claude -p` run in one
 //! repo read an image under `/tmp` in default permission mode without
 //! prompting). So the in-repo version bought nothing and cost a `.gitignore`
-//! to keep the slot's `git status` clean.
+//! to keep the task's `git status` clean.
 //!
 //! Staging is keyed by repo+branch rather than accumulating unique names, so
 //! retrying a failed create overwrites its own directory instead of leaving a
@@ -26,7 +26,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::layout::slot_name_from_branch;
+use crate::layout::task_name_from_branch;
 
 /// Cap per image. Claude Code itself rejects images well below this, so a
 /// paste over the cap is a mis-paste (a copied *file* rather than a bitmap,
@@ -34,13 +34,13 @@ use crate::layout::slot_name_from_branch;
 /// the IPC boundary before Claude refuses it anyway.
 pub const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 
-/// How long a staged paste survives. Long enough that a slot created today
+/// How long a staged paste survives. Long enough that a task created today
 /// can still resolve its image after a restart; short enough that this
 /// directory can't grow without bound. Pruning is opportunistic (on write),
 /// so nothing has to run on a timer.
 pub const MAX_AGE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
-/// One image on its way to a slot's prompt: the MIME type plus standard
+/// One image on its way to a task's prompt: the MIME type plus standard
 /// base64 (Tauri's JSON IPC has no bytes type — a `Vec<u8>` here would cross
 /// as a megabyte-long array of JSON numbers).
 ///
@@ -101,7 +101,7 @@ fn extension_for(mime: &str) -> Result<&'static str> {
 ///
 /// This exists because a Ctrl+V image paste on Linux never reaches the
 /// webview's `paste` event, so the clipboard has to be read natively — see
-/// `read_clipboard_image` in the app's `slots.rs`.
+/// `read_clipboard_image` in the app's `tasks.rs`.
 pub fn rgba_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {
     let expected = (width as usize)
         .checked_mul(height as usize)
@@ -126,18 +126,18 @@ pub fn rgba_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// One staging directory per pending slot: `<repo>-<branch-slug>`. Reuses
-/// the branch→slot-name slug so the directory reads like the slot it belongs
+/// One staging directory per pending task: `<repo>-<branch-slug>`. Reuses
+/// the branch→task-name slug so the directory reads like the task it belongs
 /// to, and includes the repo so the same branch name in two repos doesn't
 /// collide.
 pub fn scope_name(repo: &str, branch: &str) -> String {
     // Both slug to `None` only for input that is entirely punctuation. The
-    // branch is already validated before a slot is created, so this is a
+    // branch is already validated before a task is created, so this is a
     // belt-and-braces fallback rather than a reachable path — but it must
     // still be a legal single directory name, never an empty one that would
     // write straight into the staging root.
     let parts: Vec<String> =
-        [repo, branch].iter().filter_map(|s| slot_name_from_branch(s)).collect();
+        [repo, branch].iter().filter_map(|s| task_name_from_branch(s)).collect();
     if parts.is_empty() { "unnamed".to_string() } else { parts.join("-") }
 }
 
@@ -161,7 +161,7 @@ pub fn write_images(
     let _ = prune(base, now_ms);
 
     let dir = base.join(scope);
-    // A retry of the same slot reuses this directory — clear it so a paste
+    // A retry of the same task reuses this directory — clear it so a paste
     // that dropped an image can't leave the previous attempt's file behind to
     // be picked up by the next prompt.
     let _ = std::fs::remove_dir_all(&dir);
@@ -266,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn retrying_the_same_slot_replaces_the_previous_attempt() {
+    fn retrying_the_same_task_replaces_the_previous_attempt() {
         let tmp = tempfile::tempdir().unwrap();
         write_images(tmp.path(), "scope", &[png(b"a"), png(b"b")], 0).unwrap();
         // Second attempt pasted only one image — the stale paste-2 from the
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn scope_name_slugs_repo_and_branch() {
         assert_eq!(scope_name("blog", "feat/paste-images"), "blog-feat-paste-images");
-        // Case is preserved, matching how slot directories are named.
+        // Case is preserved, matching how task directories are named.
         assert_eq!(scope_name("towles-tool-rs", "fix/Thing"), "towles-tool-rs-fix-Thing");
     }
 
@@ -342,10 +342,10 @@ mod tests {
     #[test]
     fn writing_prunes_stale_neighbours_but_keeps_the_new_paste() {
         let tmp = tempfile::tempdir().unwrap();
-        write_images(tmp.path(), "old-slot", &[png(b"old")], now_ms()).unwrap();
+        write_images(tmp.path(), "old-task", &[png(b"old")], now_ms()).unwrap();
         let later = now_ms() + MAX_AGE_MS + 1;
-        let paths = write_images(tmp.path(), "new-slot", &[png(b"new")], later).unwrap();
-        assert!(!tmp.path().join("old-slot").exists());
+        let paths = write_images(tmp.path(), "new-task", &[png(b"new")], later).unwrap();
+        assert!(!tmp.path().join("old-task").exists());
         assert!(paths[0].exists());
     }
 

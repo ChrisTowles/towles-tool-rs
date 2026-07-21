@@ -1,12 +1,12 @@
 import path from "node:path";
-import { requireDevPort, resolveWebdriverPort } from "../scripts/slot-port.mjs";
+import { requireDevPort, resolveWebdriverPort } from "../scripts/task-port.mjs";
 
 // Ports are injected by scripts/e2e.mjs (resolved from the rendered
 // `.env`/`.env.local`). The dev server serves the wdio-enabled frontend; the
 // embedded WebDriver server runs inside the app on wdPort. A direct
 // `npx wdio` run without TT_DEV_PORT resolves the same per-checkout claim
 // (and fails with instructions if the checkout has none) — never a
-// hardcoded 1420, which would collide across concurrent worktree slots.
+// hardcoded 1420, which would collide across concurrent worktrees.
 const repoRoot = process.cwd();
 const devPort = requireDevPort(repoRoot, { tag: "wdio" });
 const wdPort = resolveWebdriverPort(devPort);

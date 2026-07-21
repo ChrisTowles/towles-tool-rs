@@ -5,13 +5,13 @@
 //! so a shell (or anything the user ran inside it, e.g. `npm run dev`) that
 //! bound to a port from `.env` at spawn time has no way to notice a later
 //! re-render silently reassigning that port to something else. That happens
-//! whenever `tt slot env` runs again: a sibling slot claiming the same pool,
-//! or a manual re-render, can rotate a port (see `tt_slots::template::render`'s
+//! whenever `tt task env` runs again: a sibling task claiming the same pool,
+//! or a manual re-render, can rotate a port (see `tt_tasks::template::render`'s
 //! reuse-vs-rotate logic) out from under a pane that's already running.
 //!
 //! Scoped to ports deliberately: they're the one `${tt:...}`-rendered value
 //! with a well-defined "current" signal readable straight off `.env` (see
-//! [`tt_slots::envfile::port_claims_by_key`]) — a rotation is a genuine
+//! [`tt_tasks::envfile::port_claims_by_key`]) — a rotation is a genuine
 //! conflict-driven change. Diffing the *entire* `.env` would also flag
 //! unrelated edits (a secret filled in later, a hand-added key), which isn't
 //! drift, just enrichment.
@@ -37,7 +37,7 @@ pub struct PortDrift {
 /// snapshot against, so no drift can be reported either way.
 pub fn read_current_ports(dir: &Path) -> BTreeMap<String, u16> {
     std::fs::read_to_string(dir.join(".env"))
-        .map(|text| tt_slots::envfile::port_claims_by_key(&text))
+        .map(|text| tt_tasks::envfile::port_claims_by_key(&text))
         .unwrap_or_default()
 }
 
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn read_current_ports_reads_env_by_key() {
         let root = tempfile::TempDir::new().unwrap();
-        std::fs::write(root.path().join(".env"), "UI_PORT=3001\nSLOT=3\n").unwrap();
+        std::fs::write(root.path().join(".env"), "UI_PORT=3001\nTASK=3\n").unwrap();
         let ports = read_current_ports(root.path());
         assert_eq!(ports.get("UI_PORT"), Some(&3001));
         assert_eq!(ports.len(), 1);

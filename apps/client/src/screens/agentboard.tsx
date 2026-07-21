@@ -28,11 +28,11 @@ import { DiffPane } from "@/components/diff-pane";
 import { FolderFilesPane, type FilesOpenRequest } from "@/components/files-pane";
 import { PreviewPane } from "@/components/preview-pane";
 import {
-  type NewSlotRepo,
+  type NewTaskRepo,
   type NewTaskSubmit,
-  type PendingSlot,
-  type SlotCreated,
-} from "@/components/inline-new-slot";
+  type PendingTask,
+  type TaskCreated,
+} from "@/components/inline-new-task";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import {
@@ -58,7 +58,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { SlotCreatedSchema, SlotRemoveOutcomeSchema } from "@/lib/schemas/slots";
+import { TaskCreatedSchema, TaskRemoveOutcomeSchema } from "@/lib/schemas/task";
 import { cn } from "@/lib/utils";
 import {
   changedFolderDirs,
@@ -88,7 +88,7 @@ import {
   isPreviewPane,
   previewPaneDir,
   previewPaneId,
-  folderRemovableSlot,
+  folderRemovableTask,
   forceDeleteLabel,
   isFolderQuiet,
   liveSessions,
@@ -126,8 +126,8 @@ import {
   type Selected,
   type SessionActions,
   type SessionData,
-  type SlotBlockerKind,
-  type SlotRemoveOutcome,
+  type TaskBlockerKind,
+  type TaskRemoveOutcome,
   type StartClaudeTarget,
   type StatePayload,
   type WindowsPayload,
@@ -143,7 +143,7 @@ import {
   fmtCountdown,
   storeAddTask,
   storeAttachTaskIssue,
-  storeTaskSetSlot,
+  storeTaskSetWorktree,
   useStoreSnapshot,
 } from "@/lib/data";
 import { useFocusTarget } from "@/lib/focus-target";
@@ -217,7 +217,7 @@ const paneStyle = (r: PaneRect) => ({
  * Create the board task for a new-task submit (#339): the task row exists
  * from the moment of submit — before any worktree work — with the picked
  * issues attached. Best-effort: a store failure must not block the worktree
- * (the slot is still useful without a card), so this resolves to `undefined`
+ * (the task is still useful without a card), so this resolves to `undefined`
  * on error after surfacing a toast.
  */
 async function createTaskForSubmit(input: NewTaskSubmit): Promise<number | undefined> {
@@ -237,10 +237,10 @@ async function createTaskForSubmit(input: NewTaskSubmit): Promise<number | undef
   return created.value;
 }
 
-/** Glyph per blocker kind. Exhaustive over `SlotBlockerKind`, so a guard
+/** Glyph per blocker kind. Exhaustive over `TaskBlockerKind`, so a guard
  * added in Rust fails the build here rather than silently picking up
  * whichever icon a ternary happened to end on. */
-const BLOCKER_ICONS: Record<SlotBlockerKind, typeof FileDiff> = {
+const BLOCKER_ICONS: Record<TaskBlockerKind, typeof FileDiff> = {
   dirtyTree: FileDiff,
   unreachableCommits: GitCommitHorizontal,
   foreignPort: Network,
@@ -256,7 +256,7 @@ const BLOCKER_ICONS: Record<SlotBlockerKind, typeof FileDiff> = {
  * message and remedy come from Rust — and admitting we don't know beats
  * asserting the wrong thing. */
 function BlockerIcon({ kind, losesWork }: { kind: string; losesWork: boolean }) {
-  const Icon = BLOCKER_ICONS[kind as SlotBlockerKind] ?? CircleAlert;
+  const Icon = BLOCKER_ICONS[kind as TaskBlockerKind] ?? CircleAlert;
   return (
     <Icon
       className={cn(
@@ -333,7 +333,7 @@ export function AgentboardScreen() {
   // Generation counter per worktree dir for the delete flow. Bumped when a
   // dir's flow starts and whenever one ends (cancel, force, success), so an
   // attempt that resolves after the user moved on can tell it's stale — a
-  // `slot_stop_port` plus retry runs for seconds, and without this a removal
+  // `task_stop_port` plus retry runs for seconds, and without this a removal
   // returning "blocked" would pop the dialog back open after it was
   // dismissed. Scoped per dir rather than one global counter so starting a
   // delete on a second worktree can't silently swallow the first one's
@@ -341,7 +341,7 @@ export function AgentboardScreen() {
   const deleteFlows = useRef(new Map<string, number>());
   const deleteFlowOf = (dir: string) => deleteFlows.current.get(dir) ?? 0;
   const bumpDeleteFlow = (dir: string) => deleteFlows.current.set(dir, deleteFlowOf(dir) + 1);
-  // Folder dirs whose worktree is mid-delete (`slot_remove` in flight) — the
+  // Folder dirs whose worktree is mid-delete (`task_remove` in flight) — the
   // rail dims/disables that row for the duration, see `performDeleteWorktree`.
   const [deletingDirs, setDeletingDirs] = useState<Set<string>>(new Set());
   // Repo management lives on one surface (Settings → Agentboard → Repos); the
@@ -353,14 +353,14 @@ export function AgentboardScreen() {
   // Session awaiting the "what are you working toward?" prompt before Claude
   // actually launches — see `commitStartClaude`.
   const [startClaudeTarget, setStartClaudeTarget] = useState<StartClaudeTarget | null>(null);
-  // Repo keys whose inline new-slot form is open — see InlineNewSlot. A form
+  // Repo keys whose inline new-task form is open — see InlineNewTask. A form
   // stays embedded in the rail rather than a modal, so several repos can have
   // one open (or a create in flight) at once without blocking each other.
-  const [openSlotForms, setOpenSlotForms] = useState<Set<string>>(new Set());
-  // `slot_create` calls fired from an inline form and still running (or
-  // failed) — rendered as a PendingSlotRow until they resolve. See
-  // `createSlot`.
-  const [pendingSlots, setPendingSlots] = useState<PendingSlot[]>([]);
+  const [openTaskForms, setOpenTaskForms] = useState<Set<string>>(new Set());
+  // `task_create` calls fired from an inline form and still running (or
+  // failed) — rendered as a PendingTaskRow until they resolve. See
+  // `createTask`.
+  const [pendingTasks, setPendingTasks] = useState<PendingTask[]>([]);
   const [startClaudePrompt, setStartClaudePrompt] = useState("");
   // Session ids whose PTY is mounted (kept alive for scrollback), + their cwd.
   const [open, setOpen] = useState<string[]>([]);
@@ -372,7 +372,7 @@ export function AgentboardScreen() {
   // live terminal over the top), so a stale entry for a dismissed or reopened
   // session is inert, and there's no invalidation scheme to keep correct.
   const [exitLabels, setExitLabels] = useState<Record<string, string>>({});
-  // Sessions whose shell we're killing on purpose. `slot_remove` kills a
+  // Sessions whose shell we're killing on purpose. `task_remove` kills a
   // folder's PTYs in Rust *before* the frontend unmounts their panes, so those
   // deaths arrive as signal exits at a still-listening TerminalView — which is
   // a crash by every test `handleExit` can apply, except that we asked for it.
@@ -502,7 +502,7 @@ export function AgentboardScreen() {
     return m;
   }, [repos]);
   // Folder dir → its owning repo, so a pane header can lead with "repo /
-  // folder" (a folder's own name is just the checkout/slot/worktree).
+  // folder" (a folder's own name is just the checkout/task/worktree).
   const repoOf = useMemo(() => {
     const m = new Map<string, RepoData>();
     for (const r of repos) for (const f of r.folders) m.set(f.dir, r);
@@ -674,15 +674,15 @@ export function AgentboardScreen() {
 
   // Reconcile the layout against reality whenever either changes: sessions
   // and folders vanish out from under the persisted blob (closed by another
-  // slot's app instance, a repo removed with non-live session records, a
+  // task's app instance, a repo removed with non-live session records, a
   // crash before the debounced save), leaving ghost pane ids that hold a tile
-  // slot with nothing to render in it. Locally-mounted terminals (`open`)
+  // task with nothing to render in it. Locally-mounted terminals (`open`)
   // count as valid even before the backend's state event catches up, so a
   // just-created session's pane never loses the race to this prune — and so
-  // do their folders (via the cwd recorded at mount): a just-created slot's
+  // do their folders (via the cwd recorded at mount): a just-created task's
   // window is keyed on a folder dir the backend hasn't broadcast yet, and
   // without that carve-out this prune ate the whole window (and persisted the
-  // loss), leaving the new slot's main area empty until re-clicked.
+  // loss), leaving the new task's main area empty until re-clicked.
   useEffect(() => {
     if (!wins) return;
     const validSessions = new Set(open);
@@ -752,7 +752,7 @@ export function AgentboardScreen() {
   // Add a pane (session or diff) to its own folder's focused window — the
   // placement rules live in the pure `placePane` reducer (lib/agentboard.ts).
   // A session reclaims its own tombstone first: the crashed pane is that
-  // session's slot, so reopening fills it in place instead of `placePane`
+  // session's task, so reopening fills it in place instead of `placePane`
   // appending a second pane beside the corpse.
   function addPaneToActive(folderDir: string, paneId: string) {
     updateWins([folderDir], (w) =>
@@ -865,7 +865,7 @@ export function AgentboardScreen() {
     const s = sessionById.get(sessionId);
     toast.error(`${s ? labelFor(s) : "shell"} ${label}`);
     setExitLabels((m) => ({ ...m, [sessionId]: label }));
-    // The slot keeps its place in the tiling; only its occupant changes.
+    // The task keeps its place in the tiling; only its occupant changes.
     const folderDir = wins?.windows.find((win) => win.panes.includes(sessionId))?.folderDir;
     updateWins(folderDir ? [folderDir] : [], (w) =>
       replacePane(w, sessionId, exitPaneId(sessionId)),
@@ -885,7 +885,7 @@ export function AgentboardScreen() {
 
   // Spawn a session's PTY and place its pane in its own folder's window,
   // without touching `selected`/`activeFolderDir` — for sessions created in
-  // the background (e.g. a new slot) that shouldn't steal focus from
+  // the background (e.g. a new task) that shouldn't steal focus from
   // whatever the user is currently looking at.
   function mountSession(folderDir: string, sessionId: string) {
     cwds.current[sessionId] = folderDir;
@@ -953,11 +953,11 @@ export function AgentboardScreen() {
     selectSession(folderDir, target.id);
   }
 
-  // Toggle the inline new-slot form open/closed for a repo — the "+"/"New
-  // slot…" affordances all funnel through this, same as clicking it again
+  // Toggle the inline new-task form open/closed for a repo — the "+"/"New
+  // task…" affordances all funnel through this, same as clicking it again
   // closes the form rather than only ever opening one.
-  function toggleSlotForm(repo: NewSlotRepo) {
-    setOpenSlotForms((prev) => {
+  function toggleTaskForm(repo: NewTaskRepo) {
+    setOpenTaskForms((prev) => {
       const next = new Set(prev);
       if (next.has(repo.key)) next.delete(repo.key);
       else next.add(repo.key);
@@ -965,17 +965,17 @@ export function AgentboardScreen() {
     });
   }
 
-  // ab-new-slot + the working-context band's "New slot" button both open the
+  // ab-new-task + the working-context band's "New task" button both open the
   // form for the focused folder's repo — expand a collapsed rail first since
-  // the form itself renders there, same as the rail's own new-slot buttons.
-  function newSlotForActiveRepo() {
+  // the form itself renders there, same as the rail's own new-task buttons.
+  function newTaskForActiveRepo() {
     if (!activeRepo) return;
     if (railCollapsed) toggleRail();
-    toggleSlotForm({ name: activeRepo.name, dir: activeRepo.folders[0].dir, key: activeRepo.key });
+    toggleTaskForm({ name: activeRepo.name, dir: activeRepo.folders[0].dir, key: activeRepo.key });
   }
 
-  function closeSlotForm(key: string) {
-    setOpenSlotForms((prev) => {
+  function closeTaskForm(key: string) {
+    setOpenTaskForms((prev) => {
       if (!prev.has(key)) return prev;
       const next = new Set(prev);
       next.delete(key);
@@ -983,11 +983,11 @@ export function AgentboardScreen() {
     });
   }
 
-  // The setup step (npm install/etc.) can fail without invalidating the slot
-  // itself — `slot_create`'s warning already says so. Give it a one-click
+  // The setup step (npm install/etc.) can fail without invalidating the task
+  // itself — `task_create`'s warning already says so. Give it a one-click
   // retry rather than making the user remember to re-run it from a terminal.
   async function retrySetup(dir: string) {
-    (await invoke<string | null>("slot_run_setup", { dir })).match({
+    (await invoke<string | null>("task_run_setup", { dir })).match({
       ok: (warning) => {
         if (warning) toast(warning, { action: retryAction(dir) });
         else toast("setup succeeded");
@@ -1000,22 +1000,22 @@ export function AgentboardScreen() {
     return { label: "Retry", onClick: () => void retrySetup(dir) };
   }
 
-  // Fires `slot_create` in the background and tracks it as a PendingSlotRow
+  // Fires `task_create` in the background and tracks it as a PendingTaskRow
   // in the rail instead of a blocking modal — the caller can keep working
   // anywhere else in the app while the worktree + setup finish. Keyed by
   // branch (unique per repo, since a collision is already rejected before
   // submit), so a retry just re-runs this under the same id. The board task
-  // is created first (`createTaskForSubmit`) — the slot is an attribute of
+  // is created first (`createTaskForSubmit`) — the task is an attribute of
   // the task, not the unit itself — and bound to the worktree once
-  // `slot_create` resolves; a "task only" submit stops after the card.
-  async function createSlot(repo: NewSlotRepo, input: NewTaskSubmit & { taskId?: number }) {
+  // `task_create` resolves; a "task only" submit stops after the card.
+  async function createTask(repo: NewTaskRepo, input: NewTaskSubmit & { taskId?: number }) {
     const taskId = input.taskId ?? (await createTaskForSubmit(input));
     // Bind the repo before any worktree exists. The Board groups tasks into
     // repo swimlanes, and the repo is known here — at the `+` the user clicked
     // — so binding it now is what keeps every task out of the "No repo" lane,
     // including a "task only" submit that never gets a branch or dir.
     if (taskId !== undefined) {
-      void storeTaskSetSlot(taskId, repo.dir, undefined, {
+      void storeTaskSetWorktree(taskId, repo.dir, undefined, {
         repo: ownerRepoFromOrigin(repo.originUrl),
       });
     }
@@ -1024,7 +1024,7 @@ export function AgentboardScreen() {
       return;
     }
     const id = `${repo.key}::${input.branch}`;
-    setPendingSlots((prev) => [
+    setPendingTasks((prev) => [
       ...prev.filter((p) => p.id !== id),
       {
         id,
@@ -1045,14 +1045,14 @@ export function AgentboardScreen() {
       },
     ]);
     const imagePaths = input.imagePaths;
-    const result = await invoke<SlotCreated>(
-      "slot_create",
+    const result = await invoke<TaskCreated>(
+      "task_create",
       { root: repo.dir, branch: input.branch, base: input.base },
-      { schema: SlotCreatedSchema, timeoutMs: 12 * 60_000 },
+      { schema: TaskCreatedSchema, timeoutMs: 12 * 60_000 },
     );
     if (result.isErr()) {
       const error = result.error.message;
-      setPendingSlots((prev) =>
+      setPendingTasks((prev) =>
         prev.map((p) => (p.id === id ? { ...p, status: "error" as const, error } : p)),
       );
       return;
@@ -1061,7 +1061,7 @@ export function AgentboardScreen() {
     // Bind the task to its worktree (branch + dir + repo identity for PR
     // auto-attach). Fire-and-forget: the snapshot re-emit repaints the card.
     if (taskId !== undefined) {
-      void storeTaskSetSlot(taskId, repo.dir, created.branch, {
+      void storeTaskSetWorktree(taskId, repo.dir, created.branch, {
         repo: ownerRepoFromOrigin(repo.originUrl),
         dir: created.dir,
       });
@@ -1072,7 +1072,7 @@ export function AgentboardScreen() {
         warning.startsWith("setup `") ? { action: retryAction(created.dir) } : undefined,
       );
     }
-    setPendingSlots((prev) => prev.filter((p) => p.id !== id));
+    setPendingTasks((prev) => prev.filter((p) => p.id !== id));
 
     // An image with no typed goal is still a valid ask — give the rail
     // something to show rather than an unlabeled session.
@@ -1082,12 +1082,12 @@ export function AgentboardScreen() {
     // A dynamic task wraps the goal with the post-plan-approval delivery
     // pipeline and launches in plan mode — the base comes from the resolved
     // create (what the branch actually forked from), not the form field, and
-    // uses `baseLabel` (`origin/main`, not `main`) because inside the slot's
+    // uses `baseLabel` (`origin/main`, not `main`) because inside the task's
     // worktree a fetch never advances the *local* base ref: telling the
     // session to rebase onto plain `main` would rebase onto stale history.
     // A dynamic task wraps the goal with its own delivery pipeline; otherwise
     // the goal is launched exactly as it reads in the form. Prompt improvers
-    // rewrite that field *before* submit (see `inline-new-slot.tsx`), so there
+    // rewrite that field *before* submit (see `inline-new-task.tsx`), so there
     // is deliberately nothing to apply here — what you saw is what launches.
     const goalPrompt = input.dynamic
       ? dynamicFlowPrompt(input.goal, created.baseLabel)
@@ -1096,15 +1096,15 @@ export function AgentboardScreen() {
       ? { ...input.options, permissionMode: "plan" }
       : input.options;
     // "Start Claude on the goal" unchecked → no prompt, which is already how
-    // `slotCreated` says "don't type anything into the PTY".
+    // `taskCreated` says "don't type anything into the PTY".
     const prompt = input.launchClaude ? promptWithImages(goalPrompt, imagePaths) : "";
-    await slotCreated(created, prompt, launchOptions, label);
+    await taskCreated(created, prompt, launchOptions, label);
   }
 
-  function retryPendingSlot(id: string) {
-    const p = pendingSlots.find((x) => x.id === id);
+  function retryPendingTask(id: string) {
+    const p = pendingTasks.find((x) => x.id === id);
     if (!p) return;
-    void createSlot(
+    void createTask(
       { name: p.repoName, dir: p.repoDir, key: p.repoKey, originUrl: p.repoOriginUrl },
       {
         goal: p.goal,
@@ -1123,16 +1123,16 @@ export function AgentboardScreen() {
     );
   }
 
-  function dismissPendingSlot(id: string) {
-    setPendingSlots((prev) => prev.filter((p) => p.id !== id));
+  function dismissPendingTask(id: string) {
+    setPendingTasks((prev) => prev.filter((p) => p.id !== id));
   }
 
-  // A slot the inline form just created: track it in the rail, mount its
+  // A task the inline form just created: track it in the rail, mount its
   // first session in the background, and start Claude on the goal in that
   // session's PTY — without switching the user's current view over to it.
   // They can jump to it via the rail whenever they're ready.
-  async function slotCreated(
-    created: SlotCreated,
+  async function taskCreated(
+    created: TaskCreated,
     prompt: string,
     options: ClaudeLaunchOptions,
     /** The goal as the user typed it — what the rail and the toast show, so
@@ -1156,7 +1156,7 @@ export function AgentboardScreen() {
     }
     mountSession(created.dir, rec.id);
     // Label the session before deciding whether to launch: the goal is why
-    // this session exists either way, and a slot created with "Start Claude"
+    // this session exists either way, and a task created with "Start Claude"
     // unchecked would otherwise sit in the rail as an unnamed shell.
     if (label) void abSetSessionPurpose(rec.id, label);
     // An empty prompt is the one signal for "leave the PTY at a bare shell" —
@@ -1194,11 +1194,11 @@ export function AgentboardScreen() {
     prompt: string,
     options?: ClaudeLaunchOptions,
     /** What the toast shows, when that should differ from what's actually
-     * typed into the PTY — the new-slot flow appends attached-image paths to
+     * typed into the PTY — the new-task flow appends attached-image paths to
      * `prompt` that would only be noise here. Defaults to `prompt` for every
      * other caller. Setting the session's rail purpose is the caller's job,
      * not this function's: a session's purpose is why it exists, which is
-     * equally true of the slots this never launches anything into. */
+     * equally true of the tasks this never launches anything into. */
     label?: string,
   ) {
     const { folderDir, sessionId, sessionName, restart } = target;
@@ -1337,7 +1337,7 @@ export function AgentboardScreen() {
     for (const dir of target.dirs) await untrackRepo(dir, target.label, [], "agentboard");
   }
 
-  // Delete a worktree slot from disk. Always confirms (unlike untracking,
+  // Delete a worktree from disk. Always confirms (unlike untracking,
   // this touches the filesystem); the Rust side's guards still protect real
   // work — a dirty tree, commits unreachable from any branch/remote, or a
   // foreign listener on a claimed port come back as reasons instead of a
@@ -1361,7 +1361,7 @@ export function AgentboardScreen() {
   // `force` skips every guard — only ever passed from the blocked dialog's
   // force button, which names what's being discarded.
   async function performDeleteWorktree(target: RemoveTarget, { force = false } = {}) {
-    // `slot_remove` kills the folder's live PTYs itself — only once the
+    // `task_remove` kills the folder's live PTYs itself — only once the
     // guards have passed and the removal is really happening, so a refusal
     // costs nothing — and only tears down the session records once removal
     // actually succeeds; closing sessions here first would untrack them even
@@ -1380,12 +1380,12 @@ export function AgentboardScreen() {
     // unconsumed claims are handed back below — otherwise they'd linger and
     // silently swallow a later genuine crash of the same session.
     for (const id of target.sessionIds) expectedKills.current.add(id);
-    const removed = await invoke<SlotRemoveOutcome>(
-      "slot_remove",
+    const removed = await invoke<TaskRemoveOutcome>(
+      "task_remove",
       { dir, force },
       // Validated: a `foreignPort` blocker's `port` is handed straight to
-      // `slot_stop_port`, which signals a process group.
-      { schema: SlotRemoveOutcomeSchema },
+      // `task_stop_port`, which signals a process group.
+      { schema: TaskRemoveOutcomeSchema },
     );
     // The user may have cancelled, or forced past this, while the call ran.
     // A stale result must not resurrect the dialog or re-report an outcome
@@ -1432,10 +1432,10 @@ export function AgentboardScreen() {
     });
   }
 
-  // Clear a stale dev server off one of the slot's claimed ports, then retry
+  // Clear a stale dev server off one of the task's claimed ports, then retry
   // the delete — the remedy for a `foreignPort` blocker, so the whole flow
   // finishes where it started instead of sending the user to a terminal.
-  // `slot_stop_port` refuses any port the slot doesn't claim in its `.env`,
+  // `task_stop_port` refuses any port the task doesn't claim in its `.env`,
   // and only returns once the port is actually free, so the retry can't race
   // the socket's release.
   async function stopPortAndRetry(blocked: BlockedDelete, port: number) {
@@ -1448,7 +1448,7 @@ export function AgentboardScreen() {
     // just chose to keep.
     const flow = deleteFlowOf(dir);
     setStoppingPort(port);
-    const stopped = await invoke<string>("slot_stop_port", { dir, port });
+    const stopped = await invoke<string>("task_stop_port", { dir, port });
     if (stopped.isErr()) {
       toast.error(stopped.error.message);
     } else {
@@ -1566,12 +1566,12 @@ export function AgentboardScreen() {
         "ab-new-session": () => {
           if (activeFolderDir) void newSession(activeFolderDir);
         },
-        "ab-new-slot": newSlotForActiveRepo,
-        "ab-remove-slot": () => {
+        "ab-new-task": newTaskForActiveRepo,
+        "ab-remove-task": () => {
           // `requestDeleteWorktree` always confirms before touching anything;
           // the in-flight check mirrors the rail row dimming itself while a
           // removal runs.
-          if (!activeFolder || !folderRemovableSlot(activeFolder)) return;
+          if (!activeFolder || !folderRemovableTask(activeFolder)) return;
           if (deletingDirs.has(activeFolder.dir)) return;
           requestDeleteWorktree(activeFolder.dir, activeFolder.name);
         },
@@ -1806,7 +1806,7 @@ export function AgentboardScreen() {
                               onSelectFolder={selectFolder}
                               onSelect={selectSession}
                               onNewSession={newSession}
-                              onNewSlot={toggleSlotForm}
+                              onNewTask={toggleTaskForm}
                               onRemoveRepo={requestRemoveRepo}
                               onDeleteWorktree={requestDeleteWorktree}
                               deletingDirs={deletingDirs}
@@ -1814,11 +1814,11 @@ export function AgentboardScreen() {
                               onOpenDiff={openDiff}
                               onOpenFiles={openFiles}
                               onOpenPreview={openPreview}
-                              slotFormOpen={openSlotForms.has(repo.key)}
-                              onCancelSlotForm={() => closeSlotForm(repo.key)}
-                              onSubmitSlotForm={(input) => {
-                                closeSlotForm(repo.key);
-                                void createSlot(
+                              taskFormOpen={openTaskForms.has(repo.key)}
+                              onCancelTaskForm={() => closeTaskForm(repo.key)}
+                              onSubmitTaskForm={(input) => {
+                                closeTaskForm(repo.key);
+                                void createTask(
                                   {
                                     name: repo.name,
                                     dir: repo.folders[0].dir,
@@ -1828,9 +1828,9 @@ export function AgentboardScreen() {
                                   input,
                                 );
                               }}
-                              pendingSlots={pendingSlots.filter((p) => p.repoKey === repo.key)}
-                              onRetryPendingSlot={retryPendingSlot}
-                              onDismissPendingSlot={dismissPendingSlot}
+                              pendingTasks={pendingTasks.filter((p) => p.repoKey === repo.key)}
+                              onRetryPendingTask={retryPendingTask}
+                              onDismissPendingTask={dismissPendingTask}
                             />
                           </motion.div>
                         ))}
@@ -1859,7 +1859,7 @@ export function AgentboardScreen() {
                   onOpenFiles={openFiles}
                   onOpenPreview={openPreview}
                   onNewSession={newSession}
-                  onNewSlot={newSlotForActiveRepo}
+                  onNewTask={newTaskForActiveRepo}
                   onRemoveRepo={requestRemoveRepo}
                   onDeleteWorktree={requestDeleteWorktree}
                 />
@@ -2128,11 +2128,11 @@ export function AgentboardScreen() {
                         );
                       })}
                       {/* Tombstones: a shell that died on its own, holding the
-                          slot it died in. The pane id says which kind this is,
+                          task it died in. The pane id says which kind this is,
                           so this pass can't overlap the terminal pass above —
                           a session is either its own id or its `~exit:` one,
                           never both. Dismissal is the only affordance;
-                          reopening from the rail reclaims the slot. */}
+                          reopening from the rail reclaims the task. */}
                       {panes.filter(isExitPane).map((id) => {
                         const r = rectFor(id);
                         const sessionId = exitPaneSession(id) ?? "";

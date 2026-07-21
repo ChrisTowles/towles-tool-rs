@@ -2,7 +2,7 @@
  * Enter/exit motion for agentboard rail rows (repo, folder, session).
  *
  * The rail renders an immutable snapshot pushed from the backend
- * (`agentboard://state`): an untracked repo, a deleted slot, or a closed
+ * (`agentboard://state`): an untracked repo, a deleted task, or a closed
  * session is simply *absent* from the next payload, so React would unmount its
  * row before anything could animate. Wrapping each level's `.map()` in
  * `<AnimatePresence initial={false}>` and each row in a `<motion.div>` spreading

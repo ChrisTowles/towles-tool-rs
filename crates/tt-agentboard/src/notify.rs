@@ -134,7 +134,7 @@ mod tests {
                 name: repo.to_string(),
                 origin_url: None,
                 folders: vec![FolderData {
-                    name: format!("{repo}-slot-0"),
+                    name: format!("{repo}-task-0"),
                     dir: format!("/{repo}"),
                     dir_missing: false,
                     branch: "main".into(),
@@ -150,7 +150,7 @@ mod tests {
                     sessions,
                     needs: 0,
                     base_branch: None,
-                    slot_base_branch: None,
+                    task_base_branch: None,
                     compared_base: String::new(),
                     metadata: None,
                     has_port_drift: false,

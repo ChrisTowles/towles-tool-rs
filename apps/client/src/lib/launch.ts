@@ -59,7 +59,7 @@ export function devServerUrl(port: number): string {
   return `http://localhost:${port}/`;
 }
 
-/** What the row's one action slot offers. Independent of the status dot
+/** What the row's one action task offers. Independent of the status dot
  * (which tracks `portListening` alone): a pane we launched stays focusable
  * even after the server inside it was Ctrl-C'd. */
 export type LaunchAction = "focus" | "external" | "launch";

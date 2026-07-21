@@ -50,7 +50,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 /// The sort/range key format for calendar events: UTC, fixed width, matching
 /// the `starts_at_utc`/`ends_at_utc` generated columns' `strftime` format
@@ -138,10 +138,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at INTEGER NOT NULL,
     completed_at INTEGER,
     notes TEXT,
-    slot_repo_root TEXT,
-    slot_repo TEXT,
-    slot_branch TEXT,
-    slot_dir TEXT
+    worktree_repo_root TEXT,
+    worktree_repo TEXT,
+    worktree_branch TEXT,
+    worktree_dir TEXT
 );
 CREATE TABLE IF NOT EXISTS issues (
     repo TEXT NOT NULL,
@@ -259,7 +259,7 @@ fn local_midnight(date: chrono::NaiveDate) -> Option<i64> {
 const EVENT_COLS: &str =
     "id, source, external_id, title, starts_at, ends_at, attendees, location, join_url";
 const TASK_COLS: &str = "id, text, status, position, created_at, completed_at, notes, \
-     slot_repo_root, slot_repo, slot_branch, slot_dir";
+     worktree_repo_root, worktree_repo, worktree_branch, worktree_dir";
 const ISSUE_COLS: &str = "repo, number, title, labels, state, url, updated_ts";
 const PR_COLS: &str = "repo, number, title, branch, state, checks, review_state, url, updated_ts";
 const RUN_COLS: &str = "collector, ran_at, ok, message";
@@ -313,7 +313,7 @@ impl CalEvent {
 
 /// A task on the board (#339): the unit of work. Local by default; it can
 /// link any number of GitHub issues and PRs, and usually gets a worktree
-/// slot (its [`TaskSlot`] binding).
+/// worktree (its [`TaskWorktree`] binding).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskItem {
@@ -327,28 +327,28 @@ pub struct TaskItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slot: Option<TaskSlot>,
+    pub worktree: Option<TaskWorktree>,
     #[serde(default)]
     pub issues: Vec<TaskIssueLink>,
     #[serde(default)]
     pub prs: Vec<TaskPrLink>,
 }
 
-/// A task's repo binding, and the slot its work happens in once one exists.
+/// A task's repo binding, and the worktree its work happens in once one exists.
 ///
 /// `repo_root` is the only required part: a task created from the Agentboard
 /// knows its repo from the moment of submit, including a "task only" submit
-/// that never creates a worktree. `branch` is therefore `None` until the slot
+/// that never creates a worktree. `branch` is therefore `None` until the worktree
 /// is created — which is what lets every task land in a repo swimlane on the
 /// Board rather than an "unassigned" bucket.
 ///
-/// `repo_root` and `branch` survive slot removal as historical fact; `dir` is
+/// `repo_root` and `branch` survive worktree removal as historical fact; `dir` is
 /// cleared when the worktree is removed (a "detached" task). `repo` is the
 /// GitHub `owner/name`, used to auto-attach collected PRs whose head branch
 /// matches `branch`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TaskSlot {
+pub struct TaskWorktree {
     pub repo_root: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
@@ -599,7 +599,7 @@ impl Store {
 
     /// Open the store at the resolved default location. Unscoped this is
     /// `<data_dir>/towles-tool/tt.db` (e.g. `~/.local/share/towles-tool/tt.db`);
-    /// in a slot checkout it nests under `…/slots/<scope>/` (see [`tt_config`]).
+    /// in a worktree checkout it nests under `…/tasks/<scope>/` (see [`tt_config`]).
     pub fn open_default() -> Result<Store> {
         let path = tt_config::store_db_path().map_err(|_| Error::NoDataDir)?;
         Store::open(&path)
@@ -620,6 +620,7 @@ impl Store {
         self.conn.execute_batch(SCHEMA_TASK_LINKS_V7)?;
         self.migrate_tasks_v7()?;
         self.migrate_tasks_v8_drop_due()?;
+        self.migrate_tasks_v11_worktree_cols()?;
         self.migrate_events_v9()?;
         self.migrate_events_v10_iso()?;
         // After v10, never inside SCHEMA_V1: that batch runs before the
@@ -738,8 +739,8 @@ impl Store {
 
     /// v7 (#339): tasks become the unit of work. The single issue link
     /// (`repo`/`issue_number`/`issue_url` columns) generalizes into the
-    /// `task_issues` link table, and the task gains its slot binding
-    /// (`slot_repo_root`/`slot_repo`/`slot_branch`/`slot_dir`). A rebuild —
+    /// `task_issues` link table, and the task gains its worktree binding
+    /// (`worktree_repo_root`/`worktree_repo`/`worktree_branch`/`worktree_dir`). A rebuild —
     /// not `ALTER` — for the same reason as the v2 repair (dropping columns
     /// in place is off the table). Existing single links are ported into
     /// `task_issues` with state `open`; the next collect pass refreshes
@@ -771,10 +772,10 @@ impl Store {
                 created_at INTEGER NOT NULL,
                 completed_at INTEGER,
                 notes TEXT,
-                slot_repo_root TEXT,
-                slot_repo TEXT,
-                slot_branch TEXT,
-                slot_dir TEXT
+                worktree_repo_root TEXT,
+                worktree_repo TEXT,
+                worktree_branch TEXT,
+                worktree_dir TEXT
              );
              INSERT INTO tasks_v7 (id, text, status, position, due_ts, created_at, completed_at,
                                    notes)
@@ -940,6 +941,36 @@ impl Store {
         }
         if has_due {
             self.conn.execute("ALTER TABLE tasks DROP COLUMN due_ts", [])?;
+        }
+        Ok(())
+    }
+
+    /// v11: the worktree-"slot" vocabulary rename (2026-07-20). A task's
+    /// worktree binding used to be stored in `slot_repo_root`/`slot_repo`/
+    /// `slot_branch`/`slot_dir`; those columns become `worktree_*`. Dbs created
+    /// at v7 (before the rename) carry the `slot_*` names — rename them in place
+    /// with `ALTER TABLE … RENAME COLUMN` (SQLite ≥ 3.25), which preserves data
+    /// and is cheaper than a rebuild. Detected by the `slot_repo_root` column,
+    /// so it's idempotent and a no-op on fresh dbs (built straight to `worktree_*`).
+    fn migrate_tasks_v11_worktree_cols(&self) -> Result<()> {
+        let mut has_slot = false;
+        {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(tasks)")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(1)?;
+                if name == "slot_repo_root" {
+                    has_slot = true;
+                }
+            }
+        }
+        if has_slot {
+            self.conn.execute_batch(
+                "ALTER TABLE tasks RENAME COLUMN slot_repo_root TO worktree_repo_root;
+                 ALTER TABLE tasks RENAME COLUMN slot_repo TO worktree_repo;
+                 ALTER TABLE tasks RENAME COLUMN slot_branch TO worktree_branch;
+                 ALTER TABLE tasks RENAME COLUMN slot_dir TO worktree_dir;",
+            )?;
         }
         Ok(())
     }
@@ -1159,7 +1190,7 @@ impl Store {
     /// Add a task. Lands in `status` (validated against [`TASK_STATUSES`]) at
     /// the end of that column; `notes` is free-form context. Issues/PRs are
     /// attached separately ([`Store::attach_task_issue`] /
-    /// [`Store::attach_task_pr`]), the slot via [`Store::set_task_slot`].
+    /// [`Store::attach_task_pr`]), the worktree via [`Store::set_task_worktree`].
     pub fn add_task(
         &self,
         text: &str,
@@ -1219,7 +1250,7 @@ impl Store {
     /// and clears it otherwise (matching [`Store::set_task_status`]).
     ///
     /// Unlike `set_task_status` (which always appends), this reaches an
-    /// arbitrary slot — it powers drag-to-reorder within a column and
+    /// arbitrary position — it powers drag-to-reorder within a column and
     /// position-aware drops across columns. The source column is left with a
     /// gap in its `position`s, which is harmless: ordering is by relative
     /// `position ASC`, and the next reorder there renumbers it. Returns
@@ -1240,9 +1271,9 @@ impl Store {
             let rows = stmt.query_map(params![status, id], |r| r.get::<_, i64>(0))?;
             rows.collect::<rusqlite::Result<Vec<i64>>>()?
         };
-        let slot = index.clamp(0, others.len() as i64) as usize;
+        let pos = index.clamp(0, others.len() as i64) as usize;
         let mut order = others;
-        order.insert(slot, id);
+        order.insert(pos, id);
         {
             let mut up = tx.prepare("UPDATE tasks SET position = ?1 WHERE id = ?2")?;
             for (pos, tid) in order.iter().enumerate() {
@@ -1356,18 +1387,18 @@ impl Store {
         Ok(())
     }
 
-    /// Bind a task to its repo, and to the worktree slot its work happens in
+    /// Bind a task to its repo, and to the worktree its work happens in
     /// once one exists. Called twice in the Agentboard's new-task flow: at
     /// submit with the repo alone (`branch`/`dir` `None`), then again once
-    /// `slot_create` resolves. A "task only" submit stops after the first.
+    /// `task_create` resolves. A "task only" submit stops after the first.
     ///
     /// The optional columns are upserts, never clears: a `None` means "leave
     /// as is" (`COALESCE`), so a repo-only rebind — e.g. retrying a failed
-    /// `slot_create` on a task whose worktree already exists — can't erase an
+    /// `task_create` on a task whose worktree already exists — can't erase an
     /// established branch/dir. Clearing `dir` has its own dedicated path
-    /// ([`Store::clear_task_slot_dir`]); nothing legitimately un-sets a
+    /// ([`Store::clear_task_worktree_dir`]); nothing legitimately un-sets a
     /// branch. Returns [`Error::TaskNotFound`] when no task has `id`.
-    pub fn set_task_slot(
+    pub fn set_task_worktree(
         &self,
         id: i64,
         repo_root: &str,
@@ -1376,10 +1407,10 @@ impl Store {
         dir: Option<&str>,
     ) -> Result<()> {
         let affected = self.conn.execute(
-            "UPDATE tasks SET slot_repo_root = ?1,
-                              slot_repo = COALESCE(?2, slot_repo),
-                              slot_branch = COALESCE(?3, slot_branch),
-                              slot_dir = COALESCE(?4, slot_dir)
+            "UPDATE tasks SET worktree_repo_root = ?1,
+                              worktree_repo = COALESCE(?2, worktree_repo),
+                              worktree_branch = COALESCE(?3, worktree_branch),
+                              worktree_dir = COALESCE(?4, worktree_dir)
              WHERE id = ?5",
             params![repo_root, repo, branch, dir, id],
         )?;
@@ -1389,14 +1420,15 @@ impl Store {
         Ok(())
     }
 
-    /// Detach the worktree from whatever task holds it: clears `slot_dir` for
-    /// tasks bound to `dir`, keeping `slot_repo_root`/`slot_branch` as
-    /// historical fact. Called from the slot-removal seam. Returns how many
-    /// tasks were detached (0 when the slot had no task — not an error).
-    pub fn clear_task_slot_dir(&self, dir: &str) -> Result<usize> {
-        let affected = self
-            .conn
-            .execute("UPDATE tasks SET slot_dir = NULL WHERE slot_dir = ?1", params![dir])?;
+    /// Detach the worktree from whatever task holds it: clears `worktree_dir` for
+    /// tasks bound to `dir`, keeping `worktree_repo_root`/`worktree_branch` as
+    /// historical fact. Called from the worktree-removal seam. Returns how many
+    /// tasks were detached (0 when the worktree had no task — not an error).
+    pub fn clear_task_worktree_dir(&self, dir: &str) -> Result<usize> {
+        let affected = self.conn.execute(
+            "UPDATE tasks SET worktree_dir = NULL WHERE worktree_dir = ?1",
+            params![dir],
+        )?;
         Ok(affected)
     }
 
@@ -1595,7 +1627,7 @@ impl Store {
             .next())
     }
 
-    /// All tasks in kanban order, links and slot included. The collectors'
+    /// All tasks in kanban order, links and worktree included. The collectors'
     /// rollup walks this; the board gets it via [`Store::snapshot`].
     pub fn all_tasks(&self) -> Result<Vec<TaskItem>> {
         self.query_tasks(&format!("SELECT {TASK_COLS} FROM tasks {TASK_ORDER}"), [])
@@ -1697,29 +1729,29 @@ impl Store {
         Ok(issues + prs)
     }
 
-    /// Auto-attach collected PRs to slot-bound tasks: any `pr_status` row
-    /// whose `(repo, branch)` matches a task's `(slot_repo, slot_branch)`
-    /// becomes a `task_prs` link — "PRs open in the slot, linked to the task"
+    /// Auto-attach collected PRs to worktree-bound tasks: any `pr_status` row
+    /// whose `(repo, branch)` matches a task's `(worktree_repo, worktree_branch)`
+    /// becomes a `task_prs` link — "PRs open in the worktree, linked to the task"
     /// without a manual step. Existing links are left untouched. Returns how
     /// many links were created.
-    pub fn auto_attach_slot_prs(&self, now_ms: i64) -> Result<usize> {
+    pub fn auto_attach_worktree_prs(&self, now_ms: i64) -> Result<usize> {
         Ok(self.conn.execute(
             "INSERT OR IGNORE INTO task_prs (task_id, repo, number, url, state, checks, state_ts)
              SELECT t.id, p.repo, p.number, p.url, p.state, p.checks, ?1
              FROM tasks t
-             JOIN pr_status p ON p.repo = t.slot_repo AND p.branch = t.slot_branch
-             WHERE t.slot_repo IS NOT NULL AND t.slot_branch IS NOT NULL",
+             JOIN pr_status p ON p.repo = t.worktree_repo AND p.branch = t.worktree_branch
+             WHERE t.worktree_repo IS NOT NULL AND t.worktree_branch IS NOT NULL",
             params![now_ms],
         )?)
     }
 
-    /// The task bound to the worktree at `dir`, if any (a slot belongs to at
+    /// The task bound to the worktree at `dir`, if any (a worktree belongs to at
     /// most one task; if data ever disagrees, the oldest task wins).
-    pub fn task_for_slot_dir(&self, dir: &str) -> Result<Option<TaskItem>> {
+    pub fn task_for_worktree_dir(&self, dir: &str) -> Result<Option<TaskItem>> {
         Ok(self
             .query_tasks(
                 &format!(
-                    "SELECT {TASK_COLS} FROM tasks WHERE slot_dir = ?1
+                    "SELECT {TASK_COLS} FROM tasks WHERE worktree_dir = ?1
                      ORDER BY created_at ASC LIMIT 1"
                 ),
                 params![dir],
@@ -1780,7 +1812,7 @@ impl Store {
 
     // --- Row-mapping helpers ---------------------------------------------
 
-    /// One task by id, with its links and slot binding (the same row shape
+    /// One task by id, with its links and worktree binding (the same row shape
     /// [`Store::open_tasks`] returns).
     pub fn task_by_id(&self, id: i64) -> Result<TaskItem> {
         self.query_tasks(&format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"), [id])?
@@ -1848,18 +1880,18 @@ impl Store {
     fn query_tasks(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<TaskItem>> {
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map(params, |r| {
-            let slot_repo_root: Option<String> = r.get(7)?;
-            let slot_repo: Option<String> = r.get(8)?;
-            let slot_branch: Option<String> = r.get(9)?;
-            let slot_dir: Option<String> = r.get(10)?;
+            let worktree_repo_root: Option<String> = r.get(7)?;
+            let worktree_repo: Option<String> = r.get(8)?;
+            let worktree_branch: Option<String> = r.get(9)?;
+            let worktree_dir: Option<String> = r.get(10)?;
             // Keyed on `repo_root` alone: a repo-bound task with no worktree
-            // yet still has a slot binding, and dropping it here would hide
+            // yet still has a worktree binding, and dropping it here would hide
             // the task's repo from the Board's swimlanes.
-            let slot = slot_repo_root.map(|repo_root| TaskSlot {
+            let worktree = worktree_repo_root.map(|repo_root| TaskWorktree {
                 repo_root,
-                repo: slot_repo,
-                branch: slot_branch,
-                dir: slot_dir,
+                repo: worktree_repo,
+                branch: worktree_branch,
+                dir: worktree_dir,
             });
             Ok(TaskItem {
                 id: r.get(0)?,
@@ -1869,7 +1901,7 @@ impl Store {
                 created_at: r.get(4)?,
                 completed_at: r.get(5)?,
                 notes: r.get(6)?,
-                slot,
+                worktree,
                 issues: Vec::new(),
                 prs: Vec::new(),
             })
@@ -2494,11 +2526,11 @@ mod tests {
     }
 
     #[test]
-    fn slot_binding_set_lookup_and_detach() {
+    fn worktree_binding_set_lookup_and_detach() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("slot-backed", "doing", None, 1).unwrap();
-        assert!(t.slot.is_none());
-        s.set_task_slot(
+        let t = s.add_task("worktree-backed", "doing", None, 1).unwrap();
+        assert!(t.worktree.is_none());
+        s.set_task_worktree(
             t.id,
             "/repos/x",
             Some("o/x"),
@@ -2507,32 +2539,32 @@ mod tests {
         )
         .unwrap();
 
-        let bound = s.task_for_slot_dir("/repos/x/.claude/worktrees/feat-y").unwrap().unwrap();
+        let bound = s.task_for_worktree_dir("/repos/x/.claude/worktrees/feat-y").unwrap().unwrap();
         assert_eq!(bound.id, t.id);
-        let slot = bound.slot.unwrap();
-        assert_eq!(slot.repo_root, "/repos/x");
-        assert_eq!(slot.repo.as_deref(), Some("o/x"));
-        assert_eq!(slot.branch.as_deref(), Some("feat/y"));
+        let worktree = bound.worktree.unwrap();
+        assert_eq!(worktree.repo_root, "/repos/x");
+        assert_eq!(worktree.repo.as_deref(), Some("o/x"));
+        assert_eq!(worktree.branch.as_deref(), Some("feat/y"));
 
         // A repo-only rebind (the retry path re-sends the submit-time bind)
         // upserts: `None` means "leave as is", never "clear".
-        s.set_task_slot(t.id, "/repos/x", None, None, None).unwrap();
-        let rebound = s.get_task(t.id).unwrap().unwrap().slot.unwrap();
+        s.set_task_worktree(t.id, "/repos/x", None, None, None).unwrap();
+        let rebound = s.get_task(t.id).unwrap().unwrap().worktree.unwrap();
         assert_eq!(rebound.repo.as_deref(), Some("o/x"));
         assert_eq!(rebound.branch.as_deref(), Some("feat/y"));
         assert_eq!(rebound.dir.as_deref(), Some("/repos/x/.claude/worktrees/feat-y"));
 
         // Removing the worktree detaches the dir but keeps branch + root.
-        let n = s.clear_task_slot_dir("/repos/x/.claude/worktrees/feat-y").unwrap();
+        let n = s.clear_task_worktree_dir("/repos/x/.claude/worktrees/feat-y").unwrap();
         assert_eq!(n, 1);
-        assert!(s.task_for_slot_dir("/repos/x/.claude/worktrees/feat-y").unwrap().is_none());
-        let after = s.get_task(t.id).unwrap().unwrap().slot.unwrap();
+        assert!(s.task_for_worktree_dir("/repos/x/.claude/worktrees/feat-y").unwrap().is_none());
+        let after = s.get_task(t.id).unwrap().unwrap().worktree.unwrap();
         assert_eq!(after.branch.as_deref(), Some("feat/y"));
         assert_eq!(after.dir, None);
         // Clearing an unknown dir is a 0-count no-op; unknown task errors.
-        assert_eq!(s.clear_task_slot_dir("/nope").unwrap(), 0);
+        assert_eq!(s.clear_task_worktree_dir("/nope").unwrap(), 0);
         assert!(matches!(
-            s.set_task_slot(777, "/r", None, Some("b"), None),
+            s.set_task_worktree(777, "/r", None, Some("b"), None),
             Err(Error::TaskNotFound(777))
         ));
     }
@@ -2564,7 +2596,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_attach_slot_prs_links_by_repo_and_branch() {
+    fn auto_attach_worktree_prs_links_by_repo_and_branch() {
         let pr = |branch: &str, number: i64| PrInput {
             repo: "o/x".to_string(),
             number,
@@ -2577,12 +2609,12 @@ mod tests {
             updated_ts: 1,
         };
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("slot task", "doing", None, 1).unwrap();
-        s.set_task_slot(t.id, "/repos/x", Some("o/x"), Some("feat/y"), Some("/w")).unwrap();
-        let other = s.add_task("no slot", "backlog", None, 2).unwrap();
+        let t = s.add_task("worktree task", "doing", None, 1).unwrap();
+        s.set_task_worktree(t.id, "/repos/x", Some("o/x"), Some("feat/y"), Some("/w")).unwrap();
+        let other = s.add_task("no worktree", "backlog", None, 2).unwrap();
 
         s.replace_prs(&[pr("feat/y", 7), pr("other-branch", 8)]).unwrap();
-        let n = s.auto_attach_slot_prs(9).unwrap();
+        let n = s.auto_attach_worktree_prs(9).unwrap();
         assert_eq!(n, 1);
         let got = s.get_task(t.id).unwrap().unwrap();
         assert_eq!(got.prs.len(), 1);
@@ -2590,7 +2622,7 @@ mod tests {
         assert!(s.get_task(other.id).unwrap().unwrap().prs.is_empty());
 
         // Idempotent: a second pass creates nothing new.
-        assert_eq!(s.auto_attach_slot_prs(10).unwrap(), 0);
+        assert_eq!(s.auto_attach_worktree_prs(10).unwrap(), 0);
     }
 
     #[test]
@@ -2713,8 +2745,8 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         let t = s.add_task("port the CLI", "backlog", Some("start with doctor"), 1).unwrap();
         assert_eq!(t.notes.as_deref(), Some("start with doctor"));
-        assert!(t.issues.is_empty() && t.prs.is_empty() && t.slot.is_none());
-        // A slot-backed task is born straight into `doing`.
+        assert!(t.issues.is_empty() && t.prs.is_empty() && t.worktree.is_none());
+        // A worktree-backed task is born straight into `doing`.
         let d = s.add_task("agent already running", "doing", None, 2).unwrap();
         assert_eq!(d.status, "doing");
         assert_eq!(d.completed_at, None);
@@ -2796,7 +2828,7 @@ mod tests {
         assert_eq!(pos(a.id, &tasks), 0);
         assert_eq!(pos(b.id, &tasks), 1);
 
-        // A later drop into the same column lands at the end, not at its old slot.
+        // A later drop into the same column lands at the end, not at its old position.
         s.set_task_status(c.id, "doing", 12).unwrap();
         let tasks = s.snapshot().unwrap().tasks;
         assert_eq!(pos(c.id, &tasks), 2);
@@ -2894,7 +2926,7 @@ mod tests {
         let a = s.add_task("a", "backlog", None, 1).unwrap();
         let b = s.add_task("b", "backlog", None, 2).unwrap();
         let c = s.add_task("c", "backlog", None, 3).unwrap();
-        // Dropping a card onto its own slot leaves the order unchanged.
+        // Dropping a card onto its own position leaves the order unchanged.
         for _ in 0..5 {
             s.set_task_position(b.id, "backlog", 1, 10).unwrap();
         }
@@ -3548,17 +3580,17 @@ mod tests {
     }
 
     #[test]
-    fn update_task_leaves_links_and_slot_intact() {
+    fn update_task_leaves_links_and_worktree_intact() {
         let s = Store::open_in_memory().unwrap();
         let t = s.add_task("wire board", "backlog", None, 1).unwrap();
         s.attach_task_issue(t.id, "o/r", 7, "https://github.com/o/r/issues/7").unwrap();
-        s.set_task_slot(t.id, "/repos/r", Some("o/r"), Some("feat/wire"), Some("/w")).unwrap();
+        s.set_task_worktree(t.id, "/repos/r", Some("o/r"), Some("feat/wire"), Some("/w")).unwrap();
         let updated = s.update_task(t.id, "wire board v2", Some("note")).unwrap();
         assert_eq!(updated.text, "wire board v2");
-        // Editing free-form fields must not disturb links or the slot binding.
+        // Editing free-form fields must not disturb links or the worktree binding.
         assert_eq!(updated.issues.len(), 1);
         assert_eq!(updated.issues[0].number, 7);
-        assert_eq!(updated.slot.unwrap().branch.as_deref(), Some("feat/wire"));
+        assert_eq!(updated.worktree.unwrap().branch.as_deref(), Some("feat/wire"));
     }
 
     #[test]
@@ -3628,7 +3660,12 @@ mod tests {
         for gone in ["repo", "issue_number", "issue_url"] {
             assert!(!cols.contains(&gone.to_string()), "column {gone} should be dropped");
         }
-        for added in ["slot_repo_root", "slot_repo", "slot_branch", "slot_dir"] {
+        for added in [
+            "worktree_repo_root",
+            "worktree_repo",
+            "worktree_branch",
+            "worktree_dir",
+        ] {
             assert!(cols.contains(&added.to_string()), "column {added} should exist");
         }
 
@@ -3668,10 +3705,10 @@ mod tests {
                     created_at INTEGER NOT NULL,
                     completed_at INTEGER,
                     notes TEXT,
-                    slot_repo_root TEXT,
-                    slot_repo TEXT,
-                    slot_branch TEXT,
-                    slot_dir TEXT
+                    worktree_repo_root TEXT,
+                    worktree_repo TEXT,
+                    worktree_branch TEXT,
+                    worktree_dir TEXT
                 );
                 INSERT INTO tasks (text, status, position, due_ts, created_at, notes)
                     VALUES ('was due', 'doing', 1, 1752200000000, 1, 'ctx'),
@@ -3692,5 +3729,50 @@ mod tests {
         drop(s);
         let s = Store::open(&path).unwrap();
         assert_eq!(s.all_tasks().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn migrate_v11_renames_slot_columns_to_worktree_keeping_bindings() {
+        // A v7-era db with the pre-rename slot_* columns and a bound task.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tt.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'backlog',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    completed_at INTEGER,
+                    notes TEXT,
+                    slot_repo_root TEXT,
+                    slot_repo TEXT,
+                    slot_branch TEXT,
+                    slot_dir TEXT
+                );
+                INSERT INTO tasks (text, status, position, created_at,
+                                   slot_repo_root, slot_repo, slot_branch, slot_dir)
+                    VALUES ('bound', 'doing', 0, 1,
+                            '/repos/x', 'o/x', 'feat/y', '/repos/x/wt');",
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        let cols = task_columns(&s);
+        assert!(cols.contains(&"worktree_repo_root".to_string()), "columns renamed");
+        assert!(!cols.iter().any(|c| c.starts_with("slot_")), "no slot_* columns remain");
+        let task = s.all_tasks().unwrap().into_iter().find(|t| t.text == "bound").unwrap();
+        let wt = task.worktree.expect("binding survives the rename");
+        assert_eq!(wt.repo_root, "/repos/x");
+        assert_eq!(wt.branch.as_deref(), Some("feat/y"));
+        assert_eq!(wt.dir.as_deref(), Some("/repos/x/wt"));
+
+        // Idempotent: a second open finds no slot_* columns and is a no-op.
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.all_tasks().unwrap().len(), 1);
     }
 }

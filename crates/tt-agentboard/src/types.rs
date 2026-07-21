@@ -194,7 +194,7 @@ pub struct SessionData {
     pub purpose: Option<String>,
     /// Ports this session's shell saw in the folder's `.env` at spawn time
     /// that it now claims differently (see [`crate::env_drift`]) — e.g. a
-    /// sibling slot's re-render rotated a port this pane already bound to.
+    /// sibling task's re-render rotated a port this pane already bound to.
     /// Empty when nothing has drifted (the common case) or PTY liveness
     /// hasn't been stamped yet. Assembled empty here; the app stamps it from
     /// its terminal registry before emitting, same as `live`.
@@ -202,12 +202,12 @@ pub struct SessionData {
     pub port_drift: Vec<crate::env_drift::PortDrift>,
 }
 
-/// One checkout of a repo on disk (a clone, a worktree, or a slot). Holds 1..N
+/// One checkout of a repo on disk (a clone, a worktree, or a task). Holds 1..N
 /// PTY sessions. Ports the git-stat fields of the old per-repo session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderData {
-    /// Basename (disambiguated on collision) — e.g. "slot-0".
+    /// Basename (disambiguated on collision) — e.g. "task-0".
     pub name: String,
     /// Absolute path to the checkout.
     pub dir: String,
@@ -253,15 +253,15 @@ pub struct FolderData {
     /// overriding the origin/main-or-master auto-detect (folder_meta.json).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
-    /// For a worktree slot only: the ref it was actually created from, read
-    /// from its `.tt-slot` marker (`base=`). Lets the diff pane show what it
+    /// For a worktree only: the ref it was actually created from, read
+    /// from its `.tt-task` marker (`base=`). Lets the diff pane show what it
     /// auto-compares against when `base_branch` has no manual override,
-    /// instead of always claiming "vs main". `None` for a non-slot checkout.
+    /// instead of always claiming "vs main". `None` for a non-task checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slot_base_branch: Option<String>,
+    pub task_base_branch: Option<String>,
     /// The ref `filesChanged`/`linesAdded`/`linesRemoved`/`commitsAhead`/
     /// `commitsBehind` were actually measured against (`GitInfo::compared_base`)
-    /// — e.g. `"origin/main"` or `"origin/docs/readme-slot-clean"`. Empty
+    /// — e.g. `"origin/main"` or `"origin/docs/readme-task-clean"`. Empty
     /// before the folder's git stats have been computed at least once.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub compared_base: String,

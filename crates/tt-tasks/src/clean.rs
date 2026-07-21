@@ -1,9 +1,9 @@
-//! Pure helpers for `tt slot clean`: reading a branch's upstream-tracking
+//! Pure helpers for `tt task clean`: reading a branch's upstream-tracking
 //! state, and deciding which per-checkout state directories are stale. The
 //! orchestration (git calls, removal, directory sweep) lives in
-//! [`crate::ops::clean_slots`].
+//! [`crate::ops::clean_tasks`].
 //!
-//! Whether a slot is *finished* is no longer decided here — that moved to
+//! Whether a task is *finished* is no longer decided here — that moved to
 //! [`crate::landed`], which combines several git signals because the
 //! ancestor-or-`[gone]` rule this module used to apply could not see a squash
 //! merge and treated a deleted remote branch as proof of one.
@@ -19,8 +19,8 @@ pub fn upstream_gone(track: &str) -> bool {
 }
 
 /// Which of the `existing` per-scope state dirs (children of a
-/// `…/towles-tool/slots/` parent; see `tt_config::state_scope`) are stale:
-/// they belong to `repo` — slot scopes are `<repo>-<slot>`, so membership is
+/// `…/towles-tool/tasks/` parent; see `tt_config::state_scope`) are stale:
+/// they belong to `repo` — task scopes are `<repo>-<task>`, so membership is
 /// an anchored `<repo>-` prefix (never a bare substring, so repo `blog`
 /// doesn't claim `blog2-thing`; the main checkout's own scope is its bare
 /// dir name, which the anchored prefix never matches) — but no live checkout
@@ -61,12 +61,12 @@ mod tests {
         let live: BTreeSet<String> = ["demo-primary".to_string(), "demo-wip".to_string()].into();
         let existing = vec![
             "demo-primary".to_string(),    // live primary — kept
-            "demo-wip".to_string(),        // live slot — kept
-            "demo-old-merged".to_string(), // removed slot — stale
+            "demo-wip".to_string(),        // live task — kept
+            "demo-old-merged".to_string(), // removed task — stale
             "demo2-thing".to_string(),     // another repo (anchored!) — kept
             "blog-thing".to_string(),      // another repo — kept
             "demo".to_string(),            // bare repo name, not a scope — kept
-            "demo-".to_string(),           // empty slot part, not a scope — kept
+            "demo-".to_string(),           // empty task part, not a scope — kept
         ];
         assert_eq!(stale_scope_dirs("demo", &live, &existing), vec!["demo-old-merged"]);
     }

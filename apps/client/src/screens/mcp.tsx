@@ -72,8 +72,8 @@ const endpointFor = (port: number) => `http://127.0.0.1:${port}/mcp`;
  *
  * These differ exactly where it matters: a healthy server nobody has called yet
  * reads as idle from the call log alone, and an instance that *lost* the bind
- * race (another slot got the port first) is serving nothing at all while still
- * showing that slot's calls. Only the backend knows which.
+ * race (another task got the port first) is serving nothing at all while still
+ * showing that task's calls. Only the backend knows which.
  */
 function useMcpStatus() {
   const [status, setStatus] = useState<McpStatus | null>(null);
@@ -930,7 +930,7 @@ function prettyJson(body: string): string {
  * One tool's docs: name, description, and its parameters (required ones
  * unmarked, optional ones suffixed `?`) derived straight from its JSON Schema.
  *
- * The `actions` slot is a sibling of the identity cluster, not a child of it,
+ * The `actions` task is a sibling of the identity cluster, not a child of it,
  * so a per-tool control (e.g. a "test this tool" button) drops in without
  * nesting interactive elements — see apps/client/CLAUDE.md's clickable-rows
  * rule.

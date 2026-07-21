@@ -1,11 +1,11 @@
-// Inline new-slot flow: give a goal, pick the base branch, and a branch-named
-// worktree slot is created under the repo's .claude/worktrees/ dir
-// (`slot_create` → tt-slots ops, shared with `tt slot new`). The goal slugs the branch name
+// Inline new-task flow: give a goal, pick the base branch, and a branch-named
+// worktree is created under the repo's .claude/worktrees/ dir
+// (`task_create` → tt-tasks ops, shared with `tt task new`). The goal slugs the branch name
 // (editable). Unlike the old modal this never blocks the rest of the rail —
-// the form hands off to the caller on submit (which fires `slot_create`
-// without awaiting it here) and a `PendingSlotRow` tracks the in-flight
+// the form hands off to the caller on submit (which fires `task_create`
+// without awaiting it here) and a `PendingTaskRow` tracks the in-flight
 // create until it resolves, so switching to other repos/sessions while a
-// slot is being created just works.
+// task is being created just works.
 import {
   AlertTriangle,
   Check,
@@ -53,7 +53,7 @@ import { IssueItem, storeGhIssuesList } from "@/lib/data";
 import { GoalEditor } from "@/components/goal-editor";
 import { errorMessage } from "@/lib/errors";
 import { loadUserSettings, type PromptImprover } from "@/lib/settings";
-import { type BaseBranch, BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
+import { type BaseBranch, BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/task";
 import { invoke } from "@/lib/tauri";
 import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
@@ -83,19 +83,19 @@ const EFFORT_OPTIONS: { value: EffortChoice; label: string }[] = [
   { value: "max", label: "Max" },
 ];
 
-export type NewSlotRepo = {
+export type NewTaskRepo = {
   name: string;
   dir: string;
   key: string;
   /** The repo's git origin URL when known — parsed to `owner/name` so the
-   * created task's slot binding can auto-attach PRs by branch. */
+   * created task's task binding can auto-attach PRs by branch. */
   originUrl?: string | null;
 };
 
 /** The fallback improver when settings can't be read (browser dev) or none are
  * configured: one button reproducing the historic "Suggest name + goal"
  * behavior. Its empty `prompt` makes the backend use its own default
- * instruction (`tt_slots::DEFAULT_SUGGEST_INSTRUCTION`). */
+ * instruction (`tt_tasks::DEFAULT_SUGGEST_INSTRUCTION`). */
 const FALLBACK_IMPROVER: PromptImprover = {
   id: "direct",
   label: "Suggest name + goal",
@@ -122,31 +122,31 @@ export type NewTaskSubmit = {
    * PR (`dynamicFlowPrompt`) — the merge is what closes the board task. */
   dynamic: boolean;
   /** False to create the worktree and its session but leave the PTY at a
-   * bare shell — no `claude` line typed. For work you want the slot for but
+   * bare shell — no `claude` line typed. For work you want the task for but
    * intend to drive yourself. Forces `dynamic` off. */
   launchClaude: boolean;
 };
 
-/** Mirrors the Rust `SlotCreated` payload from `slot_create`. */
-export type SlotCreated = {
+/** Mirrors the Rust `TaskCreated` payload from `task_create`. */
+export type TaskCreated = {
   name: string;
   dir: string;
   branch: string;
   base: string;
-  /** The ref the slot effectively branched from — see `SlotCreatedSchema`. */
+  /** The ref the task effectively branched from — see `TaskCreatedSchema`. */
   baseLabel: string;
   warnings: string[];
 };
 
-/** Mirrors the Rust `BranchCheck` payload from `slot_check_branch`. */
+/** Mirrors the Rust `BranchCheck` payload from `task_check_branch`. */
 export type BranchCheck = {
   name: string | null;
   taken: boolean;
   error: string | null;
 };
 
-/** Mirrors the Rust `SlotSuggestion` payload from `slot_suggest`. */
-export type SlotSuggestion = {
+/** Mirrors the Rust `TaskSuggestion` payload from `task_suggest`. */
+export type TaskSuggestion = {
   branch: string;
   goal: string;
   /** Set when claude couldn't answer and the fields were filled from a
@@ -155,12 +155,12 @@ export type SlotSuggestion = {
   fallback: string | null;
 };
 
-/** A `slot_create` call that's been fired and is running in the background —
- * tracked in the rail as a `PendingSlotRow` instead of a blocking spinner, so
+/** A `task_create` call that's been fired and is running in the background —
+ * tracked in the rail as a `PendingTaskRow` instead of a blocking spinner, so
  * the caller (agentboard.tsx) can keep several of these in flight across
  * different repos at once. Keyed by `${repoKey}::${branch}`, which is unique
  * enough since a branch collision is already rejected before submit. */
-export type PendingSlot = {
+export type PendingTask = {
   id: string;
   repoKey: string;
   repoDir: string;
@@ -175,14 +175,14 @@ export type PendingSlot = {
    * bytes: the files were staged when pasted and outlive the form. */
   imagePaths: string[];
   /** The board task created at submit (#339) — carried so a retry binds the
-   * slot to the same task instead of minting a duplicate card. */
+   * task to the same task instead of minting a duplicate card. */
   taskId?: number;
   /** Carried so a retry launches the same flow the submit asked for. */
   dynamic: boolean;
   /** Carried for the same reason — a retry of a no-Claude create must not
    * suddenly start one. */
   launchClaude: boolean;
-  /** The repo's origin URL, for the task slot binding's `owner/name`. */
+  /** The repo's origin URL, for the task task binding's `owner/name`. */
   repoOriginUrl?: string | null;
   startedAt: number;
   status: "creating" | "error";
@@ -199,10 +199,10 @@ export const BRANCH_SLUG_SOURCE_CHARS = 50;
  * repo where you triage everything and a repo where only your own issues
  * are relevant want different defaults, and both should stick across opens.
  * Defaults to "all" when nothing's stored yet: unlike the Kanban board's
- * import dialog, a new slot is just as often started from someone else's
+ * import dialog, a new task is just as often started from someone else's
  * open issue as from one of your own. */
 function issueScopeKey(repoKey: string): string {
-  return `tt-new-slot-issue-mine:${repoKey}`;
+  return `tt-new-task-issue-mine:${repoKey}`;
 }
 
 function loadIssueScopeMine(repoKey: string): boolean {
@@ -223,7 +223,7 @@ export function goalToBranch(goal: string): string {
 
 /** Issue → branch name: `feat/<number>-<slug>`, keeping this form's own
  * `feat/` prefix (not tt-git's `feature/<number>-<slug>`, which is Cockpit's
- * issue-branch convention on an already-existing checkout, not a new slot)
+ * issue-branch convention on an already-existing checkout, not a new task)
  * so a picked issue produces the same shape of branch name as a typed goal. */
 export function branchFromIssue(number: number, title: string): string {
   const slug = slugify(title.slice(0, BRANCH_SLUG_SOURCE_CHARS));
@@ -233,14 +233,14 @@ export function branchFromIssue(number: number, title: string): string {
 /** The inline goal/branch/base form, embedded directly in the rail under the
  * repo (or, for a solo repo, the merged repo+folder) header whose "+" opened
  * it. Submitting hands the collected input to `onSubmit` and closes — it does
- * not itself wait on `slot_create`, so the parent is free to run that call in
- * the background and represent it with a `PendingSlotRow` instead. */
-export function InlineNewSlot({
+ * not itself wait on `task_create`, so the parent is free to run that call in
+ * the background and represent it with a `PendingTaskRow` instead. */
+export function InlineNewTask({
   repo,
   onCancel,
   onSubmit,
 }: {
-  repo: NewSlotRepo;
+  repo: NewTaskRepo;
   onCancel: () => void;
   onSubmit: (input: NewTaskSubmit) => void;
 }) {
@@ -276,7 +276,7 @@ export function InlineNewSlot({
   const [launchClaude, setLaunchClaude] = useState(true);
   const [branches, setBranches] = useState<BaseBranch[]>([]);
   const [baseOpen, setBaseOpen] = useState(false);
-  // One slot for whatever the form has to say — an error (nothing happened)
+  // One task for whatever the form has to say — an error (nothing happened)
   // or a note (something happened, with a caveat). Modeled as one piece of
   // state because they are mutually exclusive on screen; two would mean every
   // `showError` also had to remember to clear the other one.
@@ -324,7 +324,7 @@ export function InlineNewSlot({
     // against a stale fetch's `.then` landing after a fresh one already has.
     let cancelled = false;
     void invoke<BaseBranch[]>(
-      "slot_base_branches",
+      "task_base_branches",
       { root: repo.dir },
       { schema: BaseBranchesSchema },
     ).then((result) => {
@@ -364,7 +364,7 @@ export function InlineNewSlot({
   }, []);
 
   // Debounced preflight: is `branch` a legal git ref, and would its derived
-  // slot name collide with an existing one? Cheap and read-only, so it's
+  // task name collide with an existing one? Cheap and read-only, so it's
   // safe to fire on every settled keystroke rather than only at submit time.
   useEffect(() => {
     if (!branch) {
@@ -373,7 +373,7 @@ export function InlineNewSlot({
     }
     let cancelled = false;
     const timer = setTimeout(() => {
-      void invoke<BranchCheck>("slot_check_branch", { root: repo.dir, branch }).then((check) => {
+      void invoke<BranchCheck>("task_check_branch", { root: repo.dir, branch }).then((check) => {
         if (!cancelled) setBranchCheck(check.unwrapOr(null));
       });
     }, 300);
@@ -389,7 +389,7 @@ export function InlineNewSlot({
 
   const branchProblem =
     branchCheck?.error ??
-    (branchCheck?.taken ? `a slot named "${branchCheck.name}" already exists` : null);
+    (branchCheck?.taken ? `a task named "${branchCheck.name}" already exists` : null);
 
   // Preferred improvers get their own button; the rest sit under "More". If
   // none are marked preferred, showing an empty row and hiding everything
@@ -417,7 +417,7 @@ export function InlineNewSlot({
     setSuggesting(improver.id);
     setNotice(null);
     uiAction("task.improve_prompt", "agentboard", improver.id);
-    const suggestion = await invoke<SlotSuggestion>("slot_suggest", {
+    const suggestion = await invoke<TaskSuggestion>("task_suggest", {
       dir: repo.dir,
       goal,
       imagePaths,
@@ -451,7 +451,7 @@ export function InlineNewSlot({
   }
 
   // Issue list follows the repo this form is open for and the assignee
-  // toggle, and only loads once the picker is opened — a slot is created far
+  // toggle, and only loads once the picker is opened — a task is created far
   // more often by typing a goal than by picking an issue, so there's no
   // reason to shell `gh` on every form mount.
   useEffect(() => {
@@ -507,7 +507,7 @@ export function InlineNewSlot({
   // Screenshots are how a lot of goals actually get described ("make it look
   // like this", "this is the error"), so the goal field takes an image paste
   // directly. The bytes are held here until submit, then staged as files
-  // outside the repo (`tt_slots::pasted`) whose paths go into Claude's
+  // outside the repo (`tt_tasks::pasted`) whose paths go into Claude's
   // opening prompt.
   // Two paths can attach the same image (the DOM paste event on platforms
   // that populate it, and the host-clipboard read below), so adding is
@@ -535,7 +535,7 @@ export function InlineNewSlot({
     }
     setStaging(true);
     const staged = await invoke<string[]>(
-      "slot_write_pasted_images",
+      "task_write_pasted_images",
       {
         repo: repo.name,
         branch: draftScope,
@@ -718,7 +718,7 @@ export function InlineNewSlot({
               <img
                 src={img.previewUrl}
                 alt={img.name}
-                title={`${img.name} — attached to the new slot's first prompt`}
+                title={`${img.name} — attached to the new task's first prompt`}
                 className="size-12 rounded border border-border object-cover"
               />
               <button
@@ -945,12 +945,12 @@ export function InlineNewSlot({
         </Select>
       </div>
       <label
-        htmlFor="new-slot-launch-claude"
+        htmlFor="new-task-launch-claude"
         className="flex cursor-pointer items-start gap-2"
         title="Off: create the worktree and its terminal session but leave it at a bare shell — nothing is typed into the PTY. The goal still becomes the board card and the session's label."
       >
         <Checkbox
-          id="new-slot-launch-claude"
+          id="new-task-launch-claude"
           checked={launchClaude}
           onCheckedChange={(v) => {
             const on = v === true;
@@ -963,16 +963,16 @@ export function InlineNewSlot({
           className="mt-0.5"
         />
         <span className="text-[11px] leading-snug text-muted-foreground">
-          Start Claude on the goal — off leaves the new slot at a bare shell
+          Start Claude on the goal — off leaves the new task at a bare shell
         </span>
       </label>
       <label
-        htmlFor="new-slot-dynamic"
+        htmlFor="new-task-dynamic"
         className="flex cursor-pointer items-start gap-2 has-disabled:cursor-not-allowed"
         title="Launches Claude in plan mode. Once you approve its plan in the terminal, it implements the work, runs /code-review low --fix and /simplify, rebases on the base branch, opens the PR, and merges it — the board task closes when the merge lands."
       >
         <Checkbox
-          id="new-slot-dynamic"
+          id="new-task-dynamic"
           checked={dynamic}
           disabled={!launchClaude}
           onCheckedChange={(v) => setDynamic(v === true)}
@@ -999,7 +999,7 @@ export function InlineNewSlot({
         <Button
           variant="outline"
           size="sm"
-          title="Create the board task without a worktree — attach a slot later by starting it again"
+          title="Create the board task without a worktree — attach a task later by starting it again"
           disabled={!goal.trim() && selectedIssues.length === 0}
           onClick={() => submit(false)}
         >
@@ -1013,17 +1013,17 @@ export function InlineNewSlot({
   );
 }
 
-/** A `slot_create` call in flight (or failed), rendered inline in the rail at
+/** A `task_create` call in flight (or failed), rendered inline in the rail at
  * the same tier as a `FolderHeader` — the new folder it'll become once the
  * worktree + setup finish. Never resizes the layout around a modal; the rest
  * of the rail stays fully interactive while this sits here. */
-export function PendingSlotRow({
+export function PendingTaskRow({
   pending,
   now,
   onRetry,
   onDismiss,
 }: {
-  pending: PendingSlot;
+  pending: PendingTask;
   now: number;
   onRetry: (id: string) => void;
   onDismiss: (id: string) => void;
@@ -1046,7 +1046,7 @@ export function PendingSlotRow({
         </span>
         {pending.imagePaths.length > 0 && (
           <span
-            title={`${pending.imagePaths.length} pasted image${pending.imagePaths.length === 1 ? "" : "s"} — attached to this slot's first prompt, and kept for a retry`}
+            title={`${pending.imagePaths.length} pasted image${pending.imagePaths.length === 1 ? "" : "s"} — attached to this task's first prompt, and kept for a retry`}
             className="flex shrink-0 items-center gap-0.5 font-mono text-[10.5px] text-muted-foreground/70"
           >
             <Paperclip className="size-2.5" />
@@ -1058,7 +1058,7 @@ export function PendingSlotRow({
         </span>
       </div>
       {pending.status === "creating" ? (
-        <span className="pl-[22px] text-[11px] text-muted-foreground/70">creating slot…</span>
+        <span className="pl-[22px] text-[11px] text-muted-foreground/70">creating task…</span>
       ) : (
         <div className="flex flex-wrap items-center gap-2 pl-[22px]">
           <span className="text-[11px] text-red-500">{pending.error}</span>

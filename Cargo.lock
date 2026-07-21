@@ -5347,7 +5347,7 @@ dependencies = [
  "tt-claude-code",
  "tt-config",
  "tt-exec",
- "tt-slots",
+ "tt-tasks",
 ]
 
 [[package]]
@@ -5391,8 +5391,8 @@ dependencies = [
  "tt-journal",
  "tt-mcp",
  "tt-otel",
- "tt-slots",
  "tt-store",
+ "tt-tasks",
  "tt-update",
  "tt-vt",
  "uuid",
@@ -5437,11 +5437,12 @@ dependencies = [
  "tt-collect",
  "tt-config",
  "tt-exec",
+ "tt-git",
  "tt-journal",
  "tt-mcp",
  "tt-otel",
- "tt-slots",
  "tt-store",
+ "tt-tasks",
 ]
 
 [[package]]
@@ -5555,7 +5556,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "tt-slots"
+name = "tt-store"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "tt-config",
+]
+
+[[package]]
+name = "tt-tasks"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
@@ -5568,20 +5583,6 @@ dependencies = [
  "tt-config",
  "tt-exec",
  "tt-git",
-]
-
-[[package]]
-name = "tt-store"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "tt-config",
 ]
 
 [[package]]

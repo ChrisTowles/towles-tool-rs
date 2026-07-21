@@ -45,25 +45,25 @@ of what this repo does, Desktop now does as well.
   ![Claude Desktop confirming it can't see highlighted/selected code in an editor](docs/images/wishlist/claude-desktop-no-editor-selection.png)
 
 - **Cross-repo work board.** Board is a kanban of tasks spanning every watched
-  repo. Each task links 0..N issues, 0..N PRs, and usually a worktree slot,
+  repo. Each task links 0..N issues, 0..N PRs, and usually a worktree,
   and done rolls up from GitHub PR state. Desktop has nothing like it. Its
   "tasks pane" holds background subagents inside a single session, and no
   cross-repo surface exists.
 
 - **Always-on local event log.** Every subprocess and user action lands as
   JSONL at `<data_dir>/telemetry/events-<date>.jsonl`, rotated daily, tagged
-  with `tt.slot`, queryable with `jq`, and never sent anywhere. Desktop's
+  with `tt.task`, queryable with `jq`, and never sent anywhere. Desktop's
   OpenTelemetry surface is more configurable than this repo's, but it exports
   to a collector you run. I found no sign of an on-disk log that is on by
   default, though I read strings in the bundle rather than watching it run.
 
-- **Per-slot port isolation.** Both tools put worktrees in
+- **Per-task port isolation.** Both tools put worktrees in
   `.claude/worktrees/`. The difference is that `${tt:port A-B}` claims in
-  `.env.example` render each slot its own `.env`, so ten slots run ten dev
+  `.env.example` render each task its own `.env`, so ten tasks run ten dev
   servers without colliding. Desktop's `.worktreeinclude` copies gitignored
   files verbatim, which hands every worktree the same port.
 
-- **Squash-merge-aware landing detection.** The `landed` module in `tt-slots`
+- **Squash-merge-aware landing detection.** The `landed` module in `tt-tasks`
   separates uncommitted changes from commits that never reached base, and only
   content-based proof authorizes `git branch -D`. Desktop auto-archives a
   worktree once its PR merges or closes, which covers the common case but
@@ -103,7 +103,7 @@ What it owns is the seam on either side of the harness:
 
 - **Handing work in.** A new task should cost one gesture: goal → branch →
   isolated worktree with its own ports, agent already started on the goal.
-  That's `tt slot` and the Agentboard `+` button.
+  That's `tt task` and the Agentboard `+` button.
 - **Understanding the work coming out.** Which session needs you *right now*,
   what each one did, what it cost in tokens, and a real terminal to drop into
   when it's your turn — without re-reading every line an agent wrote.
@@ -137,26 +137,26 @@ of a guess.
 the zone while agents work:
 
 - **Agentboard** — the fleet in one rail: every watched repo, its worktree
-  slots, and a live terminal per session, rendered on canvas from a real PTY
+  tasks, and a live terminal per session, rendered on canvas from a real PTY
   (the `tt-vt` engine, built on libghostty-vt). Agent status is *reported,
   never re-rendered*: the app tells you a session needs attention, and you
   interact in the actual terminal, not a reconstruction of it. The `+` button
-  on a repo runs the whole hand-off — goal → branch → new slot, with Claude
+  on a repo runs the whole hand-off — goal → branch → new task, with Claude
   started on the goal.
 - **Cockpit** — the default day home: time until the next meeting (that is the
   entire calendar feature, by design), your PRs with CI status, and the issue
   queue.
-- **Board** — cross-repo kanban of tasks (#339): each links issues/PRs and usually a worktree slot; done rolls up from GitHub.
+- **Board** — cross-repo kanban of tasks (#339): each links issues/PRs and usually a worktree; done rolls up from GitHub.
 - **Claude Sessions** — where the tokens went: per-session accounting, ranked
   waste insights, and a turn/tool drill-down.
 
 **The CLI** (`tt`) is the terminal-native half, and deliberately small: journal
-and notes, worktree slots (`tt slot`), and the headless `collect` entry point
+and notes, worktrees (`tt task`), and the headless `collect` entry point
 the store rides on. There is deliberately no CLI/app
 parity: each feature lands on its natural surface, and the shared logic lives in
 Tauri-free crates that both consume.
 
-> **Status:** in progress. The journal, worktree slots, the data-hub
+> **Status:** in progress. The journal, worktrees, the data-hub
 > store/collectors, the MCP server, the Claude Sessions screen, and the
 > Agentboard screens (with live in-app terminals) are ported. Features land one
 > at a time — see [docs/MIGRATION.md](docs/MIGRATION.md).
@@ -179,28 +179,28 @@ npm install
 npm run dev      # tauri dev — launches the app with the Vite frontend
 ```
 
-Each worktree slot picks its own dev-server port automatically, so multiple
-slots run concurrently.
+Each worktree picks its own dev-server port automatically, so multiple
+tasks run concurrently.
 
 **Run the CLI**
 
 ```sh
-cargo run -p tt-cli -- slot ls
+cargo run -p tt-cli -- task ls
 ```
 
-## Worktree slots
+## Worktree tasks
 
-Slots are the "handing work in" half made concrete: branch-named git worktrees
+Tasks are the "handing work in" half made concrete: branch-named git worktrees
 nested inside the checkout at `.claude/worktrees/<name>/` — Claude Code's
 native worktree location — one per parallel line of work, each with its own
 rendered `.env` (port-pool claims, inherited secrets) so concurrent agents
-never collide on ports or state. Any plain git checkout becomes slot-capable
-with `tt slot init`; slots are ephemeral — created for a branch, removed when
-it merges. Manage them with `tt slot` (`init`, `new`, `ls`, `env`, `rm`,
+never collide on ports or state. Any plain git checkout becomes task-capable
+with `tt task init`; tasks are ephemeral — created for a branch, removed when
+it merges. Manage them with `tt task` (`init`, `new`, `ls`, `env`, `rm`,
 `clean`) — never raw `git worktree`. Claude Code's own worktree surfaces
 (`claude --worktree`, the app's parallel sessions) route through the same
 machinery via the `WorktreeCreate`/`WorktreeRemove` hooks. The Agentboard rail
-shows the whole fleet and can create a slot from its `+` button. Full
+shows the whole fleet and can create a task from its `+` button. Full
 convention and rules: [CLAUDE.md](CLAUDE.md).
 
 ## Claude Code plugin
@@ -227,7 +227,7 @@ A second, separate plugin — `towles-tool-app` (in
 [`packages/app`](packages/app/README.md)) — bridges Claude Code to the
 desktop app itself: it registers the app's MCP server over loopback HTTP
 (board tasks and the calendar family), ships the
-`slot-onboarding` skill (guides onboarding any repo onto worktree slots), and
+`task-onboarding` skill (guides onboarding any repo onto worktrees), and
 a hook that nudges a running app instance to refresh its PR or issue data
 immediately after a `gh pr`/`gh issue` mutation, instead of waiting for its
 normal poll interval. Enable it the same way:
@@ -238,7 +238,7 @@ normal poll interval. Enable it the same way:
 The CLI binary is `tt`. Run any command with `--help` for its flags.
 
 - `journal daily-notes|note|meeting|jot|open|list|search` — filesystem notes with date-token path templates (`today` is an alias for `daily-notes`; `jot` appends a timestamped bullet without opening an editor).
-- `slot init|new|ls|rm|env|clean` — manage worktree slots (see [Worktree slots](#worktree-slots) above). `hook-create`/`hook-remove` are the Claude Code `WorktreeCreate`/`WorktreeRemove` hook shells, not meant to be run by hand.
+- `task init|new|ls|rm|env|clean` — manage worktrees (see [Worktree tasks](#worktree-tasks) above). `hook-create`/`hook-remove` are the Claude Code `WorktreeCreate`/`WorktreeRemove` hook shells, not meant to be run by hand.
 - `collect calendar|issues|prs|slack|all|status|nudge <prs|issues>` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`, and a watched Slack DM; `status` reports each collector's health; `nudge <prs|issues>` makes a running app instance refresh that data immediately instead of waiting for its normal poll interval (used by the `towles-tool-app` plugin's `gh pr`/`gh issue` mutation hook).
 
 ## Crates
@@ -251,9 +251,9 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-git` — git/GitHub helpers (branch names, PR content, issue parsing).
 - `crates/tt-claude-sessions` — session token accounting, ranked waste insights, and the per-session drill-down behind the app's Claude Sessions screen.
 - `crates/tt-doctor` — dependency/environment checks behind the app's Doctor screen.
-- `crates/tt-slots` — the worktree-slot convention: `${tt:...}` env-template renderer with port-pool claims, slot naming/layout, removal guards, and the shared `ops` orchestration behind `tt slot` and the app.
+- `crates/tt-tasks` — the worktree-task convention: `${tt:...}` env-template renderer with port-pool claims, task naming/layout, removal guards, and the shared `ops` orchestration behind `tt task` and the app.
 - `crates/tt-claude-code` — shared Claude Code transcript parsing (session JSONL, titles, token usage, model table).
-- `crates/tt-store` — the data-hub SQLite store (events, board tasks with issue/PR links + slot bindings, issues, PR status, collector freshness).
+- `crates/tt-store` — the data-hub SQLite store (events, board tasks with issue/PR links + task bindings, issues, PR status, collector freshness).
 - `crates/tt-collect` — collectors that fill the store: calendar via `claude -p`, issues/PRs via `gh`, a watched Slack DM via the Slack Web API.
 - `crates/tt-agentboard` — watched-repo and agent-session tracking behind the Agentboard screen.
 - `crates/tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and lockfile schema the app uses to pose as an IDE that Claude Code sessions connect to.
@@ -286,7 +286,7 @@ Features port over selectively per [docs/MIGRATION.md](docs/MIGRATION.md).
 - [docs/MIGRATION.md](docs/MIGRATION.md) — the feature-port backlog
 - [docs/CODING-STANDARDS.md](docs/CODING-STANDARDS.md) — Rust/TypeScript coding standards
 - [e2e/README.md](e2e/README.md) — driving the real app shell (live-drive + regression suite)
-- [CLAUDE.md](CLAUDE.md) — project instructions, architecture, and the worktree-slot workflow
+- [CLAUDE.md](CLAUDE.md) — project instructions, architecture, and the worktree-task workflow
 
 ## License
 

@@ -509,7 +509,7 @@ export function BoardScreen() {
                             "flex min-h-12 flex-col gap-2 rounded-lg border bg-muted/30 p-2",
                             // Highlights the status across every lane, because
                             // that is what a drop actually changes: a card's repo
-                            // comes from its slot/links, so dropping into another
+                            // comes from its worktree/links, so dropping into another
                             // repo's lane can't move it there.
                             dropSlot?.status === status &&
                               "border-violet-500/60 bg-violet-500/5 dark:bg-violet-500/10",
@@ -698,8 +698,8 @@ function Card({
   const RepoGlyph = repoMeta ? repoIcon(repoMeta) : null;
   const identityStyle = { ...accent.edgeStyle, ...accent.surfaceStyle };
   // The identity row's text: `repo · ⎇ branch`, either part optional.
-  const branch = task.slot?.branch;
-  const detached = branch !== undefined && !task.slot?.dir;
+  const branch = task.worktree?.branch;
+  const detached = branch !== undefined && !task.worktree?.dir;
   const identityRowText = [repoLabel, branch && `⎇ ${branch}${detached ? " · detached" : ""}`]
     .filter(Boolean)
     .join(" · ");
@@ -914,7 +914,7 @@ function Card({
       </div>
 
       {/* The identity row: the repo name in flat mode (where no lane header
-          says it), plus the slot branch when one exists — a branchless task in
+          says it), plus the worktree branch when one exists — a branchless task in
           grouped mode renders nothing here, its lane header already identifies
           it. Clickable when the repo has an Agentboard rail row. */}
       {(repoLabel !== undefined || branch) && (
@@ -928,7 +928,7 @@ function Card({
             <button
               type="button"
               onClick={onOpenAgentboard}
-              title={`Open on Agentboard${task.slot?.dir ? ` — ${task.slot.dir}` : ""}`}
+              title={`Open on Agentboard${task.worktree?.dir ? ` — ${task.worktree.dir}` : ""}`}
               className="min-w-0 truncate text-left hover:text-foreground hover:underline"
             >
               {identityRowText}
@@ -936,7 +936,9 @@ function Card({
           ) : (
             <span
               className="min-w-0 truncate"
-              title={task.slot?.dir ?? (branch ? `worktree removed — branch ${branch}` : undefined)}
+              title={
+                task.worktree?.dir ?? (branch ? `worktree removed — branch ${branch}` : undefined)
+              }
             >
               {identityRowText}
             </span>

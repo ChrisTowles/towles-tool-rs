@@ -16,7 +16,7 @@ export type PaletteRepoEntry = {
   folderDir: string;
   /** Repo name, e.g. `octo/widgets` (the rail's logical repo). */
   repoName: string;
-  /** Checkout name — distinguishes worktrees/slots of the same repo. */
+  /** Checkout name — distinguishes worktrees/tasks of the same repo. */
   folderName: string;
   branch: string;
   /** Sessions in this checkout that need attention right now. */

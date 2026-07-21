@@ -1,9 +1,9 @@
 //! Headless pruning of one agentboard instance store (`sessions.json` +
 //! `windows.json`): drop state that references checkouts which no longer
 //! exist on disk. The running app reconciles its *own* store on hydrate (the
-//! client's `pruneWins` + the engine's repo-keyed session prune), but a slot
-//! removed while no app was running — `tt slot rm` in a terminal — leaves
-//! ghost folders behind in every other instance's store. `tt slot clean`
+//! client's `pruneWins` + the engine's repo-keyed session prune), but a task
+//! removed while no app was running — `tt task rm` in a terminal — leaves
+//! ghost folders behind in every other instance's store. `tt task clean`
 //! runs this over the unscoped store plus every surviving scope's.
 
 use std::collections::{BTreeSet, HashSet};

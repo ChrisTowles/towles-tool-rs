@@ -1,8 +1,8 @@
-//! `tt slot` — worktree-slot lifecycle over any git checkout.
+//! `tt task` — worktree-task lifecycle over any git checkout.
 //!
-//! Thin CLI shell: creation/rendering/removal all live in `tt_slots::ops`
-//! (shared with the app's `slot_create`/`slot_remove` commands). See the
-//! tt-slots crate docs for the convention and the `${tt:...}` template
+//! Thin CLI shell: creation/rendering/removal all live in `tt_tasks::ops`
+//! (shared with the app's `task_create`/`task_remove` commands). See the
+//! tt-tasks crate docs for the convention and the `${tt:...}` template
 //! grammar. `hook-create`/`hook-remove` are the Claude Code
 //! WorktreeCreate/WorktreeRemove hook shells — stdin is the hook JSON and
 //! (for create) stdout is *only* the worktree path, per the hook contract.
@@ -11,24 +11,30 @@ use std::fs;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
-use tt_slots::envfile;
-use tt_slots::ops::{self, CleanOpts, CreateOpts, OpsError, RemoveOpts, RemoveOutcome, SlotRoot};
+use tt_tasks::envfile;
+use tt_tasks::ops::{self, CleanOpts, CreateOpts, OpsError, RemoveOpts, RemoveOutcome, TaskRoot};
 
-use crate::cli::SlotCommands;
+use crate::cli::TaskCommands;
 use crate::ui;
 
-pub fn run(command: SlotCommands) -> i32 {
+pub fn run(command: TaskCommands) -> i32 {
     let result = match command {
-        SlotCommands::New { branch, base, json, root } => {
-            cmd_new(&branch, base.as_deref(), json, root.as_deref())
-        }
-        SlotCommands::Ls { json, root } => cmd_ls(json, root.as_deref()),
-        SlotCommands::Rm { name, force, root } => cmd_rm(&name, force, root.as_deref()),
-        SlotCommands::Init { root } => cmd_init(root.as_deref()),
-        SlotCommands::Env { name, root } => cmd_env(&name, root.as_deref()),
-        SlotCommands::Clean { dry_run, json, root } => cmd_clean(dry_run, json, root.as_deref()),
-        SlotCommands::HookCreate => cmd_hook_create(),
-        SlotCommands::HookRemove => cmd_hook_remove(),
+        TaskCommands::New { title, repo, status, notes, branch, base, json } => cmd_new(
+            &title,
+            &repo,
+            &status,
+            notes.as_deref(),
+            branch.as_deref(),
+            base.as_deref(),
+            json,
+        ),
+        TaskCommands::Ls { json, root } => cmd_ls(json, root.as_deref()),
+        TaskCommands::Rm { name, force, root } => cmd_rm(&name, force, root.as_deref()),
+        TaskCommands::Init { root } => cmd_init(root.as_deref()),
+        TaskCommands::Env { name, root } => cmd_env(&name, root.as_deref()),
+        TaskCommands::Clean { dry_run, json, root } => cmd_clean(dry_run, json, root.as_deref()),
+        TaskCommands::HookCreate => cmd_hook_create(),
+        TaskCommands::HookRemove => cmd_hook_remove(),
     };
     match result {
         Ok(()) => 0,
@@ -40,7 +46,7 @@ pub fn run(command: SlotCommands) -> i32 {
 }
 
 /// The hook JSON Claude Code writes to the hook's stdin. TTY-guarded so a
-/// hand-run `tt slot hook-create` fails fast instead of hanging on a read.
+/// hand-run `tt task hook-create` fails fast instead of hanging on a read.
 fn read_hook_input() -> Result<serde_json::Value, String> {
     let mut stdin = std::io::stdin();
     if stdin.is_terminal() {
@@ -57,10 +63,10 @@ fn hook_str<'a>(input: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> 
     keys.iter().find_map(|k| input.get(k).and_then(|v| v.as_str())).filter(|s| !s.is_empty())
 }
 
-/// WorktreeCreate hook: create (or reuse) the slot for the requested name and
+/// WorktreeCreate hook: create (or reuse) the task for the requested name and
 /// print its path — the one line of stdout Claude Code parses. The requested
 /// name IS the branch, verbatim (`claude -w feat/thing` → branch
-/// `feat/thing`, slot folder `feat-thing` — the folder is a one-way slug of
+/// `feat/thing`, task folder `feat-thing` — the folder is a one-way slug of
 /// the branch, never parsed back) — and never the native `worktree-<name>`
 /// scheme or a guessed prefix. Claude Code observed (2.1.210) sends
 /// `{session_id, transcript_path, cwd, hook_event_name, name}` with `cwd`
@@ -79,27 +85,27 @@ fn cmd_hook_create() -> Result<(), String> {
         base: hook_str(&input, &["source_ref"]).map(str::to_string),
         run_setup: true,
     };
-    let dir = match ops::create_slot(&opts) {
+    let dir = match ops::create_task(&opts) {
         Ok(created) => {
             for warning in &created.warnings {
-                eprintln!("tt slot: {warning}");
+                eprintln!("tt task: {warning}");
             }
             created.dir
         }
-        // A slot whose folder already exists is a resume ONLY if it's still
+        // A task whose folder already exists is a resume ONLY if it's still
         // on the requested branch — Claude Code re-enters worktrees by name.
         // Distinct branches can slug to the same folder (`feat/thing` and a
         // literal `feat-thing` both land on `feat-thing`), so this must be
         // checked, not assumed: silently handing back an unrelated branch's
         // worktree would be worse than failing loudly.
-        Err(OpsError::SlotExists { dir, .. }) => {
-            let existing_branch = ops::git_slot(Path::new(&dir), &["branch", "--show-current"])
+        Err(OpsError::TaskExists { dir, .. }) => {
+            let existing_branch = ops::git_task(Path::new(&dir), &["branch", "--show-current"])
                 .ok()
                 .filter(|out| out.ok())
                 .map(|out| out.stdout.trim().to_string());
             if existing_branch.as_deref() != Some(branch.as_str()) {
                 return Err(format!(
-                    "slot folder {dir} already exists on branch {:?}, not the requested {branch:?} \
+                    "task folder {dir} already exists on branch {:?}, not the requested {branch:?} \
                      — its name collides with a different branch's slug",
                     existing_branch.unwrap_or_else(|| "<unreadable>".to_string())
                 ));
@@ -112,8 +118,8 @@ fn cmd_hook_create() -> Result<(), String> {
     Ok(())
 }
 
-/// WorktreeRemove hook: the same guarded removal as `tt slot rm` (never
-/// forced — a slot with unpushed work stays on disk and the refusal lands in
+/// WorktreeRemove hook: the same guarded removal as `tt task rm` (never
+/// forced — a task with unpushed work stays on disk and the refusal lands in
 /// Claude Code's hook log on stderr), plus the agentboard untracking every
 /// removal path owes.
 fn cmd_hook_remove() -> Result<(), String> {
@@ -127,18 +133,18 @@ fn cmd_hook_remove() -> Result<(), String> {
         .ok_or_else(|| format!("bad worktree path {}", path.display()))?
         .to_string();
     if !path.exists() {
-        eprintln!("tt slot: {} is already gone — nothing to remove", path.display());
+        eprintln!("tt task: {} is already gone — nothing to remove", path.display());
         return Ok(());
     }
     let opts = RemoveOpts { root: Some(path.clone()), name, force: false };
-    let removed = match ops::remove_slot(&opts, || {}).map_err(|e| e.to_string())? {
+    let removed = match ops::remove_task(&opts, || {}).map_err(|e| e.to_string())? {
         RemoveOutcome::Removed(r) => r,
         RemoveOutcome::Blocked { name, blocked, messages } => {
             return Err(refusal(&name, &blocked, &messages));
         }
     };
     for message in &removed.messages {
-        eprintln!("tt slot: {message}");
+        eprintln!("tt task: {message}");
     }
     untrack_from_agentboard(&removed.dir);
     Ok(())
@@ -152,48 +158,113 @@ fn untrack_from_agentboard(dir: &Path) {
         &tt_agentboard::repos::default_repos_path(),
         &dir_s,
     ) {
-        eprintln!("tt slot: untracked {dir_s} from the agentboard rail");
+        eprintln!("tt task: untracked {dir_s} from the agentboard rail");
     }
-    detach_task_slot(dir);
+    detach_task_worktree(dir);
 }
 
 /// Detach any board task bound to the removed worktree (#339): clears its
-/// `slot_dir` while the branch stays recorded. Best-effort — the store this
+/// `worktree_dir` while the branch stays recorded. Best-effort — the store this
 /// process resolves may not be the one holding the task (instance state is
 /// per-checkout-scoped), in which case this is a harmless 0-row no-op and
 /// the app's own removal path does the real detach.
-fn detach_task_slot(dir: &Path) {
+fn detach_task_worktree(dir: &Path) {
     let Ok(store) = tt_store::Store::open_default() else {
         return;
     };
-    if let Ok(detached) = store.clear_task_slot_dir(&dir.to_string_lossy())
+    if let Ok(detached) = store.clear_task_worktree_dir(&dir.to_string_lossy())
         && detached > 0
     {
-        eprintln!("tt slot: detached the board task from the removed worktree");
+        eprintln!("tt task: detached the board task from the removed worktree");
     }
 }
 
+/// Create a task (the unit of work): a board-task row PLUS its worktree, in one
+/// shot. Params mirror the MCP `task_create` tool (title/repo/status/notes) and
+/// add the worktree's branch/base, defaulted so `tt task new "Fix login" --repo
+/// myrepo` is enough. The board row is the same store path the app's `+` flow and
+/// MCP `task_create` write; the worktree is the same `ops::create_task` the app's
+/// `task_create` command uses — this is those two flows unified behind one verb.
 fn cmd_new(
-    branch: &str,
+    title: &str,
+    repo: &str,
+    status: &str,
+    notes: Option<&str>,
+    branch: Option<&str>,
     base: Option<&str>,
     json: bool,
-    root: Option<&Path>,
 ) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("a task needs a title".to_string());
+    }
+
+    // Resolve the tracked repo (by name or dir), exactly as MCP `task_create`
+    // does — the worktree is created inside this checkout, and the board row
+    // lands in its swimlane.
+    let repos = tt_agentboard::repos::load_repos(&tt_agentboard::repos::default_repos_path());
+    let entries = tt_agentboard::repos::repo_entries(&repos);
+    let repo_dir = match entries.iter().find(|e| e.dir == repo || e.name == repo) {
+        Some(e) => e.dir.clone(),
+        // A repo not on the rail is still usable when it names a real checkout on
+        // disk — the worktree is created there and the board row records its path.
+        None if Path::new(repo).is_dir() => repo.to_string(),
+        None => {
+            return Err(format!("unknown repo {repo:?} — track it on the Agentboard rail first"));
+        }
+    };
+
+    // The branch defaults to a slug of the title; the task folder slugs it again.
+    let branch = match branch.map(str::trim).filter(|b| !b.is_empty()) {
+        Some(b) => b.to_string(),
+        None => {
+            let slug = tt_git::branch_name::slug(title);
+            if slug.is_empty() {
+                return Err("cannot derive a branch from the title — pass --branch".to_string());
+            }
+            slug
+        }
+    };
+
+    // `--repo` may name any dir inside the checkout (including one of its own
+    // worktrees); `ops::create_task` anchors to the main checkout, so resolve it
+    // here too and bind the board row to *that* — a nested path recorded as
+    // `worktree_repo_root` would key the card to a Board swimlane matching no repo.
+    let sr = ops::discover_root(Some(Path::new(&repo_dir))).map_err(|e| e.to_string())?;
+    let repo_root = sr.checkout.to_string_lossy().to_string();
+
     let opts = CreateOpts {
-        root: root.map(Path::to_path_buf),
-        branch: branch.to_string(),
+        root: Some(sr.checkout.clone()),
+        branch,
         base: base.map(str::to_string),
         run_setup: true,
     };
-    let created = ops::create_slot(&opts).map_err(|e| e.to_string())?;
+    let created = ops::create_task(&opts).map_err(|e| e.to_string())?;
     for warning in &created.warnings {
         ui::warning(warning);
     }
     let dir_s = created.dir.to_string_lossy().to_string();
+
+    // Record the board task and bind it to the repo + the new worktree. A store
+    // that can't open (or a rejected status) is a soft failure: the worktree
+    // exists and is usable, so warn rather than abort.
+    let task_id = match record_board_task(title, status, notes, &repo_root, &created.branch, &dir_s)
+    {
+        Ok(id) => Some(id),
+        Err(e) => {
+            ui::warning(&format!("worktree created, but the board task was not recorded: {e}"));
+            None
+        }
+    };
+
     if json {
         let ports: serde_json::Map<String, serde_json::Value> =
             created.ports.iter().map(|(k, p)| (k.clone(), (*p).into())).collect();
         let value = serde_json::json!({
+            "taskId": task_id,
+            "title": title,
+            "status": status,
+            "repo": repo_root,
             "name": created.name,
             "dir": dir_s,
             "branch": created.branch,
@@ -204,28 +275,57 @@ fn cmd_new(
         });
         println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
     } else {
-        ui::success(&format!("created {} on branch {}", created.name, created.branch));
+        match task_id {
+            Some(id) => ui::success(&format!(
+                "created task #{id} \"{title}\" ({status}) on branch {}",
+                created.branch
+            )),
+            None => ui::success(&format!("created worktree on branch {}", created.branch)),
+        }
         for (key, port) in &created.ports {
             println!("  {key}={port}");
         }
         if created.inherited > 0 {
             println!("  inherited {} key(s) from a sibling checkout", created.inherited);
         }
-        println!("slot: {dir_s}");
+        println!("task: {dir_s}");
     }
     Ok(())
 }
 
-/// Resolve `name` to a checkout dir: `primary` or a dir under `slots/`.
-fn checkout_dir(sr: &SlotRoot, name: &str) -> Result<std::path::PathBuf, String> {
+/// Write the #339 board-task row and bind it to `repo_root` + the new worktree
+/// (`branch`/`dir`). Same store path as the app's `store_add_task` +
+/// `store_task_set_worktree` and MCP `task_create`. Returns the new task id.
+fn record_board_task(
+    title: &str,
+    status: &str,
+    notes: Option<&str>,
+    repo_root: &str,
+    branch: &str,
+    dir: &str,
+) -> Result<i64, String> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let store = tt_store::Store::open_default().map_err(|e| e.to_string())?;
+    let task = store.add_task(title, status, notes, now_ms).map_err(|e| e.to_string())?;
+    store
+        .set_task_worktree(task.id, repo_root, None, Some(branch), Some(dir))
+        .map_err(|e| e.to_string())?;
+    Ok(task.id)
+}
+
+/// Resolve `name` to a checkout dir: `primary` or a dir under `.claude/worktrees/`.
+fn checkout_dir(sr: &TaskRoot, name: &str) -> Result<std::path::PathBuf, String> {
     if name == "primary" || name == sr.checkout.file_name().and_then(|n| n.to_str()).unwrap_or("") {
         return Ok(sr.checkout.clone());
     }
-    let dir = sr.slot_dir(name);
+    let dir = sr.task_dir(name);
     if dir.is_dir() {
         Ok(dir)
     } else {
-        Err(format!("no slot {name} in {}", sr.slots_dir().display()))
+        Err(format!("no task {name} in {}", sr.tasks_dir().display()))
     }
 }
 
@@ -268,7 +368,7 @@ fn cmd_init(root: Option<&Path>) -> Result<(), String> {
 fn cmd_env(name: &str, root: Option<&Path>) -> Result<(), String> {
     let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
     let dir = checkout_dir(&sr, name)?;
-    let summary = ops::render_slot_env(&sr, &dir, None).map_err(|e| e.to_string())?;
+    let summary = ops::render_task_env(&sr, &dir, None).map_err(|e| e.to_string())?;
     for warning in &summary.warnings {
         ui::warning(warning);
     }
@@ -284,7 +384,7 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
     let _ = ops::git_checkout(&sr.checkout, &["worktree", "prune"]);
     let mut checkouts: Vec<(String, std::path::PathBuf, bool)> =
         vec![("primary".to_string(), sr.checkout.clone(), true)];
-    checkouts.extend(sr.slots().into_iter().map(|(name, dir)| (name, dir, false)));
+    checkouts.extend(sr.tasks().into_iter().map(|(name, dir)| (name, dir, false)));
 
     let refs = ops::base_refs(&sr.checkout);
 
@@ -293,7 +393,7 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
         branch: String,
         detached: bool,
         broken: bool,
-        work: tt_slots::landed::WorkState,
+        work: tt_tasks::landed::WorkState,
         /// Rendered STATE cell — each arm below knows which vocabulary applies
         /// to it, so nothing downstream has to re-derive that.
         state: String,
@@ -303,13 +403,13 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
 
     let mut rows = Vec::new();
     for (name, dir, is_primary) in checkouts {
-        let broken = !ops::git_slot(&dir, &["rev-parse", "--is-inside-work-tree"])
+        let broken = !ops::git_task(&dir, &["rev-parse", "--is-inside-work-tree"])
             .map(|o| o.ok())
             .unwrap_or(false);
         let (branch, detached, work, state) = if broken {
             ("BROKEN".to_string(), false, Default::default(), "broken".to_string())
         } else {
-            let current = ops::git_slot(&dir, &["branch", "--show-current"])
+            let current = ops::git_task(&dir, &["branch", "--show-current"])
                 .map(|o| o.stdout.trim().to_string())
                 .unwrap_or_default();
             let uncommitted = ops::uncommitted_count(&dir);
@@ -318,12 +418,12 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
                 // the landed axes are unanswerable — but the orphan count is
                 // base-independent and is exactly the work removal destroys,
                 // so it is measured rather than left at a default 0 that would
-                // report `holdsWork: false` for a slot holding unreachable
+                // report `holdsWork: false` for a task holding unreachable
                 // commits.
-                let sha = ops::git_slot(&dir, &["rev-parse", "--short", "HEAD"])
+                let sha = ops::git_task(&dir, &["rev-parse", "--short", "HEAD"])
                     .map(|o| o.stdout.trim().to_string())
                     .unwrap_or_else(|_| "?".to_string());
-                let work = tt_slots::landed::WorkState {
+                let work = tt_tasks::landed::WorkState {
                     uncommitted,
                     orphaned: ops::orphaned_count(&dir),
                     ..Default::default()
@@ -334,7 +434,7 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
                 // A checkout sitting on the base branch has no line of work to
                 // judge; running it through the landed vocabulary would label
                 // the main checkout "no commits".
-                let work = tt_slots::landed::WorkState { uncommitted, ..Default::default() };
+                let work = tt_tasks::landed::WorkState { uncommitted, ..Default::default() };
                 let state = match uncommitted {
                     0 => "clean".to_string(),
                     n => format!("{n} uncommitted"),
@@ -374,7 +474,7 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
                     "detached": r.detached,
                     "broken": r.broken,
                     // The two axes, separately: work that exists only here and
-                    // dies with the slot, vs commits the base has never seen.
+                    // dies with the task, vs commits the base has never seen.
                     "uncommitted": r.work.uncommitted,
                     "unlanded": r.work.unlanded,
                     "orphaned": r.work.orphaned,
@@ -388,7 +488,7 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
             .collect();
         println!("{}", serde_json::to_string_pretty(&items).unwrap_or_default());
     } else {
-        // Slot names are branch slugs and run long, so the columns are sized to
+        // Task names are branch slugs and run long, so the columns are sized to
         // the actual rows — a fixed width silently shifted every later column
         // out of alignment as soon as one name overflowed it.
         const HEADERS: [&str; 4] = ["CHECKOUT", "BRANCH", "STATE", "PORTS"];
@@ -425,7 +525,7 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
 
 fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
     let opts = RemoveOpts { root: root.map(Path::to_path_buf), name: name.to_string(), force };
-    let removed = match ops::remove_slot(&opts, || {}).map_err(|e| e.to_string())? {
+    let removed = match ops::remove_task(&opts, || {}).map_err(|e| e.to_string())? {
         RemoveOutcome::Removed(r) => r,
         RemoveOutcome::Blocked { name, blocked, messages } => {
             return Err(refusal(&name, &blocked, &messages));
@@ -434,7 +534,7 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
     for message in &removed.messages {
         ui::warning(message);
     }
-    // The slot may be tracked on the agentboard rail (the app tracks slots it
+    // The task may be tracked on the agentboard rail (the app tracks tasks it
     // creates); drop the now-dangling entry so the rail doesn't keep a
     // "missing" ghost with its pane and windows.
     let dir_s = removed.dir.to_string_lossy();
@@ -445,7 +545,7 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
     {
         println!("  untracked from the agentboard rail");
     }
-    detach_task_slot(&removed.dir);
+    detach_task_worktree(&removed.dir);
     ui::success(&format!("removed {} (ports released with its .env)", removed.name));
     Ok(())
 }
@@ -459,7 +559,7 @@ fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
 /// `fetch --prune`, which means the guards judged against stale `origin/*`
 /// refs. Printed above the reasons rather than dropped: a refusal that might
 /// be an artifact of being offline reads exactly like a real one otherwise.
-fn refusal(name: &str, blocked: &[tt_slots::RmBlocked], messages: &[String]) -> String {
+fn refusal(name: &str, blocked: &[tt_tasks::RmBlocked], messages: &[String]) -> String {
     let mut out = format!("refused to remove {name}:");
     for note in messages {
         out.push_str(&format!("\n  note: {note}"));
@@ -467,7 +567,7 @@ fn refusal(name: &str, blocked: &[tt_slots::RmBlocked], messages: &[String]) -> 
     for reason in blocked {
         out.push_str(&format!("\n  {reason}\n    → {}", reason.remedy()));
     }
-    let loses_work = blocked.iter().any(tt_slots::RmBlocked::loses_work);
+    let loses_work = blocked.iter().any(tt_tasks::RmBlocked::loses_work);
     out.push_str(&format!(
         "\n  Re-run with --force to remove anyway{}.",
         if loses_work { " — this discards the work above for good" } else { "" }
@@ -483,20 +583,20 @@ fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), Strin
         scope_parents: bases.scope_parents().to_vec(),
     };
     let report =
-        ops::clean_slots(&opts, tt_config::slot_scope_from_dir).map_err(|e| e.to_string())?;
+        ops::clean_tasks(&opts, tt_config::task_scope_from_dir).map_err(|e| e.to_string())?;
 
-    // Each removed slot may be tracked on the agentboard rail (same rationale
-    // as `tt slot rm`'s untracking below) — drop its now-dangling repos.json
+    // Each removed task may be tracked on the agentboard rail (same rationale
+    // as `tt task rm`'s untracking below) — drop its now-dangling repos.json
     // entry so collectors (`prs`/`issues`) don't keep retrying a gone dir.
     if !dry_run {
         let repos_path = tt_agentboard::repos::default_repos_path();
-        for slot in &report.removed {
-            let dir_s = slot.dir.to_string_lossy();
+        for task in &report.removed {
+            let dir_s = task.dir.to_string_lossy();
             if let Ok((_, true)) = tt_agentboard::repos::remove_repo_persisted(&repos_path, &dir_s)
             {
-                ui::warning(&format!("untracked {} from the agentboard rail", slot.name));
+                ui::warning(&format!("untracked {} from the agentboard rail", task.name));
             }
-            detach_task_slot(&slot.dir);
+            detach_task_worktree(&task.dir);
         }
     }
 
@@ -548,14 +648,14 @@ fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), Strin
         ui::warning(warning);
     }
     let verb = if dry_run { "would remove" } else { "removed" };
-    for slot in &report.removed {
-        ui::success(&format!("{verb} {} ({} — {})", slot.name, slot.branch, slot.reason));
-        for message in &slot.messages {
+    for task in &report.removed {
+        ui::success(&format!("{verb} {} ({} — {})", task.name, task.branch, task.reason));
+        for message in &task.messages {
             println!("  {message}");
         }
     }
-    for slot in &report.kept {
-        println!("kept {} ({}): {}", slot.name, slot.branch, slot.why.join("; "));
+    for task in &report.kept {
+        println!("kept {} ({}): {}", task.name, task.branch, task.why.join("; "));
     }
     if !report.swept_state_dirs.is_empty() {
         let verb = if dry_run { "would sweep" } else { "swept" };
