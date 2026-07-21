@@ -35,7 +35,6 @@ import {
   folderPaneDir,
   isCacheExpiring,
   claudeCommand,
-  applyPromptImprover,
   dynamicFlowPrompt,
   isFolderQuiet,
   isPasteableImage,
@@ -1471,40 +1470,6 @@ describe("dynamicFlowPrompt", () => {
 
   it("never emits a newline — typed into a PTY inside a quoted arg", () => {
     expect(dynamicFlowPrompt("goal", "main")).not.toContain("\n");
-  });
-});
-
-describe("applyPromptImprover", () => {
-  it("substitutes the goal into the {goal} placeholder", () => {
-    expect(applyPromptImprover("Plan: {goal}. Do not edit.", "add dark mode")).toBe(
-      "Plan: add dark mode. Do not edit.",
-    );
-  });
-
-  it("replaces every occurrence of the placeholder", () => {
-    expect(applyPromptImprover("{goal} — really, {goal}", "x")).toBe("x — really, x");
-  });
-
-  it("returns the bare goal for the built-in Goal template", () => {
-    expect(applyPromptImprover("{goal}", "  ship it  ")).toBe("ship it");
-  });
-
-  it("treats a placeholder-less template as a suffix appended after the goal", () => {
-    expect(applyPromptImprover("brainstorm approaches", "add dark mode")).toBe(
-      "add dark mode — brainstorm approaches",
-    );
-  });
-
-  it("stands alone when the goal is empty (image-only ask)", () => {
-    expect(applyPromptImprover("brainstorm approaches", "  ")).toBe("brainstorm approaches");
-  });
-
-  it("returns the bare goal when the template is empty", () => {
-    expect(applyPromptImprover("   ", "add dark mode")).toBe("add dark mode");
-  });
-
-  it("flattens to one line — typed into a PTY inside a quoted arg", () => {
-    expect(applyPromptImprover("line one\nline two: {goal}", "g")).toBe("line one line two: g");
   });
 });
 

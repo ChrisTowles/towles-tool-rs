@@ -36,6 +36,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { COLOR_THEMES, useTheme, type ColorTheme, type Theme } from "@/components/theme-provider";
@@ -748,12 +749,34 @@ function CalendarSourcesEditor({
   );
 }
 
+/** A prompt improver's "Preferred" toggle — whether it gets its own button in
+ * the new-task form or sits under that form's "More" menu. */
+function PreferredToggle({
+  item,
+  patch,
+}: {
+  item: PromptImprover;
+  patch: (next: Partial<PromptImprover>) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+      <Checkbox
+        checked={item.preferred}
+        onCheckedChange={(v) => patch({ preferred: v === true })}
+        aria-label={`Give ${item.label || item.id} its own button`}
+      />
+      Preferred
+    </label>
+  );
+}
+
 /**
  * Editor for the new-task form's prompt improvers (Direct / Plan / Brainstorm by
- * default) — the pre-step that reframes the typed goal into the launch prompt. An
- * improver only shapes the prompt the slot's Claude session opens with — never
- * the `claude` CLI flags — by substituting `{goal}` with the typed goal. Uses the
- * same list editor as the calendar sources.
+ * default) — the buttons that rewrite the goal you typed before the task starts.
+ * Each improver's prompt is the *instruction* handed to `claude -p`, which fills
+ * the form's goal + branch fields with the rewrite. Uses the same list editor as
+ * the calendar sources, plus a per-row "Preferred" toggle deciding which get
+ * their own button vs. sitting under the form's "More" menu.
  */
 function PromptImproversEditor({
   improvers,
@@ -773,7 +796,13 @@ function PromptImproversEditor({
         const label = `Improver ${improvers.length + 1}`;
         onChange([
           ...improvers,
-          { id: nextPromptImproverId(improvers, label), label, enabled: true, prompt: "{goal}" },
+          {
+            id: nextPromptImproverId(improvers, label),
+            label,
+            enabled: true,
+            preferred: true,
+            prompt: "",
+          },
         ]);
         uiAction("prompt_improver.added", "settings");
       }}
@@ -785,21 +814,24 @@ function PromptImproversEditor({
       heading="Prompt improvers"
       description={
         <>
-          The prompt-improver picker in the new-task form — a pre-step that reframes your typed goal
-          before Claude starts. Each improver only changes the <em>prompt</em> the slot's Claude
-          session opens with, never the model, effort, or permission mode. Write{" "}
-          <code>{"{goal}"}</code> where your typed goal should go; a template with no{" "}
-          <code>{"{goal}"}</code> is appended after the goal. Only enabled improvers are offered.
+          The buttons above the branch field in the new-task form. Clicking one runs{" "}
+          <code>claude -p</code> with its prompt as the <em>instruction</em> for how to rewrite the
+          goal you typed, then fills the goal and branch fields with the result — editable, and Undo
+          puts back what was there. So the prompt is an instruction <em>about</em> the task ("turn
+          this into a request for a plan"), not a template containing it. <strong>Preferred</strong>{" "}
+          improvers get their own button; the rest sit under “More”. Nothing here changes the model,
+          effort, or permission mode.
         </>
       }
       addLabel="Add prompt improver"
-      emptyText="No prompt improvers — the new-task form falls back to launching Claude on the bare goal."
+      emptyText="No prompt improvers — the new-task form falls back to a single “Suggest name + goal” button."
       idTitle="Prompt-improver id"
       enableVerb={(t) => `Offer ${t.label || t.id}`}
-      promptPlaceholder="e.g. {goal} — produce a plan first; don't edit any files yet."
+      promptPlaceholder="e.g. Rewrite the task as a request for an implementation plan; research first, don't edit any files yet."
+      rowExtra={PreferredToggle}
       rowWarning={(t) =>
         t.enabled && t.prompt.trim() === ""
-          ? "This improver is on but has no prompt — it would launch Claude on nothing. Add {goal} at least."
+          ? "No instruction — this button falls back to the built-in “restate it in one sentence”."
           : null
       }
     />

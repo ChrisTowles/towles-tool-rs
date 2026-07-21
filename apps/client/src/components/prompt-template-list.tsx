@@ -8,7 +8,7 @@
 // autosave `useUserSettings`). This component renders and reports edits; the
 // parent assigns ids and emits the `uiAction` telemetry on add/remove, since
 // only it knows the store lane / settings key the ids belong to.
-import type { ReactNode } from "react";
+import type { ComponentType, ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,6 +40,7 @@ export function PromptTemplateList<T extends PromptTemplateItem>({
   idTitle = "Settings key",
   enableVerb = (item) => `Enable ${item.label || item.id}`,
   rowWarning,
+  rowExtra: RowExtra,
 }: {
   items: T[];
   /** Report an edited list. `defer` debounces writes behind typed fields. */
@@ -64,6 +65,10 @@ export function PromptTemplateList<T extends PromptTemplateItem>({
   enableVerb?: (item: T) => string;
   /** Optional per-row warning (e.g. enabled but empty), shown under the prompt. */
   rowWarning?: (item: T) => string | null;
+  /** Optional extra control in a row's header (e.g. a "Preferred" checkbox),
+   * rendered just before Remove. A component (not a render prop) so it isn't
+   * redefined on every render; `patch` applies a partial update to that row. */
+  rowExtra?: ComponentType<{ item: T; patch: (next: Partial<T>) => void }>;
 }) {
   const patch = (index: number, next: Partial<T>, opts?: { defer?: boolean }) =>
     onChange(
@@ -107,10 +112,13 @@ export function PromptTemplateList<T extends PromptTemplateItem>({
               <span className="font-mono text-xs text-muted-foreground" title={idTitle}>
                 {item.id}
               </span>
+              <span className="ml-auto flex items-center gap-2">
+                {RowExtra ? <RowExtra item={item} patch={(next) => patch(index, next)} /> : null}
+              </span>
               <Button
                 variant="ghost"
                 size="sm"
-                className="ml-auto text-muted-foreground"
+                className="text-muted-foreground"
                 onClick={() => onRemove(index)}
               >
                 Remove

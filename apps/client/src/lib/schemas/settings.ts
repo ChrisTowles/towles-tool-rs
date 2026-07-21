@@ -43,6 +43,7 @@ const PromptImproverSchema = z
     id: z.string(),
     label: z.string(),
     enabled: z.boolean(),
+    preferred: z.boolean(),
     prompt: z.string(),
   })
   .passthrough();
