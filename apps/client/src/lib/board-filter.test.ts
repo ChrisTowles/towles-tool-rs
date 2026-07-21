@@ -45,7 +45,7 @@ describe("matchesTaskFilter", () => {
     expect(matchesTaskFilter(task({ text: "Fix the bug" }), "tool-rs")).toBe(false);
   });
 
-  it("matches against the task branch", () => {
+  it("matches against the worktree branch", () => {
     const bound = task(
       { text: "Rate limits" },
       { worktree: { repoRoot: "/r", branch: "fix/rate-limit-backoff" } },
@@ -53,7 +53,7 @@ describe("matchesTaskFilter", () => {
     expect(matchesTaskFilter(bound, "rate-limit")).toBe(true);
   });
 
-  it("matches against the task repo — often a card's only repo identity", () => {
+  it("matches against the worktree repo — often a card's only repo identity", () => {
     const bound = task({ text: "Ship it" }, { worktree: { repoRoot: "/r", repo: "octo/blog" } });
     expect(matchesTaskFilter(bound, "blog")).toBe(true);
     expect(matchesTaskFilter(task({ text: "Ship it" }), "blog")).toBe(false);

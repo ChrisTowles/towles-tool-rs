@@ -226,8 +226,15 @@ fn cmd_new(
         }
     };
 
+    // `--repo` may name any dir inside the checkout (including one of its own
+    // worktrees); `ops::create_task` anchors to the main checkout, so resolve it
+    // here too and bind the board row to *that* — a nested path recorded as
+    // `worktree_repo_root` would key the card to a Board swimlane matching no repo.
+    let sr = ops::discover_root(Some(Path::new(&repo_dir))).map_err(|e| e.to_string())?;
+    let repo_root = sr.checkout.to_string_lossy().to_string();
+
     let opts = CreateOpts {
-        root: Some(PathBuf::from(&repo_dir)),
+        root: Some(sr.checkout.clone()),
         branch,
         base: base.map(str::to_string),
         run_setup: true,
@@ -241,7 +248,7 @@ fn cmd_new(
     // Record the board task and bind it to the repo + the new worktree. A store
     // that can't open (or a rejected status) is a soft failure: the worktree
     // exists and is usable, so warn rather than abort.
-    let task_id = match record_board_task(title, status, notes, &repo_dir, &created.branch, &dir_s)
+    let task_id = match record_board_task(title, status, notes, &repo_root, &created.branch, &dir_s)
     {
         Ok(id) => Some(id),
         Err(e) => {
@@ -257,7 +264,7 @@ fn cmd_new(
             "taskId": task_id,
             "title": title,
             "status": status,
-            "repo": repo_dir,
+            "repo": repo_root,
             "name": created.name,
             "dir": dir_s,
             "branch": created.branch,
@@ -309,7 +316,7 @@ fn record_board_task(
     Ok(task.id)
 }
 
-/// Resolve `name` to a checkout dir: `primary` or a dir under `tasks/`.
+/// Resolve `name` to a checkout dir: `primary` or a dir under `.claude/worktrees/`.
 fn checkout_dir(sr: &TaskRoot, name: &str) -> Result<std::path::PathBuf, String> {
     if name == "primary" || name == sr.checkout.file_name().and_then(|n| n.to_str()).unwrap_or("") {
         return Ok(sr.checkout.clone());

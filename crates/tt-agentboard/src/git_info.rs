@@ -1,4 +1,4 @@
-//! Branch / worktree / diff-stat computation with a short cache. Ports §task§-1
+//! Branch / worktree / diff-stat computation with a short cache. Ports slot-1
 //! `runtime/server/git-info.ts`.
 //!
 //! What ports here: the git shell-outs, the porcelain/numstat/ahead-behind

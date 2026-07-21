@@ -77,14 +77,16 @@ Tasks are branch-named git worktrees nested **inside** the checkout at
 `<checkout>/.claude/worktrees/<name>/` — Claude Code's native worktree
 location — one per parallel line of work (a `.tt-task` marker file sits at
 each task's root). Any plain git checkout is task-capable with no
-restructuring: just run `tt task new` from inside it. Tasks are ephemeral:
+restructuring: point `tt task new` at it with `--repo`. Tasks are ephemeral:
 created for a branch, removed when the branch merges. Manage them with
 `tt task` — never raw `git worktree` or new clones. (`git clean -fdx` at the
 checkout root is safe — git skips nested repositories without a second `-f`.)
 
 ```sh
 tt task init                              # onboard a repo: template, .gitignore, worktree hooks, primary .env
-tt task new -b feat/thing [--base <ref>]  # creates .claude/worktrees/feat-thing on that branch
+tt task new "<title>" --repo <name|dir> [-b feat/thing] [--base <ref>] [--status doing] [--notes ...]
+                                          # board task + .claude/worktrees/<branch-slug> in one shot
+                                          # (branch defaults to a slug of the title)
 tt task ls [--json]                       # fleet: main checkout + tasks, branch, dirty, ports
 tt task env <name>                        # (re)render .env — idempotent, keeps claims
 tt task env primary                       # same, for the main checkout
@@ -123,7 +125,8 @@ Rules when working in a task:
   `.git` — never delete, move, or re-clone it. Tasks never work on the
   default branch directly (git itself blocks a second checkout of it while
   the main checkout holds it).
-- **One branch per task, named after it.** `tt task new -b feat/thing`
+- **One branch per task, named after it.**
+  `tt task new "Thing" --repo <r> -b feat/thing`
   creates `.claude/worktrees/feat-thing` (the folder is the slugged branch —
   one-way; the branch is always read from git, never parsed back from the
   folder) (`--base` when not branching off the

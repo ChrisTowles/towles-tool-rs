@@ -621,18 +621,18 @@ mod tests {
 
     #[test]
     fn explicitly_tracked_worktree_siblings_still_nest_by_common_dir() {
-        // /r/§task§-0 and /r/§task§-1 are both explicitly tracked (repos.json),
+        // /r/task-0 and /r/task-1 are both explicitly tracked (repos.json),
         // but they're git-worktree siblings of each other — nesting is a
         // structural git fact (`common_dir`), not a function of how each
         // checkout got onto the rail, so they must still merge into one row.
         let tracker = AgentTracker::new();
         let metadata = SessionMetadataStore::new();
         let mut store = SessionStore::new(None);
-        store.ensure_default("/r/§task§-0", 1);
-        store.ensure_default("/r/§task§-1", 1);
+        store.ensure_default("/r/task-0", 1);
+        store.ensure_default("/r/task-1", 1);
         let mut git = HashMap::new();
         git.insert(
-            "/r/§task§-0".to_string(),
+            "/r/task-0".to_string(),
             GitInfo {
                 common_dir: "/r/shared/.git".into(),
                 is_worktree: false,
@@ -640,7 +640,7 @@ mod tests {
             },
         );
         git.insert(
-            "/r/§task§-1".to_string(),
+            "/r/task-1".to_string(),
             GitInfo {
                 common_dir: "/r/shared/.git".into(),
                 is_worktree: true,
@@ -648,8 +648,8 @@ mod tests {
             },
         );
         let entries = vec![
-            RepoEntry { name: "§task§-0".into(), dir: "/r/§task§-0".into() },
-            RepoEntry { name: "§task§-1".into(), dir: "/r/§task§-1".into() },
+            RepoEntry { name: "task-0".into(), dir: "/r/task-0".into() },
+            RepoEntry { name: "task-1".into(), dir: "/r/task-1".into() },
         ];
         let payload = assemble_state(
             &entries,

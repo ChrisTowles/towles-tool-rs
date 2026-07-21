@@ -1,4 +1,4 @@
-//! Shared serde types. Ports §task§-1 `runtime/shared.ts` +
+//! Shared serde types. Ports slot-1 `runtime/shared.ts` +
 //! `runtime/contracts/agent.ts`.
 //!
 //! All wire types use camelCase field names and the same `type` discriminants as
@@ -207,7 +207,7 @@ pub struct SessionData {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderData {
-    /// Basename (disambiguated on collision) — e.g. "§task§-0".
+    /// Basename (disambiguated on collision) — e.g. "task-0".
     pub name: String,
     /// Absolute path to the checkout.
     pub dir: String,

@@ -134,7 +134,7 @@ mod tests {
                 name: repo.to_string(),
                 origin_url: None,
                 folders: vec![FolderData {
-                    name: format!("{repo}-§task§-0"),
+                    name: format!("{repo}-task-0"),
                     dir: format!("/{repo}"),
                     dir_missing: false,
                     branch: "main".into(),

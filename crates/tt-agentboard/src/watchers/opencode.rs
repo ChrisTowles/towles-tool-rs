@@ -1,4 +1,4 @@
-//! OpenCode agent watcher. Ports §task§-1 `runtime/agents/watchers/opencode.ts` (225).
+//! OpenCode agent watcher. Ports slot-1 `runtime/agents/watchers/opencode.ts` (225).
 //!
 //! Polls OpenCode's SQLite DB (`~/.local/share/opencode/opencode.db`, or
 //! `$OPENCODE_DB_PATH`) — read-only, tolerant of a missing/locked DB (it's

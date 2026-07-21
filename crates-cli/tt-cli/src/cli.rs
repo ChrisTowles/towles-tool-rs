@@ -34,9 +34,9 @@ pub enum Commands {
     /// Collect dashboard data into the local store (calendar, issues, PRs)
     Collect(CollectArgs),
 
-    /// Worktree tasks: a primary checkout (<root>/<repo>-primary, always the
-    /// default branch) plus branch-named worktrees under <root>/tasks/, each
-    /// with rendered per-task ports/env so concurrent tasks never collide
+    /// Worktree tasks: a main checkout (always the default branch) plus
+    /// branch-named worktrees under <checkout>/.claude/worktrees/, each with
+    /// rendered per-task ports/env so concurrent tasks never collide
     Task(TaskArgs),
 }
 

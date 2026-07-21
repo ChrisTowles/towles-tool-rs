@@ -1,4 +1,4 @@
-//! Agent-watcher contract. Ports §task§-1 `runtime/contracts/agent-watcher.ts`
+//! Agent-watcher contract. Ports slot-1 `runtime/contracts/agent-watcher.ts`
 //! (§0 of the watcher spec), reframed for an externally-driven scan tick.
 //!
 //! Deviation from the TS `start(ctx)`/`stop()` (which own a `setInterval` timer):

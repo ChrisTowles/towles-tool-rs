@@ -24,7 +24,7 @@ tt journal search TEXT  # Search entries
 ## Worktree tasks
 
 ```bash
-tt task new -b feat/thing  # Create a task (branch-named worktree + rendered .env)
+tt task new "Do the thing" --repo myrepo -b feat/thing  # board task + branch-named worktree + rendered .env
 tt task ls                 # Fleet: main checkout + tasks, branch, dirty, ports
 tt task rm <name>          # Guarded removal
 tt task clean              # Remove every merged/gone task

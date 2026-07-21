@@ -70,7 +70,7 @@ export type RailRepoRow = {
  * (`RepoData.key`) — the id `openTabWithFocus({ screen: "agentboard", kind:
  * "repo" })` scrolls to. `null` when the task's repo isn't on the rail.
  *
- * Path evidence outranks GitHub identity: a task's task dir / repo root names
+ * Path evidence outranks GitHub identity: a task's worktree dir / repo root names
  * one specific checkout group, while `owner/name` could match a fork tracked
  * under a different local path. Untracked-repo tasks fall through to `null`
  * rather than guessing.

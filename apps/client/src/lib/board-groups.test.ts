@@ -24,7 +24,7 @@ function task(over: Partial<TaskItem> = {}): TaskItem {
 }
 
 describe("taskRepoKey", () => {
-  it("prefers the task's owner/name over every other source", () => {
+  it("prefers the worktree's owner/name over every other source", () => {
     const t = task({
       worktree: { repoRoot: "/code/other", repo: "o/task", branch: "b" },
       issues: [{ repo: "o/issue", number: 1, url: "u", state: "open" }],
@@ -53,18 +53,18 @@ describe("taskRepoKey", () => {
     expect(taskRepoKey(t)).toBe("blog");
   });
 
-  it("keeps a task-bound task in its lane after the worktree is removed", () => {
+  it("keeps a worktree-bound task in its lane after the worktree is removed", () => {
     // `dir` cleared, `repoRoot`/`repo` kept — a detached task must not jump lanes.
     const t = task({ worktree: { repoRoot: "/code/x", repo: "o/x", branch: "feat/y" } });
     expect(taskRepoKey(t)).toBe("o/x");
   });
 
-  it("uses the first issue link when there is no task", () => {
+  it("uses the first issue link when there is no worktree", () => {
     const t = task({ issues: [{ repo: "o/issue", number: 1, url: "u", state: "open" }] });
     expect(taskRepoKey(t)).toBe("o/issue");
   });
 
-  it("uses the first PR link when there is no task and no issue", () => {
+  it("uses the first PR link when there is no worktree and no issue", () => {
     const t = task({ prs: [{ repo: "o/pr", number: 2, url: "u", state: "open", checks: "" }] });
     expect(taskRepoKey(t)).toBe("o/pr");
   });
@@ -116,7 +116,7 @@ describe("groupTasksByRepo", () => {
     expect(groups.find((g) => g.key === "o/x")?.tasks.map((t) => t.id)).toEqual([1, 3]);
   });
 
-  it("groups a task-bound and an issue-linked task together when the repo matches", () => {
+  it("groups a worktree-bound and an issue-linked task together when the repo matches", () => {
     const groups = groupTasksByRepo([
       task({ id: 1, worktree: { repoRoot: "/r", repo: "o/x", branch: "b" } }),
       task({ id: 2, issues: [{ repo: "o/x", number: 9, url: "u", state: "open" }] }),

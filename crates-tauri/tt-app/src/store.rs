@@ -130,11 +130,11 @@ pub fn emit_snapshot_from_app(app: &AppHandle) {
     emit_snapshot(app, &state);
 }
 
-/// Detach any task bound to a removed worktree: clears the task's `task_dir`
-/// (branch + repo root stay as historical fact), re-emitting the snapshot
-/// when something changed. The task-removal seam calls this right where it
-/// already untracks the dir from repos.json. Returns how many tasks were
-/// detached; a task with no task is a 0-count no-op.
+/// Detach any task bound to a removed worktree: clears the task's
+/// `worktree_dir` (branch + repo root stay as historical fact), re-emitting
+/// the snapshot when something changed. The worktree-removal seam calls this
+/// right where it already untracks the dir from repos.json. Returns how many
+/// tasks were detached; a worktree with no task is a 0-count no-op.
 pub fn detach_task_worktree_dir(app: &AppHandle, dir: &str) -> usize {
     let state = app.state::<StoreState>();
     let detached = with_store(&state, |store| {
@@ -143,11 +143,11 @@ pub fn detach_task_worktree_dir(app: &AppHandle, dir: &str) -> usize {
             .map_err(|e| format!("clear_task_worktree_dir failed: {e}"))
     })
     .unwrap_or_else(|e| {
-        eprintln!("task task detach for {dir} failed: {e}");
+        eprintln!("worktree detach for {dir} failed: {e}");
         0
     });
     if detached > 0 {
-        tracing::info!(%dir, count = detached, "task.task_detached");
+        tracing::info!(%dir, count = detached, "task.worktree_detached");
         emit_snapshot(app, &state);
     }
     detached
@@ -163,7 +163,7 @@ pub fn store_snapshot(state: State<StoreState>) -> Result<Snapshot, String> {
 
 /// Add a manually-entered task, then re-emit the snapshot. `status` picks the
 /// column it lands in (quick-add uses `backlog`; the new-task flow creates
-/// task-backed tasks straight into `doing`).
+/// worktree-backed tasks straight into `doing`).
 #[tauri::command]
 pub fn store_add_task(
     app: AppHandle,
@@ -279,7 +279,7 @@ pub fn store_task_set_worktree(
             .set_task_worktree(id, &repo_root, repo.as_deref(), branch.as_deref(), dir.as_deref())
             .map_err(|e| format!("set_task_worktree failed: {e}"))
     })?;
-    tracing::info!(task_id = id, branch = branch.as_deref().unwrap_or(""), "task.task_bound");
+    tracing::info!(task_id = id, branch = branch.as_deref().unwrap_or(""), "task.worktree_bound");
     emit_snapshot(&app, &state);
     Ok(())
 }

@@ -1,4 +1,4 @@
-//! Custom session ordering, persisted to disk. Ports §task§-1
+//! Custom session ordering, persisted to disk. Ports slot-1
 //! `runtime/server/session-order.ts`.
 //!
 //! The persist path is parameterized (tests pass a tempdir); the default

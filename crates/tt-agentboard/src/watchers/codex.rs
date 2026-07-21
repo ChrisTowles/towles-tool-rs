@@ -1,4 +1,4 @@
-//! Codex agent watcher. Ports §task§-1 `runtime/agents/watchers/codex.ts` (370).
+//! Codex agent watcher. Ports slot-1 `runtime/agents/watchers/codex.ts` (370).
 //!
 //! Watches `$CODEX_HOME/sessions/**/*.jsonl` transcripts (default `~/.codex`),
 //! deriving status from transcript events and the working dir from a

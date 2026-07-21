@@ -29,9 +29,35 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
-fn tt() -> Tt {
+/// `tt` with every state path pointed inside `home` under `scope`: tt-config
+/// resolves `~/.config` and the data dir through those, and a *forced* scope
+/// nests the shared stores too — so nothing reaches the real machine files.
+/// The one sandboxing shape in this file; tests that need to inspect the
+/// sandbox pass their own `home`, the rest go through [`tt`].
+fn tt_scoped(home: &Path, scope: &str) -> Tt {
     let mut cmd = Tt::cargo_bin("tt").expect("binary `tt` should build");
-    cmd.env("TT_STATE_SCOPE", "tt-cli-black-box-tests");
+    cmd.env("HOME", home);
+    cmd.env("XDG_DATA_HOME", home.join(".local").join("share"));
+    cmd.env(tt_config::STATE_SCOPE_ENV, scope);
+    cmd
+}
+
+/// One throwaway `$HOME` for the whole suite, alive for the process. `tt task
+/// new` writes a #339 board row through `Store::open_default()`, so without
+/// this the tests would persist rows into the developer's real data dir on
+/// every `cargo test` run.
+fn tt() -> Tt {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let home = HOME.get_or_init(|| tempfile::tempdir().expect("sandbox home"));
+    tt_scoped(home.path(), "tt-cli-black-box-tests")
+}
+
+/// `tt task new` for `branch` in `root`, titled after the branch. The branch is
+/// passed explicitly rather than left to the title slug so the task folder is
+/// the branch slug the assertions look for.
+fn new_task(root: &str, branch: &str) -> Tt {
+    let mut cmd = tt();
+    cmd.args(["task", "new", branch, "--repo", root, "-b", branch]);
     cmd
 }
 
@@ -68,19 +94,7 @@ fn lifecycle_new_env_ls_rm() {
 
     // new -b feat/thing → .claude/worktrees/thing on that branch, rendered
     // .env + marker
-    let out = tt()
-        .args([
-            "task",
-            "new",
-            "feat/thing",
-            "--repo",
-            &root_s,
-            "-b",
-            "feat/thing",
-            "--json",
-        ])
-        .output()
-        .unwrap();
+    let out = new_task(&root_s, "feat/thing").arg("--json").output().unwrap();
     assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
     let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(created["name"], "feat-thing");
@@ -122,34 +136,13 @@ fn lifecycle_new_env_ls_rm() {
     // secrets inheritance: fill this task's SECRET, then create another
     let filled = env.replace("SECRET=", "SECRET=hunter2");
     std::fs::write(task.join(".env"), filled).unwrap();
-    tt().args([
-        "task",
-        "new",
-        "fix/other",
-        "--repo",
-        &root_s,
-        "-b",
-        "fix/other",
-    ])
-    .assert()
-    .success();
+    new_task(&root_s, "fix/other").assert().success();
     let env2 = std::fs::read_to_string(task_dir(&checkout, "fix-other").join(".env")).unwrap();
     assert!(env2.contains("SECRET=hunter2"), "new task inherits sibling secrets: {env2}");
     assert!(!env2.contains(&format!("UI_PORT={ui_port}")), "new task claims a different port");
 
     // a second task for the same branch name is refused
-    tt().args([
-        "task",
-        "new",
-        "feat/thing",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/thing",
-    ])
-    .assert()
-    .failure()
-    .stderr(contains("already exists"));
+    new_task(&root_s, "feat/thing").assert().failure().stderr(contains("already exists"));
 
     // env re-render is idempotent: same port, secrets kept
     tt().args(["task", "env", "feat-thing", "--root", &root_s]).assert().success();
@@ -167,17 +160,7 @@ fn lifecycle_new_env_ls_rm() {
     // running from inside a task anchors at the main checkout — no
     // worktrees-inside-worktrees
     let task_s = task.to_string_lossy().to_string();
-    tt().args([
-        "task",
-        "new",
-        "feat/from-inside",
-        "--repo",
-        &task_s,
-        "-b",
-        "feat/from-inside",
-    ])
-    .assert()
-    .success();
+    new_task(&task_s, "feat/from-inside").assert().success();
     assert!(task_dir(&checkout, "feat-from-inside").is_dir());
     assert!(!task_dir(&task, "feat-from-inside").exists());
     tt().args(["task", "rm", "feat-from-inside", "--root", &root_s]).assert().success();
@@ -220,6 +203,26 @@ fn lifecycle_new_env_ls_rm() {
         .stderr(contains("refusing to remove the primary"));
 }
 
+/// `--repo` may point anywhere inside the checkout — including one of its own
+/// worktrees. The worktree always anchors at the main checkout, and the board
+/// row's `repo` must anchor there too: recorded as the nested path it would key
+/// the Board card to a swimlane matching no repo on the rail.
+#[test]
+fn new_records_the_main_checkout_as_the_repo_even_when_repo_points_inside_a_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+
+    new_task(&root_s, "feat/first").assert().success();
+    let inside = task_dir(&checkout, "feat-first").to_string_lossy().to_string();
+
+    let out = new_task(&inside, "feat/second").arg("--json").output().unwrap();
+    assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(created["repo"], root_s, "the board row binds to the main checkout");
+    assert_eq!(created["dir"], task_dir(&checkout, "feat-second").to_string_lossy().as_ref());
+}
+
 /// A task created with `--base <non-default>` records *that* ref, not the
 /// main checkout's currently-checked-out branch, in both the rendered
 /// `.env`'s `${tt:base}` token and the `.tt-task` marker — and re-rendering
@@ -234,19 +237,8 @@ fn new_with_base_records_the_actual_base_not_the_primary_branch() {
     git(&checkout, &["checkout", "-b", "develop"]);
     git(&checkout, &["checkout", "main"]);
 
-    let out = tt()
-        .args([
-            "task",
-            "new",
-            "feat/off-develop",
-            "--repo",
-            &root_s,
-            "-b",
-            "feat/off-develop",
-            "--base",
-            "develop",
-            "--json",
-        ])
+    let out = new_task(&root_s, "feat/off-develop")
+        .args(["--base", "develop", "--json"])
         .output()
         .unwrap();
     assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
@@ -293,17 +285,7 @@ fn new_fast_forwards_a_base_behind_origin() {
         .unwrap()
         .stdout;
 
-    tt().args([
-        "task",
-        "new",
-        "feat/thing",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/thing",
-    ])
-    .assert()
-    .success();
+    new_task(&root_s, "feat/thing").assert().success();
 
     // the checkout's local `main` was fast-forwarded to match origin...
     let local_head = Command::new("git")
@@ -344,19 +326,11 @@ fn new_warns_but_still_creates_when_base_diverged_from_origin() {
     git(&checkout, &["add", "local.txt"]);
     git(&checkout, &["commit", "-m", "local work"]);
 
-    tt().args([
-        "task",
-        "new",
-        "feat/thing",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/thing",
-    ])
-    .assert()
-    .success()
-    .stdout(contains("diverged from origin/main"))
-    .stdout(contains("could not be fast-forwarded"));
+    new_task(&root_s, "feat/thing")
+        .assert()
+        .success()
+        .stdout(contains("diverged from origin/main"))
+        .stdout(contains("could not be fast-forwarded"));
 
     // creation still succeeds, branching off the checkout's own (unmoved)
     // local main rather than blocking on the divergence
@@ -383,17 +357,7 @@ fn new_works_in_a_repo_with_no_template() {
     let checkout = tmp.path().join("demo");
     let root_s = checkout.to_string_lossy().to_string();
 
-    tt().args([
-        "task",
-        "new",
-        "feat/thing",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/thing",
-    ])
-    .assert()
-    .success();
+    new_task(&root_s, "feat/thing").assert().success();
 
     let task = task_dir(&checkout, "feat-thing");
     assert!(task.join(".tt-task").is_file(), "the task marker must still be written");
@@ -425,20 +389,12 @@ fn new_rolls_back_the_worktree_when_env_render_fails() {
 
     // the error names the template file and the offending line, so the fix
     // is actionable straight from the message
-    tt().args([
-        "task",
-        "new",
-        "feat/thing",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/thing",
-    ])
-    .assert()
-    .failure()
-    .stderr(contains("env template"))
-    .stderr(contains(".env.example"))
-    .stderr(contains("unknown or malformed token"));
+    new_task(&root_s, "feat/thing")
+        .assert()
+        .failure()
+        .stderr(contains("env template"))
+        .stderr(contains(".env.example"))
+        .stderr(contains("unknown or malformed token"));
 
     assert!(!task_dir(&checkout, "feat-thing").exists(), "the worktree must not be left behind");
     let worktrees = Command::new("git")
@@ -457,17 +413,7 @@ fn new_rolls_back_the_worktree_when_env_render_fails() {
     std::fs::write(checkout.join(".env.example"), "NAME=${tt:task-name}\n").unwrap();
     git(&checkout, &["add", ".env.example"]);
     git(&checkout, &["commit", "-m", "fix template"]);
-    tt().args([
-        "task",
-        "new",
-        "feat/thing",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/thing",
-    ])
-    .assert()
-    .success();
+    new_task(&root_s, "feat/thing").assert().success();
 }
 
 #[test]
@@ -476,17 +422,7 @@ fn rm_guards_dirty_and_orphan_commits() {
     let checkout = make_checkout(tmp.path());
     let root_s = checkout.to_string_lossy().to_string();
 
-    tt().args([
-        "task",
-        "new",
-        "feat/work",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/work",
-    ])
-    .assert()
-    .success();
+    new_task(&root_s, "feat/work").assert().success();
     let task = task_dir(&checkout, "feat-work");
 
     // dirty tree refuses — and says what to do about it, not just what's
@@ -520,17 +456,7 @@ fn rm_guards_dirty_and_orphan_commits() {
     assert!(!task.exists());
 
     // --force path: recreate, dirty it, force through
-    tt().args([
-        "task",
-        "new",
-        "feat/redo",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/redo",
-    ])
-    .assert()
-    .success();
+    new_task(&root_s, "feat/redo").assert().success();
     std::fs::write(task_dir(&checkout, "feat-redo").join("junk.txt"), "wip").unwrap();
     tt().args(["task", "rm", "feat-redo", "--force", "--root", &root_s])
         .assert()
@@ -548,17 +474,7 @@ fn rm_reports_unlanded_commits_it_does_not_block_on() {
     let checkout = make_checkout(tmp.path());
     let root_s = checkout.to_string_lossy().to_string();
 
-    tt().args([
-        "task",
-        "new",
-        "feat/unlanded",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/unlanded",
-    ])
-    .assert()
-    .success();
+    new_task(&root_s, "feat/unlanded").assert().success();
     let task = task_dir(&checkout, "feat-unlanded");
     std::fs::write(task.join("kept.txt"), "committed work").unwrap();
     git(&task, &["add", "kept.txt"]);
@@ -592,17 +508,7 @@ fn rm_reports_a_merged_branch_as_having_nothing_outstanding() {
     let checkout = make_checkout(tmp.path());
     let root_s = checkout.to_string_lossy().to_string();
 
-    tt().args([
-        "task",
-        "new",
-        "feat/landed",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/landed",
-    ])
-    .assert()
-    .success();
+    new_task(&root_s, "feat/landed").assert().success();
     let task = task_dir(&checkout, "feat-landed");
     // Two commits: squashing a single commit yields a patch-identical one,
     // which is genuinely indistinguishable from a rebase (and reports as
@@ -628,27 +534,11 @@ fn rm_untracks_the_task_and_removes_its_instance_state() {
     let tmp = tempfile::tempdir().unwrap();
     let checkout = make_checkout(tmp.path());
     let root_s = checkout.to_string_lossy().to_string();
-    // Sandbox every state path: fake HOME (tt-config resolves ~/.config and
-    // the data dir through it) plus a forced TT_STATE_SCOPE — a forced scope
-    // nests shared stores too, so nothing touches the real machine files.
+    // This test asserts on the sandbox's contents, so it needs its own
+    // inspectable `$HOME` rather than the suite's throwaway one.
     let home = tmp.path().join("home");
-    let scope_env: Vec<(&str, String)> = vec![
-        ("HOME", home.to_string_lossy().to_string()),
-        ("XDG_DATA_HOME", home.join(".local").join("share").to_string_lossy().to_string()),
-        (tt_config::STATE_SCOPE_ENV, "rm-test".to_string()),
-    ];
 
-    tt().args([
-        "task",
-        "new",
-        "feat/tracked",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/tracked",
-    ])
-    .assert()
-    .success();
+    new_task(&root_s, "feat/tracked").assert().success();
     let task = task_dir(&checkout, "feat-tracked");
 
     // Give the task checkout this repo's scope marker (committed, so the tree
@@ -679,9 +569,8 @@ fn rm_untracks_the_task_and_removes_its_instance_state() {
     std::fs::create_dir_all(state_dir.join("agentboard")).unwrap();
     std::fs::write(state_dir.join("agentboard").join("sessions.json"), "{}\n").unwrap();
 
-    let mut cmd = tt();
-    cmd.envs(scope_env.iter().map(|(k, v)| (*k, v.as_str())));
-    cmd.args(["task", "rm", "feat-tracked", "--root", &root_s])
+    tt_scoped(&home, "rm-test")
+        .args(["task", "rm", "feat-tracked", "--root", &root_s])
         .assert()
         .success()
         .stdout(contains("untracked from the agentboard rail"))
@@ -716,17 +605,7 @@ fn lockfile_detection_installs_without_declared_setup() {
     let checkout = tmp.path().join("demo");
     let root_s = checkout.to_string_lossy().to_string();
 
-    tt().args([
-        "task",
-        "new",
-        "feat/plain",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/plain",
-    ])
-    .assert()
-    .success();
+    new_task(&root_s, "feat/plain").assert().success();
     assert!(task_dir(&checkout, "feat-plain").join(".env").is_file());
 }
 
@@ -822,17 +701,7 @@ fn hook_remove_is_guarded_like_rm() {
     let checkout = make_checkout(tmp.path());
     let root_s = checkout.to_string_lossy().to_string();
 
-    tt().args([
-        "task",
-        "new",
-        "feat/done",
-        "--repo",
-        &root_s,
-        "-b",
-        "feat/done",
-    ])
-    .assert()
-    .success();
+    new_task(&root_s, "feat/done").assert().success();
     let task = task_dir(&checkout, "feat-done");
     let hook_input = serde_json::json!({
         "hook_event_name": "WorktreeRemove",

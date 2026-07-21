@@ -9,7 +9,7 @@ import type { TaskItem } from "@/lib/data";
 /**
  * Does a task match the quick filter? Case-insensitive substring test over
  * the task's text, its notes, its linked issue/PR repos and numbers, and its
- * task repo + branch. The task repo matters for the swimlane view: it is
+ * worktree repo + branch. The worktree repo matters for the swimlane view: it is
  * often a card's *only* repo identity (bound at submit, before any issue or
  * PR exists), and typing a repo name must match the cards in that repo's
  * lane. The query is trimmed first, so a whitespace-only query matches

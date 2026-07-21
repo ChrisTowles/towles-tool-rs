@@ -98,7 +98,7 @@ pub async fn task_suggest(
         tt_tasks::suggest(&PathBuf::from(dir), &goal, &image_paths, &instruction)
     })
     .await
-    .map_err(|e| format!("task task failed: {e}"))?
+    .map_err(|e| format!("worktree task failed: {e}"))?
     .map_err(|e| e.to_string());
     // A hard failure stays at `warn` — merging the two log sites must not cost
     // the severity an operator filters on.
@@ -142,7 +142,7 @@ pub async fn task_create(
     };
     let created = tauri::async_runtime::spawn_blocking(move || ops::create_task(&opts))
         .await
-        .map_err(|e| format!("task task failed: {e}"))?
+        .map_err(|e| format!("worktree task failed: {e}"))?
         .map_err(|e| e.to_string())?;
     tracing::info!(
         name = %created.name,
@@ -233,7 +233,7 @@ pub async fn task_write_pasted_images(
         pasted::write_images(&base, &scope, &images, now_ms)
     })
     .await
-    .map_err(|e| format!("task task failed: {e}"))?
+    .map_err(|e| format!("worktree task failed: {e}"))?
     .map(|paths| paths.iter().map(|p| p.to_string_lossy().to_string()).collect())
     .map_err(|e| e.to_string())
 }
@@ -248,7 +248,7 @@ pub async fn task_run_setup(dir: String) -> Result<Option<String>, String> {
     tracing::info!(%dir, "task.setup_rerun");
     tauri::async_runtime::spawn_blocking(move || ops::run_setup(&PathBuf::from(dir)))
         .await
-        .map_err(|e| format!("task task failed: {e}"))?
+        .map_err(|e| format!("worktree task failed: {e}"))?
         .map_err(|e| e.to_string())
 }
 
@@ -409,7 +409,7 @@ async fn task_remove_inner(
         .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("task task failed: {e}"))??;
+    .map_err(|e| format!("worktree task failed: {e}"))??;
 
     // A refusal ends here: nothing was removed, so none of the rail teardown
     // below applies — the panes stay put for the user to retry from.
@@ -504,7 +504,7 @@ pub async fn task_stop_port(dir: String, port: u16) -> Result<String, String> {
             ops::stop_task_port(Some(&checkout), &name, port).map_err(|e| e.to_string())
         })
         .await
-        .map_err(|e| format!("task task failed: {e}"))?;
+        .map_err(|e| format!("worktree task failed: {e}"))?;
 
         let span = tracing::Span::current();
         match stopped {

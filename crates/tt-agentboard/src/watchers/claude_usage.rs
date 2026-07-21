@@ -1,4 +1,4 @@
-//! Usage-token extraction for the claude-code watcher. Ports §task§-1
+//! Usage-token extraction for the claude-code watcher. Ports slot-1
 //! `runtime/agents/watchers/claude-usage.ts`.
 
 use tt_claude_code::{CONTEXT_1M, TranscriptEntry, Usage, context_window};

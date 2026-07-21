@@ -5,7 +5,7 @@ description: Onboard a git repo onto tt worktree tasks — unique per-task ports
 
 # Onboard a repo onto tt worktree tasks
 
-Goal: after this, `tt task new -b feat/thing` (or `claude --worktree`) gives
+Goal: after this, `tt task new "Thing" --repo <name|dir> -b feat/thing` (or `claude --worktree`) gives
 every worktree of this repo its own rendered `.env` with unique ports, and
 merged tasks clean up with `tt task rm` / `tt task clean`.
 
@@ -73,7 +73,7 @@ commit lands.
 
 ```sh
 tt task ls                       # primary listed with its claimed ports
-tt task new -b chore/task-smoke  # renders .env, runs setup
+tt task new "Task smoke" --repo . -b chore/task-smoke  # renders .env, runs setup
 tt task rm chore-task-smoke      # guarded removal works
 ```
 

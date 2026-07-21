@@ -48,7 +48,7 @@ and note that I can name substitutions if I disagree with the top 5.
 ## Mode: build
 
 Implement the top 5 (or the 5 I named when invoking build) in parallel using
-worktrees (`tt task new -b <branch>`, see CLAUDE.md's Worktree tasks
+worktrees (`tt task new "<goal>" --repo <r> -b <branch>`, see CLAUDE.md's Worktree tasks
 section) with subagents — one idea per task, each on its own branch off main.
 Do not stop to ask me anything; my only involvement is reviewing the finished
 PRs.

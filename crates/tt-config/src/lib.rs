@@ -679,6 +679,24 @@ enum Scope {
     Forced(String),
 }
 
+/// The directory every per-scope state dir nests under: `<base>/tasks/<scope>`.
+const SCOPE_DIR: &str = "tasks";
+
+/// What [`SCOPE_DIR`] was called before the worktree-"slot"→"task" rename.
+const LEGACY_SCOPE_DIR: &str = "slots";
+
+/// The two unscoped bases every state path is built from — `<data_dir>/
+/// towles-tool` and `~/.config/towles-tool`. The single place either is
+/// derived, so the layout migration and [`instance_state_bases`] can never
+/// disagree about where state lives. Deliberately does *not* call
+/// [`detect_scope`]: the migration runs from inside it.
+fn state_base_dirs() -> (Result<PathBuf>, Result<PathBuf>) {
+    (
+        dirs::data_dir().ok_or(Error::NoDataDir).map(|d| d.join(TOOL_NAME)),
+        home_dir().map(|h| h.join(".config").join(TOOL_NAME)),
+    )
+}
+
 /// One-time best-effort rename of the pre-2026-07-20 `slots/` state parent to
 /// `tasks/` under both the data and config bases — the worktree-"slot"→"task"
 /// vocabulary rename. Renames only when the old dir exists and the new one does
@@ -689,13 +707,10 @@ enum Scope {
 fn ensure_state_layout_migrated() {
     static MIGRATED: std::sync::Once = std::sync::Once::new();
     MIGRATED.call_once(|| {
-        let bases = [
-            dirs::data_dir().map(|d| d.join(TOOL_NAME)),
-            home_dir().ok().map(|h| h.join(".config").join(TOOL_NAME)),
-        ];
-        for base in bases.into_iter().flatten() {
-            let old = base.join("slots");
-            let new = base.join("tasks");
+        let (data, config) = state_base_dirs();
+        for base in [data, config].into_iter().flatten() {
+            let old = base.join(LEGACY_SCOPE_DIR);
+            let new = base.join(SCOPE_DIR);
             if old.is_dir() && !new.exists() {
                 let _ = std::fs::rename(&old, &new);
             }
@@ -783,9 +798,9 @@ fn sanitize_scope(raw: &str) -> String {
 fn nest(base: PathBuf, scope: &Scope, instance: bool) -> PathBuf {
     match scope {
         Scope::None => base,
-        Scope::Auto(s) if instance => base.join("tasks").join(s),
+        Scope::Auto(s) if instance => base.join(SCOPE_DIR).join(s),
         Scope::Auto(_) => base,
-        Scope::Forced(s) => base.join("tasks").join(s),
+        Scope::Forced(s) => base.join(SCOPE_DIR).join(s),
     }
 }
 
@@ -911,7 +926,7 @@ pub struct InstanceStateBases {
 impl InstanceStateBases {
     /// The `tasks/` directories whose children are per-scope state dirs.
     pub fn scope_parents(&self) -> [PathBuf; 2] {
-        [self.data.join("tasks"), self.config.join("tasks")]
+        [self.data.join(SCOPE_DIR), self.config.join(SCOPE_DIR)]
     }
 
     /// The agentboard instance dir for `scope` (`None` = the unscoped store
@@ -919,7 +934,7 @@ impl InstanceStateBases {
     pub fn agentboard_dir(&self, scope: Option<&str>) -> PathBuf {
         match scope {
             None => self.config.join("agentboard"),
-            Some(s) => self.config.join("tasks").join(s).join("agentboard"),
+            Some(s) => self.config.join(SCOPE_DIR).join(s).join("agentboard"),
         }
     }
 }
@@ -927,12 +942,12 @@ impl InstanceStateBases {
 /// Resolve [`InstanceStateBases`] for this machine (or, under a forced
 /// [`STATE_SCOPE_ENV`], for that sandboxed scope).
 pub fn instance_state_bases() -> Result<InstanceStateBases> {
-    let data = dirs::data_dir().ok_or(Error::NoDataDir)?.join(TOOL_NAME);
-    let config = home_dir()?.join(".config").join(TOOL_NAME);
+    let (data, config) = state_base_dirs();
+    let (data, config) = (data?, config?);
     match detect_scope() {
         Scope::Forced(s) => Ok(InstanceStateBases {
-            data: data.join("tasks").join(&s),
-            config: config.join("tasks").join(&s),
+            data: data.join(SCOPE_DIR).join(&s),
+            config: config.join(SCOPE_DIR).join(&s),
         }),
         Scope::None | Scope::Auto(_) => Ok(InstanceStateBases { data, config }),
     }
@@ -962,14 +977,12 @@ pub fn instance_state_dirs_for_scope(scope: &str) -> Vec<PathBuf> {
     if scope.is_empty() {
         return Vec::new();
     }
-    let mut out = Vec::new();
-    if let Ok(home) = home_dir() {
-        out.push(shared_under(home.join(".config").join(TOOL_NAME)).join("tasks").join(&scope));
-    }
-    if let Some(data) = dirs::data_dir() {
-        out.push(shared_under(data.join(TOOL_NAME)).join("tasks").join(&scope));
-    }
-    out
+    let (data, config) = state_base_dirs();
+    [config, data]
+        .into_iter()
+        .flatten()
+        .map(|base| shared_under(base).join(SCOPE_DIR).join(&scope))
+        .collect()
 }
 
 /// Load settings from the standard location, creating defaults if the file is missing.
