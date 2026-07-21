@@ -1770,6 +1770,13 @@ function RepoIdentityRow({
 
   return (
     <div
+      // Give the row the same repo-identity decoration as the rail header — the
+      // colored left edge and (for `tint`) the soft wash — so a repo's chosen
+      // color is visible where you set it, not only after the fact on the rail.
+      // Both are `undefined` for a repo with no color, so plain repos stay
+      // plain. The row isn't sticky, so the wash mixes into `transparent`
+      // (letting the panel show through) rather than an opaque base.
+      style={{ ...accent.edgeStyle, ...accent.surfaceStyle }}
       onDragOver={(e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
@@ -1780,7 +1787,10 @@ function RepoIdentityRow({
         onDropRow();
       }}
       className={cn(
-        "flex items-center gap-2 border-t border-border px-2 py-2 first:border-t-transparent",
+        // `border-l-2 … border-l-transparent` reserves the edge so `edgeStyle`'s
+        // inline `borderLeftColor` has a border to paint and unthemed rows don't
+        // shift width — the same idiom the rail header uses.
+        "flex items-center gap-2 border-t border-l-2 border-border border-l-transparent px-2 py-2 first:border-t-transparent",
         dragging && "opacity-50",
         dropTarget && "border-t-violet-500",
       )}
