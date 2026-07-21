@@ -686,7 +686,8 @@ export function InlineNewSlot({
             void pasteFromHostClipboard();
           }
         }}
-        placeholder="what should this task get done? (# to link an issue, paste a screenshot to attach it)"
+        hint="paste or drop a screenshot to attach it"
+        placeholder="what should this task get done?"
         rows={2}
       />
       {selectedIssues.length > 0 && (

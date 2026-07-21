@@ -77,6 +77,22 @@ export function applyMention(
 }
 
 /**
+ * Insert a `#` at `caret` to start a mention, as the hint button does.
+ *
+ * Adds a leading space when the caret sits against a word, because
+ * {@link mentionQueryAt} only recognises a `#` that starts one — without it the
+ * button would type a character and pointedly do nothing.
+ */
+export function insertMentionTrigger(text: string, caret: number): { text: string; caret: number } {
+  const before = text.slice(0, caret);
+  const insert = before.length > 0 && !/\s$/.test(before) ? " #" : "#";
+  return {
+    text: before + insert + text.slice(caret),
+    caret: caret + insert.length,
+  };
+}
+
+/**
  * Filter issues for a mention query. An all-digit query matches on number
  * (typing `#12` should surface #12 and #123 before anything whose *title*
  * happens to contain "12"); otherwise it's a case-insensitive title match.

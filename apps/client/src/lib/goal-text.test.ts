@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { applyMention, highlightSegments, matchIssues, mentionQueryAt } from "./goal-text";
+import {
+  applyMention,
+  highlightSegments,
+  insertMentionTrigger,
+  matchIssues,
+  mentionQueryAt,
+} from "./goal-text";
 
 describe("highlightSegments", () => {
   it("covers the input exactly, so the overlay can't drift from the textarea", () => {
@@ -74,6 +80,29 @@ describe("applyMention", () => {
     const r = applyMention("fix # now", 4, 5, 7);
     expect(r.text).toBe("fix #7  now");
     expect(r.caret).toBe(7);
+  });
+});
+
+describe("insertMentionTrigger", () => {
+  it("inserts a bare # into empty text", () => {
+    expect(insertMentionTrigger("", 0)).toEqual({ text: "#", caret: 1 });
+  });
+
+  it("spaces the # off a preceding word, or it would not be a mention", () => {
+    const r = insertMentionTrigger("fix the bug", 11);
+    expect(r).toEqual({ text: "fix the bug #", caret: 13 });
+    // The contract that makes the space necessary.
+    expect(mentionQueryAt(r.text, r.caret)).toEqual({ start: 12, query: "" });
+  });
+
+  it("does not double the space when one is already there", () => {
+    expect(insertMentionTrigger("fix ", 4)).toEqual({ text: "fix #", caret: 5 });
+  });
+
+  it("inserts at the caret, keeping the rest of the line", () => {
+    const r = insertMentionTrigger("fix  later", 4);
+    expect(r).toEqual({ text: "fix # later", caret: 5 });
+    expect(mentionQueryAt(r.text, r.caret)).toEqual({ start: 4, query: "" });
   });
 });
 
