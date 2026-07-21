@@ -218,6 +218,7 @@ fn find_tsconfig_dirs(folder: &Path) -> Vec<PathBuf> {
 /// trigger). The diff pane and future editor UI call this.
 #[tauri::command]
 pub fn ide_diagnostics_refresh(app: AppHandle, dir: String) {
+    tracing::info!(%dir, "ide.diagnostics_refresh");
     app.state::<Arc<DiagHub>>().request(Path::new(&dir));
 }
 

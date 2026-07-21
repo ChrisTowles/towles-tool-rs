@@ -4,6 +4,7 @@
 
 #[tauri::command]
 pub async fn doctor_run() -> Result<tt_doctor::DoctorReport, String> {
+    tracing::info!("doctor.run");
     tauri::async_runtime::spawn_blocking(|| {
         let mut report = tt_doctor::run_report();
         // App-only check: it inspects the VT parser linked into *this*

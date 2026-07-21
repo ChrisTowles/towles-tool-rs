@@ -1057,6 +1057,10 @@ pub fn term_focus(state: State<TermState>, term_id: String, focused: bool) {
 /// explicit close).
 #[tauri::command]
 pub fn term_kill(app: AppHandle, term_id: String) {
+    // Signals the shell's processes (SIGHUP/SIGKILL); like `slot_stop_port` it
+    // gets its own record so "which pane did the user close, and when" is a log
+    // query, not a repro. The PTY *spawn* is recorded in `term_start`.
+    tracing::info!(%term_id, "terminal.killed");
     app.state::<TermState>().kill(&term_id);
     notify_agentboard(&app);
 }

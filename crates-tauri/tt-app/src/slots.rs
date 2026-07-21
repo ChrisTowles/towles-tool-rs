@@ -139,6 +139,13 @@ pub async fn slot_create(
         .await
         .map_err(|e| format!("slot task failed: {e}"))?
         .map_err(|e| e.to_string())?;
+    tracing::info!(
+        name = %created.name,
+        branch = %created.branch,
+        base = %created.base_label,
+        warnings = created.warnings.len(),
+        "slot.created"
+    );
     refresh_all_git_info_in_background(&app);
     Ok(SlotCreated {
         name: created.name,
@@ -233,6 +240,7 @@ pub async fn slot_write_pasted_images(
 /// Long-running (an install can take a minute) → off the main thread.
 #[tauri::command]
 pub async fn slot_run_setup(dir: String) -> Result<Option<String>, String> {
+    tracing::info!(%dir, "slot.setup_rerun");
     tauri::async_runtime::spawn_blocking(move || ops::run_setup(&PathBuf::from(dir)))
         .await
         .map_err(|e| format!("slot task failed: {e}"))?

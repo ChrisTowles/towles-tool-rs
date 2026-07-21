@@ -585,6 +585,7 @@ pub fn ide_diff_resolve(
     accepted: bool,
     final_contents: Option<String>,
 ) -> Result<(), String> {
+    tracing::info!(request_id, accepted, "ide.diff_resolved");
     requests.resolve(request_id, accepted, final_contents)
 }
 
@@ -719,6 +720,7 @@ pub fn ide_at_mention(
     state.for_ide_servers(&dir, |server| {
         delivered |= server.at_mention(&abs.to_string_lossy(), lines);
     });
+    tracing::info!(dir = %dir.display(), delivered, "ide.at_mention");
     if delivered {
         Ok(())
     } else {

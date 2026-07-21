@@ -108,6 +108,41 @@ follows is a cross-cutting rule that spans multiple files.
   drop**, so a torn-down pane can never hang the CLI waiting on a review
   decision.
 
+## Telemetry (required for user-gesture commands)
+
+- **Every `#[tauri::command]` triggered by an explicit user gesture must emit
+  its own `tracing` event** — a mutation, a confirm, a delete, or an action
+  that signals a process. This is the backend half of the root CLAUDE.md's
+  "every user action emits its OTel event" mandate (see the `tt-otel` bullet
+  there), and it is not optional: without it the command is invisible in the
+  on-disk event log, and "feature unused" can't be told from "feature
+  uninstrumented" (the gap #363 fixed across ~all `ab_*`/`store_*`/slot/
+  slack/settings/cockpit/ide commands). The rules:
+  - **Name the event for *what changed*, `noun.verb`** (`task.created`,
+    `repo.identity_set`, `session.closed`, `slot.created`) — never reuse
+    `ui.action`. The frontend click already emitted a `ui.action`; a backend
+    event with the same name double-counts the gesture. The two are
+    complementary: `ui.action` records the intent, the command event records
+    the outcome (and catches invocations that never came from a click).
+  - **Record the outcome, not just that it ran** — a `changed`/`count` field,
+    a `from`/`to` pair, or a `started`/`already_running`/`blocked` discriminant
+    where the command can no-op or be refused (see `store_collect_now`,
+    `slot_remove`). Log after the mutation succeeds; a longer-running command
+    that can end three ways uses a span with an `outcome` field
+    (`slot_remove`, `slot_stop_port`).
+  - **Never log content or continuous input** — no note/message/prompt text,
+    no per-keystroke/mouse/scroll/resize/PTY-write events. That's why
+    `slack_dm_send` logs `slack.dm_sent` with *no* text, and the `term_*`
+    input commands emit nothing (the PTY *spawn* is recorded in `term_start`
+    via `tt_exec::record_detached_spawn`, the *kill* in `term_kill`).
+  - **Don't instrument pure reads/pollers** (`*_get`/`*_snapshot`/`ab_get_*`/
+    `app_resource_usage`) or agent-driven status reporters
+    (`ab_set_status`/`ab_set_progress`/`ab_log` come from the PTY agent, not
+    the user) — over-logging buries the signal. A command that already shells
+    out through `tt_exec` (every `gh`/`git`) is covered by that `process.spawn`
+    span, but still add a semantic event when the *user gesture* itself is
+    what you want to be able to query for.
+
 ## Misc
 
 - **`TT_NO_FOCUS_STEAL` skips OS focus-steal on launch** (`lib.rs`'s `run`,

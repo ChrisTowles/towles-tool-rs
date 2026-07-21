@@ -127,6 +127,9 @@ pub async fn slack_dm_send(app: AppHandle, text: String) -> Result<(), String> {
 
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         tt_collect::send_dm(&config, &text)?;
+        // The action, not its content — the message text is deliberately absent
+        // (the event log is plaintext; user content never lands in it).
+        tracing::info!("slack.dm_sent");
         // Best-effort refresh: the send already succeeded, so a store hiccup
         // here must not fail the command — the next scheduled tick catches up.
         if let Ok(store) = tt_store::Store::open_default() {
