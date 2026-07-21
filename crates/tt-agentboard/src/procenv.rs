@@ -179,6 +179,11 @@ pub fn in_scope(_pid: i32, _scope: &InstanceScope) -> bool {
 /// blank until every shell was respawned. Excluding only a present-and-foreign
 /// stamp keeps the shared-`sessions.json` collision guard (two live apps hosting
 /// the same session id) while staying tolerant of unstamped shells.
+///
+/// Reached only through the Linux `session_id_in_scope` (and the tests); gated
+/// to match so a macOS build — which has no `/proc` caller — doesn't see it as
+/// dead code.
+#[cfg(any(target_os = "linux", test))]
 fn scoped_session_id(bytes: &[u8], scope: &InstanceScope) -> Option<String> {
     let sid = read_var_from_environ(bytes, TT_SESSION_ENV).filter(|s| !s.is_empty())?;
     match scope {
@@ -191,6 +196,9 @@ fn scoped_session_id(bytes: &[u8], scope: &InstanceScope) -> Option<String> {
 }
 
 /// Extract a variable's value from NUL-separated `KEY=VALUE` environ bytes.
+///
+/// Same gating as [`scoped_session_id`], its only non-test caller.
+#[cfg(any(target_os = "linux", test))]
 fn read_var_from_environ(bytes: &[u8], key: &str) -> Option<String> {
     let prefix = format!("{key}=");
     bytes.split(|&b| b == 0).find_map(|entry| {

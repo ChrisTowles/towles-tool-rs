@@ -22,8 +22,13 @@ use tt_slots::pasted::{self, PastedImage};
 /// The preview surface's rectangle in CSS pixels (`getBoundingClientRect`
 /// relative to the viewport), plus the `devicePixelRatio` that scales it into
 /// the snapshot surface's device-pixel space.
+///
+/// Only the Linux capture path reads these fields; the macOS/Windows
+/// `preview_capture` stub deserializes a `CaptureRect` off the IPC boundary
+/// but ignores it, so mark them non-dead there rather than losing the shape.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct CaptureRect {
     pub x: f64,
     pub y: f64,
