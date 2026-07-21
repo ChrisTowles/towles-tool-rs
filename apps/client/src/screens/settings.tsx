@@ -80,11 +80,14 @@ import { NotInTauri } from "@/lib/errors";
 import { slackListUsers, type SlackUser } from "@/lib/slack";
 import {
   nextCalendarSourceId,
+  nextPromptImproverId,
   useUserSettings,
   type CalendarSource,
+  type PromptImprover,
   type SaveState,
   type UserSettings,
 } from "@/lib/settings";
+import { PromptTemplateList } from "@/components/prompt-template-list";
 import { DEFAULT_TERMINAL_FONT_SIZE, clampTerminalFontSize } from "@/lib/terminal-prefs";
 import { SHORTCUTS, shortcutKeys, type ShortcutScope } from "@/lib/shortcuts";
 import { useAppVersion } from "@/lib/version";
@@ -701,32 +704,27 @@ function CalendarSourcesEditor({
   /** Commits the debounced write behind the typed label/prompt fields. */
   onCommit?: () => void;
 }) {
-  const patch = (index: number, next: Partial<CalendarSource>, opts?: { defer?: boolean }) =>
-    onChange(
-      sources.map((s, i) => (i === index ? { ...s, ...next } : s)),
-      opts,
-    );
-
-  const add = () => {
-    const label = `Calendar ${sources.length + 1}`;
-    onChange([
-      ...sources,
-      { id: nextCalendarSourceId(sources, label), label, enabled: false, prompt: "" },
-    ]);
-    uiAction("calendar.source_added", "settings");
-  };
-
-  const remove = (index: number) => {
-    const removed = sources[index];
-    onChange(sources.filter((_, i) => i !== index));
-    uiAction("calendar.source_removed", "settings", removed?.id);
-  };
-
   return (
-    <div className="flex flex-col gap-3">
-      <div>
-        <div className="text-sm font-medium">Calendars</div>
-        <div className="text-sm text-muted-foreground">
+    <PromptTemplateList
+      items={sources}
+      onChange={onChange}
+      onCommit={onCommit}
+      onAdd={() => {
+        const label = `Calendar ${sources.length + 1}`;
+        onChange([
+          ...sources,
+          { id: nextCalendarSourceId(sources, label), label, enabled: false, prompt: "" },
+        ]);
+        uiAction("calendar.source_added", "settings");
+      }}
+      onRemove={(index) => {
+        const removed = sources[index];
+        onChange(sources.filter((_, i) => i !== index));
+        uiAction("calendar.source_removed", "settings", removed?.id);
+      }}
+      heading="Calendars"
+      description={
+        <>
           Each enabled calendar is pulled with its own <code>claude -p</code> prompt and stored
           separately, so several calendars merge into one timeline. The prompt must answer with only
           a JSON array of{" "}
@@ -734,68 +732,77 @@ function CalendarSourcesEditor({
           <code>[]</code>. Times are RFC 3339 with the calendar's own UTC offset (
           <code>2026-07-20T15:00:00-05:00</code>) — keep the offset rather than converting, so a
           meeting booked as 3pm somewhere still reads that way.
-        </div>
-      </div>
+        </>
+      }
+      addLabel="Add calendar"
+      emptyText="No calendars configured — the collector has nothing to pull."
+      idTitle="Store lane id"
+      enableVerb={(s) => `Pull ${s.label || s.id}`}
+      promptPlaceholder="Prompt claude with how to list today's events for this calendar, and what JSON to answer with."
+      rowWarning={(s) =>
+        s.enabled && s.prompt.trim() === ""
+          ? "This calendar is on but has no prompt — it will be reported as a failed run until you write one."
+          : null
+      }
+    />
+  );
+}
 
-      {sources.length === 0 ? (
-        <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-          No calendars configured — the collector has nothing to pull.
-        </div>
-      ) : null}
-
-      {sources.map((source, index) => (
-        <div key={source.id} className="flex flex-col gap-2 rounded-md border p-3">
-          <div className="flex items-center gap-2">
-            <Switch
-              checked={source.enabled}
-              onCheckedChange={(v) => patch(index, { enabled: v })}
-              aria-label={`Pull ${source.label || source.id}`}
-            />
-            <Input
-              value={source.label}
-              onChange={(e) => patch(index, { label: e.target.value }, { defer: true })}
-              onBlur={onCommit}
-              placeholder="Label"
-              aria-label="Calendar label"
-              className="h-8 max-w-56"
-            />
-            <span className="font-mono text-xs text-muted-foreground" title="Store lane id">
-              {source.id}
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="ml-auto text-muted-foreground"
-              onClick={() => remove(index)}
-            >
-              Remove
-            </Button>
-          </div>
-          <Textarea
-            value={source.prompt}
-            onChange={(e) => patch(index, { prompt: e.target.value }, { defer: true })}
-            onBlur={onCommit}
-            placeholder="Prompt claude with how to list today's events for this calendar, and what JSON to answer with."
-            spellCheck={false}
-            rows={5}
-            className="font-mono text-xs"
-            aria-label={`Prompt for ${source.label || source.id}`}
-          />
-          {source.enabled && source.prompt.trim() === "" ? (
-            <div className="text-xs text-destructive">
-              This calendar is on but has no prompt — it will be reported as a failed run until you
-              write one.
-            </div>
-          ) : null}
-        </div>
-      ))}
-
-      <div>
-        <Button variant="outline" size="sm" onClick={add}>
-          Add calendar
-        </Button>
-      </div>
-    </div>
+/**
+ * Editor for the new-task form's prompt improvers (Direct / Plan / Brainstorm by
+ * default) — the pre-step that reframes the typed goal into the launch prompt. An
+ * improver only shapes the prompt the slot's Claude session opens with — never
+ * the `claude` CLI flags — by substituting `{goal}` with the typed goal. Uses the
+ * same list editor as the calendar sources.
+ */
+function PromptImproversEditor({
+  improvers,
+  onChange,
+  onCommit,
+}: {
+  improvers: PromptImprover[];
+  onChange: (improvers: PromptImprover[], opts?: { defer?: boolean }) => void;
+  onCommit?: () => void;
+}) {
+  return (
+    <PromptTemplateList
+      items={improvers}
+      onChange={onChange}
+      onCommit={onCommit}
+      onAdd={() => {
+        const label = `Improver ${improvers.length + 1}`;
+        onChange([
+          ...improvers,
+          { id: nextPromptImproverId(improvers, label), label, enabled: true, prompt: "{goal}" },
+        ]);
+        uiAction("prompt_improver.added", "settings");
+      }}
+      onRemove={(index) => {
+        const removed = improvers[index];
+        onChange(improvers.filter((_, i) => i !== index));
+        uiAction("prompt_improver.removed", "settings", removed?.id);
+      }}
+      heading="Prompt improvers"
+      description={
+        <>
+          The prompt-improver picker in the new-task form — a pre-step that reframes your typed goal
+          before Claude starts. Each improver only changes the <em>prompt</em> the slot's Claude
+          session opens with, never the model, effort, or permission mode. Write{" "}
+          <code>{"{goal}"}</code> where your typed goal should go; a template with no{" "}
+          <code>{"{goal}"}</code> is appended after the goal. Only enabled improvers are offered.
+        </>
+      }
+      addLabel="Add prompt improver"
+      emptyText="No prompt improvers — the new-task form falls back to launching Claude on the bare goal."
+      idTitle="Prompt-improver id"
+      enableVerb={(t) => `Offer ${t.label || t.id}`}
+      promptPlaceholder="e.g. {goal} — produce a plan first; don't edit any files yet."
+      rowWarning={(t) =>
+        t.enabled && t.prompt.trim() === ""
+          ? "This improver is on but has no prompt — it would launch Claude on nothing. Add {goal} at least."
+          : null
+      }
+    />
   );
 }
 
@@ -1165,6 +1172,28 @@ function agentboardSections(
   ];
   if (settings) {
     rows.push(
+      {
+        label: "Prompt improvers",
+        keywords: [
+          "prompt",
+          "improver",
+          "improve",
+          "goal",
+          "plan",
+          "brainstorm",
+          "template",
+          "new task",
+        ],
+        node: (
+          <PromptImproversEditor
+            improvers={settings.promptImprovers ?? []}
+            onChange={(improvers, opts) =>
+              update((s) => ({ ...s, promptImprovers: improvers }), opts)
+            }
+            onCommit={() => void flush()}
+          />
+        ),
+      },
       {
         label: "Needs-you notifications",
         keywords: ["notification", "desktop", "needs you", "alert"],

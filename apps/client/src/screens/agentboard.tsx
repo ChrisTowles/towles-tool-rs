@@ -61,6 +61,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { SlotCreatedSchema, SlotRemoveOutcomeSchema } from "@/lib/schemas/slots";
 import { cn } from "@/lib/utils";
 import {
+  applyPromptImprover,
   changedFolderDirs,
   ClaudeLaunchOptions,
   claudeCommand,
@@ -1037,6 +1038,7 @@ export function AgentboardScreen() {
         options: input.options,
         imagePaths: input.imagePaths,
         taskId,
+        improverPrompt: input.improverPrompt,
         dynamic: input.dynamic,
         launchClaude: input.launchClaude,
         repoOriginUrl: repo.originUrl,
@@ -1085,9 +1087,13 @@ export function AgentboardScreen() {
     // uses `baseLabel` (`origin/main`, not `main`) because inside the slot's
     // worktree a fetch never advances the *local* base ref: telling the
     // session to rebase onto plain `main` would rebase onto stale history.
+    // A dynamic task wraps the goal with its own delivery pipeline; otherwise
+    // the chosen prompt improver's template frames it (`{goal}` substitution).
+    // The built-in "Direct" template is `"{goal}"`, so this reduces to the bare
+    // goal — the pre-improver behavior — when that improver (or none) is picked.
     const goalPrompt = input.dynamic
       ? dynamicFlowPrompt(input.goal, created.baseLabel)
-      : input.goal;
+      : applyPromptImprover(input.improverPrompt, input.goal);
     const launchOptions: ClaudeLaunchOptions = input.dynamic
       ? { ...input.options, permissionMode: "plan" }
       : input.options;
@@ -1106,6 +1112,8 @@ export function AgentboardScreen() {
         goal: p.goal,
         branch: p.branch,
         base: p.base,
+        improverId: "",
+        improverPrompt: p.improverPrompt,
         options: p.options,
         imagePaths: p.imagePaths,
         // The task already exists — a retry must rebind it, not mint a

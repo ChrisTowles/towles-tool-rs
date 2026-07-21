@@ -10,6 +10,7 @@ const valid = {
     notePathTemplate: "{{date}}-note.md",
     templateDir: "~/journal/templates",
   },
+  promptImprovers: [{ id: "direct", label: "Direct", enabled: true, prompt: "{goal}" }],
   collectors: {
     calendar: {
       enabled: false,

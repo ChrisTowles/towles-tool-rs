@@ -51,6 +51,7 @@ import {
 } from "@/lib/agentboard";
 import { IssueItem, storeGhIssuesList } from "@/lib/data";
 import { errorMessage } from "@/lib/errors";
+import { loadUserSettings, type PromptImprover } from "@/lib/settings";
 import { type BaseBranch, BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
 import { invoke } from "@/lib/tauri";
 import { uiAction } from "@/lib/ui-action";
@@ -90,12 +91,24 @@ export type NewSlotRepo = {
   originUrl?: string | null;
 };
 
+/** localStorage key for the last-picked prompt improver, remembered globally so
+ * the form reopens on whatever improver you last used rather than resetting to
+ * the first every time. */
+const IMPROVER_STORAGE_KEY = "tt-new-slot-prompt-improver";
+
 /** What the new-task form hands its parent on submit. */
 export type NewTaskSubmit = {
   goal: string;
   branch: string;
   base: string;
   options: ClaudeLaunchOptions;
+  /** The chosen prompt improver's id — carried for telemetry and retry. */
+  improverId: string;
+  /** The chosen prompt improver's template (`{goal}` placeholder). The parent
+   * substitutes the goal into it (`applyPromptImprover`) when launching Claude,
+   * unless the task is dynamic — the dynamic flow wraps the goal itself.
+   * Empty/`{goal}` yields the bare goal, i.e. the pre-improver behavior. */
+  improverPrompt: string;
   /** Absolute paths of the already-staged images, not the bytes — they were
    * written to disk when pasted. */
   imagePaths: string[];
@@ -163,6 +176,9 @@ export type PendingSlot = {
   /** The board task created at submit (#339) — carried so a retry binds the
    * slot to the same task instead of minting a duplicate card. */
   taskId?: number;
+  /** The chosen prompt improver's template — carried so a retry wraps the goal
+   * the same way the original submit did. */
+  improverPrompt: string;
   /** Carried so a retry launches the same flow the submit asked for. */
   dynamic: boolean;
   /** Carried for the same reason — a retry of a no-Claude create must not
@@ -247,6 +263,14 @@ export function InlineNewSlot({
   // the user explicitly picks one, so their own defaults apply.
   const [model, setModel] = useState<ModelChoice>(USE_DEFAULT);
   const [effort, setEffort] = useState<EffortChoice>(USE_DEFAULT);
+  // Prompt improvers (Direct / Plan / Brainstorm by default) — loaded from
+  // settings, filtered to the enabled ones. The picked improver only shapes the
+  // launch prompt, never the `claude` flags. `improverId` is remembered globally
+  // so the form reopens on the last-used improver.
+  const [improvers, setImprovers] = useState<PromptImprover[]>([]);
+  const [improverId, setImproverId] = useState<string>(
+    () => localStorage.getItem(IMPROVER_STORAGE_KEY) ?? "",
+  );
   // Off by default: a dynamic task merges its own PR, which is a bigger
   // grant than "start Claude on a goal" — opting in is per-task, never
   // remembered, so it's always a deliberate choice.
@@ -320,6 +344,29 @@ export function InlineNewSlot({
     // caller unmounts the form on cancel/submit rather than hiding it).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo.dir]);
+
+  // Load the enabled prompt improvers once per open. Reads the same shared
+  // settings file the Settings screen writes, so an improver added/edited there
+  // shows up the next time this form opens. Falls back to the built-in Direct
+  // improver if settings can't be read (browser dev) or none are enabled, so the
+  // picker is never empty. Reconciles the remembered `improverId` against what's
+  // actually enabled — a since-removed improver resets to the first.
+  useEffect(() => {
+    let cancelled = false;
+    void loadUserSettings().then((s) => {
+      if (cancelled) return;
+      const enabled = (s?.promptImprovers ?? []).filter((t) => t.enabled);
+      const list =
+        enabled.length > 0
+          ? enabled
+          : [{ id: "direct", label: "Direct", enabled: true, prompt: "{goal}" }];
+      setImprovers(list);
+      setImproverId((prev) => (list.some((t) => t.id === prev) ? prev : list[0].id));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Debounced preflight: is `branch` a legal git ref, and would its derived
   // slot name collide with an existing one? Cheap and read-only, so it's
@@ -538,11 +585,17 @@ export function InlineNewSlot({
         : launchClaude
           ? "task.start"
           : "task.start_no_claude";
-    uiAction(action, "agentboard");
+    // The prompt improver shapes only the launch prompt; a dynamic task wraps
+    // the goal itself, so its improver is irrelevant. `"{goal}"` is the
+    // bare-goal default when nothing's selected or loaded.
+    const selectedImprover = improvers.find((t) => t.id === improverId);
+    uiAction(action, "agentboard", isDynamic ? "dynamic" : selectedImprover?.id);
     onSubmit({
       goal: goal.trim(),
       branch,
       base,
+      improverId: selectedImprover?.id ?? "",
+      improverPrompt: selectedImprover?.prompt ?? "{goal}",
       options: {
         model: model === USE_DEFAULT ? undefined : model,
         effort: effort === USE_DEFAULT ? undefined : effort,
@@ -799,6 +852,39 @@ export function InlineNewSlot({
           </PopoverContent>
         </Popover>
       </div>
+      {improvers.length > 1 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-[10.5px] text-muted-foreground">prompt improver</span>
+          <Select
+            value={improverId}
+            disabled={!launchClaude || dynamic}
+            onValueChange={(v) => {
+              setImproverId(v);
+              localStorage.setItem(IMPROVER_STORAGE_KEY, v);
+            }}
+          >
+            <SelectTrigger
+              className="min-w-0 text-xs"
+              title={
+                dynamic
+                  ? "A dynamic task wraps the goal with its own delivery pipeline — the prompt improver doesn't apply."
+                  : !launchClaude
+                    ? "Start Claude on the goal to choose a prompt improver."
+                    : "How the goal is reframed for Claude — only the prompt changes, not the model/effort/mode."
+              }
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {improvers.map((t) => (
+                <SelectItem key={t.id} value={t.id}>
+                  {t.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <Select value={model} onValueChange={(v) => setModel(v as ModelChoice)}>
           <SelectTrigger className="min-w-0 flex-1 font-mono text-xs">

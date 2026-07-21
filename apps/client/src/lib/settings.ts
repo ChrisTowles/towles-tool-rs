@@ -64,6 +64,38 @@ export function nextCalendarSourceId(sources: CalendarSource[], label: string): 
   }
 }
 
+/**
+ * A **prompt improver**: a pre-step that reframes a new task's typed goal into
+ * the prompt the slot's Claude session opens with (Direct / Plan / Brainstorm by
+ * default). An improver only shapes the *prompt* — never the `claude` CLI flags
+ * — by substituting the literal `{goal}` placeholder in `prompt` with the typed
+ * goal (see `applyPromptImprover` in `lib/agentboard.ts`). User-editable via the
+ * same list editor the calendar sources use; `id` is referenced by the form's
+ * last-picked choice, so it's assigned once and shown read-only.
+ */
+export type PromptImprover = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  prompt: string;
+};
+
+/**
+ * A stable id for a newly added prompt improver, unique among `improvers`. Same
+ * slug rule as {@link nextCalendarSourceId}: the id is a permanent key (the
+ * form's last-picked choice is stored by id), so it must stay stable once
+ * assigned.
+ */
+export function nextPromptImproverId(improvers: PromptImprover[], label: string): string {
+  const taken = new Set(improvers.map((t) => t.id));
+  const base = slugify(label) || "improver";
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
 export type CalendarCollector = {
   enabled: boolean;
   refreshMinutes: number;
@@ -101,6 +133,8 @@ export type CollectorsSettings = {
 export type UserSettings = {
   preferredEditor: string;
   journalSettings: JournalSettings;
+  /** Prompt-improver templates for the new-task form. See {@link PromptImprover}. */
+  promptImprovers: PromptImprover[];
   collectors: CollectorsSettings;
   /**
    * Mostly TS-owned UI block, carried through opaquely so a save never drops

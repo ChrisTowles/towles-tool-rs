@@ -38,6 +38,7 @@ function base(): UserSettings {
       notePathTemplate: "{title}.md",
       templateDir: "",
     },
+    promptImprovers: [],
     collectors: {
       calendar: {
         enabled: false,

@@ -1475,6 +1475,32 @@ export function dynamicFlowPrompt(goal: string, base: string): string {
   ].join("");
 }
 
+/** Apply a prompt-improver template (`PromptImprover.prompt` from settings) to
+ * the typed goal, producing the single PTY line the session opens with.
+ *
+ * The literal `{goal}` placeholder is replaced with the trimmed goal; a template
+ * with no placeholder is treated as a suffix appended after the goal (the same
+ * `goal — …` shape as `dynamicFlowPrompt`), so a hand-written template can't
+ * accidentally drop the goal. The result is flattened to one line: like
+ * `dynamicFlowPrompt`, it's typed into a PTY inside a quoted arg, where a
+ * literal newline drops zsh to PS2.
+ *
+ * An empty template (or the built-in `"{goal}"` Direct improver) returns the
+ * bare goal, i.e. today's behavior. */
+export function applyPromptImprover(template: string, goal: string): string {
+  const trimmed = goal.trim();
+  const t = template.trim();
+  if (!t) return trimmed;
+  if (t.includes("{goal}")) return flattenToPtyLine(t.split("{goal}").join(trimmed));
+  return flattenToPtyLine(trimmed ? `${trimmed} — ${t}` : t);
+}
+
+/** Collapse a template's newlines/indentation into a single space so the result
+ * is one PTY line (a literal newline in a quoted arg drops zsh to PS2). */
+function flattenToPtyLine(s: string): string {
+  return s.replace(/\s*\n\s*/g, " ").trim();
+}
+
 /** MIME types the new-slot form accepts off the clipboard — the same closed
  * set `tt_slots::pasted` writes an extension for. Filtering here means an
  * unsupported paste is ignored at the point of paste (where the user can see

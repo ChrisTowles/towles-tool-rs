@@ -38,6 +38,15 @@ const CalendarSourceSchema = z
   })
   .passthrough();
 
+const PromptImproverSchema = z
+  .object({
+    id: z.string(),
+    label: z.string(),
+    enabled: z.boolean(),
+    prompt: z.string(),
+  })
+  .passthrough();
+
 const CalendarCollectorSchema = z
   .object({
     enabled: z.boolean(),
@@ -103,6 +112,7 @@ export const UserSettingsSchema = z
   .object({
     preferredEditor: z.string(),
     journalSettings: JournalSettingsSchema,
+    promptImprovers: z.array(PromptImproverSchema),
     collectors: CollectorsSettingsSchema,
     agentboard: AgentboardBlockSchema.optional(),
   })
