@@ -1676,7 +1676,7 @@ function RepoManager() {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-7 px-2 text-xs"
+                  className="px-2 text-xs"
                   onClick={() => void track(c.dir)}
                 >
                   Track
@@ -1884,7 +1884,7 @@ function RepoIdentityRow({
 
       <Popover>
         <PopoverTrigger asChild>
-          <Button variant="outline" size="sm" className="h-7 px-2 text-xs">
+          <Button variant="outline" size="sm" className="px-2 text-xs">
             Icon
           </Button>
         </PopoverTrigger>
@@ -1921,7 +1921,7 @@ function RepoIdentityRow({
         }}
       >
         <PopoverTrigger asChild>
-          <Button variant="outline" size="sm" className="h-7 px-2 text-xs">
+          <Button variant="outline" size="sm" className="px-2 text-xs">
             Color
           </Button>
         </PopoverTrigger>
@@ -1970,13 +1970,13 @@ function RepoIdentityRow({
         />
         Tint
       </label>
-      <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={reset}>
+      <Button variant="ghost" size="sm" className="px-2 text-xs" onClick={reset}>
         Reset
       </Button>
       <Button
         variant="ghost"
         size="sm"
-        className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+        className="px-2 text-xs text-muted-foreground hover:text-foreground"
         onClick={onUntrack}
       >
         Untrack

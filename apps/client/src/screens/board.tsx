@@ -380,7 +380,7 @@ export function BoardScreen() {
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 px-2 text-xs text-muted-foreground"
+              className="px-2 text-xs text-muted-foreground"
               title="Remove done tasks completed over 7 days ago"
               onClick={clearDone}
             >
