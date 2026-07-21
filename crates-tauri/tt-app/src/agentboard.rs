@@ -187,6 +187,7 @@ pub fn ab_dismiss_agent(
         let mut engine = state.engine.lock().unwrap();
         engine.dismiss(&session, &agent, thread_id.as_deref())
     };
+    tracing::info!(%session, %agent, changed, "agent.dismissed");
     if changed {
         state.emit.notify_one();
     }
@@ -195,11 +196,13 @@ pub fn ab_dismiss_agent(
 #[tauri::command]
 pub fn ab_reorder_session(state: State<Ab>, name: String, delta: ReorderDelta) {
     state.engine.lock().unwrap().reorder(&name, delta);
+    tracing::info!(%name, delta = ?delta, "session.reordered");
     state.emit.notify_one();
 }
 
 #[tauri::command]
 pub fn ab_set_theme(state: State<Ab>, theme: String) {
+    tracing::info!(%theme, "agentboard.theme_set");
     state.engine.lock().unwrap().set_theme(theme);
     state.emit.notify_one();
 }
@@ -207,6 +210,7 @@ pub fn ab_set_theme(state: State<Ab>, theme: String) {
 #[tauri::command]
 pub fn ab_add_repo(state: State<Ab>, path: String) {
     state.engine.lock().unwrap().add_repo(&path);
+    tracing::info!(%path, "repo.added");
     state.scan.notify_one(); // discover the new repo's sessions
     state.emit.notify_one();
 }
@@ -218,6 +222,7 @@ pub fn ab_add_repo(state: State<Ab>, path: String) {
 #[tauri::command]
 pub fn ab_remove_repo(state: State<Ab>, dir: String) {
     state.engine.lock().unwrap().remove_repo(&dir);
+    tracing::info!(%dir, "repo.removed");
     state.emit.notify_one();
 }
 
@@ -227,6 +232,7 @@ pub fn ab_remove_repo(state: State<Ab>, dir: String) {
 #[tauri::command]
 pub fn ab_untrack_missing(state: State<Ab>) -> Vec<String> {
     let removed = state.engine.lock().unwrap().untrack_missing();
+    tracing::info!(count = removed.len(), "repo.untrack_missing");
     if !removed.is_empty() {
         state.emit.notify_one();
     }
@@ -246,6 +252,7 @@ pub fn ab_get_scan_roots(state: State<Ab>) -> Vec<String> {
 pub fn ab_set_scan_roots(state: State<Ab>, roots: Vec<String>) {
     let cleaned: Vec<String> =
         roots.into_iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
+    tracing::info!(count = cleaned.len(), "agentboard.scan_roots_set");
     state.engine.lock().unwrap().set_scan_roots(cleaned);
 }
 
@@ -364,6 +371,7 @@ pub fn ab_add_session(
     name: Option<String>,
 ) -> tt_agentboard::SessionRecord {
     let record = state.engine.lock().unwrap().add_session(&dir, name.as_deref(), now_ms());
+    tracing::info!(%dir, session_id = %record.id, "session.added");
     state.emit.notify_one();
     record
 }
@@ -396,6 +404,7 @@ pub fn ab_open_session_for_cwd(state: State<Ab>, cwd: String) -> Result<OpenedSe
     }
     let record = engine.add_session(&dir, None, now_ms());
     drop(engine);
+    tracing::info!(%dir, session_id = %record.id, "session.opened_for_cwd");
     state.emit.notify_one();
     Ok(OpenedSession { folder_dir: dir, session_id: record.id })
 }
@@ -403,12 +412,14 @@ pub fn ab_open_session_for_cwd(state: State<Ab>, cwd: String) -> Result<OpenedSe
 #[tauri::command]
 pub fn ab_rename_session(state: State<Ab>, id: String, name: String) {
     state.engine.lock().unwrap().rename_session(&id, &name);
+    tracing::info!(%id, "session.renamed");
     state.emit.notify_one();
 }
 
 #[tauri::command]
 pub fn ab_close_session(state: State<Ab>, id: String) {
     state.engine.lock().unwrap().close_session(&id);
+    tracing::info!(%id, "session.closed");
     state.emit.notify_one();
 }
 
@@ -477,6 +488,7 @@ pub fn ab_set_repo_meta(
 #[tauri::command]
 pub fn ab_set_folder_base_branch(state: State<Ab>, dir: String, branch: Option<String>) {
     let changed = state.engine.lock().unwrap().set_folder_base_branch(&dir, branch.as_deref());
+    tracing::info!(%dir, branch = branch.as_deref().unwrap_or(""), changed, "folder.base_branch_set");
     if changed {
         state.emit.notify_one();
     }
@@ -487,6 +499,7 @@ pub fn ab_set_folder_base_branch(state: State<Ab>, dir: String, branch: Option<S
 #[tauri::command]
 pub fn ab_set_session_purpose(state: State<Ab>, id: String, text: Option<String>) {
     let changed = state.engine.lock().unwrap().set_session_purpose(&id, text.as_deref());
+    tracing::info!(%id, changed, "session.purpose_set");
     if changed {
         state.emit.notify_one();
     }
@@ -496,6 +509,7 @@ pub fn ab_set_session_purpose(state: State<Ab>, id: String, text: Option<String>
 #[tauri::command]
 pub fn ab_set_compact_percent(state: State<Ab>, percent: u8) {
     let changed = state.engine.lock().unwrap().set_compact_recommend_percent(percent);
+    tracing::info!(percent, changed, "agentboard.compact_percent_set");
     if changed {
         state.emit.notify_one();
     }
@@ -589,6 +603,7 @@ pub fn ab_clear_log(state: State<Ab>, session: String) -> Result<(), String> {
         return Err("session is required".into());
     }
     state.engine.lock().unwrap().clear_logs(&session);
+    tracing::info!(%session, "session.log_cleared");
     state.emit.notify_one();
     Ok(())
 }

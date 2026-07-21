@@ -66,7 +66,10 @@ pub async fn cockpit_assign_issue(
             &dir,
             GH_DEVELOP_TIMEOUT,
         ) {
-            Ok(out) if out.ok() => Ok(format!("Issue #{number} checked out in {}", dir.display())),
+            Ok(out) if out.ok() => {
+                tracing::info!(%repo, number, dir = %dir.display(), "cockpit.issue_assigned");
+                Ok(format!("Issue #{number} checked out in {}", dir.display()))
+            }
             Ok(out) => Err(format!("gh issue develop failed: {}", out.stderr.trim())),
             Err(e) => Err(format!("failed to run gh in {}: {e}", dir.display())),
         }
@@ -96,7 +99,10 @@ pub async fn cockpit_create_issue_branch(
             &dir,
             SLOT_GIT_TIMEOUT,
         ) {
-            Ok(out) if out.ok() => Ok(format!("Created branch {branch} in {}", dir.display())),
+            Ok(out) if out.ok() => {
+                tracing::info!(%repo, number, %branch, "cockpit.issue_branch_created");
+                Ok(format!("Created branch {branch} in {}", dir.display()))
+            }
             Ok(out) => Err(format!("git checkout -b {branch} failed: {}", out.stderr.trim())),
             Err(e) => Err(format!("failed to run git in {}: {e}", dir.display())),
         }

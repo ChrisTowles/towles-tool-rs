@@ -299,6 +299,12 @@ pub fn store_set_task_status(
             .map_err(|e| format!("set_task_status failed: {e}"))?;
         Ok(before)
     })?;
+    tracing::info!(
+        task_id = id,
+        from = before.as_ref().map(|b| b.status.as_str()).unwrap_or(""),
+        to = %status,
+        "task.status_set"
+    );
     emit_snapshot(&app, &state);
     if let Some(before) = before {
         spawn_gh_status_sync(&before.status, &status, &before.issues);
@@ -408,6 +414,7 @@ pub fn store_set_task_position(
             .map_err(|e| format!("set_task_position failed: {e}"))?;
         Ok(before)
     })?;
+    tracing::info!(task_id = id, %status, index, "task.position_set");
     emit_snapshot(&app, &state);
     if let Some(before) = before {
         spawn_gh_status_sync(&before.status, &status, &before.issues);
@@ -431,6 +438,7 @@ pub fn store_update_task(
             .map(|_| ())
             .map_err(|e| format!("update_task failed: {e}"))
     })?;
+    tracing::info!(task_id = id, "task.updated");
     emit_snapshot(&app, &state);
     Ok(())
 }
@@ -441,6 +449,7 @@ pub fn store_delete_task(app: AppHandle, state: State<StoreState>, id: i64) -> R
     with_store(&state, |store| {
         store.delete_task(id).map_err(|e| format!("delete_task failed: {e}"))
     })?;
+    tracing::info!(task_id = id, "task.deleted");
     emit_snapshot(&app, &state);
     Ok(())
 }
@@ -458,6 +467,7 @@ pub fn store_clear_done(app: AppHandle, state: State<StoreState>) -> Result<usiz
     let deleted = with_store(&state, |store| {
         store.clear_done_tasks(before_ms).map_err(|e| format!("clear_done_tasks failed: {e}"))
     })?;
+    tracing::info!(count = deleted, "task.done_cleared");
     emit_snapshot(&app, &state);
     Ok(deleted)
 }
@@ -473,6 +483,7 @@ pub fn store_dm_dismiss(
     with_store(&state, |store| {
         store.dismiss_dm(&channel, ts).map_err(|e| format!("dismiss_dm failed: {e}"))
     })?;
+    tracing::info!(%channel, "dm.dismissed");
     emit_snapshot(&app, &state);
     Ok(())
 }
@@ -510,6 +521,7 @@ pub async fn store_promote_task_to_issue(
             .attach_task_issue(id, &repo, number, &url)
             .map_err(|e| format!("attach_task_issue failed: {e}"))
     })?;
+    tracing::info!(task_id = id, %repo, number, "task.promoted_to_issue");
     emit_snapshot(&app, &state);
     Ok(())
 }
@@ -550,7 +562,8 @@ pub async fn store_create_issue(dir: String, title: String) -> Result<String, St
             GH_MUTATION_TIMEOUT,
         )
         .map_err(|e| format!("failed to run gh in {dir}: {e}"))?;
-        let (_, url) = parse_gh_issue_create_output(&output)?;
+        let (number, url) = parse_gh_issue_create_output(&output)?;
+        tracing::info!(%dir, number, "issue.created");
         Ok(url)
     })
     .await
@@ -613,6 +626,7 @@ pub fn journal_log(app: AppHandle, state: State<StoreState>, text: String) -> Re
     let date = chrono::Local::now().date_naive();
     tt_journal::entries::append_bullet_to_daily(&settings.journal_settings, date, line)
         .map_err(|e| format!("journal append failed: {e}"))?;
+    tracing::info!("journal.logged");
     // Journal writes don't change the store, but re-emit to match the write-command
     // contract (harmless no-op when the store is unavailable).
     emit_snapshot(&app, &state);
@@ -644,8 +658,10 @@ pub async fn store_collect_now(
     let running = collect.running.clone();
     // Acquire the guard: swap in `true`; if it was already `true`, bail.
     if running.swap(true, Ordering::SeqCst) {
+        tracing::info!(outcome = "already_running", "collect.manual");
         return Ok(CollectNowResult { started: false });
     }
+    tracing::info!(outcome = "started", "collect.manual");
     tauri::async_runtime::spawn_blocking(move || {
         let _release = ReleaseOnDrop(running);
         run_collect_now_blocking(&app);
@@ -718,9 +734,11 @@ pub async fn store_sync_repo(
     {
         let mut guard = running.lock().unwrap();
         if !guard.insert(dir.clone()) {
+            tracing::info!(%dir, outcome = "already_running", "repo.synced");
             return Ok(RepoSyncResult { started: false, ok: true, count: 0, message: None });
         }
     }
+    tracing::info!(%dir, outcome = "started", "repo.synced");
     tauri::async_runtime::spawn_blocking(move || {
         let _release = ReleaseDirOnDrop(running, dir.clone());
         run_sync_repo_blocking(&app, &dir)

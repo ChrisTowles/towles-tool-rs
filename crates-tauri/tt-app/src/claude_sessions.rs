@@ -106,6 +106,7 @@ pub async fn claude_sessions_summary(
     days: f64,
     cache: tauri::State<'_, ClaudeSessionsCache>,
 ) -> Result<ClaudeSessionsSummary, String> {
+    tracing::info!(days, "claude_sessions.viewed");
     let handle = cache.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let details = scan(days)?;
@@ -178,6 +179,7 @@ pub async fn claude_sessions_insights(
 /// per-session re-parse in the screen, done when a row is opened.
 #[tauri::command]
 pub async fn claude_sessions_breakdown(session_id: String) -> Result<SessionBreakdown, String> {
+    tracing::info!("claude_sessions.breakdown_opened");
     tauri::async_runtime::spawn_blocking(move || {
         let projects_dir = claude_dir().join("projects");
         let path = find_session_path(&projects_dir, &session_id)
