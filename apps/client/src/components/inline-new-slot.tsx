@@ -9,6 +9,7 @@
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
   CircleDot,
   ImagePlus,
   Paperclip,
@@ -37,7 +38,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import {
   ClaudeEffort,
   ClaudeLaunchOptions,
@@ -50,7 +50,9 @@ import {
   nextDraftScopeId,
 } from "@/lib/agentboard";
 import { IssueItem, storeGhIssuesList } from "@/lib/data";
+import { GoalEditor } from "@/components/goal-editor";
 import { errorMessage } from "@/lib/errors";
+import { loadUserSettings, type PromptImprover } from "@/lib/settings";
 import { type BaseBranch, BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
 import { invoke } from "@/lib/tauri";
 import { uiAction } from "@/lib/ui-action";
@@ -88,6 +90,18 @@ export type NewSlotRepo = {
   /** The repo's git origin URL when known — parsed to `owner/name` so the
    * created task's slot binding can auto-attach PRs by branch. */
   originUrl?: string | null;
+};
+
+/** The fallback improver when settings can't be read (browser dev) or none are
+ * configured: one button reproducing the historic "Suggest name + goal"
+ * behavior. Its empty `prompt` makes the backend use its own default
+ * instruction (`tt_slots::DEFAULT_SUGGEST_INSTRUCTION`). */
+const FALLBACK_IMPROVER: PromptImprover = {
+  id: "direct",
+  label: "Suggest name + goal",
+  enabled: true,
+  preferred: true,
+  prompt: "",
 };
 
 /** What the new-task form hands its parent on submit. */
@@ -247,6 +261,12 @@ export function InlineNewSlot({
   // the user explicitly picks one, so their own defaults apply.
   const [model, setModel] = useState<ModelChoice>(USE_DEFAULT);
   const [effort, setEffort] = useState<EffortChoice>(USE_DEFAULT);
+  // Prompt improvers (Direct / Plan / Brainstorm by default) — loaded from
+  // settings, filtered to the enabled ones. Each is a button that rewrites the
+  // goal field via `claude -p`; `suggesting` holds the id of the one currently
+  // running so only that button shows the spinner text.
+  const [improvers, setImprovers] = useState<PromptImprover[]>([FALLBACK_IMPROVER]);
+  const [moreOpen, setMoreOpen] = useState(false);
   // Off by default: a dynamic task merges its own PR, which is a bigger
   // grant than "start Claude on a goal" — opting in is per-task, never
   // remembered, so it's always a deliberate choice.
@@ -263,7 +283,9 @@ export function InlineNewSlot({
   const [notice, setNotice] = useState<{ text: string; kind: "error" | "note" } | null>(null);
   const showError = (text: string) => setNotice({ text, kind: "error" });
   const [branchCheck, setBranchCheck] = useState<BranchCheck | null>(null);
-  const [suggesting, setSuggesting] = useState(false);
+  // The id of the improver currently running, or null — so only the clicked
+  // button shows its running state while the others just disable.
+  const [suggesting, setSuggesting] = useState<string | null>(null);
   // What the goal/branch fields held right before the last accepted
   // suggestion or picked issue overwrote them — lets "Undo" put them back
   // exactly.
@@ -272,6 +294,9 @@ export function InlineNewSlot({
     branchEdit: string | null;
   } | null>(null);
   const [issuePickerOpen, setIssuePickerOpen] = useState(false);
+  // Set by either issue path — the Pick-issue popover or the goal field's `#`
+  // autocomplete — so `gh` is shelled once, on first need, either way.
+  const [issuesWanted, setIssuesWanted] = useState(false);
   // Lazy-initialized once from this repo's stored preference: the form
   // remounts fresh per open (see the base-branches effect below), so there's
   // no prop-change case to keep in sync with.
@@ -321,6 +346,23 @@ export function InlineNewSlot({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo.dir]);
 
+  // Load the enabled prompt improvers once per open. Reads the same shared
+  // settings file the Settings screen writes, so an improver added/edited there
+  // shows up the next time this form opens. Falls back to the single historic
+  // "Suggest name + goal" button if settings can't be read (browser dev) or
+  // none are enabled, so the row is never empty.
+  useEffect(() => {
+    let cancelled = false;
+    void loadUserSettings().then((s) => {
+      if (cancelled) return;
+      const enabled = (s?.promptImprovers ?? []).filter((t) => t.enabled);
+      setImprovers(enabled.length > 0 ? enabled : [FALLBACK_IMPROVER]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Debounced preflight: is `branch` a legal git ref, and would its derived
   // slot name collide with an existing one? Cheap and read-only, so it's
   // safe to fire on every settled keystroke rather than only at submit time.
@@ -349,21 +391,37 @@ export function InlineNewSlot({
     branchCheck?.error ??
     (branchCheck?.taken ? `a slot named "${branchCheck.name}" already exists` : null);
 
-  // Manual only — never runs on a timer or keystroke. Asks claude -p (cwd =
-  // the repo, so it has real repo context) to propose a better branch name
-  // and a cleaned-up goal, then fills both editable fields directly. The
-  // fields stay editable (or "Undo" puts back exactly what was there) —
-  // that's the confirmation step, not a separate accept/reject panel.
-  async function suggest() {
+  // Preferred improvers get their own button; the rest sit under "More". If
+  // none are marked preferred, showing an empty row and hiding everything
+  // behind a menu would be strictly worse than promoting them all.
+  const anyPreferred = improvers.some((i) => i.preferred);
+  const preferredImprovers = anyPreferred ? improvers.filter((i) => i.preferred) : improvers;
+  const otherImprovers = anyPreferred ? improvers.filter((i) => !i.preferred) : [];
+  // Same gate the single Suggest button had: nothing to rewrite, mid-stage, or
+  // another improver already running.
+  const improverDisabled =
+    suggesting !== null || staging || (!goal.trim() && imagePaths.length === 0);
+
+  // A prompt-improver button. Manual only — never runs on a timer or
+  // keystroke. Asks claude -p (cwd = the repo, so it has real repo context) to
+  // rewrite the goal per `improver.prompt` and propose a branch name, then
+  // fills both editable fields directly. The fields stay editable (or "Undo"
+  // puts back exactly what was there) — that's the confirmation step, not a
+  // separate accept/reject panel. Because the rewrite lands in the field, the
+  // launch path needs no improver knowledge at all.
+  async function runImprover(improver: PromptImprover) {
     // An attached screenshot is a complete brief on its own ("make it look
     // like this"), so images alone are enough to ask — not just typed text.
     if (suggesting || (!goal.trim() && !imagePaths.length)) return;
-    setSuggesting(true);
+    setMoreOpen(false);
+    setSuggesting(improver.id);
     setNotice(null);
+    uiAction("task.improve_prompt", "agentboard", improver.id);
     const suggestion = await invoke<SlotSuggestion>("slot_suggest", {
       dir: repo.dir,
       goal,
       imagePaths,
+      instruction: improver.prompt,
     });
     suggestion.match({
       ok: (s) => {
@@ -376,7 +434,7 @@ export function InlineNewSlot({
       },
       err: (e) => showError(e.message),
     });
-    setSuggesting(false);
+    setSuggesting(null);
   }
 
   function undoOverwrite() {
@@ -397,7 +455,7 @@ export function InlineNewSlot({
   // more often by typing a goal than by picking an issue, so there's no
   // reason to shell `gh` on every form mount.
   useEffect(() => {
-    if (!issuePickerOpen) return;
+    if (!issuesWanted) return;
     let cancelled = false;
     setIssues(null);
     setIssuesError(null);
@@ -408,7 +466,19 @@ export function InlineNewSlot({
     return () => {
       cancelled = true;
     };
-  }, [issuePickerOpen, issueAssignedToMe, repo.dir]);
+  }, [issuesWanted, issueAssignedToMe, repo.dir]);
+
+  /** Attach an issue without touching the goal/branch fields — the `#`
+   * autocomplete already wrote the reference the user typed, so seeding those
+   * (the way a first `toggleIssue` pick does) would clobber what they're
+   * mid-sentence on. Idempotent: re-referencing `#12` doesn't double-attach. */
+  function attachIssue(issue: IssueItem) {
+    setSelectedIssues((prev) =>
+      prev.some((i) => i.repo === issue.repo && i.number === issue.number)
+        ? prev
+        : [...prev, issue],
+    );
+  }
 
   // Toggle an issue in/out of the selection (multi-select, #339 — every
   // selected issue becomes a link on the created task). The *first* pick
@@ -560,10 +630,14 @@ export function InlineNewSlot({
       <span className="text-[11px] font-medium text-muted-foreground">
         ✦ New task — {repo.name}
       </span>
-      <Textarea
+      <GoalEditor
         autoFocus
         value={goal}
-        onChange={(e) => setGoal(e.target.value)}
+        onChange={setGoal}
+        issues={issues}
+        issuesError={issuesError}
+        onNeedIssues={() => setIssuesWanted(true)}
+        onPickIssue={attachIssue}
         onPaste={(e) => {
           const items = Array.from(e.clipboardData?.items ?? []);
           const pastedImages = items.filter(
@@ -612,9 +686,9 @@ export function InlineNewSlot({
             void pasteFromHostClipboard();
           }
         }}
-        placeholder="what should this task get done? (paste a screenshot to attach it)"
+        hint="paste or drop a screenshot to attach it"
+        placeholder="what should this task get done?"
         rows={2}
-        className="text-xs"
       />
       {selectedIssues.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -674,7 +748,13 @@ export function InlineNewSlot({
           <ImagePlus className="size-3" />
           Attach image
         </Button>
-        <Popover open={issuePickerOpen} onOpenChange={setIssuePickerOpen}>
+        <Popover
+          open={issuePickerOpen}
+          onOpenChange={(o) => {
+            setIssuePickerOpen(o);
+            if (o) setIssuesWanted(true);
+          }}
+        >
           <PopoverTrigger asChild>
             <Button variant="outline" size="sm" className="h-6 gap-1 px-1.5 text-[10.5px]">
               <CircleDot className="size-3" />
@@ -743,16 +823,55 @@ export function InlineNewSlot({
             Undo
           </Button>
         )}
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-6 gap-1 px-1.5 text-[10.5px]"
-          disabled={suggesting || staging || (!goal.trim() && !imagePaths.length)}
-          onClick={() => void suggest()}
-        >
-          <Sparkles className="size-3" />
-          {suggesting ? "Asking claude…" : "Suggest name + goal"}
-        </Button>
+        {/* Prompt improvers: one button per preferred improver, the rest under
+            "More". Each rewrites the goal + branch fields in place via
+            `claude -p` — Undo restores. */}
+        {preferredImprovers.map((improver) => (
+          <Button
+            key={improver.id}
+            variant="outline"
+            size="sm"
+            className="h-6 gap-1 px-1.5 text-[10.5px]"
+            title={improver.prompt || undefined}
+            disabled={improverDisabled}
+            onClick={() => void runImprover(improver)}
+          >
+            <Sparkles className="size-3" />
+            {suggesting === improver.id ? "Asking claude…" : improver.label}
+          </Button>
+        ))}
+        {otherImprovers.length > 0 && (
+          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 gap-1 px-1.5 text-[10.5px]"
+                title="More prompt improvers — mark one Preferred in Settings to give it its own button"
+                disabled={improverDisabled}
+              >
+                More
+                <ChevronDown className="size-3" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-56 p-1" align="end">
+              {otherImprovers.map((improver) => (
+                <button
+                  key={improver.id}
+                  type="button"
+                  title={improver.prompt || undefined}
+                  onClick={() => void runImprover(improver)}
+                  className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+                >
+                  <Sparkles className="size-3 shrink-0" />
+                  <span className="truncate">
+                    {suggesting === improver.id ? "Asking claude…" : improver.label}
+                  </span>
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+        )}
       </div>
       <div className="flex flex-col gap-1">
         <span className="text-[10.5px] text-muted-foreground">branch</span>

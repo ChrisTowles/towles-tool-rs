@@ -264,6 +264,11 @@ export const EMPTY_SNAPSHOT: StoreSnapshot = {
   mcpCalls: [],
 };
 
+/** Epoch ms → the RFC 3339 wire shape the calendar rows are authored in. */
+function at(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
 /**
  * Static mock snapshot for plain-Vite browser dev (no Tauri host), so screens
  * like Cockpit render representative rows — including one PR per checks state
@@ -275,7 +280,6 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
   // Authored in the wire shape and parsed by the real `toCalEvents`, so browser
   // dev exercises the same conversion the app does rather than a parallel one
   // that could drift from it.
-  const at = (ms: number) => new Date(ms).toISOString();
   return {
     events: toCalEvents([
       {

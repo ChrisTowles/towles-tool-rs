@@ -1085,6 +1085,10 @@ export function AgentboardScreen() {
     // uses `baseLabel` (`origin/main`, not `main`) because inside the slot's
     // worktree a fetch never advances the *local* base ref: telling the
     // session to rebase onto plain `main` would rebase onto stale history.
+    // A dynamic task wraps the goal with its own delivery pipeline; otherwise
+    // the goal is launched exactly as it reads in the form. Prompt improvers
+    // rewrite that field *before* submit (see `inline-new-slot.tsx`), so there
+    // is deliberately nothing to apply here — what you saw is what launches.
     const goalPrompt = input.dynamic
       ? dynamicFlowPrompt(input.goal, created.baseLabel)
       : input.goal;

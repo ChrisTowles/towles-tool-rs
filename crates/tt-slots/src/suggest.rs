@@ -40,7 +40,7 @@ const SUGGESTION_SCHEMA: &str = r#"{
   "type": "object",
   "properties": {
     "branch": { "type": "string", "description": "legal git ref: lowercase kebab-case, prefixed feat/, fix/, or chore/" },
-    "goal": { "type": "string", "description": "one clear, concise sentence restating the task" }
+    "goal": { "type": "string", "description": "the rewritten task text, produced by following the caller's instruction" }
   },
   "required": ["branch", "goal"],
   "additionalProperties": false
@@ -88,11 +88,18 @@ pub type Result<T> = std::result::Result<T, SuggestError>;
 /// the prompt and reading them is explicitly allowed, unlike every other
 /// file.
 ///
+/// `instruction` is the **prompt improver** the user clicked (its
+/// `PromptImprover::prompt` from settings): it tells the model *how* to rewrite
+/// the goal — restate it plainly, turn it into a plan ask, turn it into a
+/// brainstorm ask. Empty means [`DEFAULT_SUGGEST_INSTRUCTION`], the historic
+/// "tidy it into one sentence" behavior. Only the `goal` is shaped by it; the
+/// branch is always named for the underlying task.
+///
 /// Never fails while the user gave us anything to slug (see [`Suggested`]).
 /// Only an image-only brief can still error, and even then the dialog's typed
 /// fields are left untouched.
-pub fn suggest(cwd: &Path, goal: &str, images: &[String]) -> Result<Suggested> {
-    match ask_claude(cwd, goal, images) {
+pub fn suggest(cwd: &Path, goal: &str, images: &[String], instruction: &str) -> Result<Suggested> {
+    match ask_claude(cwd, goal, images, instruction) {
         Ok(suggestion) => Ok(Suggested { suggestion, fallback: None }),
         Err(e) => local_fallback(goal)
             .map(|suggestion| Suggested { suggestion, fallback: Some(one_line(&e)) })
@@ -116,8 +123,8 @@ fn one_line(e: &SuggestError) -> String {
     }
 }
 
-fn ask_claude(cwd: &Path, goal: &str, images: &[String]) -> Result<Suggestion> {
-    let prompt = prompt_for(goal, images);
+fn ask_claude(cwd: &Path, goal: &str, images: &[String], instruction: &str) -> Result<Suggestion> {
+    let prompt = prompt_for(goal, images, instruction);
     let out =
         tt_exec::run_in_dir_with_timeout("claude", &claude_args(&prompt), cwd, CLAUDE_TIMEOUT)
             .map_err(|e| SuggestError::Exec(e.to_string()))?;
@@ -187,7 +194,7 @@ fn local_fallback(goal: &str) -> Option<Suggestion> {
         .then(|| Suggestion { branch: format!("feat/{slug}"), goal: goal.to_string() })
 }
 
-fn prompt_for(goal: &str, images: &[String]) -> String {
+fn prompt_for(goal: &str, images: &[String], instruction: &str) -> String {
     // Reading the attached screenshots is the one carve-out from the
     // otherwise blanket "touch nothing" rule: without it the model answers
     // from the goal text alone and an image-only brief yields a generic
@@ -220,16 +227,28 @@ fn prompt_for(goal: &str, images: &[String]) -> String {
         )
     };
     let goal_line = if goal.trim().is_empty() { "(no goal text — use the images)" } else { goal };
+    let instruction = if instruction.trim().is_empty() {
+        DEFAULT_SUGGEST_INSTRUCTION
+    } else {
+        instruction.trim()
+    };
     format!(
-        "You are naming a git branch and tidying a one-line task goal for a \
-         new git worktree in this repository. Answer with the required \
-         structured output: a `branch` like \"feat/short-kebab-slug\" and a \
-         `goal` that clearly and concisely restates the task. The branch must \
-         be a legal git ref name: lowercase, kebab-case, prefixed with feat/, \
-         fix/, or chore/ as fits the goal.{image_task} \
-         {image_rule}\n\nGoal: {goal_line}"
+        "You are naming a git branch and rewriting the task goal for a new git \
+         worktree in this repository. Answer with the required structured output: \
+         a `branch` like \"feat/short-kebab-slug\", and a `goal` produced by \
+         following this instruction exactly:\n\n{instruction}\n\nThe branch must be \
+         a legal git ref name: lowercase, kebab-case, prefixed with feat/, fix/, or \
+         chore/ as fits the task — name it for the underlying task itself, never for \
+         the instruction above.{image_task} \
+         {image_rule}\n\nTask: {goal_line}"
     )
 }
+
+/// The instruction [`suggest`] uses when the caller passes none: the historic
+/// "Suggest name + goal" behavior, kept as the fallback so a machine with no
+/// prompt improvers configured still gets a usable rewrite.
+pub const DEFAULT_SUGGEST_INSTRUCTION: &str =
+    "Restate the task clearly and concisely in one sentence.";
 
 #[cfg(test)]
 mod tests {
@@ -237,15 +256,15 @@ mod tests {
 
     #[test]
     fn without_images_the_prompt_forbids_touching_anything() {
-        let p = prompt_for("add a thing", &[]);
+        let p = prompt_for("add a thing", &[], "");
         assert!(p.contains("Do not read or write any files"));
-        assert!(p.contains("Goal: add a thing"));
+        assert!(p.contains("Task: add a thing"));
     }
 
     #[test]
     fn with_images_the_prompt_names_them_and_allows_reading_only_them() {
         let images = vec!["/stage/paste-1.png".to_string()];
-        let p = prompt_for("match this", &images);
+        let p = prompt_for("match this", &images, "");
         assert!(p.contains("/stage/paste-1.png"), "the path must be in the prompt");
         assert!(p.contains("Read ONLY these attached image files"));
         // The carve-out must stay a carve-out — still no general repo access.
@@ -258,7 +277,7 @@ mod tests {
         // Pasting a screenshot with no typed text is a complete brief; the
         // prompt has to say so rather than sending an empty "Goal:" line that
         // reads like a mistake.
-        let p = prompt_for("   ", &["/stage/paste-1.png".to_string()]);
+        let p = prompt_for("   ", &["/stage/paste-1.png".to_string()], "");
         assert!(p.contains("(no goal text — use the images)"));
         assert!(p.contains("base the goal on what it shows"));
     }
@@ -266,10 +285,28 @@ mod tests {
     #[test]
     fn several_images_read_as_plural() {
         let images = vec!["/a/paste-1.png".to_string(), "/a/paste-2.png".to_string()];
-        let p = prompt_for("compare", &images);
+        let p = prompt_for("compare", &images, "");
         assert!(p.contains("/a/paste-1.png /a/paste-2.png"));
         assert!(p.contains("images describe the task"));
         assert!(p.contains("what they show."));
+    }
+
+    #[test]
+    fn the_improver_instruction_drives_the_goal_rewrite() {
+        let p = prompt_for("add dark mode", &[], "Turn this into a request for a plan.");
+        assert!(p.contains("Turn this into a request for a plan."));
+        // The task text stays separate from the instruction, so the model can
+        // tell what to rewrite from how to rewrite it.
+        assert!(p.contains("Task: add dark mode"));
+        // The branch must name the task, not the instruction — otherwise every
+        // "Plan" click would produce a branch called `feat/produce-a-plan`.
+        assert!(p.contains("never for the instruction above"));
+    }
+
+    #[test]
+    fn an_empty_instruction_falls_back_to_the_historic_behavior() {
+        let p = prompt_for("add dark mode", &[], "   ");
+        assert!(p.contains(DEFAULT_SUGGEST_INSTRUCTION));
     }
 
     #[test]

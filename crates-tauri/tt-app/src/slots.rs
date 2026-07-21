@@ -73,11 +73,14 @@ pub fn slot_check_branch(root: String, branch: String) -> Result<BranchCheck, St
     Ok(BranchCheck { name: check.name, taken: check.taken, error: check.error })
 }
 
-/// Manual "Suggest" button in the new-slot dialog: ask `claude -p` (cwd =
+/// A **prompt improver** button in the new-slot dialog: ask `claude -p` (cwd =
 /// `dir`, the repo checkout the dialog is open for, so it sees real repo
-/// context) to propose a better branch name and a cleaned-up goal for the
-/// text the user typed. The dialog fills its editable fields with the
-/// result — nothing here writes anything or is called automatically.
+/// context) to rewrite the text the user typed and propose a branch name for
+/// it. `instruction` is the clicked improver's prompt from settings — it
+/// decides *how* the goal is rewritten (restate it, turn it into a plan ask, a
+/// brainstorm ask); empty falls back to the historic restate-in-one-sentence
+/// behavior. The dialog fills its editable fields with the result (Undo
+/// restores) — nothing here writes anything or is called automatically.
 /// Long-running (a cold `claude` CLI) → off the main thread.
 ///
 /// Returns `tt_slots::Suggested`, which serializes flat as
@@ -87,10 +90,12 @@ pub async fn slot_suggest(
     dir: String,
     goal: String,
     image_paths: Vec<String>,
+    instruction: Option<String>,
 ) -> Result<Suggested, String> {
     let images = image_paths.len();
+    let instruction = instruction.unwrap_or_default();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        tt_slots::suggest(&PathBuf::from(dir), &goal, &image_paths)
+        tt_slots::suggest(&PathBuf::from(dir), &goal, &image_paths, &instruction)
     })
     .await
     .map_err(|e| format!("slot task failed: {e}"))?

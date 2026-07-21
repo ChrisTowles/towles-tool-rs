@@ -64,6 +64,44 @@ export function nextCalendarSourceId(sources: CalendarSource[], label: string): 
   }
 }
 
+/**
+ * A **prompt improver**: one button in the new-task form that rewrites the goal
+ * you typed before the task starts (Direct / Plan / Brainstorm by default).
+ *
+ * Clicking one runs `claude -p` (the `slot_suggest` command) with `prompt` as
+ * the *instruction*, and fills the form's goal + branch fields with the result —
+ * editable, with Undo. Because the improved text lands in the field, what you
+ * see is what the session launches with: nothing is wrapped at launch time and
+ * the `claude` CLI flags are never touched.
+ *
+ * `prompt` is therefore an instruction *about* the goal ("turn this into a
+ * request for a plan"), not a template containing it. `preferred` decides
+ * whether it gets its own button or sits under the form's "More" menu.
+ */
+export type PromptImprover = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  preferred: boolean;
+  prompt: string;
+};
+
+/**
+ * A stable id for a newly added prompt improver, unique among `improvers`. Same
+ * slug rule as {@link nextCalendarSourceId}: the id is a permanent key (the
+ * form's last-picked choice is stored by id), so it must stay stable once
+ * assigned.
+ */
+export function nextPromptImproverId(improvers: PromptImprover[], label: string): string {
+  const taken = new Set(improvers.map((t) => t.id));
+  const base = slugify(label) || "improver";
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
 export type CalendarCollector = {
   enabled: boolean;
   refreshMinutes: number;
@@ -101,6 +139,8 @@ export type CollectorsSettings = {
 export type UserSettings = {
   preferredEditor: string;
   journalSettings: JournalSettings;
+  /** Prompt-improver templates for the new-task form. See {@link PromptImprover}. */
+  promptImprovers: PromptImprover[];
   collectors: CollectorsSettings;
   /**
    * Mostly TS-owned UI block, carried through opaquely so a save never drops

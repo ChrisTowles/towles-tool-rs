@@ -210,6 +210,95 @@ pub const DEFAULT_NOTIFY_STALE_COLLECTOR: bool = true;
 /// Built-in default for [`AgentboardSettings::notify_checks_failed`]: on.
 pub const DEFAULT_NOTIFY_CHECKS_FAILED: bool = true;
 
+/// A **prompt improver**: one button in the Agentboard new-task form that
+/// rewrites the goal you typed before the task starts (Direct / Plan /
+/// Brainstorm by default).
+///
+/// Clicking one runs `claude -p` through [`tt_slots::suggest`] with this
+/// improver's [`prompt`](Self::prompt) as the *instruction*, and fills the
+/// form's goal + branch fields with the rewritten result. The fields stay
+/// editable and Undo restores them, so the rewrite is always reviewable — and
+/// because the improved text lands **in the field**, what you see is exactly
+/// what the session is launched with. Nothing is wrapped at launch time, and
+/// the `claude` CLI flags (model/effort/permission-mode) are never touched.
+///
+/// The prompt is therefore an instruction *about* the goal ("turn this into a
+/// request for a plan"), not a template containing it — the task text is passed
+/// separately so the model can tell what to rewrite from how to rewrite it.
+///
+/// User-editable on purpose, and managed with the same list editor the calendar
+/// sources use — the built-ins are just a starting point, so a machine can add
+/// its own improvers (`review`, `spike`) or rewrite the wording without a
+/// rebuild.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", default)]
+pub struct PromptImprover {
+    /// Stable identifier referenced by the new-task form. Assigned once at
+    /// creation and shown read-only.
+    pub id: String,
+    /// Human label — this is the button's text in the new-task form.
+    pub label: String,
+    /// Whether this improver is offered at all.
+    pub enabled: bool,
+    /// Whether it gets its own top-level button in the new-task form. Enabled
+    /// improvers that aren't preferred stay available under the "More" menu, so
+    /// the button row shows the few you actually reach for rather than all of
+    /// them.
+    pub preferred: bool,
+    /// The instruction handed to `claude -p` for how to rewrite the goal.
+    pub prompt: String,
+}
+
+impl PromptImprover {
+    /// The built-in improvers, all enabled and preferred: Direct (restate it
+    /// plainly — the historic "Suggest name + goal" behavior), Plan (turn it
+    /// into a plan-first ask), and Brainstorm (turn it into an explore-options
+    /// ask).
+    pub fn defaults() -> Vec<Self> {
+        vec![
+            Self {
+                id: "direct".to_string(),
+                label: "Direct".to_string(),
+                enabled: true,
+                preferred: true,
+                prompt: DEFAULT_IMPROVER_DIRECT.to_string(),
+            },
+            Self {
+                id: "plan".to_string(),
+                label: "Plan".to_string(),
+                enabled: true,
+                preferred: true,
+                prompt: DEFAULT_IMPROVER_PLAN.to_string(),
+            },
+            Self {
+                id: "brainstorm".to_string(),
+                label: "Brainstorm".to_string(),
+                enabled: true,
+                preferred: true,
+                prompt: DEFAULT_IMPROVER_BRAINSTORM.to_string(),
+            },
+        ]
+    }
+}
+
+/// Default "Direct" improver: tidy the task into one clear sentence. Matches
+/// [`tt_slots::DEFAULT_SUGGEST_INSTRUCTION`] — the behavior the single
+/// "Suggest name + goal" button used to have.
+pub const DEFAULT_IMPROVER_DIRECT: &str = "Restate the task clearly and concisely in one sentence.";
+
+/// Default "Plan" improver: rewrite the ask so the session plans before editing.
+pub const DEFAULT_IMPROVER_PLAN: &str = "Rewrite the task as a request for an implementation plan: \
+research the codebase first and do not edit any files yet; lay out the approach, the key decisions \
+worth revisiting, and the concrete steps, then wait for approval before implementing. Keep the \
+original task's intent and any specifics it named.";
+
+/// Default "Brainstorm" improver: rewrite the ask into an explore-options one.
+pub const DEFAULT_IMPROVER_BRAINSTORM: &str = "Rewrite the task as a request to brainstorm several \
+distinct approaches before any implementation: for each, sketch the idea, its tradeoffs, and when \
+it's the right call; do not edit any files; end by recommending one and asking which to pursue. \
+Keep the original task's intent and any specifics it named.";
+
 /// Data-hub collector settings (the Rust CLI/app's tt.db collectors; the TS CLI
 /// ignores this block). Each collector is configured independently — enable
 /// flag, refresh cadence, and (for the claude-backed calendar) which MCP
@@ -502,6 +591,12 @@ pub struct UserSettings {
 
     pub agentboard: AgentboardSettings,
 
+    /// Prompt improvers for the Agentboard new-task form (Direct / Plan /
+    /// Brainstorm by default) — the buttons that rewrite the typed goal before
+    /// the task starts. User-editable; managed with the same list editor the
+    /// calendar sources use. See [`PromptImprover`].
+    pub prompt_improvers: Vec<PromptImprover>,
+
     pub collectors: CollectorsSettings,
 
     /// Lenient on purpose: the docs invite hand-editing this block, and a slip
@@ -535,6 +630,7 @@ impl Default for UserSettings {
             preferred_editor: "code".to_string(),
             journal_settings: JournalSettings::default(),
             agentboard: AgentboardSettings::default(),
+            prompt_improvers: PromptImprover::defaults(),
             collectors: CollectorsSettings::default(),
             mcp: McpSettings::default(),
         }
@@ -1074,6 +1170,23 @@ mod tests {
         // Socket Mode is opt-in on top of the poll; no app token by default.
         assert!(c.slack.app_token.is_empty());
         assert_eq!(c.slack.refresh_seconds, 60);
+    }
+
+    #[test]
+    fn prompt_improver_defaults() {
+        let s = UserSettings::default();
+        let ids: Vec<&str> = s.prompt_improvers.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(ids, vec!["direct", "plan", "brainstorm"]);
+        // All built-ins are offered, and all get their own button by default.
+        assert!(s.prompt_improvers.iter().all(|g| g.enabled && g.preferred));
+        // Every improver carries a non-empty instruction for `claude -p`. These
+        // are instructions *about* the task, never templates containing it —
+        // the task text is passed to the model separately.
+        assert!(s.prompt_improvers.iter().all(|g| !g.prompt.trim().is_empty()));
+        assert!(!s.prompt_improvers.iter().any(|g| g.prompt.contains("{goal}")));
+        // Serializes camelCase under the top-level `promptImprovers` key.
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"promptImprovers\""));
     }
 
     #[test]
