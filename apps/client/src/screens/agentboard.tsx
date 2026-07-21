@@ -2260,10 +2260,14 @@ export function AgentboardScreen() {
         open={confirmDeleteWt != null}
         onOpenChange={closeOnFalse(() => setConfirmDeleteWt(null))}
       >
-        <AlertDialogContent>
+        {/* Same width as the blocked-delete dialog it can hand off to, so the
+            flow doesn't jump size mid-decision. */}
+        <AlertDialogContent className="max-w-[calc(100%-2rem)]! sm:max-w-xl!">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete worktree {confirmDeleteWt?.label}?</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogTitle className="wrap-anywhere">
+              Delete worktree {confirmDeleteWt?.label}?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-pretty">
               Removes the checkout from disk (guarded — uncommitted changes, commits on no
               branch/remote, or a dev server still on its ports will stop it and tell you what to
               do). Its branch survives in the primary.
@@ -2307,10 +2311,16 @@ export function AgentboardScreen() {
           if (!blockedRemovalInFlight) endDeleteFlow(blockedDeleteDir);
         })}
       >
-        <AlertDialogContent>
+        {/* Wider than the default alert, which is sized for a sentence and two
+            buttons: this one carries a list of blocker cards. The `!` beats the
+            primitive's own `data-[size=default]:` width, which outranks a plain
+            utility class. */}
+        <AlertDialogContent className="max-w-[calc(100%-2rem)]! sm:max-w-xl!">
           <AlertDialogHeader>
-            <AlertDialogTitle>Can’t delete {blockedDelete?.name} yet</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogTitle className="wrap-anywhere">
+              Can’t delete {blockedDelete?.name} yet
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-pretty">
               The worktree is still on disk. Clear what’s below and it’ll delete cleanly, or delete
               anyway.
             </AlertDialogDescription>
@@ -2327,17 +2337,20 @@ export function AgentboardScreen() {
               ))}
             </ul>
           )}
-          <ul className="flex flex-col gap-3">
+          {/* Scrolls rather than growing past the viewport — a slot can be
+              blocked by a dirty tree, unlanded commits and several ports at
+              once, and the footer must stay reachable. */}
+          <ul className="flex max-h-[45vh] flex-col gap-2 overflow-y-auto">
             {blockedDelete?.blockers.map((blocker, i) => {
               const port = stoppablePort(blocker);
               return (
                 <li
                   key={`${blocker.kind}-${port ?? i}`}
-                  className="flex items-start gap-3 rounded-lg border border-border bg-muted/40 p-3"
+                  className="flex items-start gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2.5"
                 >
                   <BlockerIcon kind={blocker.kind} losesWork={blocker.losesWork} />
-                  <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="text-sm leading-snug">{blocker.message}</span>
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="text-sm leading-snug wrap-anywhere">{blocker.message}</span>
                     <span className="text-xs leading-snug text-muted-foreground">
                       {blocker.remedy}
                     </span>
@@ -2350,6 +2363,7 @@ export function AgentboardScreen() {
                     <Button
                       size="sm"
                       variant="secondary"
+                      className="shrink-0"
                       disabled={deleteBusy}
                       onClick={() => void stopPortAndRetry(blockedDelete, port)}
                     >
@@ -2360,7 +2374,9 @@ export function AgentboardScreen() {
               );
             })}
           </ul>
-          <AlertDialogFooter>
+          {/* Opposite ends for opposite answers — the discard label runs long
+              enough that crowding it against keep reads as one two-part button. */}
+          <AlertDialogFooter className="sm:justify-between">
             {/* Cancelling is real during a port stop (the retry checks the
                 flow and stands down) but a lie once the removal is running,
                 so only the removal locks it. */}

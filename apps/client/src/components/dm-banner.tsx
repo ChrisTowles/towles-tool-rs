@@ -72,8 +72,8 @@ export function DmBanner() {
 
       <Button
         variant="outline"
-        size="sm"
-        className="h-6 border-rose-500/40 px-2 text-xs text-rose-600 hover:text-rose-600 dark:text-rose-400 dark:hover:text-rose-400"
+        size="xs"
+        className="border-rose-500/40 text-rose-600 hover:text-rose-600 dark:text-rose-400 dark:hover:text-rose-400"
         onClick={() => openTab("slack")}
       >
         Reply here
@@ -81,8 +81,8 @@ export function DmBanner() {
       {dm.url && (
         <Button
           variant="ghost"
-          size="sm"
-          className="h-6 px-2 text-xs text-muted-foreground"
+          size="xs"
+          className="text-muted-foreground"
           onClick={() => void openExternalUrl(dm.url!)}
         >
           Open in Slack
@@ -90,8 +90,8 @@ export function DmBanner() {
       )}
       <Button
         variant="ghost"
-        size="sm"
-        className="h-6 px-2 text-xs text-muted-foreground"
+        size="xs"
+        className="text-muted-foreground"
         onClick={() => void storeDmDismiss(dm.channel, dm.ts)}
       >
         <Check className="size-3.5" />

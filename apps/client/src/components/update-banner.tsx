@@ -28,16 +28,16 @@ export function UpdateBanner() {
 
       <Button
         variant="outline"
-        size="sm"
-        className="h-6 border-sky-500/40 px-2 text-xs text-sky-600 hover:text-sky-600 dark:text-sky-400 dark:hover:text-sky-400"
+        size="xs"
+        className="border-sky-500/40 text-sky-600 hover:text-sky-600 dark:text-sky-400 dark:hover:text-sky-400"
         onClick={() => void openExternalUrl(update.releaseUrl)}
       >
         View release
       </Button>
       <Button
         variant="ghost"
-        size="sm"
-        className="h-6 px-2 text-xs text-muted-foreground"
+        size="xs"
+        className="text-muted-foreground"
         onClick={() => setDismissed(true)}
       >
         <X className="size-3.5" />

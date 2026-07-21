@@ -703,7 +703,7 @@ function ToolsTab({ tools }: { tools: McpToolDoc[] | null }) {
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-7 text-xs"
+                      className="text-xs"
                       onClick={() => {
                         uiAction("mcp.tool.test_open", "mcp", tool.name);
                         setTesting(tool);

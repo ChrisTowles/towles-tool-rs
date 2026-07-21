@@ -145,7 +145,7 @@ export function SlackScreen() {
         <Button
           variant="ghost"
           size="sm"
-          className="h-7 gap-1.5 px-2 text-muted-foreground"
+          className="gap-1.5 px-2 text-muted-foreground"
           onClick={refresh}
           disabled={loading}
         >
@@ -190,8 +190,9 @@ export function SlackScreen() {
                 className="max-h-40 min-h-9 flex-1 resize-none"
               />
               <Button
-                size="sm"
-                className="h-9 gap-1.5 bg-violet-600 text-white hover:bg-violet-600/90"
+                // lg matches the composer textarea's min-h-9 beside it.
+                size="lg"
+                className="gap-1.5 bg-violet-600 text-white hover:bg-violet-600/90"
                 onClick={() => void send()}
                 disabled={sending || draft.trim().length === 0}
               >
@@ -362,7 +363,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
     <Button
       size="sm"
       variant="outline"
-      className="h-7 gap-1.5 px-2 text-xs"
+      className="gap-1.5 px-2 text-xs"
       onClick={() => void copy()}
     >
       {copied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}

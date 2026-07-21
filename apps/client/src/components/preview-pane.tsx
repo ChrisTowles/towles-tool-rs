@@ -354,7 +354,7 @@ export function PreviewPane({
                   if (s) navigate(s.url, "config");
                 }}
               >
-                <SelectTrigger size="sm" className="h-6 w-40 text-[11px]">
+                <SelectTrigger size="xs" className="w-40 text-[11px]">
                   <SelectValue placeholder="Dev server" />
                 </SelectTrigger>
                 <SelectContent>
@@ -504,17 +504,12 @@ export function PreviewPane({
         ))}
         <div className="ml-auto flex items-center gap-1.5">
           {annotations.length > 0 && (
-            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={clearAnnotations}>
+            <Button variant="ghost" size="xs" onClick={clearAnnotations}>
               Clear
             </Button>
           )}
-          <Button
-            size="sm"
-            className="h-6 text-xs"
-            disabled={!url}
-            onClick={() => void openSendDialog()}
-          >
-            <Send className="size-3" /> Send to agent
+          <Button size="xs" disabled={!url} onClick={() => void openSendDialog()}>
+            <Send /> Send to agent
           </Button>
         </div>
       </div>
