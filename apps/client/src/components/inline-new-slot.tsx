@@ -38,7 +38,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import {
   ClaudeEffort,
   ClaudeLaunchOptions,
@@ -51,6 +50,7 @@ import {
   nextDraftScopeId,
 } from "@/lib/agentboard";
 import { IssueItem, storeGhIssuesList } from "@/lib/data";
+import { GoalEditor } from "@/components/goal-editor";
 import { errorMessage } from "@/lib/errors";
 import { loadUserSettings, type PromptImprover } from "@/lib/settings";
 import { type BaseBranch, BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/slots";
@@ -294,6 +294,9 @@ export function InlineNewSlot({
     branchEdit: string | null;
   } | null>(null);
   const [issuePickerOpen, setIssuePickerOpen] = useState(false);
+  // Set by either issue path — the Pick-issue popover or the goal field's `#`
+  // autocomplete — so `gh` is shelled once, on first need, either way.
+  const [issuesWanted, setIssuesWanted] = useState(false);
   // Lazy-initialized once from this repo's stored preference: the form
   // remounts fresh per open (see the base-branches effect below), so there's
   // no prop-change case to keep in sync with.
@@ -452,7 +455,7 @@ export function InlineNewSlot({
   // more often by typing a goal than by picking an issue, so there's no
   // reason to shell `gh` on every form mount.
   useEffect(() => {
-    if (!issuePickerOpen) return;
+    if (!issuesWanted) return;
     let cancelled = false;
     setIssues(null);
     setIssuesError(null);
@@ -463,7 +466,19 @@ export function InlineNewSlot({
     return () => {
       cancelled = true;
     };
-  }, [issuePickerOpen, issueAssignedToMe, repo.dir]);
+  }, [issuesWanted, issueAssignedToMe, repo.dir]);
+
+  /** Attach an issue without touching the goal/branch fields — the `#`
+   * autocomplete already wrote the reference the user typed, so seeding those
+   * (the way a first `toggleIssue` pick does) would clobber what they're
+   * mid-sentence on. Idempotent: re-referencing `#12` doesn't double-attach. */
+  function attachIssue(issue: IssueItem) {
+    setSelectedIssues((prev) =>
+      prev.some((i) => i.repo === issue.repo && i.number === issue.number)
+        ? prev
+        : [...prev, issue],
+    );
+  }
 
   // Toggle an issue in/out of the selection (multi-select, #339 — every
   // selected issue becomes a link on the created task). The *first* pick
@@ -615,10 +630,14 @@ export function InlineNewSlot({
       <span className="text-[11px] font-medium text-muted-foreground">
         ✦ New task — {repo.name}
       </span>
-      <Textarea
+      <GoalEditor
         autoFocus
         value={goal}
-        onChange={(e) => setGoal(e.target.value)}
+        onChange={setGoal}
+        issues={issues}
+        issuesError={issuesError}
+        onNeedIssues={() => setIssuesWanted(true)}
+        onPickIssue={attachIssue}
         onPaste={(e) => {
           const items = Array.from(e.clipboardData?.items ?? []);
           const pastedImages = items.filter(
@@ -667,9 +686,8 @@ export function InlineNewSlot({
             void pasteFromHostClipboard();
           }
         }}
-        placeholder="what should this task get done? (paste a screenshot to attach it)"
+        placeholder="what should this task get done? (# to link an issue, paste a screenshot to attach it)"
         rows={2}
-        className="text-xs"
       />
       {selectedIssues.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -729,7 +747,13 @@ export function InlineNewSlot({
           <ImagePlus className="size-3" />
           Attach image
         </Button>
-        <Popover open={issuePickerOpen} onOpenChange={setIssuePickerOpen}>
+        <Popover
+          open={issuePickerOpen}
+          onOpenChange={(o) => {
+            setIssuePickerOpen(o);
+            if (o) setIssuesWanted(true);
+          }}
+        >
           <PopoverTrigger asChild>
             <Button variant="outline" size="sm" className="h-6 gap-1 px-1.5 text-[10.5px]">
               <CircleDot className="size-3" />
