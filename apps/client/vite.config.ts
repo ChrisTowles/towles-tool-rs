@@ -3,7 +3,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { defineConfig } from "vite";
-import { resolveDevPort } from "../../scripts/slot-port.mjs";
+import { resolveDevPort } from "../../scripts/task-port.mjs";
 import pkg from "./package.json" with { type: "json" };
 
 // Every @codingame/monaco-vscode-* package must be pre-bundled together (and
@@ -33,7 +33,7 @@ function requireDevPort(): number {
   const port = Number(process.env.TT_DEV_PORT) || resolveDevPort(repoRoot).unwrapOr(undefined);
   if (!port) {
     throw new Error(
-      "no TT_DEV_PORT for this checkout — run `tt slot env <name>` to claim ports, " +
+      "no TT_DEV_PORT for this checkout — run `tt task env <name>` to claim ports, " +
         "or pin TT_DEV_PORT in .env.local",
     );
   }

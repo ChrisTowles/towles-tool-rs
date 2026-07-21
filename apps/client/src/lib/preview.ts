@@ -165,7 +165,7 @@ export function feedbackPrompt(comment: string, url: string, paths: string[]): s
 
 /** What to type into the target session's PTY. Claude already running → the
  * bare prompt into its TUI input; plain shell → a `claude '<prompt>'` launch,
- * exactly like the new-slot flow. Both end in `\r` to submit. */
+ * exactly like the new-task flow. Both end in `\r` to submit. */
 export function feedbackPtyData(prompt: string, agentRunning: boolean): string {
   return agentRunning ? `${prompt}\r` : claudeCommand(prompt);
 }

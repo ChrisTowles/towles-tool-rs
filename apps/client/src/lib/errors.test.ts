@@ -64,7 +64,7 @@ describe("IpcError variants", () => {
   });
 
   it("discriminates variants by class guard, not by tag comparison", () => {
-    const notInTauri: unknown = new NotInTauri({ command: "app_slot" });
+    const notInTauri: unknown = new NotInTauri({ command: "app_task" });
     expect(NotInTauri.is(notInTauri)).toBe(true);
     expect(IpcFailed.is(notInTauri)).toBe(false);
   });

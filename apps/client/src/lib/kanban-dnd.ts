@@ -74,7 +74,7 @@ export function taskDropAction(
 
 /**
  * An optimistic `position` for a card dropped between two neighbors, so the
- * Board's `position ASC` sort places it in the new slot before the backend
+ * Board's `position ASC` sort places it in the new position before the backend
  * round-trips. Fractional values are fine locally — the next `store://snapshot`
  * replaces them with the store's renumbered integers. Pass `null` for a missing
  * neighbor (dropping at the very top or bottom, or into an empty column).

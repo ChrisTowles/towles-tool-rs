@@ -5,16 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { fmtClock, fmtCountdown, useAppSlot, useStoreSnapshot } from "@/lib/data";
+import { fmtClock, fmtCountdown, useAppTask, useStoreSnapshot } from "@/lib/data";
 import { useNow } from "@/lib/now";
 import { useWorkspace } from "@/lib/workspace";
 
 /**
  * Fixed palette of literal Tailwind classes (so the JIT sees them) — one per
- * slot window, picked by hashing the slot name so a given checkout always keeps
+ * task window, picked by hashing the task name so a given checkout always keeps
  * the same accent.
  */
-const SLOT_COLORS = [
+const TASK_COLORS = [
   {
     badge: "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300",
     dot: "bg-blue-500",
@@ -41,26 +41,26 @@ const SLOT_COLORS = [
   },
 ];
 
-function slotColor(slot: string) {
+function taskColor(task: string) {
   let hash = 0;
-  for (let i = 0; i < slot.length; i++) hash = (hash * 31 + slot.charCodeAt(i)) | 0;
-  return SLOT_COLORS[Math.abs(hash) % SLOT_COLORS.length];
+  for (let i = 0; i < task.length; i++) hash = (hash * 31 + task.charCodeAt(i)) | 0;
+  return TASK_COLORS[Math.abs(hash) % TASK_COLORS.length];
 }
 
-/** Strip the shared prefix so the badge reads "slot-2", not the whole repo name. */
-function slotShortName(slot: string): string {
-  const m = slot.match(/slot-\w+$/i);
-  return m ? m[0] : slot;
+/** Strip the shared prefix so the badge reads "task-2", not the whole repo name. */
+function taskShortName(task: string): string {
+  const m = task.match(/task-\w+$/i);
+  return m ? m[0] : task;
 }
 
-function SlotBadge() {
-  const slot = useAppSlot();
-  if (!slot) return null;
-  const color = slotColor(slot);
+function TaskBadge() {
+  const task = useAppTask();
+  if (!task) return null;
+  const color = taskColor(task);
   return (
-    <Badge variant="outline" className={color.badge} title={slot}>
+    <Badge variant="outline" className={color.badge} title={task}>
       <span className={`size-2 rounded-full ${color.dot}`} />
-      {slotShortName(slot)}
+      {taskShortName(task)}
     </Badge>
   );
 }
@@ -127,7 +127,7 @@ export function AppHeader() {
 
       <h1 className="font-heading px-1 text-sm font-semibold">Towles Tool</h1>
 
-      <SlotBadge />
+      <TaskBadge />
 
       <ClockCluster />
 

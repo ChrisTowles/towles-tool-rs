@@ -18,11 +18,11 @@ import {
   folderActionableItems,
   folderLanded,
   folderLandedButHasWork,
-  folderRemovableSlot,
+  folderRemovableTask,
   forceDeleteLabel,
   modelContextLabel,
   stoppablePort,
-  type SlotBlocker,
+  type TaskBlocker,
   folderHoldsNoWork,
   folderSafeToDelete,
   hydrateWins,
@@ -319,7 +319,7 @@ describe("folderSafeToDelete", () => {
     expect(folderSafeToDelete(folder({ landed: "squash-merged" }), undefined)).toBe(false);
   });
 
-  it("is false for a clean checkout with no PR — the PR-less scratch slot", () => {
+  it("is false for a clean checkout with no PR — the PR-less scratch task", () => {
     expect(folderSafeToDelete(folder({}), undefined)).toBe(false);
   });
 
@@ -362,23 +362,23 @@ describe("folderLanded", () => {
   });
 });
 
-describe("folderRemovableSlot", () => {
+describe("folderRemovableTask", () => {
   it("is true only for a worktree that still exists on disk", () => {
-    expect(folderRemovableSlot(folder({ isWorktree: true }))).toBe(true);
-    expect(folderRemovableSlot(folder({}))).toBe(false); // main checkout
-    expect(folderRemovableSlot(folder({ isWorktree: true, dirMissing: true }))).toBe(false); // ghost
+    expect(folderRemovableTask(folder({ isWorktree: true }))).toBe(true);
+    expect(folderRemovableTask(folder({}))).toBe(false); // main checkout
+    expect(folderRemovableTask(folder({ isWorktree: true, dirMissing: true }))).toBe(false); // ghost
   });
 });
 
-const blocker = (over: Partial<SlotBlocker> = {}): SlotBlocker => ({
+const blocker = (over: Partial<TaskBlocker> = {}): TaskBlocker => ({
   kind: "dirtyTree",
-  message: "slot working tree is not clean (1 changed/untracked path(s))",
+  message: "task working tree is not clean (1 changed/untracked path(s))",
   remedy: "Commit or stash the changes to keep them.",
   losesWork: true,
   ...over,
 });
 
-const portBlocker = (port: number | null): SlotBlocker =>
+const portBlocker = (port: number | null): TaskBlocker =>
   blocker({
     kind: "foreignPort",
     message: `port ${port} in use`,
@@ -435,12 +435,12 @@ describe("stoppablePort", () => {
     expect(stoppablePort(portBlocker(4424))).toBe(4424);
   });
 
-  it("offers nothing when there is nothing to pass to slot_stop_port", () => {
+  it("offers nothing when there is nothing to pass to task_stop_port", () => {
     // A port blocker whose number didn't survive still renders its remedy as
     // text — it just gets no button.
     expect(stoppablePort(portBlocker(null))).toBeNull();
     // And a port on a non-port blocker is not an action: only `foreignPort`
-    // is something `slot_stop_port` will act on.
+    // is something `task_stop_port` will act on.
     expect(stoppablePort(blocker({ port: 4424 }))).toBeNull();
   });
 });
@@ -661,7 +661,7 @@ const valid = (sessions: string[], folders: string[]) =>
   [new Set(sessions), new Set(folders)] as const;
 
 describe("pruneWins", () => {
-  it("drops ghost session panes so survivors tile from the first slot", () => {
+  it("drops ghost session panes so survivors tile from the first task", () => {
     const w: WindowsPayload = {
       windows: [win("w1", "/f", ["ghost", "s1"])],
       activeWindows: { "/f": "w1" },
@@ -783,7 +783,7 @@ describe("replacePane", () => {
     expect(next.windows[0].cols).toEqual([200, 400, 400]);
   });
 
-  it("round-trips: a reclaimed tombstone lands back in its own slot", () => {
+  it("round-trips: a reclaimed tombstone lands back in its own task", () => {
     const w: WindowsPayload = {
       windows: [win("w1", "/f", ["s1", "s2"])],
       activeWindows: { "/f": "w1" },
@@ -1223,7 +1223,7 @@ describe("folderActionableItems", () => {
     expect(folderActionableItems(unlanded, pr({ state: "merged" }))).toEqual([]);
   });
 
-  it("does not flag a merged non-worktree checkout — that's the primary clone, not a slot", () => {
+  it("does not flag a merged non-worktree checkout — that's the primary clone, not a task", () => {
     const f = folder({ isWorktree: false });
     expect(folderActionableItems(f, pr({ state: "merged" }))).toEqual([]);
   });
@@ -1385,14 +1385,14 @@ describe("promptWithImages", () => {
 
   it("names the image and tells Claude to read it first", () => {
     const prompt = promptWithImages("match this design", [
-      "/slot/.claude/pasted-images/paste-1.png",
+      "/task/.claude/pasted-images/paste-1.png",
     ]);
     // The path alone isn't enough — a bare path in a prompt is something
     // Claude may or may not act on, so the instruction is what makes the
     // attachment reliable.
     expect(prompt).toBe(
       "match this design — Attached image — read it first, before anything else: " +
-        "/slot/.claude/pasted-images/paste-1.png",
+        "/task/.claude/pasted-images/paste-1.png",
     );
   });
 
@@ -1456,8 +1456,8 @@ describe("dynamicFlowPrompt", () => {
   });
 
   it("carries an effective origin/ base ref through verbatim as the rebase target", () => {
-    // Callers pass `SlotCreated.baseLabel` (`origin/main`, not `main`) —
-    // inside the slot's worktree a fetch never advances local `main`, so the
+    // Callers pass `TaskCreated.baseLabel` (`origin/main`, not `main`) —
+    // inside the task's worktree a fetch never advances local `main`, so the
     // prompt must name the remote-tracking ref.
     const prompt = dynamicFlowPrompt("fix", "origin/main");
     expect(prompt).toContain("rebase this branch onto the latest origin/main");
@@ -1474,7 +1474,7 @@ describe("dynamicFlowPrompt", () => {
 });
 
 describe("isPasteableImage", () => {
-  it("accepts the types tt_slots::pasted writes an extension for", () => {
+  it("accepts the types tt_tasks::pasted writes an extension for", () => {
     for (const m of ["image/png", "image/jpeg", "image/gif", "image/webp"]) {
       expect(isPasteableImage(m)).toBe(true);
     }

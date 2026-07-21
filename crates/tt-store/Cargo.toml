@@ -16,7 +16,7 @@ thiserror = { workspace = true }
 # Warn on an event row whose stored time no longer parses (a hand-edit) rather
 # than failing the whole query — see `query_events`.
 tracing = { workspace = true }
-# Central resolver for the (optionally slot-scoped) tt.db path.
+# Central resolver for the (optionally task-scoped) tt.db path.
 tt-config = { workspace = true }
 
 [dev-dependencies]

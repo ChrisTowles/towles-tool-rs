@@ -1,4 +1,4 @@
-//! Per-session agent-pushed metadata store. Ports slot-1
+//! Per-session agent-pushed metadata store. Ports §task§-1
 //! `runtime/server/metadata-store.ts`.
 //!
 //! Timestamps are injected (`now_ms`) rather than read from the clock, matching

@@ -10,15 +10,15 @@
 //! The listener is taken **bind-or-skip**: whichever app instance binds the
 //! port serves MCP, and every other instance silently serves none. The OS bind
 //! *is* the mutex — there is no lockfile, no PID check, and nothing to clean up
-//! after a crash. Chris runs several worktree slots of this app at once, and a
+//! after a crash. Chris runs several worktrees of this app at once, and a
 //! machine-wide singleton is the point: a session anywhere on the machine
 //! reaches one server holding one store, not whichever copy happened to start
-//! last. A slot that loses the race is unreachable by design; to debug one,
+//! last. A task that loses the race is unreachable by design; to debug one,
 //! point a client at it by hand.
 //!
 //! This is also why the port is a fixed default from settings rather than a
 //! `${tt:port}` pool claim. The no-hardcoded-ports rule exists because parallel
-//! slots collide over shared resources; here exactly one process ever holds the
+//! tasks collide over shared resources; here exactly one process ever holds the
 //! port, so there is nothing to collide with — and a stable port is what lets
 //! the `towles-tool-app` plugin ship a static, checked-in `.mcp.json`.
 //!
@@ -283,7 +283,7 @@ pub fn spawn(app: AppHandle, port: u16) {
     let listener = match StdTcpListener::bind(addr) {
         Ok(listener) => listener,
         Err(error) => {
-            // Not a warning: with several slots open this is the normal path
+            // Not a warning: with several tasks open this is the normal path
             // for all but the first, and logging it as a problem would train
             // the reader to ignore a message that sometimes matters.
             tracing::info!(

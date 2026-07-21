@@ -120,24 +120,24 @@ export type TaskPrLink = {
 };
 
 /**
- * A task's repo binding, and the slot its work happens in once one exists.
+ * A task's repo binding, and the task its work happens in once one exists.
  *
  * `repoRoot` is the only required part: an Agentboard task knows its repo from
  * the moment of submit, so `branch` is absent until a worktree is created (and
  * absent forever for a "task only" submit). That's what puts every task in a
  * repo swimlane on the Board.
  *
- * `repoRoot`/`branch` survive slot removal; `dir` is cleared when the worktree
+ * `repoRoot`/`branch` survive worktree removal; `dir` is cleared when the worktree
  * is removed (a detached task).
  */
-export type TaskSlot = {
+export type TaskWorktree = {
   repoRoot: string;
   repo?: string;
   branch?: string;
   dir?: string;
 };
 
-/** A task — the unit of work (#339): 0..N issues, 0..N PRs, usually a slot. */
+/** A task — the unit of work (#339): 0..N issues, 0..N PRs, usually a task. */
 export type TaskItem = {
   id: number;
   text: string;
@@ -147,7 +147,7 @@ export type TaskItem = {
   completedAt?: number;
   /** Free-form context attached to the task. */
   notes?: string;
-  slot?: TaskSlot;
+  worktree?: TaskWorktree;
   issues: TaskIssueLink[];
   prs: TaskPrLink[];
 };
@@ -400,8 +400,8 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
       {
         repo: "octo/gizmos",
         number: 6,
-        title: "feat: slot port picker",
-        branch: "feat/slot-ports",
+        title: "feat: task port picker",
+        branch: "feat/task-ports",
         state: "merged",
         checks: "passing",
         reviewState: "",
@@ -581,24 +581,24 @@ export function fmtAge(ms: number, now: number): string {
 }
 
 /**
- * Name of the checkout/slot this window is running (e.g. `towles-tool-rs-slot-2`),
- * from the Rust `app_slot` command. `null` outside Tauri (plain-Vite browser dev)
- * so the header badge is hidden there. Lets several slots' windows be told apart.
+ * Name of the checkout/task this window is running (e.g. `towles-tool-rs-task-2`),
+ * from the Rust `app_task` command. `null` outside Tauri (plain-Vite browser dev)
+ * so the header badge is hidden there. Lets several tasks' windows be told apart.
  */
-export function useAppSlot(): string | null {
-  const [slot, setSlot] = useState<string | null>(null);
+export function useAppTask(): string | null {
+  const [task, setTask] = useState<string | null>(null);
   useEffect(() => {
     if (!isTauri()) return;
     let active = true;
     void (async () => {
-      const s = await invoke<string>("app_slot");
-      if (active) setSlot(s.unwrapOr(null));
+      const s = await invoke<string>("app_task");
+      if (active) setTask(s.unwrapOr(null));
     })();
     return () => {
       active = false;
     };
   }, []);
-  return slot;
+  return task;
 }
 
 /** Create a task; resolves to its id. `status` defaults to Backlog backend-side. */
@@ -609,7 +609,7 @@ export const storeAddTask = (text: string, opts?: { status?: TaskStatus }) =>
 export const storeSetTaskStatus = (id: number, status: TaskStatus) =>
   invoke<void>("store_set_task_status", { id, status });
 
-/** Move a task to `status` at slot `index` within that column (drag-to-reorder). */
+/** Move a task to `status` at task `index` within that column (drag-to-reorder). */
 export const storeSetTaskPosition = (id: number, status: TaskStatus, index: number) =>
   invoke<void>("store_set_task_position", { id, status, index });
 
@@ -635,7 +635,7 @@ export const storeAttachTaskIssue = (id: number, repo: string, number: number, u
 export const storeDetachTaskIssue = (id: number, repo: string, number: number) =>
   invoke<void>("store_detach_task_issue", { id, repo, number });
 
-/** Attach a GitHub PR to a task (slot-branch PRs auto-attach on collect). */
+/** Attach a GitHub PR to a task (worktree-branch PRs auto-attach on collect). */
 export const storeAttachTaskPr = (id: number, repo: string, number: number, url: string) =>
   invoke<void>("store_attach_task_pr", { id, repo, number, url });
 
@@ -643,16 +643,16 @@ export const storeAttachTaskPr = (id: number, repo: string, number: number, url:
 export const storeDetachTaskPr = (id: number, repo: string, number: number) =>
   invoke<void>("store_detach_task_pr", { id, repo, number });
 
-/** Bind a task to its repo, and to the worktree slot its work happens in once
+/** Bind a task to its repo, and to the worktree its work happens in once
  * one exists. The new-task flow calls this at submit with the repo alone, then
- * again with `branch`/`dir` once `slot_create` resolves. */
-export const storeTaskSetSlot = (
+ * again with `branch`/`dir` once `task_create` resolves. */
+export const storeTaskSetWorktree = (
   id: number,
   repoRoot: string,
   branch: string | undefined,
   opts?: { repo?: string; dir?: string },
 ) =>
-  invoke<void>("store_task_set_slot", {
+  invoke<void>("store_task_set_worktree", {
     id,
     repoRoot,
     branch,

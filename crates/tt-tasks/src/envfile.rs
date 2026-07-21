@@ -1,9 +1,9 @@
-//! Dotenv-lite parsing and merging for slot `.env` files.
+//! Dotenv-lite parsing and merging for task `.env` files.
 //!
 //! Deliberately minimal: `KEY=VALUE` lines, `#` comments, no quote handling —
 //! values pass through untouched so a merge can never mangle a secret. The
-//! rendered `.env` doubles as the slot's port-claim record, so [`port_claims`]
-//! is how sibling slots learn which ports are taken.
+//! rendered `.env` doubles as the task's port-claim record, so [`port_claims`]
+//! is how sibling tasks learn which ports are taken.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,10 +37,10 @@ pub fn parse(text: &str) -> Vec<(String, String)> {
 
 /// Ports this env file claims, keyed by the assignment's `KEY`: every `*PORT`
 /// assignment whose value is a bare decimal port number. The key filter is
-/// load-bearing: identity values like `SLOT=3` are small bare numbers too, and
+/// load-bearing: identity values like `TASK=3` are small bare numbers too, and
 /// treating them as claims made the removal guard report "port 3 in use"
 /// (binding low ports always fails without root). The rendered `.env` is the
-/// claim record — stable until the slot is removed (or re-rendered), at which
+/// claim record — stable until the task is removed (or re-rendered), at which
 /// point the ports self-release. Keeping the key lets a drift check report
 /// *which* var's port changed (e.g. `UI_PORT 3001 -> 3007`), not just that the
 /// claimed set differs.
@@ -68,7 +68,7 @@ pub fn port_claims(text: &str) -> BTreeSet<u16> {
 /// `dst` lacks entirely, and never touch a key with a value (rendered ports,
 /// template-filled values). Returns the merged text and how many keys moved.
 ///
-/// This is both the secrets-inheritance path (new slot copies a sibling's API
+/// This is both the secrets-inheritance path (new task copies a sibling's API
 /// keys) and the re-render preservation path (a re-rendered `.env` keeps keys
 /// the template doesn't know about) — re-renders must be idempotent.
 pub fn merge_missing_keys(dst: &str, src: &str) -> (String, usize) {
@@ -126,10 +126,10 @@ mod tests {
 
     #[test]
     fn port_claims_only_port_keys_with_bare_numbers() {
-        let text = "UI_PORT=3000\nDB_PORT=5439\nSLOT=3\nNAME=slot-3\nURL=http://x:9999/\nZERO_PORT=0\nBIG_PORT=99999\n";
+        let text = "UI_PORT=3000\nDB_PORT=5439\nTASK=3\nNAME=task-3\nURL=http://x:9999/\nZERO_PORT=0\nBIG_PORT=99999\n";
         let claims = port_claims(text);
         assert!(claims.contains(&3000) && claims.contains(&5439));
-        assert!(!claims.contains(&3), "SLOT=3 is identity, not a port claim");
+        assert!(!claims.contains(&3), "TASK=3 is identity, not a port claim");
         assert!(!claims.contains(&9999), "numbers inside URLs are not claims");
         assert!(!claims.contains(&0));
         assert_eq!(claims.len(), 2);
@@ -137,11 +137,11 @@ mod tests {
 
     #[test]
     fn port_claims_by_key_keeps_the_owning_var_name() {
-        let text = "UI_PORT=3000\nDB_PORT=5439\nSLOT=3\nURL=http://x:9999/\n";
+        let text = "UI_PORT=3000\nDB_PORT=5439\nTASK=3\nURL=http://x:9999/\n";
         let claims = port_claims_by_key(text);
         assert_eq!(claims.get("UI_PORT"), Some(&3000));
         assert_eq!(claims.get("DB_PORT"), Some(&5439));
-        assert_eq!(claims.len(), 2, "SLOT and URL are not port claims");
+        assert_eq!(claims.len(), 2, "TASK and URL are not port claims");
         // Consistent with the flat set view.
         assert_eq!(port_claims(text), claims.into_values().collect());
     }

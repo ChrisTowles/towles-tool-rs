@@ -24,8 +24,8 @@ mod scheduler;
 mod settings;
 mod slack;
 mod slack_socket;
-mod slots;
 mod store;
+mod task;
 mod terminal;
 mod update;
 
@@ -39,11 +39,11 @@ use agentboard::{Ab, Engine, STATE_EVENT, now_ms};
 use tt_agentboard::fs_notify::DirNotifier;
 
 /// Human-readable name of the checkout this binary was built from — the repo-root
-/// directory (e.g. `slot-migrate`, `towles-tool-rs-primary`). Baked in at compile time from
-/// `CARGO_MANIFEST_DIR` (`<root>/crates-tauri/tt-app`), so each slot's binary
-/// knows its own slot without any runtime cwd/env plumbing. Lets several slots'
+/// directory (e.g. `task-migrate`, `towles-tool-rs-primary`). Baked in at compile time from
+/// `CARGO_MANIFEST_DIR` (`<root>/crates-tauri/tt-app`), so each task's binary
+/// knows its own task without any runtime cwd/env plumbing. Lets several tasks'
 /// windows be told apart in the title bar, taskbar, and app header.
-pub(crate) fn slot_label() -> String {
+pub(crate) fn task_label() -> String {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
@@ -53,10 +53,10 @@ pub(crate) fn slot_label() -> String {
         .to_string()
 }
 
-/// Slot name for the frontend header badge (see `slot_label`).
+/// Task name for the frontend header badge (see `task_label`).
 #[tauri::command]
-fn app_slot() -> String {
-    slot_label()
+fn app_task() -> String {
+    task_label()
 }
 
 /// The shared IPC seam for frontend `ui.action` telemetry (see the root
@@ -69,9 +69,9 @@ fn ui_action(action: String, screen: String, detail: Option<String>) {
     tracing::info!(%action, %screen, detail = %detail.as_deref().unwrap_or(""), "ui.action");
 }
 
-/// Per-slot Tauri app identifier, so each worktree slot's self-installed
+/// Per-task Tauri app identifier, so each worktree's self-installed
 /// `.desktop` entry + icon (`linux_desktop::ensure_installed`) gets its own
-/// filename instead of every slot's binary overwriting the same one on
+/// filename instead of every task's binary overwriting the same one on
 /// startup. The main checkout (not under a `.claude/worktrees/` parent)
 /// keeps the base identifier unscoped, matching how it's the one instance
 /// meant to daily-drive.
@@ -87,8 +87,8 @@ fn ui_action(action: String, screen: String, detail: Option<String>) {
 /// identifier no longer affects GTK/D-Bus at all.
 fn app_identifier(base: &str) -> String {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    // `<repo>/.claude/worktrees/<slot>/crates-tauri/tt-app` — ancestors 3/4
-    // are the worktrees/.claude segments exactly when this is a slot build.
+    // `<repo>/.claude/worktrees/<task>/crates-tauri/tt-app` — ancestors 3/4
+    // are the worktrees/.claude segments exactly when this is a task build.
     let under_worktrees = manifest_dir.ancestors().nth(3).and_then(|p| p.file_name())
         == Some(std::ffi::OsStr::new("worktrees"))
         && manifest_dir.ancestors().nth(4).and_then(|p| p.file_name())
@@ -96,16 +96,16 @@ fn app_identifier(base: &str) -> String {
     if !under_worktrees {
         return base.to_string();
     }
-    let suffix: String = slot_label()
+    let suffix: String = task_label()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
         .collect();
-    format!("{base}.slot-{suffix}")
+    format!("{base}.task-{suffix}")
 }
 
 pub fn run() {
     // Errors always print to stderr, more with RUST_LOG. Independently, every
-    // span/event streams to this slot's on-disk event log at debug — the app
+    // span/event streams to this task's on-disk event log at debug — the app
     // runs unattended for hours, so its telemetry has to already be captured
     // when a question comes up. A failure here must never block startup.
     let _ = tt_otel::init("tt-app", "error");
@@ -141,7 +141,7 @@ pub fn run() {
     }
 
     // Guard against a second launch of the *same* checkout (same resolved
-    // identifier — the primary, or one specific slot) running concurrently:
+    // identifier — the primary, or one specific task) running concurrently:
     // with no GTK/D-Bus single-instance registration (`enableGTKAppId` is
     // off — see `linux_desktop`'s module doc for why), nothing else stops
     // two processes both opening a window, duplicating PTYs and scheduler
@@ -180,9 +180,9 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             linux_desktop::ensure_installed(&app.config().identifier);
 
-            // Distinguish concurrent slot windows in the title bar / taskbar.
+            // Distinguish concurrent task windows in the title bar / taskbar.
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_title(&format!("Towles Tool — {}", slot_label()));
+                let _ = win.set_title(&format!("Towles Tool — {}", task_label()));
             }
 
             // Fire-and-forget: check GitHub for a newer release and, if one
@@ -272,7 +272,7 @@ pub fn run() {
             }
 
             // Watcher scan: every 2s, or eagerly on a (debounced) fs-notify
-            // signal. Warms any stale git-cache entries (e.g. a worktree slot
+            // signal. Warms any stale git-cache entries (e.g. a worktree
             // just created — always a cache miss) OUTSIDE the engine lock
             // first, same reasoning as the stat-poll below: `scan_once` and
             // every `ab_*` command share this lock and (on Linux) sync
@@ -373,11 +373,11 @@ pub fn run() {
             }
 
             // Background fetch: `git fetch origin` every 3 minutes per tracked
-            // repo (deduped across worktrees/slots), outside the engine lock
+            // repo (deduped across worktrees/tasks), outside the engine lock
             // like the stat poll above. The 10s git-stat poll only reads
             // already-cached remote-tracking refs, so without this,
             // "commits behind main" never updates until the user happens to
-            // fetch some other way (opening a terminal, `tt slot create`,
+            // fetch some other way (opening a terminal, `tt task create`,
             // `tt gh` commands). No re-emit here — the next stat-poll tick
             // picks up whatever the fetch changed.
             {
@@ -487,7 +487,7 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
-            app_slot,
+            app_task,
             ui_action,
             update::check_for_update,
             resources::app_resource_usage,
@@ -527,22 +527,22 @@ pub fn run() {
             launch::launch_register,
             preview::preview_capture,
             preview::preview_write_feedback,
-            slots::slot_base_branches,
-            slots::slot_check_branch,
-            slots::slot_create,
-            slots::slot_remove,
-            slots::slot_stop_port,
-            slots::slot_run_setup,
-            slots::slot_suggest,
-            slots::slot_write_pasted_images,
-            slots::read_clipboard_image,
+            task::task_base_branches,
+            task::task_check_branch,
+            task::task_create,
+            task::task_remove,
+            task::task_stop_port,
+            task::task_run_setup,
+            task::task_suggest,
+            task::task_write_pasted_images,
+            task::read_clipboard_image,
             store::store_snapshot,
             store::store_add_task,
             store::store_attach_task_issue,
             store::store_detach_task_issue,
             store::store_attach_task_pr,
             store::store_detach_task_pr,
-            store::store_task_set_slot,
+            store::store_task_set_worktree,
             store::store_set_task_status,
             store::store_set_task_position,
             store::store_update_task,

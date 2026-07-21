@@ -1,6 +1,6 @@
 //! Atomic file persistence for the shared agentboard config files.
 //!
-//! Every Agentboard instance (`tt slot` runs one per checkout) reads
+//! Every Agentboard instance (`tt task` runs one per checkout) reads
 //! and writes the same `~/.config/towles-tool/agentboard/*.json` files. A plain
 //! `std::fs::write` truncates then streams, so a concurrent reader can observe
 //! an empty or half-written file — which is how a torn `repos.json` read made

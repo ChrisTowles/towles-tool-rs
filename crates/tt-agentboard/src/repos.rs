@@ -97,7 +97,7 @@ pub fn save_scan_roots(path: &Path, scan_roots: &[String]) -> std::io::Result<()
 
 /// Add `path` straight against the on-disk file: reread fresh immediately
 /// before writing, rather than trusting a caller's in-memory repo list that
-/// may have gone stale. Multiple Agentboard windows (one per `tt slot`
+/// may have gone stale. Multiple Agentboard windows (one per `tt task`
 /// checkout) share this one `repos.json`; without a fresh reread here, one
 /// window adding repo A while another adds repo B — both starting from the
 /// same stale snapshot — would have the second save silently drop the first's
@@ -112,7 +112,7 @@ pub fn add_repo_persisted(path: &Path, new_path: &str) -> std::io::Result<(Vec<S
 /// Remove `dir` straight against the on-disk file, same reread-then-write
 /// rationale as [`add_repo_persisted`]. Returns the merged repo list plus
 /// whether `dir` was actually present to remove; a no-op when it wasn't (the
-/// file is not rewritten — `tt slot rm` calls this for never-tracked slots).
+/// file is not rewritten — `tt task rm` calls this for never-tracked tasks).
 pub fn remove_repo_persisted(path: &Path, dir: &str) -> std::io::Result<(Vec<String>, bool)> {
     let mut config = load_config(path);
     let removed = remove_repo_by_dir(&mut config.repo_paths, dir);
@@ -129,7 +129,7 @@ pub fn missing_repo_dirs(repo_paths: &[String], exists: impl Fn(&str) -> bool) -
 }
 
 /// Untrack every repo whose directory no longer exists on disk (the rail's
-/// "missing" ghosts — e.g. removed worktree slots), straight against the
+/// "missing" ghosts — e.g. removed worktrees), straight against the
 /// on-disk file (same reread-then-write rationale as [`add_repo_persisted`]).
 /// Returns the merged repo list plus the dirs that were dropped; a no-op when
 /// nothing is missing (the file is not rewritten).
@@ -208,7 +208,7 @@ pub fn add_repo(repo_paths: &mut Vec<String>, path: &str) -> bool {
 /// So a concurrent add is never dropped by a drag that predates it.
 ///
 /// Note an untracked-then-retracked repo lands at the end rather than back in
-/// its old slot — deliberately, and deliberately unlike `repo_meta`, which
+/// its old task — deliberately, and deliberately unlike `repo_meta`, which
 /// *does* survive that round trip (see `RepoMetaStore::forget`). Re-dragging
 /// one row is cheap; re-picking a glyph and a hex colour is not.
 pub fn reorder_repos(current: &[String], desired: &[String]) -> Vec<String> {
@@ -464,7 +464,7 @@ mod tests {
         // A repo at depth 1 (normal clone).
         std::fs::create_dir_all(base.join("p/proj/.git")).unwrap();
         // A repo nested under a non-repo container at depth 2.
-        std::fs::create_dir_all(base.join("p/repos/slot/.git")).unwrap();
+        std::fs::create_dir_all(base.join("p/repos/task/.git")).unwrap();
         // A worktree whose `.git` is a file, not a dir.
         std::fs::create_dir_all(base.join("w/wt")).unwrap();
         std::fs::write(base.join("w/wt/.git"), "gitdir: /elsewhere").unwrap();
@@ -479,7 +479,7 @@ mod tests {
                 d.strip_prefix(base.to_str().unwrap()).unwrap().trim_start_matches('/').to_string()
             })
             .collect();
-        assert_eq!(rel, vec!["p/proj", "p/repos/slot", "w/wt"]);
+        assert_eq!(rel, vec!["p/proj", "p/repos/task", "w/wt"]);
     }
 
     #[test]

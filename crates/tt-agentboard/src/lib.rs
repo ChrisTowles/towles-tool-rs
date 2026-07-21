@@ -1,4 +1,4 @@
-//! Tauri-free core engine for agentboard. Ports the *data engine* under slot-1
+//! Tauri-free core engine for agentboard. Ports the *data engine* under §task§-1
 //! `packages/agentboard/src` — the in-memory agent state machine, per-session
 //! metadata, custom session ordering, git-info, and port attribution.
 //!

@@ -14,16 +14,16 @@
 // TT_E2E_WEBDRIVER_PORT, else TT_DEV_PORT + 3000.
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { requireDevPort, resolveWebdriverPort, spawnTauriDev, killPort } from "./slot-port.mjs";
+import { requireDevPort, resolveWebdriverPort, spawnTauriDev, killPort } from "./task-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const devPort = requireDevPort(repoRoot, { tag: "dev-drive", render: true });
 const wdPort = resolveWebdriverPort(devPort);
 
-// This port is always pinned to the slot (never scanned), so anything
-// already listening here is almost certainly this slot's own orphaned
-// session — safe to kill before we rebind. See killPort in slot-port.mjs.
+// This port is always pinned to the task (never scanned), so anything
+// already listening here is almost certainly this task's own orphaned
+// session — safe to kill before we rebind. See killPort in task-port.mjs.
 await killPort(devPort);
 
 console.log(`[dev-drive] dev server ${devPort} · automation server ${wdPort}`);

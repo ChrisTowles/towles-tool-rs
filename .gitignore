@@ -9,6 +9,6 @@ dist/
 .claude/settings.local.json
 *.local.*
 *.local
-# rendered per-slot by `tt slot new`/`env` (port claims); .env.local via *.local
+# rendered per-task by `tt task new`/`env` (port claims); .env.local via *.local
 .env
 .DS_Store

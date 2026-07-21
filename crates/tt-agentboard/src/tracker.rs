@@ -1,4 +1,4 @@
-//! In-memory agent-instance state machine. Ports slot-1
+//! In-memory agent-instance state machine. Ports §task§-1
 //! `runtime/agents/tracker.ts`.
 //!
 //! Pure logic: every method that reads the clock in TS (`Date.now()` in the

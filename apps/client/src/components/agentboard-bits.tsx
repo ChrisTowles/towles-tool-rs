@@ -276,11 +276,11 @@ export function GhostBadge() {
   );
 }
 
-/** The `⎇ branch` line under a checkout's name. Worktree slots are the common
+/** The `⎇ branch` line under a checkout's name. Worktree tasks are the common
  * case in the rail, so they stay quiet (muted, like the rest of the git row);
  * the *primary* checkout — the one clone whose `.git` is load-bearing for
  * every worktree — is the special row, and carries the sky tint that used to
- * be a "wt" badge on every slot. */
+ * be a "wt" badge on every task. */
 export function BranchLabel({
   branch,
   isWorktree,
@@ -299,7 +299,7 @@ export function BranchLabel({
       title={
         isWorktree
           ? undefined
-          : "Primary checkout — the main clone; its .git is load-bearing for every worktree slot"
+          : "Primary checkout — the main clone; its .git is load-bearing for every worktree"
       }
       onClick={onClick}
     >
@@ -308,7 +308,7 @@ export function BranchLabel({
   );
 }
 
-/** Shown on a worktree checkout mid-delete (`slot_remove` in flight). The rail
+/** Shown on a worktree checkout mid-delete (`task_remove` in flight). The rail
  * row itself dims and goes `pointer-events-none` around this badge (see
  * `RepoGroup`'s `deletingDirs`/`FolderHeader`'s `deleting` prop) — this is
  * just the label explaining *why* the row went inert, same job `GhostBadge`
@@ -327,10 +327,10 @@ export function DeletingBadge() {
 }
 
 /** Marks a folder where a live pane's ports have drifted from what `.env`
- * currently claims — a sibling slot's re-render (or a manual `tt slot env`)
+ * currently claims — a sibling task's re-render (or a manual `tt task env`)
  * rotated a port this pane already bound to. Amber like `NeedsBadge`: unlike
  * the grayscale `GhostBadge`, this is something worth acting on (restart the
- * pane, or re-run `tt slot env` and restart whatever's bound to the stale
+ * pane, or re-run `tt task env` and restart whatever's bound to the stale
  * port), not a dead state. */
 export function PortDriftBadge({ drift }: { drift: PortDrift[] }) {
   if (drift.length === 0) return null;
@@ -360,13 +360,13 @@ export function PortDriftBadge({ drift }: { drift: PortDrift[] }) {
 }
 
 /** Which branch every git stat on this folder was measured against — `vs
- * main` or `vs docs/readme-slot-clean` for a slot with a different creation
+ * main` or `vs docs/readme-task-clean` for a task with a different creation
  * base — next to the branch name so the ↑↓/±  numbers beside it are never
  * ambiguous about what they mean. */
 export function ComparedBaseBadge({
   folder,
 }: {
-  folder: Pick<FolderData, "comparedBase" | "baseBranch" | "slotBaseBranch">;
+  folder: Pick<FolderData, "comparedBase" | "baseBranch" | "taskBaseBranch">;
 }) {
   const label = comparedBaseLabel(folder);
   const manual = Boolean(folder.baseBranch?.trim());
@@ -376,8 +376,8 @@ export function ComparedBaseBadge({
       title={
         manual
           ? `Diffs against "${label}" — your override for this folder`
-          : folder.slotBaseBranch
-            ? `Diffs against "${label}" — the ref this slot was created from`
+          : folder.taskBaseBranch
+            ? `Diffs against "${label}" — the ref this task was created from`
             : `Diffs against "${label}" (origin/main-or-master auto-detect)`
       }
     >
@@ -479,7 +479,7 @@ function CommitBreakdownPreview({
  *
  * The count is `commitsAhead` — SHA reachability, which never falls back to 0
  * after a squash merge rewrites the commits. The tooltip therefore also says
- * how many are genuinely still outstanding, so "12c" on a finished slot can't
+ * how many are genuinely still outstanding, so "12c" on a finished task can't
  * read as twelve commits of pending work. */
 function outstandingNote(
   stats: Pick<FolderData, "commitsAhead" | "commitsUnlanded" | "landed">,
@@ -637,12 +637,12 @@ function unsafeToDeleteReason(
 
 /** Clickable `#N` chip for the folder's PR, tinted by the shared PR tone map
  * (`lib/pr-tone.ts`: cyan CI running · red failed/closed · green passing ·
- * gray no checks). Once merged the chip normally turns purple — the slot is
- * done, time to `tt slot rm` it — but merged only means the *PR's* content
+ * gray no checks). Once merged the chip normally turns purple — the task is
+ * done, time to `tt task rm` it — but merged only means the *PR's* content
  * is safe; it says nothing about this checkout. If `stats` shows uncommitted
  * changes or commits that haven't landed on the base branch yet
  * (`folderHoldsNoWork`), the chip turns amber (this app's needs-you hue)
- * instead, since removing the slot would lose that work despite the PR being
+ * instead, since removing the task would lose that work despite the PR being
  * merged — see the adjacent `SafeToDeleteBadge` for the positive case.
  * Opens GitHub. */
 export function PrChip({
@@ -671,7 +671,7 @@ export function PrChip({
       )}
       title={
         hasLocalWork
-          ? `${pr.title} — ${merged ? "merged" : stats.landed}, but this checkout still has ${unsafeToDeleteReason(stats, base)}. Commit or push before removing the slot. Open on GitHub.`
+          ? `${pr.title} — ${merged ? "merged" : stats.landed}, but this checkout still has ${unsafeToDeleteReason(stats, base)}. Commit or push before removing the task. Open on GitHub.`
           : merged
             ? `${pr.title} — merged. Open on GitHub.`
             : `${pr.title} — checks ${pr.checks}${pr.reviewState === "review_requested" ? ", review requested" : ""}. Open on GitHub.`
@@ -687,8 +687,8 @@ export function PrChip({
  * `rebase-merged` or `squash-merged` (see `FolderData.landed`).
  *
  * This exists because a squash merge — how this repo's PRs land — is invisible
- * to every naive git check, so a fully merged slot used to read as outstanding
- * work with nothing on screen to contradict it. It also covers the slot that
+ * to every naive git check, so a fully merged task used to read as outstanding
+ * work with nothing on screen to contradict it. It also covers the task that
  * never had a PR at all, where GitHub can say nothing and this is the only
  * evidence there is.
  *
@@ -715,7 +715,7 @@ export function LandedBadge({ landed, base }: { landed: LandedVia; base: string 
 
 /** {@link LandedBadge} plus the rule about when it may show at all: only when a
  * merged `PrChip` isn't already saying the same thing — one signal per fact.
- * This is the whole point of `landed`: a slot with no PR (or one whose branch
+ * This is the whole point of `landed`: a task with no PR (or one whose branch
  * merged locally) can still report that it's finished. */
 export function FolderLandedBadge({
   folder,
@@ -730,7 +730,7 @@ export function FolderLandedBadge({
 
 /** The positive counterpart to `PrChip`'s amber warning: a folder whose PR
  * merged, has no uncommitted changes, and has every commit landed on its
- * base — `folderSafeToDelete`. A PR-less slot never gets here, by design: git
+ * base — `folderSafeToDelete`. A PR-less task never gets here, by design: git
  * can prove content landed but not that it was *accepted*, so the affirmative
  * claim is gated on the merged PR. Deliberately louder than a bare chip (the bug
  * this replaces: a subdued purple "#N" was the *only* signal, indistinguishable
@@ -916,8 +916,8 @@ export function AgentStatusLine({
 /** "···" overflow menu for a checkout — the one place every secondary action
  * lives, shared verbatim by the rail's repo/folder headers and the
  * working-context band atop the panes (so the two surfaces never diverge):
- * full folder path (when given), "New task…" (slot-convention repos),
- * "Delete worktree…" (worktree checkouts, guarded `slot_remove`), "Sync now",
+ * full folder path (when given), "New task…" (task-convention repos),
+ * "Delete worktree…" (worktree checkouts, guarded `task_remove`), "Sync now",
  * "Create issue…" (shells `gh issue create` in `dir`), and "Remove from
  * rail". */
 export function RepoMenu({
@@ -925,7 +925,7 @@ export function RepoMenu({
   onRemove,
   dir,
   isWorktree,
-  onNewSlot,
+  onNewTask,
   onDeleteWorktree,
 }: {
   path?: string;
@@ -935,9 +935,9 @@ export function RepoMenu({
    * auto-discovered from the primary and would reappear next poll); deletion
    * is the "Delete worktree…" item instead. */
   isWorktree?: boolean;
-  /** Opens the new-slot modal — set only on a slot-convention repo. */
-  onNewSlot?: () => void;
-  /** Deletes this worktree slot from disk (guarded, `slot_remove`) — set only
+  /** Opens the new-task modal — set only on a task-convention repo. */
+  onNewTask?: () => void;
+  /** Deletes this worktree from disk (guarded, `task_remove`) — set only
    * on worktree checkouts. */
   onDeleteWorktree?: () => void;
 }) {
@@ -993,10 +993,10 @@ export function RepoMenu({
               <DropdownMenuSeparator />
             </>
           )}
-          {onNewSlot && (
-            <DropdownMenuItem onSelect={onNewSlot} className="whitespace-nowrap">
+          {onNewTask && (
+            <DropdownMenuItem onSelect={onNewTask} className="whitespace-nowrap">
               <FolderPlus className="size-3.5" /> New task…
-              <DropdownMenuShortcut>{shortcutHint("ab-new-slot")}</DropdownMenuShortcut>
+              <DropdownMenuShortcut>{shortcutHint("ab-new-task")}</DropdownMenuShortcut>
             </DropdownMenuItem>
           )}
           {onDeleteWorktree && (
@@ -1006,10 +1006,10 @@ export function RepoMenu({
               className="whitespace-nowrap"
             >
               <Trash2 className="size-3.5" /> Delete worktree…
-              <DropdownMenuShortcut>{shortcutHint("ab-remove-slot")}</DropdownMenuShortcut>
+              <DropdownMenuShortcut>{shortcutHint("ab-remove-task")}</DropdownMenuShortcut>
             </DropdownMenuItem>
           )}
-          {(onNewSlot || onDeleteWorktree) && <DropdownMenuSeparator />}
+          {(onNewTask || onDeleteWorktree) && <DropdownMenuSeparator />}
           <DropdownMenuItem onSelect={() => void syncNow()} className="whitespace-nowrap">
             <RefreshCw className="size-3.5" /> Sync now
           </DropdownMenuItem>

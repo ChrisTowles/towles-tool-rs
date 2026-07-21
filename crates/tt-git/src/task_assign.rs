@@ -1,26 +1,26 @@
-//! Guard logic for assigning an open issue to a worktree-slot checkout (the
-//! app's issue→slot flow). The whole point of the feature is the guard — an
-//! issue must never land in a slot that is holding someone's in-progress
+//! Guard logic for assigning an open issue to a worktree-task checkout (the
+//! app's issue→task flow). The whole point of the feature is the guard — an
+//! issue must never land in a task that is holding someone's in-progress
 //! work, so the checks hard-fail with no `--force` escape hatch.
 //!
 //! Pure functions only (this crate's rule): the caller gathers the git
 //! output (`remote get-url`, `status --porcelain`, `stash list`) in the target
-//! slot's directory and hands the raw text here for the decision.
+//! task's directory and hands the raw text here for the decision.
 
 use thiserror::Error;
 
-/// Why an issue may NOT be assigned into the target slot.
+/// Why an issue may NOT be assigned into the target task.
 #[derive(Debug, Error, PartialEq, Eq)]
-pub enum SlotBlocked {
+pub enum TaskBlocked {
     #[error(
-        "slot remote does not match this repo's remote\n  this repo: {expected}\n  slot:      {found}"
+        "task remote does not match this repo's remote\n  this repo: {expected}\n  task:      {found}"
     )]
     RemoteMismatch { expected: String, found: String },
 
-    #[error("slot working tree is not clean ({entries} changed/untracked path(s))")]
+    #[error("task working tree is not clean ({entries} changed/untracked path(s))")]
     DirtyTree { entries: usize },
 
-    #[error("slot has {count} stash entr{} — pop or drop them first", if *count == 1 { "y" } else { "ies" })]
+    #[error("task has {count} stash entr{} — pop or drop them first", if *count == 1 { "y" } else { "ies" })]
     StashNotEmpty { count: usize },
 }
 
@@ -78,14 +78,14 @@ fn repo_slug_from_remote(url: &str) -> Option<String> {
 /// The in-progress-work half of the guard, shared by both entry points: reject
 /// a dirty working tree first, then a non-empty stash. Order matters — the
 /// failures surface most-to-least obvious.
-fn check_clean(status_porcelain: &str, stash_list: &str) -> Result<(), SlotBlocked> {
+fn check_clean(status_porcelain: &str, stash_list: &str) -> Result<(), TaskBlocked> {
     let entries = dirty_entry_count(status_porcelain);
     if entries > 0 {
-        return Err(SlotBlocked::DirtyTree { entries });
+        return Err(TaskBlocked::DirtyTree { entries });
     }
     let count = stash_count(stash_list);
     if count > 0 {
-        return Err(SlotBlocked::StashNotEmpty { count });
+        return Err(TaskBlocked::StashNotEmpty { count });
     }
     Ok(())
 }
@@ -95,16 +95,16 @@ fn check_clean(status_porcelain: &str, stash_list: &str) -> Result<(), SlotBlock
 /// not a current-directory checkout. Failure order: wrong repo first (the
 /// assignment makes no sense at all), then in-progress work (uncommitted
 /// changes, then stashes).
-pub fn validate_slot_for_repo(
+pub fn validate_task_for_repo(
     expected_repo: &str,
-    slot_remote: &str,
+    task_remote: &str,
     status_porcelain: &str,
     stash_list: &str,
-) -> Result<(), SlotBlocked> {
+) -> Result<(), TaskBlocked> {
     let expected = expected_repo.trim().to_lowercase();
-    let found = repo_slug_from_remote(slot_remote).unwrap_or_default();
+    let found = repo_slug_from_remote(task_remote).unwrap_or_default();
     if expected != found {
-        return Err(SlotBlocked::RemoteMismatch { expected, found });
+        return Err(TaskBlocked::RemoteMismatch { expected, found });
     }
     check_clean(status_porcelain, stash_list)
 }
@@ -177,9 +177,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_for_repo_matches_issue_slug_against_slot_remote() {
+    fn validate_for_repo_matches_issue_slug_against_task_remote() {
         assert_eq!(
-            validate_slot_for_repo(
+            validate_task_for_repo(
                 "ChrisTowles/towles-tool-rs",
                 "git@github.com:christowles/towles-tool-rs.git",
                 "",
@@ -191,49 +191,49 @@ mod tests {
 
     #[test]
     fn validate_for_repo_rejects_a_different_repo() {
-        let err = validate_slot_for_repo(
+        let err = validate_task_for_repo(
             "ChrisTowles/towles-tool-rs",
             "git@github.com:someone/other-repo.git",
             "",
             "",
         )
         .unwrap_err();
-        assert!(matches!(err, SlotBlocked::RemoteMismatch { .. }));
+        assert!(matches!(err, TaskBlocked::RemoteMismatch { .. }));
     }
 
     #[test]
     fn validate_for_repo_rejects_wrong_repo_before_dirty_checks() {
         // Repo mismatch wins over a dirty tree — the assignment is
         // nonsensical, not merely unsafe.
-        let err = validate_slot_for_repo(
+        let err = validate_task_for_repo(
             "u/repo",
             "git@github.com:other/elsewhere.git",
             "?? junk.txt\n",
             "",
         )
         .unwrap_err();
-        assert!(matches!(err, SlotBlocked::RemoteMismatch { .. }));
+        assert!(matches!(err, TaskBlocked::RemoteMismatch { .. }));
     }
 
     #[test]
-    fn validate_for_repo_rejects_dirty_and_stashed_matching_slots() {
-        let dirty = validate_slot_for_repo(
+    fn validate_for_repo_rejects_dirty_and_stashed_matching_tasks() {
+        let dirty = validate_task_for_repo(
             "u/repo",
             "https://github.com/u/repo.git",
             " M a.rs\n?? b.txt\n",
             "",
         )
         .unwrap_err();
-        assert_eq!(dirty, SlotBlocked::DirtyTree { entries: 2 });
+        assert_eq!(dirty, TaskBlocked::DirtyTree { entries: 2 });
 
-        let stashed = validate_slot_for_repo(
+        let stashed = validate_task_for_repo(
             "u/repo",
             "https://github.com/u/repo.git",
             "",
             "stash@{0}: WIP on main: abc123 wip\n",
         )
         .unwrap_err();
-        assert_eq!(stashed, SlotBlocked::StashNotEmpty { count: 1 });
+        assert_eq!(stashed, TaskBlocked::StashNotEmpty { count: 1 });
         // Error text is user-facing; keep the singular/plural readable.
         assert!(stashed.to_string().contains("1 stash entry"));
     }

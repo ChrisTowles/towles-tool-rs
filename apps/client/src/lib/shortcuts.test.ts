@@ -78,21 +78,21 @@ describe("editable-target override", () => {
     expect(matchesEditableOverride(key({ ctrlKey: true, shiftKey: true, key: "p" }))).toBe(true);
   });
 
-  it("slot lifecycle chords work with a terminal focused — they act on board state", () => {
-    expect(SHORTCUTS["ab-new-slot"].allowInEditable).toBe(true);
-    expect(SHORTCUTS["ab-remove-slot"].allowInEditable).toBe(true);
+  it("task lifecycle chords work with a terminal focused — they act on board state", () => {
+    expect(SHORTCUTS["ab-new-task"].allowInEditable).toBe(true);
+    expect(SHORTCUTS["ab-remove-task"].allowInEditable).toBe(true);
     expect(matchesEditableOverride(key({ ctrlKey: true, shiftKey: true, key: "d" }))).toBe(true);
     expect(matchesEditableOverride(key({ ctrlKey: true, shiftKey: true, key: "Backspace" }))).toBe(
       true,
     );
   });
 
-  it("remove-slot is mod+shift+backspace — plain backspace stays with the shell", () => {
+  it("remove-task is mod+shift+backspace — plain backspace stays with the shell", () => {
     expect(
-      matchesShortcut("ab-remove-slot", key({ ctrlKey: true, shiftKey: true, key: "Backspace" })),
+      matchesShortcut("ab-remove-task", key({ ctrlKey: true, shiftKey: true, key: "Backspace" })),
     ).toBe(true);
-    expect(matchesShortcut("ab-remove-slot", key({ key: "Backspace" }))).toBe(false);
-    expect(matchesShortcut("ab-remove-slot", key({ ctrlKey: true, key: "Backspace" }))).toBe(false);
+    expect(matchesShortcut("ab-remove-task", key({ key: "Backspace" }))).toBe(false);
+    expect(matchesShortcut("ab-remove-task", key({ ctrlKey: true, key: "Backspace" }))).toBe(false);
   });
 
   it("new-session (mod+d) stays gated — Ctrl+D is EOF at a shell prompt", () => {

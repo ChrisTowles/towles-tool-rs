@@ -60,13 +60,13 @@ the real shell via approach 1.
 
 ## Misc
 
-- `npm run dev` (root) picks a deterministic per-slot port automatically via
+- `npm run dev` (root) picks a deterministic per-task port automatically via
   `scripts/dev-port.mjs` instead of hardcoding 1420, so running this repo
-  from multiple worktree slots at once no longer collides (a stale listener
+  from multiple worktrees at once no longer collides (a stale listener
   on that port gets killed rather than skipped). Watch its
-  `[dev-port] using port N` log line to find which port a given slot's
+  `[dev-port] using port N` log line to find which port a given task's
   WebView/browser target is on. `npm run client:dev` (bare Vite, no Tauri)
-  still defaults to 1420 since it isn't slot-aware.
+  still defaults to 1420 since it isn't task-aware.
 - If the tt-app build script fails reading plugin permissions from a *stale
   absolute path* (another checkout's `target/`), the cargo build cache was
   copied between worktrees: `rm -rf target/debug/build/tauri-* target/debug/build/tt-app-*`

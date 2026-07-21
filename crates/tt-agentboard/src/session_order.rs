@@ -1,4 +1,4 @@
-//! Custom session ordering, persisted to disk. Ports slot-1
+//! Custom session ordering, persisted to disk. Ports §task§-1
 //! `runtime/server/session-order.ts`.
 //!
 //! The persist path is parameterized (tests pass a tempdir); the default
@@ -19,7 +19,7 @@ pub enum ReorderDelta {
 }
 
 /// Default persisted-order path: `<agentboard_dir>/session-order.json`
-/// (slot-scoped in a slot checkout; see [`tt_config::agentboard_dir`]).
+/// (task-scoped in a task checkout; see [`tt_config::agentboard_dir`]).
 pub fn default_session_order_path() -> PathBuf {
     tt_config::agentboard_dir_lossy().join("session-order.json")
 }

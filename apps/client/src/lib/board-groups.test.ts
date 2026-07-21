@@ -24,47 +24,47 @@ function task(over: Partial<TaskItem> = {}): TaskItem {
 }
 
 describe("taskRepoKey", () => {
-  it("prefers the slot's owner/name over every other source", () => {
+  it("prefers the task's owner/name over every other source", () => {
     const t = task({
-      slot: { repoRoot: "/code/other", repo: "o/slot", branch: "b" },
+      worktree: { repoRoot: "/code/other", repo: "o/task", branch: "b" },
       issues: [{ repo: "o/issue", number: 1, url: "u", state: "open" }],
       prs: [{ repo: "o/pr", number: 2, url: "u", state: "open", checks: "" }],
     });
-    expect(taskRepoKey(t)).toBe("o/slot");
+    expect(taskRepoKey(t)).toBe("o/task");
   });
 
   it("falls back to the repo root's basename when nothing else identifies a repo", () => {
-    const t = task({ slot: { repoRoot: "/home/c/code/p/towles-tool-rs", branch: "b" } });
+    const t = task({ worktree: { repoRoot: "/home/c/code/p/towles-tool-rs", branch: "b" } });
     expect(taskRepoKey(t)).toBe("towles-tool-rs");
   });
 
   it("prefers a linked repo over the repo root's basename", () => {
     // The `+` on a folder header binds that folder's dir, which for a worktree
-    // slot is the branch slug — grouping on it would split one repo per slot.
+    // task is the branch slug — grouping on it would split one repo per task.
     const t = task({
-      slot: { repoRoot: "/code/p/blog/.claude/worktrees/feat-thing", branch: "feat/thing" },
+      worktree: { repoRoot: "/code/p/blog/.claude/worktrees/feat-thing", branch: "feat/thing" },
       issues: [{ repo: "o/blog", number: 1, url: "u", state: "open" }],
     });
     expect(taskRepoKey(t)).toBe("o/blog");
   });
 
   it("ignores a trailing separator on the repo root", () => {
-    const t = task({ slot: { repoRoot: "/code/p/blog/", branch: "b" } });
+    const t = task({ worktree: { repoRoot: "/code/p/blog/", branch: "b" } });
     expect(taskRepoKey(t)).toBe("blog");
   });
 
-  it("keeps a slot-bound task in its lane after the worktree is removed", () => {
+  it("keeps a task-bound task in its lane after the worktree is removed", () => {
     // `dir` cleared, `repoRoot`/`repo` kept — a detached task must not jump lanes.
-    const t = task({ slot: { repoRoot: "/code/x", repo: "o/x", branch: "feat/y" } });
+    const t = task({ worktree: { repoRoot: "/code/x", repo: "o/x", branch: "feat/y" } });
     expect(taskRepoKey(t)).toBe("o/x");
   });
 
-  it("uses the first issue link when there is no slot", () => {
+  it("uses the first issue link when there is no task", () => {
     const t = task({ issues: [{ repo: "o/issue", number: 1, url: "u", state: "open" }] });
     expect(taskRepoKey(t)).toBe("o/issue");
   });
 
-  it("uses the first PR link when there is no slot and no issue", () => {
+  it("uses the first PR link when there is no task and no issue", () => {
     const t = task({ prs: [{ repo: "o/pr", number: 2, url: "u", state: "open", checks: "" }] });
     expect(taskRepoKey(t)).toBe("o/pr");
   });
@@ -92,33 +92,33 @@ describe("groupTasksByRepo", () => {
   it("sorts lanes by label with the no-repo bucket last", () => {
     const groups = groupTasksByRepo([
       task({ id: 1 }),
-      task({ id: 2, slot: { repoRoot: "/r", repo: "o/zebra", branch: "b" } }),
-      task({ id: 3, slot: { repoRoot: "/r", repo: "o/apple", branch: "b" } }),
+      task({ id: 2, worktree: { repoRoot: "/r", repo: "o/zebra", branch: "b" } }),
+      task({ id: 3, worktree: { repoRoot: "/r", repo: "o/apple", branch: "b" } }),
     ]);
     expect(groups.map((g) => g.key)).toEqual(["o/apple", "o/zebra", NO_REPO_GROUP]);
   });
 
   it("sorts by bare name, not by owner", () => {
     const groups = groupTasksByRepo([
-      task({ id: 1, slot: { repoRoot: "/r", repo: "zzz/apple", branch: "b" } }),
-      task({ id: 2, slot: { repoRoot: "/r", repo: "aaa/zebra", branch: "b" } }),
+      task({ id: 1, worktree: { repoRoot: "/r", repo: "zzz/apple", branch: "b" } }),
+      task({ id: 2, worktree: { repoRoot: "/r", repo: "aaa/zebra", branch: "b" } }),
     ]);
     expect(groups.map((g) => g.label)).toEqual(["apple", "zebra"]);
   });
 
   it("collects every task of a repo into one lane, preserving input order", () => {
-    const slot = { repoRoot: "/r", repo: "o/x", branch: "b" };
+    const worktree = { repoRoot: "/r", repo: "o/x", branch: "b" };
     const groups = groupTasksByRepo([
-      task({ id: 1, slot }),
-      task({ id: 2, slot: { repoRoot: "/r", repo: "o/y", branch: "b" } }),
-      task({ id: 3, slot }),
+      task({ id: 1, worktree }),
+      task({ id: 2, worktree: { repoRoot: "/r", repo: "o/y", branch: "b" } }),
+      task({ id: 3, worktree }),
     ]);
     expect(groups.find((g) => g.key === "o/x")?.tasks.map((t) => t.id)).toEqual([1, 3]);
   });
 
-  it("groups a slot-bound and an issue-linked task together when the repo matches", () => {
+  it("groups a task-bound and an issue-linked task together when the repo matches", () => {
     const groups = groupTasksByRepo([
-      task({ id: 1, slot: { repoRoot: "/r", repo: "o/x", branch: "b" } }),
+      task({ id: 1, worktree: { repoRoot: "/r", repo: "o/x", branch: "b" } }),
       task({ id: 2, issues: [{ repo: "o/x", number: 9, url: "u", state: "open" }] }),
     ]);
     expect(groups).toHaveLength(1);
@@ -146,9 +146,9 @@ describe("railRepoKeyForTask", () => {
     },
   ];
 
-  it("matches the slot's worktree dir to a rail folder", () => {
+  it("matches the task's worktree dir to a rail folder", () => {
     const t = task({
-      slot: {
+      worktree: {
         repoRoot: "/elsewhere",
         dir: "/code/p/tt-rs/.claude/worktrees/feat-x",
         branch: "feat/x",
@@ -158,7 +158,7 @@ describe("railRepoKeyForTask", () => {
   });
 
   it("matches a detached task's repo root after the worktree dir is gone", () => {
-    const t = task({ slot: { repoRoot: "/code/p/dawn", repo: "other/fork", branch: "b" } });
+    const t = task({ worktree: { repoRoot: "/code/p/dawn", repo: "other/fork", branch: "b" } });
     expect(railRepoKeyForTask(rail, t)).toBe("path:/code/p/dawn");
   });
 
@@ -170,7 +170,7 @@ describe("railRepoKeyForTask", () => {
   });
 
   it("returns null for a task whose repo isn't on the rail", () => {
-    const t = task({ slot: { repoRoot: "/code/p/unrelated", repo: "o/unrelated" } });
+    const t = task({ worktree: { repoRoot: "/code/p/unrelated", repo: "o/unrelated" } });
     expect(railRepoKeyForTask(rail, t)).toBeNull();
   });
 

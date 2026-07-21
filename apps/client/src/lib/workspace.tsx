@@ -107,7 +107,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       const next = openTabs.filter((s) => s !== id);
       setOpenTabs(next);
       if (activeTab === id) {
-        // Slide focus to the tab that takes this one's slot (or the new last).
+        // Slide focus to the tab that takes this one's task (or the new last).
         setActiveTab(next[Math.min(idx, next.length - 1)]);
       }
     },

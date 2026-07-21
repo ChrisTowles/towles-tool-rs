@@ -120,7 +120,7 @@ pub struct IdeServer {
 }
 
 impl IdeServer {
-    /// Bind `127.0.0.1:0` (OS-assigned port — never hardcoded, slots run
+    /// Bind `127.0.0.1:0` (OS-assigned port — never hardcoded, tasks run
     /// concurrently), write the lockfile, and start the accept loop.
     pub fn start(
         app: AppHandle,

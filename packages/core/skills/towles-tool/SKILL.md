@@ -1,6 +1,6 @@
 ---
 name: towles-tool
-description: Use towles-tool (`tt`) CLI for journaling and worktree slots. Use when asked about "tt commands", "daily notes", "meeting notes", or worktree slot management.
+description: Use towles-tool (`tt`) CLI for journaling and worktrees. Use when asked about "tt commands", "daily notes", "meeting notes", or worktree management.
 user_invocable: true
 ---
 
@@ -21,13 +21,13 @@ tt journal list         # Recent entries
 tt journal search TEXT  # Search entries
 ```
 
-## Worktree slots
+## Worktree tasks
 
 ```bash
-tt slot new -b feat/thing  # Create a slot (branch-named worktree + rendered .env)
-tt slot ls                 # Fleet: main checkout + slots, branch, dirty, ports
-tt slot rm <name>          # Guarded removal
-tt slot clean              # Remove every merged/gone slot
+tt task new -b feat/thing  # Create a task (branch-named worktree + rendered .env)
+tt task ls                 # Fleet: main checkout + tasks, branch, dirty, ports
+tt task rm <name>          # Guarded removal
+tt task clean              # Remove every merged/gone task
 ```
 
 Everything else (PR/issue flow, dashboards, collectors) lives in the desktop

@@ -1,7 +1,7 @@
 # CLAUDE.md — crates-tauri/tt-app
 
 Tauri 2 desktop shell — see the root [`CLAUDE.md`](../../CLAUDE.md) for what
-this crate is (identifier, dev-port picking, slot labeling). This file is
+this crate is (identifier, dev-port picking, task labeling). This file is
 the internal invariants a single read of the code won't surface: it's the
 largest crate in the repo (~6,100 lines / 20 modules), and most of what
 follows is a cross-cutting rule that spans multiple files.
@@ -21,10 +21,10 @@ follows is a cross-cutting rule that spans multiple files.
   from a killed/replaced session can never close its successor. Treat
   `TermState`'s lock as map-surgery-only — don't hold it across anything
   that can block.
-- **`slot_remove` kills a folder's PTYs before touching its worktree on
+- **`task_remove` kills a folder's PTYs before touching its worktree on
   disk — but only once the removal guards have passed** (via
-  `ops::remove_slot`'s `before_removal` hook, `slots.rs`). Both halves are
-  load-bearing for any new slot-mutating command: kill before deleting or
+  `ops::remove_task`'s `before_removal` hook, `tasks.rs`). Both halves are
+  load-bearing for any new task-mutating command: kill before deleting or
   you'll orphan a shell pointed at a deleted cwd; kill only past the guards
   or a *refused* removal costs a live session the guard existed to protect.
 - **Task-status mutations must route through `spawn_gh_status_sync`**
@@ -36,7 +36,7 @@ follows is a cross-cutting rule that spans multiple files.
   clobbering rapid client-side edits. Match this if you add another
   purely-client-authoritative setter.
 
-## Singletons and cross-slot state
+## Singletons and cross-task state
 
 - **`tauri.conf.json` has no `enableGTKAppId`, deliberately — do not re-add
   it.** It used to be `true`, which made `tao` register a real
@@ -51,21 +51,21 @@ follows is a cross-cutting rule that spans multiple files.
   already exists`, tauri-2.11.5's `app.rs:1425`). Reproduced live: with
   `enableGTKAppId` on, a single `gdbus` `Activate` call crashed an
   already-running instance with **zero second process involved** — so a
-  per-slot/per-checkout identifier can reduce the collision surface but
+  per-task/per-checkout identifier can reduce the collision surface but
   can't close it; only dropping `enableGTKAppId` does, since without an
   app-id `tao` never asks GLib to register a bus name at all. The identifier
-  is still patched per-slot at runtime (`lib.rs`'s `app_identifier`, applied
+  is still patched per-task at runtime (`lib.rs`'s `app_identifier`, applied
   to `context` right after `generate_context!()`) so `linux_desktop::
   ensure_installed`'s self-installed `.desktop` entry/icon get their own
-  filename per slot instead of every slot's binary overwriting the same one.
+  filename per task instead of every task's binary overwriting the same one.
 - **`InstanceLock` is a generic, PID-tagged file lock** (`instance_lock.rs`),
   reused for two unrelated purposes under different lock names — don't
-  assume every holder is cross-slot or every holder is per-checkout; it
+  assume every holder is cross-task or every holder is per-checkout; it
   depends which name was passed to `try_acquire`:
-  - `"slack-socket"` (`slack_socket.rs`) is a **shared, cross-slot**
+  - `"slack-socket"` (`slack_socket.rs`) is a **shared, cross-task**
     singleton: Slack credentials live in the shared config dir, so every
-    open slot's process reads the same token, and without this guard N
-    open slots would each open a duplicate Socket Mode websocket on it.
+    open task's process reads the same token, and without this guard N
+    open tasks would each open a duplicate Socket Mode websocket on it.
   - `"app-<identifier>"` (`lib.rs`'s `run`, acquired before `.run()`) is
     **per-checkout**: with no GTK/D-Bus single-instance registration
     anymore (see above), nothing else stops the *same* checkout being
@@ -77,7 +77,7 @@ follows is a cross-cutting rule that spans multiple files.
   issue #39): a `tt-app` or `npm run dev` launched *inside* an embedded
   terminal doesn't collide with the outer instance's port/session identity.
   `CLAUDE_CODE_SSE_PORT` is re-stamped for deterministic IDE pairing even
-  with several slots open — don't strip this scrubbing step to "simplify"
+  with several tasks open — don't strip this scrubbing step to "simplify"
   terminal spawning.
 - **The scheduler's watchers/in-flight guards persist across a
   settings-reload rebuild** (`scheduler.rs`), and a failed `claude:calendar`
@@ -116,10 +116,10 @@ follows is a cross-cutting rule that spans multiple files.
   "every user action emits its OTel event" mandate (see the `tt-otel` bullet
   there), and it is not optional: without it the command is invisible in the
   on-disk event log, and "feature unused" can't be told from "feature
-  uninstrumented" (the gap #363 fixed across ~all `ab_*`/`store_*`/slot/
+  uninstrumented" (the gap #363 fixed across ~all `ab_*`/`store_*`/task/
   slack/settings/cockpit/ide commands). The rules:
   - **Name the event for *what changed*, `noun.verb`** (`task.created`,
-    `repo.identity_set`, `session.closed`, `slot.created`) — never reuse
+    `repo.identity_set`, `session.closed`, `task.created`) — never reuse
     `ui.action`. The frontend click already emitted a `ui.action`; a backend
     event with the same name double-counts the gesture. The two are
     complementary: `ui.action` records the intent, the command event records
@@ -127,9 +127,9 @@ follows is a cross-cutting rule that spans multiple files.
   - **Record the outcome, not just that it ran** — a `changed`/`count` field,
     a `from`/`to` pair, or a `started`/`already_running`/`blocked` discriminant
     where the command can no-op or be refused (see `store_collect_now`,
-    `slot_remove`). Log after the mutation succeeds; a longer-running command
+    `task_remove`). Log after the mutation succeeds; a longer-running command
     that can end three ways uses a span with an `outcome` field
-    (`slot_remove`, `slot_stop_port`).
+    (`task_remove`, `task_stop_port`).
   - **Never log content or continuous input** — no note/message/prompt text,
     no per-keystroke/mouse/scroll/resize/PTY-write events. That's why
     `slack_dm_send` logs `slack.dm_sent` with *no* text, and the `term_*`
@@ -166,10 +166,10 @@ follows is a cross-cutting rule that spans multiple files.
   and execs the raw binary, skipping packaging entirely.
   `linux_desktop::ensure_installed` (called from `.setup()`) self-registers
   both into `~/.local/share/{applications,icons}` on every startup instead,
-  idempotently, one `.desktop`/icon pair per slot (keyed by the per-slot
+  idempotently, one `.desktop`/icon pair per task (keyed by the per-task
   identifier). `StartupWMClass` is the constant binary name (`tt-app`), not
-  the per-slot identifier — `enableGTKAppId` is off (see "Singletons and
-  cross-slot state" above for why), so the running window's real WM_CLASS is
+  the per-task identifier — `enableGTKAppId` is off (see "Singletons and
+  cross-task state" above for why), so the running window's real WM_CLASS is
   GTK's default, not our identifier; matching on the identifier here would
   never resolve. The running window's dock/taskbar icon is best-effort as a
   result — the launcher/search entry's icon is still exact.

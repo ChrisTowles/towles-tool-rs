@@ -6,7 +6,7 @@
     "module": "ESNext",
     "skipLibCheck": true,
 
-    /* scripts/slot-port.mjs is imported from here; its JSDoc carries the types
+    /* scripts/task-port.mjs is imported from here; its JSDoc carries the types
        (there is no .d.mts sidecar to drift). checkJs stays off — that file is
        typechecked by its own scripts/tsconfig.json. */
     "allowJs": true,

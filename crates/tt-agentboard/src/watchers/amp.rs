@@ -1,4 +1,4 @@
-//! Amp agent watcher. Ports slot-1 `runtime/agents/watchers/amp.ts` (320).
+//! Amp agent watcher. Ports §task§-1 `runtime/agents/watchers/amp.ts` (320).
 //!
 //! Watches `~/.local/share/amp/threads/T-*.json` (whole-file JSON per thread) and
 //! derives status from the last message's `state`. Externally-driven scan; roots

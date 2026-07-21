@@ -1,8 +1,8 @@
-//! `claude -p`-backed branch-name/goal suggestion for the new-slot dialog.
+//! `claude -p`-backed branch-name/goal suggestion for the new-task dialog.
 //!
 //! Manual, user-triggered only (never runs on a timer or keystroke) — the
 //! dialog fills its editable fields with the result and the user can still
-//! edit or undo before creating the slot, so this never writes anything
+//! edit or undo before creating the task, so this never writes anything
 //! itself. Read-only by construction: the prompt tells `claude -p` not to
 //! read or write repo files, just answer from the goal text and its own
 //! knowledge of the repo it's pointed at (cwd = the repo checkout the dialog

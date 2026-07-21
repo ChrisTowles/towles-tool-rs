@@ -27,7 +27,7 @@ tt-claude-sessions = { workspace = true }
 tt-ide = { workspace = true }
 tt-journal = { workspace = true }
 tt-mcp = { workspace = true }
-tt-slots = { workspace = true }
+tt-tasks = { workspace = true }
 tt-store = { workspace = true }
 tt-update = { workspace = true }
 tt-vt = { workspace = true }

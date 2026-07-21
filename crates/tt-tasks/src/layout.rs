@@ -1,23 +1,23 @@
-//! Slot naming and layout rules: worktree slots live *inside* the checkout at
+//! Task naming and layout rules: worktree tasks live *inside* the checkout at
 //! `<checkout>/.claude/worktrees/<name>/` — Claude Code's native worktree
-//! location — so any plain git checkout is slot-capable with no restructuring
+//! location — so any plain git checkout is task-capable with no restructuring
 //! and no sibling directories, and worktrees created by Claude Code's own
 //! surfaces (`claude --worktree`, background sessions) land in the same place
-//! `tt slot` manages (via the repo's WorktreeCreate/WorktreeRemove hooks).
+//! `tt task` manages (via the repo's WorktreeCreate/WorktreeRemove hooks).
 //!
 //! The main checkout is a normal clone (it is where the user runs the app
-//! themselves); slots are branch-named, ephemeral worktrees created from it
+//! themselves); tasks are branch-named, ephemeral worktrees created from it
 //! and removed when their branch merges. `git clean -fdx` at the checkout
 //! root skips nested worktrees (git refuses to touch untracked repositories
 //! without a second `-f`), so the nesting is safe.
 
 use std::path::{Path, PathBuf};
 
-/// The per-slot marker file, written at render time and ignored via the
+/// The per-task marker file, written at render time and ignored via the
 /// main checkout's `.git/info/exclude` (so no repo `.gitignore` change is
-/// needed). Records the slot's identity for other tooling (state scoping,
+/// needed). Records the task's identity for other tooling (state scoping,
 /// agents landing cold).
-pub const MARKER_FILE: &str = ".tt-slot";
+pub const MARKER_FILE: &str = ".tt-task";
 
 /// First path segment of the worktrees dir under the checkout root.
 pub const CLAUDE_DIR: &str = ".claude";
@@ -25,13 +25,13 @@ pub const CLAUDE_DIR: &str = ".claude";
 /// Second path segment: `<checkout>/.claude/worktrees/<name>`.
 pub const WORKTREES_DIR: &str = "worktrees";
 
-/// The directory holding a checkout's worktree slots:
+/// The directory holding a checkout's worktree tasks:
 /// `<checkout>/.claude/worktrees`.
 pub fn worktrees_dir(checkout: &Path) -> PathBuf {
     checkout.join(CLAUDE_DIR).join(WORKTREES_DIR)
 }
 
-/// If `dir` is a slot checkout (`<main>/.claude/worktrees/<name>`), the main
+/// If `dir` is a task checkout (`<main>/.claude/worktrees/<name>`), the main
 /// checkout `<main>`. Pure path shape — no filesystem probes; callers verify
 /// `.git` presence themselves.
 pub fn main_checkout_for(dir: &Path) -> Option<&Path> {
@@ -41,7 +41,7 @@ pub fn main_checkout_for(dir: &Path) -> Option<&Path> {
         .then(|| claude.parent())?
 }
 
-/// Slot directory name for a branch: the *whole* branch, reduced to
+/// Task directory name for a branch: the *whole* branch, reduced to
 /// `[A-Za-z0-9._-]` (`feat/thing` → `feat-thing`) — the folder keeps the
 /// branch's full shape instead of discarding its type prefix.
 ///
@@ -49,11 +49,11 @@ pub fn main_checkout_for(dir: &Path) -> Option<&Path> {
 /// derive a branch back from a folder name — a dash-from-slash and a literal
 /// dash are indistinguishable, so any reverse parse would be a guess. The
 /// branch is always taken from ground truth instead: read from git in the
-/// slot (`branch --show-current`), or supplied verbatim by the caller (the
+/// task (`branch --show-current`), or supplied verbatim by the caller (the
 /// WorktreeCreate hook uses the requested worktree name AS the branch).
 /// Distinct branches can collide on one slug (`feat/thing` vs a literal
-/// `feat-thing`); creation then fails loudly with `SlotExists`.
-pub fn slot_name_from_branch(branch: &str) -> Option<String> {
+/// `feat-thing`); creation then fails loudly with `TaskExists`.
+pub fn task_name_from_branch(branch: &str) -> Option<String> {
     let name = sanitize_segment(branch);
     (!name.is_empty()).then_some(name)
 }
@@ -66,13 +66,13 @@ fn sanitize_segment(raw: &str) -> String {
         .to_string()
 }
 
-/// Contents of the `.tt-slot` marker. Line-oriented `key=value` so any
+/// Contents of the `.tt-task` marker. Line-oriented `key=value` so any
 /// language can read it without a parser dependency.
-pub fn marker_contents(slot_name: &str, base_branch: &str, stream: &str) -> String {
-    format!("name={slot_name}\nbase={base_branch}\nstream={stream}\n")
+pub fn marker_contents(task_name: &str, base_branch: &str, stream: &str) -> String {
+    format!("name={task_name}\nbase={base_branch}\nstream={stream}\n")
 }
 
-/// Parse `.tt-slot` marker contents (as written by [`marker_contents`]) into
+/// Parse `.tt-task` marker contents (as written by [`marker_contents`]) into
 /// its `key=value` lines. Pure — callers own reading the file.
 pub fn parse_marker(contents: &str) -> std::collections::HashMap<String, String> {
     contents
@@ -82,24 +82,24 @@ pub fn parse_marker(contents: &str) -> std::collections::HashMap<String, String>
         .collect()
 }
 
-/// The `base=` field from a slot's `.tt-slot` marker at `slot_dir`, if the
-/// marker exists and records a non-empty base. `None` for a non-slot
+/// The `base=` field from a task's `.tt-task` marker at `task_dir`, if the
+/// marker exists and records a non-empty base. `None` for a non-task
 /// checkout (no marker) or a marker missing/blank on `base`.
-pub fn read_slot_base(slot_dir: &Path) -> Option<String> {
-    let contents = std::fs::read_to_string(slot_dir.join(MARKER_FILE)).ok()?;
+pub fn read_task_base(task_dir: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(task_dir.join(MARKER_FILE)).ok()?;
     parse_marker(&contents).remove("base").filter(|s| !s.is_empty())
 }
 
-/// Whether `dir` is a worktree slot `tt slot` (or a repo's wired
+/// Whether `dir` is a worktree task `tt task` (or a repo's wired
 /// WorktreeCreate hook) actually created: it sits at
 /// `<checkout>/.claude/worktrees/<name>` ([`main_checkout_for`]) AND carries
-/// the `.tt-slot` marker written at creation time. A worktree satisfying
-/// only one of the two is NOT a managed slot — e.g. `claude --worktree` ran
+/// the `.tt-task` marker written at creation time. A worktree satisfying
+/// only one of the two is NOT a managed task — e.g. `claude --worktree` ran
 /// in a repo whose hooks aren't wired, so the marker was never written, or a
 /// worktree added by hand somewhere else on disk entirely — even though
 /// `git worktree list` still discovers it. The canonical check callers use
-/// to tell a `tt slot` worktree apart from any other.
-pub fn is_managed_slot(dir: &Path) -> bool {
+/// to tell a `tt task` worktree apart from any other.
+pub fn is_managed_task(dir: &Path) -> bool {
     main_checkout_for(dir).is_some() && dir.join(MARKER_FILE).is_file()
 }
 
@@ -123,72 +123,72 @@ mod tests {
         );
         assert_eq!(main_checkout_for(Path::new("/home/u/blog")), None);
         assert_eq!(main_checkout_for(Path::new("/home/u/blog/.claude/other/thing")), None);
-        assert_eq!(main_checkout_for(Path::new("/home/u/slots/thing")), None);
+        assert_eq!(main_checkout_for(Path::new("/home/u/tasks/thing")), None);
     }
 
     #[test]
-    fn slot_name_keeps_the_whole_branch_shape() {
-        assert_eq!(slot_name_from_branch("feat/slot-migrate"), Some("feat-slot-migrate".into()));
-        assert_eq!(slot_name_from_branch("fix/rail-overflow"), Some("fix-rail-overflow".into()));
-        assert_eq!(slot_name_from_branch("standalone"), Some("standalone".into()));
-        assert_eq!(slot_name_from_branch("chris/wip/thing"), Some("chris-wip-thing".into()));
+    fn task_name_keeps_the_whole_branch_shape() {
+        assert_eq!(task_name_from_branch("feat/task-migrate"), Some("feat-task-migrate".into()));
+        assert_eq!(task_name_from_branch("fix/rail-overflow"), Some("fix-rail-overflow".into()));
+        assert_eq!(task_name_from_branch("standalone"), Some("standalone".into()));
+        assert_eq!(task_name_from_branch("chris/wip/thing"), Some("chris-wip-thing".into()));
     }
 
     #[test]
-    fn slot_name_sanitizes_and_trims() {
-        assert_eq!(slot_name_from_branch("feat/hello world!"), Some("feat-hello-world".into()));
-        assert_eq!(slot_name_from_branch("feat/---"), Some("feat".into()));
+    fn task_name_sanitizes_and_trims() {
+        assert_eq!(task_name_from_branch("feat/hello world!"), Some("feat-hello-world".into()));
+        assert_eq!(task_name_from_branch("feat/---"), Some("feat".into()));
         // slug degenerates to separators only → no name
-        assert_eq!(slot_name_from_branch("///"), None);
+        assert_eq!(task_name_from_branch("///"), None);
     }
 
     #[test]
     fn marker_is_line_oriented() {
-        let m = marker_contents("slot-migrate", "main", "main");
-        assert_eq!(m, "name=slot-migrate\nbase=main\nstream=main\n");
+        let m = marker_contents("task-migrate", "main", "main");
+        assert_eq!(m, "name=task-migrate\nbase=main\nstream=main\n");
     }
 
     #[test]
     fn parse_marker_reads_key_value_lines() {
-        let fields = parse_marker("name=slot-migrate\nbase=develop\nstream=main\n");
+        let fields = parse_marker("name=task-migrate\nbase=develop\nstream=main\n");
         assert_eq!(fields.get("base"), Some(&"develop".to_string()));
-        assert_eq!(fields.get("name"), Some(&"slot-migrate".to_string()));
+        assert_eq!(fields.get("name"), Some(&"task-migrate".to_string()));
     }
 
     #[test]
-    fn read_slot_base_finds_marker_in_dir() {
+    fn read_task_base_finds_marker_in_dir() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join(MARKER_FILE), marker_contents("s", "develop", "main"))
             .unwrap();
-        assert_eq!(read_slot_base(dir.path()), Some("develop".to_string()));
+        assert_eq!(read_task_base(dir.path()), Some("develop".to_string()));
     }
 
     #[test]
-    fn read_slot_base_none_without_marker() {
+    fn read_task_base_none_without_marker() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert_eq!(read_slot_base(dir.path()), None);
+        assert_eq!(read_task_base(dir.path()), None);
     }
 
     #[test]
-    fn is_managed_slot_requires_both_location_and_marker() {
+    fn is_managed_task_requires_both_location_and_marker() {
         let root = tempfile::TempDir::new().unwrap();
         let checkout = root.path().join("checkout");
-        let slot_dir = checkout.join(CLAUDE_DIR).join(WORKTREES_DIR).join("thing");
-        std::fs::create_dir_all(&slot_dir).unwrap();
+        let task_dir = checkout.join(CLAUDE_DIR).join(WORKTREES_DIR).join("thing");
+        std::fs::create_dir_all(&task_dir).unwrap();
 
         // Right location, no marker: an unwired-hook Claude Code worktree.
-        assert!(!is_managed_slot(&slot_dir));
+        assert!(!is_managed_task(&task_dir));
 
-        // Right location, marker present: a real `tt slot`.
-        std::fs::write(slot_dir.join(MARKER_FILE), marker_contents("thing", "main", "main"))
+        // Right location, marker present: a real `tt task`.
+        std::fs::write(task_dir.join(MARKER_FILE), marker_contents("thing", "main", "main"))
             .unwrap();
-        assert!(is_managed_slot(&slot_dir));
+        assert!(is_managed_task(&task_dir));
 
-        // Wrong location, even with a stray marker file: not a slot shape.
+        // Wrong location, even with a stray marker file: not a task shape.
         let elsewhere = root.path().join("elsewhere");
         std::fs::create_dir_all(&elsewhere).unwrap();
         std::fs::write(elsewhere.join(MARKER_FILE), marker_contents("thing", "main", "main"))
             .unwrap();
-        assert!(!is_managed_slot(&elsewhere));
+        assert!(!is_managed_task(&elsewhere));
     }
 }

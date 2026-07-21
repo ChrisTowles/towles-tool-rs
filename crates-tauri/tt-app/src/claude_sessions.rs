@@ -24,7 +24,7 @@ const TOP_SESSIONS: usize = 50;
 /// Max search hits returned.
 const SEARCH_LIMIT: usize = 100;
 
-/// `~/.claude`, honoring `$HOME` so tests/multiple slots can redirect it.
+/// `~/.claude`, honoring `$HOME` so tests/multiple tasks can redirect it.
 fn claude_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude")
 }

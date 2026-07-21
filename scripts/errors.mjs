@@ -42,7 +42,7 @@ const DevPortUnsetBase = TaggedError("DevPortUnset")();
 
 /**
  * No `TT_DEV_PORT` anywhere — shell env, `.env.local`, or the rendered `.env`.
- * Recoverable: the launchers render the slot's `.env` and retry. Kept separate
+ * Recoverable: the launchers render the task's `.env` and retry. Kept separate
  * from {@link DevPortInvalid}, which is a typo the user has to fix.
  */
 export class DevPortUnset extends DevPortUnsetBase {
@@ -69,7 +69,7 @@ export class DevPortInvalid extends DevPortInvalidBase {
 }
 
 /**
- * @typedef {object} SlotEnvRenderFailedProps
+ * @typedef {object} TaskEnvRenderFailedProps
  * @property {string} name
  * @property {unknown} cause
  * @property {string} message
@@ -77,17 +77,17 @@ export class DevPortInvalid extends DevPortInvalidBase {
 
 /**
  * @type {import("better-result").TaggedErrorClass<
- *   "SlotEnvRenderFailed", SlotEnvRenderFailedProps>}
+ *   "TaskEnvRenderFailed", TaskEnvRenderFailedProps>}
  */
-const SlotEnvRenderFailedBase = TaggedError("SlotEnvRenderFailed")();
+const TaskEnvRenderFailedBase = TaggedError("TaskEnvRenderFailed")();
 
-/** `tt slot env <name>` could not run or exited non-zero — `tt` missing, or the render failed. */
-export class SlotEnvRenderFailed extends SlotEnvRenderFailedBase {
+/** `tt task env <name>` could not run or exited non-zero — `tt` missing, or the render failed. */
+export class TaskEnvRenderFailed extends TaskEnvRenderFailedBase {
   /** @param {{ name: string; cause: unknown }} args */
   constructor(args) {
     super({
       ...args,
-      message: `\`tt slot env ${args.name}\` failed: ${describe(args.cause)}`,
+      message: `\`tt task env ${args.name}\` failed: ${describe(args.cause)}`,
     });
   }
 }
@@ -192,7 +192,7 @@ export class RequestFailed extends RequestFailedBase {
       cause: args.cause,
       message:
         `can't reach the automation server at ${args.base} (${code}).\n` +
-        "Is `npm run dev:drive` running in this slot?",
+        "Is `npm run dev:drive` running in this task?",
     });
   }
 }

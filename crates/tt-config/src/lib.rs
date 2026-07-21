@@ -12,13 +12,13 @@
 //! structs), and writes to the shared file go through [`save_merge`] so
 //! TS-owned keys survive.
 //!
-//! ## Slot-scoped state
+//! ## Task-scoped state
 //!
-//! Chris runs many worktree slot clones of this repo concurrently
-//! (`…/towles-tool-rs-slot-N`). To stop concurrent dev instances from clobbering
+//! Chris runs many worktree clones of this repo concurrently
+//! (`…/towles-tool-rs-task-N`). To stop concurrent dev instances from clobbering
 //! one shared settings file / tt.db / agentboard dir, this module derives a
 //! *scope* from the running instance and, when scoped, nests all mutable state
-//! under `…/towles-tool/slots/<scope>/…`. See [`state_scope`] for the rule.
+//! under `…/towles-tool/tasks/<scope>/…`. See [`state_scope`] for the rule.
 //! When unscoped (the installed daily driver) the paths are exactly the historic
 //! defaults, so the shared settings file the TypeScript CLI also reads is
 //! untouched.
@@ -214,7 +214,7 @@ pub const DEFAULT_NOTIFY_CHECKS_FAILED: bool = true;
 /// rewrites the goal you typed before the task starts (Direct / Plan /
 /// Brainstorm by default).
 ///
-/// Clicking one runs `claude -p` through [`tt_slots::suggest`] with this
+/// Clicking one runs `claude -p` through [`tt_tasks::suggest`] with this
 /// improver's [`prompt`](Self::prompt) as the *instruction*, and fills the
 /// form's goal + branch fields with the rewritten result. The fields stay
 /// editable and Undo restores them, so the rewrite is always reviewable — and
@@ -283,7 +283,7 @@ impl PromptImprover {
 }
 
 /// Default "Direct" improver: tidy the task into one clear sentence. Matches
-/// [`tt_slots::DEFAULT_SUGGEST_INSTRUCTION`] — the behavior the single
+/// [`tt_tasks::DEFAULT_SUGGEST_INSTRUCTION`] — the behavior the single
 /// "Suggest name + goal" button used to have.
 pub const DEFAULT_IMPROVER_DIRECT: &str = "Restate the task clearly and concisely in one sentence.";
 
@@ -562,7 +562,7 @@ pub struct McpSettings {
     ///
     /// A **fixed default** rather than a `${tt:port}` pool claim, and that is
     /// deliberate: the repo's no-hardcoded-ports rule exists because parallel
-    /// worktree slots collide over shared resources, but this server is a
+    /// worktrees collide over shared resources, but this server is a
     /// machine-wide singleton acquired bind-or-skip — exactly one process ever
     /// holds it, so there is nothing to collide with. A fixed port is also what
     /// lets the `towles-tool-app` plugin ship a static, checked-in `.mcp.json`.
@@ -657,7 +657,7 @@ fn default_template_dir() -> String {
         .to_string()
 }
 
-/// Environment variable that overrides slot-scope detection.
+/// Environment variable that overrides task-scope detection.
 ///
 /// - set to a non-empty value: force that scope name (still sanitized).
 /// - set to empty (`TT_STATE_SCOPE=`): force *unscoped* — the shared defaults.
@@ -667,7 +667,7 @@ pub const STATE_SCOPE_ENV: &str = "TT_STATE_SCOPE";
 /// How the active scope was determined. The distinction matters because
 /// shared stores (settings, tracked repos) ignore an *auto-detected* scope —
 /// they describe the user/machine, not one checkout — but a *forced* scope
-/// isolates everything, so tests and quarantined slots never touch the real
+/// isolates everything, so tests and quarantined tasks never touch the real
 /// shared files.
 enum Scope {
     /// No scope — the shared daily-driver defaults.
@@ -679,30 +679,55 @@ enum Scope {
     Forced(String),
 }
 
+/// One-time best-effort rename of the pre-2026-07-20 `slots/` state parent to
+/// `tasks/` under both the data and config bases — the worktree-"slot"→"task"
+/// vocabulary rename. Renames only when the old dir exists and the new one does
+/// not, so it's idempotent and never clobbers a fresh `tasks/` tree. Best-effort:
+/// a failed rename leaves the old dir and the caller simply creates `tasks/`
+/// fresh (the lost state is one checkout's ephemeral instance data, never the
+/// shared settings, which live un-nested at the base).
+fn ensure_state_layout_migrated() {
+    static MIGRATED: std::sync::Once = std::sync::Once::new();
+    MIGRATED.call_once(|| {
+        let bases = [
+            dirs::data_dir().map(|d| d.join(TOOL_NAME)),
+            home_dir().ok().map(|h| h.join(".config").join(TOOL_NAME)),
+        ];
+        for base in bases.into_iter().flatten() {
+            let old = base.join("slots");
+            let new = base.join("tasks");
+            if old.is_dir() && !new.exists() {
+                let _ = std::fs::rename(&old, &new);
+            }
+        }
+    });
+}
+
 fn detect_scope() -> Scope {
+    ensure_state_layout_migrated();
     match std::env::var(STATE_SCOPE_ENV) {
         Ok(v) if !v.trim().is_empty() => Scope::Forced(sanitize_scope(&v)),
         Ok(_) => Scope::None,
-        Err(_) => match std::env::current_dir().ok().as_deref().and_then(slot_scope_from_dir) {
+        Err(_) => match std::env::current_dir().ok().as_deref().and_then(task_scope_from_dir) {
             Some(s) => Scope::Auto(s),
             None => Scope::None,
         },
     }
 }
 
-/// The active slot scope for the running process, or `None` for the shared
+/// The active task scope for the running process, or `None` for the shared
 /// (unscoped) defaults.
 ///
 /// Resolution order:
 /// 1. [`STATE_SCOPE_ENV`] if set (empty forces unscoped, non-empty forces that name).
 /// 2. Otherwise walk up from the current working directory to a checkout of *this*
 ///    repo and use its root directory name (e.g. `towles-tool-rs-primary`), repo-
-///    qualified for `slots/<name>` checkouts (e.g. `towles-tool-rs-slot-migrate`).
+///    qualified for `tasks/<name>` checkouts (e.g. `towles-tool-rs-task-migrate`).
 ///
 /// A checkout is recognised by a `crates/tt-config` directory at its root — a
 /// marker unique to this workspace — so an installed `tt` run from an arbitrary
 /// project directory stays unscoped and keeps sharing the daily-driver config.
-/// The dir-name rule mirrors `scripts/slot-port.mjs` and the app's `slot_label`.
+/// The dir-name rule mirrors `scripts/task-port.mjs` and the app's `task_label`.
 pub fn state_scope() -> Option<String> {
     match detect_scope() {
         Scope::None => None,
@@ -710,17 +735,17 @@ pub fn state_scope() -> Option<String> {
     }
 }
 
-/// Derive a slot scope from `dir`: the nearest ancestor that is a checkout of
+/// Derive a task scope from `dir`: the nearest ancestor that is a checkout of
 /// this repo (contains a `crates/tt-config` directory), or `None`. Split out
 /// from [`state_scope`] so it can be unit-tested against temp dirs without
 /// touching the real cwd/env.
 ///
-/// Branch-named slots nest inside their main checkout at
-/// `<repo>/.claude/worktrees/<name>` (see the tt-slots crate), so a bare dir
-/// name like `slot-migrate` is not unique across repos — those scopes are
+/// Branch-named tasks nest inside their main checkout at
+/// `<repo>/.claude/worktrees/<name>` (see the tt-tasks crate), so a bare dir
+/// name like `task-migrate` is not unique across repos — those scopes are
 /// qualified with the main checkout's dir name (`<repo>-<name>`). The main
 /// checkout itself scopes by its own dir name.
-pub fn slot_scope_from_dir(dir: &Path) -> Option<String> {
+pub fn task_scope_from_dir(dir: &Path) -> Option<String> {
     for ancestor in dir.ancestors() {
         if !ancestor.join("crates").join("tt-config").is_dir() {
             continue;
@@ -744,7 +769,7 @@ pub fn slot_scope_from_dir(dir: &Path) -> Option<String> {
 }
 
 /// Reduce a scope name to a single safe path segment: anything outside
-/// `[A-Za-z0-9._-]` becomes `-`. Slot dir names already qualify; this only
+/// `[A-Za-z0-9._-]` becomes `-`. Task dir names already qualify; this only
 /// guards a hand-set `TT_STATE_SCOPE`.
 fn sanitize_scope(raw: &str) -> String {
     raw.trim()
@@ -758,19 +783,19 @@ fn sanitize_scope(raw: &str) -> String {
 fn nest(base: PathBuf, scope: &Scope, instance: bool) -> PathBuf {
     match scope {
         Scope::None => base,
-        Scope::Auto(s) if instance => base.join("slots").join(s),
+        Scope::Auto(s) if instance => base.join("tasks").join(s),
         Scope::Auto(_) => base,
-        Scope::Forced(s) => base.join("slots").join(s),
+        Scope::Forced(s) => base.join("tasks").join(s),
     }
 }
 
-/// Nest `base` under `slots/<scope>` for *instance* state (sessions, windows,
+/// Nest `base` under `tasks/<scope>` for *instance* state (sessions, windows,
 /// tt.db — anything one running checkout owns): any scope applies.
 fn instance_under(base: PathBuf) -> PathBuf {
     nest(base, &detect_scope(), true)
 }
 
-/// Nest `base` under `slots/<scope>` for *shared* stores (settings, tracked
+/// Nest `base` under `tasks/<scope>` for *shared* stores (settings, tracked
 /// repos — they describe the user/machine, so every checkout reads one copy):
 /// only a forced [`STATE_SCOPE_ENV`] scopes them.
 fn shared_under(base: PathBuf) -> PathBuf {
@@ -779,7 +804,7 @@ fn shared_under(base: PathBuf) -> PathBuf {
 
 /// Config directory for shared stores (the settings file). Shared across
 /// checkouts: `~/.config/towles-tool` (matches the TS CLI on every platform);
-/// a forced `TT_STATE_SCOPE` nests it under `slots/<scope>`.
+/// a forced `TT_STATE_SCOPE` nests it under `tasks/<scope>`.
 fn config_dir() -> Result<PathBuf> {
     Ok(shared_under(home_dir()?.join(".config").join(TOOL_NAME)))
 }
@@ -791,8 +816,8 @@ pub fn config_path() -> Result<PathBuf> {
 }
 
 /// Data directory, instance-scoped (holds tt.db). Unscoped:
-/// `<data_dir>/towles-tool` (e.g. `~/.local/share/towles-tool`). In a slot
-/// checkout: `…/towles-tool/slots/<scope>` — a branch's schema experiments
+/// `<data_dir>/towles-tool` (e.g. `~/.local/share/towles-tool`). In a task
+/// checkout: `…/towles-tool/tasks/<scope>` — a branch's schema experiments
 /// must not touch the daily driver's database.
 fn data_dir() -> Result<PathBuf> {
     Ok(instance_under(dirs::data_dir().ok_or(Error::NoDataDir)?.join(TOOL_NAME)))
@@ -806,7 +831,7 @@ pub fn store_db_path() -> Result<PathBuf> {
 /// Directory watched by the app's scheduler for an eager collector nudge: a
 /// `prs` or `issues` file touched inside it triggers an immediate collect of
 /// that target instead of waiting for the normal poll cadence. Instance-scoped
-/// like `data_dir()` so a nudge in one worktree slot only wakes that slot's
+/// like `data_dir()` so a nudge in one worktree only wakes that task's
 /// own running app. Kept as its own subdirectory rather than nested directly
 /// under `data_dir()` so a directory-watch on it isn't spammed by tt.db's own
 /// WAL/SHM churn.
@@ -815,15 +840,15 @@ pub fn nudge_dir_path() -> Result<PathBuf> {
 }
 
 /// Directory the telemetry event log streams to: `<data_dir>/telemetry`.
-/// Instance-scoped like `data_dir()`, which is the point — each worktree slot
-/// writes its own event log, so "which slot spawned these commands?" is
+/// Instance-scoped like `data_dir()`, which is the point — each worktree
+/// writes its own event log, so "which task spawned these commands?" is
 /// answerable from the path alone rather than from a field every writer has to
 /// remember to stamp. Its own subdirectory so log rotation never walks tt.db.
 pub fn telemetry_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("telemetry"))
 }
 
-/// Staging directory for images pasted into the app (today: the new-slot
+/// Staging directory for images pasted into the app (today: the new-task
 /// form). The bytes have to become a file somewhere before a path to them can
 /// go into a Claude prompt, and that somewhere is deliberately *not* the
 /// repo — Claude Code reads an absolute path outside its workspace without
@@ -832,7 +857,7 @@ pub fn telemetry_dir() -> Result<PathBuf> {
 ///
 /// Deliberately the OS temp dir (`/tmp` on Linux), not `data_dir()`: a pasted
 /// screenshot is throwaway staging, not state worth keeping across a reboot,
-/// and `data_dir()`'s per-checkout `slots/<scope>` nesting exists to isolate
+/// and `data_dir()`'s per-checkout `tasks/<scope>` nesting exists to isolate
 /// state a checkout *owns* (tt.db, sessions) — a paste doesn't need that,
 /// and every extra layer is a directory the caller's age-based prune has to
 /// walk. The OS already reclaims `/tmp` on its own schedule; that prune is a
@@ -846,16 +871,16 @@ pub fn pasted_images_dir() -> PathBuf {
 /// only means anything while the process that created it is still running —
 /// it carries no durable state worth keeping across a reboot, and doesn't
 /// belong next to settings a user might back up or sync. Unscoped like
-/// `config_dir()` (not nested under `slots/<scope>`) since some holders
+/// `config_dir()` (not nested under `tasks/<scope>`) since some holders
 /// (e.g. `"slack-socket"`) are intentionally shared across every worktree
-/// slot on the machine; per-checkout holders instead vary the lock *name*
+/// task on the machine; per-checkout holders instead vary the lock *name*
 /// (e.g. `"app-<identifier>"`).
 pub fn locks_dir() -> PathBuf {
     std::env::temp_dir().join(TOOL_NAME).join("locks")
 }
 
 /// Agentboard *instance* persistence directory (sessions.json, windows.json,
-/// collapse.json, … — one running app's state): scoped in a slot checkout.
+/// collapse.json, … — one running app's state): scoped in a task checkout.
 pub fn agentboard_dir() -> Result<PathBuf> {
     Ok(instance_under(home_dir()?.join(".config").join(TOOL_NAME)).join("agentboard"))
 }
@@ -867,26 +892,26 @@ pub fn agentboard_shared_dir() -> Result<PathBuf> {
 }
 
 /// The base directories under which per-checkout *instance* state nests as
-/// `slots/<scope>/…` (see [`state_scope`]): the data base (tt.db) and the
+/// `tasks/<scope>/…` (see [`state_scope`]): the data base (tt.db) and the
 /// instance-config base (agentboard sessions/windows/collapse). Cleanup tools
 /// use this to reach state belonging to scopes *other than* the running
 /// process's — [`data_dir`]/[`agentboard_dir`] only ever resolve the current
 /// scope. Deliberately ignores an auto-detected scope (the machine's state is
-/// the target even when cleanup runs from a slot checkout), but a *forced*
+/// the target even when cleanup runs from a task checkout), but a *forced*
 /// [`STATE_SCOPE_ENV`] nests both bases like every other path, so tests and
-/// quarantined slots never see or touch the real state tree.
+/// quarantined tasks never see or touch the real state tree.
 pub struct InstanceStateBases {
-    /// e.g. `~/.local/share/towles-tool` — holds `tt.db` and `slots/<scope>/tt.db`.
+    /// e.g. `~/.local/share/towles-tool` — holds `tt.db` and `tasks/<scope>/tt.db`.
     pub data: PathBuf,
     /// e.g. `~/.config/towles-tool` — holds `agentboard/` and
-    /// `slots/<scope>/agentboard/`.
+    /// `tasks/<scope>/agentboard/`.
     pub config: PathBuf,
 }
 
 impl InstanceStateBases {
-    /// The `slots/` directories whose children are per-scope state dirs.
+    /// The `tasks/` directories whose children are per-scope state dirs.
     pub fn scope_parents(&self) -> [PathBuf; 2] {
-        [self.data.join("slots"), self.config.join("slots")]
+        [self.data.join("tasks"), self.config.join("tasks")]
     }
 
     /// The agentboard instance dir for `scope` (`None` = the unscoped store
@@ -894,7 +919,7 @@ impl InstanceStateBases {
     pub fn agentboard_dir(&self, scope: Option<&str>) -> PathBuf {
         match scope {
             None => self.config.join("agentboard"),
-            Some(s) => self.config.join("slots").join(s).join("agentboard"),
+            Some(s) => self.config.join("tasks").join(s).join("agentboard"),
         }
     }
 }
@@ -906,8 +931,8 @@ pub fn instance_state_bases() -> Result<InstanceStateBases> {
     let config = home_dir()?.join(".config").join(TOOL_NAME);
     match detect_scope() {
         Scope::Forced(s) => Ok(InstanceStateBases {
-            data: data.join("slots").join(&s),
-            config: config.join("slots").join(&s),
+            data: data.join("tasks").join(&s),
+            config: config.join("tasks").join(&s),
         }),
         Scope::None | Scope::Auto(_) => Ok(InstanceStateBases { data, config }),
     }
@@ -926,11 +951,11 @@ pub fn agentboard_shared_dir_lossy() -> PathBuf {
 }
 
 /// The instance-state directories owned by `scope` — the config-side
-/// `…/towles-tool/slots/<scope>` (agentboard sessions/windows/collapse) and
-/// the data-side one (tt.db) — so `tt slot rm` can delete a removed slot's
+/// `…/towles-tool/tasks/<scope>` (agentboard sessions/windows/collapse) and
+/// the data-side one (tt.db) — so `tt task rm` can delete a removed task's
 /// leftover state. This targets *another* checkout's scope, so the ambient
 /// auto-detected scope is deliberately ignored (running the command from
-/// inside a slot must not nest the target under the runner's own scope);
+/// inside a task must not nest the target under the runner's own scope);
 /// a forced [`STATE_SCOPE_ENV`] still nests, keeping tests fully isolated.
 pub fn instance_state_dirs_for_scope(scope: &str) -> Vec<PathBuf> {
     let scope = sanitize_scope(scope);
@@ -939,10 +964,10 @@ pub fn instance_state_dirs_for_scope(scope: &str) -> Vec<PathBuf> {
     }
     let mut out = Vec::new();
     if let Ok(home) = home_dir() {
-        out.push(shared_under(home.join(".config").join(TOOL_NAME)).join("slots").join(&scope));
+        out.push(shared_under(home.join(".config").join(TOOL_NAME)).join("tasks").join(&scope));
     }
     if let Some(data) = dirs::data_dir() {
-        out.push(shared_under(data.join(TOOL_NAME)).join("slots").join(&scope));
+        out.push(shared_under(data.join(TOOL_NAME)).join("tasks").join(&scope));
     }
     out
 }
@@ -1346,9 +1371,9 @@ mod tests {
     /// tests don't race each other (cargo runs tests on parallel threads).
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// A temp dir laid out like a slot checkout: `<root>/crates/tt-config`
+    /// A temp dir laid out like a task checkout: `<root>/crates/tt-config`
     /// (plus a nested crate dir to test detection from a subdirectory).
-    fn slot_checkout(root_name: &str) -> TempDir {
+    fn task_checkout(root_name: &str) -> TempDir {
         let dir = TempDir::new().unwrap();
         let root = dir.path().join(root_name);
         std::fs::create_dir_all(root.join("crates").join("tt-config")).unwrap();
@@ -1357,27 +1382,27 @@ mod tests {
     }
 
     #[test]
-    fn slot_checkout_dir_derives_scope() {
-        let dir = slot_checkout("towles-tool-rs");
+    fn task_checkout_dir_derives_scope() {
+        let dir = task_checkout("towles-tool-rs");
         let root = dir.path().join("towles-tool-rs");
         // From the root and from a nested subdir, the scope is the root's name.
-        assert_eq!(slot_scope_from_dir(&root), Some("towles-tool-rs".to_string()));
+        assert_eq!(task_scope_from_dir(&root), Some("towles-tool-rs".to_string()));
         assert_eq!(
-            slot_scope_from_dir(&root.join("crates").join("tt-store").join("src")),
+            task_scope_from_dir(&root.join("crates").join("tt-store").join("src")),
             Some("towles-tool-rs".to_string())
         );
     }
 
     #[test]
     fn nested_worktree_checkout_is_repo_qualified() {
-        // <repo>/.claude/worktrees/<name>/crates/tt-config: the slot's scope
-        // carries the main checkout's name so same-named slots of different
+        // <repo>/.claude/worktrees/<name>/crates/tt-config: the task's scope
+        // carries the main checkout's name so same-named tasks of different
         // repos never share state.
         let dir = TempDir::new().unwrap();
-        let slot =
+        let task =
             dir.path().join("towles-tool-rs").join(".claude").join("worktrees").join("migrate");
-        std::fs::create_dir_all(slot.join("crates").join("tt-config")).unwrap();
-        assert_eq!(slot_scope_from_dir(&slot), Some("towles-tool-rs-migrate".to_string()));
+        std::fs::create_dir_all(task.join("crates").join("tt-config")).unwrap();
+        assert_eq!(task_scope_from_dir(&task), Some("towles-tool-rs-migrate".to_string()));
     }
 
     #[test]
@@ -1388,13 +1413,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let checkout = dir.path().join("worktrees").join("thing");
         std::fs::create_dir_all(checkout.join("crates").join("tt-config")).unwrap();
-        assert_eq!(slot_scope_from_dir(&checkout), Some("thing".to_string()));
+        assert_eq!(task_scope_from_dir(&checkout), Some("thing".to_string()));
     }
 
     #[test]
     fn non_repo_dir_is_unscoped() {
         let dir = TempDir::new().unwrap();
-        assert_eq!(slot_scope_from_dir(dir.path()), None);
+        assert_eq!(task_scope_from_dir(dir.path()), None);
     }
 
     #[test]
@@ -1406,12 +1431,12 @@ mod tests {
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::create_dir_all(root.join("crates").join("their-crate")).unwrap();
         std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
-        assert_eq!(slot_scope_from_dir(&root), None);
+        assert_eq!(task_scope_from_dir(&root), None);
     }
 
     #[test]
-    fn sanitize_scope_keeps_slot_names_and_strips_others() {
-        assert_eq!(sanitize_scope("towles-tool-rs-slot-2"), "towles-tool-rs-slot-2");
+    fn sanitize_scope_keeps_scope_names_and_strips_others() {
+        assert_eq!(sanitize_scope("towles-tool-rs-task-2"), "towles-tool-rs-task-2");
         assert_eq!(sanitize_scope("  weird/name space "), "weird-name-space");
     }
 
@@ -1421,12 +1446,12 @@ mod tests {
         let base = PathBuf::from("/home/x/.config/towles-tool");
 
         // Non-empty → that scope — and a FORCED scope nests shared stores
-        // too, so tests and quarantined slots never touch real shared files.
+        // too, so tests and quarantined tasks never touch real shared files.
         // SAFETY: guarded by ENV_LOCK; no other threads read env concurrently here.
         unsafe { std::env::set_var(STATE_SCOPE_ENV, "my-scope") };
         assert_eq!(state_scope(), Some("my-scope".to_string()));
-        assert_eq!(instance_under(base.clone()), base.join("slots").join("my-scope"));
-        assert_eq!(shared_under(base.clone()), base.join("slots").join("my-scope"));
+        assert_eq!(instance_under(base.clone()), base.join("tasks").join("my-scope"));
+        assert_eq!(shared_under(base.clone()), base.join("tasks").join("my-scope"));
 
         // Empty → forced unscoped, regardless of cwd.
         unsafe { std::env::set_var(STATE_SCOPE_ENV, "") };
@@ -1447,7 +1472,7 @@ mod tests {
         let auto = Scope::Auto("towles-tool-rs-thing".into());
         assert_eq!(
             nest(base.clone(), &auto, true),
-            base.join("slots").join("towles-tool-rs-thing")
+            base.join("tasks").join("towles-tool-rs-thing")
         );
         assert_eq!(nest(base.clone(), &auto, false), base);
     }
@@ -1456,17 +1481,17 @@ mod tests {
     fn config_dir_override_wins_via_env_but_scoped_paths_nest() {
         let _guard = ENV_LOCK.lock().unwrap();
         // SAFETY: guarded by ENV_LOCK.
-        unsafe { std::env::set_var(STATE_SCOPE_ENV, "slot-9") };
+        unsafe { std::env::set_var(STATE_SCOPE_ENV, "task-9") };
         let cfg = config_dir().unwrap();
-        assert!(cfg.ends_with("towles-tool/slots/slot-9"), "got {}", cfg.display());
-        assert!(config_path().unwrap().ends_with("slot-9/towles-tool.settings.json"));
-        assert!(store_db_path().unwrap().ends_with("towles-tool/slots/slot-9/tt.db"));
-        assert!(agentboard_dir().unwrap().ends_with("slots/slot-9/agentboard"));
+        assert!(cfg.ends_with("towles-tool/tasks/task-9"), "got {}", cfg.display());
+        assert!(config_path().unwrap().ends_with("task-9/towles-tool.settings.json"));
+        assert!(store_db_path().unwrap().ends_with("towles-tool/tasks/task-9/tt.db"));
+        assert!(agentboard_dir().unwrap().ends_with("tasks/task-9/agentboard"));
         unsafe { std::env::remove_var(STATE_SCOPE_ENV) };
     }
 
     /// The cleanup bases point at the machine-wide state tree even when the
-    /// process itself runs auto-scoped from a slot checkout — that tree is
+    /// process itself runs auto-scoped from a task checkout — that tree is
     /// what cleanup sweeps — but a forced scope sandboxes them entirely.
     #[test]
     fn instance_state_bases_ignore_auto_but_honor_forced_scope() {
@@ -1477,21 +1502,21 @@ mod tests {
         let bases = instance_state_bases().unwrap();
         assert!(bases.data.ends_with("towles-tool"), "got {}", bases.data.display());
         assert!(bases.config.ends_with(".config/towles-tool"), "got {}", bases.config.display());
-        let [data_slots, config_slots] = bases.scope_parents();
-        assert!(data_slots.ends_with("towles-tool/slots"));
-        assert!(config_slots.ends_with(".config/towles-tool/slots"));
+        let [data_tasks, config_tasks] = bases.scope_parents();
+        assert!(data_tasks.ends_with("towles-tool/tasks"));
+        assert!(config_tasks.ends_with(".config/towles-tool/tasks"));
         assert!(bases.agentboard_dir(None).ends_with("towles-tool/agentboard"));
         assert!(
             bases
                 .agentboard_dir(Some("repo-thing"))
-                .ends_with("towles-tool/slots/repo-thing/agentboard")
+                .ends_with("towles-tool/tasks/repo-thing/agentboard")
         );
 
         // SAFETY: guarded by ENV_LOCK.
         unsafe { std::env::set_var(STATE_SCOPE_ENV, "sandbox") };
         let bases = instance_state_bases().unwrap();
-        assert!(bases.data.ends_with("towles-tool/slots/sandbox"));
-        assert!(bases.config.ends_with(".config/towles-tool/slots/sandbox"));
+        assert!(bases.data.ends_with("towles-tool/tasks/sandbox"));
+        assert!(bases.config.ends_with(".config/towles-tool/tasks/sandbox"));
 
         unsafe { std::env::remove_var(STATE_SCOPE_ENV) };
     }
@@ -1505,19 +1530,19 @@ mod tests {
         assert!(!dirs.is_empty());
         for dir in &dirs {
             assert!(
-                dir.ends_with("towles-tool/slots/towles-tool-rs-thing"),
+                dir.ends_with("towles-tool/tasks/towles-tool-rs-thing"),
                 "got {}",
                 dir.display()
             );
         }
         assert!(instance_state_dirs_for_scope("  ").is_empty());
 
-        // A FORCED scope nests the targets too — a test world's slot state
+        // A FORCED scope nests the targets too — a test world's task state
         // lives under the forced nest, never at the real machine paths.
         unsafe { std::env::set_var(STATE_SCOPE_ENV, "test-world") };
         for dir in instance_state_dirs_for_scope("towles-tool-rs-thing") {
             assert!(
-                dir.ends_with("slots/test-world/slots/towles-tool-rs-thing"),
+                dir.ends_with("tasks/test-world/tasks/towles-tool-rs-thing"),
                 "got {}",
                 dir.display()
             );

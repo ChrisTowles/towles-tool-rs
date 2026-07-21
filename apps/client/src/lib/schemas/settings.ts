@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * Runtime validators for `UserSettings` (`lib/settings.ts`) — the shared
- * settings file every worktree slot reads/writes, hand-edited on disk and
+ * settings file every worktree reads/writes, hand-edited on disk and
  * carried across a TS-CLI compatibility boundary (#38). Mirrors the TS type
  * field-for-field; `.passthrough()` on every object matches the Rust side's
  * `#[serde(default)]`/no-`deny_unknown_fields` tolerance so a field this

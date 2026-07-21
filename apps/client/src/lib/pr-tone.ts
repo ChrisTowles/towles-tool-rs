@@ -10,7 +10,7 @@ import type { PrItem } from "./data";
  *   problem — never red/amber, which read as "act now".
  * - `failed` → red: checks failed, or the PR was closed without merging.
  * - `passing` → green, mirroring the rail's `complete`.
- * - `merged` → purple, matching `LandedBadge` — done, clean up the slot.
+ * - `merged` → purple, matching `LandedBadge` — done, clean up the task.
  * - `review` → blue, the rail's waiting-on-you hue (review requested is a
  *   fact about *you*, orthogonal to the checks axis — callers pick it
  *   explicitly, `prTone` never returns it).

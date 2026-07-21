@@ -49,7 +49,7 @@ pub struct WindowsStore {
     payload: WindowsPayload,
 }
 
-/// Default location: `<agentboard_dir>/windows.json` (slot-scoped in a slot
+/// Default location: `<agentboard_dir>/windows.json` (task-scoped in a task
 /// checkout; see [`tt_config::agentboard_dir`]).
 pub fn default_windows_path() -> PathBuf {
     tt_config::agentboard_dir_lossy().join("windows.json")
@@ -80,7 +80,7 @@ impl WindowsStore {
     }
 
     /// Drop windows (and active-window entries) for folders no longer in
-    /// `dirs` — e.g. a removed worktree slot's layout, which would otherwise
+    /// `dirs` — e.g. a removed worktree's layout, which would otherwise
     /// linger in windows.json forever. Returns the folder dirs that lost
     /// state so the caller can persist them via [`Self::save`] (an empty
     /// return means nothing changed).
@@ -105,7 +105,7 @@ impl WindowsStore {
     }
 
     /// Drop every window (and the active-window entry) for one folder right
-    /// now — used ahead of a slot removal, before the checkout disappears
+    /// now — used ahead of a task removal, before the checkout disappears
     /// from disk, so the layout doesn't wait for the next poll's
     /// [`Self::prune`] to notice. Returns whether anything changed; caller
     /// persists via [`Self::save`] with `dir` in `touched`.
@@ -126,7 +126,7 @@ impl WindowsStore {
     /// distinguish "never touched" from "explicitly emptied"). Rereads the
     /// file fresh, replaces only those folders' entries, and leaves every
     /// other folder exactly as found on disk: this file is shared by every
-    /// Agentboard window (`tt slot` runs one per checkout), so a
+    /// Agentboard window (`tt task` runs one per checkout), so a
     /// blind whole-payload overwrite from this instance's hydrate-once,
     /// possibly-stale copy would erase another window's edits to folders we
     /// never touched. Same-folder concurrent edits are still last-write-wins;
@@ -173,7 +173,7 @@ fn diff_pane_dir(pane_id: &str) -> Option<&str> {
 /// Headless port of the client's `pruneWins` + active-window normalization
 /// (`apps/client/src/lib/agentboard.ts` — keep the two in lockstep): reconcile
 /// a persisted layout against what still exists. The blob on disk outlives its
-/// referents — a slot removed while no app was running leaves windows whose
+/// referents — a task removed while no app was running leaves windows whose
 /// `folderDir` is gone and panes whose session records vanished with it.
 ///
 /// Drops windows whose folder fails `folder_valid`, then panes that are
@@ -467,18 +467,18 @@ mod tests {
         let mut payload = layout();
         payload.windows.push(AgWindow {
             id: "w2".into(),
-            name: "removed slot".into(),
-            folder_dir: "/repo/slots/gone".into(),
+            name: "removed task".into(),
+            folder_dir: "/repo/tasks/gone".into(),
             panes: vec!["s3".into()],
             cols: None,
         });
-        payload.active_windows.insert("/repo/slots/gone".into(), "w2".into());
+        payload.active_windows.insert("/repo/tasks/gone".into(), "w2".into());
         store.set(payload);
-        store.save(&["/repo/checkout".to_string(), "/repo/slots/gone".to_string()]).unwrap();
+        store.save(&["/repo/checkout".to_string(), "/repo/tasks/gone".to_string()]).unwrap();
 
         let kept: std::collections::HashSet<String> = ["/repo/checkout".to_string()].into();
         let gone = store.prune(&kept);
-        assert_eq!(gone, vec!["/repo/slots/gone".to_string()]);
+        assert_eq!(gone, vec!["/repo/tasks/gone".to_string()]);
         store.save(&gone).unwrap();
 
         let reloaded = WindowsStore::new(Some(path));

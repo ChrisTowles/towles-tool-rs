@@ -9,7 +9,7 @@ user-invocable: true
 Neutral grayscale shadcn base (`apps/client/src/index.css`); a hue is added
 only to carry agent status or attention, never decoration.
 
-**Hierarchy:** repo (1..N folders: clone/worktree/slot) → folder (1..N
+**Hierarchy:** repo (1..N folders: clone/worktree/task) → folder (1..N
 sessions) → session (`✦` Claude agent or `❯` zsh shell). Solo-repo folders
 collapse repo+folder into one header. Attention bubbles up session→folder→repo.
 Never flatten this.

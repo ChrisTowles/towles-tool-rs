@@ -19,7 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Result } from "better-result";
 import { PortNeverListened, SpawnFailed } from "./errors.mjs";
-import { requireDevPort, resolveWebdriverPort } from "./slot-port.mjs";
+import { requireDevPort, resolveWebdriverPort } from "./task-port.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

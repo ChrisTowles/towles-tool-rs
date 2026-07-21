@@ -130,22 +130,24 @@ pub fn emit_snapshot_from_app(app: &AppHandle) {
     emit_snapshot(app, &state);
 }
 
-/// Detach any task bound to a removed worktree: clears the task's `slot_dir`
+/// Detach any task bound to a removed worktree: clears the task's `task_dir`
 /// (branch + repo root stay as historical fact), re-emitting the snapshot
-/// when something changed. The slot-removal seam calls this right where it
+/// when something changed. The task-removal seam calls this right where it
 /// already untracks the dir from repos.json. Returns how many tasks were
-/// detached; a slot with no task is a 0-count no-op.
-pub fn detach_task_slot_dir(app: &AppHandle, dir: &str) -> usize {
+/// detached; a task with no task is a 0-count no-op.
+pub fn detach_task_worktree_dir(app: &AppHandle, dir: &str) -> usize {
     let state = app.state::<StoreState>();
     let detached = with_store(&state, |store| {
-        store.clear_task_slot_dir(dir).map_err(|e| format!("clear_task_slot_dir failed: {e}"))
+        store
+            .clear_task_worktree_dir(dir)
+            .map_err(|e| format!("clear_task_worktree_dir failed: {e}"))
     })
     .unwrap_or_else(|e| {
-        eprintln!("task slot detach for {dir} failed: {e}");
+        eprintln!("task task detach for {dir} failed: {e}");
         0
     });
     if detached > 0 {
-        tracing::info!(%dir, count = detached, "task.slot_detached");
+        tracing::info!(%dir, count = detached, "task.task_detached");
         emit_snapshot(app, &state);
     }
     detached
@@ -161,7 +163,7 @@ pub fn store_snapshot(state: State<StoreState>) -> Result<Snapshot, String> {
 
 /// Add a manually-entered task, then re-emit the snapshot. `status` picks the
 /// column it lands in (quick-add uses `backlog`; the new-task flow creates
-/// slot-backed tasks straight into `doing`).
+/// task-backed tasks straight into `doing`).
 #[tauri::command]
 pub fn store_add_task(
     app: AppHandle,
@@ -218,7 +220,7 @@ pub fn store_detach_task_issue(
 }
 
 /// Attach a GitHub PR to a task, then re-emit the snapshot. (PRs from the
-/// task's own slot branch attach automatically on collect; this is the manual
+/// task's own task branch attach automatically on collect; this is the manual
 /// path for cross-repo or extra PRs.)
 #[tauri::command]
 pub fn store_attach_task_pr(
@@ -256,14 +258,14 @@ pub fn store_detach_task_pr(
     Ok(())
 }
 
-/// Bind a task to its repo, and to the worktree slot its work happens in
+/// Bind a task to its repo, and to the worktree its work happens in
 /// once one exists, then re-emit the snapshot. The Agentboard's new-task flow
 /// calls this at submit with the repo alone (`branch`/`dir` `None`) so the
-/// task has a Board swimlane immediately, then again once `slot_create`
+/// task has a Board swimlane immediately, then again once `task_create`
 /// resolves. `repo` is the GitHub `owner/name` when known — it enables PR
 /// auto-attach.
 #[tauri::command]
-pub fn store_task_set_slot(
+pub fn store_task_set_worktree(
     app: AppHandle,
     state: State<StoreState>,
     id: i64,
@@ -274,10 +276,10 @@ pub fn store_task_set_slot(
 ) -> Result<(), String> {
     with_store(&state, |store| {
         store
-            .set_task_slot(id, &repo_root, repo.as_deref(), branch.as_deref(), dir.as_deref())
-            .map_err(|e| format!("set_task_slot failed: {e}"))
+            .set_task_worktree(id, &repo_root, repo.as_deref(), branch.as_deref(), dir.as_deref())
+            .map_err(|e| format!("set_task_worktree failed: {e}"))
     })?;
-    tracing::info!(task_id = id, branch = branch.as_deref().unwrap_or(""), "task.slot_bound");
+    tracing::info!(task_id = id, branch = branch.as_deref().unwrap_or(""), "task.task_bound");
     emit_snapshot(&app, &state);
     Ok(())
 }
@@ -395,7 +397,7 @@ fn run_gh_issue_state_change(repo: &str, number: i64, verb: &str) -> Result<(), 
     Ok(())
 }
 
-/// Move a todo to `status` at an explicit slot (`index`) within that column,
+/// Move a todo to `status` at an explicit task (`index`) within that column,
 /// renumbering the column's positions — powers drag-to-reorder and
 /// position-aware cross-column drops. Then re-emit the snapshot and sync
 /// GitHub if this crosses the `done` boundary (see [`spawn_gh_status_sync`]).

@@ -1,4 +1,4 @@
-// Tests for the per-slot port derivation in `slot-port.mjs`, the single source
+// Tests for the per-task port derivation in `task-port.mjs`, the single source
 // of truth that dev / dev:drive / e2e / wdio.conf.ts all depend on. Run with
 // `node --test scripts/` (built-in runner, no extra deps).
 import { test } from "node:test";
@@ -12,11 +12,11 @@ import { DevPortInvalid, DevPortUnset, EnvFileUnreadable } from "./errors.mjs";
 import {
   loadEnvFiles,
   resolveDevPort,
-  slotEnvName,
+  taskEnvName,
   resolveWebdriverPort,
   isPortFree,
   killPort,
-} from "./slot-port.mjs";
+} from "./task-port.mjs";
 
 // Run `fn` with `process.env` restored afterwards, so env-reading functions
 // (resolveDevPort/resolveWebdriverPort) don't leak state between tests.
@@ -42,18 +42,18 @@ function withCleanEnv(keys, fn) {
 // Make a throwaway repo root, optionally seeding its `.env.local`.
 /** @param {string} [envLocal] */
 function makeRepoRoot(envLocal) {
-  const root = mkdtempSync(join(tmpdir(), "slot-port-test-"));
+  const root = mkdtempSync(join(tmpdir(), "task-port-test-"));
   if (envLocal !== undefined) writeFileSync(join(root, ".env.local"), envLocal);
   return root;
 }
 
-test("slotEnvName maps a nested worktree slot to its dir name", () => {
-  assert.equal(slotEnvName("/home/x/code/blog/.claude/worktrees/feat-thing"), "feat-thing");
+test("taskEnvName maps a nested worktree task to its dir name", () => {
+  assert.equal(taskEnvName("/home/x/code/blog/.claude/worktrees/feat-thing"), "feat-thing");
 });
 
-test("slotEnvName maps any other checkout to primary", () => {
-  assert.equal(slotEnvName("/home/x/code/blog"), "primary");
-  assert.equal(slotEnvName("/home/x/code/blog/.claude/other/feat-thing"), "primary");
+test("taskEnvName maps any other checkout to primary", () => {
+  assert.equal(taskEnvName("/home/x/code/blog"), "primary");
+  assert.equal(taskEnvName("/home/x/code/blog/.claude/other/feat-thing"), "primary");
 });
 
 test("resolveDevPort errs DevPortUnset with no TT_DEV_PORT anywhere (no derived fallback)", () => {
@@ -105,7 +105,7 @@ test("resolveDevPort: shell env wins over .env.local", () => {
 });
 
 // The two no-port cases are separate errors because `requireDevPort` recovers
-// from one (render the slot's .env) and not the other.
+// from one (render the task's .env) and not the other.
 test("resolveDevPort errs DevPortInvalid for an unusable TT_DEV_PORT", () => {
   for (const bad of ["0", "-1", "70000", "abc", "12.5"]) {
     withCleanEnv(["TT_DEV_PORT"], () => {
@@ -211,7 +211,7 @@ test("resolveWebdriverPort: TT_E2E_WEBDRIVER_PORT overrides the offset", () => {
   });
 });
 
-// --- .env layering (rendered by `tt slot`) ---
+// --- .env layering (rendered by `tt task`) ---
 
 test("resolveDevPort: rendered .env pins the port when .env.local is absent", () => {
   withCleanEnv(["TT_DEV_PORT"], () => {

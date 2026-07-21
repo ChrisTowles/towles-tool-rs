@@ -1,7 +1,7 @@
 # Driving & testing the real Tauri shell
 
 Two ways to drive the **actual Tauri shell** — the WebKitGTK WebView, not a bare
-browser — both exercising real Rust IPC (`app_slot`, `settings_get`,
+browser — both exercising real Rust IPC (`app_task`, `settings_get`,
 `ab_discover_repos`, …):
 
 - **Live drive** (`npm run dev:drive` + `scripts/drive.mjs`) — one window you keep
@@ -46,9 +46,9 @@ client (no `@wdio/*` at runtime): session-less `POST /wdio/eval` for `status` /
 
 Notes:
 - **Ports come from the rendered `.env`/`.env.local`** (same as `npm run dev`):
-  `wdPort` is the slot's `TT_E2E_WEBDRIVER_PORT` claim, falling back to
-  `TT_DEV_PORT + 3000`. Per-slot claims, so `drive.mjs` finds the server
-  without arguments and different slots don't collide.
+  `wdPort` is the task's `TT_E2E_WEBDRIVER_PORT` claim, falling back to
+  `TT_DEV_PORT + 3000`. Per-task claims, so `drive.mjs` finds the server
+  without arguments and different tasks don't collide.
 - **`click`/`type` take CSS selectors only** (W3C `POST /element`), which can't
   match by text. To click a text-only button/link, use `clicktext "<text>"`
   instead — it matches trimmed visible text across clickable elements (buttons,
@@ -68,12 +68,12 @@ Notes:
   re-check state via `eval` between each — that isolates whether the specific
   case really is session-lifecycle-sensitive before assuming it's the same
   root cause as #35.
-- `dev:drive` and `npm run e2e` **share a slot's ports**, so don't run both in the
-  same slot at once.
+- `dev:drive` and `npm run e2e` **share a task's ports**, so don't run both in the
+  same task at once.
 - Automation mode: launched with `TAURI_WEBVIEW_AUTOMATION=true`, WebKitGTK may
   show a small "controlled by automation" banner and use ephemeral web storage.
 - **Stopping a stray dev session:** `dev:drive`/`dev` (via `spawnTauriDev` in
-  `scripts/slot-port.mjs`) spawn `tauri` as the leader of its own process
+  `scripts/task-port.mjs`) spawn `tauri` as the leader of its own process
   group and forward SIGINT/SIGTERM/SIGHUP to that whole group, so a normal
   Ctrl+C (or `kill` on the wrapper, while it's still alive) tears down `tauri`
   → `cargo run` → `tt-app` and the `vite`/esbuild dev server together. If a
@@ -87,7 +87,7 @@ Notes:
   `kill -- -$(ps -o pgid= -p <that pid> | tr -d ' ')`. Confirm the port is
   actually free afterward with `ss -tlnp | grep <port>` — don't just check
   that a `ps aux | grep <pattern>` you expected is empty, since a leftover
-  `vite`/esbuild process won't match a pattern like "tauri dev" or the slot's
+  `vite`/esbuild process won't match a pattern like "tauri dev" or the task's
   directory name the same way the top-level process did.
 
 ## Regression suite (WebdriverIO)
@@ -126,7 +126,7 @@ npm run e2e:run    # run against an already-built binary (skips the build)
 `.env`/`.env.local`** (the same `TT_DEV_PORT` mechanism as `npm run dev`): the
 Vite dev server uses `TT_DEV_PORT`, and the embedded WebDriver server uses the
 `TT_E2E_WEBDRIVER_PORT` claim (falling back to `TT_DEV_PORT + 3000`). Nothing
-is hardcoded, so slots don't collide. `e2e:run` assumes the binary was already built for this slot's port —
+is hardcoded, so tasks don't collide. `e2e:run` assumes the binary was already built for this task's port —
 use `e2e` after changing the port or the Rust commands.
 
 ## How it works (the non-obvious bits)

@@ -14,12 +14,12 @@
 //! and costs nothing until Slack is (re)configured.
 //!
 //! Settings (and so the Slack token) are shared across every open worktree
-//! slot, so unconditionally spawning this loop makes each open slot's app
+//! task, so unconditionally spawning this loop makes each open task's app
 //! process independently connect and poll on the same token — duplicate
 //! `wss://` connections and duplicate notifications for one Slack message
 //! (#227). The loop only proceeds past the [`instance_lock::InstanceLock`]
 //! gate in one process at a time; the rest park and retry periodically so a
-//! closed "primary" instance's slot is picked up without a relaunch.
+//! closed "primary" instance's task is picked up without a relaunch.
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -309,7 +309,7 @@ fn check_claude_plugins() -> Vec<PluginCheck> {
 fn check_agentboard() -> Vec<AgentBoardCheck> {
     let mut results = Vec::new();
 
-    // Which state scope this instance resolved to — makes it obvious when a slot
+    // Which state scope this instance resolved to — makes it obvious when a task
     // checkout is reading its own scoped config/db instead of the shared default.
     results.push(AgentBoardCheck {
         name: "state scope".to_string(),

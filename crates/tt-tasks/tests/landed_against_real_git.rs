@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use tt_slots::landed::{LandedVia, probe_work_state};
+use tt_tasks::landed::{LandedVia, probe_work_state};
 
 /// Run git, mirroring the contract `probe_work_state` documents: `Some(stdout)`
 /// only on a zero exit, `None` otherwise.
@@ -176,9 +176,9 @@ fn rebase_merged_branch_reads_as_landed_under_a_different_sha() {
 }
 
 #[test]
-fn branch_absorbed_by_a_merge_commit_is_not_mistaken_for_a_fresh_slot() {
+fn branch_absorbed_by_a_merge_commit_is_not_mistaken_for_a_fresh_task() {
     // A merged branch has nothing since its merge-base, exactly like a fresh
-    // slot; only the base having moved past it tells them apart.
+    // task; only the base having moved past it tells them apart.
     let tmp = repo();
     let dir = tmp.path();
 
@@ -200,7 +200,7 @@ fn branch_absorbed_by_a_merge_commit_is_not_mistaken_for_a_fresh_slot() {
 
     let state = probe_work_state(&git, dir, "main", "feat/merged", 0, 0, false);
 
-    // Both a merged branch and a fresh slot have nothing since their
+    // Both a merged branch and a fresh task have nothing since their
     // merge-base; only the landing evidence tells them apart, so assert on
     // that pair directly rather than a helper that hides the distinction.
     assert_eq!(state.total_commits, 0, "a merged branch has nothing since its merge-base");
@@ -225,17 +225,17 @@ fn genuinely_unmerged_branch_reports_its_commits() {
 }
 
 #[test]
-fn fresh_slot_holds_nothing() {
+fn fresh_task_holds_nothing() {
     let tmp = repo();
     let dir = tmp.path();
     run(dir, &["checkout", "-qb", "feat/fresh"]);
 
     let state = probe_work_state(&git, dir, "main", "feat/fresh", 0, 0, false);
 
-    assert_eq!(state.total_commits, 0, "a fresh slot has no commits of its own");
-    assert_eq!(state.landed, None, "a fresh slot must never read as merged");
+    assert_eq!(state.total_commits, 0, "a fresh task has no commits of its own");
+    assert_eq!(state.landed, None, "a fresh task must never read as merged");
     assert_eq!(state.unlanded, 0);
-    assert!(!state.holds_work(), "a fresh slot is not protected from removal");
+    assert!(!state.holds_work(), "a fresh task is not protected from removal");
 }
 
 #[test]
@@ -282,7 +282,7 @@ fn a_failing_git_degrades_to_assuming_work_is_present() {
     let tmp = tempfile::tempdir().unwrap(); // not a repo at all
     let state = probe_work_state(&git, tmp.path(), "main", "feat/x", 0, 0, false);
     assert_eq!(state.landed, None, "an unanswerable probe must never read as merged");
-    // `landed: None` is the load-bearing half: `clean` only removes a slot —
+    // `landed: None` is the load-bearing half: `clean` only removes a task —
     // and force-deletes its branch — when it sees content proof, so a repo git
     // could not answer for is kept rather than collected. Assert the counts it
     // reports alongside, so a future change that invents a landing from a

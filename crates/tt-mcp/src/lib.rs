@@ -486,7 +486,7 @@ impl Dispatcher {
     }
 
     /// Open (not-done) board tasks in board order, each with its issue/PR
-    /// links and repo/slot binding.
+    /// links and repo/worktree binding.
     fn task_list(&self) -> Result<Value, String> {
         let tasks = self.store.open_tasks().map_err(|e| e.to_string())?;
         Ok(json!({ "tasks": tasks }))
@@ -512,7 +512,7 @@ impl Dispatcher {
 
     /// Create a board task in a tracked repo — the same store path as the
     /// app's Agentboard `+` flow: [`Store::add_task`] then a repo-only
-    /// [`Store::set_task_slot`], so the task lands in that repo's Board
+    /// [`Store::set_task_worktree`], so the task lands in that repo's Board
     /// swimlane immediately (no worktree yet).
     fn task_create(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
         let title = args
@@ -539,7 +539,7 @@ impl Dispatcher {
 
         let task = self.store.add_task(title, status, notes, now_ms).map_err(|e| e.to_string())?;
         self.store
-            .set_task_slot(task.id, &entry.dir, None, None, None)
+            .set_task_worktree(task.id, &entry.dir, None, None, None)
             .map_err(|e| e.to_string())?;
         let task = self.store.task_by_id(task.id).map_err(|e| e.to_string())?;
         tracing::info!(task_id = task.id, repo = %entry.dir, %status, "task.created");
@@ -686,12 +686,12 @@ pub fn tool_definitions() -> Value {
     let mut tools = json!([
         {
             "name": "task_list",
-            "description": "Open (not-done) board tasks in board order, each with its issue/PR links and repo/slot binding.",
+            "description": "Open (not-done) board tasks in board order, each with its issue/PR links and repo/worktree binding.",
             "inputSchema": no_args(),
         },
         {
             "name": "task_status",
-            "description": "One board task by id — the full row (status, links, repo/slot binding), including done tasks.",
+            "description": "One board task by id — the full row (status, links, repo/worktree binding), including done tasks.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1223,7 +1223,7 @@ mod tests {
         assert_eq!(result["task"]["notes"], "start with doctor");
         assert_eq!(result["task"]["createdAt"], NOW);
         // The repo binding is what puts the task in a Board swimlane.
-        assert_eq!(result["task"]["slot"]["repoRoot"], REPO_DIR);
+        assert_eq!(result["task"]["worktree"]["repoRoot"], REPO_DIR);
 
         // The new task shows up in the task_list read tool.
         let open = call_tool(&mut dispatcher, "task_list", json!({}));
@@ -1241,7 +1241,7 @@ mod tests {
             json!({ "repo": REPO_DIR, "title": "already underway", "status": "doing" }),
         );
         assert_eq!(result["task"]["status"], "doing");
-        assert_eq!(result["task"]["slot"]["repoRoot"], REPO_DIR);
+        assert_eq!(result["task"]["worktree"]["repoRoot"], REPO_DIR);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 // It stays a real <textarea> rather than a contenteditable/rich editor because
 // the surrounding form depends on textarea behavior that's painful to
 // reimplement: image paste (WebKitGTK delivers it with empty clipboardData —
-// see `inline-new-slot.tsx`), drag-drop, Cmd+Enter submit, Escape to cancel,
+// see `inline-new-task.tsx`), drag-drop, Cmd+Enter submit, Escape to cancel,
 // and native undo. Highlighting is therefore an aria-hidden mirror div sitting
 // exactly behind transparent text; the two must keep identical typography,
 // padding and wrapping or the colours slide off the words, which is why the

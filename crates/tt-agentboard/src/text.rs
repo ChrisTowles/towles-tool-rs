@@ -1,4 +1,4 @@
-//! Small text helpers. Ports slot-1 `runtime/text-utils.ts`.
+//! Small text helpers. Ports §task§-1 `runtime/text-utils.ts`.
 
 /// Truncate a string to `max` characters, appending an ellipsis if clipped.
 ///

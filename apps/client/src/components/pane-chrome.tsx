@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
  * The ordering rule is the whole point: **the lens leads, the subject
  * follows, the folder never appears.** A window is scoped to a single
  * checkout (`AgWindow.folderDir`), so every pane in it shows the same folder
- * — printing that name in each header spends the most prominent slot on the
+ * — printing that name in each header spends the most prominent task on the
  * one value guaranteed to be constant, leaving the panes to be told apart by
  * a 14px muted glyph. Repo / folder / branch live once in the working-context
  * band above, which is the rule `PaneHeader` already documented and the diff,

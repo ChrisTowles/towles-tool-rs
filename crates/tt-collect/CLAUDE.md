@@ -33,9 +33,9 @@ not per-directory) from getting hammered:
 
 - `dedupe_repo_dirs` (`lib.rs`) runs before every sweep in `collect_issues`/
   `collect_prs`, collapsing tracked dirs to one per resolved `owner/repo`
-  before the expensive PR/issue-list calls fire. Every worktree slot of a repo
+  before the expensive PR/issue-list calls fire. Every worktree of a repo
   is a separate tracked dir sharing one GitHub identity, so without this an
-  N-slot repo issues N sets of byte-identical queries per tick. Only a dir
+  N-task repo issues N sets of byte-identical queries per tick. Only a dir
   that *fails* to resolve is kept unconditionally (can't prove it's a
   duplicate) — don't "fix" that into dropping it, or a real error goes silent.
 - `gh::run` arms a process-wide backoff the moment a call's stderr looks like
@@ -84,7 +84,7 @@ Two invariants worth keeping:
 
 `slack_socket.rs` here is pure, unit-tested envelope/backoff/ack logic —
 deliberately Tauri-free. The actual WebSocket I/O, reconnect loop, and the
-cross-slot singleton lock that keeps N open worktree slots from each opening
+cross-task singleton lock that keeps N open worktrees from each opening
 a duplicate Socket Mode connection all live in
 [`crates-tauri/tt-app/src/slack_socket.rs`](../../crates-tauri/tt-app/CLAUDE.md)
 (see that crate's `InstanceLock` section) — that's the file to read for the

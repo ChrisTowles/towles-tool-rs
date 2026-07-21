@@ -61,7 +61,7 @@ impl Visit for JsonVisitor {
 /// [`EventLog`] as one JSON record per line.
 pub struct EventLogLayer {
     log: Mutex<EventLog>,
-    /// Resource attributes stamped onto every record (service name, pid, slot
+    /// Resource attributes stamped onto every record (service name, pid, task
     /// scope) — the OpenTelemetry notion of "who produced this".
     resource: Map<String, Value>,
     /// Wall clock, injectable so tests can pin timestamps.

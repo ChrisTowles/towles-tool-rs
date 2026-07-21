@@ -6,7 +6,7 @@ import type { IpcError } from "./errors";
 import type { LaunchConfigStatus } from "./launch";
 import type { RepoMeta } from "./repo-identity";
 import { OpenedSessionSchema } from "./schemas/agentboard";
-import { SlotBlockerSchema, SlotRemoveOutcomeSchema } from "./schemas/slots";
+import { TaskBlockerSchema, TaskRemoveOutcomeSchema } from "./schemas/task";
 import { invoke } from "./tauri";
 
 /**
@@ -75,7 +75,7 @@ export type AgentEvent = {
 };
 
 /** One port a session's shell saw in its folder's `.env` at spawn time that
- * the file now claims differently — e.g. a sibling slot's re-render rotated
+ * the file now claims differently — e.g. a sibling task's re-render rotated
  * it out from under an already-running pane. Mirrors the Rust `PortDrift`
  * (`crates/tt-agentboard/src/env_drift.rs`). */
 export type PortDrift = { key: string; spawnedPort: number; currentPort: number };
@@ -129,11 +129,11 @@ export type FolderMetadata = {
 };
 
 /** How git decided a branch's work reached its base. The wire mirror of
- * `LandedVia::label()` (`crates/tt-slots/src/landed.rs`) — every value the
+ * `LandedVia::label()` (`crates/tt-tasks/src/landed.rs`) — every value the
  * backend can put in {@link FolderData.landed}. */
 export type LandedVia = "merged" | "rebase-merged" | "squash-merged" | "upstream gone";
 
-/** One checkout of a repo on disk (a clone, worktree, or slot). */
+/** One checkout of a repo on disk (a clone, worktree, or task). */
 export type FolderData = {
   name: string;
   dir: string;
@@ -165,7 +165,7 @@ export type FolderData = {
   /** How this branch's work reached `comparedBase` — `"merged"` (a merge
    * commit), `"rebase-merged"` or `"squash-merged"` — and `null` while it
    * hasn't fully landed. Mirrors `LandedVia::label()`
-   * (`crates/tt-slots/src/landed.rs`), which explains why no single git signal
+   * (`crates/tt-tasks/src/landed.rs`), which explains why no single git signal
    * answers this.
    *
    * {@link LandedVia}'s fourth label, `"upstream gone"`, is a real value in
@@ -184,13 +184,13 @@ export type FolderData = {
   /** Branch the diff pane's "vs main" mode compares against, overriding the
    * origin/main-or-master auto-detect (persisted per folder). */
   baseBranch?: string | null;
-  /** For a worktree slot only: the ref it was actually created from (its
-   * `.tt-slot` marker). What the diff pane auto-compares against when
-   * `baseBranch` has no manual override — `null` for a non-slot checkout. */
-  slotBaseBranch?: string | null;
+  /** For a worktree only: the ref it was actually created from (its
+   * `.tt-task` marker). What the diff pane auto-compares against when
+   * `baseBranch` has no manual override — `null` for a non-task checkout. */
+  taskBaseBranch?: string | null;
   /** The ref `filesChanged`/`linesAdded`/`linesRemoved`/`commitsAhead`/
    * `commitsBehind` were actually measured against, e.g. `"origin/main"` or
-   * `"origin/docs/readme-slot-clean"` — always matches what the diff pane's
+   * `"origin/docs/readme-task-clean"` — always matches what the diff pane's
    * "vs main" mode shows. Empty until the folder's git stats are computed
    * at least once. */
   comparedBase?: string;
@@ -226,7 +226,7 @@ export type CommitStat = {
 /** `comparedBase` with its `origin/` prefix stripped for display, e.g.
  * `"origin/main"` → `"main"`. Falls back to `"main"` before the backend has
  * computed anything yet. Deliberately the opposite of the new-task form's
- * base label (`BaseBranchesSchema` in lib/schemas/slots.ts), which *adds*
+ * base label (`BaseBranchesSchema` in lib/schemas/task.ts), which *adds*
  * `origin/`: here the compared ref is always the freshest one the backend
  * found and the local/origin distinction is noise, while the form's whole
  * point is that you'll branch from origin's tip, not stale local history.
@@ -414,7 +414,7 @@ export function folderPaneDir(paneId: string): string | null {
 }
 
 /** The pane id of a crashed session's tombstone. A shell that dies on its own
- * swaps its session pane for this one, so the *layout* records that the slot
+ * swaps its session pane for this one, so the *layout* records that the task
  * now holds a report rather than a terminal — the alternative, leaving the
  * session id in place and remembering "but it's dead" beside the layout, makes
  * every reader of `panes` responsible for a distinction the id could carry. */
@@ -478,7 +478,7 @@ export function nextOpenFileNonce(): number {
 let lastDraftScopeSeq = 0;
 
 /**
- * Mint a scope id for a new-slot form's image staging directory. Same
+ * Mint a scope id for a new-task form's image staging directory. Same
  * reasoning as {@link nextWindowId}: two forms opened in the same millisecond
  * (e.g. across two repos) would otherwise share a staging dir and clobber
  * each other's pasted images.
@@ -563,8 +563,8 @@ export function dropPane(w: WindowsPayload, paneId: string): WindowsPayload {
 
 /** Swap one pane id for another in place — same window, same position, same
  * column widths. This is how a session pane becomes its own tombstone when the
- * shell crashes (and back again when the session is reopened): the slot is the
- * same slot, only what fills it changed, so nothing about the tiling should
+ * shell crashes (and back again when the session is reopened): the task is the
+ * same task, only what fills it changed, so nothing about the tiling should
  * move. Returns `w` untouched when `fromId` isn't in the layout. */
 export function replacePane(w: WindowsPayload, fromId: string, toId: string): WindowsPayload {
   const host = w.windows.find((win) => win.panes.includes(fromId));
@@ -624,7 +624,7 @@ export function hydrateWins(w: WireWindowsPayload): WindowsPayload {
 /** Reconcile the persisted layout against what actually exists. The blob on
  * disk outlives its panes: sessions get removed by another app instance, a
  * repo comes off the rail with non-live session records, a crash beats the
- * debounced save — leaving ghost pane ids that hold a tile slot with nothing
+ * debounced save — leaving ghost pane ids that hold a tile task with nothing
  * in it (so a fresh pane lands in spot two behind a blank).
  *
  * Drops windows of folders not in `validFolderDirs`, then panes that are
@@ -885,7 +885,7 @@ export function pathScope(dir: string): string | null {
  * doesn't look like one. Handles the three shapes that show up in practice —
  * `https://github.com/owner/repo(.git)`, `git@github.com:owner/repo.git`,
  * and `ssh://git@github.com/owner/repo` — by taking the last two path
- * segments and stripping a `.git` suffix. Used to stamp a task's slot
+ * segments and stripping a `.git` suffix. Used to stamp a task's task
  * binding with the repo identity PR auto-attach matches on (#339).
  */
 export function ownerRepoFromOrigin(originUrl: string | null | undefined): string | undefined {
@@ -910,8 +910,8 @@ export function prForFolder(
  * (`commitsUnlanded === 0`). Deliberately independent of any PR's state —
  * it's a pure git fact — so call sites that want to gate on "the work
  * landed" do that themselves (see `folderLandedButHasWork`). Note this checks a
- * narrower, more optimistic thing than `tt slot rm`'s own removal guard
- * (`crates/tt-slots/src/guards.rs`): that guard only blocks on a dirty tree
+ * narrower, more optimistic thing than `tt task rm`'s own removal guard
+ * (`crates/tt-tasks/src/guards.rs`): that guard only blocks on a dirty tree
  * or commits unreachable from *any* branch/remote (deleting a worktree never
  * deletes its branch, so an unmerged-but-pushed branch is still "safe" by
  * its math). This is the stricter "nothing left to do here" signal — the
@@ -942,13 +942,13 @@ export function folderHoldsNoWork(folder: Pick<FolderData, "dirty" | "commitsUnl
  * as one that shipped. A merged PR is the durable external fact that closes
  * that gap, so the affirmative claim rests on it.
  *
- * The cost is deliberate: a PR-less scratch slot never earns the badge, even
+ * The cost is deliberate: a PR-less scratch task never earns the badge, even
  * when git can see it is clean. That is fail-safe — deletion is still offered
  * through the guarded modal — and it is the direction chosen over the looser
  * git-only gate that shipped in #371.
  *
- * Note this is *stricter* than `tt slot rm`'s own guard
- * (`crates/tt-slots/src/guards.rs`), which blocks only on a dirty tree or
+ * Note this is *stricter* than `tt task rm`'s own guard
+ * (`crates/tt-tasks/src/guards.rs`), which blocks only on a dirty tree or
  * commits reachable from no branch/remote. Absence of this badge therefore
  * says nothing about whether removal would be refused — the guard remains the
  * last line of defense either way. */
@@ -965,7 +965,7 @@ export function folderSafeToDelete(
  *
  * Both halves are needed. Git can't see a PR that merged into a base this
  * checkout never fetched, and GitHub can't see a branch merged locally or one
- * that never had a PR at all — which used to make every PR-less slot read as
+ * that never had a PR at all — which used to make every PR-less task read as
  * unfinished forever. Says nothing about whether the checkout still holds
  * work; that's `folderSafeToDelete`. */
 export function folderLanded(
@@ -975,37 +975,37 @@ export function folderLanded(
   return folder.landed !== null || pr?.state === "merged";
 }
 
-/** Whether the delete-worktree affordances (rail menu, the `ab-remove-slot`
- * chord) apply to a folder: a worktree slot that still exists on disk. The
- * main checkout has no `slot_remove` path, and a ghost (`dirMissing`) has
+/** Whether the delete-worktree affordances (rail menu, the `ab-remove-task`
+ * chord) apply to a folder: a worktree that still exists on disk. The
+ * main checkout has no `task_remove` path, and a ghost (`dirMissing`) has
  * nothing on disk to delete — its affordance is Untrack. Unrelated to
  * `folderSafeToDelete`: this gates whether deletion can be *offered*, not
  * whether it would succeed (the guarded removal decides that after the
  * confirm). */
-export function folderRemovableSlot(
+export function folderRemovableTask(
   folder: Pick<FolderData, "isWorktree" | "dirMissing">,
 ): boolean {
   return folder.isWorktree && !folder.dirMissing;
 }
 
-/** The guard kinds `RmBlocked::kind()` emits (`crates/tt-slots/src/guards.rs`).
+/** The guard kinds `RmBlocked::kind()` emits (`crates/tt-tasks/src/guards.rs`).
  * A blocker whose kind isn't one of these is a backend that grew a guard this
  * frontend hasn't been taught yet — rendered generically rather than
  * mislabeled, see `BlockerIcon`. */
-export const SLOT_BLOCKER_KINDS = ["dirtyTree", "unreachableCommits", "foreignPort"] as const;
-export type SlotBlockerKind = (typeof SLOT_BLOCKER_KINDS)[number];
+export const TASK_BLOCKER_KINDS = ["dirtyTree", "unreachableCommits", "foreignPort"] as const;
+export type TaskBlockerKind = (typeof TASK_BLOCKER_KINDS)[number];
 
-/** One reason `slot_remove` refused. Blocked is an `Ok` outcome there, not
+/** One reason `task_remove` refused. Blocked is an `Ok` outcome there, not
  * an error — an expected answer with a next step attached — so the UI gets
  * typed rows to act on instead of a newline-joined error string.
  *
  * Inferred from the Zod schema that actually parses the IPC payload, so the
  * validated shape and the type can't drift apart; the field-level rationale
  * (why `kind` stays an open string, what `port` feeds) lives on the schema. */
-export type SlotBlocker = z.infer<typeof SlotBlockerSchema>;
+export type TaskBlocker = z.infer<typeof TaskBlockerSchema>;
 
-/** The `slot_remove` result: removed, or refused with reasons. */
-export type SlotRemoveOutcome = z.infer<typeof SlotRemoveOutcomeSchema>;
+/** The `task_remove` result: removed, or refused with reasons. */
+export type TaskRemoveOutcome = z.infer<typeof TaskRemoveOutcomeSchema>;
 
 /** What forcing past a blocker would discard, as a noun for the button. */
 const DISCARDED: Record<string, string> = {
@@ -1025,7 +1025,7 @@ const DISCARDED: Record<string, string> = {
  * Names only the kinds it recognizes: an unfamiliar `losesWork` kind falls
  * back to the unspecific label rather than asserting it's discarding
  * "commits" because that was the last branch of a ternary. */
-export function forceDeleteLabel(blockers: SlotBlocker[]): string {
+export function forceDeleteLabel(blockers: TaskBlocker[]): string {
   const nouns = blockers
     .filter((b) => b.losesWork)
     .map((b) => DISCARDED[b.kind])
@@ -1035,10 +1035,10 @@ export function forceDeleteLabel(blockers: SlotBlocker[]): string {
 }
 
 /** The port this blocker offers to clear, or `null` when there's nothing to
- * act on. Only a `foreignPort` blocker is something `slot_stop_port` will
+ * act on. Only a `foreignPort` blocker is something `task_stop_port` will
  * touch, and only if its number survived — a port blocker without one still
  * renders its remedy as text, it just gets no button. */
-export function stoppablePort(blocker: SlotBlocker): number | null {
+export function stoppablePort(blocker: TaskBlocker): number | null {
   if (blocker.kind !== "foreignPort") return null;
   return typeof blocker.port === "number" ? blocker.port : null;
 }
@@ -1050,7 +1050,7 @@ export function stoppablePort(blocker: SlotBlocker): number | null {
  *
  * This is the "squash-merged, but 2 uncommitted files" case, and it is exactly
  * where a merged badge would otherwise lie. Replaces the old PR-only check:
- * that one couldn't warn about a slot whose branch merged locally, which is
+ * that one couldn't warn about a task whose branch merged locally, which is
  * the same data-loss risk with no GitHub row to notice it.
  *
  * Pairs with `folderHoldsNoWork`, not `folderSafeToDelete`: this warns that
@@ -1300,7 +1300,7 @@ export function useAgentboardState(): StatePayload {
       // older snapshot replace a newer one. The initial `ab_get_state` fetch
       // below resolves *after* the subscription is live, so a debounced
       // `agentboard://state` event (e.g. the one `ab_add_repo` triggers during
-      // slot creation) can land first; without the guard the slower fetch
+      // task creation) can land first; without the guard the slower fetch
       // would roll the rail back to a snapshot that predates it.
       const accept = (payload: StatePayload) =>
         setState((cur) => (payload.ts < cur.ts ? cur : payload));
@@ -1429,7 +1429,7 @@ export type ClaudeLaunchOptions = {
 /** The `claude` invocation for a session's PTY: bare, or with an initial
  * prompt passed as an argument so Claude starts working on it immediately
  * instead of waiting at an empty prompt, plus an optional `--model`/`--effort`
- * pair for callers (e.g. the new-slot dialog) that let the user pick both. */
+ * pair for callers (e.g. the new-task dialog) that let the user pick both. */
 export function claudeCommand(prompt: string, options?: ClaudeLaunchOptions): string {
   const trimmed = prompt.trim();
   const parts = [
@@ -1451,8 +1451,8 @@ export function claudeCommand(prompt: string, options?: ClaudeLaunchOptions): st
  * and the merged PR is what rolls the board task to done (PR auto-attach +
  * status rollup on collect).
  *
- * `base` should be the *effective* base ref (`SlotCreated.baseLabel`, e.g.
- * `origin/main`), not the local branch name: inside the slot's worktree a
+ * `base` should be the *effective* base ref (`TaskCreated.baseLabel`, e.g.
+ * `origin/main`), not the local branch name: inside the task's worktree a
  * fetch never advances the local base ref, so "rebase onto main" would mean
  * stale history. */
 export function dynamicFlowPrompt(goal: string, base: string): string {
@@ -1475,8 +1475,8 @@ export function dynamicFlowPrompt(goal: string, base: string): string {
   ].join("");
 }
 
-/** MIME types the new-slot form accepts off the clipboard — the same closed
- * set `tt_slots::pasted` writes an extension for. Filtering here means an
+/** MIME types the new-task form accepts off the clipboard — the same closed
+ * set `tt_tasks::pasted` writes an extension for. Filtering here means an
  * unsupported paste is ignored at the point of paste (where the user can see
  * it didn't take) rather than erroring minutes later mid-create. */
 const PASTEABLE_IMAGE_MIMES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
@@ -1485,13 +1485,13 @@ export function isPasteableImage(mime: string): boolean {
   return PASTEABLE_IMAGE_MIMES.includes(mime.split(";")[0].trim().toLowerCase());
 }
 
-/** Mirrors `MAX_IMAGE_BYTES` in `tt_slots::pasted`. Checked here as well as
+/** Mirrors `MAX_IMAGE_BYTES` in `tt_tasks::pasted`. Checked here as well as
  * there so an over-cap paste is refused while the form is still open — the
- * Rust-side check is the backstop, but by the time it fires the slot already
+ * Rust-side check is the backstop, but by the time it fires the task already
  * exists and the error is much less actionable. */
 export const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
 
-/** An image sitting in the new-slot form, waiting for its slot to exist.
+/** An image sitting in the new-task form, waiting for its task to exist.
  * `dataBase64` is what crosses to Rust; `previewUrl` is the same bytes as a
  * data URL, kept for the thumbnail (a data URL rather than an object URL so
  * there's no lifetime to manage against React's re-renders). */
@@ -1563,11 +1563,11 @@ async function readImageFile(file: File, index: number): Promise<PastedImage> {
   };
 }
 
-/** Fold images pasted into the new-slot form into that slot's opening prompt.
+/** Fold images pasted into the new-task form into that task's opening prompt.
  *
  * The prompt crosses into Claude as a single argv string (`claudeCommand`),
- * so an image rides along as a *path* — `slot_write_pasted_images` has
- * already written the bytes inside the slot, and Claude's Read tool loads an
+ * so an image rides along as a *path* — `task_write_pasted_images` has
+ * already written the bytes inside the task, and Claude's Read tool loads an
  * image from a path. The wording names the files and says to read them
  * first, because a bare path in a prompt is something Claude may or may not
  * act on; an explicit instruction is what makes the attachment reliable
@@ -1618,7 +1618,7 @@ export type PendingOpenSession = {
   label: string;
 };
 
-/** A queue, not a single slot: the crash-resume picker hands off every ticked
+/** A queue, not a single task: the crash-resume picker hands off every ticked
  * pane at once, at boot, when Agentboard is typically not mounted yet — so all
  * of them stash and keeping only the last would resume one session out of N. */
 let pendingOpenSessions: PendingOpenSession[] = [];
@@ -1870,7 +1870,7 @@ export type RemoveTarget = { label: string; dirs: string[]; sessionIds: string[]
 export type BlockedDelete = {
   target: RemoveTarget;
   name: string;
-  blockers: SlotBlocker[];
+  blockers: TaskBlocker[];
   /** Caveats about how the verdict was reached (a failed fetch → stale refs),
    * carried through so the dialog can qualify the blockers it lists. */
   messages: string[];

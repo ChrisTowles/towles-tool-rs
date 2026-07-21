@@ -3,10 +3,10 @@
 //! the Board's task cards, and anywhere else its work shows up.
 //!
 //! Stored in `<agentboard_shared_dir>/repo_meta.json`, keyed by the repo's
-//! absolute dir — the same key `repos.json` lists. **Shared, not slot-scoped**:
+//! absolute dir — the same key `repos.json` lists. **Shared, not task-scoped**:
 //! which repos exist and what they look like is a fact about the machine, the
 //! same rationale as [`crate::repos`]. (Contrast [`crate::folder_meta`], which
-//! is per-checkout state and therefore slot-scoped.)
+//! is per-checkout state and therefore task-scoped.)
 //!
 //! Identity lives here rather than as fields on `repos.json`'s `repoPaths`
 //! because that list is a plain `Vec<String>` read by three other crates; a

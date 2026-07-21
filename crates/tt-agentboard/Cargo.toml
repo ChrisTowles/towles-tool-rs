@@ -33,10 +33,10 @@ tt-claude-code = { workspace = true }
 # the shared settings file, identically for both hosts.
 tt-config = { workspace = true }
 tt-exec = { workspace = true }
-# tt-slots: reads a worktree slot's `.tt-slot` marker so the diff pane's "vs
-# main" mode compares against the slot's actual creation base ref, not always
+# tt-tasks: reads a worktree's `.tt-task` marker so the diff pane's "vs
+# main" mode compares against the task's actual creation base ref, not always
 # main.
-tt-slots = { workspace = true }
+tt-tasks = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.14.0"

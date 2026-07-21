@@ -13,11 +13,11 @@
 //! `preview_capture` snapshots the visible viewport and crops to the preview
 //! surface's rect; `preview_write_feedback` stages the annotated PNG under
 //! `tt_config::pasted_images_dir()` (outside any repo — same reasoning as
-//! `tt_slots::pasted`) so the frontend can name its path in a prompt typed
+//! `tt_tasks::pasted`) so the frontend can name its path in a prompt typed
 //! into an agent session's PTY.
 
 use serde::Deserialize;
-use tt_slots::pasted::{self, PastedImage};
+use tt_tasks::pasted::{self, PastedImage};
 
 /// The preview surface's rectangle in CSS pixels (`getBoundingClientRect`
 /// relative to the viewport), plus the `devicePixelRatio` that scales it into
@@ -169,7 +169,7 @@ fn argb_to_straight_rgba(cropped: CroppedArgb) -> (u32, u32, Vec<u8>) {
 
 /// Stage an annotated preview capture as a PNG file and return its absolute
 /// path for the caller to name in an agent prompt (`promptWithImages` on the
-/// client). One scope per send — unlike the new-slot flow, a second send must
+/// client). One scope per send — unlike the new-task flow, a second send must
 /// not clear the previous one's directory out from under an agent that
 /// hasn't read the first file yet — with `pasted::prune` sweeping scopes
 /// older than its retention window on every write.

@@ -2,7 +2,7 @@
  * End-to-end smoke test driving the real Tauri shell via @wdio/tauri-service.
  * Exercises the command palette the way a user does — open with Ctrl/Cmd+K,
  * type, Enter — and proves navigation lands on the target screen. Also checks
- * the slot badge, whose value comes from the real `app_slot` Rust command.
+ * the task badge, whose value comes from the real `app_task` Rust command.
  * Read-only — never writes settings or other state.
  */
 
@@ -67,14 +67,14 @@ describe("Command palette navigation", () => {
     });
   });
 
-  it("shows the slot badge from the real app_slot command", async () => {
-    const slot = expectString(
-      await browser.tauri.execute(({ core }) => core.invoke("app_slot")),
-      "app_slot",
+  it("shows the task badge from the real app_task command", async () => {
+    const task = expectString(
+      await browser.tauri.execute(({ core }) => core.invoke("app_task")),
+      "app_task",
     );
-    expect(slot.length).toBeGreaterThan(0);
-    // The header badge carries the full slot as its title attribute.
-    const badge = await browser.$(`[title="${slot}"]`);
+    expect(task.length).toBeGreaterThan(0);
+    // The header badge carries the full task as its title attribute.
+    const badge = await browser.$(`[title="${task}"]`);
     await badge.waitForDisplayed({ timeout: 10000 });
     expect((await badge.getText()).length).toBeGreaterThan(0);
   });

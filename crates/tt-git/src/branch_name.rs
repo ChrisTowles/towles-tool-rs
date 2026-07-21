@@ -12,7 +12,7 @@ pub fn create_branch_name_from_issue(number: u64, title: &str) -> String {
 /// class is ASCII-only, so non-ASCII letters (e.g. `ü`) become `-` — matching
 /// the TS byte-for-byte.
 ///
-/// Shared rather than re-derived: `tt-slots`' suggestion fallback and the
+/// Shared rather than re-derived: `tt-tasks`' suggestion fallback and the
 /// new-task dialog's own branch field both want exactly this, and a slug rule
 /// maintained in parallel copies drifts.
 pub fn slug(text: &str) -> String {

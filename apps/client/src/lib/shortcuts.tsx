@@ -141,7 +141,7 @@ export const SHORTCUTS = defineShortcuts([
     when: "a folder is focused",
   },
   {
-    id: "ab-new-slot",
+    id: "ab-new-task",
     scope: "agentboard",
     keys: "mod+shift+d",
     description: "New task — goal, issues, branch",
@@ -149,11 +149,11 @@ export const SHORTCUTS = defineShortcuts([
     allowInEditable: true,
   },
   {
-    id: "ab-remove-slot",
+    id: "ab-remove-task",
     scope: "agentboard",
     keys: "mod+shift+backspace",
-    description: "Delete the focused worktree slot (confirms first)",
-    when: "a worktree slot is focused",
+    description: "Delete the focused worktree (confirms first)",
+    when: "a worktree is focused",
     allowInEditable: true,
   },
   {

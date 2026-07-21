@@ -7,7 +7,7 @@
 //! to a terminal's IDE server, the git-stat poll noticing a folder's working
 //! tree changed, and the manual `ide_diagnostics_refresh` command. Requests
 //! are debounced per folder and executed one folder at a time (a check run is
-//! real CPU; a burst of edits across slots must not fan out into parallel
+//! real CPU; a burst of edits across tasks must not fan out into parallel
 //! full-workspace cargo checks). Folders with no *connected* Claude session
 //! are skipped entirely — no session, no reader, no run.
 

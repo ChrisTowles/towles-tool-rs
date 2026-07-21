@@ -34,44 +34,59 @@ pub enum Commands {
     /// Collect dashboard data into the local store (calendar, issues, PRs)
     Collect(CollectArgs),
 
-    /// Worktree slots: a primary checkout (<root>/<repo>-primary, always the
-    /// default branch) plus branch-named worktrees under <root>/slots/, each
-    /// with rendered per-slot ports/env so concurrent slots never collide
-    Slot(SlotArgs),
+    /// Worktree tasks: a primary checkout (<root>/<repo>-primary, always the
+    /// default branch) plus branch-named worktrees under <root>/tasks/, each
+    /// with rendered per-task ports/env so concurrent tasks never collide
+    Task(TaskArgs),
 }
 
 #[derive(Args)]
 #[command(disable_help_subcommand = true)]
-pub struct SlotArgs {
+pub struct TaskArgs {
     #[command(subcommand)]
-    pub command: SlotCommands,
+    pub command: TaskCommands,
 }
 
 #[derive(Subcommand)]
-pub enum SlotCommands {
-    /// Create the slot for a branch: worktree under .claude/worktrees/ +
-    /// rendered .env (port claims, inherited sibling secrets) + setup step
-    /// (TT_SLOT_SETUP from the rendered .env, else lockfile-detected install)
+pub enum TaskCommands {
+    /// Create a task (the unit of work): a board-task row in a tracked repo's
+    /// swimlane PLUS its worktree under .claude/worktrees/ + rendered .env
+    /// (port claims, inherited sibling secrets) + setup step (TT_TASK_SETUP
+    /// from the rendered .env, else lockfile-detected install). Mirrors the
+    /// MCP `task_create` params, with the worktree stood up in the same shot.
     New {
-        /// Branch to create and check out (the slot folder is the slugged branch,
-        /// e.g. feat/thing -> feat-thing)
+        /// Task title (also the goal the worktree is created for)
+        #[arg(value_name = "TITLE")]
+        title: String,
+
+        /// Tracked repo the task belongs to — its name or absolute dir (as
+        /// shown by the Agentboard rail). The worktree is created here.
+        #[arg(long, value_name = "NAME|DIR")]
+        repo: String,
+
+        /// Board column the task starts in
+        #[arg(long, default_value = "backlog")]
+        status: String,
+
+        /// Free-form notes stored on the board task
+        #[arg(long)]
+        notes: Option<String>,
+
+        /// Branch to create and check out (default: slugged from TITLE, e.g.
+        /// "Fix login" -> fix-login; the task folder is the same slug)
         #[arg(long, short = 'b')]
-        branch: String,
+        branch: Option<String>,
 
         /// Base ref for the new branch (default: the main checkout's branch)
         #[arg(long, value_name = "REF")]
         base: Option<String>,
 
-        /// Emit the created slot as JSON
+        /// Emit the created task as JSON
         #[arg(long)]
         json: bool,
-
-        /// Repo checkout (default: walk up from cwd to the nearest git checkout)
-        #[arg(long, value_name = "DIR")]
-        root: Option<PathBuf>,
     },
 
-    /// List the main checkout and slots with branch, work state (uncommitted
+    /// List the main checkout and tasks with branch, work state (uncommitted
     /// changes vs commits that never reached the base), and claimed ports
     Ls {
         /// Emit checkouts as a JSON array
@@ -83,11 +98,11 @@ pub enum SlotCommands {
         root: Option<PathBuf>,
     },
 
-    /// Remove a slot: guarded (clean tree, no commits unreachable from a
+    /// Remove a task: guarded (clean tree, no commits unreachable from a
     /// branch or remote, nothing foreign on its ports), then docker compose
     /// down -v, anchored container/volume sweep, worktree remove
     Rm {
-        /// Slot directory name under .claude/worktrees/, e.g. slot-migrate
+        /// Task directory name under .claude/worktrees/, e.g. task-migrate
         name: String,
 
         /// Skip guards (each skip is printed) and force worktree removal
@@ -99,7 +114,7 @@ pub enum SlotCommands {
         root: Option<PathBuf>,
     },
 
-    /// Onboard this repo onto the slot convention (idempotent): pick/create
+    /// Onboard this repo onto the task convention (idempotent): pick/create
     /// the env template, gitignore .env, wire the Claude Code
     /// WorktreeCreate/WorktreeRemove hooks into .claude/settings.json, and
     /// render the primary checkout's .env so it claims its ports
@@ -112,7 +127,7 @@ pub enum SlotCommands {
     /// (Re)render a checkout's .env from the template — idempotent: existing
     /// port claims and keys the template doesn't know are preserved
     Env {
-        /// Slot directory name under .claude/worktrees/, or `primary` for the
+        /// Task directory name under .claude/worktrees/, or `primary` for the
         /// main checkout
         name: String,
 
@@ -122,18 +137,18 @@ pub enum SlotCommands {
     },
 
     /// Claude Code WorktreeCreate hook shell: reads the hook JSON on stdin,
-    /// creates (or reuses) the slot, prints its path on stdout — wire it as
+    /// creates (or reuses) the task, prints its path on stdout — wire it as
     /// the repo's WorktreeCreate hook so `claude --worktree` and background
-    /// sessions land in tt-managed slots
+    /// sessions land in tt-managed tasks
     #[command(hide = true)]
     HookCreate,
 
     /// Claude Code WorktreeRemove hook shell: reads the hook JSON on stdin
-    /// and runs the same guarded removal as `tt slot rm`
+    /// and runs the same guarded removal as `tt task rm`
     #[command(hide = true)]
     HookRemove,
 
-    /// Remove every slot whose branch's work has landed (merged into the
+    /// Remove every task whose branch's work has landed (merged into the
     /// main checkout's branch, or upstream deleted after a squash/rebase
     /// merge) — same guards as rm, never forced — then sweep the
     /// per-checkout state dirs and agentboard windows/sessions left behind

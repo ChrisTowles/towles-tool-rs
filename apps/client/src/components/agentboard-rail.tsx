@@ -40,12 +40,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  InlineNewSlot,
-  PendingSlotRow,
-  type NewSlotRepo,
+  InlineNewTask,
+  PendingTaskRow,
+  type NewTaskRepo,
   type NewTaskSubmit,
-  type PendingSlot,
-} from "@/components/inline-new-slot";
+  type PendingTask,
+} from "@/components/inline-new-task";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
@@ -59,7 +59,7 @@ import {
   fmtElapsed,
   fmtWaitingAge,
   folderPortDrift,
-  folderRemovableSlot,
+  folderRemovableTask,
   folderSafeToDelete,
   isAgent,
   isSoloRepo,
@@ -344,7 +344,7 @@ export function RepoGroup({
   onSelectFolder,
   onSelect,
   onNewSession,
-  onNewSlot,
+  onNewTask,
   onRemoveRepo,
   onDeleteWorktree,
   deletingDirs,
@@ -355,12 +355,12 @@ export function RepoGroup({
   quietDirs,
   quietRevealed,
   onToggleQuiet,
-  slotFormOpen,
-  onCancelSlotForm,
-  onSubmitSlotForm,
-  pendingSlots,
-  onRetryPendingSlot,
-  onDismissPendingSlot,
+  taskFormOpen,
+  onCancelTaskForm,
+  onSubmitTaskForm,
+  pendingTasks,
+  onRetryPendingTask,
+  onDismissPendingTask,
 }: {
   repo: RepoData;
   now: number;
@@ -378,13 +378,13 @@ export function RepoGroup({
   onSelectFolder: (folderDir: string) => void;
   onSelect: (folderDir: string, sessionId: string) => void;
   onNewSession: (folderDir: string, launchClaude?: boolean) => void;
-  /** Toggles the inline new-slot form open/closed for a slot-convention repo
-   * (worktree hub) — never a blocking modal, see InlineNewSlot. */
-  onNewSlot: (repo: NewSlotRepo) => void;
+  /** Toggles the inline new-task form open/closed for a task-convention repo
+   * (worktree hub) — never a blocking modal, see InlineNewTask. */
+  onNewTask: (repo: NewTaskRepo) => void;
   onRemoveRepo: (dirs: string[], label: string) => void;
-  /** Delete a worktree slot from disk (guarded `slot_remove`). */
+  /** Delete a worktree from disk (guarded `task_remove`). */
   onDeleteWorktree: (dir: string, label: string) => void;
-  /** Folder dirs whose `slot_remove` is currently in flight — that row dims
+  /** Folder dirs whose `task_remove` is currently in flight — that row dims
    * and disables until it resolves (deleted → the row vanishes on the next
    * poll; blocked/failed → the row goes interactive again). */
   deletingDirs?: Set<string>;
@@ -402,26 +402,26 @@ export function RepoGroup({
   /** Whether this repo's quiet folders are temporarily shown. */
   quietRevealed?: boolean;
   onToggleQuiet?: () => void;
-  /** Whether this repo's inline new-slot form is open. */
-  slotFormOpen: boolean;
-  onCancelSlotForm: () => void;
-  onSubmitSlotForm: (input: NewTaskSubmit) => void;
-  /** This repo's in-flight `slot_create` calls — see PendingSlot. */
-  pendingSlots: PendingSlot[];
-  onRetryPendingSlot: (id: string) => void;
-  onDismissPendingSlot: (id: string) => void;
+  /** Whether this repo's inline new-task form is open. */
+  taskFormOpen: boolean;
+  onCancelTaskForm: () => void;
+  onSubmitTaskForm: (input: NewTaskSubmit) => void;
+  /** This repo's in-flight `task_create` calls — see PendingTask. */
+  pendingTasks: PendingTask[];
+  onRetryPendingTask: (id: string) => void;
+  onDismissPendingTask: (id: string) => void;
 }) {
   const solo = isSoloRepo(repo);
   const quiet = quietDirs ?? new Set<string>();
   const showQuiet = quietRevealed ?? false;
 
-  const pendingRows = pendingSlots.map((p) => (
-    <PendingSlotRow
+  const pendingRows = pendingTasks.map((p) => (
+    <PendingTaskRow
       key={p.id}
       pending={p}
       now={now}
-      onRetry={onRetryPendingSlot}
-      onDismiss={onDismissPendingSlot}
+      onRetry={onRetryPendingTask}
+      onDismiss={onDismissPendingTask}
     />
   ));
 
@@ -544,20 +544,20 @@ export function RepoGroup({
             onSelectFolder(folder.dir);
           }}
           onNewSession={() => onNewSession(folder.dir)}
-          onNewSlot={() => onNewSlot({ name: repo.name, dir: folder.dir, key: repo.key })}
+          onNewTask={() => onNewTask({ name: repo.name, dir: folder.dir, key: repo.key })}
           onRemoveRepo={() => onRemoveRepo([folder.dir], repo.name)}
           onDeleteWorktree={
-            folderRemovableSlot(folder) ? () => onDeleteWorktree(folder.dir, repo.name) : undefined
+            folderRemovableTask(folder) ? () => onDeleteWorktree(folder.dir, repo.name) : undefined
           }
           onOpenDiff={() => onOpenDiff(folder.dir)}
           onOpenFiles={() => onOpenFiles(folder.dir)}
           onOpenPreview={() => onOpenPreview(folder.dir)}
         />
-        {slotFormOpen && (
-          <InlineNewSlot
+        {taskFormOpen && (
+          <InlineNewTask
             repo={{ name: repo.name, dir: folder.dir, key: repo.key }}
-            onCancel={onCancelSlotForm}
-            onSubmit={onSubmitSlotForm}
+            onCancel={onCancelTaskForm}
+            onSubmit={onSubmitTaskForm}
           />
         )}
         {pendingRows}
@@ -626,8 +626,8 @@ export function RepoGroup({
           </span>
         </button>
         <IconBtn
-          title={`New task — goal, issues, branch (${shortcutHint("ab-new-slot")})`}
-          onClick={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir, key: repo.key })}
+          title={`New task — goal, issues, branch (${shortcutHint("ab-new-task")})`}
+          onClick={() => onNewTask({ name: repo.name, dir: repo.folders[0].dir, key: repo.key })}
           className="hover:text-violet-500"
         >
           <FolderPlus className="size-3.5" />
@@ -640,14 +640,14 @@ export function RepoGroup({
             )
           }
           dir={repo.folders[0].dir}
-          onNewSlot={() => onNewSlot({ name: repo.name, dir: repo.folders[0].dir, key: repo.key })}
+          onNewTask={() => onNewTask({ name: repo.name, dir: repo.folders[0].dir, key: repo.key })}
         />
       </div>
-      {slotFormOpen && (
-        <InlineNewSlot
+      {taskFormOpen && (
+        <InlineNewTask
           repo={{ name: repo.name, dir: repo.folders[0].dir, key: repo.key }}
-          onCancel={onCancelSlotForm}
-          onSubmit={onSubmitSlotForm}
+          onCancel={onCancelTaskForm}
+          onSubmit={onSubmitTaskForm}
         />
       )}
       {pendingRows}
@@ -689,7 +689,7 @@ export function RepoGroup({
                   onNewSession={() => onNewSession(folder.dir)}
                   onRemoveRepo={() => onRemoveRepo([folder.dir], folder.name)}
                   onDeleteWorktree={
-                    folderRemovableSlot(folder)
+                    folderRemovableTask(folder)
                       ? () => onDeleteWorktree(folder.dir, folder.name)
                       : undefined
                   }
@@ -776,7 +776,7 @@ function FolderHeader({
   actions,
   onToggle,
   onNewSession,
-  onNewSlot,
+  onNewTask,
   onRemoveRepo,
   onDeleteWorktree,
   onOpenDiff,
@@ -798,7 +798,7 @@ function FolderHeader({
   /** Whether this folder is the one currently shown in the main pane area. */
   active: boolean;
   now: number;
-  /** This worktree's `slot_remove` is in flight — the caller already dims and
+  /** This worktree's `task_remove` is in flight — the caller already dims and
    * disables the whole row (`pointer-events-none opacity-50`); this just adds
    * the `DeletingBadge` label explaining why. */
   deleting?: boolean;
@@ -807,12 +807,12 @@ function FolderHeader({
   actions: SessionActions;
   onToggle: () => void;
   onNewSession: () => void;
-  /** Opens the new-slot modal — set only on a solo slot-convention repo's
+  /** Opens the new-task modal — set only on a solo task-convention repo's
    * collapsed repo+folder header (the multi-checkout repo tier renders its
    * own button). */
-  onNewSlot?: () => void;
+  onNewTask?: () => void;
   onRemoveRepo?: () => void;
-  /** Deletes this worktree slot from disk (guarded, `slot_remove`) — set
+  /** Deletes this worktree from disk (guarded, `task_remove`) — set
    * only on worktree checkouts, where untracking makes no sense (they are
    * auto-discovered from the primary and would reappear next poll). */
   onDeleteWorktree?: () => void;
@@ -901,7 +901,7 @@ function FolderHeader({
         </button>
         {collapsed && !missing && <CollapsedLive sessions={folder.sessions} />}
         {needs > 0 && <NeedsBadge n={needs} />}
-        {/* No "New session"/"New slot" on a ghost — the directory is gone. */}
+        {/* No "New session"/"New task" on a ghost — the directory is gone. */}
         {!missing && folder.hasLaunchConfig && (
           <DevServersButton folder={folder} actions={actions} />
         )}
@@ -914,10 +914,10 @@ function FolderHeader({
             <Plus className="size-3.5" />
           </IconBtn>
         )}
-        {!missing && onNewSlot && (
+        {!missing && onNewTask && (
           <IconBtn
-            title={`New task — goal, issues, branch (${shortcutHint("ab-new-slot")})`}
-            onClick={onNewSlot}
+            title={`New task — goal, issues, branch (${shortcutHint("ab-new-task")})`}
+            onClick={onNewTask}
             className="hover:text-violet-500"
           >
             <FolderPlus className="size-3.5" />
@@ -929,7 +929,7 @@ function FolderHeader({
             onRemove={onRemoveRepo}
             dir={folder.dir}
             isWorktree={folder.isWorktree}
-            onNewSlot={!missing ? onNewSlot : undefined}
+            onNewTask={!missing ? onNewTask : undefined}
             onDeleteWorktree={!missing ? onDeleteWorktree : undefined}
           />
         )}
@@ -965,7 +965,7 @@ function FolderHeader({
           {folder.hasLaunchConfig && <PreviewButton onOpen={onOpenPreview} />}
           {pr && <PrChip pr={pr} stats={folder} />}
           <FolderLandedBadge folder={folder} pr={pr} />
-          {/* Merged PR, and nothing here would be lost. A PR-less slot never
+          {/* Merged PR, and nothing here would be lost. A PR-less task never
               shows this — git alone can't tell landed work from abandoned
               work, so the affirmative claim needs the merged PR. See
               `folderSafeToDelete`. */}

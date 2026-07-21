@@ -1,10 +1,10 @@
-//! Has a slot branch's work actually reached the base branch?
+//! Has a task branch's work actually reached the base branch?
 //!
-//! This is the single answer to "is it safe to remove this slot", shared by
-//! `tt slot ls`/`rm`/`clean` and the Agentboard rail. Before it existed the
+//! This is the single answer to "is it safe to remove this task", shared by
+//! `tt task ls`/`rm`/`clean` and the Agentboard rail. Before it existed the
 //! repo carried three disagreeing models — `guards::check_removal` (orphaned
 //! commits), `clean`'s old ancestor-merge-or-`[gone]` rule (since deleted),
-//! and the rail's raw `git cherry` count — so the same slot could read
+//! and the rail's raw `git cherry` count — so the same task could read
 //! "safe to delete" in one surface and "2 commits unlanded" in another.
 //!
 //! ## Why one signal is never enough
@@ -22,7 +22,7 @@
 //! PRs land: GitHub replaces the branch's N commits with one new commit whose
 //! SHA *and* patch-id differ from all of them, so both reachability and
 //! `git cherry` report the whole branch as unlanded work. That false alarm is
-//! exactly what made a merged slot look unsafe to remove.
+//! exactly what made a merged task look unsafe to remove.
 //!
 //! The tree probe is what closes it: synthesise a commit holding the branch's
 //! *tree* parented on the merge-base, and ask `git cherry` whether that
@@ -82,7 +82,7 @@ impl LandedVia {
     }
 }
 
-/// What a slot still holds, on two independent axes: work that was never
+/// What a task still holds, on two independent axes: work that was never
 /// committed, and commits whose content never reached the base.
 ///
 /// Kept as separate counts on purpose — collapsing them into one "dirty" flag
@@ -106,12 +106,12 @@ pub struct WorkState {
 }
 
 impl WorkState {
-    /// Whether removing this slot would lose anything a user cannot recover.
+    /// Whether removing this task would lose anything a user cannot recover.
     pub fn holds_work(&self) -> bool {
         self.uncommitted > 0 || self.unlanded > 0 || self.orphaned > 0
     }
 
-    /// One line naming each axis that is non-zero, so the reason a slot is
+    /// One line naming each axis that is non-zero, so the reason a task is
     /// held back is never guesswork. Empty string when there is nothing to
     /// report beyond how it landed.
     pub fn headline(&self) -> String {
@@ -127,8 +127,8 @@ impl WorkState {
         }
         // A branch with no commits of its own is reported as such rather than
         // as "merged". The two are indistinguishable after the fact — an
-        // absorbed branch and a slot created from an older base both have
-        // nothing since their merge-base — and "merged" on a slot nobody ever
+        // absorbed branch and a task created from an older base both have
+        // nothing since their merge-base — and "merged" on a task nobody ever
         // committed to reads as a claim about work that never existed. Either
         // way nothing is at stake, which is what the phrase needs to convey.
         if self.total_commits == 0 {
@@ -170,8 +170,8 @@ pub fn cherry_says_landed(output: &str) -> bool {
 /// when nothing about the content did.
 ///
 /// `tip_equals_base` suppresses the ancestor answer for a freshly created
-/// slot: a branch still sitting on the base tip is trivially reachable from
-/// it, and reporting that as "merged" would invite cleaning a slot someone is
+/// task: a branch still sitting on the base tip is trivially reachable from
+/// it, and reporting that as "merged" would invite cleaning a task someone is
 /// about to work in.
 ///
 /// One label is fuzzy by nature: squashing a *single* commit produces a
@@ -208,7 +208,7 @@ pub fn classify(
 
 /// Cap on per-commit probes. Each probe is *three* git subprocesses
 /// (`rev-parse`, `commit-tree`, `cherry`) and this runs on the Agentboard's
-/// poll, so the worst case here is ~3× this many spawns. A slot branch is
+/// poll, so the worst case here is ~3× this many spawns. A task branch is
 /// short-lived by construction; one past this many commits falls back to the
 /// `git cherry` count rather than paying an unbounded cost for a number nobody
 /// is reading closely. The scan also stops at the first landed commit, so the
@@ -279,8 +279,8 @@ where
     let ancestor = git(dir, &["merge-base", "--is-ancestor", branch, base]).is_some();
 
     // Zero commits since the merge-base is ambiguous, and the two readings
-    // have opposite consequences. A *fresh* slot sits on the base tip and must
-    // never read as merged — cleaning it would take a slot someone is about to
+    // have opposite consequences. A *fresh* task sits on the base tip and must
+    // never read as merged — cleaning it would take a task someone is about to
     // work in. A *merged* branch also has nothing since its merge-base (the
     // merge-base is its own tip once the base absorbed it), but the base has
     // moved on past it, and it is exactly what `clean` should collect.
@@ -363,7 +363,7 @@ where
     // `user@host` from the system, which is absent on CI runners and minimal
     // containers, where it fails with "Author identity unknown". That failure
     // is silent here — the probe would just answer "not landed", turning every
-    // squash-merged slot back into a false alarm in exactly the environments
+    // squash-merged task back into a false alarm in exactly the environments
     // nobody is watching. What the identity *is* does not matter: the commit is
     // deleted below, and `git cherry` compares patch-ids, which ignore it.
     let Some(synthetic) = git(
@@ -447,9 +447,9 @@ mod tests {
     }
 
     #[test]
-    fn fresh_slot_is_never_landed() {
+    fn fresh_task_is_never_landed() {
         // Branch sitting on the base tip: trivially an ancestor, but cleaning
-        // it would take a slot someone is about to work in.
+        // it would take a task someone is about to work in.
         assert_eq!(classify(true, true, 0, 0, false, false), None);
         assert_eq!(classify(true, true, 0, 0, false, true), None);
     }
@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn headline_of_a_merged_clean_slot_names_how_it_landed() {
+    fn headline_of_a_merged_clean_task_names_how_it_landed() {
         let s =
             WorkState { total_commits: 2, landed: Some(LandedVia::Squash), ..Default::default() };
         assert_eq!(s.headline(), "squash-merged");
@@ -492,7 +492,7 @@ mod tests {
         assert_eq!(s.headline(), "2 orphaned");
         assert!(s.holds_work());
 
-        // A detached slot whose commits are on no branch at all: nothing since
+        // A detached task whose commits are on no branch at all: nothing since
         // a merge-base, but the orphan axis still has to be reported — that is
         // the work removal really would destroy.
         let detached = WorkState { orphaned: 2, ..Default::default() };

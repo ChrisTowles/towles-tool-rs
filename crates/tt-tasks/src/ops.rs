@@ -1,9 +1,9 @@
-//! Slot lifecycle operations shared by the CLI (`tt slot`) and the app.
+//! Task lifecycle operations shared by the CLI (`tt task`) and the app.
 //!
 //! This module owns the IO and process execution (git via `tt-exec`, env-file
 //! writes, bind tests, the claim lock); every *decision* stays in the pure
 //! modules ([`crate::template`], [`crate::guards`], [`crate::envfile`],
-//! [`crate::layout`]). Callers surface [`CreatedSlot::warnings`] to the user —
+//! [`crate::layout`]). Callers surface [`CreatedTask::warnings`] to the user —
 //! nothing here prints.
 
 use std::collections::hash_map::DefaultHasher;
@@ -19,16 +19,16 @@ use thiserror::Error;
 use crate::guards::{ForeignPort, RmBlocked};
 use crate::{TemplateError, envfile, layout};
 
-pub const TEMPLATE_SIDECAR: &str = "slot-env.template";
-/// Declared setup command, read from the slot's rendered `.env`
-/// (e.g. `TT_SLOT_SETUP=bun install`). Spawned directly — no shell — so a
+pub const TEMPLATE_SIDECAR: &str = "task-env.template";
+/// Declared setup command, read from the task's rendered `.env`
+/// (e.g. `TT_TASK_SETUP=bun install`). Spawned directly — no shell — so a
 /// repo needing more than one command should point this at its own task
 /// runner (`make setup`, `npm run bootstrap`).
-pub const SETUP_ENV_KEY: &str = "TT_SLOT_SETUP";
-const LOCK_FILE: &str = "tt-slots.lock";
+pub const SETUP_ENV_KEY: &str = "TT_TASK_SETUP";
+const LOCK_FILE: &str = "tt-tasks.lock";
 const LOCK_STALE: Duration = Duration::from_secs(60);
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
-/// The pre-flight `fetch` in [`create_slot`] is best-effort freshness, not
+/// The pre-flight `fetch` in [`create_task`] is best-effort freshness, not
 /// required for correctness (a failure just falls back to local refs with a
 /// warning) — so it gets a shorter leash than [`GIT_TIMEOUT`] and fails fast
 /// on a slow/inspected network instead of blocking creation for up to 30s.
@@ -39,7 +39,7 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(600);
 /// probably adding the time (a slow or TLS-inspecting proxy, antivirus/EDR
 /// intercepting every file write, Spotlight indexing a freshly checked-out
 /// tree — all disproportionately common on a managed corporate laptop), so
-/// [`create_slot`] names the step and its duration in a warning instead of
+/// [`create_task`] names the step and its duration in a warning instead of
 /// letting it pass silently.
 const SLOW_STEP: Duration = Duration::from_secs(5);
 
@@ -48,14 +48,14 @@ pub enum OpsError {
     #[error("no git checkout found walking up from {0}")]
     NoCheckout(String),
 
-    #[error("cannot derive a slot name from branch {0}")]
+    #[error("cannot derive a task name from branch {0}")]
     BadBranchName(String),
 
     #[error("'{branch}' is not a valid branch name: {detail}")]
     InvalidBranchName { branch: String, detail: String },
 
-    #[error("slot {name} already exists at {dir}")]
-    SlotExists { name: String, dir: String },
+    #[error("task {name} already exists at {dir}")]
+    TaskExists { name: String, dir: String },
 
     #[error("git: {0}")]
     Git(String),
@@ -66,14 +66,14 @@ pub enum OpsError {
     #[error("{0}")]
     Io(String),
 
-    #[error("timed out waiting for {0} — another slot command may be stuck")]
+    #[error("timed out waiting for {0} — another task command may be stuck")]
     LockTimeout(String),
 
-    #[error("refusing to remove the primary checkout — it owns every slot's git state")]
+    #[error("refusing to remove the primary checkout — it owns every task's git state")]
     PrimaryRemoval,
 
-    #[error("no slot {name} in {slots_dir}")]
-    NoSuchSlot { name: String, slots_dir: String },
+    #[error("no task {name} in {tasks_dir}")]
+    NoSuchTask { name: String, tasks_dir: String },
 
     #[error(
         "{name}'s worktree is broken (git fails inside it) — re-run with --force to remove anyway"
@@ -85,51 +85,51 @@ pub enum OpsError {
     Port(#[from] crate::ports::PortError),
 
     #[error(
-        "port {port} is not claimed by {name} — refusing to signal a process this slot does not own"
+        "port {port} is not claimed by {name} — refusing to signal a process this task does not own"
     )]
     PortNotClaimed { name: String, port: u16 },
 }
 
 pub type Result<T> = std::result::Result<T, OpsError>;
 
-/// A discovered slot root: the repo's main checkout and the repo name (its
-/// directory basename). Slots nest inside the checkout at
+/// A discovered task root: the repo's main checkout and the repo name (its
+/// directory basename). Tasks nest inside the checkout at
 /// `.claude/worktrees/<name>` — see the [`crate::layout`] docs.
-pub struct SlotRoot {
+pub struct TaskRoot {
     /// The main checkout — a normal clone whose `.git` directory owns every
-    /// slot's git state.
+    /// task's git state.
     pub checkout: PathBuf,
     pub repo: String,
 }
 
-impl SlotRoot {
-    /// The directory holding the worktree slots (may not exist yet).
-    pub fn slots_dir(&self) -> PathBuf {
+impl TaskRoot {
+    /// The directory holding the worktree tasks (may not exist yet).
+    pub fn tasks_dir(&self) -> PathBuf {
         layout::worktrees_dir(&self.checkout)
     }
 
-    pub fn slot_dir(&self, name: &str) -> PathBuf {
-        self.slots_dir().join(name)
+    pub fn task_dir(&self, name: &str) -> PathBuf {
+        self.tasks_dir().join(name)
     }
 
-    /// Existing slot dirs as (name, path), sorted by name.
-    pub fn slots(&self) -> Vec<(String, PathBuf)> {
-        let mut slots: Vec<(String, PathBuf)> = dir_names(&self.slots_dir())
+    /// Existing task dirs as (name, path), sorted by name.
+    pub fn tasks(&self) -> Vec<(String, PathBuf)> {
+        let mut tasks: Vec<(String, PathBuf)> = dir_names(&self.tasks_dir())
             .into_iter()
             .map(|name| {
-                let path = self.slots_dir().join(&name);
+                let path = self.tasks_dir().join(&name);
                 (name, path)
             })
             .collect();
-        slots.sort();
-        slots
+        tasks.sort();
+        tasks
     }
 
-    /// The checkout plus every slot — every checkout whose `.env` can hold
+    /// The checkout plus every task — every checkout whose `.env` can hold
     /// port claims.
     pub fn checkouts(&self) -> Vec<PathBuf> {
         let mut dirs = vec![self.checkout.clone()];
-        dirs.extend(self.slots().into_iter().map(|(_, dir)| dir));
+        dirs.extend(self.tasks().into_iter().map(|(_, dir)| dir));
         dirs
     }
 }
@@ -149,7 +149,7 @@ fn dir_names(dir: &Path) -> Vec<String> {
 /// Resolve the *main* checkout for `dir`, which must contain `.git`: a `.git`
 /// directory means `dir` is the main checkout itself; a `.git` *file* (a
 /// linked worktree) points at `<main>/.git/worktrees/<wt>` — hop to `<main>`,
-/// so slot commands anchor at the repo root no matter which worktree they run
+/// so task commands anchor at the repo root no matter which worktree they run
 /// from. A `.git` file that is not a worktree pointer (a submodule's
 /// `gitdir: ../.git/modules/<x>`) keeps `dir` itself as the checkout — a
 /// submodule is its own repo and gets its own nested worktrees.
@@ -183,12 +183,12 @@ fn main_checkout(dir: &Path) -> PathBuf {
     dir.to_path_buf()
 }
 
-/// Find the slot root: walk up from `explicit` (or the current working
+/// Find the task root: walk up from `explicit` (or the current working
 /// directory) to the nearest dir containing `.git`, then hop from a linked
 /// worktree to its main checkout (see [`main_checkout`]) — so running from
-/// inside a slot anchors at the repo root, never nesting worktrees inside
+/// inside a task anchors at the repo root, never nesting worktrees inside
 /// worktrees. Any plain git checkout qualifies; there is no layout to set up.
-pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
+pub fn discover_root(explicit: Option<&Path>) -> Result<TaskRoot> {
     let start = match explicit {
         Some(dir) => dir.to_path_buf(),
         None => {
@@ -205,14 +205,14 @@ pub fn discover_root(explicit: Option<&Path>) -> Result<SlotRoot> {
             .and_then(|n| n.to_str())
             .ok_or_else(|| OpsError::Io(format!("bad checkout path {}", checkout.display())))?
             .to_string();
-        return Ok(SlotRoot { checkout, repo });
+        return Ok(TaskRoot { checkout, repo });
     }
     Err(OpsError::NoCheckout(start.display().to_string()))
 }
 
-/// Bounded like [`git_slot`] — a stalled network op (stuck proxy/VPN, an SSH
+/// Bounded like [`git_task`] — a stalled network op (stuck proxy/VPN, an SSH
 /// prompt with nothing to answer it) must fail after `GIT_TIMEOUT`, not hang
-/// the caller (`create_slot`/`remove_slot`/`clean_slots`) forever.
+/// the caller (`create_task`/`remove_task`/`clean_tasks`) forever.
 pub fn git_checkout(checkout: &Path, args: &[&str]) -> Result<tt_exec::Output> {
     git_checkout_timeout(checkout, args, GIT_TIMEOUT)
 }
@@ -241,13 +241,13 @@ fn note_if_slow(warnings: &mut Vec<String>, label: &str, elapsed: Duration) {
     }
 }
 
-/// The refs a slot's work is judged against: the checkout's base branch, and
+/// The refs a task's work is judged against: the checkout's base branch, and
 /// its remote-tracking twin when one exists.
 ///
 /// Both are needed because they answer at different times. A squash merge
 /// lands on `origin/<base>` the moment the PR is merged, while local `<base>`
 /// only catches up when the user pulls — so judging against the local ref
-/// alone makes every merged slot look active until the next `git pull`.
+/// alone makes every merged task look active until the next `git pull`.
 #[derive(Debug, Clone)]
 pub struct BaseRefs {
     /// Base branch name, e.g. `main`.
@@ -259,7 +259,7 @@ pub struct BaseRefs {
 }
 
 /// Resolve the base refs for a checkout. One set of git calls, reused across
-/// every slot by callers that loop.
+/// every task by callers that loop.
 pub fn base_refs(checkout: &Path) -> BaseRefs {
     let base = base_branch(checkout);
     let local = format!("refs/heads/{base}");
@@ -271,7 +271,7 @@ pub fn base_refs(checkout: &Path) -> BaseRefs {
     BaseRefs { base, local, remote }
 }
 
-/// What a slot still holds — uncommitted work and commits that never reached
+/// What a task still holds — uncommitted work and commits that never reached
 /// the base — as one answer shared by `ls`, `rm`, `clean` and the Agentboard
 /// rail. See [`crate::landed`] for why several git signals are combined.
 ///
@@ -279,7 +279,7 @@ pub fn base_refs(checkout: &Path) -> BaseRefs {
 /// degrade to "work is present", never to "safe to delete".
 ///
 /// `uncommitted` and `orphaned` are passed in rather than gathered here. Every
-/// caller either already has them (`remove_slot` computes both for
+/// caller either already has them (`remove_task` computes both for
 /// [`crate::guards::check_removal`]) or needs them for a checkout this function
 /// cannot judge (a detached HEAD has no branch to compare). Re-reading them
 /// would also mean two snapshots of one working tree, so the guard could pass
@@ -297,7 +297,7 @@ pub fn work_state(
     // `Some` only on a zero exit — `merge-base --is-ancestor` answers through
     // the exit code and prints nothing.
     let probe_git = |dir: &Path, args: &[&str]| -> Option<String> {
-        git_slot(dir, args).ok().filter(|o| o.ok()).map(|o| o.stdout)
+        git_task(dir, args).ok().filter(|o| o.ok()).map(|o| o.stdout)
     };
 
     let gone = probe_git(dir, &["for-each-ref", branch, "--format=%(upstream:track)"])
@@ -311,7 +311,7 @@ pub fn work_state(
     // Judge against the local base first, then the remote-tracking one. A
     // squash merge lands on `origin/<base>` and nothing here fast-forwards
     // local `<base>`, so a checkout that has not pulled since the merge would
-    // otherwise read every merged slot as active. The local ref is still asked
+    // otherwise read every merged task as active. The local ref is still asked
     // first so a repo with no remote, or one merged only locally, keeps
     // working. The retry runs whenever the local base gave no *content* proof
     // — a bare `[gone]` upstream included, since that is exactly the shape a
@@ -328,7 +328,7 @@ pub fn work_state(
 
 /// `git status --porcelain` entry count for a checkout — the uncommitted axis.
 pub fn uncommitted_count(dir: &Path) -> usize {
-    git_slot(dir, &["status", "--porcelain"])
+    git_task(dir, &["status", "--porcelain"])
         .ok()
         .filter(|o| o.ok())
         .map(|o| crate::guards::dirty_entry_count(&o.stdout))
@@ -339,7 +339,7 @@ pub fn uncommitted_count(dir: &Path) -> usize {
 /// removal genuinely destroys. Base-independent, so it is meaningful even for a
 /// detached HEAD that [`work_state`] cannot otherwise judge.
 pub fn orphaned_count(dir: &Path) -> u64 {
-    git_slot(
+    git_task(
         dir,
         &[
             "rev-list",
@@ -356,7 +356,7 @@ pub fn orphaned_count(dir: &Path) -> u64 {
     .unwrap_or(0)
 }
 
-pub fn git_slot(dir: &Path, args: &[&str]) -> Result<tt_exec::Output> {
+pub fn git_task(dir: &Path, args: &[&str]) -> Result<tt_exec::Output> {
     tt_exec::run_in_dir_with_timeout_env(
         "git",
         args,
@@ -379,7 +379,7 @@ pub fn base_branch(checkout: &Path) -> String {
 
 /// Fast-forward `base` to `upstream` (its `origin/<base>` counterpart, per
 /// [`effective_origin_base`] — the caller decides applicability) — so a new
-/// slot branches from current history instead of stale local history, which
+/// task branches from current history instead of stale local history, which
 /// otherwise means its first sync with base is an unnecessary rebase.
 /// `git merge --ff-only` is itself a no-op when already current, so this
 /// attempts it unconditionally rather than counting commits behind first.
@@ -388,9 +388,9 @@ pub fn base_branch(checkout: &Path) -> String {
 /// one with no `origin/<base>` upstream, since moving a ref out from under
 /// another checkout would fight whatever's using it. A genuine divergence
 /// (or uncommitted local changes ff-only won't overwrite) warns rather than
-/// blocks creation — the slot still branches from local history.
+/// blocks creation — the task still branches from local history.
 fn fast_forward_base_if_behind(
-    sr: &SlotRoot,
+    sr: &TaskRoot,
     base: &str,
     upstream: &str,
     warnings: &mut Vec<String>,
@@ -399,7 +399,7 @@ fn fast_forward_base_if_behind(
         Ok(out) if out.ok() => {}
         Ok(out) => warnings.push(format!(
             "base branch '{base}' has diverged from {upstream} and could not be fast-forwarded \
-             ({}) — the new slot may need a rebase later",
+             ({}) — the new task may need a rebase later",
             out.stderr.trim()
         )),
         Err(e) => warnings
@@ -407,7 +407,7 @@ fn fast_forward_base_if_behind(
     }
 }
 
-/// The ref slot creation will *effectively* branch from when it applies the
+/// The ref task creation will *effectively* branch from when it applies the
 /// fast-forward above: `Some("origin/<base>")` exactly when `base` is the
 /// checkout's checked-out branch and that remote-tracking ref exists, `None`
 /// otherwise. The single copy of that rule, shared by
@@ -426,8 +426,8 @@ fn effective_origin_base(checkout: &Path, base: &str) -> Option<String> {
     exists.then_some(upstream)
 }
 
-/// One base-branch choice for the new-slot form. `name` is the local branch —
-/// what `create_slot` takes as `base` — and `label` is the ref creation will
+/// One base-branch choice for the new-task form. `name` is the local branch —
+/// what `create_task` takes as `base` — and `label` is the ref creation will
 /// *effectively* branch from ([`effective_origin_base`]), which the UI should
 /// show instead of `name`: a form showing plain `main` when creation will
 /// branch from `origin/main` would be underselling what actually happens.
@@ -476,21 +476,21 @@ pub fn validate_branch_name(branch: &str) -> Result<()> {
     })
 }
 
-/// Preflight for the new-slot dialog: is `branch` a legal ref, and would its
-/// derived slot name collide with an existing slot? Read-only.
+/// Preflight for the new-task dialog: is `branch` a legal ref, and would its
+/// derived task name collide with an existing task? Read-only.
 pub struct BranchCheck {
     pub name: Option<String>,
     pub taken: bool,
     pub error: Option<String>,
 }
 
-pub fn check_branch(sr: &SlotRoot, branch: &str) -> BranchCheck {
+pub fn check_branch(sr: &TaskRoot, branch: &str) -> BranchCheck {
     if let Err(e) = validate_branch_name(branch) {
         return BranchCheck { name: None, taken: false, error: Some(e.to_string()) };
     }
-    match layout::slot_name_from_branch(branch) {
+    match layout::task_name_from_branch(branch) {
         Some(name) => {
-            let taken = sr.slot_dir(&name).exists();
+            let taken = sr.task_dir(&name).exists();
             BranchCheck { name: Some(name), taken, error: None }
         }
         None => BranchCheck {
@@ -507,7 +507,7 @@ pub fn port_occupied(port: u16) -> bool {
 
 // ---------------------------------------------------------------------------
 // claim lock — serializes port claims across concurrent creations (parallel
-// agents create slots together; without this, both scan siblings before
+// agents create tasks together; without this, both scan siblings before
 // either writes, and claim the same ports)
 
 /// Path of the claim lock for `checkout`, in `tt_config::locks_dir()` and
@@ -566,20 +566,20 @@ impl Drop for ClaimLock {
 // ---------------------------------------------------------------------------
 // rendering
 
-/// The template sidecar's path: `<checkout>/.claude/slot-env.template`,
+/// The template sidecar's path: `<checkout>/.claude/task-env.template`,
 /// next to the repo's Claude Code settings (committable, but gitignoring it
 /// works too — render only reads it).
-pub fn template_sidecar_path(sr: &SlotRoot) -> PathBuf {
+pub fn template_sidecar_path(sr: &TaskRoot) -> PathBuf {
     sr.checkout.join(layout::CLAUDE_DIR).join(TEMPLATE_SIDECAR)
 }
 
 /// Create the [`TEMPLATE_SIDECAR`] for repos that don't commit a tokenized
-/// `.env.example` (`tt slot init`). Purely a starting point: a repo with no
-/// template at all still renders slots (an empty `.env` — see
-/// [`render_slot_env`]), so the sidecar exists to give `${tt:...}` tokens an
+/// `.env.example` (`tt task init`). Purely a starting point: a repo with no
+/// template at all still renders tasks (an empty `.env` — see
+/// [`render_task_env`]), so the sidecar exists to give `${tt:...}` tokens an
 /// obvious home when the repo later needs one.
 /// Idempotent: an existing sidecar is left untouched.
-pub fn init_template_sidecar(sr: &SlotRoot) -> Result<PathBuf> {
+pub fn init_template_sidecar(sr: &TaskRoot) -> Result<PathBuf> {
     let sidecar = template_sidecar_path(sr);
     if sidecar.is_file() {
         return Ok(sidecar);
@@ -589,9 +589,9 @@ pub fn init_template_sidecar(sr: &SlotRoot) -> Result<PathBuf> {
         .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", claude_dir.display())))?;
     fs::write(
         &sidecar,
-        "# tt slot env template — this repo declares no ports/env vars for slots.\n\
-         # Add ${tt:port A-B} / ${tt:var NAME} / ${tt:slot-name} / ${tt:base} tokens\n\
-         # here (or commit a tokenized .env.example in the repo instead) if a slot\n\
+        "# tt task env template — this repo declares no ports/env vars for tasks.\n\
+         # Add ${tt:port A-B} / ${tt:var NAME} / ${tt:task-name} / ${tt:base} tokens\n\
+         # here (or commit a tokenized .env.example in the repo instead) if a task\n\
          # ever needs one.\n",
     )
     .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", sidecar.display())))?;
@@ -609,34 +609,34 @@ pub struct RenderSummary {
 
 /// Render a checkout's `.env`: template → text (reusing existing claims),
 /// then merge back any keys the template doesn't know (inherited secrets,
-/// local adds). Works for slots and for the checkout itself — the checkout is
-/// where the user runs the app, so it claims ports like any slot. Slot dirs
-/// also get the `.tt-slot` marker.
+/// local adds). Works for tasks and for the checkout itself — the checkout is
+/// where the user runs the app, so it claims ports like any task. Task dirs
+/// also get the `.tt-task` marker.
 ///
-/// `new_slot_base` seeds the marker's `base=` field the *first* time a slot
+/// `new_task_base` seeds the marker's `base=` field the *first* time a task
 /// is rendered (at creation, when `dir` has no marker yet) — it should be the
-/// actual ref the worktree was created from ([`create_slot`]'s resolved
+/// actual ref the worktree was created from ([`create_task`]'s resolved
 /// `base`), not the checkout's current branch. A re-render of an *existing*
-/// slot (`tt slot env <name>`) ignores this and keeps the marker's already
+/// task (`tt task env <name>`) ignores this and keeps the marker's already
 /// recorded base: it's fixed at creation and must never drift just because
 /// the checkout's branch or default has since changed.
-pub fn render_slot_env(
-    sr: &SlotRoot,
+pub fn render_task_env(
+    sr: &TaskRoot,
     dir: &Path,
-    new_slot_base: Option<&str>,
+    new_task_base: Option<&str>,
 ) -> Result<RenderSummary> {
     let name = dir
         .file_name()
         .and_then(|n| n.to_str())
-        .ok_or_else(|| OpsError::Io(format!("bad slot path {}", dir.display())))?
+        .ok_or_else(|| OpsError::Io(format!("bad task path {}", dir.display())))?
         .to_string();
-    let is_slot = dir.parent().is_some_and(|p| p == sr.slots_dir());
+    let is_task = dir.parent().is_some_and(|p| p == sr.tasks_dir());
 
     // template: the repo's own .env.example when it carries ${tt:...} tokens
     // (the committed convention), else the .claude/ sidecar (repos that
     // don't commit tt tokens in their .env.example), else empty — a repo
-    // that declares nothing to template (no ports, no per-slot config) still
-    // renders (an empty .env), so any plain checkout is slot-capable with no
+    // that declares nothing to template (no ports, no per-task config) still
+    // renders (an empty .env), so any plain checkout is task-capable with no
     // onboarding step.
     let repo_template = dir.join(".env.example");
     let sidecar = template_sidecar_path(sr);
@@ -666,16 +666,16 @@ pub fn render_slot_env(
         }
     }
 
-    // A marker already on disk (re-rendering an existing slot) wins over
-    // `new_slot_base` — the base is set once at creation, not re-derived on
-    // every `tt slot env`. Only a fresh slot (no marker yet) or the checkout
-    // (never gets a marker) falls back to `new_slot_base`/the checkout's branch.
-    let recorded_base = layout::read_slot_base(dir);
+    // A marker already on disk (re-rendering an existing task) wins over
+    // `new_task_base` — the base is set once at creation, not re-derived on
+    // every `tt task env`. Only a fresh task (no marker yet) or the checkout
+    // (never gets a marker) falls back to `new_task_base`/the checkout's branch.
+    let recorded_base = layout::read_task_base(dir);
     let ctx_base = recorded_base
         .clone()
-        .or_else(|| new_slot_base.map(str::to_string))
+        .or_else(|| new_task_base.map(str::to_string))
         .unwrap_or_else(|| base_branch(&sr.checkout));
-    let ctx = crate::SlotContext { slot_name: &name, base_branch: &ctx_base };
+    let ctx = crate::TaskContext { task_name: &name, base_branch: &ctx_base };
     let outcome = crate::render(&template, &ctx, &existing, &sibling_claims, |p| !port_occupied(p))
         .map_err(|source| OpsError::Template {
             // an empty (no-template) render can't fail, so this always names
@@ -688,7 +688,7 @@ pub fn render_slot_env(
     fs::write(&env_path, &merged)
         .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", env_path.display())))?;
 
-    if is_slot {
+    if is_task {
         let marker = layout::marker_contents(&name, &ctx_base, "main");
         fs::write(dir.join(layout::MARKER_FILE), marker)
             .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", layout::MARKER_FILE)))?;
@@ -696,10 +696,10 @@ pub fn render_slot_env(
     ensure_excludes(&sr.checkout)?;
 
     let mut warnings = Vec::new();
-    if let Ok(out) = git_slot(dir, &["check-ignore", "-q", ".env"])
+    if let Ok(out) = git_task(dir, &["check-ignore", "-q", ".env"])
         && !out.ok()
     {
-        warnings.push(".env is NOT gitignored in this repo — it will dirty the slot's tree".into());
+        warnings.push(".env is NOT gitignored in this repo — it will dirty the task's tree".into());
     }
 
     let ports = outcome.reused.iter().chain(outcome.claimed.iter()).cloned().collect();
@@ -743,20 +743,20 @@ fn ensure_excludes(checkout: &Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// init — one-shot repo onboarding (`tt slot init`)
+// init — one-shot repo onboarding (`tt task init`)
 
-/// The two Claude Code worktree hooks `tt slot init` wires so `claude
-/// --worktree` and background sessions route through the slot machinery.
+/// The two Claude Code worktree hooks `tt task init` wires so `claude
+/// --worktree` and background sessions route through the task machinery.
 const WORKTREE_HOOKS: [(&str, &str); 2] = [
-    ("WorktreeCreate", "tt slot hook-create"),
-    ("WorktreeRemove", "tt slot hook-remove"),
+    ("WorktreeCreate", "tt task hook-create"),
+    ("WorktreeRemove", "tt task hook-remove"),
 ];
 
 /// What [`init_repo`] did (every step is idempotent, so re-runs report
 /// mostly `false`/unchanged).
 pub struct InitReport {
-    /// The template slots will render from: the repo's tokenized
-    /// `.env.example`, or the `.claude/slot-env.template` sidecar.
+    /// The template tasks will render from: the repo's tokenized
+    /// `.env.example`, or the `.claude/task-env.template` sidecar.
     pub template: PathBuf,
     pub sidecar_created: bool,
     /// `.env` was appended to the repo's `.gitignore`.
@@ -764,17 +764,17 @@ pub struct InitReport {
     /// The worktree hooks were added to `.claude/settings.json`.
     pub hooks_wired: bool,
     pub settings_path: PathBuf,
-    /// The primary checkout's `.env` render (it claims ports like any slot).
+    /// The primary checkout's `.env` render (it claims ports like any task).
     pub render: RenderSummary,
 }
 
-/// Onboard a repo onto the slot convention in one idempotent shot: pick (or
+/// Onboard a repo onto the task convention in one idempotent shot: pick (or
 /// create) the env template, gitignore `.env`, wire the Claude Code
 /// WorktreeCreate/WorktreeRemove hooks into `.claude/settings.json`, and
 /// render the primary checkout's `.env` so it claims its ports. The hook
 /// wiring only takes effect in new worktrees once the settings file is
 /// committed — the caller surfaces that reminder.
-pub fn init_repo(sr: &SlotRoot) -> Result<InitReport> {
+pub fn init_repo(sr: &TaskRoot) -> Result<InitReport> {
     // Template: the committed tokenized .env.example wins; otherwise make
     // sure the sidecar exists (empty-but-explained when freshly created).
     let repo_template = sr.checkout.join(".env.example");
@@ -818,7 +818,7 @@ pub fn init_repo(sr: &SlotRoot) -> Result<InitReport> {
             .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", settings_path.display())))?;
     }
 
-    let render = render_slot_env(sr, &sr.checkout, None)?;
+    let render = render_task_env(sr, &sr.checkout, None)?;
     Ok(InitReport {
         template,
         sidecar_created,
@@ -831,7 +831,7 @@ pub fn init_repo(sr: &SlotRoot) -> Result<InitReport> {
 
 /// Merge the [`WORKTREE_HOOKS`] into a `.claude/settings.json` document,
 /// preserving every existing key/hook. Returns the new JSON text and whether
-/// anything changed (an event already carrying its `tt slot hook-*` command
+/// anything changed (an event already carrying its `tt task hook-*` command
 /// anywhere in its entries is left alone). Empty input starts from `{}`;
 /// malformed JSON is an error — never clobber a file we can't parse.
 pub fn wire_worktree_hooks(settings: &str) -> Result<(String, bool)> {
@@ -888,8 +888,8 @@ pub fn wire_worktree_hooks(settings: &str) -> Result<(String, bool)> {
 // ---------------------------------------------------------------------------
 // setup
 
-/// The setup command for a fresh slot, as argv. `env` is the slot's rendered
-/// `.env`; `has_file` probes the slot's checkout. Declared `TT_SLOT_SETUP`
+/// The setup command for a fresh task, as argv. `env` is the task's rendered
+/// `.env`; `has_file` probes the task's checkout. Declared `TT_TASK_SETUP`
 /// wins (whitespace-split — point it at a task runner for anything fancier);
 /// else the package manager is detected from the committed lockfile. `None`
 /// means nothing to run (e.g. a pure-cargo repo whose deps resolve on build).
@@ -921,11 +921,11 @@ pub fn setup_command(
     None
 }
 
-/// Run `dir`'s setup step (declared `TT_SLOT_SETUP` from its rendered
+/// Run `dir`'s setup step (declared `TT_TASK_SETUP` from its rendered
 /// `.env`, else lockfile detection — see [`setup_command`]), reading the
 /// `.env` itself. `Ok(None)` means nothing to run or it succeeded; `Ok(Some)`
 /// carries a warning for a failure the caller should surface but not fail
-/// on (the slot/checkout is kept either way). Shared by `create_slot` and
+/// on (the task/checkout is kept either way). Shared by `create_task` and
 /// the app's setup-retry command, so a failed install always gets exactly
 /// one re-run path.
 pub fn run_setup(dir: &Path) -> Result<Option<String>> {
@@ -940,12 +940,12 @@ pub fn run_setup(dir: &Path) -> Result<Option<String>> {
     let warning = match tt_exec::run_in_dir_with_timeout(&argv[0], &args, dir, SETUP_TIMEOUT) {
         Ok(out) if out.ok() => None,
         Ok(out) => Some(format!(
-            "setup `{}` failed (exit {}) — slot kept, fix and re-run it\n{}",
+            "setup `{}` failed (exit {}) — task kept, fix and re-run it\n{}",
             argv.join(" "),
             out.exit_code,
             out.stderr.trim()
         )),
-        Err(e) => Some(format!("setup `{}` failed — slot kept: {e}", argv.join(" "))),
+        Err(e) => Some(format!("setup `{}` failed — task kept: {e}", argv.join(" "))),
     };
     Ok(warning)
 }
@@ -955,24 +955,24 @@ pub fn run_setup(dir: &Path) -> Result<Option<String>> {
 
 #[derive(Debug, Default)]
 pub struct CreateOpts {
-    /// Slot root; `None` walks up from the current working directory.
+    /// Task root; `None` walks up from the current working directory.
     pub root: Option<PathBuf>,
-    /// Branch to create and check out. Slots are branch-named and ephemeral —
+    /// Branch to create and check out. Tasks are branch-named and ephemeral —
     /// there is no detached/parked mode.
     pub branch: String,
     /// Base ref for the new branch; `None` = the checkout's branch.
     pub base: Option<String>,
-    /// Run the setup step in the new slot (declared `TT_SLOT_SETUP` from the
+    /// Run the setup step in the new task (declared `TT_TASK_SETUP` from the
     /// rendered `.env`, else lockfile-detected package-manager install).
     pub run_setup: bool,
 }
 
-pub struct CreatedSlot {
+pub struct CreatedTask {
     pub name: String,
     pub dir: PathBuf,
     pub branch: String,
     pub base: String,
-    /// The ref the slot effectively branched from — `origin/<base>` when the
+    /// The ref the task effectively branched from — `origin/<base>` when the
     /// creation-time fast-forward applied ([`effective_origin_base`]), else
     /// `base`. Display/prompt honesty; `base` stays the branch-name value.
     pub base_label: String,
@@ -981,9 +981,9 @@ pub struct CreatedSlot {
     pub warnings: Vec<String>,
 }
 
-/// Create the slot for `branch`: worktree under `slots/`, rendered `.env`
+/// Create the task for `branch`: worktree under `tasks/`, rendered `.env`
 /// with port claims, sibling-secrets inheritance, setup step.
-pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
+pub fn create_task(opts: &CreateOpts) -> Result<CreatedTask> {
     let sr = discover_root(opts.root.as_deref())?;
     validate_branch_name(&opts.branch)?;
     let mut warnings = Vec::new();
@@ -1002,7 +1002,7 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     note_if_slow(&mut warnings, "fetch", fetch_start.elapsed());
 
     let base = opts.base.clone().unwrap_or_else(|| base_branch(&sr.checkout));
-    // The ref this slot effectively branches from — probed after the fetch so
+    // The ref this task effectively branches from — probed after the fetch so
     // a just-created remote counterpart counts, and carried on the result as
     // `base_label` so the UI and the dynamic-flow prompt name the same ref
     // creation actually used (agreeing with `checkout_branches`' labels).
@@ -1011,14 +1011,14 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
         fast_forward_base_if_behind(&sr, &base, upstream, &mut warnings);
     }
     let base_label = effective.unwrap_or_else(|| base.clone());
-    let name = layout::slot_name_from_branch(&opts.branch)
+    let name = layout::task_name_from_branch(&opts.branch)
         .ok_or_else(|| OpsError::BadBranchName(opts.branch.clone()))?;
-    let dir = sr.slot_dir(&name);
+    let dir = sr.task_dir(&name);
     if dir.exists() {
-        return Err(OpsError::SlotExists { name, dir: dir.display().to_string() });
+        return Err(OpsError::TaskExists { name, dir: dir.display().to_string() });
     }
-    fs::create_dir_all(sr.slots_dir())
-        .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", sr.slots_dir().display())))?;
+    fs::create_dir_all(sr.tasks_dir())
+        .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", sr.tasks_dir().display())))?;
     let dir_s = dir.to_string_lossy().to_string();
 
     let worktree_start = Instant::now();
@@ -1033,18 +1033,18 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
     note_if_slow(&mut warnings, "git worktree add", worktree_start.elapsed());
 
     // From here on, any failure must remove the worktree just added above —
-    // otherwise (e.g. a template render error) it leaves a half-set-up slot
+    // otherwise (e.g. a template render error) it leaves a half-set-up task
     // behind: a real worktree with no rendered `.env`, invisible as "failed"
-    // to `tt slot ls` and blocking a retry with `SlotExists`.
-    let created = (|| -> Result<CreatedSlot> {
-        let summary = render_slot_env(&sr, &dir, Some(&base))?;
+    // to `tt task ls` and blocking a retry with `TaskExists`.
+    let created = (|| -> Result<CreatedTask> {
+        let summary = render_task_env(&sr, &dir, Some(&base))?;
         warnings.extend(summary.warnings);
 
         // Inherit secrets from the first sibling checkout that has a .env —
         // the main checkout first (`sr.checkouts()` orders it that way; it's
         // the longest-lived and least likely to carry stale branch-specific
-        // values), else the alphabetically-first slot. Surfaced in a warning
-        // when it wasn't the main checkout, since a slot's secrets can be
+        // values), else the alphabetically-first task. Surfaced in a warning
+        // when it wasn't the main checkout, since a task's secrets can be
         // branch-specific or stale in a way the main checkout's never are.
         let mut inherited = 0;
         for sib_dir in sr.checkouts() {
@@ -1060,7 +1060,7 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
                 inherited = count;
                 if count > 0 && sib_dir != sr.checkout {
                     let source =
-                        sib_dir.file_name().and_then(|n| n.to_str()).unwrap_or("a sibling slot");
+                        sib_dir.file_name().and_then(|n| n.to_str()).unwrap_or("a sibling task");
                     warnings.push(format!(
                         "inherited {count} .env key(s) from {source}, not the main checkout — \
                          the main checkout has no .env yet, so these may be branch-specific or stale"
@@ -1079,7 +1079,7 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
             }
         }
 
-        Ok(CreatedSlot {
+        Ok(CreatedTask {
             name,
             dir,
             branch: opts.branch.clone(),
@@ -1106,19 +1106,19 @@ pub fn create_slot(opts: &CreateOpts) -> Result<CreatedSlot> {
 
 #[derive(Debug, Default)]
 pub struct RemoveOpts {
-    /// Slot root; `None` walks up from the current working directory.
+    /// Task root; `None` walks up from the current working directory.
     pub root: Option<PathBuf>,
-    /// Slot directory name under `slots/`.
+    /// Task directory name under `tasks/`.
     pub name: String,
-    /// Skip guards (each skip lands in [`RemovedSlot::messages`]) and force
+    /// Skip guards (each skip lands in [`RemovedTask::messages`]) and force
     /// worktree removal.
     pub force: bool,
 }
 
-pub struct RemovedSlot {
+pub struct RemovedTask {
     pub name: String,
     /// The removed checkout's directory (now gone from disk) — callers use it
-    /// to untrack the slot from stores keyed by dir (the agentboard rail).
+    /// to untrack the task from stores keyed by dir (the agentboard rail).
     pub dir: PathBuf,
     /// Progress notes for the user: docker resources removed, guards skipped
     /// under force, fallback paths taken. Callers surface these — nothing
@@ -1132,13 +1132,13 @@ pub struct RemovedSlot {
 /// answer with a next step attached (stash it, stop the dev server, re-run
 /// with force), not a failure. Modeling it as an error made every consumer
 /// destructure it straight back out — the app to build a dialog from it, the
-/// CLI to attach remedies, `clean_slots` to list it as a keep-reason — so
+/// CLI to attach remedies, `clean_tasks` to list it as a keep-reason — so
 /// three call sites each re-derived "this error isn't an error", and the one
 /// thing an error buys you (a `Display` for the boundary) went unused. Errors
 /// here stay for what the user genuinely cannot proceed past: a bad path, a
 /// broken worktree, git falling over.
 pub enum RemoveOutcome {
-    Removed(RemovedSlot),
+    Removed(RemovedTask),
     Blocked {
         name: String,
         blocked: Vec<RmBlocked>,
@@ -1154,40 +1154,40 @@ pub enum RemoveOutcome {
     },
 }
 
-/// Remove a slot: guarded (clean tree, no commits unreachable from a branch
+/// Remove a task: guarded (clean tree, no commits unreachable from a branch
 /// or remote, nothing foreign on its claimed ports), then docker compose
 /// down -v, anchored container/volume sweep, `git worktree remove`. Shared by
-/// `tt slot rm` and the app's `slot_remove` command.
+/// `tt task rm` and the app's `task_remove` command.
 ///
 /// `before_removal` runs once the guards have passed (or been forced) and the
 /// removal is really about to happen — after the last return that leaves the
-/// slot untouched, before the first destructive step. The app hangs its
-/// kill-the-slot's-PTYs step here so a *refused* removal never costs a live
+/// task untouched, before the first destructive step. The app hangs its
+/// kill-the-task's-PTYs step here so a *refused* removal never costs a live
 /// session; the CLI passes `|| {}`. Deliberately not part of `RemoveOpts`:
 /// it's a phase marker in this function's control flow, not a removal
 /// setting.
-pub fn remove_slot(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<RemoveOutcome> {
+pub fn remove_task(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<RemoveOutcome> {
     let sr = discover_root(opts.root.as_deref())?;
     let name = opts.name.clone();
     if name == "primary" || sr.checkout.file_name().and_then(|n| n.to_str()) == Some(&name) {
         return Err(OpsError::PrimaryRemoval);
     }
-    let dir = sr.slot_dir(&name);
+    let dir = sr.task_dir(&name);
     if !dir.is_dir() {
-        return Err(OpsError::NoSuchSlot { name, slots_dir: sr.slots_dir().display().to_string() });
+        return Err(OpsError::NoSuchTask { name, tasks_dir: sr.tasks_dir().display().to_string() });
     }
     let dir_s = dir.to_string_lossy().to_string();
     let mut messages = Vec::new();
-    // The slot's state scope must be read while the checkout still exists —
-    // scope detection probes the directory (see `tt_config::slot_scope_from_dir`).
-    let state_scope = tt_config::slot_scope_from_dir(&dir);
+    // The task's state scope must be read while the checkout still exists —
+    // scope detection probes the directory (see `tt_config::task_scope_from_dir`).
+    let state_scope = tt_config::task_scope_from_dir(&dir);
 
     // Refresh remote-tracking refs before the unreachable-commit guard below:
     // without this, a branch merged and deleted upstream since the last
     // fetch still looks "unreachable from any branch/remote" against a stale
     // `origin/*`, which is the right call but for the wrong (stale) reason,
     // and a branch merged just now can look falsely safe to remove before
-    // its remote ref disappears. `--prune` mirrors `clean_slots` so a
+    // its remote ref disappears. `--prune` mirrors `clean_tasks` so a
     // deleted remote branch is reflected too.
     match git_checkout(&sr.checkout, &["fetch", "--prune", "--quiet", "origin"]) {
         Ok(out) if out.ok() => {}
@@ -1196,9 +1196,9 @@ pub fn remove_slot(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
     }
 
     // One `git status --porcelain` answers both questions below — whether git
-    // works in there at all, and how dirty the tree is. `clean_slots` calls
-    // this for every merged slot, so a second spawn here is per-slot waste.
-    let status = git_slot(&dir, &["status", "--porcelain"]).ok().filter(|o| o.ok());
+    // works in there at all, and how dirty the tree is. `clean_tasks` calls
+    // this for every merged task, so a second spawn here is per-task waste.
+    let status = git_task(&dir, &["status", "--porcelain"]).ok().filter(|o| o.ok());
 
     // broken worktree: git can't even report status
     let Some(status) = status else {
@@ -1215,11 +1215,11 @@ pub fn remove_slot(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
             .map_err(|e| OpsError::Io(format!("cannot remove {dir_s}: {e}")))?;
         let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
         state_cleanup(state_scope.as_deref(), &mut messages);
-        return Ok(RemoveOutcome::Removed(RemovedSlot { name, dir, messages }));
+        return Ok(RemoveOutcome::Removed(RemovedTask { name, dir, messages }));
     };
 
     let dirty = crate::guards::dirty_entry_count(&status.stdout);
-    let unreachable = git_slot(
+    let unreachable = git_task(
         &dir,
         &[
             "rev-list",
@@ -1266,7 +1266,7 @@ pub fn remove_slot(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
     // output ambiguous: "removed" read as "that work is dealt with". Say
     // plainly what survives and where, so the difference from the uncommitted
     // work the guard above *does* block on is visible.
-    let branch = git_slot(&dir, &["branch", "--show-current"])
+    let branch = git_task(&dir, &["branch", "--show-current"])
         .ok()
         .filter(|o| o.ok())
         .map(|o| o.stdout.trim().to_string())
@@ -1321,7 +1321,7 @@ pub fn remove_slot(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
     }
     let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
     state_cleanup(state_scope.as_deref(), &mut messages);
-    Ok(RemoveOutcome::Removed(RemovedSlot { name, dir, messages }))
+    Ok(RemoveOutcome::Removed(RemovedTask { name, dir, messages }))
 }
 
 /// The ports a checkout claims, from its rendered `.env`.
@@ -1329,28 +1329,28 @@ fn claimed_ports(dir: &Path) -> BTreeSet<u16> {
     envfile::port_claims(&fs::read_to_string(dir.join(".env")).unwrap_or_default())
 }
 
-/// Stop whatever is listening on `port` in the slot named `name` under `root`
+/// Stop whatever is listening on `port` in the task named `name` under `root`
 /// — the remedy for [`RmBlocked::ForeignPortListener`], so a stale dev server
 /// can be cleared from the app instead of sending the user to a terminal.
 ///
-/// Takes the slot's identity rather than [`RemoveOpts`]: this removes nothing,
+/// Takes the task's identity rather than [`RemoveOpts`]: this removes nothing,
 /// and threading a `force` flag through a function that ignores it invites a
 /// later caller to believe forcing means something here.
 ///
 /// The claim check is the whole safety story and is not optional: `port` must
-/// appear in *this slot's* rendered `.env`. Ports are claimed per-checkout, so
-/// a claimed port that's occupied is this slot's own orphan by construction —
-/// while an unclaimed one is somebody else's, quite possibly a sibling slot's
+/// appear in *this task's* rendered `.env`. Ports are claimed per-checkout, so
+/// a claimed port that's occupied is this task's own orphan by construction —
+/// while an unclaimed one is somebody else's, quite possibly a sibling task's
 /// working dev server, and this function would kill its entire process group.
-/// Same reasoning as `scripts/slot-port.mjs`'s "never call `killPort` on a
+/// Same reasoning as `scripts/task-port.mjs`'s "never call `killPort` on a
 /// scanned/shared port".
-pub fn stop_slot_port(root: Option<&Path>, name: &str, port: u16) -> Result<crate::ports::Stopped> {
+pub fn stop_task_port(root: Option<&Path>, name: &str, port: u16) -> Result<crate::ports::Stopped> {
     let sr = discover_root(root)?;
-    let dir = sr.slot_dir(name);
+    let dir = sr.task_dir(name);
     if !dir.is_dir() {
-        return Err(OpsError::NoSuchSlot {
+        return Err(OpsError::NoSuchTask {
             name: name.to_string(),
-            slots_dir: sr.slots_dir().display().to_string(),
+            tasks_dir: sr.tasks_dir().display().to_string(),
         });
     }
     if !claimed_ports(&dir).contains(&port) {
@@ -1359,9 +1359,9 @@ pub fn stop_slot_port(root: Option<&Path>, name: &str, port: u16) -> Result<crat
     Ok(crate::ports::stop_listeners(port)?)
 }
 
-/// Delete the removed slot's instance-state directories (agentboard
+/// Delete the removed task's instance-state directories (agentboard
 /// sessions/windows, tt.db — see `tt_config::instance_state_dirs_for_scope`).
-/// Only checkouts of this repo have a scope; other repos' slots have no
+/// Only checkouts of this repo have a scope; other repos' tasks have no
 /// scoped state and skip cleanly.
 fn state_cleanup(scope: Option<&str>, messages: &mut Vec<String>) {
     let Some(scope) = scope else {
@@ -1372,29 +1372,29 @@ fn state_cleanup(scope: Option<&str>, messages: &mut Vec<String>) {
             continue;
         }
         match fs::remove_dir_all(&dir) {
-            Ok(()) => messages.push(format!("removed slot state {}", dir.display())),
-            Err(e) => messages.push(format!("could not remove slot state {}: {e}", dir.display())),
+            Ok(()) => messages.push(format!("removed task state {}", dir.display())),
+            Err(e) => messages.push(format!("could not remove task state {}: {e}", dir.display())),
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// clean — remove every finished slot and the state removed checkouts left behind
+// clean — remove every finished task and the state removed checkouts left behind
 
 #[derive(Debug, Default)]
 pub struct CleanOpts {
-    /// Slot root; `None` walks up from the current working directory.
+    /// Task root; `None` walks up from the current working directory.
     pub root: Option<PathBuf>,
     /// Report what would happen without removing or sweeping anything.
     pub dry_run: bool,
     /// Parents of per-scope instance-state dirs to sweep (the
-    /// `…/towles-tool/slots/` dirs; the caller resolves them via
+    /// `…/towles-tool/tasks/` dirs; the caller resolves them via
     /// `tt_config::instance_state_bases`). Empty = skip the sweep.
     pub scope_parents: Vec<PathBuf>,
 }
 
-/// A slot `clean` removed (or, on dry-run, would remove).
-pub struct FinishedSlot {
+/// A task `clean` removed (or, on dry-run, would remove).
+pub struct FinishedTask {
     pub name: String,
     pub branch: String,
     /// How the branch landed, e.g. `"squash-merged into main"`
@@ -1404,13 +1404,13 @@ pub struct FinishedSlot {
     /// dry-run.
     pub messages: Vec<String>,
     /// The removed checkout's directory (now gone from disk, except on
-    /// dry-run) — callers use it to untrack the slot from stores keyed by dir
-    /// (the agentboard rail), the same way `tt slot rm` does.
+    /// dry-run) — callers use it to untrack the task from stores keyed by dir
+    /// (the agentboard rail), the same way `tt task rm` does.
     pub dir: PathBuf,
 }
 
-/// A slot `clean` left alone, and why.
-pub struct KeptSlot {
+/// A task `clean` left alone, and why.
+pub struct KeptTask {
     pub name: String,
     pub branch: String,
     pub why: Vec<String>,
@@ -1418,31 +1418,31 @@ pub struct KeptSlot {
 
 pub struct CleanReport {
     pub dry_run: bool,
-    /// Removed (dry-run: would-remove) slots.
-    pub removed: Vec<FinishedSlot>,
-    pub kept: Vec<KeptSlot>,
+    /// Removed (dry-run: would-remove) tasks.
+    pub removed: Vec<FinishedTask>,
+    pub kept: Vec<KeptTask>,
     /// Orphaned per-scope state dirs swept (dry-run: would sweep).
     pub swept_state_dirs: Vec<PathBuf>,
-    /// State scopes of the checkouts that remain (checkout + kept slots) —
+    /// State scopes of the checkouts that remain (checkout + kept tasks) —
     /// callers prune *these* agentboard stores plus the unscoped one.
     pub live_scopes: Vec<String>,
     pub warnings: Vec<String>,
 }
 
-/// Remove every *finished* slot — its branch is a strict ancestor of the
+/// Remove every *finished* task — its branch is a strict ancestor of the
 /// checkout's branch (classic merge) or its upstream is gone after
 /// `fetch --prune` (squash/rebase merge) — via the same guarded
-/// [`remove_slot`], never forced: a finished slot with uncommitted changes,
+/// [`remove_task`], never forced: a finished task with uncommitted changes,
 /// orphanable commits, or a live dev server is reported and kept. A removed
-/// slot's branch is deleted from the hub (its work is reachable from the
+/// task's branch is deleted from the hub (its work is reachable from the
 /// base/remote — that's what made it finished). Then sweep `scope_parents`
 /// for per-scope state dirs whose checkout no longer exists.
 ///
 /// `scope_of` maps a checkout dir to its instance-state scope
-/// (`tt_config::slot_scope_from_dir`); it is injected so the scope rule has
+/// (`tt_config::task_scope_from_dir`); it is injected so the scope rule has
 /// exactly one owner. When it can't scope the checkout (a repo that never
 /// produces scoped state), the sweep is skipped entirely.
-pub fn clean_slots(
+pub fn clean_tasks(
     opts: &CleanOpts,
     scope_of: impl Fn(&Path) -> Option<String>,
 ) -> Result<CleanReport> {
@@ -1467,21 +1467,21 @@ pub fn clean_slots(
     let mut live_scopes: Vec<String> = scope_of(&sr.checkout).into_iter().collect();
     let checkout_scoped = !live_scopes.is_empty();
 
-    for (name, dir) in sr.slots() {
-        // Computed before removal — a removed slot's dir is gone afterwards.
+    for (name, dir) in sr.tasks() {
+        // Computed before removal — a removed task's dir is gone afterwards.
         let scope = scope_of(&dir);
         let mut keep = |name: String, branch: String, why: Vec<String>| {
-            kept.push(KeptSlot { name, branch, why });
+            kept.push(KeptTask { name, branch, why });
             live_scopes.extend(scope.clone());
         };
 
-        let branch = match git_slot(&dir, &["branch", "--show-current"]) {
+        let branch = match git_task(&dir, &["branch", "--show-current"]) {
             Ok(out) if out.ok() => out.stdout.trim().to_string(),
             _ => {
                 keep(
                     name,
                     "BROKEN".to_string(),
-                    vec!["worktree is broken — `tt slot rm --force` to drop it".to_string()],
+                    vec!["worktree is broken — `tt task rm --force` to drop it".to_string()],
                 );
                 continue;
             }
@@ -1509,7 +1509,7 @@ pub fn clean_slots(
         };
         // `clean` deletes the branch after removing the worktree, so unlanded
         // commits are unrecoverable here in a way they never are for
-        // `tt slot rm` (which leaves the branch behind). Only content-based
+        // `tt task rm` (which leaves the branch behind). Only content-based
         // evidence clears that bar — see `LandedVia::is_content_proof`.
         if work.unlanded > 0 || !via.is_content_proof() {
             keep(
@@ -1526,7 +1526,7 @@ pub fn clean_slots(
         let reason = format!("{} into {base}", via.label());
 
         if opts.dry_run {
-            removed.push(FinishedSlot {
+            removed.push(FinishedTask {
                 name,
                 branch,
                 reason: reason.clone(),
@@ -1536,7 +1536,7 @@ pub fn clean_slots(
             continue;
         }
         let rm = RemoveOpts { root: Some(sr.checkout.clone()), name: name.clone(), force: false };
-        match remove_slot(&rm, || {}) {
+        match remove_task(&rm, || {}) {
             Ok(RemoveOutcome::Removed(r)) => {
                 let mut messages = r.messages;
                 match git_checkout(&sr.checkout, &["branch", "-D", &branch]) {
@@ -1545,7 +1545,7 @@ pub fn clean_slots(
                         "could not delete branch {branch} — remove it with `git branch -D`"
                     )),
                 }
-                removed.push(FinishedSlot {
+                removed.push(FinishedTask {
                     name,
                     branch,
                     reason: reason.clone(),
@@ -1561,7 +1561,7 @@ pub fn clean_slots(
     }
 
     // Sweep per-scope instance state whose checkout no longer exists — the
-    // dirs `tt slot rm` never touches (see tt_config::state_scope). Only in
+    // dirs `tt task rm` never touches (see tt_config::state_scope). Only in
     // repos that actually produce scopes: if the checkout itself has none,
     // nothing under these parents can be ours.
     let mut swept_state_dirs = Vec::new();
@@ -1595,8 +1595,8 @@ pub fn clean_slots(
     })
 }
 
-/// Whether a docker container owned by this slot publishes `port`.
-fn docker_owns_port(slot_name: &str, port: u16) -> bool {
+/// Whether a docker container owned by this task publishes `port`.
+fn docker_owns_port(task_name: &str, port: u16) -> bool {
     let publish = format!("publish={port}");
     tt_exec::run("docker", &["ps", "--filter", &publish, "--format", "{{.Names}}"])
         .map(|out| {
@@ -1604,14 +1604,14 @@ fn docker_owns_port(slot_name: &str, port: u16) -> bool {
                 && out
                     .stdout
                     .lines()
-                    .any(|line| crate::guards::docker_resource_matches(line.trim(), slot_name))
+                    .any(|line| crate::guards::docker_resource_matches(line.trim(), task_name))
         })
         .unwrap_or(false)
 }
 
 /// Compose down (containers, networks, volumes) then an anchored sweep of
-/// anything else named after the slot. Best-effort: a missing docker is fine.
-fn docker_cleanup(slot_name: &str, dir: &Path, messages: &mut Vec<String>) {
+/// anything else named after the task. Best-effort: a missing docker is fine.
+fn docker_cleanup(task_name: &str, dir: &Path, messages: &mut Vec<String>) {
     let has_compose = [
         "docker-compose.yml",
         "docker-compose.yaml",
@@ -1630,7 +1630,7 @@ fn docker_cleanup(slot_name: &str, dir: &Path, messages: &mut Vec<String>) {
     }
     if let Ok(out) = tt_exec::run("docker", &["ps", "-a", "--format", "{{.Names}}"]) {
         for container in out.stdout.lines().map(str::trim) {
-            if crate::guards::docker_resource_matches(container, slot_name) {
+            if crate::guards::docker_resource_matches(container, task_name) {
                 messages.push(format!("removing container {container}"));
                 let _ = tt_exec::run("docker", &["rm", "-f", container]);
             }
@@ -1638,7 +1638,7 @@ fn docker_cleanup(slot_name: &str, dir: &Path, messages: &mut Vec<String>) {
     }
     if let Ok(out) = tt_exec::run("docker", &["volume", "ls", "--format", "{{.Name}}"]) {
         for volume in out.stdout.lines().map(str::trim) {
-            if crate::guards::docker_resource_matches(volume, slot_name) {
+            if crate::guards::docker_resource_matches(volume, task_name) {
                 messages.push(format!("removing volume {volume}"));
                 let _ = tt_exec::run("docker", &["volume", "rm", volume]);
             }
@@ -1695,12 +1695,12 @@ mod tests {
         assert!(validate_branch_name("-leading-dash").is_err());
     }
 
-    /// Minimal slot root under a tempdir: `<tmp>/repo/.git`.
-    fn temp_slot_root() -> (tempfile::TempDir, SlotRoot) {
+    /// Minimal task root under a tempdir: `<tmp>/repo/.git`.
+    fn temp_task_root() -> (tempfile::TempDir, TaskRoot) {
         let tmp = tempfile::tempdir().unwrap();
         let checkout = tmp.path().join("repo");
         fs::create_dir_all(checkout.join(".git")).unwrap();
-        let sr = SlotRoot { checkout, repo: "repo".to_string() };
+        let sr = TaskRoot { checkout, repo: "repo".to_string() };
         (tmp, sr)
     }
 
@@ -1714,30 +1714,30 @@ mod tests {
         let sr = discover_root(Some(&repo.join("src").join("deep"))).unwrap();
         assert_eq!(sr.checkout, repo);
         assert_eq!(sr.repo, "blog");
-        assert_eq!(sr.slots_dir(), repo.join(".claude").join("worktrees"));
+        assert_eq!(sr.tasks_dir(), repo.join(".claude").join("worktrees"));
     }
 
     #[test]
     fn discover_root_hops_from_a_worktree_to_the_main_checkout() {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path().join("blog");
-        let slot = repo.join(".claude").join("worktrees").join("thing");
+        let task = repo.join(".claude").join("worktrees").join("thing");
         fs::create_dir_all(repo.join(".git").join("worktrees").join("thing")).unwrap();
-        fs::create_dir_all(&slot).unwrap();
+        fs::create_dir_all(&task).unwrap();
         fs::write(
-            slot.join(".git"),
+            task.join(".git"),
             format!("gitdir: {}\n", repo.join(".git/worktrees/thing").display()),
         )
         .unwrap();
 
-        let sr = discover_root(Some(&slot)).unwrap();
+        let sr = discover_root(Some(&task)).unwrap();
         assert_eq!(sr.checkout, repo);
         assert_eq!(sr.repo, "blog");
     }
 
     #[test]
     fn discover_root_hops_even_from_a_worktree_outside_the_checkout() {
-        // Old-layout stragglers (slots that still live in a sibling dir) must
+        // Old-layout stragglers (tasks that still live in a sibling dir) must
         // still anchor at the main checkout, not become their own root.
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path().join("blog");
@@ -1801,30 +1801,30 @@ mod tests {
     }
 
     #[test]
-    fn render_slot_env_with_no_template_renders_an_empty_env() {
+    fn render_task_env_with_no_template_renders_an_empty_env() {
         // A repo with neither a tokenized .env.example nor the sidecar — a
         // plain checkout never onboarded — still renders: empty .env, no
-        // claims, and for a slot dir the marker. (The old behavior was a hard
-        // "no template" error, which made slot creation fail for any such
+        // claims, and for a task dir the marker. (The old behavior was a hard
+        // "no template" error, which made task creation fail for any such
         // repo.)
-        let (_tmp, sr) = temp_slot_root();
-        let slot = sr.slot_dir("feat-thing");
-        fs::create_dir_all(&slot).unwrap();
+        let (_tmp, sr) = temp_task_root();
+        let task = sr.task_dir("feat-thing");
+        fs::create_dir_all(&task).unwrap();
 
-        let summary = render_slot_env(&sr, &slot, Some("main")).unwrap();
+        let summary = render_task_env(&sr, &task, Some("main")).unwrap();
 
         assert!(summary.ports.is_empty());
-        assert_eq!(fs::read_to_string(slot.join(".env")).unwrap().trim(), "");
-        assert!(slot.join(layout::MARKER_FILE).is_file());
+        assert_eq!(fs::read_to_string(task.join(".env")).unwrap().trim(), "");
+        assert!(task.join(layout::MARKER_FILE).is_file());
     }
 
     #[test]
-    fn render_slot_env_names_the_template_file_on_render_errors() {
-        let (_tmp, sr) = temp_slot_root();
+    fn render_task_env_names_the_template_file_on_render_errors() {
+        let (_tmp, sr) = temp_task_root();
         fs::create_dir_all(sr.checkout.join(layout::CLAUDE_DIR)).unwrap();
         fs::write(template_sidecar_path(&sr), "X=${tt:bogus}\n").unwrap();
 
-        let err = render_slot_env(&sr, &sr.checkout, None).unwrap_err();
+        let err = render_task_env(&sr, &sr.checkout, None).unwrap_err();
 
         let msg = err.to_string();
         assert!(msg.contains(TEMPLATE_SIDECAR), "error must name the template file: {msg}");
@@ -1833,7 +1833,7 @@ mod tests {
 
     #[test]
     fn init_template_sidecar_creates_a_usable_empty_template() {
-        let (_tmp, sr) = temp_slot_root();
+        let (_tmp, sr) = temp_task_root();
         let path = init_template_sidecar(&sr).unwrap();
         assert_eq!(path, sr.checkout.join(".claude").join(TEMPLATE_SIDECAR));
         let contents = fs::read_to_string(&path).unwrap();
@@ -1845,13 +1845,13 @@ mod tests {
 
     #[test]
     fn init_template_sidecar_is_idempotent() {
-        let (_tmp, sr) = temp_slot_root();
+        let (_tmp, sr) = temp_task_root();
         init_template_sidecar(&sr).unwrap();
-        fs::write(template_sidecar_path(&sr), "NAME=${tt:slot-name}\n").unwrap();
+        fs::write(template_sidecar_path(&sr), "NAME=${tt:task-name}\n").unwrap();
         // a second call must not clobber a sidecar the user has since edited
         init_template_sidecar(&sr).unwrap();
         let contents = fs::read_to_string(template_sidecar_path(&sr)).unwrap();
-        assert!(contents.contains("${tt:slot-name}"));
+        assert!(contents.contains("${tt:task-name}"));
     }
 
     #[test]
@@ -1883,7 +1883,7 @@ mod tests {
         let create = doc["hooks"]["WorktreeCreate"].as_array().unwrap();
         assert_eq!(create.len(), 2);
         assert_eq!(create[0]["hooks"][0]["command"], "other");
-        assert_eq!(create[1]["hooks"][0]["command"], "tt slot hook-create");
+        assert_eq!(create[1]["hooks"][0]["command"], "tt task hook-create");
     }
 
     #[test]
@@ -1903,16 +1903,16 @@ mod tests {
 
     #[test]
     fn check_branch_reports_invalid_ref() {
-        let (_tmp, sr) = temp_slot_root();
+        let (_tmp, sr) = temp_task_root();
         let check = check_branch(&sr, "feat/bad name");
         assert!(check.error.is_some());
         assert!(!check.taken);
     }
 
     #[test]
-    fn check_branch_flags_an_existing_slot_name() {
-        let (_tmp, sr) = temp_slot_root();
-        fs::create_dir_all(sr.slot_dir("feat-hello-world")).unwrap();
+    fn check_branch_flags_an_existing_task_name() {
+        let (_tmp, sr) = temp_task_root();
+        fs::create_dir_all(sr.task_dir("feat-hello-world")).unwrap();
         let check = check_branch(&sr, "feat/hello-world");
         assert_eq!(check.name.as_deref(), Some("feat-hello-world"));
         assert!(check.taken);
@@ -1921,7 +1921,7 @@ mod tests {
 
     #[test]
     fn check_branch_clears_a_free_name() {
-        let (_tmp, sr) = temp_slot_root();
+        let (_tmp, sr) = temp_task_root();
         let check = check_branch(&sr, "feat/brand-new");
         assert_eq!(check.name.as_deref(), Some("feat-brand-new"));
         assert!(!check.taken);

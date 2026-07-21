@@ -42,7 +42,7 @@ pub struct FolderMetaStore {
     dirty: HashSet<String>,
 }
 
-/// Default location: `<agentboard_dir>/folder_meta.json` (slot-scoped in a slot
+/// Default location: `<agentboard_dir>/folder_meta.json` (task-scoped in a task
 /// checkout; see [`tt_config::agentboard_dir`]).
 pub fn default_folder_meta_path() -> PathBuf {
     tt_config::agentboard_dir_lossy().join("folder_meta.json")

@@ -1,12 +1,12 @@
 [package]
-name = "tt-slots"
+name = "tt-tasks"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [dependencies]
 base64 = { workspace = true }
-# `kill(2)` on a process group, for clearing a stale dev server off a slot's
+# `kill(2)` on a process group, for clearing a stale dev server off a task's
 # claimed port (`ports::stop_listeners`). Shelling out to `kill(1)` instead
 # would be ambiguous: procps parses a leading `-<pgid>` as a signal number.
 libc = { workspace = true }

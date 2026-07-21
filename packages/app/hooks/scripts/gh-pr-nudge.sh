@@ -17,7 +17,7 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) |
 
 # Which nudge target(s) this command touches -- separator- or
 # line-start-anchored (same heuristic as the repo's own
-# .claude/hooks/guard-slot-pkill.sh) so this never fires on a bare mention of
+# .claude/hooks/guard-task-pkill.sh) so this never fires on a bare mention of
 # the phrase inside prose, a commit message, or a code span. A chained
 # command (`gh pr create && gh issue close 5`) can match both.
 is_pr_command=0
@@ -42,7 +42,7 @@ cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 #   1. An env value the app itself stamps into every terminal it spawns
 #      (TT_SESSION_ID/TT_APP_INSTANCE -- crates-tauri/tt-app/src/terminal.rs).
 #   2. `cwd` is inside a towles-tool-rs checkout (primary or a worktree
-#      slot), recognised the same way tt_config::slot_scope_from_dir does:
+#      task), recognised the same way tt_config::task_scope_from_dir does:
 #      a `crates/tt-config` directory at some ancestor.
 # Without this, a hook enabled globally would still fire for `gh` commands
 # run against completely unrelated projects in a plain tmux pane, silently
