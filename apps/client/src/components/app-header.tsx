@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { fmtClock, fmtCountdown, useAppTask, useStoreSnapshot } from "@/lib/data";
+import { fmtClock, fmtCountdown, fmtDate, useAppTask, useStoreSnapshot } from "@/lib/data";
 import { useNow } from "@/lib/now";
 import { useWorkspace } from "@/lib/workspace";
 
@@ -86,6 +86,8 @@ function ClockCluster() {
       <span className="font-mono text-sm font-semibold tabular-nums text-foreground">
         {fmtClock(now)}
       </span>
+      <span className="text-muted-foreground/40">·</span>
+      <span className="text-xs text-muted-foreground">{fmtDate(now)}</span>
       {nextEvent && (
         <>
           <span className="text-muted-foreground/40">·</span>
