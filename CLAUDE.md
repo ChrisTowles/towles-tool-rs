@@ -447,7 +447,7 @@ see [docs](https://docs.claude.com/en/docs/claude-code/plugins)). Two
 plugins ship today:
 
 - `tt` (`packages/core`) — the map-vs-territory workflow commands/skills
-  (`/tt:01-blindspot` … `/tt:22-memories`).
+  (`/tt:blindspot` … `/tt:memories`).
 - `towles-tool-app` (`packages/app`) — bridges Claude Code to the desktop
   app itself: registers the app's MCP server with a static checked-in
   `.mcp.json` (`{"type":"http","url":"http://127.0.0.1:8787/mcp"}` — board

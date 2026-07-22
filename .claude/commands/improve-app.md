@@ -14,7 +14,7 @@ given, default to `review` (the safe, look-before-you-build path).
 
 ## Shared first steps (both modes)
 
-Run /tt:01-blindspot on this task first. Then:
+Run /tt:blindspot on this task first. Then:
 
 1. Brainstorm 15 concrete improvements to this app. Ground them in the actual
    codebase (read the screens, crates, and docs/MIGRATION.md first — no generic

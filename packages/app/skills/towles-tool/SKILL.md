@@ -29,6 +29,3 @@ tt task ls                 # Fleet: main checkout + tasks, branch, dirty, ports
 tt task rm <name>          # Guarded removal
 tt task clean              # Remove every merged/gone task
 ```
-
-Everything else (PR/issue flow, dashboards, collectors) lives in the desktop
-app; `tt collect` is the one headless entry point.

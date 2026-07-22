@@ -43,6 +43,9 @@ settings file, and update this plugin's `.mcp.json` to match.
   tasks" / a repo whose tasks render an empty `.env` but need per-task
   ports. (Tasks work without any template — onboarding is only for repos
   that need ports/env vars templated per task.)
+- **`towles-tool`** — `tt` CLI reference: journaling and worktree-task
+  commands. Triggers on "tt commands", "daily notes", "meeting notes", or
+  worktree management.
 
 ## Hooks
 

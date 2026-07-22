@@ -207,11 +207,12 @@ convention and rules: [CLAUDE.md](CLAUDE.md).
 
 The repo doubles as a Claude Code plugin marketplace. The `tt` plugin (in
 [`packages/core`](packages/core/README.md)) packages the map-vs-territory
-workflow commands, numbered so they sort in workflow order — `0x` before
-implementation (`/tt:01-blindspot`, `/tt:02-brainstorm`, `/tt:03-interview`,
-`/tt:04-references`), `1x` plan/during (`/tt:10-plan`), `2x` after
-(`/tt:20-pitch`, `/tt:21-comprehend`, `/tt:22-memories`) — plus the
-`towles-tool` skill.
+workflow commands — before implementation (`/tt:blindspot`,
+`/tt:brainstorm`, `/tt:interview`, `/tt:references`), plan/during
+(`/tt:plan`), after (`/tt:pitch`, `/tt:comprehend`, `/tt:memories`,
+`/tt:handoff`). The `towles-tool-app` plugin (in
+[`packages/app`](packages/app/README.md)) bridges to the desktop app and
+ships the `towles-tool` CLI reference and `task-onboarding` skills.
 
 Install it in Claude Code:
 
