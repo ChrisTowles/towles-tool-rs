@@ -93,6 +93,12 @@ pub enum TaskCommands {
         #[arg(long)]
         json: bool,
 
+        /// Show only tasks with no new commits in the last N days that have not
+        /// landed (default 7). Adds an AGE column of days since the branch's
+        /// newest own commit; a landed or empty branch is never stale.
+        #[arg(long, value_name = "DAYS", num_args = 0..=1, default_missing_value = "7")]
+        stale: Option<u64>,
+
         /// Repo checkout (default: walk up from cwd to the nearest git checkout)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
