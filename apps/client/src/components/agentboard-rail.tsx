@@ -1158,21 +1158,43 @@ function SessionRow({
               swapping it out, so hovering never reflows the row. */}
           <span className="ml-auto flex min-w-0 shrink items-center gap-2">
             {eff.live && <PortDriftBadge drift={eff.portDrift ?? []} />}
-            <ModelBadge session={eff} />
-            <CacheBadge
-              session={eff}
-              now={now}
-              compactPct={compactPct}
-              onCompact={() => actions.compactClaude(eff)}
-            />
+            {/* Fixed 11ch slot, right-aligned: a session with no context
+                usage reported yet (agent just started) renders neither
+                badge at all, so without a reserved width everything after
+                it — elapsed, status — drifts left on those rows. */}
+            <span className="flex w-[11ch] shrink-0 items-center justify-end gap-1">
+              <ModelBadge session={eff} />
+              <CacheBadge
+                session={eff}
+                now={now}
+                compactPct={compactPct}
+                onCompact={() => actions.compactClaude(eff)}
+              />
+            </span>
             {eff.live && (
               <span
                 className="shrink-0 font-mono text-[10.5px] text-muted-foreground/70"
                 title="running for"
               >
-                {fmtElapsed(now - eff.createdAt)}
+                {/* Fixed 6ch slot, right-aligned: elapsed time is 4–7 chars
+                    ("0:04" .. "1:02:30"), and without a reserved width the
+                    status word after it drifts per row. */}
+                <span className="inline-block w-[6ch] text-right">
+                  {fmtElapsed(now - eff.createdAt)}
+                </span>
               </span>
             )}
+            {/* Fixed 7ch slot, left-aligned: sessionStatusText is a short,
+                uniform-width word ("Waiting", "Working", "Done", …), so a
+                reserved slot keeps this aligned across rows instead of
+                drifting per the old variable-length prose. Comes before the
+                waiting-age badge (not after) so that badge's rare, highly
+                variable-width presence — only on rows currently needing
+                you — never shifts this or anything else; it just trails off
+                the end of the already right-flushed cluster. */}
+            <span className="inline-block w-[7ch] shrink-0 truncate text-[11px] text-muted-foreground">
+              {sessionStatusText(eff)}
+            </span>
             {(() => {
               const age = fmtWaitingAge(eff.needsSinceMs, now);
               return age ? (
@@ -1184,9 +1206,6 @@ function SessionRow({
                 </span>
               ) : null;
             })()}
-            <span className="min-w-0 truncate text-[11px] text-muted-foreground">
-              {sessionStatusText(eff)}
-            </span>
           </span>
           {/* Hover-only, not hover-or-active: the selected row otherwise
               carries a resting ✕/menu forever, hiding the meta it overlays. */}

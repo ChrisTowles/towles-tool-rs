@@ -806,24 +806,27 @@ export function claudeTitleName(raw: string | undefined): string | null {
   return m[1];
 }
 
-/** A one-liner status message for a session row. */
+/** A one-word status label for a session row. Kept short and uniform-width
+ * on purpose — the rail renders it in a fixed-width slot (see
+ * `agentboard-rail.tsx`) so rows line up instead of drifting per the old
+ * variable-length prose ("Waiting — needs your input" vs "Done"). */
 export function sessionStatusText(s: SessionData): string {
-  if (!s.live) return "not started";
+  if (!s.live) return "Off";
   const st = s.agentState;
-  if (!st) return "idle";
+  if (!st) return "Idle";
   switch (st.status) {
     case "waiting":
-      return "Waiting — needs your input";
+      return "Waiting";
     case "error":
-      return "Errored — needs a look";
+      return "Error";
     case "busy":
-      return "Working…";
+      return "Working";
     case "complete":
       return "Done";
     case "interrupted":
       return "Paused";
     default:
-      return "idle";
+      return "Idle";
   }
 }
 
