@@ -50,7 +50,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 /// The sort/range key format for calendar events: UTC, fixed width, matching
 /// the `starts_at_utc`/`ends_at_utc` generated columns' `strftime` format
@@ -109,6 +109,46 @@ const MCP_CALL_SNAPSHOT_LIMIT: usize = 100;
 /// Kanban columns a todo can live in, in board order.
 pub const TASK_STATUSES: [&str; 5] = ["backlog", "next", "doing", "review", "done"];
 
+/// How a closed task ended. Orthogonal to [`TASK_STATUSES`]: `status` is where
+/// the card sits on the board, `outcome` is the record of how the work
+/// finished — set once when the task is closed (usually as its worktree is
+/// deleted), `NULL` while the task is open.
+pub const TASK_OUTCOMES: [&str; 2] = ["done", "abandoned"];
+
+/// A parsed task outcome — the typed form of [`TASK_OUTCOMES`]. String input
+/// (MCP args, CLI flags, IPC payloads) parses at the boundary via
+/// [`TaskOutcome::parse`]; everything past it carries the enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskOutcome {
+    Done,
+    Abandoned,
+}
+
+impl TaskOutcome {
+    /// The stored/wire spelling, one of [`TASK_OUTCOMES`].
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskOutcome::Done => "done",
+            TaskOutcome::Abandoned => "abandoned",
+        }
+    }
+
+    /// Parse the stored/wire spelling; `None` for anything else.
+    pub fn parse(s: &str) -> Option<TaskOutcome> {
+        match s {
+            "done" => Some(TaskOutcome::Done),
+            "abandoned" => Some(TaskOutcome::Abandoned),
+            _ => None,
+        }
+    }
+}
+
+/// How long a finished task stays visible in the terminal column before
+/// [`Store::archive_closed_tasks`] hides it. One constant for every sweeper —
+/// the app's manual "Archive done" button and the collector-side auto-sweep
+/// must agree on what "old enough" means.
+pub const ARCHIVE_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
 /// Schema v1. Every statement is `IF NOT EXISTS` so `migrate` is idempotent.
 const SCHEMA_V1: &str = "\
 CREATE TABLE IF NOT EXISTS meta (
@@ -141,7 +181,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     worktree_repo_root TEXT,
     worktree_repo TEXT,
     worktree_branch TEXT,
-    worktree_dir TEXT
+    worktree_dir TEXT,
+    outcome TEXT,
+    archived_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS issues (
     repo TEXT NOT NULL,
@@ -273,7 +315,7 @@ fn local_midnight(date: chrono::NaiveDate) -> Option<i64> {
 const EVENT_COLS: &str =
     "id, source, external_id, title, starts_at, ends_at, attendees, location, join_url";
 const TASK_COLS: &str = "id, text, status, position, created_at, completed_at, notes, \
-     worktree_repo_root, worktree_repo, worktree_branch, worktree_dir";
+     worktree_repo_root, worktree_repo, worktree_branch, worktree_dir, outcome, archived_at";
 const ISSUE_COLS: &str = "repo, number, title, labels, state, url, updated_ts";
 const PR_COLS: &str = "repo, number, title, branch, state, checks, review_state, url, updated_ts";
 const RUN_COLS: &str = "collector, ran_at, ok, message";
@@ -340,12 +382,36 @@ pub struct TaskItem {
     pub completed_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// How the task ended (see [`TASK_OUTCOMES`]); `None` while it is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    /// When the closed task was archived off the active board; `None` while
+    /// it is open or still visible in the terminal column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<TaskWorktree>,
     #[serde(default)]
     pub issues: Vec<TaskIssueLink>,
     #[serde(default)]
     pub prs: Vec<TaskPrLink>,
+}
+
+impl TaskItem {
+    /// The best-evidence default outcome for closing this task without a user
+    /// answer: a merged linked PR — or already sitting in `done` — closes as
+    /// [`TaskOutcome::Done`], anything else as [`TaskOutcome::Abandoned`].
+    /// Strictly `merged`, never `closed`: an unmerged-closed PR is evidence
+    /// of abandonment, not completion. Every headless close path (CLI, MCP)
+    /// shares this one inference; interactive paths ask the user and use it
+    /// only to pre-answer.
+    pub fn inferred_outcome(&self) -> TaskOutcome {
+        if self.status == "done" || self.prs.iter().any(|pr| pr.state == "merged") {
+            TaskOutcome::Done
+        } else {
+            TaskOutcome::Abandoned
+        }
+    }
 }
 
 /// A task's repo binding, and the worktree its work happens in once one exists.
@@ -635,6 +701,7 @@ impl Store {
         self.migrate_tasks_v7()?;
         self.migrate_tasks_v8_drop_due()?;
         self.migrate_tasks_v11_worktree_cols()?;
+        self.migrate_tasks_v13_outcome()?;
         self.migrate_events_v9()?;
         self.migrate_events_v10_iso()?;
         // After v10, never inside SCHEMA_V1: that batch runs before the
@@ -990,6 +1057,32 @@ impl Store {
         Ok(())
     }
 
+    /// v13: closing a task stopped deleting its row (2026-07-22). `outcome`
+    /// records how it ended (see [`TASK_OUTCOMES`]) and `archived_at` hides it
+    /// from active views — both `NULL` for every pre-existing (open) row.
+    /// Detected by the `outcome` column, so it's idempotent and a no-op on
+    /// fresh dbs (built straight to the full shape).
+    fn migrate_tasks_v13_outcome(&self) -> Result<()> {
+        let mut has_outcome = false;
+        {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(tasks)")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(1)?;
+                if name == "outcome" {
+                    has_outcome = true;
+                }
+            }
+        }
+        if !has_outcome {
+            self.conn.execute_batch(
+                "ALTER TABLE tasks ADD COLUMN outcome TEXT;
+                 ALTER TABLE tasks ADD COLUMN archived_at INTEGER;",
+            )?;
+        }
+        Ok(())
+    }
+
     // --- Writes -----------------------------------------------------------
 
     /// The `[start, end)` epoch-ms bounds of the local calendar day containing
@@ -1234,8 +1327,10 @@ impl Store {
 
     /// Move a todo to a kanban column, appending it at the end of the target
     /// column (position = max there + 1, ignoring the task itself). Sets
-    /// `completed_at` when entering `done`, clears it otherwise. Unknown
-    /// statuses are rejected.
+    /// `completed_at` when entering `done`, clears it otherwise. Moving to any
+    /// non-`done` column also reopens a closed task — `outcome` and
+    /// `archived_at` clear, since the card is active again. Unknown statuses
+    /// are rejected.
     pub fn set_task_status(&self, id: i64, status: &str, now_ms: i64) -> Result<()> {
         if !TASK_STATUSES.contains(&status) {
             return Err(Error::Sqlite(rusqlite::Error::InvalidParameterName(format!(
@@ -1250,7 +1345,10 @@ impl Store {
             |r| r.get(0),
         )?;
         tx.execute(
-            "UPDATE tasks SET status = ?1, completed_at = ?2, position = ?3 WHERE id = ?4",
+            "UPDATE tasks SET status = ?1, completed_at = ?2, position = ?3,
+                    outcome = CASE WHEN ?1 = 'done' THEN outcome ELSE NULL END,
+                    archived_at = CASE WHEN ?1 = 'done' THEN archived_at ELSE NULL END
+             WHERE id = ?4",
             params![status, completed_at, position, id],
         )?;
         tx.commit()?;
@@ -1297,7 +1395,10 @@ impl Store {
         }
         let completed_at: Option<i64> = if status == "done" { Some(now_ms) } else { None };
         let affected = tx.execute(
-            "UPDATE tasks SET status = ?1, completed_at = ?2 WHERE id = ?3",
+            "UPDATE tasks SET status = ?1, completed_at = ?2,
+                    outcome = CASE WHEN ?1 = 'done' THEN outcome ELSE NULL END,
+                    archived_at = CASE WHEN ?1 = 'done' THEN archived_at ELSE NULL END
+             WHERE id = ?3",
             params![status, completed_at, id],
         )?;
         if affected == 0 {
@@ -1337,23 +1438,89 @@ impl Store {
         Ok(())
     }
 
-    /// Delete `done` tasks completed before `before_ms` (cascading their link
-    /// rows), returning how many tasks were removed. Open tasks and
-    /// recently-completed `done` tasks are left untouched. A `done` row with a
-    /// NULL `completed_at` (legacy data) is never swept, since its completion
-    /// time is unknown. The cutoff is injected — the clock read happens at the
-    /// call boundary, not here.
-    pub fn clear_done_tasks(&self, before_ms: i64) -> Result<usize> {
+    /// Close a task: record how it ended and detach it from its worktree
+    /// directory — the row survives as the record, this is what replaced
+    /// deleting it. Closing as [`TaskOutcome::Done`] also lands the card at
+    /// the end of the `done` column (matching [`Store::set_task_status`]);
+    /// closing as [`TaskOutcome::Abandoned`] freezes `status` where the work
+    /// stopped. Either way `completed_at` is stamped if not already set,
+    /// which is what later ages the row into the archive
+    /// ([`Store::archive_closed_tasks`]). Returns the updated task, or
+    /// [`Error::TaskNotFound`] when no task has `id`.
+    pub fn close_task(&self, id: i64, outcome: TaskOutcome, now_ms: i64) -> Result<TaskItem> {
+        let outcome = outcome.as_str();
         let tx = self.conn.unchecked_transaction()?;
-        let deleted = tx.execute(
-            "DELETE FROM tasks
-             WHERE status = 'done' AND completed_at IS NOT NULL AND completed_at < ?1",
-            params![before_ms],
-        )?;
-        tx.execute("DELETE FROM task_issues WHERE task_id NOT IN (SELECT id FROM tasks)", [])?;
-        tx.execute("DELETE FROM task_prs WHERE task_id NOT IN (SELECT id FROM tasks)", [])?;
+        let affected = if outcome == "done" {
+            let position: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM tasks
+                 WHERE status = 'done' AND id <> ?1",
+                params![id],
+                |r| r.get(0),
+            )?;
+            tx.execute(
+                "UPDATE tasks SET status = 'done', position = ?2,
+                        completed_at = COALESCE(completed_at, ?3),
+                        outcome = ?4, worktree_dir = NULL
+                 WHERE id = ?1",
+                params![id, position, now_ms, outcome],
+            )?
+        } else {
+            tx.execute(
+                "UPDATE tasks SET completed_at = COALESCE(completed_at, ?2),
+                        outcome = ?3, worktree_dir = NULL
+                 WHERE id = ?1",
+                params![id, now_ms, outcome],
+            )?
+        };
+        if affected == 0 {
+            return Err(Error::TaskNotFound(id));
+        }
         tx.commit()?;
-        Ok(deleted)
+        self.task_by_id(id)
+    }
+
+    /// Archive one task off the active board now. Archiving twice keeps the
+    /// original timestamp. Returns [`Error::TaskNotFound`] when no task has
+    /// `id`.
+    pub fn archive_task(&self, id: i64, now_ms: i64) -> Result<()> {
+        let affected = self.conn.execute(
+            "UPDATE tasks SET archived_at = COALESCE(archived_at, ?2) WHERE id = ?1",
+            params![id, now_ms],
+        )?;
+        if affected == 0 {
+            return Err(Error::TaskNotFound(id));
+        }
+        Ok(())
+    }
+
+    /// Bring an archived task back onto the board. Its `status` and `outcome`
+    /// are left as they were — it reappears in the terminal column, and a
+    /// status move out of there reopens it fully. Returns
+    /// [`Error::TaskNotFound`] when no task has `id`.
+    pub fn unarchive_task(&self, id: i64) -> Result<()> {
+        let affected =
+            self.conn.execute("UPDATE tasks SET archived_at = NULL WHERE id = ?1", params![id])?;
+        if affected == 0 {
+            return Err(Error::TaskNotFound(id));
+        }
+        Ok(())
+    }
+
+    /// Archive closed tasks (an `outcome` on record, or sitting in `done`)
+    /// that finished before `before_ms`, returning how many were archived.
+    /// This replaced the old hard-delete sweep — history is hidden, never
+    /// destroyed. Open tasks and recently-finished ones are left untouched; a
+    /// closed row with a NULL `completed_at` (legacy data) is never swept,
+    /// since its completion time is unknown. Both instants are injected — the
+    /// clock read happens at the call boundary, not here.
+    pub fn archive_closed_tasks(&self, before_ms: i64, now_ms: i64) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE tasks SET archived_at = ?2
+             WHERE archived_at IS NULL
+               AND (outcome IS NOT NULL OR status = 'done')
+               AND completed_at IS NOT NULL AND completed_at < ?1",
+            params![before_ms, now_ms],
+        )?)
     }
 
     /// Attach a GitHub issue to a task. Re-attaching an existing link only
@@ -1410,10 +1577,10 @@ impl Store {
     /// The optional columns are upserts, never clears: a `None` means "leave
     /// as is" (`COALESCE`), so a repo-only rebind — e.g. retrying a failed
     /// `task_create` on a task whose worktree already exists — can't erase an
-    /// established branch/dir. Nothing legitimately un-sets a branch or a dir:
-    /// a worktree that goes away takes its whole task with it (see
-    /// [`Store::delete_task`]), so there is no "detached task" state to
-    /// reach. Returns [`Error::TaskNotFound`] when no task has `id`.
+    /// established branch/dir. Nothing here un-sets a branch or a dir: the
+    /// one legitimate detach is [`Store::close_task`], which clears `dir` (the
+    /// worktree is off disk) while `repo_root`/`branch` survive as historical
+    /// fact. Returns [`Error::TaskNotFound`] when no task has `id`.
     pub fn set_task_worktree(
         &self,
         id: i64,
@@ -1760,10 +1927,14 @@ impl Store {
             .next())
     }
 
-    /// Open (not-done) todos in kanban order.
+    /// Open todos in kanban order: not in `done`, not closed with an
+    /// `outcome`, not archived.
     pub fn open_tasks(&self) -> Result<Vec<TaskItem>> {
         self.query_tasks(
-            &format!("SELECT {TASK_COLS} FROM tasks WHERE status != 'done' {TASK_ORDER}"),
+            &format!(
+                "SELECT {TASK_COLS} FROM tasks
+                 WHERE status != 'done' AND outcome IS NULL AND archived_at IS NULL {TASK_ORDER}"
+            ),
             [],
         )
     }
@@ -1881,15 +2052,20 @@ impl Store {
     /// Auto-attach collected PRs to worktree-bound tasks: any `pr_status` row
     /// whose `(repo, branch)` matches a task's `(worktree_repo, worktree_branch)`
     /// becomes a `task_prs` link — "PRs open in the worktree, linked to the task"
-    /// without a manual step. Existing links are left untouched. Returns how
-    /// many links were created.
+    /// without a manual step. Existing links are left untouched. Archived
+    /// tasks are excluded: their kept `branch` is historical fact, and a
+    /// reused branch name must not link a future PR to a long-dead task. A
+    /// merely *closed* task still attaches — a PR that merges right as the
+    /// worktree is deleted completes the record. Returns how many links were
+    /// created.
     pub fn auto_attach_worktree_prs(&self, now_ms: i64) -> Result<usize> {
         Ok(self.conn.execute(
             "INSERT OR IGNORE INTO task_prs (task_id, repo, number, url, state, checks, state_ts)
              SELECT t.id, p.repo, p.number, p.url, p.state, p.checks, ?1
              FROM tasks t
              JOIN pr_status p ON p.repo = t.worktree_repo AND p.branch = t.worktree_branch
-             WHERE t.worktree_repo IS NOT NULL AND t.worktree_branch IS NOT NULL",
+             WHERE t.worktree_repo IS NOT NULL AND t.worktree_branch IS NOT NULL
+               AND t.archived_at IS NULL",
             params![now_ms],
         )?)
     }
@@ -2033,6 +2209,8 @@ impl Store {
             let worktree_repo: Option<String> = r.get(8)?;
             let worktree_branch: Option<String> = r.get(9)?;
             let worktree_dir: Option<String> = r.get(10)?;
+            let outcome: Option<String> = r.get(11)?;
+            let archived_at: Option<i64> = r.get(12)?;
             // Keyed on `repo_root` alone: a repo-bound task with no worktree
             // yet still has a worktree binding, and dropping it here would hide
             // the task's repo from the Board's swimlanes.
@@ -2050,6 +2228,8 @@ impl Store {
                 created_at: r.get(4)?,
                 completed_at: r.get(5)?,
                 notes: r.get(6)?,
+                outcome,
+                archived_at,
                 worktree,
                 issues: Vec::new(),
                 prs: Vec::new(),
@@ -2970,26 +3150,180 @@ mod tests {
     }
 
     #[test]
-    fn clear_done_tasks_sweeps_only_old_done() {
+    fn archive_closed_tasks_sweeps_only_old_finished() {
         let s = Store::open_in_memory().unwrap();
         let old = s.add_task("old done", "backlog", None, 1).unwrap();
+        let abandoned = s.add_task("old abandoned", "doing", None, 1).unwrap();
         let recent = s.add_task("recent done", "backlog", None, 2).unwrap();
         let open = s.add_task("still open", "backlog", None, 3).unwrap();
         s.set_task_status(old.id, "done", 100).unwrap();
+        s.close_task(abandoned.id, TaskOutcome::Abandoned, 200).unwrap();
         s.set_task_status(recent.id, "done", 5_000).unwrap();
         s.set_task_status(open.id, "doing", 4).unwrap();
 
-        // Cutoff between the two done todos: only the old one is swept.
-        let deleted = s.clear_done_tasks(1_000).unwrap();
-        assert_eq!(deleted, 1);
+        // Cutoff between the finished todos: the old done *and* the old
+        // abandoned are archived — the rows survive, hidden, not deleted.
+        let archived = s.archive_closed_tasks(1_000, 9_000).unwrap();
+        assert_eq!(archived, 2);
 
-        let remaining: Vec<i64> = s.snapshot().unwrap().tasks.iter().map(|t| t.id).collect();
-        assert!(!remaining.contains(&old.id));
-        assert!(remaining.contains(&recent.id));
-        assert!(remaining.contains(&open.id));
+        let tasks = s.snapshot().unwrap().tasks;
+        let archived_ids: Vec<i64> =
+            tasks.iter().filter(|t| t.archived_at.is_some()).map(|t| t.id).collect();
+        assert!(archived_ids.contains(&old.id));
+        assert!(archived_ids.contains(&abandoned.id));
+        assert!(tasks.iter().any(|t| t.id == recent.id && t.archived_at.is_none()));
+        assert!(tasks.iter().any(|t| t.id == open.id && t.archived_at.is_none()));
 
         // Nothing else old enough on a second sweep.
-        assert_eq!(s.clear_done_tasks(1_000).unwrap(), 0);
+        assert_eq!(s.archive_closed_tasks(1_000, 9_001).unwrap(), 0);
+    }
+
+    #[test]
+    fn close_task_as_done_lands_in_done_and_detaches_the_dir() {
+        let s = Store::open_in_memory().unwrap();
+        let done_first = s.add_task("already done", "done", None, 1).unwrap();
+        let t = s.add_task("ship it", "doing", None, 2).unwrap();
+        s.set_task_worktree(t.id, "/repos/x", Some("o/x"), Some("feat/y"), Some("/repos/x/wt"))
+            .unwrap();
+
+        let closed = s.close_task(t.id, TaskOutcome::Done, 500).unwrap();
+        assert_eq!(closed.status, "done");
+        assert_eq!(closed.outcome.as_deref(), Some("done"));
+        assert_eq!(closed.completed_at, Some(500));
+        assert!(closed.position > done_first.position, "appended to the done column");
+        let wt = closed.worktree.expect("repo binding survives");
+        assert_eq!(wt.branch.as_deref(), Some("feat/y"), "branch kept as historical fact");
+        assert_eq!(wt.dir, None, "dir cleared — the worktree is gone");
+        assert!(s.task_for_worktree_dir("/repos/x/wt").unwrap().is_none());
+    }
+
+    #[test]
+    fn close_task_as_abandoned_freezes_status() {
+        let s = Store::open_in_memory().unwrap();
+        let t = s.add_task("didn't pan out", "review", None, 1).unwrap();
+
+        let closed = s.close_task(t.id, TaskOutcome::Abandoned, 500).unwrap();
+        assert_eq!(closed.status, "review", "status stays where the work stopped");
+        assert_eq!(closed.outcome.as_deref(), Some("abandoned"));
+        assert_eq!(closed.completed_at, Some(500), "stamped so the archive sweep can age it");
+        assert!(!s.open_tasks().unwrap().iter().any(|x| x.id == t.id), "closed = not open");
+
+        // Unknown outcomes never parse; a bad id is TaskNotFound.
+        assert_eq!(TaskOutcome::parse("exploded"), None);
+        assert_eq!(TaskOutcome::parse("abandoned"), Some(TaskOutcome::Abandoned));
+        assert!(matches!(
+            s.close_task(9999, TaskOutcome::Done, 501),
+            Err(Error::TaskNotFound(9999))
+        ));
+    }
+
+    #[test]
+    fn status_move_out_of_done_reopens_a_closed_task() {
+        let s = Store::open_in_memory().unwrap();
+        let t = s.add_task("round two", "doing", None, 1).unwrap();
+        s.close_task(t.id, TaskOutcome::Done, 100).unwrap();
+        s.archive_task(t.id, 200).unwrap();
+
+        // Dragging the card back to an active column clears the whole
+        // terminal record: outcome, archive, completed_at.
+        s.set_task_status(t.id, "doing", 300).unwrap();
+        let back = s.task_by_id(t.id).unwrap();
+        assert_eq!(back.outcome, None);
+        assert_eq!(back.archived_at, None);
+        assert_eq!(back.completed_at, None);
+
+        // A move *within* done (re-close) keeps the record.
+        s.close_task(t.id, TaskOutcome::Done, 400).unwrap();
+        s.set_task_status(t.id, "done", 500).unwrap();
+        assert_eq!(s.task_by_id(t.id).unwrap().outcome.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn archive_and_unarchive_round_trip() {
+        let s = Store::open_in_memory().unwrap();
+        let t = s.add_task("history", "doing", None, 1).unwrap();
+        s.close_task(t.id, TaskOutcome::Abandoned, 100).unwrap();
+
+        s.archive_task(t.id, 200).unwrap();
+        assert_eq!(s.task_by_id(t.id).unwrap().archived_at, Some(200));
+        // Idempotent: the original archive instant survives a re-archive.
+        s.archive_task(t.id, 300).unwrap();
+        assert_eq!(s.task_by_id(t.id).unwrap().archived_at, Some(200));
+
+        s.unarchive_task(t.id).unwrap();
+        let back = s.task_by_id(t.id).unwrap();
+        assert_eq!(back.archived_at, None);
+        assert_eq!(back.outcome.as_deref(), Some("abandoned"), "outcome survives unarchive");
+        assert!(matches!(s.unarchive_task(9999), Err(Error::TaskNotFound(9999))));
+    }
+
+    #[test]
+    fn auto_attach_skips_archived_tasks_but_not_closed_ones() {
+        let s = Store::open_in_memory().unwrap();
+        let closed = s.add_task("closed", "doing", None, 1).unwrap();
+        s.set_task_worktree(closed.id, "/r/a", Some("o/r"), Some("feat/a"), None).unwrap();
+        s.close_task(closed.id, TaskOutcome::Done, 10).unwrap();
+        let archived = s.add_task("archived", "doing", None, 2).unwrap();
+        s.set_task_worktree(archived.id, "/r/b", Some("o/r"), Some("feat/b"), None).unwrap();
+        s.close_task(archived.id, TaskOutcome::Done, 10).unwrap();
+        s.archive_task(archived.id, 20).unwrap();
+
+        let pr = |number: i64, branch: &str| PrInput {
+            repo: "o/r".to_string(),
+            number,
+            title: "t".to_string(),
+            branch: branch.to_string(),
+            state: "merged".to_string(),
+            checks: "none".to_string(),
+            review_state: String::new(),
+            url: "https://x".to_string(),
+            updated_ts: number,
+        };
+        s.replace_prs(&[pr(1, "feat/a"), pr(2, "feat/b")]).unwrap();
+
+        assert_eq!(s.auto_attach_worktree_prs(30).unwrap(), 1);
+        assert_eq!(s.task_by_id(closed.id).unwrap().prs.len(), 1, "closed still attaches");
+        assert!(s.task_by_id(archived.id).unwrap().prs.is_empty(), "archived never attaches");
+    }
+
+    #[test]
+    fn migrate_v13_adds_outcome_columns_to_a_v12_tasks_table() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tt.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            // A v12-era tasks table: full worktree columns, no outcome/archive.
+            conn.execute_batch(
+                "CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'backlog',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    completed_at INTEGER,
+                    notes TEXT,
+                    worktree_repo_root TEXT,
+                    worktree_repo TEXT,
+                    worktree_branch TEXT,
+                    worktree_dir TEXT
+                );
+                INSERT INTO tasks (text, status, position, created_at)
+                    VALUES ('carried forward', 'doing', 0, 1);",
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        let tasks = s.snapshot().unwrap().tasks;
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].outcome, None, "pre-existing rows stay open");
+        assert_eq!(tasks[0].archived_at, None);
+        s.close_task(tasks[0].id, TaskOutcome::Abandoned, 10).unwrap();
+
+        // Idempotent: reopening doesn't re-alter or lose the close.
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.task_by_id(1).unwrap().outcome.as_deref(), Some("abandoned"));
     }
 
     #[test]
@@ -3564,7 +3898,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_done_tasks_never_sweeps_legacy_null_completed_at() {
+    fn archive_closed_tasks_never_sweeps_legacy_null_completed_at() {
         // A `done` row whose `completed_at` is NULL (data from before the column
         // was stamped) has no known completion time, so the sweep must skip it —
         // even with a cutoff far in the future. There is no public API to make
@@ -3580,10 +3914,17 @@ mod tests {
         let normal = s.add_task("normal done", "backlog", None, 2).unwrap();
         s.set_task_status(normal.id, "done", 10).unwrap();
 
-        let deleted = s.clear_done_tasks(1_000_000).unwrap();
-        assert_eq!(deleted, 1, "only the stamped done row is swept");
-        let texts: Vec<String> = s.snapshot().unwrap().tasks.into_iter().map(|t| t.text).collect();
-        assert_eq!(texts, vec!["legacy done".to_string()]);
+        let archived = s.archive_closed_tasks(1_000_000, 1_000_001).unwrap();
+        assert_eq!(archived, 1, "only the stamped done row is swept");
+        let visible: Vec<String> = s
+            .snapshot()
+            .unwrap()
+            .tasks
+            .into_iter()
+            .filter(|t| t.archived_at.is_none())
+            .map(|t| t.text)
+            .collect();
+        assert_eq!(visible, vec!["legacy done".to_string()]);
     }
 
     #[test]
@@ -3859,7 +4200,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_and_clear_done_cascade_link_rows() {
+    fn delete_task_cascades_link_rows_but_archiving_keeps_them() {
         let s = Store::open_in_memory().unwrap();
         let a = s.add_task("a", "backlog", None, 1).unwrap();
         let b = s.add_task("b", "backlog", None, 2).unwrap();
@@ -3871,9 +4212,10 @@ mod tests {
         assert_eq!(issue_link_rows(&s), vec![(b.id, "o/r".to_string(), 3)]);
         assert!(s.linked_pr_refs().unwrap().is_empty());
 
+        // The archive sweep keeps the row, so its links survive too.
         s.set_task_status(b.id, "done", 10).unwrap();
-        assert_eq!(s.clear_done_tasks(100).unwrap(), 1);
-        assert!(issue_link_rows(&s).is_empty());
+        assert_eq!(s.archive_closed_tasks(100, 101).unwrap(), 1);
+        assert_eq!(issue_link_rows(&s), vec![(b.id, "o/r".to_string(), 3)]);
     }
 
     #[test]

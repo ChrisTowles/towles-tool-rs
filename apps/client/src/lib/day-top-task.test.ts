@@ -49,6 +49,15 @@ describe("pickTopTask", () => {
     expect(pickTopTask([done, backlog])).toBe(backlog);
   });
 
+  it("never surfaces a closed task, even one abandoned mid-doing", () => {
+    // Abandoned tasks freeze their status where the work stopped — without
+    // the closed check, this "doing" card would outrank every live one.
+    const abandoned = task("doing", { outcome: "abandoned" });
+    const backlog = task("backlog");
+    expect(pickTopTask([abandoned, backlog])).toBe(backlog);
+    expect(pickTopTask([abandoned])).toBeUndefined();
+  });
+
   it("breaks status ties by column position (nearer the top wins)", () => {
     const lower = task("doing", { position: 5 });
     const higher = task("doing", { position: 1 });

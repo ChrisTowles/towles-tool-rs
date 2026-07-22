@@ -1,4 +1,4 @@
-import type { TaskItem, TaskStatus } from "@/lib/data";
+import { isTaskClosed, type TaskItem, type TaskStatus } from "@/lib/data";
 
 /**
  * Priority order for the day bar's single "top task": what you're actively
@@ -16,13 +16,14 @@ const STATUS_RANK: Record<Exclude<TaskStatus, "done">, number> = {
  * Pick the one task the day bar should surface: the most in-progress work,
  * not the oldest backlog item. Ranks by status (doing > review > next >
  * backlog), then by column position (the card nearer the top of its column
- * wins the tiebreak). `done` tasks are never eligible. Returns `undefined`
- * when there is nothing to show.
+ * wins the tiebreak). Closed tasks are never eligible — including one
+ * abandoned mid-`doing`, whose frozen status would otherwise outrank every
+ * live card. Returns `undefined` when there is nothing to show.
  */
 export function pickTopTask(tasks: readonly TaskItem[]): TaskItem | undefined {
   let best: TaskItem | undefined;
   for (const task of tasks) {
-    if (task.status === "done") continue;
+    if (isTaskClosed(task)) continue;
     if (best === undefined || isHigherPriority(task, best)) {
       best = task;
     }

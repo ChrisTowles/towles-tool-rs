@@ -14,7 +14,11 @@
 //! 3. the worktree leaves disk;
 //! 4. the dir is untracked from `repos.json` — the repo rule; skip it and the
 //!    `prs`/`issues` collectors retry `gh`/`git` against a dead path forever;
-//! 5. the board row goes **last**, when it can no longer strand anything.
+//! 5. the board row is **closed last**, when it can no longer strand anything:
+//!    it records the caller's [`tt_store::TaskOutcome`] (`done`/`abandoned`)
+//!    and detaches from the now-gone dir, but the row itself survives as the
+//!    record of the work — deleting it was the old behavior, replaced
+//!    2026-07-22.
 //!
 //! ## Why this crate
 //!
@@ -33,7 +37,7 @@
 
 use std::path::Path;
 
-use tt_store::Store;
+use tt_store::{Store, TaskOutcome};
 use tt_tasks::RmBlocked;
 use tt_tasks::ops::{self, RemoveOpts, RemoveOutcome};
 
@@ -91,19 +95,35 @@ impl RemovalHooks for NoHooks {}
 /// to publish. This way each host locks for exactly the row delete and no
 /// longer.
 pub trait BoardRows {
-    /// Delete the task bound to `dir`. Returns a note when a row went, `None`
-    /// when the worktree had no task — a real answer, since a worktree can be
-    /// discovered on disk without the board knowing about it.
-    fn delete_task_for_worktree(&self, dir: &str) -> Option<String>;
+    /// Close the task bound to `dir`, recording `outcome`. Returns a note
+    /// when a row was closed, `None` when the worktree had no task — a real
+    /// answer, since a worktree can be discovered on disk without the board
+    /// knowing about it.
+    fn close_task_for_worktree(
+        &self,
+        dir: &str,
+        outcome: TaskOutcome,
+        now_ms: i64,
+    ) -> Option<String>;
 }
 
 /// The straightforward implementation, for a host holding an open [`Store`].
 impl BoardRows for Store {
-    fn delete_task_for_worktree(&self, dir: &str) -> Option<String> {
+    fn close_task_for_worktree(
+        &self,
+        dir: &str,
+        outcome: TaskOutcome,
+        now_ms: i64,
+    ) -> Option<String> {
         let row = self.task_for_worktree_dir(dir).ok()??;
-        match self.delete_task(row.id) {
-            Ok(()) => Some(format!("deleted board task #{} ({})", row.id, row.text)),
-            Err(error) => Some(format!("could not delete board task #{}: {error}", row.id)),
+        match self.close_task(row.id, outcome, now_ms) {
+            Ok(_) => Some(format!(
+                "closed board task #{} as {} ({})",
+                row.id,
+                outcome.as_str(),
+                row.text
+            )),
+            Err(error) => Some(format!("could not close board task #{}: {error}", row.id)),
         }
     }
 }
@@ -122,6 +142,13 @@ pub struct TaskRemoval<'a> {
     /// cannot resolve which store owns the row, which is a real state
     /// (instance stores are per-checkout) and not an error.
     pub rows: Option<&'a dyn BoardRows>,
+    /// How the task ended — recorded on the board row at step 5. Callers with
+    /// a user answer pass it through; headless callers infer it (merged PR /
+    /// landed work ⇒ done, else abandoned).
+    pub outcome: TaskOutcome,
+    /// When "now" is, for the close stamp. Injected — the clock read happens
+    /// at the call boundary, not here.
+    pub now_ms: i64,
     /// What a directory that is already gone means to this caller — see
     /// [`MissingDir`].
     pub on_missing: MissingDir,
@@ -152,7 +179,13 @@ pub enum Outcome {
 /// these behind, and `tt task clean` — which removes in bulk through
 /// [`ops::clean_tasks`] and cannot route each task through
 /// [`remove_task_and_bindings`] — needs the identical teardown.
-pub fn remove_bindings(repos_path: &Path, rows: Option<&dyn BoardRows>, dir: &Path) -> Vec<String> {
+pub fn remove_bindings(
+    repos_path: &Path,
+    rows: Option<&dyn BoardRows>,
+    dir: &Path,
+    outcome: TaskOutcome,
+    now_ms: i64,
+) -> Vec<String> {
     let dir_s = dir.to_string_lossy().to_string();
     let mut messages = Vec::new();
 
@@ -160,9 +193,10 @@ pub fn remove_bindings(repos_path: &Path, rows: Option<&dyn BoardRows>, dir: &Pa
         messages.push("untracked from the agentboard rail".to_string());
     }
 
-    // Last: the worktree is gone, so dropping the row can no longer strand
+    // Last: the worktree is gone, so closing the row can no longer strand
     // anything on disk.
-    if let Some(note) = rows.and_then(|rows| rows.delete_task_for_worktree(&dir_s)) {
+    if let Some(note) = rows.and_then(|rows| rows.close_task_for_worktree(&dir_s, outcome, now_ms))
+    {
         messages.push(note);
     }
     messages
@@ -207,7 +241,13 @@ pub fn remove_task_and_bindings(
     }
 
     messages.extend(hooks.after_removal(task.dir));
-    messages.extend(remove_bindings(task.repos_path, task.rows, task.dir));
+    messages.extend(remove_bindings(
+        task.repos_path,
+        task.rows,
+        task.dir,
+        task.outcome,
+        task.now_ms,
+    ));
     Ok(Outcome::Removed { name, messages })
 }
 
@@ -235,20 +275,32 @@ mod tests {
     }
 
     /// The whole point of step 4 + 5 being one function: a removed worktree
-    /// leaves both a tracked path and a board row, and dropping only one of
+    /// leaves both a tracked path and a board row, and handling only one of
     /// them is what used to strand the other.
     #[test]
-    fn remove_bindings_untracks_the_dir_and_deletes_the_bound_row() {
+    fn remove_bindings_untracks_the_dir_and_closes_the_bound_row() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = "/repos/demo/.claude/worktrees/feat-thing";
         let path = repos_json(&tmp, &[dir, "/repos/other"]);
         let store = store_with_task_at(dir);
+        let id = store.task_for_worktree_dir(dir).unwrap().unwrap().id;
 
-        let notes = remove_bindings(&path, Some(&store), std::path::Path::new(dir));
+        let notes = remove_bindings(
+            &path,
+            Some(&store),
+            std::path::Path::new(dir),
+            TaskOutcome::Abandoned,
+            NOW + 5,
+        );
 
         assert!(notes.iter().any(|n| n.contains("untracked")), "{notes:?}");
-        assert!(notes.iter().any(|n| n.contains("deleted board task")), "{notes:?}");
-        assert!(store.task_for_worktree_dir(dir).unwrap().is_none(), "the row went");
+        assert!(notes.iter().any(|n| n.contains("closed board task")), "{notes:?}");
+        assert!(store.task_for_worktree_dir(dir).unwrap().is_none(), "the binding went");
+        // …but the row survives as the record, closed with the outcome.
+        let row = store.task_by_id(id).unwrap();
+        assert_eq!(row.outcome.as_deref(), Some("abandoned"));
+        assert_eq!(row.status, "doing", "abandoned freezes the status");
+        assert_eq!(row.worktree.as_ref().unwrap().dir, None);
         let left = crate::repos::load_repos(&path);
         assert_eq!(left, vec!["/repos/other".to_string()], "only this task's path was untracked");
     }
@@ -262,7 +314,8 @@ mod tests {
         let path = repos_json(&tmp, &[dir]);
         let store = Store::open_in_memory().unwrap();
 
-        let notes = remove_bindings(&path, Some(&store), std::path::Path::new(dir));
+        let notes =
+            remove_bindings(&path, Some(&store), std::path::Path::new(dir), TaskOutcome::Done, NOW);
 
         assert_eq!(notes, vec!["untracked from the agentboard rail".to_string()]);
         assert!(crate::repos::load_repos(&path).is_empty());
@@ -276,7 +329,7 @@ mod tests {
         let dir = "/repos/demo/.claude/worktrees/feat-thing";
         let path = repos_json(&tmp, &[dir]);
 
-        let notes = remove_bindings(&path, None, std::path::Path::new(dir));
+        let notes = remove_bindings(&path, None, std::path::Path::new(dir), TaskOutcome::Done, NOW);
 
         assert_eq!(notes, vec!["untracked from the agentboard rail".to_string()]);
     }
@@ -289,7 +342,13 @@ mod tests {
         let path = repos_json(&tmp, &["/repos/other"]);
         let store = Store::open_in_memory().unwrap();
 
-        let notes = remove_bindings(&path, Some(&store), std::path::Path::new("/repos/gone"));
+        let notes = remove_bindings(
+            &path,
+            Some(&store),
+            std::path::Path::new("/repos/gone"),
+            TaskOutcome::Done,
+            NOW,
+        );
 
         assert!(notes.is_empty(), "{notes:?}");
         assert_eq!(crate::repos::load_repos(&path), vec!["/repos/other".to_string()]);
@@ -317,6 +376,8 @@ mod tests {
                 dir: &dir,
                 repos_path: &path,
                 rows: Some(&store),
+                outcome: TaskOutcome::Done,
+                now_ms: NOW,
                 on_missing: MissingDir::TearDownBindings,
             },
             &mut NoHooks,
@@ -328,7 +389,7 @@ mod tests {
         };
         assert!(messages.iter().any(|m| m.contains("was already gone")), "{messages:?}");
         assert!(messages.iter().any(|m| m.contains("untracked")), "{messages:?}");
-        assert!(messages.iter().any(|m| m.contains("deleted board task")), "{messages:?}");
+        assert!(messages.iter().any(|m| m.contains("closed board task")), "{messages:?}");
         assert!(crate::repos::load_repos(&path).is_empty());
     }
 
@@ -349,6 +410,8 @@ mod tests {
                 dir: &dir,
                 repos_path: &path,
                 rows: None,
+                outcome: TaskOutcome::Abandoned,
+                now_ms: NOW,
                 on_missing: MissingDir::Fail,
             },
             &mut NoHooks,
@@ -369,9 +432,17 @@ mod tests {
         let path = repos_json(&tmp, &[mine, theirs]);
         let store = store_with_task_at(theirs);
 
-        let notes = remove_bindings(&path, Some(&store), std::path::Path::new(mine));
+        let notes = remove_bindings(
+            &path,
+            Some(&store),
+            std::path::Path::new(mine),
+            TaskOutcome::Done,
+            NOW,
+        );
 
-        assert!(!notes.iter().any(|n| n.contains("deleted board task")), "{notes:?}");
-        assert!(store.task_for_worktree_dir(theirs).unwrap().is_some(), "their row survived");
+        assert!(!notes.iter().any(|n| n.contains("closed board task")), "{notes:?}");
+        let theirs_row = store.task_for_worktree_dir(theirs).unwrap();
+        assert!(theirs_row.is_some(), "their row stayed bound");
+        assert_eq!(theirs_row.unwrap().outcome, None, "…and open");
     }
 }

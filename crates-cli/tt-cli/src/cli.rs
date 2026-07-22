@@ -109,6 +109,11 @@ pub enum TaskCommands {
         #[arg(long)]
         force: bool,
 
+        /// How the task ended, recorded on its board row (the row is closed,
+        /// not deleted). Default: done if a linked PR merged, else abandoned
+        #[arg(long, value_parser = ["done", "abandoned"])]
+        outcome: Option<String>,
+
         /// Repo checkout (default: walk up from cwd to the nearest git checkout)
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,

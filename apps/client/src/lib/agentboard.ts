@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Result } from "better-result";
 import type { z } from "zod";
-import type { PrItem } from "./data";
+import type { PrItem, TaskOutcome } from "./data";
 import type { IpcError } from "./errors";
 import type { LaunchConfigStatus } from "./launch";
 import type { RepoMeta } from "./repo-identity";
@@ -1923,6 +1923,9 @@ export type RemoveTarget = { label: string; dirs: string[]; sessionIds: string[]
 export type BlockedDelete = {
   target: RemoveTarget;
   name: string;
+  /** The outcome the user already chose in the close dialog — a forced retry
+   * records the same answer instead of re-inferring one. */
+  outcome?: TaskOutcome;
   blockers: TaskBlocker[];
   /** Caveats about how the verdict was reached (a failed fetch → stale refs),
    * carried through so the dialog can qualify the blockers it lists. */

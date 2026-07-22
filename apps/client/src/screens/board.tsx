@@ -41,14 +41,17 @@ import { useBoardGroupByRepo } from "@/lib/board-prefs";
 import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
 import {
+  isTaskClosed,
+  storeArchiveDone,
   storeAttachTaskIssue,
   storeAttachTaskPr,
-  storeClearDone,
   storeDetachTaskIssue,
   storeDetachTaskPr,
   storePromoteTaskToIssue,
   storeSetTaskPosition,
+  storeUnarchiveTask,
   taskDelete,
+  taskOutcomeOf,
   storeSetTaskStatus,
   storeUpdateTask,
   TASK_STATUS_LABEL,
@@ -58,6 +61,7 @@ import {
   type PrItem,
   type TaskIssueLink,
   type TaskItem,
+  type TaskOutcome,
   type TaskPrLink,
   type TaskStatus,
 } from "@/lib/data";
@@ -71,6 +75,7 @@ import {
 import { countByStatus } from "@/lib/board-metrics";
 import { matchesTaskFilter } from "@/lib/board-filter";
 import {
+  boardColumnOf,
   bucketByStatus,
   byBoardOrder,
   groupTasksByRepo,
@@ -141,12 +146,21 @@ export function BoardScreen() {
   const [posOverrides, setPosOverrides] = useState<Record<number, PosOverride>>({});
   const [editOverrides, setEditOverrides] = useState<Record<number, TaskEdit>>({});
   const [deletedIds, setDeletedIds] = useState<Set<number>>(() => new Set());
-  // A refused delete, held for the dialog that reports it. Deleting a card
+  // Optimistic close: the outcome shown on a card whose worktree teardown is
+  // still running (a close can take a minute of git work), until the snapshot
+  // re-arrives with the recorded one.
+  const [closeOverrides, setCloseOverrides] = useState<Record<number, TaskOutcome>>({});
+  // Archived rows are hidden by default; the header chip reveals them dimmed
+  // in place.
+  const [showArchived, setShowArchived] = useState(false);
+  // A refused close, held for the dialog that reports it. Closing a card
   // also deletes its worktree, so the guards can refuse — see `remove`. No
   // name is stored: a refusal deleted nothing, so the row is still in `merged`
-  // and the dialog reads the current text from there.
+  // and the dialog reads the current text from there. `outcome` rides along
+  // so a forced retry records the same answer the user already gave.
   const [blockedDelete, setBlockedDelete] = useState<{
     id: number;
+    outcome?: TaskOutcome;
     blockers: TaskBlocker[];
     messages: string[];
   } | null>(null);
@@ -205,18 +219,34 @@ export function BoardScreen() {
     () =>
       snapshot.tasks
         .filter((t) => !deletedIds.has(t.id))
+        .filter((t) => showArchived || t.archivedAt === undefined)
         .map((t) => {
           const pos = posOverrides[t.id];
+          // A reorder override carries both the target column and a fractional
+          // position; it wins over a plain status move for the same card.
+          const status = pos?.status ?? statusOverrides[t.id] ?? t.status;
+          // A move out of the terminal column reopens the task backend-side
+          // (outcome and archive clear) — mirror that optimistically, or the
+          // dragged card would snap back into Closed until the next snapshot.
+          const reopened = status !== t.status && status !== "done";
           return {
             ...t,
             ...editOverrides[t.id],
-            // A reorder override carries both the target column and a fractional
-            // position; it wins over a plain status move for the same card.
-            status: pos?.status ?? statusOverrides[t.id] ?? t.status,
+            status,
             position: pos ? pos.position : t.position,
+            outcome: reopened ? undefined : (closeOverrides[t.id] ?? t.outcome),
+            archivedAt: reopened ? undefined : t.archivedAt,
           };
         }),
-    [snapshot.tasks, editOverrides, statusOverrides, posOverrides, deletedIds],
+    [
+      snapshot.tasks,
+      editOverrides,
+      statusOverrides,
+      posOverrides,
+      deletedIds,
+      closeOverrides,
+      showArchived,
+    ],
   );
 
   // The cards actually rendered: everything matching the quick filter (an empty
@@ -229,6 +259,13 @@ export function BoardScreen() {
   // Truly empty: no todos in any column (a filter hiding all is a different
   // state — the header still shows the count and the filter box).
   const isEmpty = merged.length === 0;
+
+  // Counted off the raw snapshot, not `merged` — the chip advertises what the
+  // archive holds while the archive is hidden.
+  const archivedCount = useMemo(
+    () => snapshot.tasks.filter((t) => t.archivedAt !== undefined).length,
+    [snapshot.tasks],
+  );
 
   // Repo swimlanes. Grouping is automatic — a lane is just "the tasks that
   // resolved to this repo" — so lanes appear and vanish with the work and
@@ -277,7 +314,9 @@ export function BoardScreen() {
   // than kept as a second render-time bucketing of the whole board.
   function reorder(id: number, status: TaskStatus, beforeId: number | "end") {
     if (beforeId === id) return;
-    const col = visible.filter((t) => t.status === status && t.id !== id).toSorted(byBoardOrder);
+    const col = visible
+      .filter((t) => boardColumnOf(t) === status && t.id !== id)
+      .toSorted(byBoardOrder);
     const insertAt =
       beforeId === "end"
         ? col.length
@@ -339,39 +378,62 @@ export function BoardScreen() {
     void commit(storeUpdateTask(id, current.text, value), "save those notes");
   }
 
-  /** Delete a task: its board row, and its worktree and panes when it has
-   * them. The card hides optimistically, but a guarded refusal brings it
-   * straight back — nothing was deleted in that case, so leaving it hidden
-   * would show the user a delete that didn't happen. */
-  async function remove(id: number, { force = false } = {}) {
-    setDeletedIds((prev) => new Set(prev).add(id));
-    const done = await taskDelete({ id }, force);
-    const unhide = () =>
+  /** Close a task — its worktree and panes go, the row survives with
+   * `outcome` recorded — or, with `purge`, delete a (worktree-free) row for
+   * good. Close paints the outcome optimistically (the git teardown can take
+   * a minute); purge hides the card. A guarded refusal reverts either —
+   * nothing changed in that case, so leaving the overlay up would show the
+   * user a close that didn't happen. */
+  async function remove(
+    id: number,
+    {
+      force = false,
+      outcome,
+      purge = false,
+    }: { force?: boolean; outcome?: TaskOutcome; purge?: boolean } = {},
+  ) {
+    if (purge) setDeletedIds((prev) => new Set(prev).add(id));
+    else if (outcome) setCloseOverrides((prev) => ({ ...prev, [id]: outcome }));
+    const done = await taskDelete({ id }, { force, outcome, purge });
+    const revert = () => {
       setDeletedIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
+      setCloseOverrides((prev) => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    };
     done.match({
-      ok: (outcome) => {
-        if (outcome.status === "blocked") {
-          unhide();
+      ok: (result) => {
+        if (result.status === "blocked") {
+          revert();
           // Refused, not failed: the reasons come with remedies, so they go to
           // a dialog that can act on them rather than a dismissable toast.
-          setBlockedDelete({ id, blockers: outcome.blockers, messages: outcome.messages });
+          setBlockedDelete({ id, outcome, blockers: result.blockers, messages: result.messages });
           return;
         }
-        for (const message of outcome.messages) toast(message);
+        for (const message of result.messages) toast(message);
       },
       err: (e) => {
-        unhide();
-        toast.error(`Couldn't delete that task — ${e.message}`);
+        revert();
+        toast.error(`Couldn't ${purge ? "delete" : "close"} that task — ${e.message}`);
       },
     });
   }
 
-  function clearDone() {
-    void commit(storeClearDone(), "clear the Done column");
+  function restore(id: number) {
+    uiAction("board.unarchive_task", "board");
+    void commit(storeUnarchiveTask(id), "restore that task");
+  }
+
+  function archiveDone() {
+    uiAction("board.archive_done", "board");
+    void commit(storeArchiveDone(), "archive the Closed column");
   }
 
   // Jump to a card's repo on the Agentboard: same focus primitive the
@@ -412,15 +474,37 @@ export function BoardScreen() {
             }}
             aria-label="Group tasks into repo swimlanes"
           />
+          {archivedCount > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(
+                "px-2 font-mono text-[11px]",
+                showArchived ? "text-foreground" : "text-muted-foreground",
+              )}
+              title={
+                showArchived
+                  ? "Hide archived tasks"
+                  : "Show archived tasks, dimmed, in their columns"
+              }
+              aria-pressed={showArchived}
+              onClick={() => {
+                setShowArchived((v) => !v);
+                uiAction("board.show_archived", "board", showArchived ? "off" : "on");
+              }}
+            >
+              Archived · {archivedCount}
+            </Button>
+          )}
           {counts.done > 0 && (
             <Button
               variant="ghost"
               size="sm"
               className="px-2 text-xs text-muted-foreground"
-              title="Remove done tasks completed over 7 days ago"
-              onClick={clearDone}
+              title="Archive closed tasks finished over 7 days ago — hidden, not deleted"
+              onClick={archiveDone}
             >
-              Clear done
+              Archive done
             </Button>
           )}
           <div className="relative w-44">
@@ -586,7 +670,9 @@ export function BoardScreen() {
                                   onDetachPr={detachPr}
                                   onRename={rename}
                                   onSetNotes={setNotes}
-                                  onDelete={(id) => void remove(id)}
+                                  onClose={(id, outcome) => void remove(id, { outcome })}
+                                  onRestore={restore}
+                                  onPurge={(id) => void remove(id, { purge: true })}
                                   onDragEnd={clearDropSlot}
                                 />
                               </Fragment>
@@ -612,15 +698,15 @@ export function BoardScreen() {
           if (!isOpen) setBlockedDelete(null);
         }}
         name={merged.find((t) => t.id === blockedDelete?.id)?.text}
-        description="This task’s worktree still holds work. Clear what’s below and it’ll delete cleanly, or delete anyway."
+        description="This task’s worktree still holds work. Clear what’s below and it’ll close cleanly, or close anyway."
         cancelLabel="Keep the task"
         blockers={blockedDelete?.blockers ?? []}
         messages={blockedDelete?.messages ?? []}
         onForce={() => {
           if (blockedDelete) {
-            const id = blockedDelete.id;
+            const { id, outcome } = blockedDelete;
             setBlockedDelete(null);
-            void remove(id, { force: true });
+            void remove(id, { force: true, outcome });
           }
         }}
       />
@@ -697,7 +783,9 @@ function Card({
   onDetachPr,
   onRename,
   onSetNotes,
-  onDelete,
+  onClose,
+  onRestore,
+  onPurge,
   onDragEnd,
 }: {
   task: TaskItem;
@@ -729,15 +817,30 @@ function Card({
   onDetachPr: (id: number, link: TaskPrLink) => void;
   onRename: (id: number, text: string) => void;
   onSetNotes: (id: number, notes: string) => void;
-  onDelete: (id: number) => void;
+  /** Close the task with an outcome — removes its worktree/panes, keeps the row. */
+  onClose: (id: number, outcome: TaskOutcome) => void;
+  /** Bring an archived task back onto the board. */
+  onRestore: (id: number) => void;
+  /** Permanently delete the row — only offered when no worktree is bound. */
+  onPurge: (id: number) => void;
   onDragEnd: () => void;
 }) {
   const [dragging, setDragging] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.text);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // What the confirm dialog is confirming: a close (with the chosen outcome,
+  // worktree-bound tasks only — a bare row closes without asking) or a purge.
+  const [confirming, setConfirming] = useState<
+    { kind: "close"; outcome: TaskOutcome } | { kind: "purge" } | null
+  >(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const hasNotes = (task.notes ?? "").trim() !== "";
+  const closed = isTaskClosed(task);
+  const outcome = taskOutcomeOf(task);
+  const archived = task.archivedAt !== undefined;
+  // The column this card renders in — closed cards sit in the terminal column
+  // whatever their frozen status; drags must agree with the bucketing.
+  const column = boardColumnOf(task);
   // Attach candidates: collected refs not already linked to this task.
   const attachableIssues = openIssues.filter(
     (i) => !task.issues.some((l) => l.repo === i.repo && l.number === i.number),
@@ -783,10 +886,7 @@ function Card({
       data-focus-kind="todo"
       data-focus-id={String(task.id)}
       onDragStart={(e) => {
-        e.dataTransfer.setData(
-          TASK_DRAG_TYPE,
-          encodeTaskDrag({ id: task.id, status: task.status }),
-        );
+        e.dataTransfer.setData(TASK_DRAG_TYPE, encodeTaskDrag({ id: task.id, status: column }));
         e.dataTransfer.effectAllowed = "move";
         setDragging(true);
       }}
@@ -797,14 +897,14 @@ function Card({
         e.preventDefault();
         e.stopPropagation();
         e.dataTransfer.dropEffect = "move";
-        onReorderHover({ status: task.status, beforeId: slotBeforeId(e) });
+        onReorderHover({ status: column, beforeId: slotBeforeId(e) });
       }}
       onDrop={(e) => {
         if (!isTaskDrag(e.dataTransfer.types)) return;
         e.preventDefault();
         e.stopPropagation();
         const payload = decodeTaskDrag(e.dataTransfer.getData(TASK_DRAG_TYPE));
-        if (payload) onReorder(payload.id, task.status, slotBeforeId(e));
+        if (payload) onReorder(payload.id, column, slotBeforeId(e));
       }}
       onDragEnd={() => {
         setDragging(false);
@@ -813,7 +913,8 @@ function Card({
       className={cn(
         "group rounded-md border border-l-2 bg-background p-2.5 text-sm shadow-sm",
         "cursor-grab active:cursor-grabbing",
-        task.status === "done" && "opacity-60",
+        closed && "opacity-60",
+        archived && "opacity-40",
         dragging && "opacity-40",
       )}
       style={identityStyle}
@@ -847,7 +948,9 @@ function Card({
         ) : (
           <span
             onDoubleClick={startRename}
-            className={cn("min-w-0 flex-1", task.status === "done" && "line-through")}
+            // Only done work is struck through — an abandoned task ended, but
+            // striking it would claim it was finished.
+            className={cn("min-w-0 flex-1", outcome === "done" && "line-through")}
           >
             {task.text}
           </span>
@@ -883,9 +986,12 @@ function Card({
             </div>
             <DropdownMenuSeparator />
             <DropdownMenuLabel>Move to</DropdownMenuLabel>
-            {TASK_STATUSES.filter((s) => s !== task.status).map((s) => (
+            {TASK_STATUSES.filter((s) => s !== column).map((s) => (
               <DropdownMenuItem key={s} onSelect={() => onMove(task.id, s)}>
                 {TASK_STATUS_LABEL[s]}
+                {closed && s !== "done" && (
+                  <span className="ml-auto text-[10px] text-muted-foreground">reopens</span>
+                )}
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
@@ -961,9 +1067,44 @@ function Card({
               <DropdownMenuItem disabled>No repos to file in</DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => setConfirmingDelete(true)}>
-              Delete
-            </DropdownMenuItem>
+            {/* How a task ends. Open tasks close with an outcome (taking their
+                worktree with them — confirmed when one exists, immediate for a
+                bare row). Archived ones can come back. The permanent delete
+                survives only for rows with no worktree bound — the backend
+                refuses it otherwise. */}
+            {!closed && (
+              <>
+                <DropdownMenuItem
+                  onSelect={() =>
+                    task.worktree?.dir
+                      ? setConfirming({ kind: "close", outcome: "done" })
+                      : onClose(task.id, "done")
+                  }
+                >
+                  Close as done
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() =>
+                    task.worktree?.dir
+                      ? setConfirming({ kind: "close", outcome: "abandoned" })
+                      : onClose(task.id, "abandoned")
+                  }
+                >
+                  Close as abandoned
+                </DropdownMenuItem>
+              </>
+            )}
+            {archived && (
+              <DropdownMenuItem onSelect={() => onRestore(task.id)}>Restore</DropdownMenuItem>
+            )}
+            {!task.worktree?.dir && (
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={() => setConfirming({ kind: "purge" })}
+              >
+                Delete permanently…
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -1000,8 +1141,26 @@ function Card({
           )}
         </div>
       )}
-      {(hasLinks || hasNotes) && (
+      {(hasLinks || hasNotes || closed) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          {/* How the task ended: ✓ teal for done, ⊘ muted for abandoned — the
+              one honest terminal column needs the badge to say which. */}
+          {outcome && (
+            <Badge
+              variant="outline"
+              className={cn(
+                "gap-1 font-mono text-[10px]",
+                outcome === "done" ? "text-emerald-500" : "text-muted-foreground",
+              )}
+            >
+              {outcome === "done" ? "✓ done" : "⊘ abandoned"}
+            </Badge>
+          )}
+          {archived && (
+            <Badge variant="outline" className="text-[10px] text-muted-foreground/70">
+              archived
+            </Badge>
+          )}
           {task.issues.map((link) => (
             <a
               key={`i${link.repo}#${link.number}`}
@@ -1061,30 +1220,43 @@ function Card({
         </div>
       )}
 
-      <AlertDialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
+      <AlertDialog open={confirming != null} onOpenChange={(open) => !open && setConfirming(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete this task?</AlertDialogTitle>
-            {/* Names the worktree when there is one: this deletes the checkout
-                on disk too, and a confirm that only mentioned the card would
+            <AlertDialogTitle>
+              {confirming?.kind === "purge"
+                ? "Delete this task permanently?"
+                : `Close as ${confirming?.outcome ?? "done"}?`}
+            </AlertDialogTitle>
+            {/* Close names the worktree: it deletes the checkout on disk and
+                its terminals, and a confirm that only mentioned the card would
                 be understating what the button does. Still promises the
-                guards — work that would be lost stops the delete and reopens
+                guards — work that would be lost stops the close and reopens
                 as the blocked dialog, which is where discarding is agreed
                 to. */}
             <AlertDialogDescription>
-              “{task.text}” will be permanently removed
-              {task.worktree?.dir ? ", along with its worktree and any terminals in it" : ""}. This
-              can't be undone, but uncommitted or unlanded work will stop the delete rather than be
-              discarded.
+              {confirming?.kind === "purge"
+                ? `“${task.text}” and its record will be removed for good. Closed tasks are normally archived, not deleted — this is the exception.`
+                : `“${task.text}” stays on the board as ${
+                    confirming?.outcome ?? "done"
+                  }, but its worktree and any terminals in it will be removed. Uncommitted or unlanded work stops the close rather than being discarded.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => onDelete(task.id)}
-              className="bg-red-600 text-white hover:bg-red-600/90"
+              onClick={() => {
+                if (confirming?.kind === "purge") onPurge(task.id);
+                else if (confirming) onClose(task.id, confirming.outcome);
+                setConfirming(null);
+              }}
+              className={cn(
+                confirming?.kind === "purge" && "bg-red-600 text-white hover:bg-red-600/90",
+              )}
             >
-              Delete
+              {confirming?.kind === "purge"
+                ? "Delete permanently"
+                : `Close as ${confirming?.outcome ?? "done"}`}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

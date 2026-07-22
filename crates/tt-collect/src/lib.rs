@@ -247,7 +247,8 @@ pub fn collect_issues(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> Coll
 ///    or aged out of the merged list?), so state is only ever learned from an
 ///    actual fetch, never inferred. A failed fetch keeps the last state;
 /// 3. auto-attach collected PRs whose head branch matches a task's worktree;
-/// 4. roll task statuses up ([`rollup_task_statuses`]).
+/// 4. roll task statuses up ([`rollup_task_statuses`]);
+/// 5. archive finished tasks older than [`tt_store::ARCHIVE_AFTER_MS`].
 ///
 /// Never panics and never fails the collect pass — each stage logs and moves
 /// on (the never-panic contract). The write half (closing/reopening linked
@@ -301,6 +302,12 @@ fn sync_task_links(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) {
     if let Err(e) = rollup_task_statuses(store, now_ms) {
         log::warn!("rollup_task_statuses failed: {e}");
     }
+    // 5. age finished tasks off the active board. Riding this path (rather
+    // than a timer of its own) keeps the sweep on the same cadence that
+    // creates done tasks in the first place.
+    if let Err(e) = store.archive_closed_tasks(now_ms - tt_store::ARCHIVE_AFTER_MS, now_ms) {
+        log::warn!("archive_closed_tasks failed: {e}");
+    }
 }
 
 /// Map `owner/name` → repo dir for the swept dirs, so targeted fetches know
@@ -325,11 +332,17 @@ fn repo_dir_index(repo_dirs: &[PathBuf]) -> std::collections::HashMap<String, Pa
 /// reopened ref falls back to `backlog`. Tasks with no links never auto-move,
 /// and statuses that already match are left untouched — safe to run on every
 /// poll without fighting manual board moves that aren't a done/not-done
-/// crossing.
+/// crossing. Closed and archived tasks are skipped entirely: an explicit
+/// outcome is a user decision this rollup must never overturn (a reopened ref
+/// must not resurrect an abandoned task, and `set_task_status` would clear
+/// its outcome as a side effect).
 pub fn rollup_task_statuses(store: &Store, now_ms: i64) -> tt_store::Result<usize> {
     let mut changed = 0;
     for task in store.all_tasks()? {
         if task.issues.is_empty() && task.prs.is_empty() {
+            continue;
+        }
+        if task.outcome.is_some() || task.archived_at.is_some() {
             continue;
         }
         let resolved = task.issues.iter().all(|l| l.state == "closed")
@@ -830,6 +843,7 @@ fn parse_balanced_at(raw: &str, start: usize) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tt_store::TaskOutcome;
 
     #[test]
     fn extract_clean_array() {
@@ -1002,6 +1016,40 @@ mod tests {
         store.refresh_link_states_from_cache(5).unwrap();
         assert_eq!(rollup_task_statuses(&store, 5).unwrap(), 1);
         assert_eq!(store.get_task(task.id).unwrap().unwrap().status, "backlog");
+    }
+
+    #[test]
+    fn rollup_never_overturns_an_explicit_outcome() {
+        // A task closed as abandoned whose linked PR later reads merged: the
+        // rollup must not resurrect-and-complete it (set_task_status would
+        // clear the outcome as a side effect), and a reopened ref must not
+        // drag an archived done task back to backlog.
+        let store = Store::open_in_memory().unwrap();
+        let task = store.add_task("closed", "doing", None, 1).unwrap();
+        store.attach_task_pr(task.id, "o/r", 10, "u").unwrap();
+        store.set_pr_link_state("o/r", 10, "merged", None, 2).unwrap();
+        store.close_task(task.id, TaskOutcome::Abandoned, 3).unwrap();
+
+        assert_eq!(rollup_task_statuses(&store, 4).unwrap(), 0);
+        let after = store.get_task(task.id).unwrap().unwrap();
+        assert_eq!(after.status, "doing", "frozen where it was closed");
+        assert_eq!(after.outcome.as_deref(), Some("abandoned"));
+    }
+
+    #[test]
+    fn sync_sweep_archives_old_finished_tasks() {
+        // The sweep rides sync_task_links' cadence: anything finished more
+        // than ARCHIVE_AFTER_MS ago leaves the active board.
+        let store = Store::open_in_memory().unwrap();
+        let old = store.add_task("old", "doing", None, 1).unwrap();
+        store.close_task(old.id, TaskOutcome::Done, 10).unwrap();
+        let fresh = store.add_task("fresh", "doing", None, 2).unwrap();
+        store.close_task(fresh.id, TaskOutcome::Done, 500).unwrap();
+
+        let now = tt_store::ARCHIVE_AFTER_MS + 100;
+        store.archive_closed_tasks(now - tt_store::ARCHIVE_AFTER_MS, now).unwrap();
+        assert!(store.get_task(old.id).unwrap().unwrap().archived_at.is_some());
+        assert!(store.get_task(fresh.id).unwrap().unwrap().archived_at.is_none());
     }
 
     #[test]
