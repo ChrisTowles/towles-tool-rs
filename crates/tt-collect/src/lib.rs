@@ -742,8 +742,17 @@ fn write_repo_prs_now(
 
 /// The tracked repo directories from the agentboard repos config, or an empty
 /// vec if the config is missing/empty.
+///
+/// First untracks any repo whose linked worktree has gone stale (its
+/// `.git/worktrees/<name>` registration is gone even though the directory
+/// itself remains, e.g. a removed task worktree) — otherwise every collector
+/// tick re-discovers the same dead dir and fails every `gh` call against it
+/// with "fatal: not a git repository", forever, with no way to recover.
 pub fn tracked_repo_dirs() -> Vec<PathBuf> {
     let path = tt_agentboard::repos::default_repos_path();
+    if let Err(e) = tt_agentboard::repos::untrack_broken_persisted(&path) {
+        log::warn!("untrack_broken_persisted failed: {e}");
+    }
     tt_agentboard::repos::load_repos(&path).into_iter().map(PathBuf::from).collect()
 }
 
