@@ -1000,14 +1000,34 @@ export function AgentboardScreen() {
     return { label: "Retry", onClick: () => void retrySetup(dir) };
   }
 
+  // `task_create` no longer runs the install step itself (see the Rust doc
+  // comment on `task_create`) — the pane opens as soon as the worktree
+  // exists, and this fires the setup afterward, in the background, into a
+  // worktree the user may already be typing in. A failure surfaces through
+  // the same retry-able toast `retrySetup` uses; success is silent, matching
+  // what an inline `task_create` warning used to look like — nothing, unless
+  // something actually went wrong.
+  function runSetupInBackground(dir: string) {
+    void invoke<string | null>("task_run_setup", { dir }).then((result) => {
+      result.match({
+        ok: (warning) => {
+          if (warning) toast(warning, { action: retryAction(dir) });
+        },
+        err: (e) => toast(e.message),
+      });
+    });
+  }
+
   // Fires `task_create` in the background and tracks it as a PendingTaskRow
   // in the rail instead of a blocking modal — the caller can keep working
-  // anywhere else in the app while the worktree + setup finish. Keyed by
-  // branch (unique per repo, since a collision is already rejected before
-  // submit), so a retry just re-runs this under the same id. The board task
-  // is created first (`createTaskForSubmit`) — the task is an attribute of
-  // the task, not the unit itself — and bound to the worktree once
-  // `task_create` resolves; a "task only" submit stops after the card.
+  // anywhere else in the app while the worktree resolves (fetch + worktree
+  // add only now — the install runs later, see `runSetupInBackground`, so
+  // this pending window is normally seconds, not minutes). Keyed by branch
+  // (unique per repo, since a collision is already rejected before submit),
+  // so a retry just re-runs this under the same id. The board task is
+  // created first (`createTaskForSubmit`) — the task is an attribute of the
+  // task, not the unit itself — and bound to the worktree once `task_create`
+  // resolves; a "task only" submit stops after the card.
   async function createTask(repo: NewTaskRepo, input: NewTaskSubmit & { taskId?: number }) {
     const taskId = input.taskId ?? (await createTaskForSubmit(input));
     // Bind the repo before any worktree exists. The Board groups tasks into
@@ -1045,10 +1065,13 @@ export function AgentboardScreen() {
       },
     ]);
     const imagePaths = input.imagePaths;
+    // 60s, not the 12-minute budget this used to need — `task_create` no
+    // longer waits on the install (which owned nearly all of that time), so
+    // what's left is just a fetch (10s server-side cap) and a worktree add.
     const result = await invoke<TaskCreated>(
       "task_create",
       { root: repo.dir, branch: input.branch, base: input.base },
-      { schema: TaskCreatedSchema, timeoutMs: 12 * 60_000 },
+      { schema: TaskCreatedSchema, timeoutMs: 60_000 },
     );
     if (result.isErr()) {
       const error = result.error.message;
@@ -1066,13 +1089,14 @@ export function AgentboardScreen() {
         dir: created.dir,
       });
     }
+    // Only fetch/worktree-add/secret-inherit warnings land here now — the
+    // install step runs separately below, after the pane opens, and reports
+    // through its own toast.
     for (const warning of created.warnings) {
-      toast(
-        warning,
-        warning.startsWith("setup `") ? { action: retryAction(created.dir) } : undefined,
-      );
+      toast(warning);
     }
     setPendingTasks((prev) => prev.filter((p) => p.id !== id));
+    runSetupInBackground(created.dir);
 
     // An image with no typed goal is still a valid ask — give the rail
     // something to show rather than an unlabeled session.

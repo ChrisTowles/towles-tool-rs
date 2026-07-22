@@ -291,7 +291,13 @@ impl Engine {
     /// [`crate::git_info::compute_git_info`] *outside* the engine lock, then
     /// hand back via [`Self::warm_git_cache`]. Read-only; safe to call under
     /// the lock since it never shells out.
-    pub fn stale_git_targets(&mut self, now: i64) -> Vec<(String, Option<String>)> {
+    /// Each entry also carries that folder's previously cached value, which the
+    /// host passes back into `compute_git_info` so an unmoved repo revalidates
+    /// cheaply instead of re-running the landing probe.
+    pub fn stale_git_targets(
+        &mut self,
+        now: i64,
+    ) -> Vec<(String, Option<String>, crate::git_info::GitInfo)> {
         self.reload_repos();
         let all_paths = self.expand_with_worktrees();
         all_paths
@@ -299,7 +305,8 @@ impl Engine {
             .filter(|d| !self.git_cache.is_fresh(d, now))
             .map(|d| {
                 let base = self.folder_meta.base_branch_for(&d).map(str::to_string);
-                (d, base)
+                let previous = self.git_cache.get(&d);
+                (d, base, previous)
             })
             .collect()
     }
@@ -354,13 +361,17 @@ impl Engine {
     /// any). Cheap; hold the lock only for this, then run
     /// [`crate::git_info::compute_git_info`] per dir unlocked and hand the
     /// results back via [`Engine::store_git_info`].
-    pub fn git_targets(&mut self) -> Vec<(String, Option<String>)> {
+    /// Like [`Self::stale_git_targets`], each entry carries the folder's
+    /// previously cached value so the host's recompute can revalidate cheaply
+    /// instead of re-running the landing probe.
+    pub fn git_targets(&mut self) -> Vec<(String, Option<String>, crate::git_info::GitInfo)> {
         self.reload_repos();
         repo_entries(&self.repo_paths)
             .into_iter()
             .map(|e| {
                 let base = self.folder_meta.base_branch_for(&e.dir).map(str::to_string);
-                (e.dir, base)
+                let previous = self.git_cache.get(&e.dir);
+                (e.dir, base, previous)
             })
             .collect()
     }
