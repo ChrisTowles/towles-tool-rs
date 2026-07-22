@@ -26,6 +26,10 @@ pub const SNAPSHOT_EVENT: &str = "store://snapshot";
 const GH_MUTATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Managed Tauri state: the SQLite store, `None` when it could not be opened.
+/// `Clone` so the git-info poll loop (`lib.rs`) can hold its own handle to
+/// reconcile the tracked-repo identity cache without going through
+/// `AppHandle::state`.
+#[derive(Clone)]
 pub struct StoreState {
     store: Arc<Mutex<Option<Store>>>,
 }
@@ -47,6 +51,17 @@ impl StoreState {
     #[cfg(test)]
     fn from_option(store: Option<Store>) -> StoreState {
         StoreState { store: Arc::new(Mutex::new(store)) }
+    }
+
+    /// Reconcile the tracked-repo identity cache to exactly `repos` — see
+    /// `tt_store::Store::reconcile_repos`. Best-effort: a no-op if the store
+    /// never opened.
+    pub fn reconcile_repos(&self, repos: &[(String, String)], now_ms: i64) {
+        if let Some(store) = self.store.lock().unwrap().as_ref()
+            && let Err(e) = store.reconcile_repos(repos, now_ms)
+        {
+            tracing::warn!(error = %e, "store: failed to reconcile tracked-repo identity cache");
+        }
     }
 }
 

@@ -117,10 +117,6 @@ pub struct Dispatcher {
     /// `clientInfo` from the session's `initialize` (e.g. `claude-code 2.1`),
     /// stamped onto call-log rows so the app's MCP screen can say who called.
     client: Option<String>,
-    /// Injected tracked-repo dirs (test hook). The serving path leaves it
-    /// `None` and re-reads the shared agentboard `repos.json` on every
-    /// `task_create`, so newly tracked repos are creatable without a restart.
-    tracked_repos: Option<Vec<String>>,
     /// Injected calendar-source ids (test hook), keeping `calendar_set`'s lane
     /// validation off the real settings file. `None` re-reads settings per call.
     calendar_sources: Option<Vec<String>>,
@@ -211,13 +207,7 @@ impl Outcome {
 impl Dispatcher {
     /// Build a dispatcher over `store`.
     pub fn new(store: Store) -> Dispatcher {
-        Dispatcher {
-            store,
-            task_host: None,
-            client: None,
-            tracked_repos: None,
-            calendar_sources: None,
-        }
+        Dispatcher { store, task_host: None, client: None, calendar_sources: None }
     }
 
     /// Inject the app-side deletion host — see [`TaskHost`]. The serving
@@ -225,13 +215,6 @@ impl Dispatcher {
     /// refuses.
     pub fn with_task_host(mut self, host: Box<dyn TaskHost>) -> Dispatcher {
         self.task_host = Some(host);
-        self
-    }
-
-    /// Build a dispatcher with a fixed tracked-repo list (test hook — keeps
-    /// `task_create`'s repo validation off the real agentboard `repos.json`).
-    pub fn with_tracked_repos(mut self, repos: Vec<String>) -> Dispatcher {
-        self.tracked_repos = Some(repos);
         self
     }
 
@@ -267,16 +250,6 @@ impl Dispatcher {
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    /// The tracked-repo dirs `task_create` validates against: the injected
-    /// override if any, else re-read from the shared agentboard `repos.json`
-    /// every time (so a newly tracked repo is creatable without a restart).
-    fn tracked_repo_dirs(&self) -> Vec<String> {
-        match &self.tracked_repos {
-            Some(repos) => repos.clone(),
-            None => tt_agentboard::repos::load_repos(&tt_agentboard::repos::default_repos_path()),
-        }
     }
 
     /// [`Dispatcher::dispatch_at`] keeping only the response line — the shape
@@ -600,6 +573,8 @@ impl Dispatcher {
     /// app's Agentboard `+` flow: [`Store::add_task`] then a repo-only
     /// [`Store::set_task_worktree`], so the task lands in that repo's Board
     /// swimlane immediately (no worktree yet).
+    ///
+    /// `repo` must be a GitHub `owner/repo` slug.
     fn task_create(&self, args: &Value, now_ms: i64) -> Result<Value, String> {
         let title = args
             .get("title")
@@ -616,19 +591,20 @@ impl Dispatcher {
         let status = args.get("status").and_then(Value::as_str).unwrap_or("backlog");
         let notes = args.get("notes").and_then(Value::as_str);
 
-        let repos = self.tracked_repo_dirs();
-        let entries = tt_agentboard::repos::repo_entries(&repos);
-        let entry = entries
-            .iter()
-            .find(|entry| entry.dir == repo_arg || entry.name == repo_arg)
-            .ok_or_else(|| unknown_repo_message(repo_arg, &entries))?;
+        let repo_root =
+            self.store.repo_root_for_owner_repo(repo_arg).map_err(|e| e.to_string())?.ok_or_else(
+                || {
+                    let slugs = self.store.repo_slugs().unwrap_or_default();
+                    unknown_repo_message(repo_arg, &slugs)
+                },
+            )?;
 
         let task = self.store.add_task(title, status, notes, now_ms).map_err(|e| e.to_string())?;
         self.store
-            .set_task_worktree(task.id, &entry.dir, None, None, None)
+            .set_task_worktree(task.id, &repo_root, Some(repo_arg), None, None)
             .map_err(|e| e.to_string())?;
         let task = self.store.task_by_id(task.id).map_err(|e| e.to_string())?;
-        tracing::info!(task_id = task.id, repo = %entry.dir, %status, "task.created");
+        tracing::info!(task_id = task.id, repo = %repo_arg, %status, "task.created");
         Ok(json!({ "task": task }))
     }
 
@@ -792,15 +768,15 @@ fn unknown_calendar_source_message(source: &str, configured: &[String]) -> Strin
 }
 
 /// The repo-validation refusal: names the argument and lists what *is*
-/// tracked, so a caller can self-correct without another round trip.
-fn unknown_repo_message(repo: &str, entries: &[tt_agentboard::repos::RepoEntry]) -> String {
-    if entries.is_empty() {
+/// tracked (as `owner/repo` slugs), so a caller can self-correct without
+/// another round trip.
+fn unknown_repo_message(repo: &str, slugs: &[String]) -> String {
+    if slugs.is_empty() {
         return format!(
             "unknown repo: {repo} — no repos are tracked yet (add one on the app's Agentboard)"
         );
     }
-    let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
-    format!("unknown repo: {repo} — tracked repos: {}", names.join(", "))
+    format!("unknown repo: {repo} — tracked repos: {}", slugs.join(", "))
 }
 
 /// JSON Schema tool descriptors returned by `tools/list` — the MCP contract's
@@ -832,7 +808,7 @@ pub fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "repo": { "type": "string", "description": "The tracked repo — its Agentboard name (dir basename) or absolute path." },
+                    "repo": { "type": "string", "description": "The tracked repo's GitHub `owner/repo` slug." },
                     "title": { "type": "string", "description": "The task's title." },
                     "notes": { "type": "string", "description": "Optional free-form context." },
                     "status": { "type": "string", "enum": ["backlog", "next", "doing", "review", "done"], "description": "Column to land in (default backlog)." },
@@ -912,8 +888,11 @@ mod tests {
 
     const NOW: i64 = 1_700_000_000_000; // fixed epoch ms for deterministic tests
 
-    /// The tracked-repo dir every test dispatcher knows about.
+    /// The tracked-repo dir and its `owner/repo` slug every test dispatcher
+    /// knows about — seeded into `tt-store`'s tracked-repo identity cache the
+    /// same way the Agentboard poll loop reconciles it in production.
     const REPO_DIR: &str = "/home/u/code/demo";
+    const REPO_SLUG: &str = "o/demo";
 
     fn seeded_store() -> Store {
         let store = Store::open_in_memory().unwrap();
@@ -921,11 +900,12 @@ mod tests {
         store
     }
 
-    /// A dispatcher with one injected tracked repo, so no test touches the real
-    /// agentboard repos.json.
+    /// A dispatcher over a store with one reconciled tracked repo, so no test
+    /// touches the real agentboard `repos.json`.
     fn dispatcher() -> Dispatcher {
-        Dispatcher::new(seeded_store())
-            .with_tracked_repos(vec![REPO_DIR.to_string()])
+        let store = seeded_store();
+        store.reconcile_repos(&[(REPO_DIR.to_string(), REPO_SLUG.to_string())], NOW).unwrap();
+        Dispatcher::new(store)
             .with_calendar_sources(vec!["google".to_string(), "outlook".to_string()])
     }
 
@@ -1355,7 +1335,7 @@ mod tests {
         let result = call_tool(
             &mut dispatcher,
             "task_create",
-            json!({ "repo": "demo", "title": "port the CLI", "notes": "start with doctor" }),
+            json!({ "repo": REPO_SLUG, "title": "port the CLI", "notes": "start with doctor" }),
         );
         assert_eq!(result["task"]["text"], "port the CLI");
         assert_eq!(result["task"]["status"], "backlog");
@@ -1363,6 +1343,7 @@ mod tests {
         assert_eq!(result["task"]["createdAt"], NOW);
         // The repo binding is what puts the task in a Board swimlane.
         assert_eq!(result["task"]["worktree"]["repoRoot"], REPO_DIR);
+        assert_eq!(result["task"]["worktree"]["repo"], REPO_SLUG);
 
         // The new task shows up in the task_list read tool.
         let open = call_tool(&mut dispatcher, "task_list", json!({}));
@@ -1372,12 +1353,12 @@ mod tests {
     }
 
     #[test]
-    fn task_create_accepts_the_repo_dir_and_a_status() {
+    fn task_create_accepts_a_status() {
         let mut dispatcher = dispatcher();
         let result = call_tool(
             &mut dispatcher,
             "task_create",
-            json!({ "repo": REPO_DIR, "title": "already underway", "status": "doing" }),
+            json!({ "repo": REPO_SLUG, "title": "already underway", "status": "doing" }),
         );
         assert_eq!(result["task"]["status"], "doing");
         assert_eq!(result["task"]["worktree"]["repoRoot"], REPO_DIR);
@@ -1487,24 +1468,30 @@ mod tests {
     #[test]
     fn task_create_rejects_an_untracked_repo() {
         let mut dispatcher = dispatcher();
-        let message =
-            call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "nope", "title": "x" }));
-        assert!(message.contains("unknown repo: nope"), "{message}");
-        assert!(message.contains("demo"), "error should list tracked repos: {message}");
+        let message = call_tool_err(
+            &mut dispatcher,
+            "task_create",
+            json!({ "repo": "nope/nope", "title": "x" }),
+        );
+        assert!(message.contains("unknown repo: nope/nope"), "{message}");
+        assert!(message.contains(REPO_SLUG), "error should list tracked repos: {message}");
 
-        let mut empty = Dispatcher::new(seeded_store()).with_tracked_repos(vec![]);
+        let mut empty = Dispatcher::new(seeded_store());
         let message =
-            call_tool_err(&mut empty, "task_create", json!({ "repo": "demo", "title": "x" }));
+            call_tool_err(&mut empty, "task_create", json!({ "repo": REPO_SLUG, "title": "x" }));
         assert!(message.contains("no repos are tracked"), "{message}");
     }
 
     #[test]
     fn task_create_requires_title_and_repo() {
         let mut dispatcher = dispatcher();
-        let message = call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "demo" }));
+        let message = call_tool_err(&mut dispatcher, "task_create", json!({ "repo": REPO_SLUG }));
         assert!(message.contains("title"), "error should name the missing arg: {message}");
-        let message =
-            call_tool_err(&mut dispatcher, "task_create", json!({ "repo": "demo", "title": " " }));
+        let message = call_tool_err(
+            &mut dispatcher,
+            "task_create",
+            json!({ "repo": REPO_SLUG, "title": " " }),
+        );
         assert!(message.contains("title"), "blank title should be rejected: {message}");
         let message = call_tool_err(&mut dispatcher, "task_create", json!({ "title": "x" }));
         assert!(message.contains("repo"), "error should name the missing arg: {message}");
@@ -1516,7 +1503,7 @@ mod tests {
         let message = call_tool_err(
             &mut dispatcher,
             "task_create",
-            json!({ "repo": "demo", "title": "x", "status": "bogus" }),
+            json!({ "repo": REPO_SLUG, "title": "x", "status": "bogus" }),
         );
         assert!(message.contains("bogus"), "{message}");
         // Nothing was created.

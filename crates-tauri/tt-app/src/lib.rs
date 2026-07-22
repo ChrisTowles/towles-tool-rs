@@ -507,7 +507,40 @@ pub fn run() {
             let store_state = store::StoreState::open();
             // Emit the initial store snapshot for the dashboard's first mount.
             store::emit_snapshot(&app.handle().clone(), &store_state);
+            let repo_cache_store = store_state.clone();
             app.manage(store_state);
+
+            // Tracked-repo identity cache: every 10s, reconcile `tt-store`'s
+            // `repos` table (repo root -> `owner/repo`) from the currently
+            // tracked repos' cache-only git origin (no subprocess — reads
+            // whatever the scan/stat-poll loops above already computed). This
+            // is what lets `tt-mcp`'s `task_create` validate its `repo`
+            // argument against a real GitHub slug instead of a dir/basename
+            // match; `repos.json` (via the engine's tracked-repo list) stays
+            // the sole source of truth for which repos exist; a repo that's
+            // untracked or whose origin becomes unparseable just drops out of
+            // the next reconcile, with no separate untrack path to keep in
+            // sync. See `tt_store::Store::reconcile_repos`.
+            {
+                let engine = engine.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(10));
+                    loop {
+                        interval.tick().await;
+                        let now = now_ms();
+                        let origins = engine.lock().unwrap().tracked_repo_origins();
+                        let slugs: Vec<(String, String)> = origins
+                            .into_iter()
+                            .filter_map(|(dir, origin_url)| {
+                                let url = origin_url?;
+                                let slug = tt_git::task_assign::repo_slug_from_remote(&url)?;
+                                Some((dir, slug))
+                            })
+                            .collect();
+                        repo_cache_store.reconcile_repos(&slugs, now);
+                    }
+                });
+            }
 
             // Serve MCP over loopback HTTP. Bind-or-skip: whichever instance
             // takes the port serves every Claude Code session on the machine,
