@@ -127,6 +127,15 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
+/** Estimated dollar cost. Sub-cent figures round to `<$0.01` rather than `$0.00`
+ * so a nonzero session never reads as free. */
+function formatCost(n: number): string {
+  if (n > 0 && n < 0.01) return "<$0.01";
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
+  if (n >= 100) return `$${n.toFixed(0)}`;
+  return `$${n.toFixed(2)}`;
+}
+
 /** Bumps whenever `<html>`'s class actually flips (light/dark), so chart color
  * reads never race the theme-provider's own effect that toggles the class. */
 function useDomThemeVersion(): number {
@@ -312,7 +321,14 @@ function RankedBarChart({ bars }: { bars: { label: string; totalTokens: number }
   return <div ref={ref} style={{ height: Math.max(120, bars.length * 36) }} />;
 }
 
-type SessionSortKey = "title" | "project" | "date" | "billable" | "cacheRead" | "cacheWrite";
+type SessionSortKey =
+  | "title"
+  | "project"
+  | "date"
+  | "billable"
+  | "cacheRead"
+  | "cacheWrite"
+  | "cost";
 type SortDir = "asc" | "desc";
 
 /** First-click direction per column: names/repos alphabetize ascending; dates
@@ -325,6 +341,7 @@ const DEFAULT_SORT_DIR: Record<SessionSortKey, SortDir> = {
   billable: "desc",
   cacheRead: "desc",
   cacheWrite: "desc",
+  cost: "desc",
 };
 
 function sessionSortValue(s: ClaudeSession, key: SessionSortKey): string | number {
@@ -341,6 +358,8 @@ function sessionSortValue(s: ClaudeSession, key: SessionSortKey): string | numbe
       return s.cacheReadTokens;
     case "cacheWrite":
       return s.cacheCreationTokens;
+    case "cost":
+      return s.costUsd;
   }
 }
 
@@ -681,6 +700,15 @@ function SessionTable({ sessions, searching }: { sessions: ClaudeSession[]; sear
             >
               Cache W
             </SortableTh>
+            <SortableTh
+              sortKey="cost"
+              active={sort?.key === "cost"}
+              dir={sort?.dir ?? "desc"}
+              align="right"
+              onSort={toggleSort}
+            >
+              Cost
+            </SortableTh>
             <th className="py-1.5 pl-3 font-medium" aria-label="Actions" />
           </tr>
         </thead>
@@ -720,6 +748,9 @@ function SessionTable({ sessions, searching }: { sessions: ClaudeSession[]; sear
                 </td>
                 <td className="py-1.5 pr-3 text-right font-mono text-xs text-muted-foreground">
                   {formatTokens(s.cacheCreationTokens)}
+                </td>
+                <td className="py-1.5 pr-3 text-right font-mono text-xs text-foreground">
+                  {formatCost(s.costUsd)}
                 </td>
                 <td className="py-1.5 pl-3 text-right">
                   <OpenInAgentboardButton session={s} opening={opening} onOpen={open} />
@@ -919,7 +950,7 @@ export function ClaudeSessionsScreen() {
         <p className="p-6 text-sm text-muted-foreground">Scanning sessions…</p>
       ) : summary && totals ? (
         <>
-          <div className="grid grid-cols-2 gap-3 border-b border-border p-4 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 border-b border-border p-4 lg:grid-cols-5">
             <StatTile label="Sessions" value={String(totals.sessions)} />
             <StatTile
               label="In + Out"
@@ -928,6 +959,11 @@ export function ClaudeSessionsScreen() {
             />
             <StatTile label="Cache read" value={formatTokens(totals.cacheReadTokens)} />
             <StatTile label="Cache write" value={formatTokens(totals.cacheCreationTokens)} />
+            <StatTile
+              label="Est. cost"
+              value={formatCost(totals.costUsd)}
+              detail="approx · per-model rates"
+            />
           </div>
 
           <Tabs

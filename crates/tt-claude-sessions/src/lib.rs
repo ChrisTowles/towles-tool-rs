@@ -18,6 +18,7 @@
 //! - [`parser`] — day-cutoff computation.
 //! - [`tools`] — tool-call extraction from content blocks.
 //! - [`analyzer`] — per-session token analysis, model/project name helpers.
+//! - [`pricing`] — per-model token→dollar rates for cost estimation.
 //! - [`ledger`] — single-parse session scan + summary aggregates + search.
 //! - [`insights`] — ranked waste/habit findings over a scanned window.
 //! - [`breakdown`] — one session's turn/tool drill-down.
@@ -29,6 +30,7 @@ pub mod breakdown;
 pub mod insights;
 pub mod ledger;
 pub mod parser;
+pub mod pricing;
 pub mod tools;
 pub mod types;
 
@@ -56,6 +58,7 @@ pub use ledger::{
     search_sessions,
 };
 pub use parser::calculate_cutoff_ms;
+pub use pricing::{ModelPricing, pricing_for};
 pub use tools::{extract_tool_data, extract_tool_detail, sanitize_string, truncate_detail};
 pub use types::{BarChartDay, ModelBar, ProjectBar, ToolData};
 // The Claude Code transcript schema + parse/title/usage projections live in

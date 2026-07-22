@@ -28,6 +28,8 @@ export type LedgerTotals = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** Estimated USD cost across the window (approximate; priced per model). */
+  costUsd: number;
 };
 
 export type ClaudeSession = {
@@ -39,6 +41,8 @@ export type ClaudeSession = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** Estimated USD cost, priced per model (approximate). */
+  costUsd: number;
   /** Real launch directory, for "Open in Agentboard"; null for transcripts
    * that predate the field. */
   cwd: string | null;

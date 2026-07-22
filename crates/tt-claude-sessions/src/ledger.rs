@@ -43,6 +43,8 @@ pub struct SessionDetail {
     pub fable_tokens: i64,
     /// Extra reads of files already read this session (a context-loss smell).
     pub repeated_reads: i64,
+    /// Estimated USD cost, priced per model (see [`crate::pricing`]).
+    pub cost_usd: f64,
     /// Number of human prompts in the session.
     pub user_turns: i64,
     /// Human prompt text, newline-joined, capped — the search corpus.
@@ -139,6 +141,7 @@ pub fn scan_sessions_detailed(
             haiku_tokens: analysis.haiku_tokens,
             fable_tokens: analysis.fable_tokens,
             repeated_reads: analysis.repeated_reads,
+            cost_usd: analysis.cost_usd,
             user_turns,
             prompt_blob: user_prompt_blob(&entries, PROMPT_BLOB_MAX_BYTES),
             path,
@@ -156,7 +159,7 @@ fn local_date(mtime_ms: i64) -> String {
 }
 
 /// Whole-window totals for the stat tiles.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerTotals {
     pub sessions: i64,
@@ -164,6 +167,8 @@ pub struct LedgerTotals {
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
     pub cache_creation_tokens: i64,
+    /// Estimated USD cost across the window (see [`crate::pricing`]).
+    pub cost_usd: f64,
 }
 
 pub fn ledger_totals(details: &[SessionDetail]) -> LedgerTotals {
@@ -173,6 +178,7 @@ pub fn ledger_totals(details: &[SessionDetail]) -> LedgerTotals {
         t.output_tokens += d.usage.output_tokens;
         t.cache_read_tokens += d.usage.cache_read_tokens;
         t.cache_creation_tokens += d.usage.cache_creation_tokens;
+        t.cost_usd += d.cost_usd;
     }
     t
 }
@@ -309,6 +315,7 @@ mod tests {
             haiku_tokens: 0,
             fable_tokens: input + output,
             repeated_reads: 0,
+            cost_usd: 0.0,
             user_turns: 0,
             prompt_blob: String::new(),
         }
@@ -359,12 +366,14 @@ mod tests {
         let mut d = detail("a", "2026-07-10", 10, 20);
         d.usage.cache_read_tokens = 1000;
         d.usage.cache_creation_tokens = 30;
+        d.cost_usd = 0.5;
         let t = ledger_totals(&[d.clone(), d]);
         assert_eq!(t.sessions, 2);
         assert_eq!(t.input_tokens, 20);
         assert_eq!(t.output_tokens, 40);
         assert_eq!(t.cache_read_tokens, 2000);
         assert_eq!(t.cache_creation_tokens, 60);
+        assert!((t.cost_usd - 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -430,6 +439,8 @@ mod tests {
         assert_eq!(d.billable(), 15);
         assert_eq!(d.usage.cache_read_tokens, 100);
         assert_eq!(d.fable_tokens, 15);
+        // Fable: (10*10 + 5*50 + 100*1.0) / 1e6
+        assert!((d.cost_usd - 0.00045).abs() < 1e-9);
         assert_eq!(d.prompt_blob, "hello ledger");
     }
 }
