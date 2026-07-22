@@ -1,5 +1,8 @@
 //! Telemetry for the `tt` CLI and the desktop app: `tracing` instrumentation
-//! plus an event-log sink that streams every span and event to disk as JSONL.
+//! plus an event-log sink that streams every span and event to disk as JSONL,
+//! and the reader the Telemetry viewer screen uses to read it back. One
+//! crate for both halves so the writer and reader can never disagree about
+//! the on-disk schema.
 //!
 //! The point is answering questions *later*. "Which task spawned that `gh`
 //! call, how long did it take, and what did it exit with?" should be a `jq`
@@ -15,6 +18,18 @@
 //! - An [`layer::EventLogLayer`] writes the structured record to
 //!   `<data_dir>/telemetry/events-<date>.jsonl`, instance-scoped so each
 //!   worktree gets its own log.
+//! - [`list_days`]/[`read_day`] read those files back, for the Telemetry
+//!   viewer screen's Tauri bridge (`crates-tauri/tt-app/src/telemetry.rs`).
+//!   There is no cache here, unlike `tt-claude-sessions` — a day's log was
+//!   assumed to be small (bounded by subprocess spawns and discrete user
+//!   actions, never per-keystroke input), but an actively-used dev checkout
+//!   has been observed producing 75,000+ records in a single day, so that
+//!   assumption does not hold for a long-running session. The frontend caps
+//!   *rendered* rows to cope with that; `read_day` itself still returns the
+//!   whole file unconditionally, so a large day still costs a full read,
+//!   parse, and IPC payload on every screen focus/refresh. Bounded
+//!   reads/pagination here would be the deeper fix if that cost becomes a
+//!   problem in practice — not yet implemented.
 //!
 //! `tracing-subscriber`'s `tracing-log` feature captures the `log::` macros
 //! still in the tree, so existing call sites keep reporting while individual
@@ -22,9 +37,14 @@
 
 mod event_log;
 mod layer;
+mod reader;
+mod schema;
+mod types;
 
 pub use event_log::EventLog;
 pub use layer::EventLogLayer;
+pub use reader::{list_days, read_day};
+pub use types::TelemetryRecord;
 
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -52,7 +72,7 @@ const DISABLE_ENV: &str = "TT_TELEMETRY";
 /// exactly the kind of thing worth having already captured.
 const DISK_FILTER: &str = "warn,tt=debug,tt_agentboard=debug,tt_app=debug,tt_cli=debug,\
                            tt_collect=debug,tt_config=debug,tt_exec=debug,tt_git=debug,\
-                           tt_ide=debug,tt_journal=debug,tt_mcp=debug,tt_otel=debug,\
+                           tt_ide=debug,tt_journal=debug,tt_mcp=debug,tt_telemetry=debug,\
                            tt_tasks=debug,tt_store=debug,tt_update=debug,tt_vt=debug";
 
 #[derive(Debug, Error)]
@@ -62,6 +82,9 @@ pub enum Error {
 
     #[error("A global tracing subscriber is already installed")]
     AlreadyInitialized,
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -78,11 +101,14 @@ fn disk_sink_disabled() -> bool {
 /// produced it.
 fn resource(service: &str) -> Map<String, Value> {
     let mut attrs = Map::new();
-    attrs.insert("service.name".into(), Value::from(service));
-    attrs.insert("service.version".into(), Value::from(env!("CARGO_PKG_VERSION")));
-    attrs.insert("process.pid".into(), Value::from(std::process::id()));
+    let [service_name, service_version, process_pid] = schema::RESOURCE_KEYS else {
+        unreachable!("RESOURCE_KEYS is a fixed 3-element array")
+    };
+    attrs.insert(service_name.to_string(), Value::from(service));
+    attrs.insert(service_version.to_string(), Value::from(env!("CARGO_PKG_VERSION")));
+    attrs.insert(process_pid.to_string(), Value::from(std::process::id()));
     attrs.insert(
-        "tt.task".into(),
+        schema::FIELD_TT_TASK.into(),
         match tt_config::state_scope() {
             Some(scope) => Value::from(scope),
             None => Value::Null,

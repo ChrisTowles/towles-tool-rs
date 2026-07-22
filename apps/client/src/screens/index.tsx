@@ -9,6 +9,7 @@ import { GhPrsScreen } from "@/screens/gh-prs";
 import { McpScreen } from "@/screens/mcp";
 import { SettingsScreen } from "@/screens/settings";
 import { SlackScreen } from "@/screens/slack";
+import { TelemetryScreen } from "@/screens/telemetry";
 
 export const SCREEN_COMPONENTS: Record<ScreenId, ComponentType> = {
   cockpit: CockpitScreen,
@@ -19,5 +20,6 @@ export const SCREEN_COMPONENTS: Record<ScreenId, ComponentType> = {
   "claude-sessions": ClaudeSessionsScreen,
   "gh-prs": GhPrsScreen,
   mcp: McpScreen,
+  telemetry: TelemetryScreen,
   settings: SettingsScreen,
 };

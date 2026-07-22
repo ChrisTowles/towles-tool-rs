@@ -5390,9 +5390,9 @@ dependencies = [
  "tt-ide",
  "tt-journal",
  "tt-mcp",
- "tt-otel",
  "tt-store",
  "tt-tasks",
+ "tt-telemetry",
  "tt-update",
  "tt-vt",
  "uuid",
@@ -5440,9 +5440,9 @@ dependencies = [
  "tt-git",
  "tt-journal",
  "tt-mcp",
- "tt-otel",
  "tt-store",
  "tt-tasks",
+ "tt-telemetry",
 ]
 
 [[package]]
@@ -5496,7 +5496,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
- "tt-otel",
+ "tt-telemetry",
  "wait-timeout",
 ]
 
@@ -5543,19 +5543,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tt-otel"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "tracing-subscriber",
- "tt-config",
-]
-
-[[package]]
 name = "tt-store"
 version = "0.1.0"
 dependencies = [
@@ -5583,6 +5570,20 @@ dependencies = [
  "tt-config",
  "tt-exec",
  "tt-git",
+]
+
+[[package]]
+name = "tt-telemetry"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-subscriber",
+ "tt-config",
 ]
 
 [[package]]

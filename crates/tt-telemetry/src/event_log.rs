@@ -120,12 +120,18 @@ impl EventLog {
     }
 }
 
+/// The `%Y-%m-%d` date `path` holds, if it's one of our own rotated log
+/// files (`events-<date>.jsonl`) — the single place that owns this filename
+/// convention, so pruning and the reader's day listing can't drift apart on
+/// what counts as a log file.
+pub(crate) fn event_log_date(path: &Path) -> Option<&str> {
+    path.file_name()?.to_str()?.strip_prefix("events-")?.strip_suffix(".jsonl")
+}
+
 /// Whether `path` is one of our own rotated log files, so pruning can never
 /// delete something else that happens to share the directory.
 fn is_event_log(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("events-") && name.ends_with(".jsonl"))
+    event_log_date(path).is_some()
 }
 
 #[cfg(test)]

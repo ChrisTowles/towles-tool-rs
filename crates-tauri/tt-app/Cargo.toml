@@ -29,12 +29,12 @@ tt-journal = { workspace = true }
 tt-mcp = { workspace = true }
 tt-tasks = { workspace = true }
 tt-store = { workspace = true }
+tt-telemetry = { workspace = true }
 tt-update = { workspace = true }
 tt-vt = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
-tt-otel = { workspace = true }
 tracing = { workspace = true }
 futures-util = "0.3"
 native-tls = { workspace = true }

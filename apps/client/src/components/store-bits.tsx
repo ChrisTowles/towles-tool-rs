@@ -115,6 +115,51 @@ export function StatTile({
   );
 }
 
+/**
+ * A horizontal magnitude bar: a truncated label, a proportional fill against
+ * `max`, and the raw count right-aligned. Shared by any screen breaking a
+ * count down by category (MCP's tool usage, Telemetry's level/target/name
+ * breakdowns) so the bar-row markup lives in one place.
+ */
+export function BarRow({
+  label,
+  count,
+  max,
+  tone,
+}: {
+  label: string;
+  count: number;
+  max: number;
+  /** Text color for the label; defaults to the standard foreground. */
+  tone?: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      <span
+        className={cn("w-28 truncate font-mono text-xs", tone ?? "text-foreground")}
+        title={label}
+      >
+        {label}
+      </span>
+      <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+        <div
+          className="h-full rounded-full bg-violet-500"
+          style={{ width: `${Math.max(2, (count / max) * 100)}%` }}
+        />
+      </div>
+      <span className="w-10 shrink-0 text-right font-mono text-xs text-muted-foreground">
+        {count}
+      </span>
+    </div>
+  );
+}
+
+/** The largest count in a set of {@link BarRow} rows, floored at 1 so a bar
+ * never divides by zero. */
+export function maxCount(rows: { count: number }[]): number {
+  return Math.max(1, ...rows.map((r) => r.count));
+}
+
 /** Icon + label per checks tone — the color itself comes from the shared PR
  * tone map (`lib/pr-tone.ts`), so cyan means running everywhere, never
  * red/amber, which are reserved for genuine failure/needs-you. */
