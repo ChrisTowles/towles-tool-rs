@@ -522,6 +522,15 @@ export function fmtClock(ms: number): string {
   });
 }
 
+/** `Wed, Jul 22` — weekday + date for an epoch-ms timestamp. */
+export function fmtDate(ms: number): string {
+  return new Date(ms).toLocaleDateString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 /** Below this span the countdown switches to `m:ss` and (in the Cockpit) ticks
  * every second, so the final approach reads "1:30 … 0:59 … 0:05" instead of a
  * coarse "1m" that the 15s shared clock can leave stale 20s out. */
