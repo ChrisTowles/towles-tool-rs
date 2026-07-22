@@ -231,7 +231,7 @@ export function McpScreen() {
           </TabsContent>
 
           <TabsContent value="tools" className="p-4">
-            <ToolsTab tools={tools} />
+            <ToolsTab tools={tools} endpoint={endpoint} />
           </TabsContent>
 
           <TabsContent value="setup" className="p-4">
@@ -652,7 +652,7 @@ function groupTools(tools: McpToolDoc[]): { family: string; tools: McpToolDoc[] 
  * Auto-generated tool documentation, straight from the MCP contract — never
  * hand-maintained, so it can't fall out of sync as tools are added or changed.
  */
-function ToolsTab({ tools }: { tools: McpToolDoc[] | null }) {
+function ToolsTab({ tools, endpoint }: { tools: McpToolDoc[] | null; endpoint: string }) {
   const [query, setQuery] = useState("");
   const [testing, setTesting] = useState<McpToolDoc | null>(null);
 
@@ -720,7 +720,7 @@ function ToolsTab({ tools }: { tools: McpToolDoc[] | null }) {
         ))
       )}
 
-      <ToolTesterDialog tool={testing} onClose={() => setTesting(null)} />
+      <ToolTesterDialog tool={testing} endpoint={endpoint} onClose={() => setTesting(null)} />
     </div>
   );
 }
@@ -757,7 +757,15 @@ function isMutating(tool: McpToolDoc): boolean {
  * faith. With no capability gate left, that check is the whole guard on writes,
  * so making it visible is worth a button.
  */
-function ToolTesterDialog({ tool, onClose }: { tool: McpToolDoc | null; onClose: () => void }) {
+function ToolTesterDialog({
+  tool,
+  endpoint,
+  onClose,
+}: {
+  tool: McpToolDoc | null;
+  endpoint: string;
+  onClose: () => void;
+}) {
   const [args, setArgs] = useState("{}");
   const [asBrowser, setAsBrowser] = useState(false);
   const [running, setRunning] = useState(false);
@@ -795,12 +803,7 @@ function ToolTesterDialog({ tool, onClose }: { tool: McpToolDoc | null; onClose:
     // simulation. Encoding one *or* the other lost the tool name for exactly
     // the runs where the security boundary was being exercised.
     uiAction("mcp.tool.test_run", "mcp", asBrowser ? `${tool.name} as-browser` : tool.name);
-    const body = JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: { name: tool.name, arguments: parsed },
-    });
+    const body = requestBody(tool.name, parsed);
     const res = await invoke<McpTestResult>(
       "mcp_test_call",
       { body, simulateBrowserOrigin: asBrowser },
@@ -814,6 +817,29 @@ function ToolTesterDialog({ tool, onClose }: { tool: McpToolDoc | null; onClose:
       ok: setResult,
       err: (e) => toast.error(errorMessage(e)),
     });
+  }
+
+  async function copyCurl() {
+    if (!tool) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(args);
+    } catch (e) {
+      toast.error(`Arguments must be valid JSON: ${errorMessage(e)}`);
+      return;
+    }
+    uiAction("mcp.tool.copy_curl", "mcp", tool.name);
+    // Safe to hand out precisely because `curl` sends no Origin header: the
+    // transport refuses any request that carries one (the DNS-rebinding guard),
+    // so a terminal curl was always a valid way to reach this endpoint — this
+    // just spares the user typing it.
+    const command = curlCommand(endpoint, requestBody(tool.name, parsed));
+    try {
+      await navigator.clipboard.writeText(command);
+      toast.success("Copied curl command");
+    } catch (e) {
+      toast.error(errorMessage(e));
+    }
   }
 
   const mutating = isMutating(tool);
@@ -869,6 +895,10 @@ function ToolTesterDialog({ tool, onClose }: { tool: McpToolDoc | null; onClose:
             <Play className="size-3.5" />
             {running ? "Running…" : "Run tool"}
           </Button>
+          <Button variant="outline" size="sm" onClick={() => void copyCurl()}>
+            <Copy className="size-3.5" />
+            Copy as curl
+          </Button>
           {result && (
             <span className="text-xs text-muted-foreground">
               HTTP {result.status} · {result.durationMs}ms
@@ -900,6 +930,37 @@ function ToolTesterDialog({ tool, onClose }: { tool: McpToolDoc | null; onClose:
       </DialogContent>
     </Dialog>
   );
+}
+
+/** The `tools/call` JSON-RPC request body — the one shape both the live test
+ * call and the copied curl command send, so they can never drift apart. */
+function requestBody(name: string, args: unknown): string {
+  return JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name, arguments: args },
+  });
+}
+
+/** Wrap a string for a POSIX shell in single quotes, escaping any embedded
+ * single quote as `'\''` — the standard idiom, and the only sequence that needs
+ * handling inside single quotes. */
+function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/** An equivalent `curl` invocation for the request the tester would send:
+ * POST to the endpoint with the required `Content-Type: application/json`
+ * (an admission requirement, not a nicety) and the JSON body, both shell-quoted
+ * so it pastes into a terminal verbatim. */
+function curlCommand(endpoint: string, body: string): string {
+  return [
+    "curl -X POST",
+    shellSingleQuote(endpoint),
+    "-H 'Content-Type: application/json'",
+    `-d ${shellSingleQuote(body)}`,
+  ].join(" ");
 }
 
 /** A starting `arguments` object: every required property, with a typed
