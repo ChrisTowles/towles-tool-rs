@@ -121,13 +121,6 @@ export const isTaskClosed = (t: Pick<TaskItem, "status" | "outcome">) =>
 export const taskOutcomeOf = (t: Pick<TaskItem, "status" | "outcome">): TaskOutcome | null =>
   t.outcome ?? (t.status === "done" ? "done" : null);
 
-/** The best-evidence default for closing a task: a merged linked PR (or a
- * card already in done) closes as `done`, anything else as `abandoned`.
- * Mirrors the backend's `TaskItem::inferred_outcome` — the close dialog uses
- * it to pre-answer, so the common case is one click. */
-export const inferredTaskOutcome = (t: Pick<TaskItem, "status" | "prs">): TaskOutcome =>
-  t.status === "done" || t.prs.some((p) => p.state === "merged") ? "done" : "abandoned";
-
 /** One GitHub issue linked to a task; `state` is the last observed state. */
 export type TaskIssueLink = {
   repo: string;
