@@ -134,7 +134,6 @@ import type { OpenFileRequest } from "@/lib/ide";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import {
   fmtCountdown,
-  inferredTaskOutcome,
   storeAddTask,
   taskDelete,
   storeAttachTaskIssue,
@@ -1345,11 +1344,14 @@ export function AgentboardScreen() {
     const folder = repos.flatMap((r) => r.folders).find((f) => f.dir === dir);
     const sessionIds = folder ? liveSessions(folder).map((s) => s.id) : [];
     // The bound board task, if the board knows this worktree: deleting the
-    // worktree closes it, so the dialog asks how it ended — pre-answered
-    // from the task's own evidence.
+    // worktree closes it, so the dialog asks how it ended. Defaults to
+    // `done` — the common case — rather than inferring from the linked PR's
+    // cached state, which can lag a just-merged PR by a full poll tick and
+    // silently default to "abandoned". The user flips it via the dialog's
+    // swap link on the (rarer) actually-abandoned case.
     const bound = snapshot.tasks.find((t) => t.worktree?.dir === dir) ?? null;
     setDeleteWtTask(bound);
-    setDeleteWtOutcome(bound ? inferredTaskOutcome(bound) : "done");
+    setDeleteWtOutcome("done");
     bumpDeleteFlow(dir); // a fresh flow — see `endDeleteFlow`
     setConfirmDeleteWt({ label, dirs: [dir], sessionIds });
   }
@@ -2290,10 +2292,10 @@ export function AgentboardScreen() {
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {/* How the task ended, pre-answered from its own evidence (a merged
-              linked PR ⇒ done) — one underlined link flips it, so the common
-              case stays one click. Only rendered when a board task is bound;
-              a bare worktree has nothing to record. */}
+          {/* How the task ended, defaulted to `done` — the common case — with
+              one underlined link to flip it to `abandoned`. Only rendered
+              when a board task is bound; a bare worktree has nothing to
+              record. */}
           {deleteWtTask && (
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <span
