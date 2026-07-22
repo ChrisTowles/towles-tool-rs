@@ -279,6 +279,11 @@ pub struct FolderData {
     /// carried on the snapshot.
     #[serde(default)]
     pub has_launch_config: bool,
+    /// Forced-quiet override (folder_meta.json) — the frontend's
+    /// `isFolderQuiet` treats this folder as quiet under the "hide inactive"
+    /// rail filter regardless of its actual activity signals below.
+    #[serde(default)]
+    pub quiet: bool,
 }
 
 /// A logical repo: a checkout and every other folder on the rail that's a

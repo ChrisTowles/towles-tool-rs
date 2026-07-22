@@ -150,6 +150,7 @@ import { useFocusTarget } from "@/lib/focus-target";
 import { railRowMotion } from "@/lib/rail-motion";
 import { AnimatePresence, motion } from "motion/react";
 import { openExternalUrl } from "@/lib/open-url";
+import { useHideInactiveRepos } from "@/lib/rail-prefs";
 import { PR_TONE } from "@/lib/pr-tone";
 import { useWorkspace } from "@/lib/workspace";
 import { untrackRepo } from "@/lib/repo-actions";
@@ -411,12 +412,14 @@ export function AgentboardScreen() {
   // the eye, no agent activity within the grace window) behind a per-repo
   // "N quiet" stub row, so a big rail shrinks to what's actually going on
   // without anything silently disappearing. A view filter, not a
-  // rail-structure change — local state only, unlike `collapsed` it doesn't
-  // need to survive a reload. Lookups used for panes/sessions (folderOf,
+  // rail-structure change. Persisted via `agentboard.hideInactiveRepos` in the
+  // shared settings file (`useHideInactiveRepos`) — a whole-app preference,
+  // not rail-row UI state, so it doesn't belong in the `collapsed` map the way
+  // `railCollapsed` does. Lookups used for panes/sessions (folderOf,
   // sessionById, etc. below) stay on the full `repos` list; only the two
-  // render surfaces (RepoGroup list, RailIconStrip) apply the filter, since
-  // a pane already open for a now-quiet folder must keep working.
-  const [hideInactive, setHideInactive] = useState(false);
+  // render surfaces (RepoGroup list, RailIconStrip) apply the filter, since a
+  // pane already open for a now-quiet folder must keep working.
+  const [hideInactive, setHideInactive] = useHideInactiveRepos();
   // Per-repo "show me the quiet ones anyway" toggle (the stub row).
   const [quietRevealed, setQuietRevealed] = useState<Record<string, boolean>>({});
 
@@ -1726,7 +1729,7 @@ export function AgentboardScreen() {
                       )}
                       <button
                         type="button"
-                        onClick={() => setHideInactive((v) => !v)}
+                        onClick={() => setHideInactive(!hideInactive)}
                         aria-label={hideInactive ? "Show all repos" : "Hide inactive repos"}
                         aria-pressed={hideInactive}
                         className={cn(

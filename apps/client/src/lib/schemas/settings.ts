@@ -106,6 +106,7 @@ const AgentboardBlockSchema = z
     terminalFontSize: z.number().optional(),
     shortcutsWorkInTerminal: z.boolean().optional(),
     boardGroupByRepo: z.boolean().optional(),
+    hideInactiveRepos: z.boolean().optional(),
   })
   .catchall(z.unknown());
 

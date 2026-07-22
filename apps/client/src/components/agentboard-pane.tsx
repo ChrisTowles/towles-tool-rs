@@ -128,6 +128,7 @@ export function WorkingContext({
             path={folder.dir}
             dir={folder.dir}
             isWorktree={folder.isWorktree}
+            quiet={folder.quiet}
             onNewTask={!missing ? newTask : undefined}
             onDeleteWorktree={
               !missing && folder.isWorktree

@@ -156,8 +156,9 @@ export type UserSettings = {
    * `terminalFontSize` (canvas terminal font px; unset = 13), and
    * `shortcutsWorkInTerminal` (board-wide action shortcuts, e.g. jump to
    * next/prev session needing you, fire even while a terminal has focus;
-   * unset = on), and `boardGroupByRepo` (the Board kanban groups tasks into
-   * per-repo swimlanes; unset = on).
+   * unset = on), `boardGroupByRepo` (the Board kanban groups tasks into
+   * per-repo swimlanes; unset = on), and `hideInactiveRepos` (the Agentboard
+   * rail's eye-icon "hide inactive repos" filter; unset = off).
    */
   agentboard?: {
     notifyNeedsYou?: boolean;
@@ -170,6 +171,7 @@ export type UserSettings = {
     terminalFontSize?: number;
     shortcutsWorkInTerminal?: boolean;
     boardGroupByRepo?: boolean;
+    hideInactiveRepos?: boolean;
   } & Record<string, unknown>;
 };
 

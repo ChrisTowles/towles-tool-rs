@@ -42,6 +42,7 @@ function folder(overrides: Partial<FolderData>): FolderData {
     needs: 0,
     hasPortDrift: false,
     hasLaunchConfig: false,
+    quiet: false,
     ...overrides,
   };
 }
