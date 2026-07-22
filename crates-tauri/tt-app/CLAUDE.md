@@ -13,6 +13,19 @@ follows is a cross-cutting rule that spans multiple files.
   `engine.lock()` deliberately — on Linux, sync Tauri commands dispatch
   inline on the GTK main thread, so a lock held across a `git` chain would
   freeze every `ab_*` command, not just the caller.
+- **Stamp a cache entry with the time its batch *finished*, never the `now`
+  the work was scheduled with.** `lib.rs`'s git warm loop takes a fresh
+  `now_ms()` *after* `compute_git_info` returns. Reusing the pre-batch `now`
+  makes every entry born older than `GIT_CACHE_TTL_MS` the moment a batch
+  outruns the TTL, so the next tick finds it stale and recomputes immediately —
+  a loop with no upper bound. It ran at ~20 git spawns/sec around the clock and
+  wrote ~1 GB/day of telemetry before anyone noticed, because nothing about it
+  looks wrong at a glance. The cost is bounded structurally as well:
+  `compute_git_info` takes the folder's previous `GitInfo` and skips the
+  landing probe when `probe_key` (HEAD sha + base sha + upstream track) is
+  unchanged, so an idle repo costs three cheap reads instead of up to ~192
+  subprocesses. Both halves are pinned by tests in `git_info.rs` — keep them
+  if you touch either.
 - **Every `StatePayload` leaving the app must pass through
   `stamp_pty_state`** (`agentboard.rs`). The Tauri-free engine can't see
   PTYs, so a new command that builds/returns a `StatePayload` without this

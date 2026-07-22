@@ -301,10 +301,11 @@ pub fn run() {
                             let warmed = tauri::async_runtime::spawn_blocking(move || {
                                 stale
                                     .into_iter()
-                                    .map(|(dir, base_branch)| {
+                                    .map(|(dir, base_branch, previous)| {
                                         let info = tt_agentboard::git_info::compute_git_info(
                                             &dir,
                                             base_branch.as_deref(),
+                                            Some(&previous),
                                         );
                                         (dir, info)
                                     })
@@ -312,7 +313,14 @@ pub fn run() {
                             })
                             .await
                             .unwrap_or_default();
-                            engine.lock().unwrap().warm_git_cache(warmed, now);
+                            // Stamp with the time the batch actually *finished*,
+                            // not the `now` from before it ran. Reusing the
+                            // pre-batch timestamp made every entry born older
+                            // than `GIT_CACHE_TTL_MS` whenever the batch outran
+                            // the TTL, so the next tick found them stale again
+                            // and recomputed immediately, forever.
+                            let warmed_at = now_ms();
+                            engine.lock().unwrap().warm_git_cache(warmed, warmed_at);
                         }
                         {
                             let mut e = engine.lock().unwrap();
@@ -341,10 +349,11 @@ pub fn run() {
                         let changed_dirs = tauri::async_runtime::spawn_blocking(move || {
                             let targets = poll_engine.lock().unwrap().git_targets();
                             let mut changed_dirs = Vec::new();
-                            for (dir, base_branch) in targets {
+                            for (dir, base_branch, previous) in targets {
                                 let info = tt_agentboard::git_info::compute_git_info(
                                     &dir,
                                     base_branch.as_deref(),
+                                    Some(&previous),
                                 );
                                 let stored = poll_engine.lock().unwrap().store_git_info(
                                     &dir,
@@ -393,7 +402,7 @@ pub fn run() {
                                 .unwrap()
                                 .git_targets()
                                 .into_iter()
-                                .map(|(dir, _)| dir)
+                                .map(|(dir, _, _)| dir)
                                 .collect();
                             tt_agentboard::git_info::fetch_all(&targets);
                         })

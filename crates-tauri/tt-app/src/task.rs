@@ -24,7 +24,7 @@ fn refresh_all_git_info_in_background(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let ab = app.state::<crate::agentboard::Ab>();
         let targets: Vec<String> =
-            ab.engine.lock().unwrap().git_targets().into_iter().map(|(dir, _)| dir).collect();
+            ab.engine.lock().unwrap().git_targets().into_iter().map(|(dir, _, _)| dir).collect();
         let _ = tauri::async_runtime::spawn_blocking(move || {
             tt_agentboard::git_info::fetch_all(&targets);
         })

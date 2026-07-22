@@ -106,6 +106,13 @@ pub struct GitInfo {
     /// copied onto the wire `FolderData` so the client can gate its
     /// dev-servers affordance without a per-poll file read of its own.
     pub has_launch_config: bool,
+    /// Fingerprint of the git state the landing probe's answer was computed
+    /// at (see [`probe_fingerprint`]). Purely an internal revalidation token —
+    /// never sent to the client — that lets a poll skip the probe when nothing
+    /// it reads has moved. Empty when the probe never ran or the fingerprint
+    /// was unreadable.
+    #[serde(skip)]
+    pub probe_key: String,
 }
 
 /// Must stay above the git poll interval so the poll keeps entries warm.
@@ -166,7 +173,7 @@ impl GitInfoCache {
     /// per-folder base-branch override — callers that have one (the app's
     /// git-stat poll) call [`compute_git_info`] directly instead.
     pub fn refresh(&mut self, dir: &str, now_ms: i64) -> GitInfo {
-        let info = compute_git_info(dir, None);
+        let info = compute_git_info(dir, None, None);
         self.insert(dir, info.clone(), now_ms);
         info
     }
@@ -208,7 +215,39 @@ fn git_out(dir: &str, args: &[&str]) -> String {
 /// [`resolve_base_ref`]), threaded in by the caller from
 /// `FolderMetaStore::base_branch_for` — `compute_git_info` has no store
 /// access of its own, only `dir`.
-pub fn compute_git_info(dir: &str, base_branch_override: Option<&str>) -> GitInfo {
+/// Fingerprint of every input the landing probe reads: `HEAD`'s sha, the
+/// resolved base's sha, and the branch's upstream-track string.
+/// `tt_tasks::ops::work_state` is a pure function of those three (its other
+/// arguments are constants at this call site), so an unchanged fingerprint
+/// means the previous landing answer is still exact.
+///
+/// This is what keeps the poll's cost proportional to *actual git movement*
+/// rather than to elapsed time: three cheap reads stand in for a probe that
+/// costs up to ~192 subprocesses (`MAX_PROBES` commits × 3 spawns each).
+///
+/// Returns empty when `HEAD` or the base is unreadable — a partial fingerprint
+/// must never compare equal to a real one, so an unreadable repo re-probes
+/// instead of trusting a half-formed key.
+fn probe_fingerprint(dir: &str, compared_base: &str) -> String {
+    let head = git_out(dir, &["rev-parse", "HEAD"]);
+    let base = git_out(dir, &["rev-parse", compared_base]);
+    if head.is_empty() || base.is_empty() {
+        return String::new();
+    }
+    // Empty is a legitimate answer here (a branch with no upstream), unlike
+    // the two shas above — so it never invalidates the fingerprint.
+    let track = git_out(dir, &["for-each-ref", "HEAD", "--format=%(upstream:track)"]);
+    format!("{head} {base} {track}")
+}
+
+/// Compute a folder's git info. `previous` is that folder's last cached value,
+/// used only to skip the expensive landing probe when nothing it reads has
+/// moved (see [`probe_fingerprint`]); pass `None` to force a full computation.
+pub fn compute_git_info(
+    dir: &str,
+    base_branch_override: Option<&str>,
+    previous: Option<&GitInfo>,
+) -> GitInfo {
     if dir.is_empty() {
         return GitInfo::default();
     }
@@ -263,14 +302,30 @@ pub fn compute_git_info(dir: &str, base_branch_override: Option<&str>) -> GitInf
         // story. The uncommitted and orphaned axes are passed as 0 because
         // this struct reports the first as `dirty` and does not carry the
         // second; only the landing half of `WorkState` is read below.
-        let refs = tt_tasks::ops::BaseRefs {
-            base: compared_base.clone(),
-            local: compared_base.clone(),
-            remote: None,
-        };
-        let work = tt_tasks::ops::work_state(&refs, std::path::Path::new(dir), "HEAD", 0, 0);
-        info.commits_unlanded = work.unlanded as i64;
-        info.landed = work.landed.map(|via| via.label().to_string());
+        //
+        // Before paying for it, check whether anything the probe reads has
+        // actually moved. When it hasn't, the previous answer is not merely a
+        // good guess — it is the same computation over the same inputs — so
+        // reusing it is exact, not a staleness tradeoff. This is what stops a
+        // hot poll loop from re-running the probe against an idle repo.
+        let fingerprint = probe_fingerprint(dir, &compared_base);
+        let reusable = previous
+            .filter(|prev| !fingerprint.is_empty() && prev.probe_key == fingerprint)
+            .cloned();
+        if let Some(prev) = reusable {
+            info.commits_unlanded = prev.commits_unlanded;
+            info.landed = prev.landed;
+        } else {
+            let refs = tt_tasks::ops::BaseRefs {
+                base: compared_base.clone(),
+                local: compared_base.clone(),
+                remote: None,
+            };
+            let work = tt_tasks::ops::work_state(&refs, std::path::Path::new(dir), "HEAD", 0, 0);
+            info.commits_unlanded = work.unlanded as i64;
+            info.landed = work.landed.map(|via| via.label().to_string());
+        }
+        info.probe_key = fingerprint;
     } else {
         info.commits_unlanded = 0;
     }
@@ -446,6 +501,10 @@ pub fn compute_git_info_from_outputs(
         task_base_branch: None,
         compared_base: String::new(),
         has_launch_config: false,
+        // Stamped by `compute_git_info` alongside the probe it guards; empty
+        // here means "no probe has run", which never compares equal to a real
+        // fingerprint and so can only cause a probe, never skip one.
+        probe_key: String::new(),
     }
 }
 
@@ -1173,7 +1232,7 @@ mod tests {
     fn compute_flags_a_missing_dir() {
         let root = tempfile::TempDir::new().unwrap();
         let gone = root.path().join("moved-away");
-        let info = compute_git_info(gone.to_str().unwrap(), None);
+        let info = compute_git_info(gone.to_str().unwrap(), None, None);
         assert!(info.dir_missing);
         assert!(info.branch.is_empty());
     }
@@ -1182,7 +1241,7 @@ mod tests {
     fn compute_does_not_flag_an_existing_dir() {
         let root = tempfile::TempDir::new().unwrap();
         // Present but not a git repo: still not "missing".
-        let info = compute_git_info(root.path().to_str().unwrap(), None);
+        let info = compute_git_info(root.path().to_str().unwrap(), None, None);
         assert!(!info.dir_missing);
     }
 
@@ -1209,7 +1268,7 @@ mod tests {
         run(&["commit", "--quiet", "-m", "init"]);
 
         // A non-task checkout has no marker: no task base surfaced.
-        let info = compute_git_info(repo.to_str().unwrap(), None);
+        let info = compute_git_info(repo.to_str().unwrap(), None, None);
         assert_eq!(info.task_base_branch, None);
 
         // Writing the `.tt-task` marker surfaces its `base=` field, so the
@@ -1219,7 +1278,7 @@ mod tests {
             tt_tasks::marker_contents("s", "develop", "main"),
         )
         .unwrap();
-        let info = compute_git_info(repo.to_str().unwrap(), None);
+        let info = compute_git_info(repo.to_str().unwrap(), None, None);
         assert_eq!(info.task_base_branch, Some("develop".to_string()));
     }
 
@@ -1265,12 +1324,12 @@ mod tests {
         let dir = repo.to_str().unwrap();
 
         // vs origin/main (auto-detect, no override): both commits count.
-        let vs_main = compute_git_info(dir, None);
+        let vs_main = compute_git_info(dir, None, None);
         assert_eq!(vs_main.compared_base, "origin/main");
         assert_eq!(vs_main.commits_ahead, 2);
 
         // vs an explicit "develop" override: only feature's own commit counts.
-        let vs_develop = compute_git_info(dir, Some("develop"));
+        let vs_develop = compute_git_info(dir, Some("develop"), None);
         assert_eq!(vs_develop.compared_base, "origin/develop");
         assert_eq!(vs_develop.commits_ahead, 1);
     }
@@ -1330,7 +1389,7 @@ mod tests {
         run(&["checkout", "--quiet", "feature"]);
 
         let dir = repo.to_str().unwrap();
-        let info = compute_git_info(dir, None);
+        let info = compute_git_info(dir, None, None);
         // Still "ahead" by SHA reachability — feature's own commit is a
         // different object than the one cherry-picked onto main.
         assert_eq!(info.commits_ahead, 1);
@@ -1366,10 +1425,96 @@ mod tests {
         run(&["commit", "--quiet", "-am", "on feature, never merged"]);
 
         let dir = repo.to_str().unwrap();
-        let info = compute_git_info(dir, None);
+        let info = compute_git_info(dir, None, None);
         assert_eq!(info.commits_ahead, 1);
         assert_eq!(info.commits_unlanded, 1);
         assert_eq!(info.landed, None, "nothing landed, so the rail must not claim otherwise");
+    }
+
+    /// An entry stamped with a timestamp captured *before* a slow batch is born
+    /// already past the TTL, so the very next poll finds it stale and recomputes
+    /// immediately — a loop with no upper bound. This is the arithmetic behind a
+    /// real incident: the agentboard's git warm loop reused its pre-batch `now`,
+    /// and once the landing probe pushed a batch past `GIT_CACHE_TTL_MS` it
+    /// spawned ~20 git subprocesses/sec around the clock. Stamp with the time the
+    /// batch *finished*.
+    #[test]
+    fn cache_entry_stamped_before_a_slow_batch_is_born_stale() {
+        let mut cache = GitInfoCache::new();
+        let batch_started = 1_000_000;
+        let batch_finished = batch_started + GIT_CACHE_TTL_MS * 2;
+
+        cache.insert("/repo", GitInfo::default(), batch_started);
+        assert!(
+            !cache.is_fresh("/repo", batch_finished),
+            "a pre-batch stamp is already expired by the time the batch lands"
+        );
+
+        cache.insert("/repo", GitInfo::default(), batch_finished);
+        assert!(
+            cache.is_fresh("/repo", batch_finished),
+            "stamping with the batch's completion time is what makes the TTL mean anything"
+        );
+    }
+
+    /// The structural guard against that same storm: when nothing the landing
+    /// probe reads has moved, its answer is reused rather than recomputed, so a
+    /// hot poll costs three cheap reads instead of up to ~192 subprocesses. The
+    /// previous answer is poisoned with a value the probe could never produce —
+    /// if it survives, the probe genuinely did not run.
+    #[test]
+    fn unchanged_revision_reuses_the_landing_answer_and_a_moved_head_invalidates_it() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+        run(&["update-ref", "refs/remotes/origin/main", "main"]);
+        run(&["checkout", "--quiet", "-b", "feature"]);
+        std::fs::write(repo.join("f.txt"), "2").unwrap();
+        run(&["commit", "--quiet", "-am", "unlanded work"]);
+
+        let dir = repo.to_str().unwrap();
+        let first = compute_git_info(dir, None, None);
+        assert_eq!(first.commits_unlanded, 1);
+        assert!(!first.probe_key.is_empty(), "a probed repo must carry a fingerprint to reuse");
+
+        let mut poisoned = first.clone();
+        poisoned.landed = Some("sentinel".to_string());
+        poisoned.commits_unlanded = 99;
+
+        let reused = compute_git_info(dir, None, Some(&poisoned));
+        assert_eq!(
+            reused.landed.as_deref(),
+            Some("sentinel"),
+            "nothing moved, so the cached answer must be carried over, not recomputed"
+        );
+        assert_eq!(reused.commits_unlanded, 99);
+        assert_eq!(reused.probe_key, first.probe_key);
+
+        // Moving HEAD changes the fingerprint, which must force a real probe and
+        // discard the poisoned answer.
+        std::fs::write(repo.join("f.txt"), "3").unwrap();
+        run(&["commit", "--quiet", "-am", "more unlanded work"]);
+
+        let reprobed = compute_git_info(dir, None, Some(&poisoned));
+        assert_ne!(reprobed.probe_key, first.probe_key, "a moved HEAD must invalidate the memo");
+        assert_eq!(reprobed.landed, None);
+        assert_eq!(reprobed.commits_unlanded, 2);
     }
 
     /// The rail's headline false alarm. A squash merge collapses the branch's
@@ -1415,7 +1560,7 @@ mod tests {
         run(&["checkout", "--quiet", "feature"]);
 
         let dir = repo.to_str().unwrap();
-        let info = compute_git_info(dir, None);
+        let info = compute_git_info(dir, None, None);
         // Still ahead by SHA reachability — the squash commit is a new object.
         assert_eq!(info.commits_ahead, 2);
         assert_eq!(info.commits_unlanded, 0, "a squash-merged branch holds no outstanding work");
@@ -1463,7 +1608,7 @@ mod tests {
         let count_objects =
             || walkdir(&repo.join(".git").join("objects")).filter(|p| p.is_file()).count();
         let before = count_objects();
-        let info = compute_git_info(repo.to_str().unwrap(), None);
+        let info = compute_git_info(repo.to_str().unwrap(), None, None);
         assert_eq!(info.commits_unlanded, 3, "the probe actually ran");
         assert_eq!(
             count_objects(),
@@ -1536,7 +1681,7 @@ mod tests {
         run(&["commit", "--quiet", "-m", "c, after the merge"]);
 
         let dir = repo.to_str().unwrap();
-        let info = compute_git_info(dir, None);
+        let info = compute_git_info(dir, None, None);
         assert_eq!(info.commits_ahead, 3);
         assert_eq!(info.commits_unlanded, 1, "only the post-merge commit is outstanding");
         assert_eq!(info.landed, None, "a branch with new work has not fully landed");
