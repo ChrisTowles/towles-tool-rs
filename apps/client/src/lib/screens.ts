@@ -8,6 +8,7 @@ import {
   Settings,
   Stethoscope,
   TerminalSquare,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 
@@ -20,6 +21,7 @@ export type ScreenId =
   | "claude-sessions"
   | "gh-prs"
   | "mcp"
+  | "telemetry"
   | "settings";
 
 export type ScreenMeta = {
@@ -88,6 +90,13 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     keywords: ["mcp", "server", "calls", "tools", "json-rpc", "protocol", "incoming"],
     fullBleed: true,
   },
+  telemetry: {
+    id: "telemetry",
+    title: "Telemetry",
+    icon: Zap,
+    keywords: ["events", "otel", "telemetry", "spans", "log", "tracing"],
+    fullBleed: true,
+  },
   settings: {
     id: "settings",
     title: "Settings",
@@ -109,6 +118,6 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
 
 export const NAV_SECTIONS: { label: string; screens: ScreenId[] }[] = [
   { label: "Focus", screens: ["cockpit", "board", "agentboard", "slack"] },
-  { label: "Tools", screens: ["doctor", "claude-sessions", "gh-prs", "mcp"] },
+  { label: "Tools", screens: ["doctor", "claude-sessions", "gh-prs", "mcp", "telemetry"] },
   { label: "App", screens: ["settings"] },
 ];

@@ -26,6 +26,7 @@ mod slack;
 mod slack_socket;
 mod store;
 mod task;
+mod telemetry;
 mod terminal;
 mod update;
 
@@ -62,7 +63,7 @@ fn app_task() -> String {
 }
 
 /// The shared IPC seam for frontend `ui.action` telemetry (see the root
-/// CLAUDE.md's `tt-otel` bullet): the webview can't reach `tracing`, so every
+/// CLAUDE.md's `tt-telemetry` bullet): the webview can't reach `tracing`, so every
 /// user gesture worth recording crosses here with a stable action id, the
 /// screen it happened on, and an optional word of `detail` (an outcome, a
 /// count — never content or continuous input).
@@ -110,7 +111,7 @@ pub fn run() {
     // span/event streams to this task's on-disk event log at debug — the app
     // runs unattended for hours, so its telemetry has to already be captured
     // when a question comes up. A failure here must never block startup.
-    let _ = tt_otel::init("tt-app", "error");
+    let _ = tt_telemetry::init("tt-app", "error");
 
     // WebKitGTK's DMABUF renderer glitches on the NVIDIA proprietary driver:
     // small damage regions (e.g. a terminal cursor blink) flash as
@@ -668,6 +669,8 @@ pub fn run() {
             claude_sessions::claude_sessions_search,
             claude_sessions::claude_sessions_insights,
             claude_sessions::claude_sessions_breakdown,
+            telemetry::telemetry_days,
+            telemetry::telemetry_events,
             agentboard::ab_open_session_for_cwd,
             doctor::doctor_run,
             settings::settings_get,

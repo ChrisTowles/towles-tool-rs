@@ -18,6 +18,9 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 
 use crate::event_log::EventLog;
+use crate::schema::{
+    FIELD_DURATION_MS, FIELD_KIND, FIELD_LEVEL, FIELD_NAME, FIELD_TARGET, FIELD_TS,
+};
 
 /// Per-span state carried from creation to close.
 struct SpanState {
@@ -74,9 +77,10 @@ impl EventLogLayer {
         Self { log: Mutex::new(log), resource, now: Utc::now }
     }
 
-    /// Replace the wall clock. Test-only seam.
+    /// Replace the wall clock. Test-only seam, `pub(crate)` so `reader`'s
+    /// round-trip test can pin it too.
     #[cfg(test)]
-    fn with_clock(mut self, now: fn() -> DateTime<Utc>) -> Self {
+    pub(crate) fn with_clock(mut self, now: fn() -> DateTime<Utc>) -> Self {
         self.now = now;
         self
     }
@@ -95,11 +99,11 @@ impl EventLogLayer {
         now: DateTime<Utc>,
     ) -> Map<String, Value> {
         let mut record = self.resource.clone();
-        record.insert("ts".into(), Value::from(now.to_rfc3339()));
-        record.insert("kind".into(), Value::from(kind));
-        record.insert("level".into(), Value::from(level.as_str()));
-        record.insert("target".into(), Value::from(target));
-        record.insert("name".into(), Value::from(name));
+        record.insert(FIELD_TS.into(), Value::from(now.to_rfc3339()));
+        record.insert(FIELD_KIND.into(), Value::from(kind));
+        record.insert(FIELD_LEVEL.into(), Value::from(level.as_str()));
+        record.insert(FIELD_TARGET.into(), Value::from(target));
+        record.insert(FIELD_NAME.into(), Value::from(name));
         record
     }
 
@@ -152,7 +156,10 @@ where
         let now = (self.now)();
         let meta = span.metadata();
         let mut record = self.base("span", meta.level(), meta.target(), meta.name(), now);
-        record.insert("duration_ms".into(), Value::from(state.opened.elapsed().as_millis() as u64));
+        record.insert(
+            FIELD_DURATION_MS.into(),
+            Value::from(state.opened.elapsed().as_millis() as u64),
+        );
         record.extend(state.fields);
         self.write(record, now);
     }

@@ -13,7 +13,7 @@ wait-timeout = { workspace = true }
 
 [dev-dependencies]
 # Proves the spawn spans actually reach the on-disk event log. Acyclic:
-# tt-otel depends on tt-config, never on tt-exec.
-tt-otel = { workspace = true }
+# tt-telemetry depends on tt-config, never on tt-exec.
+tt-telemetry = { workspace = true }
 tracing-subscriber = { workspace = true }
 tempfile = "3.14.0"

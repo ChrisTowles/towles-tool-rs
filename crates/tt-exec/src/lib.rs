@@ -535,8 +535,8 @@ mod tests {
         use tracing_subscriber::prelude::*;
 
         let dir = tempfile::tempdir().unwrap();
-        let layer = tt_otel::EventLogLayer::new(
-            tt_otel::EventLog::new(dir.path(), 7),
+        let layer = tt_telemetry::EventLogLayer::new(
+            tt_telemetry::EventLog::new(dir.path(), 7),
             serde_json::Map::new(),
         );
         tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), body);

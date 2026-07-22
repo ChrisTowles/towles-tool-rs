@@ -180,7 +180,7 @@ follows is a cross-cutting rule that spans multiple files.
 - **Every `#[tauri::command]` triggered by an explicit user gesture must emit
   its own `tracing` event** — a mutation, a confirm, a delete, or an action
   that signals a process. This is the backend half of the root CLAUDE.md's
-  "every user action emits its OTel event" mandate (see the `tt-otel` bullet
+  "every user action emits its OTel event" mandate (see the `tt-telemetry` bullet
   there), and it is not optional: without it the command is invisible in the
   on-disk event log, and "feature unused" can't be told from "feature
   uninstrumented" (the gap #363 fixed across ~all `ab_*`/`store_*`/task/

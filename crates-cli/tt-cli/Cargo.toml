@@ -22,7 +22,7 @@ chrono = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }
 dirs = { workspace = true }
-tt-otel = { workspace = true }
+tt-telemetry = { workspace = true }
 inquire = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

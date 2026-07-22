@@ -282,7 +282,9 @@ Cargo workspace + npm workspace (`apps/client` only):
     exception to the no-hardcoded-ports rule, because a machine-wide singleton
     has nothing to collide with, and a stable port is what lets the
     `towles-tool-app` plugin ship a static checked-in `.mcp.json`.
-  - `tt-otel` — telemetry. `tt_otel::init` installs the global `tracing`
+  - `tt-telemetry` — telemetry: the `tracing` subscriber/writer and the reader
+    behind the app's Telemetry screen, one crate so both halves can never
+    disagree about the on-disk schema. `tt_telemetry::init` installs the global `tracing`
     subscriber for both binaries (it replaced `env_logger` — a hard cutover,
     no second logger), fanning out to stderr (filtered by `-v`/`RUST_LOG`) and
     to an **event log on disk**: one JSON object per line at
@@ -335,7 +337,13 @@ Cargo workspace + npm workspace (`apps/client` only):
     an unrelated needs-you notification fired at the same moment, or neither
     — all three now emit `window.focus_changed` / `notify_needs_you: fired`
     /`skipped` records precisely so the next occurrence is a `jq` query, not
-    another live repro session).
+    another live repro session). The **Telemetry** screen (`apps/client/src/
+    screens/telemetry.tsx`, `crates-tauri/tt-app/src/telemetry.rs`) reads
+    these files back for browsing/searching — day picker, level/kind/target
+    filters, substring search, a per-record drill-down. It reads fresh off
+    disk on every request rather than caching (the log is small and bounded
+    by spawns/discrete actions, never per-keystroke input) and refreshes on a
+    manual button and when the screen regains focus, not live-tailed.
   - `tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and
     lockfile schema the app uses to pose as an "IDE" a Claude Code CLI session
     connects to. Transport-free by design (sockets, auth, clocks live in
@@ -497,7 +505,7 @@ etc.). The points below are repo-specific specializations of that doc.
   `AnimatePresence` can hold it on screen or `layout`-animate the rows that
   survive it. `apps/client/src/lib/rail-motion.ts` is the canonical config.
 - **Every user action in the app must emit its OTel event** — event shape
-  and exclusions in the `tt-otel` bullet in Architecture.
+  and exclusions in the `tt-telemetry` bullet in Architecture.
 - **No CLI-parity requirement.** The app is the primary product; each feature
   picks its natural surface. App-only features don't need a `tt` subcommand,
   and terminal-native tools (journal, gh, doctor) don't need app screens. The

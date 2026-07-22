@@ -123,7 +123,7 @@ product sold to whoever bids for it.
 
 That only works if the record is honest and stays on your machine. So every
 user-initiated action in this app — not just the subprocesses it spawns — is
-instrumented via `tracing` into the local event log (see `tt-otel` in
+instrumented via `tracing` into the local event log (see `tt-telemetry` in
 [CLAUDE.md](CLAUDE.md#architecture)). The point isn't surveillance; it's the
 opposite: so *you* can later mine your own behavior — "where did my attention
 actually go, and did this app respect it or steal it?" — instead of taking
@@ -259,8 +259,9 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and lockfile schema the app uses to pose as an IDE that Claude Code sessions connect to.
 - `crates/tt-vt` — libghostty-vt terminal-state engine driving the app's canvas terminals (needs zig 0.15.x).
 - `crates/tt-mcp` — the transport-free JSON-RPC MCP server over the store: board tasks (`task_list`, `task_status`, `task_create`) and the calendar family (`calendar_today`, `calendar_next`, `calendar_set`). The app serves it over loopback HTTP at `http://127.0.0.1:8787/mcp` (`mcp.port`), one instance per machine — app closed means no MCP. See the crate's trust-boundary doc.
-- `crates/tt-otel` — telemetry: the `tracing` subscriber and the local JSONL
-  event log every subprocess and user action lands in.
+- `crates/tt-telemetry` — telemetry: the `tracing` subscriber/writer for the
+  local JSONL event log every subprocess and user action lands in, plus the
+  reader behind the app's Telemetry screen.
 - `crates/tt-update` — GitHub Releases update check for the running app.
 - `crates-cli/tt-cli` — the `clap` CLI (binary `tt`).
 - `crates-tauri/tt-app` — the Tauri 2 desktop shell; `apps/client` is its React + Vite frontend.
