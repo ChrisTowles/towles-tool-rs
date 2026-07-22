@@ -1194,6 +1194,22 @@ export function modelContextLabel(d: AgentEventDetails | null | undefined): stri
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
+/** Model family → the single letter the rail's `ModelBadge` shows: `H`aiku,
+ * `S`onnet, `O`pus, `F`able, `M`ythos. Matches on the family token inside the
+ * id (`claude-opus-4-8` → `O`), deliberately dropping the version — the badge
+ * answers "which brain", the tooltip carries the exact id. Null for an unknown
+ * family rather than a guessed letter, so the badge simply doesn't render. */
+export function modelLetter(model: string | null | undefined): string | null {
+  if (!model) return null;
+  const family = ["haiku", "sonnet", "opus", "fable", "mythos"].find((f) =>
+    model
+      .toLowerCase()
+      .split(/[-_./:\s]/)
+      .includes(f),
+  );
+  return family ? family[0].toUpperCase() : null;
+}
+
 /** A session is cache-cold when it never had cache activity or the TTL lapsed. */
 export function isCold(d: AgentEventDetails | null | undefined, now: number): boolean {
   return !d?.cacheExpiresAt || now >= d.cacheExpiresAt;

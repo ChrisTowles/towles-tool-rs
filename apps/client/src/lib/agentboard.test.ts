@@ -21,6 +21,7 @@ import {
   folderRemovableTask,
   forceDeleteLabel,
   modelContextLabel,
+  modelLetter,
   stoppablePort,
   type TaskBlocker,
   folderHoldsNoWork,
@@ -203,6 +204,28 @@ describe("modelContextLabel", () => {
   it("is null when nothing is known", () => {
     expect(modelContextLabel({})).toBeNull();
     expect(modelContextLabel(null)).toBeNull();
+  });
+});
+
+describe("modelLetter", () => {
+  it("maps each family to its letter, ignoring the version", () => {
+    expect(modelLetter("claude-haiku-4-5-20251001")).toBe("H");
+    expect(modelLetter("claude-sonnet-5")).toBe("S");
+    expect(modelLetter("claude-opus-4-8")).toBe("O");
+    expect(modelLetter("claude-fable-5")).toBe("F");
+    expect(modelLetter("claude-mythos-5")).toBe("M");
+  });
+
+  it("matches the family token, not a substring", () => {
+    expect(modelLetter("us.anthropic.claude-opus-4-8")).toBe("O");
+    expect(modelLetter("claude-opusish-1")).toBeNull();
+  });
+
+  it("is null for unknown families and missing models", () => {
+    expect(modelLetter("gpt-5")).toBeNull();
+    expect(modelLetter("")).toBeNull();
+    expect(modelLetter(null)).toBeNull();
+    expect(modelLetter(undefined)).toBeNull();
   });
 });
 

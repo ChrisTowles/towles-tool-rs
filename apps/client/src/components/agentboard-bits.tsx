@@ -40,6 +40,7 @@ import {
   isCacheExpiring,
   isCold,
   modelContextLabel,
+  modelLetter,
   needsCompact,
   statusColor,
   type AgentStatus,
@@ -773,6 +774,40 @@ export function SafeToDeleteBadge({
         {landed ? ` (${landed})` : ""}. Nothing here would be lost — click to delete this worktree.
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+/** Visual weight per model family, scaling with how much the model matters:
+ * Haiku/Sonnet are the quiet workhorses (neutral, read only when looked for),
+ * Opus tints violet — the rail's agent hue, "a serious brain is on this" —
+ * and Fable/Mythos get the meta cluster's only *filled* chip, a fuchsia→violet
+ * gradient, so the top-tier model is spottable without hunting. Deliberately
+ * not amber (needs-you) and not animated (resting facts don't pulse). */
+const MODEL_TONE: Record<string, string> = {
+  O: "border-violet-500/50 bg-violet-500/10 text-violet-600 dark:text-violet-400",
+  F: "border-transparent bg-gradient-to-br from-fuchsia-500 to-violet-500 font-semibold text-white",
+  M: "border-transparent bg-gradient-to-br from-fuchsia-500 to-violet-500 font-semibold text-white",
+};
+
+/** Which Claude model is powering a live agent session, as a boxed single
+ * letter (`H`/`S`/`O`/`F`/`M` — see `modelLetter`) in the row's meta cluster,
+ * weighted by tier (see {@link MODEL_TONE}). The tooltip carries the exact id
+ * plus context (`claude-opus-4-8 · 412K / 1M`). Renders nothing when the model
+ * is unknown or the family unrecognized. */
+export function ModelBadge({ session }: { session: SessionData }) {
+  const d = session.agentState?.details;
+  const letter = modelLetter(d?.model);
+  if (!session.live || !letter) return null;
+  return (
+    <span
+      title={modelContextLabel(d) ?? undefined}
+      className={cn(
+        "flex h-4 shrink-0 items-center rounded-md border px-1 font-mono text-[10px] font-medium",
+        MODEL_TONE[letter] ?? "border-border bg-muted/30 text-muted-foreground",
+      )}
+    >
+      {letter}
+    </span>
   );
 }
 

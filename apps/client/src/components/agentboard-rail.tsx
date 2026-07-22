@@ -13,6 +13,7 @@ import {
   AgentStatusLine,
   AheadBehind,
   CacheBadge,
+  ModelBadge,
   Chevron,
   DeletingBadge,
   DiffButton,
@@ -1144,6 +1145,7 @@ function SessionRow({
               swapping it out, so hovering never reflows the row. */}
           <span className="ml-auto flex min-w-0 shrink items-center gap-2">
             {eff.live && <PortDriftBadge drift={eff.portDrift ?? []} />}
+            <ModelBadge session={eff} />
             <CacheBadge
               session={eff}
               now={now}
