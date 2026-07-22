@@ -203,6 +203,12 @@ export type FolderData = {
    * dimmed/how-to state (`components/dev-servers.tsx`); the configs
    * themselves are fetched on demand via `launch_configs`. */
   hasLaunchConfig: boolean;
+  /** Forced-quiet override (persisted per folder, `ab_set_folder_quiet`) —
+   * `isFolderQuiet` treats this folder as quiet under the "hide inactive"
+   * rail filter regardless of its actual activity signals above. One flag
+   * whether it got set by hand or some other way; nothing here distinguishes
+   * "manual" from any other source. */
+  quiet: boolean;
 };
 
 /** The one definition of "this folder's working tree measurably changed" —
@@ -859,14 +865,21 @@ export function folderLastActivityAt(f: FolderData): number {
  * opened in it falls out of this naturally (empty `sessions`, clean tree, no
  * activity timestamps) — no special case needed. Richer than "no live
  * session": a folder can be mid-work (dirty tree, unpushed commits, a
- * finished-but-unseen turn) with nothing currently *running*. */
+ * finished-but-unseen turn) with nothing currently *running*.
+ *
+ * `f.quiet` (persisted per folder — see `RepoMenu`'s "Mark quiet" action)
+ * short-circuits straight to quiet, for a folder the user wants off the rail
+ * even while it's technically busy (e.g. mid-review, waiting on someone
+ * else). It's one-directional: there's no override in the other direction —
+ * a folder is never forced to read as *busy*. */
 export function isFolderQuiet(f: FolderData, now: number): boolean {
   return (
-    liveSessions(f).length === 0 &&
-    f.filesChanged === 0 &&
-    f.commitsAhead === 0 &&
-    f.sessions.every((s) => !sessionCatchesEye(s)) &&
-    now - folderLastActivityAt(f) >= QUIET_GRACE_MS
+    f.quiet ||
+    (liveSessions(f).length === 0 &&
+      f.filesChanged === 0 &&
+      f.commitsAhead === 0 &&
+      f.sessions.every((s) => !sessionCatchesEye(s)) &&
+      now - folderLastActivityAt(f) >= QUIET_GRACE_MS)
   );
 }
 

@@ -1,6 +1,11 @@
-//! Persisted per-folder metadata (Folder Rail): today just the *base-branch
-//! override* — what this checkout's diff/ahead-behind stats compare against.
-//! Stored in the app's own file,
+//! Persisted per-folder metadata (Folder Rail): the *base-branch override* —
+//! what this checkout's diff/ahead-behind stats compare against — and the
+//! *quiet override*, which forces a folder to count as quiet for the
+//! frontend's "hide inactive" rail filter (`isFolderQuiet` in
+//! `apps/client/src/lib/agentboard.ts`) even when its own activity signals
+//! say otherwise — the same flag whether it got set by hand or (in future) by
+//! some other rule; nothing here distinguishes "manual" from any other
+//! source. Stored in the app's own file,
 //! `~/.config/towles-tool/agentboard/folder_meta.json`, keyed by the folder's
 //! absolute dir (same per-file pattern as [`crate::sessions`]).
 //! Path-parameterized so tests use a tempdir.
@@ -13,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// Metadata for one folder. A struct rather than a bare string so the on-disk
 /// value stays a named object — a second field can land without rewriting
 /// every existing file.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderMeta {
     /// Branch this folder's diff/ahead-behind stats compare against, overriding
@@ -21,9 +26,23 @@ pub struct FolderMeta {
     /// didn't fork from main (e.g. a release line).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
+    /// Forces this folder to count as quiet — the rail treats it as quiet
+    /// regardless of its actual activity, so it collapses into the stub row
+    /// under "hide inactive" the same as an auto-detected one. Only ever
+    /// `Some(true)` on disk; the setter normalizes `false` to absent so "not
+    /// forced" is one state rather than two.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet: Option<bool>,
 }
 
-/// On-disk shape: `{ "folders": { "<folderDir>": { "baseBranch": "..." } } }`.
+impl FolderMeta {
+    fn is_empty(&self) -> bool {
+        self.base_branch.is_none() && self.quiet.is_none()
+    }
+}
+
+/// On-disk shape: `{ "folders": { "<folderDir>": { "baseBranch": "...",
+/// "quiet": true } } }`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct FolderMetaConfig {
     #[serde(default)]
@@ -71,16 +90,38 @@ impl FolderMetaStore {
         if current == normalized {
             return false;
         }
-        match normalized {
-            Some(b) => self.folders.entry(dir.to_string()).or_default().base_branch = Some(b),
-            // The only field, so clearing it empties the entry outright rather
-            // than leaving a `{}` behind for every folder ever overridden.
-            None => {
-                self.folders.remove(dir);
-            }
-        }
+        self.folders.entry(dir.to_string()).or_default().base_branch = normalized;
+        self.drop_if_empty(dir);
         self.dirty.insert(dir.to_string());
         true
+    }
+
+    /// Whether a folder's "hide inactive" quiet state is forced, regardless of
+    /// its own activity signals.
+    pub fn quiet_for(&self, dir: &str) -> bool {
+        self.folders.get(dir).and_then(|m| m.quiet).unwrap_or(false)
+    }
+
+    /// Set (`true`) or clear (`false`, the default) a folder's quiet override.
+    /// Returns whether it changed. Caller persists on `true`.
+    pub fn set_quiet(&mut self, dir: &str, quiet: bool) -> bool {
+        let normalized = quiet.then_some(true);
+        let current = self.folders.get(dir).and_then(|m| m.quiet);
+        if current == normalized {
+            return false;
+        }
+        self.folders.entry(dir.to_string()).or_default().quiet = normalized;
+        self.drop_if_empty(dir);
+        self.dirty.insert(dir.to_string());
+        true
+    }
+
+    /// Remove `dir`'s entry outright once every field is back to default,
+    /// rather than leaving a `{}` behind for every folder ever touched.
+    fn drop_if_empty(&mut self, dir: &str) {
+        if self.folders.get(dir).is_some_and(FolderMeta::is_empty) {
+            self.folders.remove(dir);
+        }
     }
 
     /// Drop metadata for folders no longer in `dirs` (called after a repo removal).
@@ -161,6 +202,39 @@ mod tests {
         let mut store = FolderMetaStore::new(None);
         store.set_base_branch("/r/a", Some("  release/2.0  "));
         assert_eq!(store.base_branch_for("/r/a"), Some("release/2.0"));
+    }
+
+    #[test]
+    fn set_and_clear_quiet() {
+        let mut store = FolderMetaStore::new(None);
+        assert!(!store.quiet_for("/r/a"));
+        assert!(store.set_quiet("/r/a", true));
+        assert!(store.quiet_for("/r/a"));
+        // Unchanged write reports false.
+        assert!(!store.set_quiet("/r/a", true));
+        assert!(store.set_quiet("/r/a", false));
+        assert!(!store.quiet_for("/r/a"));
+        // Clearing an unset folder is a no-op.
+        assert!(!store.set_quiet("/r/b", false));
+    }
+
+    #[test]
+    fn quiet_and_base_branch_coexist_on_one_folder() {
+        let mut store = FolderMetaStore::new(None);
+        store.set_base_branch("/r/a", Some("develop"));
+        store.set_quiet("/r/a", true);
+        assert_eq!(store.base_branch_for("/r/a"), Some("develop"));
+        assert!(store.quiet_for("/r/a"));
+
+        // Clearing one field must not wipe out the other.
+        store.set_quiet("/r/a", false);
+        assert_eq!(store.base_branch_for("/r/a"), Some("develop"));
+        assert!(!store.quiet_for("/r/a"));
+
+        // Now clearing the last field drops the entry outright.
+        store.set_base_branch("/r/a", None);
+        assert_eq!(store.base_branch_for("/r/a"), None);
+        assert!(!store.quiet_for("/r/a"));
     }
 
     #[test]

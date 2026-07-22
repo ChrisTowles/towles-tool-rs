@@ -4,6 +4,8 @@ import {
   Check,
   ChevronDown,
   CircleDot,
+  Eye,
+  EyeOff,
   Files,
   FolderPlus,
   GitCompare,
@@ -918,13 +920,15 @@ export function AgentStatusLine({
  * working-context band atop the panes (so the two surfaces never diverge):
  * full folder path (when given), "New task…" (task-convention repos),
  * "Delete worktree…" (worktree checkouts, guarded `task_remove`), "Sync now",
- * "Create issue…" (shells `gh issue create` in `dir`), and "Remove from
- * rail". */
+ * "Create issue…", "Mark quiet"/"Unmark quiet" (forces this folder into the
+ * "hide inactive" filter's stub row regardless of its actual activity — see
+ * `isFolderQuiet`), and "Remove from rail". */
 export function RepoMenu({
   path,
   onRemove,
   dir,
   isWorktree,
+  quiet,
   onNewTask,
   onDeleteWorktree,
 }: {
@@ -935,6 +939,9 @@ export function RepoMenu({
    * auto-discovered from the primary and would reappear next poll); deletion
    * is the "Delete worktree…" item instead. */
   isWorktree?: boolean;
+  /** Whether this folder currently has the quiet override set
+   * (`FolderData.quiet`) — flips the menu item between "Mark"/"Unmark". */
+  quiet: boolean;
   /** Opens the new-task modal — set only on a task-convention repo. */
   onNewTask?: () => void;
   /** Deletes this worktree from disk (guarded, `task_remove`) — set only
@@ -969,6 +976,14 @@ export function RepoMenu({
       },
       err: (e) => toast.error(e.message),
     });
+  }
+
+  async function toggleQuiet() {
+    const result = await invoke<void>("ab_set_folder_quiet", {
+      dir,
+      quiet: !quiet,
+    });
+    if (result.isErr()) toast.error(`Couldn't update — ${result.error.message}`);
   }
 
   return (
@@ -1015,6 +1030,17 @@ export function RepoMenu({
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setIssueOpen(true)} className="whitespace-nowrap">
             <CircleDot className="size-3.5" /> Create issue…
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void toggleQuiet()} className="whitespace-nowrap">
+            {quiet ? (
+              <>
+                <Eye className="size-3.5" /> Unmark quiet
+              </>
+            ) : (
+              <>
+                <EyeOff className="size-3.5" /> Mark quiet
+              </>
+            )}
           </DropdownMenuItem>
           {!isWorktree && (
             <DropdownMenuItem

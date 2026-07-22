@@ -155,6 +155,7 @@ mod tests {
                     metadata: None,
                     has_port_drift: false,
                     has_launch_config: false,
+                    quiet: false,
                 }],
                 needs: 0,
             }],

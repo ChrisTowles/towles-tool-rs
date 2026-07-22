@@ -640,6 +640,7 @@ export function RepoGroup({
             )
           }
           dir={repo.folders[0].dir}
+          quiet={repo.folders[0].quiet}
           onNewTask={() => onNewTask({ name: repo.name, dir: repo.folders[0].dir, key: repo.key })}
         />
       </div>
@@ -929,6 +930,7 @@ function FolderHeader({
             onRemove={onRemoveRepo}
             dir={folder.dir}
             isWorktree={folder.isWorktree}
+            quiet={folder.quiet}
             onNewTask={!missing ? onNewTask : undefined}
             onDeleteWorktree={!missing ? onDeleteWorktree : undefined}
           />

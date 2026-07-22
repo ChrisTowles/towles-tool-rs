@@ -491,6 +491,17 @@ pub fn ab_set_folder_base_branch(state: State<Ab>, dir: String, branch: Option<S
     }
 }
 
+/// Set (or clear) a folder's quiet override — forces it to count as quiet for
+/// the "hide inactive" rail filter regardless of its own activity.
+#[tauri::command]
+pub fn ab_set_folder_quiet(state: State<Ab>, dir: String, quiet: bool) {
+    let changed = state.engine.lock().unwrap().set_folder_quiet(&dir, quiet);
+    tracing::info!(%dir, quiet, changed, "folder.quiet_set");
+    if changed {
+        state.emit.notify_one();
+    }
+}
+
 /// Set (or clear with `None`/blank) a session's user-authored purpose —
 /// captured when starting Claude, so the rail can show why a session exists.
 #[tauri::command]

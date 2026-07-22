@@ -990,6 +990,7 @@ function folder(overrides: Partial<FolderData>): FolderData {
     needs: 0,
     hasPortDrift: false,
     hasLaunchConfig: false,
+    quiet: false,
     ...overrides,
   };
 }
@@ -1009,6 +1010,12 @@ describe("isFolderQuiet", () => {
 
   it("is not quiet with a live session", () => {
     expect(isFolderQuiet(folder({ sessions: [session({ live: true })] }), NOW)).toBe(false);
+  });
+
+  it("the quiet override forces quiet even with a live session", () => {
+    expect(isFolderQuiet(folder({ quiet: true, sessions: [session({ live: true })] }), NOW)).toBe(
+      true,
+    );
   });
 
   it("is not quiet with a dirty working tree", () => {

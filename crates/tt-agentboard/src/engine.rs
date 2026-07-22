@@ -514,6 +514,15 @@ impl Engine {
         changed
     }
 
+    /// Set (or clear) a folder's quiet override. Persists on change.
+    pub fn set_folder_quiet(&mut self, dir: &str, quiet: bool) -> bool {
+        let changed = self.folder_meta.set_quiet(dir, quiet);
+        if changed {
+            let _ = self.folder_meta.save();
+        }
+        changed
+    }
+
     /// Replace the persisted window layout (frontend-owned blob). Persists on
     /// change; returns whether it changed.
     /// `touched` is the set of folder dirs whose windows/active-window the

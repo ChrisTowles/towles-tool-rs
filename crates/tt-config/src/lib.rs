@@ -190,6 +190,14 @@ pub struct AgentboardSettings {
     /// shared settings file stays clean for the TS CLI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub board_group_by_repo: Option<bool>,
+
+    /// The Agentboard rail's "hide inactive repos" eye-icon filter. `None` =
+    /// the built-in default (off, showing everything). Only written once the
+    /// user toggles it, so the shared settings file stays clean for the TS
+    /// CLI. Rust never interprets this value — it's opaque storage for a
+    /// frontend-only filter, same treatment as `board_group_by_repo`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hide_inactive_repos: Option<bool>,
 }
 
 /// Built-in default for [`AgentboardSettings::compact_recommend_percent`].
