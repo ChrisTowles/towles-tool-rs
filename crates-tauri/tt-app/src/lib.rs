@@ -29,6 +29,8 @@ mod task;
 mod terminal;
 mod update;
 
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -36,7 +38,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 use tokio::sync::Notify;
 
 use agentboard::{Ab, Engine, STATE_EVENT, now_ms};
-use tt_agentboard::fs_notify::ScopedDirNotifier;
+use tt_agentboard::fs_notify::{MultiFileNotifier, ScopedDirNotifier};
 
 /// Human-readable name of the checkout this binary was built from — the repo-root
 /// directory (e.g. `task-migrate`, `towles-tool-rs-primary`). Baked in at compile time from
@@ -225,6 +227,42 @@ pub fn run() {
                 ScopedDirNotifier::new(move || scan_for_notify.notify_one()).ok(),
             ));
 
+            // Event-driven git-info refresh: watches each tracked repo's own
+            // `.git` internals (HEAD, index, refs, packed-refs — see
+            // `Engine::control_watch_files`) so a real commit/fetch/branch-
+            // switch/`git add` invalidates just that repo immediately instead
+            // of waiting on `GIT_CACHE_TTL_MS`'s now-long backup ceiling. The
+            // reverse-index (which dir owns which watched file) is rebuilt by
+            // the scan loop below alongside its `MultiFileNotifier`
+            // registration diff; the callback only resolves paths → dirs and
+            // invalidates. Doesn't cover unstaged working-tree edits — see
+            // `control_files_for`'s doc for why that still needs the poll.
+            let git_watch_index: Arc<Mutex<HashMap<PathBuf, String>>> = Arc::default();
+            let git_watcher = {
+                let engine = engine.clone();
+                let scan = scan.clone();
+                let index = git_watch_index.clone();
+                Arc::new(Mutex::new(
+                    MultiFileNotifier::new(move |changed: Vec<PathBuf>| {
+                        let dirs: HashSet<String> = {
+                            let idx = index.lock().unwrap();
+                            changed.iter().filter_map(|p| idx.get(p).cloned()).collect()
+                        };
+                        if dirs.is_empty() {
+                            return;
+                        }
+                        {
+                            let mut e = engine.lock().unwrap();
+                            for dir in &dirs {
+                                e.invalidate_git(dir);
+                            }
+                        }
+                        scan.notify_one();
+                    })
+                    .ok(),
+                ))
+            };
+
             app.manage(Ab {
                 engine: engine.clone(),
                 emit: emit.clone(),
@@ -292,8 +330,11 @@ pub fn run() {
                 let scan = scan.clone();
                 let notifier = notifier.clone();
                 let projects_dir = projects_dir.clone();
+                let git_watcher = git_watcher.clone();
+                let git_watch_index = git_watch_index.clone();
                 tauri::async_runtime::spawn(async move {
                     let mut interval = tokio::time::interval(Duration::from_millis(2000));
+                    let mut git_watched: HashSet<PathBuf> = HashSet::new();
                     loop {
                         tokio::select! {
                             _ = interval.tick() => {}
@@ -345,17 +386,46 @@ pub fn run() {
                         if let Some(n) = notifier.lock().unwrap().as_mut() {
                             n.set_targets(&projects_dir, &targets);
                         }
+                        // Same idea for the git-control-file watch: diff the
+                        // desired set against what's registered, add/remove
+                        // only the delta, and rebuild the path→dir reverse
+                        // index the watcher callback resolves against. A dir
+                        // with no cached info yet contributes no files (see
+                        // `control_files_for`) — it starts being watched from
+                        // whichever tick follows its first compute.
+                        let desired = engine.lock().unwrap().control_watch_files();
+                        if let Some(w) = git_watcher.lock().unwrap().as_mut() {
+                            let desired_keys: HashSet<PathBuf> = desired.keys().cloned().collect();
+                            for stale in
+                                git_watched.difference(&desired_keys).cloned().collect::<Vec<_>>()
+                            {
+                                w.remove(&stale);
+                            }
+                            for fresh in
+                                desired_keys.difference(&git_watched).cloned().collect::<Vec<_>>()
+                            {
+                                let _ = w.add(&fresh);
+                            }
+                            git_watched = desired_keys;
+                        }
+                        *git_watch_index.lock().unwrap() = desired;
                         emit.notify_one();
                     }
                 });
             }
 
-            // Git-stat poll: recompute working-tree stats every 10s with the
-            // subprocesses OUTSIDE the engine lock — a slow or hung git (stale
-            // network mount, cold cache) must never wedge the ab_* commands
-            // that share the lock, and lock-held git spawns every 1.5s were
-            // the dominant idle-CPU cost. Signals a re-emit only when some
-            // repo's stats actually changed.
+            // Git-stat poll: the diagnostics-hub half of git-info refresh,
+            // outside the engine lock like the scan loop above (a slow/hung
+            // git must never wedge the `ab_*` commands sharing the lock).
+            // Staleness-gated via `stale_git_targets` — it used to
+            // unconditionally recompute every tracked repo every tick
+            // regardless of `GIT_CACHE_TTL_MS`, which meant this loop alone
+            // kept every repo on a hard 10s recompute cadence no matter how
+            // long the TTL or how precise the control-file invalidation
+            // above got; nothing downstream of *this* loop ever benefited
+            // from either. Now it shares the exact same staleness signal the
+            // scan loop's `warm_git_cache` uses, so in steady state (nothing
+            // invalidated) this tick finds nothing to do.
             {
                 let engine = engine.clone();
                 let emit = emit.clone();
@@ -365,8 +435,9 @@ pub fn run() {
                     loop {
                         interval.tick().await;
                         let poll_engine = engine.clone();
+                        let now = now_ms();
                         let changed_dirs = tauri::async_runtime::spawn_blocking(move || {
-                            let targets = poll_engine.lock().unwrap().git_targets();
+                            let targets = poll_engine.lock().unwrap().stale_git_targets(now);
                             let mut changed_dirs = Vec::new();
                             for (dir, base_branch, previous) in targets {
                                 let info = tt_agentboard::git_info::compute_git_info(

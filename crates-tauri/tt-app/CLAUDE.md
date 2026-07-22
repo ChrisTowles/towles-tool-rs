@@ -46,6 +46,40 @@ follows is a cross-cutting rule that spans multiple files.
   guess used to miss). Don't revert to watching `projects_dir` directly, and
   don't recompute `encode_project_dir_name`'s rule ad hoc elsewhere — it's
   also what `find_journal` uses to resolve a session's journal.
+- **Git-info refresh is event-driven, with polling as the backup, not the
+  other way around.** `commits_ahead`/`commits_behind`/`landed` depend on
+  exactly five `.git` internal files per checkout (`HEAD`, `index`,
+  `packed-refs`, `refs/heads/<branch>`, `refs/remotes/origin/<base>` — see
+  `git_info::control_files`'s doc). `lib.rs`'s scan loop watches those via a
+  `MultiFileNotifier` (`git_watcher`), rebuilt each tick from `Engine::
+  control_watch_files()` the same way `ScopedDirNotifier` above is; on a real
+  change it calls `Engine::invalidate_git(dir)` (stamp → 0, bypassing the TTL
+  entirely) and wakes the scan loop, so a commit/fetch/branch-switch/`git add`
+  in a tracked repo recomputes that repo's stats within one tick — measured
+  live: an empty commit + immediate `reset --soft HEAD~1` triggered a full
+  recompute (`status`, `merge-base`, `diff --numstat`, `rev-list`, even the
+  landing probe for the transient ahead-commit) inside 4 seconds, nowhere
+  near the TTL. `GIT_CACHE_TTL_MS` (`git_info.rs`) is now 60s specifically
+  *because* it's a backup ceiling for a missed event, not the primary
+  driver — don't shorten it back down to compensate for a watch gap; fix the
+  watch instead. The 10s "git-stat poll" (the second, independent poller) was
+  changed to use `stale_git_targets` instead of unconditionally recomputing
+  every tracked repo every tick — it used to double-poll on top of the scan
+  loop's own TTL-gated warming, which is why raising the TTL alone wouldn't
+  have been enough; both loops must respect the same staleness signal or one
+  silently defeats the other's savings.
+  **What this deliberately does not cover**: `dirty`/`files_changed`/the diff
+  stats measure the *working tree*, and an edited-but-unstaged file never
+  touches any of the five watched files — `index` only moves on `git add`/
+  `commit`/`reset`. There is no cheap fs-watch fix for this (it would mean
+  recursively watching the whole working tree, gitignore-aware, which is
+  exactly the inotify-instance-cost problem `MultiFileNotifier`'s own doc
+  comment already warns about) — this is why the 60s poll backup still
+  matters for those specific fields, not just as a missed-event safety net.
+  Measured before/after on this machine (steady state, no session running the
+  poll's targets): ~14.8 git spawns/sec pre-fix → ~1.9/sec after, with the
+  remainder being exactly this working-tree-state backup poll plus the
+  occasional structural/landing recompute.
 - **Every `StatePayload` leaving the app must pass through
   `stamp_pty_state`** (`agentboard.rs`). The Tauri-free engine can't see
   PTYs, so a new command that builds/returns a `StatePayload` without this
