@@ -1969,39 +1969,33 @@ mod tests {
         assert!(check.error.is_none());
     }
 
+    /// Runs `git <args>` in `dir` and asserts it actually succeeded (exit
+    /// code 0) — a CI runner has no ambient git identity, so a bare `commit`
+    /// silently fails without `-c user.{name,email}=...`, and `is_ok()` alone
+    /// only proves the process spawned, not that it did anything.
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let dir = dir.to_str().unwrap();
+        let mut full = vec![
+            "-C",
+            dir,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@test",
+        ];
+        full.extend_from_slice(args);
+        let out = tt_exec::run("git", &full).unwrap();
+        assert!(out.ok(), "git {full:?} failed: {}", out.stderr);
+    }
+
     #[test]
     fn check_branch_flags_an_existing_git_branch() {
         let tmp = tempfile::tempdir().unwrap();
         let checkout = tmp.path().join("repo");
         fs::create_dir_all(&checkout).unwrap();
-        assert!(tt_exec::run("git", &["-C", checkout.to_str().unwrap(), "init", "-q"]).is_ok());
-        assert!(
-            tt_exec::run(
-                "git",
-                &[
-                    "-C",
-                    checkout.to_str().unwrap(),
-                    "commit",
-                    "-q",
-                    "--allow-empty",
-                    "-m",
-                    "x"
-                ]
-            )
-            .is_ok()
-        );
-        assert!(
-            tt_exec::run(
-                "git",
-                &[
-                    "-C",
-                    checkout.to_str().unwrap(),
-                    "branch",
-                    "feat/taken-elsewhere"
-                ]
-            )
-            .is_ok()
-        );
+        git_ok(&checkout, &["init", "-q"]);
+        git_ok(&checkout, &["commit", "-q", "--allow-empty", "-m", "x"]);
+        git_ok(&checkout, &["branch", "feat/taken-elsewhere"]);
         let sr = TaskRoot { checkout, repo: "repo".to_string() };
 
         let check = check_branch(&sr, "feat/taken-elsewhere");
