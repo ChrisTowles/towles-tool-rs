@@ -34,17 +34,16 @@ Radius: cards/panels `rounded-lg`, chips/badges/tabs `rounded-md`, dots circular
 | `waiting` | `bg-blue-500` |
 | `error` | `bg-red-500` |
 | `complete` | `bg-green-500` |
-| `interrupted` | `bg-orange-800` — not orange-500, which sits inside amber-500's *and* red-500's confusion radius (OKLab ΔE ~10, checked with the dataviz skill's palette validator); an unseen interrupted session shows this dot inside an amber-washed needs-you row, so it must stay clearly not-amber |
+| `interrupted` | `bg-orange-800` — not orange-500, which sits inside amber-500's *and* red-500's confusion radius (OKLab ΔE ~10); an unseen interrupted session shows this dot inside an amber-washed needs-you row, so it must stay clearly not-amber |
 | `idle` (default) | `bg-muted-foreground/40` |
 
 Dot = `size-2 rounded-full`.
 
 When adding or re-tuning a status/accent color, don't eyeball hue distance —
-run the `dataviz` skill's `scripts/validate_palette.js` against the full set
-of colors that can appear adjacent (status dots + amber + violet), `--pairs
-all`. A normal-vision ΔE under ~15 between two colors that can co-occur is a
-real risk, not a nitpick — that's how the original yellow/amber busy bug and
-the orange/amber interrupted bug both got in.
+check OKLab ΔE by hand against the full set of colors that can appear
+adjacent (status dots + amber + violet). A normal-vision ΔE under ~15 between
+two colors that can co-occur is a real risk, not a nitpick — that's how the
+original yellow/amber busy bug and the orange/amber interrupted bug both got in.
 
 ## Two accent hues, one rule each
 - **Amber (`amber-500`)** = needs-you (`status ∈ {waiting, error}` + failing
@@ -85,16 +84,25 @@ Every header row (repo, folder, or a solo-repo's collapsed header) gets
 // status dot
 <span className={cn("size-2 rounded-full", statusColor(status), live && "animate-pulse")} />
 
-// session row
-<button className={cn(
-  "flex items-center gap-2.5 py-1.5 pr-3 pl-9 text-left border-l-2 border-transparent",
-  hovered && !needsYou && "bg-accent",
-  active && !needsYou && "bg-accent border-l-violet-500",
-  // needs-you wins the edge AND the fill over hover/active — see "Two accent
-  // hues" above for why a thin border alone isn't enough.
-  needsYou && "border-l-amber-500 bg-amber-500/10",
-  needsYou && hovered && "bg-amber-500/15",
-)}>
+// session row — a real <button> can't be used here: this row contains its
+// own interactive descendants (inline rename input, trailing action
+// buttons), which is invalid inside <button> and React only reports at
+// runtime, not via lint/tsc/tests. Use a div with role="button" instead.
+<div
+  role="button"
+  tabIndex={0}
+  onClick={onSelect}
+  onKeyDown={(e) => e.key === "Enter" && onSelect()}
+  className={cn(
+    "flex items-center gap-2.5 py-1.5 pr-3 pl-9 cursor-pointer border-l-2 border-transparent",
+    hovered && !needsYou && "bg-accent",
+    active && !needsYou && "bg-accent border-l-violet-500",
+    // needs-you wins the edge AND the fill over hover/active — see "Two accent
+    // hues" above for why a thin border alone isn't enough.
+    needsYou && "border-l-amber-500 bg-amber-500/10",
+    needsYou && hovered && "bg-amber-500/15",
+  )}
+>
   <span className={cn("font-mono text-xs w-4 text-center",
     type === "agent" ? "text-violet-500" : "text-muted-foreground/60")}>
     {type === "agent" ? "✦" : "❯"}
@@ -103,7 +111,7 @@ Every header row (repo, folder, or a solo-repo's collapsed header) gets
   {needsYou && <span className="size-1.5 rounded-full bg-amber-500" />}
   <span className="text-foreground">{name}</span>
   <span className="ml-auto text-[11px] text-muted-foreground">{message}</span>
-</button>
+</div>
 
 // folder count badge (needs-you)
 <span className="rounded-md border border-amber-500/50 bg-amber-500/10 px-1.5 font-mono text-[10.5px] text-amber-500">
@@ -128,6 +136,9 @@ Every header row (repo, folder, or a solo-repo's collapsed header) gets
 
 ## Source of truth in the app
 `apps/client/src/lib/agentboard.ts` (`statusColor()`, types) ·
-`apps/client/src/screens/agentboard.tsx` (`KIND_BORDER`, rail/split layout) ·
+`apps/client/src/components/agentboard-rail.tsx` (rail/split layout, row markup) ·
 `apps/client/src/components/day-bar.tsx` (needs-you math) ·
 `apps/client/src/index.css` (token definitions).
+
+For behavior/flow rules (confirmations, error copy, when something needs a
+setting) rather than look, see the `ui-rules` skill.
