@@ -23,9 +23,12 @@
     "test:scripts": "node --test \"scripts/*.test.mjs\"",
     "typecheck:scripts": "tsc -p scripts/tsconfig.json"
   },
-  "comment:overrides": "@wdio/tauri-service@1.2.0 exact-pins @wdio/native-utils@2.4.0 but imports installMockSyncOverride, only added in 2.5.0 — a broken pin. Force 2.5.0 until upstream fixes it.",
+  "comment:overrides": "@wdio/tauri-service@1.2.0 exact-pins @wdio/native-utils@2.4.0 but imports installMockSyncOverride, only added in 2.5.0 — a broken pin. Force 2.5.0 until upstream fixes it. monaco-languageclient pins @codingame/monaco-vscode-* to ^35.0.1, which npm was satisfying with a second nested install alongside our own ~35.0.3 pins — two copies of the same VS Code services meant two CommandsRegistry instances, both registering editor.action.measureExtHostLatency and crashing with 'Cannot register two commands with the same id'. Force every @codingame/monaco-vscode-* package to one shared version so the whole tree dedupes to a single copy.",
   "overrides": {
-    "@wdio/native-utils": "2.5.0"
+    "@wdio/native-utils": "2.5.0",
+    "@codingame/monaco-vscode-api": "35.0.3",
+    "@codingame/monaco-vscode-editor-api": "35.0.3",
+    "@codingame/monaco-vscode-extension-api": "35.0.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.1",
