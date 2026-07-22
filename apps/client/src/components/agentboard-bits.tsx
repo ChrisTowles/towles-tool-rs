@@ -886,7 +886,11 @@ export function CacheBadge({
             : "text-muted-foreground/70",
       )}
     >
-      {pct}% {warmth}
+      {/* Fixed 4ch slot ("100%"), right-aligned: the percent is 1–3 digits,
+          and without a reserved width every element after it drifts per row,
+          so the rail's meta columns never line up vertically. */}
+      <span className="inline-block w-[4ch] text-right">{pct}%</span>{" "}
+      <span className="inline-block min-w-[4ch]">{warmth}</span>
     </span>
   );
 }

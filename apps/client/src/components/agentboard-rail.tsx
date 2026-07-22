@@ -1188,7 +1188,9 @@ function SessionRow({
               {sessionStatusText(eff)}
             </span>
           </span>
-          {(active || hovered) && (
+          {/* Hover-only, not hover-or-active: the selected row otherwise
+              carries a resting ✕/menu forever, hiding the meta it overlays. */}
+          {hovered && (
             <span className="absolute inset-y-0 right-2 z-10 flex items-center gap-1 bg-accent pl-1.5">
               <RowControls
                 session={eff}
