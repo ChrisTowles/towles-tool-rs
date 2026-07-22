@@ -20,6 +20,7 @@ import {
   folderLandedButHasWork,
   folderRemovableTask,
   forceDeleteLabel,
+  branchRedundant,
   modelContextLabel,
   modelLetter,
   stoppablePort,
@@ -204,6 +205,24 @@ describe("modelContextLabel", () => {
   it("is null when nothing is known", () => {
     expect(modelContextLabel({})).toBeNull();
     expect(modelContextLabel(null)).toBeNull();
+  });
+});
+
+describe("branchRedundant", () => {
+  it("matches a worktree task's folder against its slugged branch", () => {
+    expect(branchRedundant("feat-model-indicator-badge", "feat/model-indicator-badge")).toBe(true);
+    expect(branchRedundant("feature-4-fix-thing", "feature/4-fix-thing")).toBe(true);
+  });
+
+  it("keeps the label when they differ", () => {
+    expect(branchRedundant("towles-tool-rs", "main")).toBe(false);
+    expect(branchRedundant("feat-model-indicator-badge", "feat/other-branch")).toBe(false);
+    expect(branchRedundant("feat-model-indicator-badge", null)).toBe(false);
+    expect(branchRedundant("feat-model-indicator-badge", undefined)).toBe(false);
+  });
+
+  it("collapses runs and strips trailing dashes like tt-git's slug", () => {
+    expect(branchRedundant("feat-a-b", "feat//a--b!!")).toBe(true);
   });
 });
 
