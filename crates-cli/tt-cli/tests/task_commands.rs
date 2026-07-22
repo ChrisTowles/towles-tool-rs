@@ -587,6 +587,60 @@ fn rm_untracks_the_task_and_removes_its_instance_state() {
     );
 }
 
+/// The stale-rail bug: a checkout reached through a symlinked path gets
+/// tracked (and its board row bound) under that literal string, but `git
+/// worktree add` persists the realpath internally — so a removal driven by
+/// the *realpath* form (what `git worktree list`, and so the rail, would
+/// report) must still find and untrack the literal entry, not silently
+/// leave it as a "directory missing" ghost.
+#[test]
+#[cfg(unix)]
+fn rm_untracks_a_symlink_aliased_worktree_and_closes_its_row() {
+    let tmp = tempfile::tempdir().unwrap();
+    let real_checkout = make_checkout(tmp.path());
+    let link_checkout = tmp.path().join("link");
+    std::os::unix::fs::symlink(&real_checkout, &link_checkout).unwrap();
+    let link_s = link_checkout.to_string_lossy().to_string();
+    let home = tmp.path().join("home");
+
+    // Create the task through the symlinked path — this is the literal
+    // string that gets tracked (and bound to a board row) in the real app.
+    new_task(&link_s, "feat/aliased").assert().success();
+    let literal_dir = link_checkout.join(".claude").join("worktrees").join("feat-aliased");
+    let literal_dir_s = literal_dir.to_string_lossy().to_string();
+
+    let shared = home.join(".config").join("towles-tool").join("tasks").join("alias-test");
+    let repos_json = shared.join("agentboard").join("repos.json");
+    std::fs::create_dir_all(repos_json.parent().unwrap()).unwrap();
+    std::fs::write(
+        &repos_json,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "repoPaths": [literal_dir_s, "/kept/elsewhere"],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Remove it by the *realpath* checkout — what `git worktree list` (and
+    // so the rail, and the app's delete-worktree button) would report,
+    // never byte-identical to the symlinked literal string above.
+    let real_root_s = real_checkout.to_string_lossy().to_string();
+    tt_scoped(&home, "alias-test")
+        .args(["task", "rm", "feat-aliased", "--root", &real_root_s])
+        .assert()
+        .success()
+        .stdout(contains("untracked from the agentboard rail"));
+
+    assert!(!literal_dir.exists());
+    let repos: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&repos_json).unwrap()).unwrap();
+    assert_eq!(
+        repos["repoPaths"],
+        serde_json::json!(["/kept/elsewhere"]),
+        "the symlink-aliased entry is untracked by realpath; the unrelated repo survives"
+    );
+}
+
 #[test]
 fn lockfile_detection_installs_without_declared_setup() {
     // A repo with no TT_TASK_SETUP but a package-lock.json: setup_command
@@ -727,6 +781,59 @@ fn hook_remove_is_guarded_like_rm() {
     // already gone → a no-op success, not an error (Claude Code may fire the
     // hook for a worktree the user already cleaned up)
     tt().args(["task", "hook-remove"]).write_stdin(hook_input).assert().success();
+}
+
+/// Claude Code sometimes removes the worktree from disk itself before firing
+/// WorktreeRemove — the hook must still untrack it from the agentboard rail
+/// rather than no-op, or the rail strands a "directory missing" ghost that
+/// only a manual Untrack can clear (the bug this test guards against).
+#[test]
+fn hook_remove_untracks_a_worktree_already_gone_from_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+    let home = tmp.path().join("home");
+
+    new_task(&root_s, "feat/ghost").assert().success();
+    let task = task_dir(&checkout, "feat-ghost");
+    let task_s = task.to_string_lossy().to_string();
+
+    let shared = home.join(".config").join("towles-tool").join("tasks").join("ghost-test");
+    let repos_json = shared.join("agentboard").join("repos.json");
+    std::fs::create_dir_all(repos_json.parent().unwrap()).unwrap();
+    std::fs::write(
+        &repos_json,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "repoPaths": [task_s, "/kept/elsewhere"],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    // The worktree is gone from disk already — e.g. Claude Code's own
+    // teardown ran before the hook fired.
+    std::fs::remove_dir_all(&task).unwrap();
+    assert!(!task.exists());
+
+    let hook_input = serde_json::json!({
+        "hook_event_name": "WorktreeRemove",
+        "cwd": checkout.to_string_lossy(),
+        "worktree_path": task_s,
+    })
+    .to_string();
+    tt_scoped(&home, "ghost-test")
+        .args(["task", "hook-remove"])
+        .write_stdin(hook_input)
+        .assert()
+        .success();
+
+    let repos: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&repos_json).unwrap()).unwrap();
+    assert_eq!(
+        repos["repoPaths"],
+        serde_json::json!(["/kept/elsewhere"]),
+        "the gone worktree's entry is dropped, the other repo survives"
+    );
 }
 
 #[test]

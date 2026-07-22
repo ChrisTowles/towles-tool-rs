@@ -122,6 +122,39 @@ pub fn remove_repo_persisted(path: &Path, dir: &str) -> std::io::Result<(Vec<Str
     Ok((config.repo_paths, removed))
 }
 
+/// Every path currently tracked in `repos.json` that names the same physical
+/// directory as `dir`, by realpath, other than `dir`'s own literal string.
+///
+/// `git worktree add` persists a symlink-resolved (realpath) form of the path
+/// it was given, which can diverge byte-for-byte from the literal path a
+/// caller built for that same directory (`tt-tasks::ops::create_task` never
+/// canonicalizes) — so a worktree discovered via `git worktree list`, and
+/// deleted by clicking its row on the rail, can carry a `dir` that
+/// exact-matches neither `repos.json` nor a bound board row's `worktree_dir`,
+/// even though both name the same directory. A plain string-equality untrack
+/// then silently does nothing, leaving the entry to strand as a "directory
+/// missing" ghost once the worktree is actually gone.
+///
+/// `canonicalize` needs the directory to still exist, so **this must be
+/// called before anything removes it** — called any later it just returns
+/// nothing, same as if there were no alias. A tracked path that can't be
+/// canonicalized (already gone, permission denied) is skipped rather than
+/// guessed at: a false negative just leaves an already-orphaned string for
+/// the rail's ordinary "missing" handling to catch, a false positive would
+/// untrack the wrong repo.
+pub fn aliases_for(repos_path: &Path, dir: &Path) -> Vec<String> {
+    let Ok(dir_real) = std::fs::canonicalize(dir) else {
+        return Vec::new();
+    };
+    let dir_s = dir.to_string_lossy().to_string();
+    load_config(repos_path)
+        .repo_paths
+        .into_iter()
+        .filter(|p| *p != dir_s)
+        .filter(|p| std::fs::canonicalize(p).ok().as_deref() == Some(dir_real.as_path()))
+        .collect()
+}
+
 /// Tracked paths whose directory is gone (per `exists`). Pure — the caller
 /// supplies the probe so tests need no real filesystem.
 pub fn missing_repo_dirs(repo_paths: &[String], exists: impl Fn(&str) -> bool) -> Vec<String> {
@@ -524,6 +557,58 @@ mod tests {
         let (merged, removed) = remove_repo_persisted(&path, "/repo/a").unwrap();
         assert!(removed);
         assert_eq!(merged, paths(&["/repo/b", "/repo/c"]));
+    }
+
+    /// The bug this guards against: a checkout reached through a symlink gets
+    /// tracked under the literal (symlinked) path, but `git worktree add`
+    /// persists the realpath — so a worktree discovered via `git worktree
+    /// list` and deleted from the rail carries a `dir` that never
+    /// exact-matches the tracked entry, even though both name the same
+    /// directory.
+    #[test]
+    #[cfg(unix)]
+    fn aliases_for_finds_a_symlinked_tracked_entry_by_realpath() {
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let path = tmp.path().join("repos.json");
+        let link_s = link.to_string_lossy().to_string();
+        save_repos(&path, &paths(&[&link_s, "/kept/elsewhere"])).unwrap();
+
+        // `dir` here is the realpath form — what git itself would report —
+        // not the literal symlinked path tracked in repos.json.
+        let aliases = aliases_for(&path, &real);
+        assert_eq!(aliases, vec![link_s]);
+    }
+
+    /// No symlink involved: nothing to alias, and the literal string is
+    /// excluded from its own alias list (the caller already matches it
+    /// directly).
+    #[test]
+    fn aliases_for_is_empty_with_no_divergence() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("plain");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = tmp.path().join("repos.json");
+        save_repos(&path, &paths(&[&dir.to_string_lossy()])).unwrap();
+
+        assert!(aliases_for(&path, &dir).is_empty());
+    }
+
+    /// Called after the directory is already gone (the common case — this
+    /// runs post-removal for most callers): `canonicalize` can't resolve
+    /// anything, so it degrades to no aliases rather than guessing.
+    #[test]
+    fn aliases_for_is_empty_once_the_directory_is_gone() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("gone");
+        let path = tmp.path().join("repos.json");
+        save_repos(&path, &paths(&[&dir.to_string_lossy()])).unwrap();
+
+        assert!(aliases_for(&path, &dir).is_empty());
     }
 
     #[test]

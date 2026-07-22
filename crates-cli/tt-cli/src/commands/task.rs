@@ -135,14 +135,26 @@ fn cmd_hook_remove() -> Result<(), String> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| format!("bad worktree path {}", path.display()))?
         .to_string();
-    if !path.exists() {
-        eprintln!("tt task: {} is already gone — nothing to remove", path.display());
-        return Ok(());
-    }
+    // `discover_root` walks `path`'s ancestors, so it resolves the checkout
+    // even when `path` itself is already gone — Claude Code sometimes removes
+    // the worktree from disk before firing this hook. A `!path.exists()`
+    // early return used to stop right there and report "nothing to remove",
+    // which skipped the bindings teardown entirely: the repos.json entry and
+    // board row survived, stranding the rail with a "directory missing" ghost
+    // that only a manual Untrack could clear. `MissingDir::TearDownBindings`
+    // (unlike `cmd_rm`'s `Fail`) is the right call here — this path came from
+    // Claude Code itself, never a typed name, so a missing dir is exactly the
+    // record that still needs cleaning up, not a typo to report.
     let checkout = ops::discover_root(Some(&path)).map_err(|e| e.to_string())?.checkout;
     let opts = RemoveOpts { root: Some(path.clone()), name, force: false };
     // Hooks are headless: the outcome comes from the row's own evidence.
-    match remove_task_fully(&opts, &path, &checkout, None)? {
+    match remove_task_fully(
+        &opts,
+        &path,
+        &checkout,
+        None,
+        task_removal::MissingDir::TearDownBindings,
+    )? {
         task_removal::Outcome::Removed { messages, .. } => {
             for message in messages {
                 eprintln!("tt task: {message}");
@@ -166,6 +178,7 @@ fn remove_task_fully(
     dir: &Path,
     checkout: &Path,
     outcome: Option<tt_store::TaskOutcome>,
+    on_missing: task_removal::MissingDir,
 ) -> Result<task_removal::Outcome, String> {
     let store = board_store_for(checkout);
     let now_ms = epoch_now_ms();
@@ -183,9 +196,7 @@ fn remove_task_fully(
         rows: store.as_ref().map(|s| s as &dyn task_removal::BoardRows),
         outcome,
         now_ms,
-        // The name came from the command line, so a missing worktree is a typo
-        // to report, not a no-op to celebrate.
-        on_missing: task_removal::MissingDir::Fail,
+        on_missing,
     };
     task_removal::remove_task_and_bindings(removal, &mut task_removal::NoHooks)
         .map_err(|e| e.to_string())
@@ -232,6 +243,7 @@ fn after_removal(checkout: &Path, dir: &Path) -> Vec<String> {
         &tt_agentboard::repos::default_repos_path(),
         store.as_ref().map(|s| s as &dyn task_removal::BoardRows),
         dir,
+        &[],
         // `clean` only sweeps *finished* tasks — landed by evidence — so the
         // close is always a done, never an abandonment.
         tt_store::TaskOutcome::Done,
@@ -594,7 +606,9 @@ fn cmd_rm(
     let opts = RemoveOpts { root: root.map(Path::to_path_buf), name: name.to_string(), force };
     // clap's value_parser guarantees the spelling; parse never fails here.
     let outcome = outcome.and_then(tt_store::TaskOutcome::parse);
-    match remove_task_fully(&opts, &dir, &sr.checkout, outcome)? {
+    // The name came from the command line, so a missing worktree is a typo to
+    // report, not a no-op to celebrate.
+    match remove_task_fully(&opts, &dir, &sr.checkout, outcome, task_removal::MissingDir::Fail)? {
         task_removal::Outcome::Removed { name, messages } => {
             for message in messages {
                 ui::warning(&message);
