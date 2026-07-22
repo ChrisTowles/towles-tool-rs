@@ -851,6 +851,29 @@ pub fn store_db_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("tt.db"))
 }
 
+/// The tt.db owned by a *named* scope, ignoring the ambient one.
+///
+/// The ambient scope is derived from the process's cwd, which answers "whose
+/// database am I?" — but a removal path needs "whose database holds the row for
+/// the checkout I just deleted?", and those differ whenever the command runs
+/// from somewhere other than the checkout that owns the board. `tt task rm`
+/// run from inside a worktree would otherwise open that worktree's own empty
+/// tt.db, find no row, and silently leave the real one orphaned.
+///
+/// `None` means the unscoped store. A forced [`STATE_SCOPE_ENV`] still wins, so
+/// tests stay isolated — same rule as [`instance_state_dirs_for_scope`].
+pub fn store_db_path_for_scope(scope: Option<&str>) -> Result<PathBuf> {
+    let base = dirs::data_dir().ok_or(Error::NoDataDir)?.join(TOOL_NAME);
+    let base = match detect_scope() {
+        Scope::Forced(forced) => base.join(SCOPE_DIR).join(forced),
+        _ => match scope {
+            Some(scope) => base.join(SCOPE_DIR).join(scope),
+            None => base,
+        },
+    };
+    Ok(base.join("tt.db"))
+}
+
 /// Directory watched by the app's scheduler for an eager collector nudge: a
 /// `prs` or `issues` file touched inside it triggers an immediate collect of
 /// that target instead of waiting for the normal poll cadence. Instance-scoped

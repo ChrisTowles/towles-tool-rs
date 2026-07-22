@@ -34,7 +34,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
-import { ownerRepoFromOrigin, useAgentboardState } from "@/lib/agentboard";
+import { ownerRepoFromOrigin, type TaskBlocker, useAgentboardState } from "@/lib/agentboard";
+import { BlockedDeleteDialog } from "@/components/task-blockers";
 import { repoAccentStyles, repoIcon, type RepoMeta } from "@/lib/repo-identity";
 import { useBoardGroupByRepo } from "@/lib/board-prefs";
 import { uiAction } from "@/lib/ui-action";
@@ -43,11 +44,11 @@ import {
   storeAttachTaskIssue,
   storeAttachTaskPr,
   storeClearDone,
-  storeDeleteTask,
   storeDetachTaskIssue,
   storeDetachTaskPr,
   storePromoteTaskToIssue,
   storeSetTaskPosition,
+  taskDelete,
   storeSetTaskStatus,
   storeUpdateTask,
   TASK_STATUS_LABEL,
@@ -140,6 +141,15 @@ export function BoardScreen() {
   const [posOverrides, setPosOverrides] = useState<Record<number, PosOverride>>({});
   const [editOverrides, setEditOverrides] = useState<Record<number, TaskEdit>>({});
   const [deletedIds, setDeletedIds] = useState<Set<number>>(() => new Set());
+  // A refused delete, held for the dialog that reports it. Deleting a card
+  // also deletes its worktree, so the guards can refuse — see `remove`. No
+  // name is stored: a refusal deleted nothing, so the row is still in `merged`
+  // and the dialog reads the current text from there.
+  const [blockedDelete, setBlockedDelete] = useState<{
+    id: number;
+    blockers: TaskBlocker[];
+    messages: string[];
+  } | null>(null);
   // Quick filter: case-insensitive substring over each todo's text + repo tag.
   const [filter, setFilter] = useState("");
 
@@ -329,9 +339,35 @@ export function BoardScreen() {
     void commit(storeUpdateTask(id, current.text, value), "save those notes");
   }
 
-  function remove(id: number) {
+  /** Delete a task: its board row, and its worktree and panes when it has
+   * them. The card hides optimistically, but a guarded refusal brings it
+   * straight back — nothing was deleted in that case, so leaving it hidden
+   * would show the user a delete that didn't happen. */
+  async function remove(id: number, { force = false } = {}) {
     setDeletedIds((prev) => new Set(prev).add(id));
-    void commit(storeDeleteTask(id), "delete that todo");
+    const done = await taskDelete({ id }, force);
+    const unhide = () =>
+      setDeletedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    done.match({
+      ok: (outcome) => {
+        if (outcome.status === "blocked") {
+          unhide();
+          // Refused, not failed: the reasons come with remedies, so they go to
+          // a dialog that can act on them rather than a dismissable toast.
+          setBlockedDelete({ id, blockers: outcome.blockers, messages: outcome.messages });
+          return;
+        }
+        for (const message of outcome.messages) toast(message);
+      },
+      err: (e) => {
+        unhide();
+        toast.error(`Couldn't delete that task — ${e.message}`);
+      },
+    });
   }
 
   function clearDone() {
@@ -550,7 +586,7 @@ export function BoardScreen() {
                                   onDetachPr={detachPr}
                                   onRename={rename}
                                   onSetNotes={setNotes}
-                                  onDelete={remove}
+                                  onDelete={(id) => void remove(id)}
                                   onDragEnd={clearDropSlot}
                                 />
                               </Fragment>
@@ -569,6 +605,25 @@ export function BoardScreen() {
           </div>
         </ScrollArea>
       )}
+
+      <BlockedDeleteDialog
+        open={blockedDelete != null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setBlockedDelete(null);
+        }}
+        name={merged.find((t) => t.id === blockedDelete?.id)?.text}
+        description="This task’s worktree still holds work. Clear what’s below and it’ll delete cleanly, or delete anyway."
+        cancelLabel="Keep the task"
+        blockers={blockedDelete?.blockers ?? []}
+        messages={blockedDelete?.messages ?? []}
+        onForce={() => {
+          if (blockedDelete) {
+            const id = blockedDelete.id;
+            setBlockedDelete(null);
+            void remove(id, { force: true });
+          }
+        }}
+      />
     </div>
   );
 }
@@ -1010,8 +1065,17 @@ function Card({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this task?</AlertDialogTitle>
+            {/* Names the worktree when there is one: this deletes the checkout
+                on disk too, and a confirm that only mentioned the card would
+                be understating what the button does. Still promises the
+                guards — work that would be lost stops the delete and reopens
+                as the blocked dialog, which is where discarding is agreed
+                to. */}
             <AlertDialogDescription>
-              “{task.text}” will be permanently removed. This can't be undone.
+              “{task.text}” will be permanently removed
+              {task.worktree?.dir ? ", along with its worktree and any terminals in it" : ""}. This
+              can't be undone, but uncommitted or unlanded work will stop the delete rather than be
+              discarded.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

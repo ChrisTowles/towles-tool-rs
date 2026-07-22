@@ -62,7 +62,7 @@ from "not wired in browser". Now each call site states its own intent:
 
 ```ts
 const repos = (await invoke<Repo[]>("list_repos")).unwrapOr([]);      // degrade
-if ((await storeDeleteTask(id)).isErr()) revertOptimisticDelete();     // branch
+if ((await taskDelete({ id })).isErr()) revertOptimisticDelete();      // branch
 result.match({ ok: setView, err: (e) => {                             // report
   if (!NotInTauri.is(e)) toast.error(e.message);                      // …but not in browser dev
 } });

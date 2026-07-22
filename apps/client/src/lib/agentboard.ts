@@ -6,7 +6,7 @@ import type { IpcError } from "./errors";
 import type { LaunchConfigStatus } from "./launch";
 import type { RepoMeta } from "./repo-identity";
 import { OpenedSessionSchema } from "./schemas/agentboard";
-import { TaskBlockerSchema, TaskRemoveOutcomeSchema } from "./schemas/task";
+import { TaskBlockerSchema } from "./schemas/task";
 import { invoke } from "./tauri";
 
 /**
@@ -990,7 +990,7 @@ export function folderLanded(
 
 /** Whether the delete-worktree affordances (rail menu, the `ab-remove-task`
  * chord) apply to a folder: a worktree that still exists on disk. The
- * main checkout has no `task_remove` path, and a ghost (`dirMissing`) has
+ * main checkout has no `task_delete` path, and a ghost (`dirMissing`) has
  * nothing on disk to delete — its affordance is Untrack. Unrelated to
  * `folderSafeToDelete`: this gates whether deletion can be *offered*, not
  * whether it would succeed (the guarded removal decides that after the
@@ -1008,7 +1008,7 @@ export function folderRemovableTask(
 export const TASK_BLOCKER_KINDS = ["dirtyTree", "unreachableCommits", "foreignPort"] as const;
 export type TaskBlockerKind = (typeof TASK_BLOCKER_KINDS)[number];
 
-/** One reason `task_remove` refused. Blocked is an `Ok` outcome there, not
+/** One reason `task_delete` refused. Blocked is an `Ok` outcome there, not
  * an error — an expected answer with a next step attached — so the UI gets
  * typed rows to act on instead of a newline-joined error string.
  *
@@ -1017,8 +1017,10 @@ export type TaskBlockerKind = (typeof TASK_BLOCKER_KINDS)[number];
  * (why `kind` stays an open string, what `port` feeds) lives on the schema. */
 export type TaskBlocker = z.infer<typeof TaskBlockerSchema>;
 
-/** The `task_remove` result: removed, or refused with reasons. */
-export type TaskRemoveOutcome = z.infer<typeof TaskRemoveOutcomeSchema>;
+/** The `task_delete` result: deleted, or refused with reasons. Defined next to
+ * the schema that parses it (`schemas/task.ts`); re-exported here so the
+ * agentboard's own consumers keep one import site. */
+export type { TaskDeleteOutcome } from "./schemas/task";
 
 /** What forcing past a blocker would discard, as a noun for the button. */
 const DISCARDED: Record<string, string> = {

@@ -311,7 +311,7 @@ export function BranchLabel({
   );
 }
 
-/** Shown on a worktree checkout mid-delete (`task_remove` in flight). The rail
+/** Shown on a worktree checkout mid-delete (`task_delete` in flight). The rail
  * row itself dims and goes `pointer-events-none` around this badge (see
  * `RepoGroup`'s `deletingDirs`/`FolderHeader`'s `deleting` prop) — this is
  * just the label explaining *why* the row went inert, same job `GhostBadge`
@@ -958,7 +958,7 @@ export function AgentStatusLine({
  * lives, shared verbatim by the rail's repo/folder headers and the
  * working-context band atop the panes (so the two surfaces never diverge):
  * full folder path (when given), "New task…" (task-convention repos),
- * "Delete worktree…" (worktree checkouts, guarded `task_remove`), "Sync now",
+ * "Delete worktree…" (worktree checkouts, guarded `task_delete`), "Sync now",
  * "Create issue…", "Mark quiet"/"Unmark quiet" (forces this folder into the
  * "hide inactive" filter's stub row regardless of its actual activity — see
  * `isFolderQuiet`), and "Remove from rail". */
@@ -983,7 +983,7 @@ export function RepoMenu({
   quiet: boolean;
   /** Opens the new-task modal — set only on a task-convention repo. */
   onNewTask?: () => void;
-  /** Deletes this worktree from disk (guarded, `task_remove`) — set only
+  /** Deletes this worktree from disk (guarded, `task_delete`) — set only
    * on worktree checkouts. */
   onDeleteWorktree?: () => void;
 }) {

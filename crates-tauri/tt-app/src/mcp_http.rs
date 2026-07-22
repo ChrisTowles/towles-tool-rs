@@ -329,13 +329,53 @@ pub fn spawn(app: AppHandle, port: u16) {
     // was written.
     let _ = store.sweep_old_events(crate::store::now_ms());
 
-    let dispatcher = Arc::new(Mutex::new(Dispatcher::new(store)));
+    let dispatcher = Arc::new(Mutex::new(
+        Dispatcher::new(store).with_task_host(Box::new(AppTaskHost { app: app.clone() })),
+    ));
 
     SERVING.store(true, Ordering::Relaxed);
     tracing::info!(%addr, "mcp.http: serving");
     tauri::async_runtime::spawn(async move {
         accept_loop(app, listener, dispatcher).await;
     });
+}
+
+/// Lets the `task_delete` MCP tool reach the same delete path the app's own UI
+/// uses — see [`tt_mcp::TaskHost`] for why the tool can't do this itself.
+///
+/// Runs on the connection's `spawn_blocking` thread (the dispatcher call
+/// already is one), which is right for work that is entirely git subprocesses.
+/// It does hold the dispatcher's mutex for the duration, so a slow delete
+/// serializes other MCP calls behind it — acceptable for a single-user local
+/// server, and the alternative (releasing the lock mid-call) would let a
+/// concurrent tool observe the store halfway through a delete.
+struct AppTaskHost {
+    app: AppHandle,
+}
+
+impl tt_mcp::TaskHost for AppTaskHost {
+    fn delete_task(&self, id: i64, force: bool) -> Result<tt_mcp::TaskDeletion, String> {
+        use crate::task::{DeleteTarget, TaskDeleteOutcome};
+
+        match crate::task::delete_task_blocking(&self.app, DeleteTarget::Board(id), force)? {
+            TaskDeleteOutcome::Deleted { name, messages } => {
+                Ok(tt_mcp::TaskDeletion::Deleted { name, messages })
+            }
+            TaskDeleteOutcome::Blocked { name, blockers, messages } => {
+                // Serialize through the same `Blocker` the frontend dialog
+                // renders, so an agent reading the refusal and a human reading
+                // the dialog are looking at the same fields. One conversion for
+                // the whole list, so a serialization failure is one error here
+                // rather than a `null` silently taking a blocker's place in the
+                // refusal an agent acts on.
+                let blockers = serde_json::to_value(&blockers)
+                    .ok()
+                    .and_then(|value| value.as_array().cloned())
+                    .ok_or_else(|| format!("could not encode blockers for task {id}"))?;
+                Ok(tt_mcp::TaskDeletion::Refused { name, blockers, messages })
+            }
+        }
+    }
 }
 
 /// Accept connections until the task is aborted. One failed connection recycles

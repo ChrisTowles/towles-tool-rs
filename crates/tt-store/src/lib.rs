@@ -1395,9 +1395,10 @@ impl Store {
     /// The optional columns are upserts, never clears: a `None` means "leave
     /// as is" (`COALESCE`), so a repo-only rebind — e.g. retrying a failed
     /// `task_create` on a task whose worktree already exists — can't erase an
-    /// established branch/dir. Clearing `dir` has its own dedicated path
-    /// ([`Store::clear_task_worktree_dir`]); nothing legitimately un-sets a
-    /// branch. Returns [`Error::TaskNotFound`] when no task has `id`.
+    /// established branch/dir. Nothing legitimately un-sets a branch or a dir:
+    /// a worktree that goes away takes its whole task with it (see
+    /// [`Store::delete_task`]), so there is no "detached task" state to
+    /// reach. Returns [`Error::TaskNotFound`] when no task has `id`.
     pub fn set_task_worktree(
         &self,
         id: i64,
@@ -1418,18 +1419,6 @@ impl Store {
             return Err(Error::TaskNotFound(id));
         }
         Ok(())
-    }
-
-    /// Detach the worktree from whatever task holds it: clears `worktree_dir` for
-    /// tasks bound to `dir`, keeping `worktree_repo_root`/`worktree_branch` as
-    /// historical fact. Called from the worktree-removal seam. Returns how many
-    /// tasks were detached (0 when the worktree had no task — not an error).
-    pub fn clear_task_worktree_dir(&self, dir: &str) -> Result<usize> {
-        let affected = self.conn.execute(
-            "UPDATE tasks SET worktree_dir = NULL WHERE worktree_dir = ?1",
-            params![dir],
-        )?;
-        Ok(affected)
     }
 
     /// Replace only the named repos' PR rows, leaving other repos' rows intact.
@@ -2554,15 +2543,11 @@ mod tests {
         assert_eq!(rebound.branch.as_deref(), Some("feat/y"));
         assert_eq!(rebound.dir.as_deref(), Some("/repos/x/.claude/worktrees/feat-y"));
 
-        // Removing the worktree detaches the dir but keeps branch + root.
-        let n = s.clear_task_worktree_dir("/repos/x/.claude/worktrees/feat-y").unwrap();
-        assert_eq!(n, 1);
+        // Removing the worktree takes the whole task with it — there is no
+        // detached-task state to land in (see `set_task_worktree`'s doc).
+        s.delete_task(t.id).unwrap();
         assert!(s.task_for_worktree_dir("/repos/x/.claude/worktrees/feat-y").unwrap().is_none());
-        let after = s.get_task(t.id).unwrap().unwrap().worktree.unwrap();
-        assert_eq!(after.branch.as_deref(), Some("feat/y"));
-        assert_eq!(after.dir, None);
-        // Clearing an unknown dir is a 0-count no-op; unknown task errors.
-        assert_eq!(s.clear_task_worktree_dir("/nope").unwrap(), 0);
+        assert!(s.get_task(t.id).unwrap().is_none());
         assert!(matches!(
             s.set_task_worktree(777, "/r", None, Some("b"), None),
             Err(Error::TaskNotFound(777))

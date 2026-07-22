@@ -167,14 +167,16 @@ Rules when working in a task:
   `.git` file's worktree pointer resolves to the main checkout), but new
   tasks land in `<checkout>/.claude/worktrees/`; old tasks drain as their
   branches merge.
-- **Any code path that removes a task checkout must also untrack its dir
-  from the shared `repos.json`** (`tt_agentboard::repos::remove_repo_persisted`),
-  the same way `tt task rm`'s CLI shell and the app's `task_remove` command
-  already do right after `ops::remove_task`/`ops::clean_tasks` returns —
-  `FinishedTask`/`RemovedTask` carry `dir` for exactly this. Skip it and a
-  removed task's stale path lingers in the tracked-repos list forever, and
-  the scheduler's `prs`/`issues` collectors retry `gh`/`git` against a
-  directory with no `.git` on every tick.
+- **Removing a task checkout goes through `tt_agentboard::task_removal`** —
+  don't hand-roll the sequence. It untracks the dir from the shared
+  `repos.json` and deletes the bound board row, in that order, after the
+  worktree leaves disk; `FinishedTask`/`RemovedTask` carry `dir`/`checkout`
+  for exactly this. Skip the untrack and a removed task's stale path lingers
+  in the tracked-repos list forever, with the scheduler's `prs`/`issues`
+  collectors retrying `gh`/`git` against a directory with no `.git` on every
+  tick; skip the row and the board keeps a card pointing at nothing. `tt task
+  rm`/`clean`/`hook-remove` and the app's `task_delete` are all shells over
+  it.
 
 ## Architecture
 
@@ -254,8 +256,13 @@ Cargo workspace + npm workspace (`apps/client` only):
     `crates-tauri/tt-app/src/mcp_http.rs` — read that module's doc before
     touching either half. Tools: `task_list`, `task_status`, `task_create`
     (a #339 board task in a tracked repo's swimlane, same store path as the
-    app's `store_add_task`), plus the calendar family `calendar_today`,
-    `calendar_next` and the push-model write `calendar_set`. The broader
+    app's `store_add_task`), `task_delete`, plus the calendar family
+    `calendar_today`, `calendar_next` and the push-model write `calendar_set`.
+    `task_delete` is the one tool that cannot work from the dispatcher alone —
+    deleting a task also kills its panes and removes its worktree, neither
+    visible from a Tauri-free crate — so the transport injects a `TaskHost`
+    (`tt-app`'s `task::delete_task_blocking`) and a dispatcher without one
+    refuses rather than deleting the row on its own. The broader
     dashboard-read tools (`day_brief`, `needs_you`, `snapshot`,
     PR/issue/DM/collector reads) were pruned in the 2026-07 tool-surface
     review and have not returned.
@@ -331,7 +338,7 @@ Cargo workspace + npm workspace (`apps/client` only):
     (`WindowEvent::Focused` in `lib.rs`), a native notification actually
     firing (`agentboard::notify_needs_you`) — get the same treatment, since
     they're exactly the kind of thing that's impossible to reconstruct after
-    the fact otherwise (a real incident: `task_remove`'s ~1-minute worktree
+    the fact otherwise (a real incident: `task_delete`'s ~1-minute worktree
     removal appeared to "steal focus" on completion, and there was no way to
     tell from the log alone whether the window itself ever regained OS focus,
     an unrelated needs-you notification fired at the same moment, or neither
@@ -354,7 +361,16 @@ Cargo workspace + npm workspace (`apps/client` only):
     [`crates/tt-vt/CLAUDE.md`](crates/tt-vt/CLAUDE.md) for the Debug-mode
     parser perf trap and other gotchas.
   - `tt-agentboard` — agentboard watchers/engine: repo list, session tracking,
-    needs-you synthesis (consumed by the app shell).
+    needs-you synthesis (consumed by the app shell). Also **the one home of the
+    task-removal sequence** (`task_removal`): guards → host teardown → worktree
+    off disk → untrack from `repos.json` → board row last. It lives here
+    because it needs `tt-tasks`, `repos.json` and `tt-store` at once — `tt-tasks`
+    can't host it (this crate already depends on it, so the edge would be a
+    cycle) and `tt-app` can't (the CLI has no Tauri and would have to restate
+    the order, which is exactly how the two copies drifted). Host-specific work
+    — killing PTYs, closing rail folders, reaching a store held behind a mutex —
+    enters through the `RemovalHooks`/`BoardRows` traits. Change the order
+    there, not in a shell.
   - `tt-claude-code` — Claude Code transcript/session parsing models.
   - `tt-doctor` — doctor checks logic (app screen consumes it; the CLI command
     was removed in the 2026-07-19 trim).
@@ -435,7 +451,7 @@ plugins ship today:
 - `towles-tool-app` (`packages/app`) — bridges Claude Code to the desktop
   app itself: registers the app's MCP server with a static checked-in
   `.mcp.json` (`{"type":"http","url":"http://127.0.0.1:8787/mcp"}` — board
-  tasks `task_list`/`task_status`/`task_create` plus the calendar family
+  tasks `task_list`/`task_status`/`task_create`/`task_delete` plus the calendar family
   `calendar_today`/`calendar_next`/`calendar_set`; the app must be running),
   ships the `task-onboarding` skill
   (guides onboarding any repo onto worktrees — port discovery, template

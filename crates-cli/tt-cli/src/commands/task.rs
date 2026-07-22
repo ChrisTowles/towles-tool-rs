@@ -1,7 +1,7 @@
 //! `tt task` — worktree-task lifecycle over any git checkout.
 //!
 //! Thin CLI shell: creation/rendering/removal all live in `tt_tasks::ops`
-//! (shared with the app's `task_create`/`task_remove` commands). See the
+//! (shared with the app's `task_create`/`task_delete` commands). See the
 //! tt-tasks crate docs for the convention and the `${tt:...}` template
 //! grammar. `hook-create`/`hook-remove` are the Claude Code
 //! WorktreeCreate/WorktreeRemove hook shells — stdin is the hook JSON and
@@ -11,8 +11,9 @@ use std::fs;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
+use tt_agentboard::task_removal;
 use tt_tasks::envfile;
-use tt_tasks::ops::{self, CleanOpts, CreateOpts, OpsError, RemoveOpts, RemoveOutcome, TaskRoot};
+use tt_tasks::ops::{self, CleanOpts, CreateOpts, OpsError, RemoveOpts, TaskRoot};
 
 use crate::cli::TaskCommands;
 use crate::ui;
@@ -136,47 +137,77 @@ fn cmd_hook_remove() -> Result<(), String> {
         eprintln!("tt task: {} is already gone — nothing to remove", path.display());
         return Ok(());
     }
+    let checkout = ops::discover_root(Some(&path)).map_err(|e| e.to_string())?.checkout;
     let opts = RemoveOpts { root: Some(path.clone()), name, force: false };
-    let removed = match ops::remove_task(&opts, || {}).map_err(|e| e.to_string())? {
-        RemoveOutcome::Removed(r) => r,
-        RemoveOutcome::Blocked { name, blocked, messages } => {
-            return Err(refusal(&name, &blocked, &messages));
+    match remove_task_fully(&opts, &path, &checkout)? {
+        task_removal::Outcome::Removed { messages, .. } => {
+            for message in messages {
+                eprintln!("tt task: {message}");
+            }
+            Ok(())
         }
-    };
-    for message in &removed.messages {
-        eprintln!("tt task: {message}");
+        task_removal::Outcome::Blocked { name, blocked, messages } => {
+            Err(refusal(&name, &blocked, &messages))
+        }
     }
-    untrack_from_agentboard(&removed.dir);
-    Ok(())
 }
 
-/// Drop a removed checkout's now-dangling agentboard rail entry (see the
-/// repo rule: every removal path must untrack the dir from repos.json).
-fn untrack_from_agentboard(dir: &Path) {
-    let dir_s = dir.to_string_lossy();
-    if let Ok((_, true)) = tt_agentboard::repos::remove_repo_persisted(
+/// Remove a worktree task and everything bound to it, through the one shared
+/// sequence in [`tt_agentboard::task_removal`]. The CLI has no panes and no
+/// in-memory rail, so it passes no hooks; the app passes its own and gets the
+/// identical ordering.
+fn remove_task_fully(
+    opts: &RemoveOpts,
+    dir: &Path,
+    checkout: &Path,
+) -> Result<task_removal::Outcome, String> {
+    let store = board_store_for(checkout);
+    let removal = task_removal::TaskRemoval {
+        opts,
+        dir,
+        repos_path: &tt_agentboard::repos::default_repos_path(),
+        rows: store.as_ref().map(|s| s as &dyn task_removal::BoardRows),
+        // The name came from the command line, so a missing worktree is a typo
+        // to report, not a no-op to celebrate.
+        on_missing: task_removal::MissingDir::Fail,
+    };
+    task_removal::remove_task_and_bindings(removal, &mut task_removal::NoHooks)
+        .map_err(|e| e.to_string())
+}
+
+/// Open the board store that owns a checkout's rows.
+///
+/// The scope comes from the *checkout*, not the ambient cwd: the row was
+/// written by the app running from there, so a `tt task rm` invoked from inside
+/// any worktree would otherwise open a different, empty database, delete
+/// nothing, and leave the orphaned row this path exists to prevent.
+///
+/// `None` on a store that won't open — best-effort by design, since the
+/// worktree removal has already happened by the time this matters and failing
+/// the command now would report a removal that really occurred as a failure.
+fn board_store_for(checkout: &Path) -> Option<tt_store::Store> {
+    let scope = tt_config::task_scope_from_dir(checkout);
+    let path = tt_config::store_db_path_for_scope(scope.as_deref()).ok()?;
+    tt_store::Store::open(&path).ok()
+}
+
+/// Steps 4 and 5 of the removal sequence, for `tt task clean` — which removes
+/// in bulk through `ops::clean_tasks` and so has already taken each worktree
+/// off disk by the time the bindings need clearing. Same shared code as every
+/// other path.
+///
+/// **Returns** its notes rather than printing them: `tt task clean --json`
+/// writes a machine-read document to stdout and `ui::warning` (like
+/// `ui::success`) prints to *stdout*, so a helper that reported for itself
+/// would corrupt that document. Each caller renders in its own idiom; `--json`
+/// drops them.
+fn after_removal(checkout: &Path, dir: &Path) -> Vec<String> {
+    let store = board_store_for(checkout);
+    task_removal::remove_bindings(
         &tt_agentboard::repos::default_repos_path(),
-        &dir_s,
-    ) {
-        eprintln!("tt task: untracked {dir_s} from the agentboard rail");
-    }
-    detach_task_worktree(dir);
-}
-
-/// Detach any board task bound to the removed worktree (#339): clears its
-/// `worktree_dir` while the branch stays recorded. Best-effort — the store this
-/// process resolves may not be the one holding the task (instance state is
-/// per-checkout-scoped), in which case this is a harmless 0-row no-op and
-/// the app's own removal path does the real detach.
-fn detach_task_worktree(dir: &Path) {
-    let Ok(store) = tt_store::Store::open_default() else {
-        return;
-    };
-    if let Ok(detached) = store.clear_task_worktree_dir(&dir.to_string_lossy())
-        && detached > 0
-    {
-        eprintln!("tt task: detached the board task from the removed worktree");
-    }
+        store.as_ref().map(|s| s as &dyn task_removal::BoardRows),
+        dir,
+    )
 }
 
 /// Create a task (the unit of work): a board-task row PLUS its worktree, in one
@@ -524,30 +555,21 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
 }
 
 fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
+    let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
+    let dir = sr.task_dir(name);
     let opts = RemoveOpts { root: root.map(Path::to_path_buf), name: name.to_string(), force };
-    let removed = match ops::remove_task(&opts, || {}).map_err(|e| e.to_string())? {
-        RemoveOutcome::Removed(r) => r,
-        RemoveOutcome::Blocked { name, blocked, messages } => {
-            return Err(refusal(&name, &blocked, &messages));
+    match remove_task_fully(&opts, &dir, &sr.checkout)? {
+        task_removal::Outcome::Removed { name, messages } => {
+            for message in messages {
+                ui::warning(&message);
+            }
+            ui::success(&format!("removed {name} (ports released with its .env)"));
+            Ok(())
         }
-    };
-    for message in &removed.messages {
-        ui::warning(message);
+        task_removal::Outcome::Blocked { name, blocked, messages } => {
+            Err(refusal(&name, &blocked, &messages))
+        }
     }
-    // The task may be tracked on the agentboard rail (the app tracks tasks it
-    // creates); drop the now-dangling entry so the rail doesn't keep a
-    // "missing" ghost with its pane and windows.
-    let dir_s = removed.dir.to_string_lossy();
-    if let Ok((_, untracked)) = tt_agentboard::repos::remove_repo_persisted(
-        &tt_agentboard::repos::default_repos_path(),
-        &dir_s,
-    ) && untracked
-    {
-        println!("  untracked from the agentboard rail");
-    }
-    detach_task_worktree(&removed.dir);
-    ui::success(&format!("removed {} (ports released with its .env)", removed.name));
-    Ok(())
 }
 
 /// Render a guard refusal for the terminal: each reason paired with its
@@ -589,14 +611,13 @@ fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), Strin
     // as `tt task rm`'s untracking below) — drop its now-dangling repos.json
     // entry so collectors (`prs`/`issues`) don't keep retrying a gone dir.
     if !dry_run {
-        let repos_path = tt_agentboard::repos::default_repos_path();
         for task in &report.removed {
-            let dir_s = task.dir.to_string_lossy();
-            if let Ok((_, true)) = tt_agentboard::repos::remove_repo_persisted(&repos_path, &dir_s)
-            {
-                ui::warning(&format!("untracked {} from the agentboard rail", task.name));
+            let notes = after_removal(&task.checkout, &task.dir);
+            if !json {
+                for note in notes {
+                    ui::warning(&format!("{}: {note}", task.name));
+                }
             }
-            detach_task_worktree(&task.dir);
         }
     }
 

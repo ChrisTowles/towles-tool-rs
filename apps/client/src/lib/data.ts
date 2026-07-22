@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Result } from "better-result";
 import type { IpcError } from "./errors";
 import { invoke, isTauri } from "./tauri";
+import { type TaskDeleteOutcome, TaskDeleteOutcomeSchema } from "./schemas/task";
 
 /**
  * Client-side view of the personal-HQ store (the Rust `tt-store` crate, surfaced
@@ -127,8 +128,8 @@ export type TaskPrLink = {
  * absent forever for a "task only" submit). That's what puts every task in a
  * repo swimlane on the Board.
  *
- * `repoRoot`/`branch` survive worktree removal; `dir` is cleared when the worktree
- * is removed (a detached task).
+ * There is no "worktree removed but task kept" state: deleting a task deletes
+ * its worktree, and deleting its worktree deletes the task (see `taskDelete`).
  */
 export type TaskWorktree = {
   repoRoot: string;
@@ -617,8 +618,25 @@ export const storeSetTaskPosition = (id: number, status: TaskStatus, index: numb
 export const storeUpdateTask = (id: number, text: string, notes?: string) =>
   invoke<void>("store_update_task", { id, text, notes });
 
-/** Delete a task outright. */
-export const storeDeleteTask = (id: number) => invoke<void>("store_delete_task", { id });
+/** Delete a task and everything bound to it — its terminal panes and its git
+ * worktree as well as its board row.
+ *
+ * There is deliberately no row-only delete: dropping the row while its
+ * worktree stayed on disk left a checkout with nothing in the UI pointing at
+ * it. Guarded, so this can come back `blocked` with reasons and having deleted
+ * nothing — see `TaskDeleteOutcomeSchema`.
+ *
+ * `target` is whichever handle the caller happens to hold: the Board has a
+ * board id, the Agentboard rail has a worktree dir (and lists worktrees the
+ * board may know nothing about). Both reach the same command, and the schema
+ * binding lives here once — validated because a `foreignPort` blocker's `port`
+ * is handed straight to `task_stop_port`, which signals a process group. */
+export const taskDelete = (target: { id: number } | { dir: string }, force = false) =>
+  invoke<TaskDeleteOutcome>(
+    "task_delete",
+    { ...target, force },
+    { schema: TaskDeleteOutcomeSchema },
+  );
 
 /** Sweep Done tasks older than the backend's retention window (default 7 days). */
 export const storeClearDone = () => invoke<void>("store_clear_done");

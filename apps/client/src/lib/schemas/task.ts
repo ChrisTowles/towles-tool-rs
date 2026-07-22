@@ -40,7 +40,7 @@ export type BaseBranch = z.infer<typeof BaseBranchesSchema>[number];
  * silently fails to read inside the session. */
 export const PastedImagePathsSchema = z.array(z.string());
 
-/** One reason `task_remove` refused. The strongest case in this file for
+/** One reason `task_delete` refused. The strongest case in this file for
  * validating: `port` is handed straight to `task_stop_port`, which SIGTERMs
  * (then SIGKILLs) a process group — a payload that isn't the shape we think
  * it is should fail as a typed `SchemaMismatch` before anything gets
@@ -59,12 +59,17 @@ export const TaskBlockerSchema = z.object({
   port: z.number().int().positive().max(65535).nullish(),
 });
 
-/** `task_remove`'s result — removed, or refused with reasons. A tagged union
- * on `status`, mirroring `TaskRemoveOutcome` in
- * `crates-tauri/tt-app/src/tasks.rs`. */
-export const TaskRemoveOutcomeSchema = z.discriminatedUnion("status", [
+/** `task_delete`'s result — deleted, or refused with reasons. A tagged union
+ * on `status`, mirroring `TaskDeleteOutcome` in
+ * `crates-tauri/tt-app/src/task.rs`.
+ *
+ * "Deleted" covers all three things a task is made of — its panes, its
+ * worktree, and its board row. "Blocked" means **none** of them went: the
+ * guards refuse before the first destructive step, so a refusal always leaves
+ * the task exactly as it was and the user can act on the blocker and retry. */
+export const TaskDeleteOutcomeSchema = z.discriminatedUnion("status", [
   z.object({
-    status: z.literal("removed"),
+    status: z.literal("deleted"),
     name: z.string(),
     messages: z.array(z.string()),
   }),
@@ -79,3 +84,7 @@ export const TaskRemoveOutcomeSchema = z.discriminatedUnion("status", [
     messages: z.array(z.string()),
   }),
 ]);
+
+/** `task_delete`'s result. Inferred from the schema that actually parses the
+ * IPC payload, so the validated shape and the type can't drift apart. */
+export type TaskDeleteOutcome = z.infer<typeof TaskDeleteOutcomeSchema>;

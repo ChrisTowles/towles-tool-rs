@@ -264,8 +264,8 @@ pub async fn task_run_setup(dir: String) -> Result<Option<String>, String> {
 /// union so the frontend gets real narrowing on `status`.
 #[derive(Serialize, Clone)]
 #[serde(tag = "status", rename_all = "camelCase")]
-pub enum TaskRemoveOutcome {
-    Removed {
+pub enum TaskDeleteOutcome {
+    Deleted {
         name: String,
         messages: Vec<String>,
     },
@@ -314,11 +314,76 @@ impl From<&RmBlocked> for Blocker {
     }
 }
 
-/// Remove the worktree at `dir`, guarded — a dirty tree, commits
+/// What to delete. Both forms resolve to the same pair — a board row and the
+/// worktree bound to it — before anything is touched, so "delete the task I
+/// clicked on the Board" and "delete the worktree I clicked on the rail" are
+/// one operation reached through two handles, not two behaviors that can drift
+/// apart. Either half may be absent: a board task can exist with no worktree
+/// (the common case for a note-shaped todo), and a worktree discovered on disk
+/// may have no board row.
+#[derive(Debug, Clone)]
+pub enum DeleteTarget {
+    /// A board task id — the Board screen and the `task_delete` MCP tool.
+    Board(i64),
+    /// A worktree directory — the Agentboard rail, which lists worktrees found
+    /// on disk whether or not the board knows about them.
+    Worktree(String),
+}
+
+/// What a [`DeleteTarget`] actually names, resolved once before anything
+/// destructive runs so a target that doesn't exist fails while it's still free
+/// to fail.
+struct Resolved {
+    /// The board row, when the target named one. `None` for a rail-initiated
+    /// delete, which knows only a directory — there the row is found by the dir
+    /// it is bound to (`BoardRows`), and taking it with the worktree is the
+    /// whole point of #339's "the worktree is an attribute of the task".
+    board_id: Option<i64>,
+    /// The worktree bound to it, if any. Present even when the directory has
+    /// since vanished — the bindings still need tearing down.
+    dir: Option<String>,
+    /// What to call this in messages and toasts.
+    label: String,
+}
+
+fn resolve_delete_target(app: &tauri::AppHandle, target: DeleteTarget) -> Result<Resolved, String> {
+    match target {
+        DeleteTarget::Board(id) => {
+            let task =
+                crate::store::task_by_id(app, id)?.ok_or_else(|| format!("no board task #{id}"))?;
+            let dir = task.worktree.as_ref().and_then(|w| w.dir.clone());
+            Ok(Resolved { board_id: Some(id), dir, label: task.text })
+        }
+        DeleteTarget::Worktree(dir) => {
+            let label = PathBuf::from(&dir)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&dir)
+                .to_string();
+            Ok(Resolved { board_id: None, dir: Some(dir), label })
+        }
+    }
+}
+
+/// Delete a task outright: its live panes, its worktree on disk, and its board
+/// row — the three things that together *are* the task — refusing the whole
+/// operation if the worktree still holds work that exists nowhere else.
+///
+/// This is the single delete path. The Board screen, the Agentboard rail, and
+/// the `task_delete` MCP tool all land here, because a delete that took only
+/// some of the three left the other parts as garbage: deleting the row alone
+/// orphaned a worktree on disk with nothing left in the UI to remove it from,
+/// and removing the worktree alone left a board row pointing at a directory
+/// that no longer existed.
+///
+/// **The board row is deleted last, and only if the worktree really went.**
+/// A guarded refusal returns [`TaskDeleteOutcome::Blocked`] with the row and
+/// the worktree both untouched, so the user can act on the blocker and retry
+/// from exactly where they were — a dirty tree, commits
 /// unreachable from any branch/remote, or a foreign listener on the task's
-/// claimed ports come back as [`TaskRemoveOutcome::Blocked`] with a typed
-/// blocker per reason, which the app renders as a dialog offering each one's
-/// remedy (stop the port's process via [`task_stop_port`]) plus a force.
+/// claimed ports come back as a typed blocker per reason, which the app
+/// renders as a dialog offering each one's remedy (stop the port's process via
+/// [`task_stop_port`]) plus a force.
 /// `force: true` is that force — it skips every guard, so it discards
 /// uncommitted changes and unreachable commits for good; only call it behind
 /// an explicit confirmation that names what's being lost.
@@ -339,14 +404,188 @@ impl From<&RmBlocked> for Blocker {
 /// from. On failure the killed-but-still-tracked sessions surface as dead
 /// panes so the user can see the task is still there. Then cleans up docker
 /// resources, the worktree registration, and the task's agentboard tracking.
+///
+/// Blocking, not `async`: every step is a subprocess or a lock, and the two
+/// callers already have a blocking thread to spend — the Tauri command below
+/// wraps it in `spawn_blocking`, and the MCP host runs inside the transport's
+/// existing `spawn_blocking`. Making it `async` would only add a second way to
+/// reach the same synchronous work.
+pub fn delete_task_blocking(
+    app: &tauri::AppHandle,
+    target: DeleteTarget,
+    force: bool,
+) -> Result<TaskDeleteOutcome, String> {
+    let Resolved { board_id, dir, label } = resolve_delete_target(app, target)?;
+
+    // No worktree: nothing to guard and nothing bound, so the row is the whole
+    // task and goes on its own. Everything else runs the shared sequence.
+    let Some(dir) = dir.as_deref() else {
+        let mut messages = Vec::new();
+        if let Some(id) = board_id {
+            crate::store::delete_task_row(app, id)?;
+            messages.push("deleted the board task".to_string());
+        }
+        return Ok(TaskDeleteOutcome::Deleted { name: label, messages });
+    };
+
+    // `resolve_task` runs here rather than inside the sequence: it is what
+    // rejects a path that isn't a worktree of its own checkout, and the
+    // caller-supplied `dir` has not been checked yet.
+    //
+    // A directory that is already gone can't be resolved, so `root` stays
+    // `None` — which is safe **only** because `MissingDir::TearDownBindings`
+    // makes the sequence skip the removal step entirely for a missing dir. Were
+    // it to call `ops::remove_task` with `root: None`, that would re-discover a
+    // root by walking up from this *process's* cwd — a different checkout — and
+    // could remove a same-named worktree there.
+    let (root, name) = match resolve_task(dir) {
+        Ok((checkout, name)) => (Some(checkout), name),
+        Err(_) if !std::path::Path::new(dir).is_dir() => (None, task_name_from_dir(dir)),
+        Err(error) => return Err(error),
+    };
+    let opts = RemoveOpts { root, name, force };
+    let mut hooks = AppRemovalHooks { app, dir };
+    let rows = AppBoardRows { app, board_id };
+    let removal = tt_agentboard::task_removal::TaskRemoval {
+        opts: &opts,
+        dir: std::path::Path::new(dir),
+        repos_path: &tt_agentboard::repos::default_repos_path(),
+        rows: Some(&rows),
+        // The dir came out of the app's own store or the rail, never a typed
+        // name, so a missing one means the record outlived the checkout — the
+        // record is exactly what still needs clearing.
+        on_missing: tt_agentboard::task_removal::MissingDir::TearDownBindings,
+    };
+
+    let outcome = tt_agentboard::task_removal::remove_task_and_bindings(removal, &mut hooks)
+        .map_err(|e| e.to_string())?;
+
+    match outcome {
+        tt_agentboard::task_removal::Outcome::Removed { messages, .. } => {
+            // Re-emit either way: a fleet-discovered (never-tracked) task also
+            // drops off the rail on the next recompute, so don't make the user
+            // wait a poll.
+            app.state::<crate::agentboard::Ab>().emit.notify_one();
+            refresh_all_git_info_in_background(app);
+            Ok(TaskDeleteOutcome::Deleted { name: label, messages })
+        }
+        // A refusal ends here: nothing was removed — not the worktree, not the
+        // panes, not the row — so the user can act on the blocker and retry
+        // from exactly where they were.
+        tt_agentboard::task_removal::Outcome::Blocked { name, blocked, messages } => {
+            Ok(TaskDeleteOutcome::Blocked {
+                name,
+                blockers: blocked.iter().map(Blocker::from).collect(),
+                messages,
+            })
+        }
+    }
+}
+
+/// The task name for a worktree whose directory is already gone, so
+/// `resolve_task` can't read it off the checkout. The folder basename is the
+/// task name by construction (it is the slugged branch).
+fn task_name_from_dir(dir: &str) -> String {
+    PathBuf::from(dir).file_name().and_then(|n| n.to_str()).unwrap_or(dir).to_string()
+}
+
+/// The app's half of the removal sequence: the two steps that need the live
+/// process, which is exactly why they are hooks rather than shared code.
+struct AppRemovalHooks<'a> {
+    app: &'a tauri::AppHandle,
+    dir: &'a str,
+}
+
+impl tt_agentboard::task_removal::RemovalHooks for AppRemovalHooks<'_> {
+    fn before_removal(&mut self) {
+        // Kills the folder's live PTYs. Locks are scoped tight per this crate's
+        // rule: never hold the engine lock across a subprocess.
+        let ids = {
+            let ab = self.app.state::<crate::agentboard::Ab>();
+            let engine = ab.engine.lock().unwrap();
+            engine.session_ids_for(self.dir)
+        };
+        if !ids.is_empty() {
+            let term_state = self.app.state::<crate::terminal::TermState>();
+            for id in &ids {
+                term_state.kill(id);
+            }
+        }
+    }
+
+    fn after_removal(&mut self, _dir: &std::path::Path) -> Vec<String> {
+        let mut notes = Vec::new();
+        let ab = self.app.state::<crate::agentboard::Ab>();
+        let mut engine = ab.engine.lock().unwrap();
+        let closed_ids = engine.close_folder(self.dir);
+        if !closed_ids.is_empty() {
+            notes.push(format!(
+                "closed {} session{} and their panes/windows",
+                closed_ids.len(),
+                if closed_ids.len() == 1 { "" } else { "s" }
+            ));
+        }
+        // Also reaps the repo's stored identity, which the shared untrack
+        // (a plain repos.json rewrite) doesn't know about. Running first makes
+        // that untrack a no-op, so it reports nothing and there is no double
+        // note.
+        engine.remove_repo(self.dir);
+        notes
+    }
+}
+
+/// Reaches the board row through the app's shared store — locking only for the
+/// delete itself, never across the worktree removal (see
+/// [`tt_agentboard::task_removal::BoardRows`]).
+struct AppBoardRows<'a> {
+    app: &'a tauri::AppHandle,
+    /// The row the caller already resolved, when it had one. Preferred over a
+    /// lookup by dir: the Board hands us an explicit id, and re-deriving it
+    /// from the directory can quietly miss (a `worktree_dir` that differs by a
+    /// trailing slash or a symlink) and leave the very row the user asked to
+    /// delete in place while the command reports success.
+    board_id: Option<i64>,
+}
+
+impl tt_agentboard::task_removal::BoardRows for AppBoardRows<'_> {
+    fn delete_task_for_worktree(&self, dir: &str) -> Option<String> {
+        // Store errors become a note, never silence: reporting "nothing was
+        // bound" when the truth is "the store wouldn't answer" tells the user a
+        // row is gone that is still there.
+        let id = match self.board_id {
+            Some(id) => id,
+            None => match crate::store::task_id_for_worktree_dir(self.app, dir) {
+                Ok(Some(id)) => id,
+                Ok(None) => return None,
+                Err(error) => return Some(format!("could not read the board row: {error}")),
+            },
+        };
+        if let Err(error) = crate::store::delete_task_row(self.app, id) {
+            return Some(format!("could not delete board task #{id}: {error}"));
+        }
+        Some("deleted the board task".to_string())
+    }
+}
+
+/// The Tauri command over [`delete_task_blocking`] — see its doc. Exactly one
+/// of `id`/`dir` identifies the task; the Board screen passes an id, the
+/// Agentboard rail passes a worktree dir.
+///
 /// Long-running → off the main thread.
 #[tauri::command]
-pub async fn task_remove(
+pub async fn task_delete(
     app: tauri::AppHandle,
-    dir: String,
+    id: Option<i64>,
+    dir: Option<String>,
     force: bool,
-) -> Result<TaskRemoveOutcome, String> {
+) -> Result<TaskDeleteOutcome, String> {
     use tracing::Instrument as _;
+
+    let target = match (id, dir.clone()) {
+        (Some(id), None) => DeleteTarget::Board(id),
+        (None, Some(dir)) => DeleteTarget::Worktree(dir),
+        _ => return Err("task_delete needs exactly one of id/dir".to_string()),
+    };
 
     // A span (not a bare event) so the event log carries this command's own
     // start/end/duration as one record — otherwise the only visible trace of
@@ -361,17 +600,21 @@ pub async fn task_remove(
     // only records `is_ok`. `force` rides along because a forced removal is
     // the only entry in this log that can have destroyed uncommitted work.
     let span = tracing::info_span!(
-        "task_remove",
-        dir = %dir,
+        "task_delete",
+        task_id = id,
+        dir = dir.as_deref().unwrap_or(""),
         force,
         outcome = tracing::field::Empty,
         blockers = tracing::field::Empty,
     );
     async move {
-        let result = task_remove_inner(app, dir, force).await;
+        let result =
+            tauri::async_runtime::spawn_blocking(move || delete_task_blocking(&app, target, force))
+                .await
+                .map_err(|e| format!("worktree task failed: {e}"))?;
         let outcome = match &result {
-            Ok(TaskRemoveOutcome::Removed { .. }) => "ok",
-            Ok(TaskRemoveOutcome::Blocked { blockers, .. }) => {
+            Ok(TaskDeleteOutcome::Deleted { .. }) => "ok",
+            Ok(TaskDeleteOutcome::Blocked { blockers, .. }) => {
                 let kinds: Vec<&str> = blockers.iter().map(|b| b.kind.as_str()).collect();
                 tracing::Span::current().record("blockers", kinds.join(","));
                 "blocked"
@@ -385,85 +628,10 @@ pub async fn task_remove(
     .await
 }
 
-async fn task_remove_inner(
-    app: tauri::AppHandle,
-    dir: String,
-    force: bool,
-) -> Result<TaskRemoveOutcome, String> {
-    let mut messages = Vec::new();
-    let kill_app = app.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let (checkout, name) = resolve_task(&dir)?;
-        let opts = RemoveOpts { root: Some(checkout), name, force };
-        // The PTY kill rides `before_removal`, not the top of this command:
-        // the guards run with the panes alive, so a refusal (the dialog the
-        // user can back out of) never costs a live Claude session — only a
-        // removal that is really happening does. Locks are scoped tight per
-        // this crate's rule: never hold the engine lock across a subprocess.
-        ops::remove_task(&opts, || {
-            let ids = {
-                let ab = kill_app.state::<crate::agentboard::Ab>();
-                let engine = ab.engine.lock().unwrap();
-                engine.session_ids_for(&dir)
-            };
-            if !ids.is_empty() {
-                let term_state = kill_app.state::<crate::terminal::TermState>();
-                for id in &ids {
-                    term_state.kill(id);
-                }
-            }
-        })
-        .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("worktree task failed: {e}"))??;
-
-    // A refusal ends here: nothing was removed, so none of the rail teardown
-    // below applies — the panes stay put for the user to retry from.
-    let removed = match outcome {
-        ops::RemoveOutcome::Removed(removed) => removed,
-        ops::RemoveOutcome::Blocked { name, blocked, messages: notes } => {
-            messages.extend(notes);
-            return Ok(TaskRemoveOutcome::Blocked {
-                name,
-                blockers: blocked.iter().map(Blocker::from).collect(),
-                messages,
-            });
-        }
-    };
-
-    messages.extend(removed.messages);
-    let ab = app.state::<crate::agentboard::Ab>();
-    let untracked = {
-        let mut engine = ab.engine.lock().unwrap();
-        let closed_ids = engine.close_folder(&removed.dir.to_string_lossy());
-        if !closed_ids.is_empty() {
-            messages.push(format!(
-                "closed {} session{} and their panes/windows",
-                closed_ids.len(),
-                if closed_ids.len() == 1 { "" } else { "s" }
-            ));
-        }
-        engine.remove_repo(&removed.dir.to_string_lossy())
-    };
-    if untracked {
-        messages.push("untracked from the agentboard rail".to_string());
-    }
-    let detached = crate::store::detach_task_worktree_dir(&app, &removed.dir.to_string_lossy());
-    if detached > 0 {
-        messages.push("detached the board task from the removed worktree".to_string());
-    }
-    // Re-emit either way: a fleet-discovered (never-tracked) task also drops
-    // off the rail on the next recompute, so don't make the user wait a poll.
-    ab.emit.notify_one();
-    refresh_all_git_info_in_background(&app);
-    Ok(TaskRemoveOutcome::Removed { name: removed.name, messages })
-}
-
 /// Resolve a task directory to its checkout root and task name, rejecting
 /// anything that isn't a worktree of its own checkout — shared by
-/// `task_remove` and `task_stop_port` so both agree on what "this task"
-/// means before either acts on it. Returns the identity only; `task_remove`
+/// `delete_task_blocking` and `task_stop_port` so both agree on what "this
+/// task" means before either acts on it. Returns the identity only; the delete
 /// attaches its own `force` when building [`RemoveOpts`], so a non-removal
 /// caller never constructs a removal config with a meaningless flag.
 fn resolve_task(dir: &str) -> Result<(PathBuf, String), String> {
@@ -495,7 +663,7 @@ pub async fn task_stop_port(dir: String, port: u16) -> Result<String, String> {
     // A user-initiated action that signals processes: it gets its own record
     // (see the telemetry rule in the root CLAUDE.md) — after the fact, "the
     // dev server died" should be answerable from the log, not a repro.
-    // `.instrument` rather than a held `enter()` guard, same as `task_remove`:
+    // `.instrument` rather than a held `enter()` guard, same as `task_delete`:
     // an entered span across an `.await` stays entered while the task is
     // parked, attributing whatever else runs on this thread to it.
     let span = tracing::info_span!(

@@ -1120,6 +1120,11 @@ pub struct RemovedTask {
     /// The removed checkout's directory (now gone from disk) — callers use it
     /// to untrack the task from stores keyed by dir (the agentboard rail).
     pub dir: PathBuf,
+    /// The main checkout the task belonged to. Carried because it survives the
+    /// removal and `dir` does not: it is what identifies the *instance state*
+    /// holding this task's board row, which a caller cannot re-derive from a
+    /// directory that no longer exists.
+    pub checkout: PathBuf,
     /// Progress notes for the user: docker resources removed, guards skipped
     /// under force, fallback paths taken. Callers surface these — nothing
     /// here prints.
@@ -1157,7 +1162,7 @@ pub enum RemoveOutcome {
 /// Remove a task: guarded (clean tree, no commits unreachable from a branch
 /// or remote, nothing foreign on its claimed ports), then docker compose
 /// down -v, anchored container/volume sweep, `git worktree remove`. Shared by
-/// `tt task rm` and the app's `task_remove` command.
+/// `tt task rm` and the app's `task_delete` command.
 ///
 /// `before_removal` runs once the guards have passed (or been forced) and the
 /// removal is really about to happen — after the last return that leaves the
@@ -1215,7 +1220,12 @@ pub fn remove_task(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
             .map_err(|e| OpsError::Io(format!("cannot remove {dir_s}: {e}")))?;
         let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
         state_cleanup(state_scope.as_deref(), &mut messages);
-        return Ok(RemoveOutcome::Removed(RemovedTask { name, dir, messages }));
+        return Ok(RemoveOutcome::Removed(RemovedTask {
+            name,
+            dir,
+            checkout: sr.checkout.clone(),
+            messages,
+        }));
     };
 
     let dirty = crate::guards::dirty_entry_count(&status.stdout);
@@ -1321,7 +1331,7 @@ pub fn remove_task(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
     }
     let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
     state_cleanup(state_scope.as_deref(), &mut messages);
-    Ok(RemoveOutcome::Removed(RemovedTask { name, dir, messages }))
+    Ok(RemoveOutcome::Removed(RemovedTask { name, dir, checkout: sr.checkout.clone(), messages }))
 }
 
 /// The ports a checkout claims, from its rendered `.env`.
@@ -1407,6 +1417,8 @@ pub struct FinishedTask {
     /// dry-run) — callers use it to untrack the task from stores keyed by dir
     /// (the agentboard rail), the same way `tt task rm` does.
     pub dir: PathBuf,
+    /// The main checkout this task belonged to — see [`RemovedTask::checkout`].
+    pub checkout: PathBuf,
 }
 
 /// A task `clean` left alone, and why.
@@ -1532,6 +1544,7 @@ pub fn clean_tasks(
                 reason: reason.clone(),
                 messages: Vec::new(),
                 dir,
+                checkout: sr.checkout.clone(),
             });
             continue;
         }
@@ -1551,6 +1564,7 @@ pub fn clean_tasks(
                     reason: reason.clone(),
                     messages,
                     dir: r.dir,
+                    checkout: r.checkout,
                 });
             }
             Ok(RemoveOutcome::Blocked { blocked, .. }) => {
