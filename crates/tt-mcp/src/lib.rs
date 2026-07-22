@@ -60,11 +60,60 @@ const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 /// truncated with an ellipsis so a huge payload can't bloat tt.db.
 const CALL_LOG_ARGS_MAX: usize = 400;
 
+/// The app-side half of `task_delete`.
+///
+/// Deleting a task means removing its live panes and its worktree on disk as
+/// well as its board row, and neither of the first two is visible from this
+/// Tauri-free crate — the PTYs live in the app's terminal state, and the
+/// guarded worktree teardown needs the agentboard engine to close the folder's
+/// sessions. So the serving transport injects an implementation
+/// (`tt-app`'s `task::delete_task_blocking`) and this crate keeps only the
+/// tool's shape.
+///
+/// A dispatcher with no host **refuses `task_delete` outright** rather than
+/// falling back to deleting the row: a row-only delete is precisely the
+/// half-delete this tool exists to stop, and doing it silently would strand
+/// the worktree on disk with nothing left on the board pointing at it.
+pub trait TaskHost: Send {
+    /// Delete the board task `id` and everything bound to it. `force` skips
+    /// the work-preserving guards. `Ok(Refused)` is a guarded refusal, not a
+    /// failure — see [`TaskDeletion`].
+    fn delete_task(&self, id: i64, force: bool) -> Result<TaskDeletion, String>;
+}
+
+/// What a [`TaskHost::delete_task`] attempt produced.
+///
+/// The refusal is an `Ok` variant for the same reason it is one in
+/// `tt_tasks::ops::RemoveOutcome`: "your worktree still has uncommitted work"
+/// is an answer with a next step attached, not a malfunction. Reporting it as
+/// an error would tell a calling agent the delete *failed* — inviting a retry
+/// with force — when the truth is that it was declined on purpose.
+///
+/// Both variants carry `name` — what the host called the thing it acted on —
+/// so the dispatcher never has to read the row itself just to name it in the
+/// reply. That read would be a second trip over a second SQLite connection for
+/// a string the host already had in hand.
+pub enum TaskDeletion {
+    /// The task is gone: panes, worktree, and board row.
+    Deleted { name: String, messages: Vec<String> },
+    /// Nothing was deleted. Each blocker carries `losesWork` so a caller can
+    /// tell "stop your dev server and retry" apart from "forcing this destroys
+    /// commits that exist nowhere else".
+    Refused {
+        name: String,
+        blockers: Vec<Value>,
+        messages: Vec<String>,
+    },
+}
+
 /// The stateful core of the server: owns the [`Store`] and dispatches JSON-RPC
 /// requests to tool handlers. Kept free of any transport so it can be driven
 /// directly in tests.
 pub struct Dispatcher {
     store: Store,
+    /// Injected by the serving transport — see [`TaskHost`]. `None` in tests
+    /// and any Tauri-free driver, where `task_delete` refuses.
+    task_host: Option<Box<dyn TaskHost>>,
     /// `clientInfo` from the session's `initialize` (e.g. `claude-code 2.1`),
     /// stamped onto call-log rows so the app's MCP screen can say who called.
     client: Option<String>,
@@ -80,10 +129,11 @@ pub struct Dispatcher {
 /// What one dispatched request produced: the reply to send back, and whether
 /// the call actually wrote to the store.
 ///
-/// `wrote` is deliberately narrow — true only for a *successful* call to a tool
-/// the contract marks as writing. A refusal, a failed write, and every read all
-/// report false, so a transport can use it to skip work that only a real
-/// mutation justifies.
+/// `wrote` is deliberately narrow, and it answers "**must the transport
+/// repaint?**" — not "did this mutate?". A refusal, a failed write, and every
+/// read all report false, so a transport can skip work only a real mutation
+/// justifies; so does a tool in [`SELF_REFRESHING_TOOLS`], which already
+/// repainted on its own and would otherwise be repainted twice.
 pub struct Handled {
     /// The response line, or `None` for a notification (which gets no reply).
     pub response: Option<String>,
@@ -109,12 +159,27 @@ impl Handled {
 /// hint (and rebuild the whole tool contract per request to do it); a tool added
 /// to [`Dispatcher::call_tool`] but missed here is one edit away from a stale
 /// board either way, but here the fix is a single obvious list.
-const WRITING_TOOLS: &[&str] = &["task_create", "calendar_set"];
+const WRITING_TOOLS: &[&str] = &["task_create", "task_delete", "calendar_set"];
 
 /// Whether a tool writes to the store — see [`WRITING_TOOLS`].
 pub fn tool_writes(name: &str) -> bool {
     WRITING_TOOLS.contains(&name)
 }
+
+/// Writing tools that refresh the UI themselves, so the transport must not do
+/// it again.
+///
+/// `task_delete` runs through the app's own delete path, which emits a snapshot
+/// the moment the row goes. Letting [`Handled::wrote`] stay true here would
+/// rebuild the whole snapshot a second time — under the `StoreState` mutex the
+/// transport opened a separate connection specifically to avoid — and would do
+/// it even for a *refused* delete, which changed nothing at all.
+///
+/// Deliberately separate from [`WRITING_TOOLS`] rather than removing the tool
+/// from it: `readOnlyHint` must still say the tool writes, because it does.
+/// The two questions ("does this mutate?" and "who repaints?") only looked like
+/// one question while every writer went through the dispatcher's own store.
+const SELF_REFRESHING_TOOLS: &[&str] = &["task_delete"];
 
 /// The result of dispatching one request: the response line to write back, plus
 /// the bits the call log needs — the tool name and compacted args (only set for
@@ -146,7 +211,21 @@ impl Outcome {
 impl Dispatcher {
     /// Build a dispatcher over `store`.
     pub fn new(store: Store) -> Dispatcher {
-        Dispatcher { store, client: None, tracked_repos: None, calendar_sources: None }
+        Dispatcher {
+            store,
+            task_host: None,
+            client: None,
+            tracked_repos: None,
+            calendar_sources: None,
+        }
+    }
+
+    /// Inject the app-side deletion host — see [`TaskHost`]. The serving
+    /// transport in `tt-app` is the only caller; without it `task_delete`
+    /// refuses.
+    pub fn with_task_host(mut self, host: Box<dyn TaskHost>) -> Dispatcher {
+        self.task_host = Some(host);
+        self
     }
 
     /// Build a dispatcher with a fixed tracked-repo list (test hook — keeps
@@ -288,8 +367,14 @@ impl Dispatcher {
             log::warn!("tt-mcp: failed to record call log: {error}");
         }
 
-        // A refused or failed call changed nothing, so it needs no refresh.
-        let wrote = call.ok && call.tool.as_deref().is_some_and(tool_writes);
+        // A refused or failed call changed nothing, so it needs no refresh —
+        // and neither does one that already repainted itself
+        // ([`SELF_REFRESHING_TOOLS`]).
+        let wrote = call.ok
+            && call
+                .tool
+                .as_deref()
+                .is_some_and(|tool| tool_writes(tool) && !SELF_REFRESHING_TOOLS.contains(&tool));
         Handled { response: Some(outcome.response), wrote }
     }
 
@@ -321,6 +406,7 @@ impl Dispatcher {
             "task_list" => self.task_list(),
             "task_status" => self.task_status(args),
             "task_create" => self.task_create(args, now_ms),
+            "task_delete" => self.task_delete(args),
             "calendar_today" => self.calendar_today(now_ms),
             "calendar_next" => self.calendar_next(now_ms),
             "calendar_set" => self.calendar_set(args, now_ms),
@@ -545,6 +631,46 @@ impl Dispatcher {
         tracing::info!(task_id = task.id, repo = %entry.dir, %status, "task.created");
         Ok(json!({ "task": task }))
     }
+
+    /// Delete a board task and everything bound to it — its live panes and its
+    /// worktree on disk as well as its row — through the injected
+    /// [`TaskHost`].
+    ///
+    /// The refusal path is the point of this tool. A worktree holding
+    /// uncommitted changes, commits that reached no branch or remote, or a
+    /// foreign process on its claimed ports comes back as `status: "refused"`
+    /// with the reasons, having deleted **nothing** — so an agent that calls
+    /// this on a task the user still has work in cannot destroy it by
+    /// accident. `force: true` is the deliberate override and is reported in
+    /// the app's event log as such.
+    fn task_delete(&mut self, args: &Value) -> Result<Value, String> {
+        let id = args
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "missing required argument: id".to_string())?;
+        let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+        let host = self
+            .task_host
+            .as_ref()
+            .ok_or_else(|| "task_delete is unavailable: no task host is attached".to_string())?;
+
+        // No pre-read to name the task: the host has to resolve the row anyway
+        // before it can delete anything, so it returns the name it found — and
+        // an unknown id comes back as its error rather than being diagnosed
+        // twice over two connections.
+        match host.delete_task(id, force)? {
+            TaskDeletion::Deleted { name, messages } => {
+                Ok(json!({ "status": "deleted", "id": id, "text": name, "messages": messages }))
+            }
+            TaskDeletion::Refused { name, blockers, messages } => Ok(json!({
+                "status": "refused",
+                "id": id,
+                "text": name,
+                "blockers": blockers,
+                "messages": messages,
+            })),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -715,6 +841,18 @@ pub fn tool_definitions() -> Value {
             },
         },
         {
+            "name": "task_delete",
+            "description": "Delete a board task and everything bound to it — its terminal panes and its git worktree on disk as well as its board row. Guarded: if the worktree has uncommitted changes, commits that reached no branch or remote, or a foreign process on its claimed ports, nothing is deleted and the reasons come back as `status: \"refused\"`. Report those to the user and let them decide; only pass force after they have said so explicitly, since it destroys that work permanently.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "The task's id (from task_list or task_status)." },
+                    "force": { "type": "boolean", "description": "Skip the guards and delete anyway, discarding uncommitted changes and unreachable commits for good. Default false." },
+                },
+                "required": ["id"],
+            },
+        },
+        {
             "name": "calendar_today",
             "description": "The shape of today: every meeting starting in today's local calendar day, in order. Use it to see where the uninterrupted stretches are before committing to deep work.",
             "inputSchema": no_args(),
@@ -882,6 +1020,7 @@ mod tests {
                 "task_list",
                 "task_status",
                 "task_create",
+                "task_delete",
                 "calendar_today",
                 "calendar_next",
                 "calendar_set",
@@ -1242,6 +1381,107 @@ mod tests {
         );
         assert_eq!(result["task"]["status"], "doing");
         assert_eq!(result["task"]["worktree"]["repoRoot"], REPO_DIR);
+    }
+
+    /// A host that records what it was asked to do and answers with whatever
+    /// the test wants — the app's real one tears down worktrees, which has no
+    /// place in a unit test of the tool's shape.
+    /// Each `(id, force)` the host was called with, shared with the test.
+    type HostCalls = std::sync::Arc<std::sync::Mutex<Vec<(i64, bool)>>>;
+
+    struct FakeHost {
+        answer: std::sync::Mutex<Option<Result<TaskDeletion, String>>>,
+        calls: HostCalls,
+    }
+
+    impl TaskHost for FakeHost {
+        fn delete_task(&self, id: i64, force: bool) -> Result<TaskDeletion, String> {
+            self.calls.lock().unwrap().push((id, force));
+            self.answer.lock().unwrap().take().expect("one delete per test")
+        }
+    }
+
+    fn with_host(answer: Result<TaskDeletion, String>) -> (Dispatcher, HostCalls) {
+        let calls: HostCalls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let host = FakeHost {
+            answer: std::sync::Mutex::new(Some(answer)),
+            calls: std::sync::Arc::clone(&calls),
+        };
+        (dispatcher().with_task_host(Box::new(host)), calls)
+    }
+
+    fn deleted(name: &str, messages: Vec<String>) -> Result<TaskDeletion, String> {
+        Ok(TaskDeletion::Deleted { name: name.to_string(), messages })
+    }
+
+    /// The whole point of routing deletion through a host: a dispatcher with
+    /// none must refuse rather than quietly fall back to deleting the row,
+    /// which would strand the worktree on disk.
+    #[test]
+    fn task_delete_without_a_host_refuses() {
+        let mut dispatcher = dispatcher();
+        let message = call_tool_err(&mut dispatcher, "task_delete", json!({ "id": 1 }));
+        assert!(message.contains("no task host"), "{message}");
+        // And the row it declined to delete is still there.
+        let open = call_tool(&mut dispatcher, "task_list", json!({}));
+        assert_eq!(open["tasks"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn task_delete_passes_the_id_and_force_through_and_names_what_it_deleted() {
+        let (mut dispatcher, calls) =
+            with_host(deleted("open task", vec!["removed the worktree".into()]));
+        let result = call_tool(&mut dispatcher, "task_delete", json!({ "id": 1, "force": true }));
+        assert_eq!(result["status"], "deleted");
+        assert_eq!(result["id"], 1);
+        // The name comes back from the host, which had to resolve the row
+        // anyway — the dispatcher never reads it a second time.
+        assert_eq!(result["text"], "open task");
+        assert_eq!(result["messages"][0], "removed the worktree");
+        assert_eq!(*calls.lock().unwrap(), vec![(1, true)]);
+    }
+
+    /// A guarded refusal is a normal result, not a tool error: reporting it as
+    /// an error would tell a calling agent the delete *failed* and invite a
+    /// retry with force, when it was declined on purpose.
+    #[test]
+    fn task_delete_reports_a_refusal_as_a_normal_result() {
+        let (mut dispatcher, calls) = with_host(Ok(TaskDeletion::Refused {
+            name: "open task".to_string(),
+            blockers: vec![json!({
+                "kind": "dirtyTree",
+                "message": "2 uncommitted files",
+                "remedy": "commit or stash them",
+                "losesWork": true,
+            })],
+            messages: vec![],
+        }));
+        let result = call_tool(&mut dispatcher, "task_delete", json!({ "id": 1 }));
+        assert_eq!(result["status"], "refused");
+        assert_eq!(result["blockers"][0]["kind"], "dirtyTree");
+        assert_eq!(result["blockers"][0]["losesWork"], true);
+        // Force defaults off — a refusal must be reachable without asking for one.
+        assert_eq!(*calls.lock().unwrap(), vec![(1, false)]);
+    }
+
+    #[test]
+    fn task_delete_requires_an_id() {
+        let (mut dispatcher, calls) = with_host(deleted("open task", vec![]));
+        let message = call_tool_err(&mut dispatcher, "task_delete", json!({}));
+        assert!(message.contains("missing required argument: id"), "{message}");
+        // Rejected before the host could touch anything.
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    /// An unknown id is the host's answer, not a pre-flight check here — it has
+    /// to resolve the row to delete it, so diagnosing it twice would be a second
+    /// read for a string the host already produces.
+    #[test]
+    fn task_delete_surfaces_the_hosts_unknown_id_error() {
+        let (mut dispatcher, calls) = with_host(Err("no board task #9999".to_string()));
+        let message = call_tool_err(&mut dispatcher, "task_delete", json!({ "id": 9999 }));
+        assert!(message.contains("no board task #9999"), "{message}");
+        assert_eq!(*calls.lock().unwrap(), vec![(9999, false)]);
     }
 
     #[test]

@@ -43,7 +43,7 @@ export type InvokeOptions<T> = {
  * });
  *
  * // Branch on the outcome.
- * if ((await invoke("store_delete_task", { id })).isErr()) revertOptimisticDelete();
+ * if ((await invoke("task_delete", { id })).isErr()) revertOptimisticDelete();
  * ```
  *
  * Fire-and-forget is safe by construction: an ignored `Result` can't produce an

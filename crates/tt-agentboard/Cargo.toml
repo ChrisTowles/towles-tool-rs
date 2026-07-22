@@ -33,6 +33,9 @@ tt-claude-code = { workspace = true }
 # the shared settings file, identically for both hosts.
 tt-config = { workspace = true }
 tt-exec = { workspace = true }
+# tt-store: the board row a removed worktree takes with it — see `task_removal`,
+# which is the one place the removal sequence lives for both the app and the CLI.
+tt-store = { workspace = true }
 # tt-tasks: reads a worktree's `.tt-task` marker so the diff pane's "vs
 # main" mode compares against the task's actual creation base ref, not always
 # main.

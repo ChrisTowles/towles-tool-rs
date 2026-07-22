@@ -7,16 +7,12 @@ import {
 } from "react";
 import {
   CalendarClock,
-  CircleAlert,
   Eye,
   EyeOff,
-  FileDiff,
   FolderGit2,
   FolderPlus,
   FolderX,
-  GitCommitHorizontal,
   GitPullRequest,
-  Network,
   PanelLeftClose,
   Plus,
   TerminalSquare,
@@ -24,6 +20,7 @@ import {
 import { fmtMins, PanePlaceholder } from "@/components/agentboard-bits";
 import { ColdCacheOverlay, PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
+import { BlockedDeleteDialog } from "@/components/task-blockers";
 import { DiffPane } from "@/components/diff-pane";
 import { FolderFilesPane, type FilesOpenRequest } from "@/components/files-pane";
 import { PreviewPane } from "@/components/preview-pane";
@@ -58,7 +55,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { TaskCreatedSchema, TaskRemoveOutcomeSchema } from "@/lib/schemas/task";
+import { TaskCreatedSchema } from "@/lib/schemas/task";
 import { cn } from "@/lib/utils";
 import {
   changedFolderDirs,
@@ -89,7 +86,6 @@ import {
   previewPaneDir,
   previewPaneId,
   folderRemovableTask,
-  forceDeleteLabel,
   isFolderQuiet,
   liveSessions,
   normalizeWins,
@@ -108,7 +104,6 @@ import {
   pruneWins,
   sessionLabel,
   sleep,
-  stoppablePort,
   termWriteRetry,
   useAgentboardState,
   useNow,
@@ -126,8 +121,6 @@ import {
   type Selected,
   type SessionActions,
   type SessionData,
-  type TaskBlockerKind,
-  type TaskRemoveOutcome,
   type StartClaudeTarget,
   type StatePayload,
   type WindowsPayload,
@@ -142,6 +135,7 @@ import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import {
   fmtCountdown,
   storeAddTask,
+  taskDelete,
   storeAttachTaskIssue,
   storeTaskSetWorktree,
   useStoreSnapshot,
@@ -238,37 +232,6 @@ async function createTaskForSubmit(input: NewTaskSubmit): Promise<number | undef
   return created.value;
 }
 
-/** Glyph per blocker kind. Exhaustive over `TaskBlockerKind`, so a guard
- * added in Rust fails the build here rather than silently picking up
- * whichever icon a ternary happened to end on. */
-const BLOCKER_ICONS: Record<TaskBlockerKind, typeof FileDiff> = {
-  dirtyTree: FileDiff,
-  unreachableCommits: GitCommitHorizontal,
-  foreignPort: Network,
-};
-
-/** Glyph for a removal blocker. Tinted by consequence rather than by kind:
- * the one thing worth seeing at a glance is which rows are work that
- * disappears if forced (destructive) and which are merely in the way
- * (muted) — the row's own text says what it is.
- *
- * An unrecognized kind (an older frontend meeting a newer backend across the
- * IPC boundary) gets a neutral alert glyph. The row still reads fine — its
- * message and remedy come from Rust — and admitting we don't know beats
- * asserting the wrong thing. */
-function BlockerIcon({ kind, losesWork }: { kind: string; losesWork: boolean }) {
-  const Icon = BLOCKER_ICONS[kind as TaskBlockerKind] ?? CircleAlert;
-  return (
-    <Icon
-      className={cn(
-        "mt-0.5 size-4 shrink-0",
-        losesWork ? "text-destructive" : "text-muted-foreground",
-      )}
-      aria-hidden
-    />
-  );
-}
-
 export function AgentboardScreen() {
   const state = useAgentboardState();
   const { snapshot } = useStoreSnapshot();
@@ -342,7 +305,7 @@ export function AgentboardScreen() {
   const deleteFlows = useRef(new Map<string, number>());
   const deleteFlowOf = (dir: string) => deleteFlows.current.get(dir) ?? 0;
   const bumpDeleteFlow = (dir: string) => deleteFlows.current.set(dir, deleteFlowOf(dir) + 1);
-  // Folder dirs whose worktree is mid-delete (`task_remove` in flight) — the
+  // Folder dirs whose worktree is mid-delete (`task_delete` in flight) — the
   // rail dims/disables that row for the duration, see `performDeleteWorktree`.
   const [deletingDirs, setDeletingDirs] = useState<Set<string>>(new Set());
   // Repo management lives on one surface (Settings → Agentboard → Repos); the
@@ -373,7 +336,7 @@ export function AgentboardScreen() {
   // live terminal over the top), so a stale entry for a dismissed or reopened
   // session is inert, and there's no invalidation scheme to keep correct.
   const [exitLabels, setExitLabels] = useState<Record<string, string>>({});
-  // Sessions whose shell we're killing on purpose. `task_remove` kills a
+  // Sessions whose shell we're killing on purpose. `task_delete` kills a
   // folder's PTYs in Rust *before* the frontend unmounts their panes, so those
   // deaths arrive as signal exits at a still-listening TerminalView — which is
   // a crash by every test `handleExit` can apply, except that we asked for it.
@@ -1388,7 +1351,7 @@ export function AgentboardScreen() {
   // `force` skips every guard — only ever passed from the blocked dialog's
   // force button, which names what's being discarded.
   async function performDeleteWorktree(target: RemoveTarget, { force = false } = {}) {
-    // `task_remove` kills the folder's live PTYs itself — only once the
+    // `task_delete` kills the folder's live PTYs itself — only once the
     // guards have passed and the removal is really happening, so a refusal
     // costs nothing — and only tears down the session records once removal
     // actually succeeds; closing sessions here first would untrack them even
@@ -1407,13 +1370,7 @@ export function AgentboardScreen() {
     // unconsumed claims are handed back below — otherwise they'd linger and
     // silently swallow a later genuine crash of the same session.
     for (const id of target.sessionIds) expectedKills.current.add(id);
-    const removed = await invoke<TaskRemoveOutcome>(
-      "task_remove",
-      { dir, force },
-      // Validated: a `foreignPort` blocker's `port` is handed straight to
-      // `task_stop_port`, which signals a process group.
-      { schema: TaskRemoveOutcomeSchema },
-    );
+    const removed = await taskDelete({ dir }, force);
     // The user may have cancelled, or forced past this, while the call ran.
     // A stale result must not resurrect the dialog or re-report an outcome
     // for a flow that's over — but the `deletingDirs` release below still has
@@ -2322,14 +2279,8 @@ export function AgentboardScreen() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* The guards refused. Every reason gets its own row with its own way
-          out, because the reasons are independent and only some are
-          actionable from here: a stale dev server is one button, a dirty tree
-          is work only the user can decide about. The force sits in the footer
-          under a label that names what it discards — this dialog is where
-          consent to lose work is actually given, since the confirm before it
-          promised the delete was guarded. */}
-      <AlertDialog
+      {/* The guards refused — shared shell, see `BlockedDeleteDialog`. */}
+      <BlockedDeleteDialog
         open={blockedDelete != null}
         // Escape/cancel abandons the flow — except once the removal itself is
         // running, when "keep" can no longer be honored: the dialog stays up
@@ -2337,95 +2288,25 @@ export function AgentboardScreen() {
         onOpenChange={closeOnFalse(() => {
           if (!blockedRemovalInFlight) endDeleteFlow(blockedDeleteDir);
         })}
-      >
-        {/* Wider than the default alert, which is sized for a sentence and two
-            buttons: this one carries a list of blocker cards. The `!` beats the
-            primitive's own `data-[size=default]:` width, which outranks a plain
-            utility class. */}
-        <AlertDialogContent className="max-w-[calc(100%-2rem)]! sm:max-w-xl!">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="wrap-anywhere">
-              Can’t delete {blockedDelete?.name} yet
-            </AlertDialogTitle>
-            <AlertDialogDescription className="text-pretty">
-              The worktree is still on disk. Clear what’s below and it’ll delete cleanly, or delete
-              anyway.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {/* Caveats about how the verdict itself was reached — chiefly a
-              failed fetch, meaning these blockers were judged against stale
-              refs. Above the list because it qualifies every row below it. */}
-          {blockedDelete && blockedDelete.messages.length > 0 && (
-            <ul className="flex flex-col gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2">
-              {blockedDelete.messages.map((message) => (
-                <li key={message} className="text-[11.5px] text-amber-600 dark:text-amber-400">
-                  {message}
-                </li>
-              ))}
-            </ul>
-          )}
-          {/* Scrolls rather than growing past the viewport — a slot can be
-              blocked by a dirty tree, unlanded commits and several ports at
-              once, and the footer must stay reachable. */}
-          <ul className="flex max-h-[45vh] flex-col gap-2 overflow-y-auto">
-            {blockedDelete?.blockers.map((blocker, i) => {
-              const port = stoppablePort(blocker);
-              return (
-                <li
-                  key={`${blocker.kind}-${port ?? i}`}
-                  className="flex items-start gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2.5"
-                >
-                  <BlockerIcon kind={blocker.kind} losesWork={blocker.losesWork} />
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="text-sm leading-snug wrap-anywhere">{blocker.message}</span>
-                    <span className="text-xs leading-snug text-muted-foreground">
-                      {blocker.remedy}
-                    </span>
-                  </div>
-                  {port !== null && (
-                    // Every action is disabled while any stop+retry runs, not
-                    // just this row's: they all end in a removal of the same
-                    // worktree, and two of those overlapping means concurrent
-                    // `docker compose down` / `git worktree remove`.
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      className="shrink-0"
-                      disabled={deleteBusy}
-                      onClick={() => void stopPortAndRetry(blockedDelete, port)}
-                    >
-                      {stoppingPort === port ? "Stopping…" : "Stop it"}
-                    </Button>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-          {/* Opposite ends for opposite answers — the discard label runs long
-              enough that crowding it against keep reads as one two-part button. */}
-          <AlertDialogFooter className="sm:justify-between">
-            {/* Cancelling is real during a port stop (the retry checks the
-                flow and stands down) but a lie once the removal is running,
-                so only the removal locks it. */}
-            <AlertDialogCancel disabled={blockedRemovalInFlight}>
-              Keep the worktree
-            </AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              disabled={deleteBusy}
-              onClick={() => {
-                if (blockedDelete) {
-                  const target = blockedDelete.target;
-                  endDeleteFlow(blockedDeleteDir);
-                  void performDeleteWorktree(target, { force: true });
-                }
-              }}
-            >
-              {forceDeleteLabel(blockedDelete?.blockers ?? [])}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        name={blockedDelete?.name}
+        description="The worktree is still on disk. Clear what’s below and it’ll delete cleanly, or delete anyway."
+        cancelLabel="Keep the worktree"
+        blockers={blockedDelete?.blockers ?? []}
+        messages={blockedDelete?.messages ?? []}
+        busy={deleteBusy}
+        cancelDisabled={blockedRemovalInFlight}
+        stoppingPort={stoppingPort}
+        onStopPort={(port) => {
+          if (blockedDelete) void stopPortAndRetry(blockedDelete, port);
+        }}
+        onForce={() => {
+          if (blockedDelete) {
+            const target = blockedDelete.target;
+            endDeleteFlow(blockedDeleteDir);
+            void performDeleteWorktree(target, { force: true });
+          }
+        }}
+      />
 
       <Dialog open={startClaudeTarget != null} onOpenChange={closeOnFalse(commitStartClaude)}>
         <DialogContent showCloseButton={false}>

@@ -82,7 +82,7 @@ export function WorkingContext({
   onNewTask: (repo: NewTaskRepo) => void;
   /** Untracks this checkout from the rail. */
   onRemoveRepo: (dirs: string[], label: string) => void;
-  /** Deletes a worktree from disk (guarded `task_remove`). */
+  /** Deletes a worktree from disk (guarded `task_delete`). */
   onDeleteWorktree: (dir: string, label: string) => void;
 }) {
   const scope = pathScope(folder.dir);

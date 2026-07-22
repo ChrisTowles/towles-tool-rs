@@ -384,9 +384,9 @@ export function RepoGroup({
    * (worktree hub) — never a blocking modal, see InlineNewTask. */
   onNewTask: (repo: NewTaskRepo) => void;
   onRemoveRepo: (dirs: string[], label: string) => void;
-  /** Delete a worktree from disk (guarded `task_remove`). */
+  /** Delete a worktree from disk (guarded `task_delete`). */
   onDeleteWorktree: (dir: string, label: string) => void;
-  /** Folder dirs whose `task_remove` is currently in flight — that row dims
+  /** Folder dirs whose `task_delete` is currently in flight — that row dims
    * and disables until it resolves (deleted → the row vanishes on the next
    * poll; blocked/failed → the row goes interactive again). */
   deletingDirs?: Set<string>;
@@ -801,7 +801,7 @@ function FolderHeader({
   /** Whether this folder is the one currently shown in the main pane area. */
   active: boolean;
   now: number;
-  /** This worktree's `task_remove` is in flight — the caller already dims and
+  /** This worktree's `task_delete` is in flight — the caller already dims and
    * disables the whole row (`pointer-events-none opacity-50`); this just adds
    * the `DeletingBadge` label explaining why. */
   deleting?: boolean;
@@ -815,7 +815,7 @@ function FolderHeader({
    * own button). */
   onNewTask?: () => void;
   onRemoveRepo?: () => void;
-  /** Deletes this worktree from disk (guarded, `task_remove`) — set
+  /** Deletes this worktree from disk (guarded, `task_delete`) — set
    * only on worktree checkouts, where untracking makes no sense (they are
    * auto-discovered from the primary and would reappear next poll). */
   onDeleteWorktree?: () => void;

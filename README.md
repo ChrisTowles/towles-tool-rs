@@ -258,7 +258,7 @@ Cargo workspace with Tauri-free shared crates plus the CLI and Tauri shells:
 - `crates/tt-agentboard` — watched-repo and agent-session tracking behind the Agentboard screen.
 - `crates/tt-ide` — Claude Code IDE-protocol core: the MCP/JSON-RPC dispatcher and lockfile schema the app uses to pose as an IDE that Claude Code sessions connect to.
 - `crates/tt-vt` — libghostty-vt terminal-state engine driving the app's canvas terminals (needs zig 0.15.x).
-- `crates/tt-mcp` — the transport-free JSON-RPC MCP server over the store: board tasks (`task_list`, `task_status`, `task_create`) and the calendar family (`calendar_today`, `calendar_next`, `calendar_set`). The app serves it over loopback HTTP at `http://127.0.0.1:8787/mcp` (`mcp.port`), one instance per machine — app closed means no MCP. See the crate's trust-boundary doc.
+- `crates/tt-mcp` — the transport-free JSON-RPC MCP server over the store: board tasks (`task_list`, `task_status`, `task_create`, `task_delete`) and the calendar family (`calendar_today`, `calendar_next`, `calendar_set`). The app serves it over loopback HTTP at `http://127.0.0.1:8787/mcp` (`mcp.port`), one instance per machine — app closed means no MCP. See the crate's trust-boundary doc.
 - `crates/tt-telemetry` — telemetry: the `tracing` subscriber/writer for the
   local JSONL event log every subprocess and user action lands in, plus the
   reader behind the app's Telemetry screen.

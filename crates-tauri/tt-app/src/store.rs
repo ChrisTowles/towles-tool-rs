@@ -130,27 +130,44 @@ pub fn emit_snapshot_from_app(app: &AppHandle) {
     emit_snapshot(app, &state);
 }
 
-/// Detach any task bound to a removed worktree: clears the task's
-/// `worktree_dir` (branch + repo root stay as historical fact), re-emitting
-/// the snapshot when something changed. The worktree-removal seam calls this
-/// right where it already untracks the dir from repos.json. Returns how many
-/// tasks were detached; a worktree with no task is a 0-count no-op.
-pub fn detach_task_worktree_dir(app: &AppHandle, dir: &str) -> usize {
+/// One board task by id, for callers holding only an [`AppHandle`].
+/// `Ok(None)` is "no such task" — a real answer, not a failure.
+pub fn task_by_id(app: &AppHandle, id: i64) -> Result<Option<tt_store::TaskItem>, String> {
     let state = app.state::<StoreState>();
-    let detached = with_store(&state, |store| {
-        store
-            .clear_task_worktree_dir(dir)
-            .map_err(|e| format!("clear_task_worktree_dir failed: {e}"))
+    with_store(&state, |store| store.get_task(id).map_err(|e| format!("get_task failed: {e}")))
+}
+
+/// The board task bound to a worktree dir, if any. `Ok(None)` is "no task
+/// bound" — a real answer, since the rail lists worktrees the board may know
+/// nothing about.
+///
+/// Propagates store errors rather than swallowing them, matching [`task_by_id`]
+/// — the two are consumed by adjacent arms of the same match in
+/// `delete_task_blocking`, and an unreadable store must not be reported as
+/// "this worktree has no task": that would remove the checkout and silently
+/// leave its row behind, the exact half-delete the unified path exists to stop.
+pub fn task_id_for_worktree_dir(app: &AppHandle, dir: &str) -> Result<Option<i64>, String> {
+    let state = app.state::<StoreState>();
+    with_store(&state, |store| {
+        store.task_for_worktree_dir(dir).map_err(|e| format!("task_for_worktree_dir failed: {e}"))
     })
-    .unwrap_or_else(|e| {
-        eprintln!("worktree detach for {dir} failed: {e}");
-        0
-    });
-    if detached > 0 {
-        tracing::info!(%dir, count = detached, "task.worktree_detached");
-        emit_snapshot(app, &state);
-    }
-    detached
+    .map(|task| task.map(|task| task.id))
+}
+
+/// Delete one board row and re-emit the snapshot.
+///
+/// Deliberately not a Tauri command: a row-only delete is exactly the
+/// half-delete that used to strand worktrees on disk, so the only way to reach
+/// it is through [`crate::task::delete_task_blocking`], which has already
+/// dealt with the worktree by the time it calls this.
+pub fn delete_task_row(app: &AppHandle, id: i64) -> Result<(), String> {
+    let state = app.state::<StoreState>();
+    with_store(&state, |store| {
+        store.delete_task(id).map_err(|e| format!("delete_task failed: {e}"))
+    })?;
+    tracing::info!(task_id = id, "task.deleted");
+    emit_snapshot(app, &state);
+    Ok(())
 }
 
 // --- Tauri commands ---
@@ -441,17 +458,6 @@ pub fn store_update_task(
             .map_err(|e| format!("update_task failed: {e}"))
     })?;
     tracing::info!(task_id = id, "task.updated");
-    emit_snapshot(&app, &state);
-    Ok(())
-}
-
-/// Delete a todo permanently, then re-emit the snapshot.
-#[tauri::command]
-pub fn store_delete_task(app: AppHandle, state: State<StoreState>, id: i64) -> Result<(), String> {
-    with_store(&state, |store| {
-        store.delete_task(id).map_err(|e| format!("delete_task failed: {e}"))
-    })?;
-    tracing::info!(task_id = id, "task.deleted");
     emit_snapshot(&app, &state);
     Ok(())
 }

@@ -5347,6 +5347,7 @@ dependencies = [
  "tt-claude-code",
  "tt-config",
  "tt-exec",
+ "tt-store",
  "tt-tasks",
 ]
 

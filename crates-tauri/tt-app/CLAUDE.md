@@ -88,7 +88,7 @@ follows is a cross-cutting rule that spans multiple files.
   from a killed/replaced session can never close its successor. Treat
   `TermState`'s lock as map-surgery-only — don't hold it across anything
   that can block.
-- **`task_remove` kills a folder's PTYs before touching its worktree on
+- **`task_delete` kills a folder's PTYs before touching its worktree on
   disk — but only once the removal guards have passed** (via
   `ops::remove_task`'s `before_removal` hook, `tasks.rs`). Both halves are
   load-bearing for any new task-mutating command: kill before deleting or
@@ -194,9 +194,9 @@ follows is a cross-cutting rule that spans multiple files.
   - **Record the outcome, not just that it ran** — a `changed`/`count` field,
     a `from`/`to` pair, or a `started`/`already_running`/`blocked` discriminant
     where the command can no-op or be refused (see `store_collect_now`,
-    `task_remove`). Log after the mutation succeeds; a longer-running command
+    `task_delete`). Log after the mutation succeeds; a longer-running command
     that can end three ways uses a span with an `outcome` field
-    (`task_remove`, `task_stop_port`).
+    (`task_delete`, `task_stop_port`).
   - **Never log content or continuous input** — no note/message/prompt text,
     no per-keystroke/mouse/scroll/resize/PTY-write events. That's why
     `slack_dm_send` logs `slack.dm_sent` with *no* text, and the `term_*`

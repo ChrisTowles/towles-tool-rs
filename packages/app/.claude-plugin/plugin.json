@@ -1,7 +1,7 @@
 {
   "name": "towles-tool-app",
-  "description": "Bridges Claude Code to the towles-tool desktop app: points at its loopback-HTTP MCP server (board tasks: task_list, task_status, task_create; calendar: calendar_today, calendar_next, calendar_set) and a hook that nudges the app to refresh PR/issue data immediately after a `gh pr`/`gh issue` mutation. Requires the app to be running.",
-  "version": "0.1.8",
+  "description": "Bridges Claude Code to the towles-tool desktop app: points at its loopback-HTTP MCP server (board tasks: task_list, task_status, task_create, task_delete; calendar: calendar_today, calendar_next, calendar_set) and a hook that nudges the app to refresh PR/issue data immediately after a `gh pr`/`gh issue` mutation. Requires the app to be running.",
+  "version": "0.1.9",
   "author": {
     "name": "Chris Towles"
   }
