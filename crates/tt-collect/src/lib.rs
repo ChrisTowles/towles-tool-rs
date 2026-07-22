@@ -347,9 +347,16 @@ pub fn rollup_task_statuses(store: &Store, now_ms: i64) -> tt_store::Result<usiz
     Ok(changed)
 }
 
-/// Collect open + review-requested PRs across `repo_dirs` via `gh` and update
-/// the stored PR set. Records `prs`. Failure containment matches
-/// [`collect_issues`]: failed repos keep their last-known-good rows.
+/// Collect open + review-requested + recently-merged PRs across `repo_dirs`
+/// via `gh` and update the stored PR set. Records `prs`. Failure containment
+/// matches [`collect_issues`]: failed repos keep their last-known-good rows.
+///
+/// This is the "full" sweep — used for on-demand refreshes (a manual
+/// `tt collect prs`, `collect_all`, and the post-mutation nudge) where paying
+/// for all three `gh` calls once is worth it for full freshness. The periodic
+/// scheduler tick instead splits this into [`collect_prs_open`] (fast cadence)
+/// and [`collect_prs_merged`] (slow cadence) so it isn't re-fetching the
+/// rarely-needed merged list on every fast tick.
 pub fn collect_prs(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> CollectSummary {
     let repo_dirs = dedupe_repo_dirs(repo_dirs);
     let outcome = sweep_repos(&repo_dirs, prs::collect_repo_prs);
@@ -361,6 +368,40 @@ pub fn collect_prs(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> Collect
         finish_sweep(store, "prs", outcome, write, |p| (p.repo.clone(), p.number), now_ms);
     sync_task_links(store, &repo_dirs, now_ms);
     summary
+}
+
+/// Collect just the authored + review-requested open PRs across `repo_dirs`
+/// — the fast half of [`collect_prs`], meant for the scheduler's frequent
+/// tick. Records `prs` (same key as [`collect_prs`]/[`collect_prs_merged`]:
+/// they're cadence splits of one logical collector, not separate ones).
+/// Also runs [`sync_task_links`], so task-linked PR merge detection stays on
+/// this fast cadence rather than the slower merged-list one.
+pub fn collect_prs_open(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> CollectSummary {
+    let repo_dirs = dedupe_repo_dirs(repo_dirs);
+    let outcome = sweep_repos(&repo_dirs, prs::collect_repo_prs_open);
+    let write = |all: &[tt_store::PrInput], repos: Option<&[String]>| match repos {
+        None => store.replace_open_prs(all),
+        Some(repos) => store.replace_open_prs_for_repos(repos, all),
+    };
+    let summary =
+        finish_sweep(store, "prs", outcome, write, |p| (p.repo.clone(), p.number), now_ms);
+    sync_task_links(store, &repo_dirs, now_ms);
+    summary
+}
+
+/// Collect just the recently-merged authored PRs across `repo_dirs` — the
+/// slow half of [`collect_prs`]. This list exists only to catch a
+/// just-merged branch before its worktree is removed; it isn't the mechanism
+/// that detects a task-linked PR merging (that's [`sync_task_links`], run
+/// from [`collect_prs_open`]'s faster cadence), so this doesn't call it.
+pub fn collect_prs_merged(store: &Store, repo_dirs: &[PathBuf], now_ms: i64) -> CollectSummary {
+    let repo_dirs = dedupe_repo_dirs(repo_dirs);
+    let outcome = sweep_repos(&repo_dirs, prs::collect_repo_merged_prs);
+    let write = |all: &[tt_store::PrInput], repos: Option<&[String]>| match repos {
+        None => store.replace_merged_prs(all),
+        Some(repos) => store.replace_merged_prs_for_repos(repos, all),
+    };
+    finish_sweep(store, "prs", outcome, write, |p| (p.repo.clone(), p.number), now_ms)
 }
 
 /// Collect the watched Slack DM's latest state via the Slack Web API and
@@ -874,6 +915,22 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].collector, "prs");
         assert!(runs[0].ok);
+    }
+
+    #[test]
+    fn collect_prs_open_and_collect_prs_merged_are_clean_noops_and_share_the_prs_key() {
+        let store = Store::open_in_memory().unwrap();
+        let open = collect_prs_open(&store, &[], 1);
+        assert!(open.ok);
+        assert_eq!(open.count, 0);
+        let merged = collect_prs_merged(&store, &[], 2);
+        assert!(merged.ok);
+        assert_eq!(merged.count, 0);
+        // Both cadences are splits of the same logical collector, so they
+        // record under the same `prs` key rather than two separate ones.
+        let runs = store.runs().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].collector, "prs");
     }
 
     #[test]

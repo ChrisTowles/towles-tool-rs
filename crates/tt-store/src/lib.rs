@@ -1554,6 +1554,94 @@ impl Store {
         Ok(prs.len())
     }
 
+    /// Replace only the non-merged PR rows for `repos`, leaving each repo's
+    /// merged rows and every other repo's rows intact. Used by the fast,
+    /// frequent open-PR sweep so it never has to re-fetch (and thus never
+    /// clobbers) the separately-cadenced merged-PR rows — see
+    /// [`Store::replace_merged_prs_for_repos`].
+    pub fn replace_open_prs_for_repos(&self, repos: &[String], prs: &[PrInput]) -> Result<usize> {
+        self.replace_prs_for_repos_where(repos, prs, "state != 'merged'")
+    }
+
+    /// Full-snapshot replace of the non-merged PR rows, preserving merged rows.
+    pub fn replace_open_prs(&self, prs: &[PrInput]) -> Result<usize> {
+        self.replace_prs_where(prs, "state != 'merged'")
+    }
+
+    /// Replace only the merged PR rows for `repos`, leaving each repo's open
+    /// rows intact. See [`Store::replace_open_prs_for_repos`].
+    pub fn replace_merged_prs_for_repos(&self, repos: &[String], prs: &[PrInput]) -> Result<usize> {
+        self.replace_prs_for_repos_where(repos, prs, "state = 'merged'")
+    }
+
+    /// Full-snapshot replace of the merged PR rows, preserving open rows.
+    pub fn replace_merged_prs(&self, prs: &[PrInput]) -> Result<usize> {
+        self.replace_prs_where(prs, "state = 'merged'")
+    }
+
+    fn replace_prs_for_repos_where(
+        &self,
+        repos: &[String],
+        prs: &[PrInput],
+        state_predicate: &str,
+    ) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut del = tx
+                .prepare(&format!("DELETE FROM pr_status WHERE repo = ?1 AND {state_predicate}"))?;
+            for repo in repos {
+                del.execute(params![repo])?;
+            }
+            let mut stmt = tx.prepare(
+                "INSERT INTO pr_status
+                   (repo, number, title, branch, state, checks, review_state, url, updated_ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?;
+            for p in prs {
+                stmt.execute(params![
+                    p.repo,
+                    p.number,
+                    p.title,
+                    p.branch,
+                    p.state,
+                    p.checks,
+                    p.review_state,
+                    p.url,
+                    p.updated_ts,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(prs.len())
+    }
+
+    fn replace_prs_where(&self, prs: &[PrInput], state_predicate: &str) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(&format!("DELETE FROM pr_status WHERE {state_predicate}"), [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO pr_status
+                   (repo, number, title, branch, state, checks, review_state, url, updated_ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?;
+            for p in prs {
+                stmt.execute(params![
+                    p.repo,
+                    p.number,
+                    p.title,
+                    p.branch,
+                    p.state,
+                    p.checks,
+                    p.review_state,
+                    p.url,
+                    p.updated_ts,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(prs.len())
+    }
+
     /// Upsert the latest state of a watched DM conversation. `dismissed_ts` is
     /// preserved across upserts — dismissal is user state, not collector state.
     pub fn upsert_dm(&self, dm: &DmInput, now_ms: i64) -> Result<()> {
@@ -2731,6 +2819,84 @@ mod tests {
         assert_eq!(prs.len(), 2);
         assert!(prs.iter().any(|p| p.repo == "o/b" && p.number == 2));
         assert!(prs.iter().any(|p| p.repo == "o/a" && p.number == 3));
+    }
+
+    #[test]
+    fn replace_open_prs_for_repos_preserves_merged_rows() {
+        let pr = |repo: &str, number: i64, state: &str| PrInput {
+            repo: repo.to_string(),
+            number,
+            title: "t".to_string(),
+            branch: "b".to_string(),
+            state: state.to_string(),
+            checks: "passing".to_string(),
+            review_state: String::new(),
+            url: "https://x".to_string(),
+            updated_ts: 1,
+        };
+        let s = Store::open_in_memory().unwrap();
+        s.replace_prs(&[pr("o/a", 1, "open"), pr("o/a", 2, "merged")]).unwrap();
+        // A fresh open-only sweep must not delete the merged row it never fetched.
+        s.replace_open_prs_for_repos(&["o/a".to_string()], &[pr("o/a", 3, "open")]).unwrap();
+        let prs = s.prs().unwrap();
+        assert_eq!(prs.len(), 2);
+        assert!(prs.iter().any(|p| p.number == 2 && p.state == "merged"));
+        assert!(prs.iter().any(|p| p.number == 3 && p.state == "open"));
+        assert!(!prs.iter().any(|p| p.number == 1));
+    }
+
+    #[test]
+    fn replace_merged_prs_for_repos_preserves_open_rows() {
+        let pr = |repo: &str, number: i64, state: &str| PrInput {
+            repo: repo.to_string(),
+            number,
+            title: "t".to_string(),
+            branch: "b".to_string(),
+            state: state.to_string(),
+            checks: "passing".to_string(),
+            review_state: String::new(),
+            url: "https://x".to_string(),
+            updated_ts: 1,
+        };
+        let s = Store::open_in_memory().unwrap();
+        s.replace_prs(&[pr("o/a", 1, "open"), pr("o/a", 2, "merged")]).unwrap();
+        // A merged-only sweep must not delete the open row it never fetched.
+        s.replace_merged_prs_for_repos(&["o/a".to_string()], &[pr("o/a", 4, "merged")]).unwrap();
+        let prs = s.prs().unwrap();
+        assert_eq!(prs.len(), 2);
+        assert!(prs.iter().any(|p| p.number == 1 && p.state == "open"));
+        assert!(prs.iter().any(|p| p.number == 4 && p.state == "merged"));
+        assert!(!prs.iter().any(|p| p.number == 2));
+    }
+
+    #[test]
+    fn replace_open_prs_and_replace_merged_prs_are_full_snapshots_scoped_by_state() {
+        let pr = |repo: &str, number: i64, state: &str| PrInput {
+            repo: repo.to_string(),
+            number,
+            title: "t".to_string(),
+            branch: "b".to_string(),
+            state: state.to_string(),
+            checks: "passing".to_string(),
+            review_state: String::new(),
+            url: "https://x".to_string(),
+            updated_ts: 1,
+        };
+        let s = Store::open_in_memory().unwrap();
+        s.replace_prs(&[pr("o/a", 1, "open"), pr("o/b", 2, "merged")]).unwrap();
+        s.replace_open_prs(&[pr("o/a", 3, "open")]).unwrap();
+        let prs = s.prs().unwrap();
+        // The other repo's open row (none here) would be purged, but its merged
+        // row survives; repo o/a's stale open row 1 is gone, replaced by 3.
+        assert_eq!(prs.len(), 2);
+        assert!(prs.iter().any(|p| p.number == 3 && p.state == "open"));
+        assert!(prs.iter().any(|p| p.number == 2 && p.state == "merged"));
+
+        s.replace_merged_prs(&[pr("o/b", 5, "merged")]).unwrap();
+        let prs = s.prs().unwrap();
+        assert_eq!(prs.len(), 2);
+        assert!(prs.iter().any(|p| p.number == 3 && p.state == "open"));
+        assert!(prs.iter().any(|p| p.number == 5 && p.state == "merged"));
     }
 
     #[test]

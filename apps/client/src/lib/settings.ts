@@ -112,6 +112,7 @@ export type CalendarCollector = {
 export type PrCollector = {
   enabled: boolean;
   refreshSeconds: number;
+  mergedRefreshMinutes: number;
 };
 
 export type IssueCollector = {

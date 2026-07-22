@@ -1027,10 +1027,24 @@ function collectorsSections(
           node: (
             <CadenceRow
               label="Refresh every"
-              description="How often to re-poll PRs."
+              description="How often to re-poll open + review-requested PRs."
               value={c.prs.refreshSeconds}
               unit="sec"
               onValue={(n) => setPrs({ refreshSeconds: n }, typed)}
+              onCommit={() => void flush()}
+            />
+          ),
+        },
+        {
+          label: "Merged PRs refresh every",
+          keywords: ["cadence", "interval", "merged"],
+          node: (
+            <CadenceRow
+              label="Merged PRs refresh every"
+              description="How often to re-poll recently-merged PRs. Looser than the open-PR cadence since this only catches a just-merged branch before its worktree is removed."
+              value={c.prs.mergedRefreshMinutes}
+              unit="min"
+              onValue={(n) => setPrs({ mergedRefreshMinutes: n }, typed)}
               onCommit={() => void flush()}
             />
           ),

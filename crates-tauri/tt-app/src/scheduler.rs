@@ -1,8 +1,13 @@
 //! Collector scheduler: fills tt.db while the app is open.
 //!
-//! Cadence comes from `settings.collectors`, one tick per collector: PRs via
-//! `gh` every `prs.refresh_seconds`; issues via `gh` every
-//! `issues.refresh_minutes`; calendar via `claude -p` every
+//! Cadence comes from `settings.collectors`. PRs split into two independent
+//! ticks: the authored + review-requested open-PR sweep (`Batch::PrsOpen`)
+//! runs every `prs.refresh_seconds` since that's what Board/Cockpit render
+//! from, while the recently-merged-PRs sweep (`Batch::PrsMerged`) runs on the
+//! much looser `prs.merged_refresh_minutes` — it only exists to catch a
+//! just-merged branch before its worktree is removed, so it doesn't need the
+//! open sweep's freshness or `gh` call count on every tick. Issues via `gh`
+//! run every `issues.refresh_minutes`; calendar via `claude -p` every
 //! `calendar.refresh_minutes`, gated by `calendar.enabled` because those runs
 //! cost tokens. Each batch runs in a blocking task on its **own** store
 //! connection (tt-store opens WAL + busy-timeout), so a slow `claude -p` never
@@ -12,7 +17,9 @@
 //! A `prs` or `issues` batch can also fire early, outside its normal cadence:
 //! see the nudge-dir watch in [`spawn`], which reacts to `tt collect nudge
 //! prs`/`tt collect nudge issues` by diffing each target's file mtime (see
-//! [`changed_nudge_batches`]).
+//! [`changed_nudge_batches`]) — a `prs` touch fires both `PrsOpen` and
+//! `PrsMerged` together, since a mutation like `gh pr merge` needs the merged
+//! sweep refreshed immediately rather than waiting for its own slow tick.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -84,7 +91,11 @@ fn watched_collectors(collectors: &tt_config::CollectorsSettings) -> Vec<Watched
 
 #[derive(Clone)]
 enum Batch {
-    Prs,
+    /// Fast cadence: authored + review-requested open PRs.
+    PrsOpen,
+    /// Slow cadence: recently-merged authored PRs (just enough to catch a
+    /// just-merged branch before its worktree is removed).
+    PrsMerged,
     Issues,
     /// Carries the calendar sources to pull, snapshotted from settings when the
     /// tick fired — the same way [`Batch::SlackDm`] carries its config — so the
@@ -102,7 +113,8 @@ enum Batch {
 /// cadence rebuild.
 #[derive(Default)]
 struct BatchGuards {
-    prs: Arc<AtomicBool>,
+    prs_open: Arc<AtomicBool>,
+    prs_merged: Arc<AtomicBool>,
     issues: Arc<AtomicBool>,
     calendar: Arc<AtomicBool>,
     slack: Arc<AtomicBool>,
@@ -139,16 +151,20 @@ struct NudgeSeen {
 /// so it's cheap to call on every nudge and easy to unit test with a tempdir.
 fn changed_nudge_batches(dir: &Path, seen: &mut NudgeSeen) -> Vec<Batch> {
     let mut changed = Vec::new();
-    for (file_name, batch, last) in [
-        ("prs", Batch::Prs, &mut seen.prs),
-        ("issues", Batch::Issues, &mut seen.issues),
-    ] {
-        let mtime = std::fs::metadata(dir.join(file_name)).and_then(|m| m.modified()).ok();
-        if mtime.is_some() && mtime != *last {
-            changed.push(batch);
-        }
-        *last = mtime;
+    let prs_mtime = std::fs::metadata(dir.join("prs")).and_then(|m| m.modified()).ok();
+    if prs_mtime.is_some() && prs_mtime != seen.prs {
+        // A `gh pr`/`gh issue` mutation just happened: refresh both halves of
+        // the PR collector so a just-merged PR shows up immediately, not only
+        // on the next slow merged-cadence tick.
+        changed.push(Batch::PrsOpen);
+        changed.push(Batch::PrsMerged);
     }
+    seen.prs = prs_mtime;
+    let issues_mtime = std::fs::metadata(dir.join("issues")).and_then(|m| m.modified()).ok();
+    if issues_mtime.is_some() && issues_mtime != seen.issues {
+        changed.push(Batch::Issues);
+    }
+    seen.issues = issues_mtime;
     changed
 }
 
@@ -197,6 +213,10 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
             let mut pr_tick =
                 tokio::time::interval(Duration::from_secs(collectors.prs.refresh_seconds.max(30)));
             pr_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut pr_merged_tick = tokio::time::interval(Duration::from_secs(
+                collectors.prs.merged_refresh_minutes.max(1) * 60,
+            ));
+            pr_merged_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
             let mut issue_tick = tokio::time::interval(Duration::from_secs(
                 collectors.issues.refresh_minutes.max(1) * 60,
             ));
@@ -227,7 +247,10 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                 tokio::select! {
                     _ = reload.notified() => break,
                     _ = pr_tick.tick(), if collectors.prs.enabled => {
-                        spawn_batch(&app, Batch::Prs, calendar_period_ms, &guards.prs);
+                        spawn_batch(&app, Batch::PrsOpen, calendar_period_ms, &guards.prs_open);
+                    }
+                    _ = pr_merged_tick.tick(), if collectors.prs.enabled => {
+                        spawn_batch(&app, Batch::PrsMerged, calendar_period_ms, &guards.prs_merged);
                     }
                     _ = issue_tick.tick(), if collectors.issues.enabled => {
                         spawn_batch(&app, Batch::Issues, calendar_period_ms, &guards.issues);
@@ -261,7 +284,8 @@ pub fn spawn(app: AppHandle, reload: Arc<Notify>) {
                         if let Some(dir) = &nudge_dir {
                             for batch in changed_nudge_batches(dir, &mut nudge_seen) {
                                 let guard = match batch {
-                                    Batch::Prs if collectors.prs.enabled => &guards.prs,
+                                    Batch::PrsOpen if collectors.prs.enabled => &guards.prs_open,
+                                    Batch::PrsMerged if collectors.prs.enabled => &guards.prs_merged,
                                     Batch::Issues if collectors.issues.enabled => &guards.issues,
                                     _ => continue,
                                 };
@@ -328,9 +352,13 @@ fn run_batch_blocking(app: &AppHandle, batch: Batch, calendar_period_ms: i64) {
     let now = now_ms();
 
     match batch {
-        Batch::Prs => {
+        Batch::PrsOpen => {
             let repos = tt_collect::tracked_repo_dirs();
-            log_failure(tt_collect::collect_prs(&store, &repos, now));
+            log_failure(tt_collect::collect_prs_open(&store, &repos, now));
+        }
+        Batch::PrsMerged => {
+            let repos = tt_collect::tracked_repo_dirs();
+            log_failure(tt_collect::collect_prs_merged(&store, &repos, now));
         }
         Batch::Issues => {
             let repos = tt_collect::tracked_repo_dirs();
@@ -591,7 +619,8 @@ mod tests {
         batches
             .iter()
             .map(|b| match b {
-                Batch::Prs => "prs",
+                Batch::PrsOpen => "prs_open",
+                Batch::PrsMerged => "prs_merged",
                 Batch::Issues => "issues",
                 Batch::Calendar(_) => "calendar",
                 Batch::SlackDm(_) => "slack",
@@ -606,7 +635,11 @@ mod tests {
         assert!(changed_nudge_batches(dir.path(), &mut seen).is_empty(), "nothing written yet");
 
         std::fs::write(dir.path().join("prs"), "1").unwrap();
-        assert_eq!(batch_names(&changed_nudge_batches(dir.path(), &mut seen)), vec!["prs"]);
+        assert_eq!(
+            batch_names(&changed_nudge_batches(dir.path(), &mut seen)),
+            vec!["prs_open", "prs_merged"],
+            "a gh pr/issue mutation refreshes both PR cadences immediately"
+        );
         // Already acknowledged: polling again with no further touch is quiet.
         assert!(changed_nudge_batches(dir.path(), &mut seen).is_empty());
     }
@@ -621,7 +654,7 @@ mod tests {
         std::fs::write(dir.path().join("prs"), "1").unwrap();
         assert_eq!(
             batch_names(&changed_nudge_batches(dir.path(), &mut seen)),
-            vec!["prs"],
+            vec!["prs_open", "prs_merged"],
             "issues was already acknowledged in the prior poll"
         );
     }
@@ -640,7 +673,10 @@ mod tests {
         // filesystem mtime resolution across two quick writes.
         let file = std::fs::File::open(&path).unwrap();
         file.set_modified(SystemTime::now() + Duration::from_secs(5)).unwrap();
-        assert_eq!(batch_names(&changed_nudge_batches(dir.path(), &mut seen)), vec!["prs"]);
+        assert_eq!(
+            batch_names(&changed_nudge_batches(dir.path(), &mut seen)),
+            vec!["prs_open", "prs_merged"]
+        );
     }
 
     #[test]
@@ -684,12 +720,12 @@ mod tests {
         let watched = watched_collectors(&c);
         let keys: Vec<&str> = watched.iter().map(|w| w.key.as_str()).collect();
         assert_eq!(keys, vec!["prs", "issues"]);
-        // issues: 5m cadence * 4 = 20m.
+        // issues: 15m cadence * 4 = 60m.
         let issues = watched.iter().find(|w| w.key == "issues").unwrap();
-        assert_eq!(issues.stale_after_ms, 20 * 60_000);
-        // prs: 120s cadence * 4 = 8m.
+        assert_eq!(issues.stale_after_ms, 60 * 60_000);
+        // prs: 300s (5m) cadence * 4 = 20m.
         let prs = watched.iter().find(|w| w.key == "prs").unwrap();
-        assert_eq!(prs.stale_after_ms, 8 * 60_000);
+        assert_eq!(prs.stale_after_ms, 20 * 60_000);
     }
 
     #[test]
