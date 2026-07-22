@@ -12,6 +12,8 @@ import {
   graphemeClusters,
   isWideRun,
   rgb,
+  isCopyChord,
+  isPasteChord,
   keyEventWire,
   scrollbackKey,
   stepMatch,
@@ -670,12 +672,12 @@ export function TerminalView({
           setSearchOpen(true);
           return;
         }
-        if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "c")) {
+        if (isCopyChord(e)) {
           e.preventDefault();
           copySelection();
           return;
         }
-        if (e.ctrlKey && e.shiftKey && (e.key === "V" || e.key === "v")) {
+        if (isPasteChord(e)) {
           e.preventDefault();
           pasteClipboard();
           return;
