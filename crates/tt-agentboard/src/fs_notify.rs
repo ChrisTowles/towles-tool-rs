@@ -10,7 +10,7 @@
 //! while the user's agents were busiest. Bursts coalesce into at most one
 //! callback per [`DEBOUNCE`] window; worst-case added latency is one window.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -46,6 +46,74 @@ impl DirNotifier {
             })?;
         watcher.watch(dir, RecursiveMode::Recursive)?;
         Ok(Self { _watcher: watcher })
+    }
+}
+
+/// Like [`DirNotifier`], but watches a *changing set* of directories under
+/// one root instead of the whole tree — built for `~/.claude/projects`,
+/// which every Claude Code session on the machine writes into. A plain
+/// `DirNotifier` on that root fires the agentboard's eager rescan for *any*
+/// session's transcript activity, not just the tracked repos it's actually
+/// polling; on a machine with several concurrent sessions (this one
+/// included, mid-conversation) that reduces the accelerant to "rescan
+/// constantly," which is not faster than the poll it's meant to shortcut.
+///
+/// [`set_targets`](Self::set_targets) recomputes the watched set from a list
+/// of checkout dirs (tracked repos plus discovered worktrees — the same set
+/// [`crate::engine::Engine::watch_targets`] hands the host), diffing against
+/// what's currently watched so an unchanged set touches no watcher calls.
+/// Each target maps to its Claude Code transcript directory via
+/// [`crate::watchers::claude_code::encode_project_dir_name`]; a checkout
+/// with no Claude sessions yet (the encoded dir doesn't exist) is simply not
+/// watched — there's nothing to eagerly refresh for it yet, and the poll
+/// loop remains the correctness baseline regardless, so under-watching here
+/// is a latency tradeoff, never a staleness bug.
+pub struct ScopedDirNotifier {
+    watcher: RecommendedWatcher,
+    watched: HashSet<PathBuf>,
+}
+
+impl ScopedDirNotifier {
+    pub fn new<F>(on_change: F) -> notify::Result<Self>
+    where
+        F: Fn() + Send + 'static,
+    {
+        let (tx, rx) = mpsc::channel::<()>();
+        std::thread::spawn(move || debounce_loop(&rx, move |_batch| on_change()));
+        let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if res.is_ok() {
+                let _ = tx.send(());
+            }
+        })?;
+        Ok(Self { watcher, watched: HashSet::new() })
+    }
+
+    /// Recompute the watched set from `targets` (absolute checkout dirs).
+    /// Idempotent — an unchanged `targets` list is a no-op, so calling this
+    /// on every poll tick (cheap: no subprocess, just `notify` add/remove
+    /// calls on the *changed* entries) is the intended usage.
+    pub fn set_targets(&mut self, projects_dir: &Path, targets: &[String]) {
+        let desired: HashSet<PathBuf> = targets
+            .iter()
+            .map(|dir| {
+                projects_dir.join(crate::watchers::claude_code::encode_project_dir_name(dir))
+            })
+            .filter(|p| p.is_dir())
+            .collect();
+        for stale in self.watched.difference(&desired).cloned().collect::<Vec<_>>() {
+            let _ = self.watcher.unwatch(&stale);
+            self.watched.remove(&stale);
+        }
+        for fresh in desired.difference(&self.watched).cloned().collect::<Vec<_>>() {
+            if self.watcher.watch(&fresh, RecursiveMode::Recursive).is_ok() {
+                self.watched.insert(fresh);
+            }
+        }
+    }
+
+    /// The currently watched directories — test/diagnostic seam.
+    pub fn watched(&self) -> &HashSet<PathBuf> {
+        &self.watched
     }
 }
 
@@ -232,6 +300,102 @@ mod tests {
         handle.join().unwrap();
         let flushed = batches.lock().unwrap();
         assert_eq!(flushed.as_slice(), &[vec![PathBuf::from("/a"), PathBuf::from("/b")]]);
+    }
+
+    /// The core reason this type exists: `set_targets` must only ever watch
+    /// directories that correspond to a currently tracked checkout, never
+    /// the whole `~/.claude/projects` tree — a repo dropped from the tracked
+    /// set (task removed, repo untracked) must stop being watched, not just
+    /// stop being added to.
+    #[test]
+    fn set_targets_watches_only_tracked_checkouts_and_drops_untracked_ones() {
+        let root = tempfile::TempDir::new().unwrap();
+        let projects = root.path().join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        // Two checkouts with a session transcript dir already on disk, one
+        // without — the third proves a checkout with no Claude session yet
+        // is simply never watched, not an error.
+        std::fs::create_dir_all(projects.join("-home-u-repo-a")).unwrap();
+        std::fs::create_dir_all(projects.join("-home-u-repo-b")).unwrap();
+
+        let mut n = ScopedDirNotifier::new(|| {}).unwrap();
+        n.set_targets(&projects, &["/home/u/repo-a".into(), "/home/u/no-session-yet".into()]);
+        assert_eq!(n.watched(), &HashSet::from([projects.join("-home-u-repo-a")]));
+
+        // Swap the tracked set entirely: repo-a drops out, repo-b comes in.
+        n.set_targets(&projects, &["/home/u/repo-b".into()]);
+        assert_eq!(n.watched(), &HashSet::from([projects.join("-home-u-repo-b")]));
+    }
+
+    /// A worktree checkout's path runs through `.claude/worktrees/...` — the
+    /// literal dot is exactly the case the naive `/`→`-` guess used to miss
+    /// (see `watchers::claude_code::encode_project_dir_name`'s doc). This is
+    /// the scenario the storm investigation actually hit: this app's own
+    /// worktree tasks must resolve to their real transcript directory, not
+    /// silently go unwatched.
+    #[test]
+    fn set_targets_resolves_a_worktree_checkout_through_the_dot_in_its_path() {
+        let root = tempfile::TempDir::new().unwrap();
+        let projects = root.path().join("projects");
+        let encoded = "-home-u-repo--claude-worktrees-fix-thing";
+        std::fs::create_dir_all(projects.join(encoded)).unwrap();
+
+        let mut n = ScopedDirNotifier::new(|| {}).unwrap();
+        n.set_targets(&projects, &["/home/u/repo/.claude/worktrees/fix-thing".into()]);
+        assert_eq!(n.watched(), &HashSet::from([projects.join(encoded)]));
+    }
+
+    /// Calling `set_targets` again with an identical list must not touch the
+    /// watcher at all — this is what makes it cheap enough to call on every
+    /// 2s poll tick rather than only when the tracked set is known to have
+    /// changed.
+    #[test]
+    fn set_targets_is_a_no_op_when_the_target_list_is_unchanged() {
+        let root = tempfile::TempDir::new().unwrap();
+        let projects = root.path().join("projects");
+        std::fs::create_dir_all(projects.join("-home-u-repo-a")).unwrap();
+
+        let mut n = ScopedDirNotifier::new(|| {}).unwrap();
+        let targets = vec!["/home/u/repo-a".to_string()];
+        n.set_targets(&projects, &targets);
+        let watched_after_first = n.watched().clone();
+        n.set_targets(&projects, &targets);
+        assert_eq!(n.watched(), &watched_after_first);
+    }
+
+    /// End-to-end proof, not just set bookkeeping: a write inside an
+    /// untracked project dir (some other Claude Code session, anywhere on
+    /// the machine) must never fire the callback, while a write inside a
+    /// tracked one still does. This is the actual behavior the storm
+    /// investigation needed — a global `DirNotifier` on `~/.claude/projects`
+    /// fires on both.
+    #[test]
+    fn only_a_tracked_checkouts_journal_write_fires_the_callback() {
+        let root = tempfile::TempDir::new().unwrap();
+        let projects = root.path().join("projects");
+        let tracked = projects.join("-home-u-repo-a");
+        let untracked = projects.join("-home-u-someone-elses-session");
+        std::fs::create_dir_all(&tracked).unwrap();
+        std::fs::create_dir_all(&untracked).unwrap();
+
+        let (tx, rx) = mpsc::channel::<()>();
+        let mut n = ScopedDirNotifier::new(move || {
+            let _ = tx.send(());
+        })
+        .unwrap();
+        n.set_targets(&projects, &["/home/u/repo-a".into()]);
+
+        std::fs::write(untracked.join("sid.jsonl"), "noise").unwrap();
+        assert!(
+            rx.recv_timeout(DEBOUNCE * 3).is_err(),
+            "an untracked session's transcript write must not fire the accelerant"
+        );
+
+        std::fs::write(tracked.join("sid.jsonl"), "a message").unwrap();
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "a tracked checkout's own transcript write must still fire it"
+        );
     }
 
     /// Real-filesystem check of the behaviors the viewer/diff pane depend on:

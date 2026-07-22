@@ -36,7 +36,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 use tokio::sync::Notify;
 
 use agentboard::{Ab, Engine, STATE_EVENT, now_ms};
-use tt_agentboard::fs_notify::DirNotifier;
+use tt_agentboard::fs_notify::ScopedDirNotifier;
 
 /// Human-readable name of the checkout this binary was built from — the repo-root
 /// directory (e.g. `task-migrate`, `towles-tool-rs-primary`). Baked in at compile time from
@@ -211,17 +211,24 @@ pub fn run() {
             let emit = Arc::new(Notify::new());
             let scan = Arc::new(Notify::new());
 
-            // fs-notify accelerant: any journal change signals an eager scan.
+            // fs-notify accelerant: a tracked repo/worktree's journal change
+            // signals an eager scan. Scoped to those checkouts' own
+            // `~/.claude/projects` subdirectories — not the whole tree, which
+            // every Claude Code session on the machine writes into (including
+            // whatever session is editing this repo right now) — see
+            // `ScopedDirNotifier`'s doc comment. The initial target set is
+            // empty; the scan loop below calls `set_targets` on its first
+            // tick and every one after, so this starts narrowing within 2s.
             let projects_dir = engine.lock().unwrap().projects_dir();
             let scan_for_notify = scan.clone();
-            let notifier =
-                DirNotifier::watch(&projects_dir, move || scan_for_notify.notify_one()).ok();
+            let notifier = Arc::new(Mutex::new(
+                ScopedDirNotifier::new(move || scan_for_notify.notify_one()).ok(),
+            ));
 
             app.manage(Ab {
                 engine: engine.clone(),
                 emit: emit.clone(),
                 scan: scan.clone(),
-                _notifier: Mutex::new(notifier),
                 needs_since: Mutex::new(tt_agentboard::bridge::NeedsSince::new()),
             });
 
@@ -283,6 +290,8 @@ pub fn run() {
                 let engine = engine.clone();
                 let emit = emit.clone();
                 let scan = scan.clone();
+                let notifier = notifier.clone();
+                let projects_dir = projects_dir.clone();
                 tauri::async_runtime::spawn(async move {
                     let mut interval = tokio::time::interval(Duration::from_millis(2000));
                     loop {
@@ -325,6 +334,16 @@ pub fn run() {
                         {
                             let mut e = engine.lock().unwrap();
                             e.scan_once(now);
+                        }
+                        // Narrow the fs-notify accelerant to the repos/worktrees
+                        // actually being polled. Cheap (cache-only, see
+                        // `Engine::watch_targets`'s doc) and a no-op unless the
+                        // tracked set changed since last tick, so doing this
+                        // every tick rather than only on repo add/remove is
+                        // simpler and costs nothing extra.
+                        let targets = engine.lock().unwrap().watch_targets();
+                        if let Some(n) = notifier.lock().unwrap().as_mut() {
+                            n.set_targets(&projects_dir, &targets);
                         }
                         emit.notify_one();
                     }

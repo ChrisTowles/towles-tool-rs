@@ -24,8 +24,28 @@ follows is a cross-cutting rule that spans multiple files.
   `compute_git_info` takes the folder's previous `GitInfo` and skips the
   landing probe when `probe_key` (HEAD sha + base sha + upstream track) is
   unchanged, so an idle repo costs three cheap reads instead of up to ~192
-  subprocesses. Both halves are pinned by tests in `git_info.rs` — keep them
-  if you touch either.
+  subprocesses. `is_worktree`/`common_dir`/`worktree_dirs`/`origin_url` get
+  the same treatment for a different reason — they're structural facts (a
+  repo's sibling worktrees, its remote), not working-tree state, so they're
+  memoized off two file mtimes (`structural_key`) instead of re-derived via
+  four more git spawns every poll. All three halves are pinned by tests in
+  `git_info.rs` — keep them if you touch any.
+- **The `~/.claude/projects` fs-notify accelerant is scoped to tracked
+  checkouts, not the whole tree.** `lib.rs`'s scan loop watches via
+  `ScopedDirNotifier` (`tt_agentboard::fs_notify`), whose `set_targets` is
+  called every scan tick with `Engine::watch_targets()` (tracked repos plus
+  discovered worktrees). A plain `DirNotifier` on `projects_dir` — the
+  original design — fires the eager rescan on *any* Claude Code session's
+  transcript write anywhere on the machine, this repo's own session
+  included; on a machine running several concurrent sessions that reduces
+  the "accelerant" to "rescan constantly," fighting the exact poll cadence
+  it exists to shortcut. Each tracked dir maps to its transcript directory
+  via `watchers::claude_code::encode_project_dir_name` (`/`, `.`, `_` → `-`,
+  verified against real `~/.claude/projects` entries — a worktree checkout's
+  `.claude/worktrees/...` segment is exactly the case a naive `/`→`-`-only
+  guess used to miss). Don't revert to watching `projects_dir` directly, and
+  don't recompute `encode_project_dir_name`'s rule ad hoc elsewhere — it's
+  also what `find_journal` uses to resolve a session's journal.
 - **Every `StatePayload` leaving the app must pass through
   `stamp_pty_state`** (`agentboard.rs`). The Tauri-free engine can't see
   PTYs, so a new command that builds/returns a `StatePayload` without this
