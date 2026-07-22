@@ -56,6 +56,7 @@ import { cn } from "@/lib/utils";
 import {
   agentRollup,
   claudeTitleName,
+  branchRedundant,
   comparedBaseLabel,
   fmtElapsed,
   fmtWaitingAge,
@@ -849,7 +850,7 @@ function FolderHeader({
           : undefined
       }
       className={cn(
-        "border-b border-l-2 border-border border-l-transparent bg-card pr-2",
+        "group border-b border-l-2 border-border border-l-transparent bg-card pr-2",
         // A repo-scope header is sticky, so rows scroll underneath it and every
         // background it can take must be opaque — a translucent tint lets their
         // text show through the stuck header. Folder-scope rows sit in normal
@@ -959,13 +960,25 @@ function FolderHeader({
         </div>
       ) : (
         <div className="ml-11 flex items-center gap-1.5 pb-1.5">
-          <BranchLabel branch={folder.branch} isWorktree={folder.isWorktree} onClick={onToggle} />
+          {/* A worktree task's folder name IS its slugged branch, so the label
+              would say the title twice — drop it and let the diff/PR facts own
+              the line. The main checkout ("towles-tool-rs" on `main`) keeps it. */}
+          {!branchRedundant(folder.name, folder.branch) && (
+            <BranchLabel branch={folder.branch} isWorktree={folder.isWorktree} onClick={onToggle} />
+          )}
           {deleting && <DeletingBadge />}
           <AheadBehind stats={folder} />
           {folder.hasPortDrift && <PortDriftBadge drift={folderPortDrift(folder)} />}
           <DiffButton stats={folder} onOpen={onOpenDiff} />
-          <FilesButton onOpen={onOpenFiles} />
-          {folder.hasLaunchConfig && <PreviewButton onOpen={onOpenPreview} />}
+          {/* files/preview are pure actions carrying no state (unlike the diff
+              chip's dirty counts), so they don't earn resting-rail pixels on
+              every folder — they fade in on header hover or keyboard focus.
+              Opacity, not conditional render, so the trailing chips never
+              reflow; pointer-events gates ghost clicks while invisible. */}
+          <span className="pointer-events-none flex items-center gap-1.5 opacity-0 transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+            <FilesButton onOpen={onOpenFiles} />
+            {folder.hasLaunchConfig && <PreviewButton onOpen={onOpenPreview} />}
+          </span>
           {pr && <PrChip pr={pr} stats={folder} />}
           <FolderLandedBadge folder={folder} pr={pr} />
           {/* Merged PR, and nothing here would be lost. A PR-less task never

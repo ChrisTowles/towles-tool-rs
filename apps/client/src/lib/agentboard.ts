@@ -1194,6 +1194,25 @@ export function modelContextLabel(d: AgentEventDetails | null | undefined): stri
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
+/** True when a folder's branch label would only restate the folder's own
+ * name: a worktree task's directory *is* the slug of its branch
+ * (`feat/model-indicator-badge` → `feat-model-indicator-badge`), so printing
+ * both spends a rail line saying one thing twice. The slug rules mirror
+ * `tt-git`'s `slug()` (`crates/tt-git/src/branch_name.rs`): lowercase, trim,
+ * anything outside `[0-9a-z_-]` to `-`, collapse runs, strip trailing `-`.
+ * A main checkout (`towles-tool-rs` on `main`) never matches, so it keeps
+ * its branch label. */
+export function branchRedundant(folderName: string, branch: string | null | undefined): boolean {
+  if (!branch) return false;
+  const slug = branch
+    .toLowerCase()
+    .trim()
+    .replace(/[^0-9a-z_-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/-+$/, "");
+  return folderName === slug;
+}
+
 /** Model family → the single letter the rail's `ModelBadge` shows: `H`aiku,
  * `S`onnet, `O`pus, `F`able, `M`ythos. Matches on the family token inside the
  * id (`claude-opus-4-8` → `O`), deliberately dropping the version — the badge
