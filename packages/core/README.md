@@ -12,38 +12,33 @@ to fix.
 
 ## Commands
 
-One command per technique, numbered by phase so the menu sorts in workflow
-order: `0x` before implementation, `1x` plan/during, `2x` after. Each is a
-generic prompt you invoke; pass an optional target as an argument.
+One command per technique, grouped by phase: before implementation,
+plan/during, after. Each is a generic prompt you invoke; pass an optional
+target as an argument.
 
-### Before implementation (0x)
+### Before implementation
 
-| Command              | Finds…           | Description                                                                       |
+| Command             | Finds…           | Description                                                                       |
 | -------------------- | ---------------- | --------------------------------------------------------------------------------- |
-| `/tt:01-blindspot`   | unknown unknowns | Surface what you don't know you don't know in an unfamiliar area, and teach it.   |
-| `/tt:02-brainstorm`  | unknown knowns   | Explore approaches / prototype with fake data so you can react before wiring.     |
-| `/tt:03-interview`   | known unknowns   | Interview you one question at a time, architecture-changing questions first.      |
-| `/tt:04-references`  | —                | Convey intent with a reference (ideally source code); reimplement its semantics.  |
+| `/tt:blindspot`   | unknown unknowns | Surface what you don't know you don't know in an unfamiliar area, and teach it.   |
+| `/tt:brainstorm`  | unknown knowns   | Explore approaches / prototype with fake data so you can react before wiring.     |
+| `/tt:interview`   | known unknowns   | Interview you one question at a time, architecture-changing questions first.      |
+| `/tt:references`  | —                | Convey intent with a reference (ideally source code); reimplement its semantics.  |
 
-### Plan & during implementation (1x)
+### Plan & during implementation
 
-| Command       | Finds…            | Description                                                                                                                                      |
-| ------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/tt:10-plan` | tweakable choices | Plan that leads with what you'll change (data models, types, UX), buries chores; then keeps implementation-notes with deviations while building. |
+| Command    | Finds…            | Description                                                                                                                                      |
+| ----------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/tt:plan` | tweakable choices | Plan that leads with what you'll change (data models, types, UX), buries chores; then keeps implementation-notes with deviations while building. |
 
-### After implementation (2x)
+### After implementation
 
-| Command             | Description                                                  |
-| ------------------- | ------------------------------------------------------------ |
-| `/tt:20-pitch`      | Package the work into one buy-in doc, demo first.            |
-| `/tt:21-comprehend` | Report on the change + a quiz you must pass before merging.  |
-| `/tt:22-memories`   | Review your memory files and recommend which to commit into CLAUDE.md. |
-
-## Skills
-
-| Skill            | Description                                                        |
-| ---------------- | -------------------------------------------------------------------- |
-| `tt:towles-tool` | `tt` CLI reference: git/gh helpers, journaling, dependency checks. |
+| Command           | Description                                                  |
+| ------------------ | ------------------------------------------------------------ |
+| `/tt:pitch`      | Package the work into one buy-in doc, demo first.            |
+| `/tt:comprehend` | Report on the change + a quiz you must pass before merging.  |
+| `/tt:memories`   | Review your memory files and recommend which to commit into CLAUDE.md. |
+| `/tt:handoff`    | Write a short restart prompt for a fresh agent, copied to your clipboard. |
 
 ## Installation
 
