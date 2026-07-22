@@ -20,6 +20,7 @@
     "client:dev": "npm run dev --workspace @towles-tool/client",
     "e2e": "node scripts/e2e.mjs",
     "e2e:run": "node scripts/e2e.mjs --no-build",
+    "release:bump": "node scripts/release-version-bump.mjs",
     "test:scripts": "node --test \"scripts/*.test.mjs\"",
     "typecheck:scripts": "tsc -p scripts/tsconfig.json"
   },
