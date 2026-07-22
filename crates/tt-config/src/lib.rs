@@ -488,12 +488,19 @@ impl Default for CalendarQuietHours {
 #[serde(rename_all = "camelCase", default)]
 pub struct PrCollector {
     pub enabled: bool,
+    /// Cadence for the authored + review-requested open-PR sweep — the data
+    /// Board/Cockpit render from, so this stays the fast cadence.
     pub refresh_seconds: u64,
+    /// Cadence for the separate recently-merged-PRs sweep. Looser than
+    /// `refresh_seconds` on purpose: this list only exists to catch a
+    /// just-merged branch before its worktree is removed, not to drive
+    /// live-looking UI, so it doesn't need the same freshness.
+    pub merged_refresh_minutes: u64,
 }
 
 impl Default for PrCollector {
     fn default() -> Self {
-        Self { enabled: true, refresh_seconds: 120 }
+        Self { enabled: true, refresh_seconds: 300, merged_refresh_minutes: 15 }
     }
 }
 
@@ -543,7 +550,7 @@ pub struct IssueCollector {
 
 impl Default for IssueCollector {
     fn default() -> Self {
-        Self { enabled: true, refresh_minutes: 5 }
+        Self { enabled: true, refresh_minutes: 15 }
     }
 }
 
@@ -1230,9 +1237,10 @@ mod tests {
         assert_eq!(c.calendar.quiet_hours.end_hour, 18);
         assert_eq!(c.calendar.quiet_hours.weekdays, vec![0, 1, 2, 3, 4]);
         assert!(c.prs.enabled);
-        assert_eq!(c.prs.refresh_seconds, 120);
+        assert_eq!(c.prs.refresh_seconds, 300);
+        assert_eq!(c.prs.merged_refresh_minutes, 15);
         assert!(c.issues.enabled);
-        assert_eq!(c.issues.refresh_minutes, 5);
+        assert_eq!(c.issues.refresh_minutes, 15);
         // Off by default: the Slack watcher needs a user token first.
         assert!(!c.slack.enabled);
         assert!(c.slack.token.is_empty());
@@ -1380,6 +1388,7 @@ mod tests {
         assert!(src.get("enabled").is_some());
         let prs = &defs["PrCollector"]["properties"];
         assert!(prs.get("refreshSeconds").is_some());
+        assert!(prs.get("mergedRefreshMinutes").is_some());
     }
 
     /// Pins the shared-file write contract honestly: [`save_to`] serializes only

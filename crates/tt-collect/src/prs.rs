@@ -32,22 +32,53 @@ const MERGED_LIST_LIMIT: &str = "20";
 /// reports the same number as both open and merged).
 pub(crate) fn collect_repo_prs(dir: &Path) -> Result<(String, Vec<PrInput>), String> {
     let repo = gh::repo_name_with_owner(dir)?;
+    let mut open = open_prs_by_number(dir, &repo)?;
+    let merged = gh_pr_list(dir, "merged", MERGED_LIST_LIMIT, &["--author", "@me"])?;
+    for pr in map_pr_list(&merged, &repo, false) {
+        // Merged can never collide with open/review-requested (GitHub never
+        // reports the same PR number as both), so insertion order doesn't
+        // matter here the way it does between authored and review-requested.
+        open.entry(pr.number).or_insert(pr);
+    }
+    Ok((repo, open.into_values().collect()))
+}
+
+/// Collect just the authored + review-requested open PRs for one repo dir —
+/// the fast, frequently-polled half of [`collect_repo_prs`]. Used by the
+/// periodic scheduler tick so it doesn't also re-fetch the separately-cadenced
+/// recently-merged list on every poll; see [`collect_repo_merged_prs`].
+pub(crate) fn collect_repo_prs_open(dir: &Path) -> Result<(String, Vec<PrInput>), String> {
+    let repo = gh::repo_name_with_owner(dir)?;
+    let by_number = open_prs_by_number(dir, &repo)?;
+    Ok((repo, by_number.into_values().collect()))
+}
+
+/// Collect just the recently-merged authored PRs for one repo dir — the slow,
+/// infrequently-polled half of [`collect_repo_prs`]. This list only exists to
+/// catch a just-merged branch before its worktree is removed, so it doesn't
+/// need the open-PR sweep's cadence; see [`collect_repo_prs_open`].
+pub(crate) fn collect_repo_merged_prs(dir: &Path) -> Result<(String, Vec<PrInput>), String> {
+    let repo = gh::repo_name_with_owner(dir)?;
+    let merged = gh_pr_list(dir, "merged", MERGED_LIST_LIMIT, &["--author", "@me"])?;
+    let prs = map_pr_list(&merged, &repo, false);
+    Ok((repo, prs))
+}
+
+/// Fetch and dedup the authored + review-requested open PRs for one repo.
+/// A review-requested entry wins over an authored one for the same PR number.
+fn open_prs_by_number(dir: &Path, repo: &str) -> Result<HashMap<i64, PrInput>, String> {
     let authored = gh_pr_list(dir, "open", gh::LIST_LIMIT, &["--author", "@me"])?;
     let review = gh_pr_list(dir, "open", gh::LIST_LIMIT, &["--search", "review-requested:@me"])?;
-    let merged = gh_pr_list(dir, "merged", MERGED_LIST_LIMIT, &["--author", "@me"])?;
 
     let mut by_number: HashMap<i64, PrInput> = HashMap::new();
-    for pr in map_pr_list(&merged, &repo, false) {
-        by_number.insert(pr.number, pr);
-    }
-    for pr in map_pr_list(&authored, &repo, false) {
+    for pr in map_pr_list(&authored, repo, false) {
         by_number.insert(pr.number, pr);
     }
     // Insert review-requested last so it wins on collision.
-    for pr in map_pr_list(&review, &repo, true) {
+    for pr in map_pr_list(&review, repo, true) {
         by_number.insert(pr.number, pr);
     }
-    Ok((repo, by_number.into_values().collect()))
+    Ok(by_number)
 }
 
 /// Run `gh pr list` in `dir` for the given `--state`/`--limit` plus `extra` filters.

@@ -46,7 +46,7 @@ function base(): UserSettings {
         quietHours: { enabled: false, startHour: 9, endHour: 17, weekdays: [0, 1, 2, 3, 4] },
         sources: [],
       },
-      prs: { enabled: true, refreshSeconds: 120 },
+      prs: { enabled: true, refreshSeconds: 300, mergedRefreshMinutes: 15 },
       issues: { enabled: true, refreshMinutes: 10 },
       slack: {
         enabled: false,

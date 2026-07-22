@@ -20,7 +20,7 @@ const valid = {
       quietHours: { enabled: false, startHour: 9, endHour: 17, weekdays: [0, 1, 2, 3, 4] },
       sources: [{ id: "google", label: "Google (personal)", enabled: true, prompt: "list today" }],
     },
-    prs: { enabled: true, refreshSeconds: 60 },
+    prs: { enabled: true, refreshSeconds: 60, mergedRefreshMinutes: 15 },
     issues: { enabled: true, refreshMinutes: 5 },
     slack: {
       enabled: false,

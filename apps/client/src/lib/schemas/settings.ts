@@ -61,6 +61,7 @@ const PrCollectorSchema = z
   .object({
     enabled: z.boolean(),
     refreshSeconds: z.number(),
+    mergedRefreshMinutes: z.number(),
   })
   .passthrough();
 
