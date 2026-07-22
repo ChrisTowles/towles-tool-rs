@@ -447,7 +447,7 @@ export function MonacoMultiDiff({
             // resolver's own disposal of that handle raced ours and blanked
             // the pane ("TextModel got disposed before DiffEditorWidget model
             // got reset"). The rejection doesn't affect rendering or editing.
-            options: { readOnly: false, originalEditable: false },
+            options: { readOnly: false, originalEditable: false, wordWrap: "on" as const },
           };
         });
         modelsRef.current = models;

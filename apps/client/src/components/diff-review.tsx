@@ -57,6 +57,7 @@ export function DiffReview({
         minimap: { enabled: false },
         fontSize: 12,
         scrollBeyondLastLine: false,
+        wordWrap: "on",
       });
       editor.setModel({ original, modified });
       setReady(true);
