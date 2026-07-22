@@ -134,11 +134,14 @@ import type { OpenFileRequest } from "@/lib/ide";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import {
   fmtCountdown,
+  inferredTaskOutcome,
   storeAddTask,
   taskDelete,
   storeAttachTaskIssue,
   storeTaskSetWorktree,
   useStoreSnapshot,
+  type TaskItem,
+  type TaskOutcome,
 } from "@/lib/data";
 import { useFocusTarget } from "@/lib/focus-target";
 import { railRowMotion } from "@/lib/rail-motion";
@@ -285,6 +288,12 @@ export function AgentboardScreen() {
   const [confirmRemove, setConfirmRemove] = useState<RemoveTarget | null>(null);
   // Pending worktree deletion — always confirmed (it deletes from disk).
   const [confirmDeleteWt, setConfirmDeleteWt] = useState<RemoveTarget | null>(null);
+  // The board task bound to the worktree being deleted (null = none on the
+  // board) and the outcome the close will record. Pre-answered from the
+  // task's own evidence (merged PR ⇒ done) so the common case is one click;
+  // the dialog's swap link flips it.
+  const [deleteWtTask, setDeleteWtTask] = useState<TaskItem | null>(null);
+  const [deleteWtOutcome, setDeleteWtOutcome] = useState<TaskOutcome>("done");
   // A delete the guards refused, with the reasons — see `performDeleteWorktree`
   // and the blocked-delete dialog. Holds the original target so each remedy
   // can retry the same removal without the user re-finding the row.
@@ -1335,6 +1344,12 @@ export function AgentboardScreen() {
   function requestDeleteWorktree(dir: string, label: string) {
     const folder = repos.flatMap((r) => r.folders).find((f) => f.dir === dir);
     const sessionIds = folder ? liveSessions(folder).map((s) => s.id) : [];
+    // The bound board task, if the board knows this worktree: deleting the
+    // worktree closes it, so the dialog asks how it ended — pre-answered
+    // from the task's own evidence.
+    const bound = snapshot.tasks.find((t) => t.worktree?.dir === dir) ?? null;
+    setDeleteWtTask(bound);
+    setDeleteWtOutcome(bound ? inferredTaskOutcome(bound) : "done");
     bumpDeleteFlow(dir); // a fresh flow — see `endDeleteFlow`
     setConfirmDeleteWt({ label, dirs: [dir], sessionIds });
   }
@@ -1349,8 +1364,13 @@ export function AgentboardScreen() {
   }
 
   // `force` skips every guard — only ever passed from the blocked dialog's
-  // force button, which names what's being discarded.
-  async function performDeleteWorktree(target: RemoveTarget, { force = false } = {}) {
+  // force button, which names what's being discarded. `outcome` is what the
+  // bound board row records as it closes; omitted (no bound task, or a
+  // pre-outcome caller) the backend infers it.
+  async function performDeleteWorktree(
+    target: RemoveTarget,
+    { force = false, outcome }: { force?: boolean; outcome?: TaskOutcome } = {},
+  ) {
     // `task_delete` kills the folder's live PTYs itself — only once the
     // guards have passed and the removal is really happening, so a refusal
     // costs nothing — and only tears down the session records once removal
@@ -1370,7 +1390,7 @@ export function AgentboardScreen() {
     // unconsumed claims are handed back below — otherwise they'd linger and
     // silently swallow a later genuine crash of the same session.
     for (const id of target.sessionIds) expectedKills.current.add(id);
-    const removed = await taskDelete({ dir }, force);
+    const removed = await taskDelete({ dir }, { force, outcome });
     // The user may have cancelled, or forced past this, while the call ran.
     // A stale result must not resurrect the dialog or re-report an outcome
     // for a flow that's over — but the `deletingDirs` release below still has
@@ -1381,16 +1401,17 @@ export function AgentboardScreen() {
       for (const id of target.sessionIds) expectedKills.current.delete(id);
     }
     removed.match({
-      ok: (outcome) => {
+      ok: (verdict) => {
         // Refused, not failed: hand the reasons to the dialog that can act on
         // them rather than a toast that can only be dismissed.
-        if (outcome.status === "blocked") {
+        if (verdict.status === "blocked") {
           if (current)
             setBlockedDelete({
               target,
-              name: outcome.name,
-              blockers: outcome.blockers,
-              messages: outcome.messages,
+              name: verdict.name,
+              outcome,
+              blockers: verdict.blockers,
+              messages: verdict.messages,
             });
           return;
         }
@@ -1400,8 +1421,8 @@ export function AgentboardScreen() {
           setSelected((cur) => (cur?.sessionId === id ? null : cur));
           removeSessionPane(id);
         }
-        for (const message of outcome.messages) toast(message);
-        toast.success(`Deleted worktree ${outcome.name || target.label}`);
+        for (const message of verdict.messages) toast(message);
+        toast.success(`Deleted worktree ${verdict.name || target.label}`);
       },
       // A genuine failure (bad path, broken worktree, git fell over) — there
       // is no remedy to offer, so this stays a toast.
@@ -1445,7 +1466,8 @@ export function AgentboardScreen() {
       // free comes back `Ok` too (the user may have quit the dev server
       // themselves after reading the blocker), so that also lands here rather
       // than dead-ending on an error toast.
-      if (deleteFlowOf(dir) === flow) await performDeleteWorktree(blocked.target);
+      if (deleteFlowOf(dir) === flow)
+        await performDeleteWorktree(blocked.target, { outcome: blocked.outcome });
     }
     // Released only now, after the retry: clearing it before would re-enable
     // this row's button while the removal is still running, letting a second
@@ -2249,12 +2271,15 @@ export function AgentboardScreen() {
         <AlertDialogContent className="max-w-[calc(100%-2rem)]! sm:max-w-xl!">
           <AlertDialogHeader>
             <AlertDialogTitle className="wrap-anywhere">
-              Delete worktree {confirmDeleteWt?.label}?
+              {deleteWtTask
+                ? `Close task & delete worktree ${confirmDeleteWt?.label}?`
+                : `Delete worktree ${confirmDeleteWt?.label}?`}
             </AlertDialogTitle>
             <AlertDialogDescription className="text-pretty">
               Removes the checkout from disk (guarded — uncommitted changes, commits on no
               branch/remote, or a dev server still on its ports will stop it and tell you what to
               do). Its branch survives in the primary.
+              {deleteWtTask && " The task stays on the board, closed."}
               {confirmDeleteWt && confirmDeleteWt.sessionIds.length > 0 && (
                 <>
                   {" "}
@@ -2265,15 +2290,58 @@ export function AgentboardScreen() {
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {/* How the task ended, pre-answered from its own evidence (a merged
+              linked PR ⇒ done) — one underlined link flips it, so the common
+              case stays one click. Only rendered when a board task is bound;
+              a bare worktree has nothing to record. */}
+          {deleteWtTask && (
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span
+                className={cn(
+                  "rounded px-1.5 py-0.5 font-mono",
+                  deleteWtOutcome === "done"
+                    ? "bg-emerald-500/10 text-emerald-500"
+                    : "bg-muted text-muted-foreground",
+                )}
+              >
+                {(() => {
+                  const merged = deleteWtTask.prs.find((p) => p.state === "merged");
+                  return deleteWtOutcome === "done"
+                    ? merged
+                      ? `PR #${merged.number} merged — closing as done ✓`
+                      : "closing as done ✓"
+                    : merged
+                      ? `closing as abandoned ⊘ (PR #${merged.number} merged)`
+                      : "no merged PR — closing as abandoned ⊘";
+                })()}
+              </span>
+              <button
+                type="button"
+                className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                onClick={() => setDeleteWtOutcome((cur) => (cur === "done" ? "abandoned" : "done"))}
+              >
+                record as {deleteWtOutcome === "done" ? "abandoned" : "done"} instead
+              </button>
+            </div>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (confirmDeleteWt) void performDeleteWorktree(confirmDeleteWt);
+                if (confirmDeleteWt) {
+                  uiAction(
+                    "agentboard.delete_worktree",
+                    "agentboard",
+                    deleteWtTask ? deleteWtOutcome : "no-task",
+                  );
+                  void performDeleteWorktree(confirmDeleteWt, {
+                    outcome: deleteWtTask ? deleteWtOutcome : undefined,
+                  });
+                }
                 setConfirmDeleteWt(null);
               }}
             >
-              Delete worktree
+              {deleteWtTask ? `Close as ${deleteWtOutcome}` : "Delete worktree"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -2301,9 +2369,9 @@ export function AgentboardScreen() {
         }}
         onForce={() => {
           if (blockedDelete) {
-            const target = blockedDelete.target;
+            const { target, outcome } = blockedDelete;
             endDeleteFlow(blockedDeleteDir);
-            void performDeleteWorktree(target, { force: true });
+            void performDeleteWorktree(target, { force: true, outcome });
           }
         }}
       />

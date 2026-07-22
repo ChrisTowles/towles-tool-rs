@@ -1,5 +1,5 @@
 import { ownerRepoFromOrigin } from "@/lib/agentboard";
-import { TASK_STATUSES, type TaskItem, type TaskStatus } from "@/lib/data";
+import { isTaskClosed, TASK_STATUSES, type TaskItem, type TaskStatus } from "@/lib/data";
 
 /** The bucket for tasks with no discoverable repo. Sorts last. */
 export const NO_REPO_GROUP = "__no_repo__";
@@ -105,8 +105,18 @@ export function byBoardOrder(a: TaskItem, b: TaskItem): number {
   return a.position - b.position || a.createdAt - b.createdAt;
 }
 
+/** The column a card renders in. Closed tasks (an `outcome` on record) render
+ * in the terminal "Closed" column whatever their frozen kanban `status` says —
+ * an abandoned task keeps `status: "review"` as history, but the board shows
+ * where it *is*, not where it was. One helper shared by bucketing, counting,
+ * and the drag handlers, so they can never disagree about a card's column. */
+export function boardColumnOf(task: Pick<TaskItem, "status" | "outcome">): TaskStatus {
+  return isTaskClosed(task) ? "done" : task.status;
+}
+
 /**
- * Bucket tasks into the five status columns, each sorted in board order.
+ * Bucket tasks into the five columns, each sorted in board order. Closed
+ * tasks land in the terminal column via `boardColumnOf`.
  */
 export function bucketByStatus(tasks: TaskItem[]): Record<TaskStatus, TaskItem[]> {
   const byStatus = Object.fromEntries(TASK_STATUSES.map((s) => [s, [] as TaskItem[]])) as Record<
@@ -116,7 +126,7 @@ export function bucketByStatus(tasks: TaskItem[]): Record<TaskStatus, TaskItem[]
   // `?.`: `status` is a closed union in TS, but the value crosses IPC from
   // SQLite — an unknown status from an older/newer db drops that one card
   // rather than crashing the whole board render.
-  for (const task of tasks) byStatus[task.status]?.push(task);
+  for (const task of tasks) byStatus[boardColumnOf(task)]?.push(task);
   for (const status of TASK_STATUSES) byStatus[status].sort(byBoardOrder);
   return byStatus;
 }

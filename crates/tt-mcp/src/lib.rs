@@ -75,10 +75,17 @@ const CALL_LOG_ARGS_MAX: usize = 400;
 /// half-delete this tool exists to stop, and doing it silently would strand
 /// the worktree on disk with nothing left on the board pointing at it.
 pub trait TaskHost: Send {
-    /// Delete the board task `id` and everything bound to it. `force` skips
-    /// the work-preserving guards. `Ok(Refused)` is a guarded refusal, not a
+    /// Close the board task `id`, deleting everything bound to it (panes,
+    /// worktree) while the row survives with `outcome` recorded — `None`
+    /// lets the host infer it from the row's own evidence. `force` skips the
+    /// work-preserving guards. `Ok(Refused)` is a guarded refusal, not a
     /// failure — see [`TaskDeletion`].
-    fn delete_task(&self, id: i64, force: bool) -> Result<TaskDeletion, String>;
+    fn delete_task(
+        &self,
+        id: i64,
+        force: bool,
+        outcome: Option<tt_store::TaskOutcome>,
+    ) -> Result<TaskDeletion, String>;
 }
 
 /// What a [`TaskHost::delete_task`] attempt produced.
@@ -625,6 +632,13 @@ impl Dispatcher {
             .and_then(Value::as_i64)
             .ok_or_else(|| "missing required argument: id".to_string())?;
         let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+        let outcome = match args.get("outcome").and_then(Value::as_str) {
+            None => None,
+            Some(raw) => Some(
+                tt_store::TaskOutcome::parse(raw)
+                    .ok_or_else(|| format!("unknown outcome {raw:?} (done|abandoned)"))?,
+            ),
+        };
         let host = self
             .task_host
             .as_ref()
@@ -634,7 +648,7 @@ impl Dispatcher {
         // before it can delete anything, so it returns the name it found — and
         // an unknown id comes back as its error rather than being diagnosed
         // twice over two connections.
-        match host.delete_task(id, force)? {
+        match host.delete_task(id, force, outcome)? {
             TaskDeletion::Deleted { name, messages } => {
                 Ok(json!({ "status": "deleted", "id": id, "text": name, "messages": messages }))
             }
@@ -818,12 +832,13 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "task_delete",
-            "description": "Delete a board task and everything bound to it — its terminal panes and its git worktree on disk as well as its board row. Guarded: if the worktree has uncommitted changes, commits that reached no branch or remote, or a foreign process on its claimed ports, nothing is deleted and the reasons come back as `status: \"refused\"`. Report those to the user and let them decide; only pass force after they have said so explicitly, since it destroys that work permanently.",
+            "description": "Close a board task and delete everything bound to it — its terminal panes and its git worktree on disk. The board row itself survives, closed with an outcome (done/abandoned) as the record of the work. Guarded: if the worktree has uncommitted changes, commits that reached no branch or remote, or a foreign process on its claimed ports, nothing is deleted and the reasons come back as `status: \"refused\"`. Report those to the user and let them decide; only pass force after they have said so explicitly, since it destroys that work permanently.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "id": { "type": "integer", "description": "The task's id (from task_list or task_status)." },
-                    "force": { "type": "boolean", "description": "Skip the guards and delete anyway, discarding uncommitted changes and unreachable commits for good. Default false." },
+                    "outcome": { "type": "string", "enum": ["done", "abandoned"], "description": "How the task ended, recorded on its closed row. Omitted: inferred from the task's own evidence — done if a linked PR merged, else abandoned." },
+                    "force": { "type": "boolean", "description": "Skip the guards and delete the worktree anyway, discarding uncommitted changes and unreachable commits for good. Default false." },
                 },
                 "required": ["id"],
             },
@@ -1367,8 +1382,9 @@ mod tests {
     /// A host that records what it was asked to do and answers with whatever
     /// the test wants — the app's real one tears down worktrees, which has no
     /// place in a unit test of the tool's shape.
-    /// Each `(id, force)` the host was called with, shared with the test.
-    type HostCalls = std::sync::Arc<std::sync::Mutex<Vec<(i64, bool)>>>;
+    /// Each `(id, force, outcome)` the host was called with, shared with the test.
+    type HostCalls =
+        std::sync::Arc<std::sync::Mutex<Vec<(i64, bool, Option<tt_store::TaskOutcome>)>>>;
 
     struct FakeHost {
         answer: std::sync::Mutex<Option<Result<TaskDeletion, String>>>,
@@ -1376,8 +1392,13 @@ mod tests {
     }
 
     impl TaskHost for FakeHost {
-        fn delete_task(&self, id: i64, force: bool) -> Result<TaskDeletion, String> {
-            self.calls.lock().unwrap().push((id, force));
+        fn delete_task(
+            &self,
+            id: i64,
+            force: bool,
+            outcome: Option<tt_store::TaskOutcome>,
+        ) -> Result<TaskDeletion, String> {
+            self.calls.lock().unwrap().push((id, force, outcome));
             self.answer.lock().unwrap().take().expect("one delete per test")
         }
     }
@@ -1409,17 +1430,39 @@ mod tests {
     }
 
     #[test]
-    fn task_delete_passes_the_id_and_force_through_and_names_what_it_deleted() {
+    fn task_delete_passes_the_id_force_and_outcome_through_and_names_what_it_deleted() {
         let (mut dispatcher, calls) =
             with_host(deleted("open task", vec!["removed the worktree".into()]));
-        let result = call_tool(&mut dispatcher, "task_delete", json!({ "id": 1, "force": true }));
+        let result = call_tool(
+            &mut dispatcher,
+            "task_delete",
+            json!({ "id": 1, "force": true, "outcome": "abandoned" }),
+        );
         assert_eq!(result["status"], "deleted");
         assert_eq!(result["id"], 1);
         // The name comes back from the host, which had to resolve the row
         // anyway — the dispatcher never reads it a second time.
         assert_eq!(result["text"], "open task");
         assert_eq!(result["messages"][0], "removed the worktree");
-        assert_eq!(*calls.lock().unwrap(), vec![(1, true)]);
+        assert_eq!(*calls.lock().unwrap(), vec![(1, true, Some(tt_store::TaskOutcome::Abandoned))]);
+    }
+
+    /// A bad outcome is rejected before the host acts; an omitted one reaches
+    /// the host as `None` — "infer from the row's evidence" is the host's call.
+    #[test]
+    fn task_delete_validates_the_outcome_and_defaults_it_to_inference() {
+        let (mut dispatcher, calls) = with_host(deleted("open task", vec![]));
+        let message = call_tool_err(
+            &mut dispatcher,
+            "task_delete",
+            json!({ "id": 1, "outcome": "exploded" }),
+        );
+        assert!(message.contains("unknown outcome"), "{message}");
+        assert!(calls.lock().unwrap().is_empty(), "rejected before the host ran");
+
+        let result = call_tool(&mut dispatcher, "task_delete", json!({ "id": 1 }));
+        assert_eq!(result["status"], "deleted");
+        assert_eq!(*calls.lock().unwrap(), vec![(1, false, None)]);
     }
 
     /// A guarded refusal is a normal result, not a tool error: reporting it as
@@ -1442,7 +1485,7 @@ mod tests {
         assert_eq!(result["blockers"][0]["kind"], "dirtyTree");
         assert_eq!(result["blockers"][0]["losesWork"], true);
         // Force defaults off — a refusal must be reachable without asking for one.
-        assert_eq!(*calls.lock().unwrap(), vec![(1, false)]);
+        assert_eq!(*calls.lock().unwrap(), vec![(1, false, None)]);
     }
 
     #[test]
@@ -1462,7 +1505,7 @@ mod tests {
         let (mut dispatcher, calls) = with_host(Err("no board task #9999".to_string()));
         let message = call_tool_err(&mut dispatcher, "task_delete", json!({ "id": 9999 }));
         assert!(message.contains("no board task #9999"), "{message}");
-        assert_eq!(*calls.lock().unwrap(), vec![(9999, false)]);
+        assert_eq!(*calls.lock().unwrap(), vec![(9999, false, None)]);
     }
 
     #[test]

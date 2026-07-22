@@ -169,18 +169,39 @@ pub fn task_id_for_worktree_dir(app: &AppHandle, dir: &str) -> Result<Option<i64
     .map(|task| task.map(|task| task.id))
 }
 
-/// Delete one board row and re-emit the snapshot.
+/// Delete one board row permanently and re-emit the snapshot.
 ///
 /// Deliberately not a Tauri command: a row-only delete is exactly the
 /// half-delete that used to strand worktrees on disk, so the only way to reach
 /// it is through [`crate::task::delete_task_blocking`], which has already
-/// dealt with the worktree by the time it calls this.
+/// verified no worktree is bound (`purge`) by the time it calls this.
 pub fn delete_task_row(app: &AppHandle, id: i64) -> Result<(), String> {
     let state = app.state::<StoreState>();
     with_store(&state, |store| {
         store.delete_task(id).map_err(|e| format!("delete_task failed: {e}"))
     })?;
     tracing::info!(task_id = id, "task.deleted");
+    emit_snapshot(app, &state);
+    Ok(())
+}
+
+/// Close one board row — record how it ended, detach its worktree dir — and
+/// re-emit the snapshot. What replaced [`delete_task_row`] as the normal end
+/// of a task (2026-07-22).
+///
+/// Not a Tauri command for the same reason as its sibling: the frontend
+/// reaches it only through `task_delete`, which owns the worktree half.
+pub fn close_task_row(
+    app: &AppHandle,
+    id: i64,
+    outcome: tt_store::TaskOutcome,
+) -> Result<(), String> {
+    let state = app.state::<StoreState>();
+    let now = now_ms();
+    with_store(&state, |store| {
+        store.close_task(id, outcome, now).map_err(|e| format!("close_task failed: {e}"))
+    })?;
+    tracing::info!(task_id = id, outcome = outcome.as_str(), "task.closed");
     emit_snapshot(app, &state);
     Ok(())
 }
@@ -477,22 +498,39 @@ pub fn store_update_task(
     Ok(())
 }
 
-/// How long a completed todo lingers in Done before "Clear done" can sweep it.
-const DONE_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-
-/// Sweep `done` todos completed more than [`DONE_RETENTION_MS`] ago, then
-/// re-emit the snapshot. The cutoff is derived from the wall clock here, at the
-/// command boundary — the store takes it as a plain `before_ms`. Returns the
-/// number of todos removed.
+/// Archive finished todos older than [`tt_store::ARCHIVE_AFTER_MS`] off the
+/// active board, then re-emit the snapshot — the "Archive done" button. Rows
+/// are hidden, never deleted (the collector-side sweep in `tt-collect` does
+/// the same on its own cadence; this is the don't-wait affordance). The
+/// cutoff is derived from the wall clock here, at the command boundary — the
+/// store takes plain instants. Returns the number of todos archived.
 #[tauri::command]
-pub fn store_clear_done(app: AppHandle, state: State<StoreState>) -> Result<usize, String> {
-    let before_ms = now_ms() - DONE_RETENTION_MS;
-    let deleted = with_store(&state, |store| {
-        store.clear_done_tasks(before_ms).map_err(|e| format!("clear_done_tasks failed: {e}"))
+pub fn store_archive_done(app: AppHandle, state: State<StoreState>) -> Result<usize, String> {
+    let now = now_ms();
+    let archived = with_store(&state, |store| {
+        store
+            .archive_closed_tasks(now - tt_store::ARCHIVE_AFTER_MS, now)
+            .map_err(|e| format!("archive_closed_tasks failed: {e}"))
     })?;
-    tracing::info!(count = deleted, "task.done_cleared");
+    tracing::info!(count = archived, "task.done_archived");
     emit_snapshot(&app, &state);
-    Ok(deleted)
+    Ok(archived)
+}
+
+/// Bring one archived task back onto the board, then re-emit the snapshot —
+/// the card's "Restore" action.
+#[tauri::command]
+pub fn store_unarchive_task(
+    app: AppHandle,
+    state: State<StoreState>,
+    id: i64,
+) -> Result<(), String> {
+    with_store(&state, |store| {
+        store.unarchive_task(id).map_err(|e| format!("unarchive_task failed: {e}"))
+    })?;
+    tracing::info!(task_id = id, "task.unarchived");
+    emit_snapshot(&app, &state);
+    Ok(())
 }
 
 /// Mark the watched DM's message at `ts` handled (banner dismissal), then re-emit.

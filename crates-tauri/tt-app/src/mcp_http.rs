@@ -354,10 +354,21 @@ struct AppTaskHost {
 }
 
 impl tt_mcp::TaskHost for AppTaskHost {
-    fn delete_task(&self, id: i64, force: bool) -> Result<tt_mcp::TaskDeletion, String> {
+    fn delete_task(
+        &self,
+        id: i64,
+        force: bool,
+        outcome: Option<tt_store::TaskOutcome>,
+    ) -> Result<tt_mcp::TaskDeletion, String> {
         use crate::task::{DeleteTarget, TaskDeleteOutcome};
 
-        match crate::task::delete_task_blocking(&self.app, DeleteTarget::Board(id), force)? {
+        match crate::task::delete_task_blocking(
+            &self.app,
+            DeleteTarget::Board(id),
+            force,
+            outcome,
+            false,
+        )? {
             TaskDeleteOutcome::Deleted { name, messages } => {
                 Ok(tt_mcp::TaskDeletion::Deleted { name, messages })
             }

@@ -169,12 +169,20 @@ Rules when working in a task:
   branches merge.
 - **Removing a task checkout goes through `tt_agentboard::task_removal`** —
   don't hand-roll the sequence. It untracks the dir from the shared
-  `repos.json` and deletes the bound board row, in that order, after the
+  `repos.json` and **closes** the bound board row, in that order, after the
   worktree leaves disk; `FinishedTask`/`RemovedTask` carry `dir`/`checkout`
-  for exactly this. Skip the untrack and a removed task's stale path lingers
-  in the tracked-repos list forever, with the scheduler's `prs`/`issues`
-  collectors retrying `gh`/`git` against a directory with no `.git` on every
-  tick; skip the row and the board keeps a card pointing at nothing. `tt task
+  for exactly this. Closing (2026-07-22) replaced deleting: the row survives
+  with a `TaskOutcome` (`done`/`abandoned`) and its `worktree_dir` cleared —
+  the app's delete dialog asks which, headless callers (`tt task rm`, MCP)
+  infer it via `TaskItem::inferred_outcome` (merged linked PR ⇒ done). Closed
+  rows age into the archive (`archived_at`, `Store::archive_closed_tasks`,
+  swept from `tt-collect`'s `sync_task_links` and the Board's "Archive done"
+  button); `Store::delete_task` remains only behind the Board's explicit
+  "Delete permanently", which refuses while a worktree is bound. Skip the
+  untrack and a removed task's stale path lingers in the tracked-repos list
+  forever, with the scheduler's `prs`/`issues` collectors retrying `gh`/`git`
+  against a directory with no `.git` on every tick; skip the row-close and
+  the board keeps a card claiming a worktree that no longer exists. `tt task
   rm`/`clean`/`hook-remove` and the app's `task_delete` are all shells over
   it.
 
@@ -259,10 +267,12 @@ Cargo workspace + npm workspace (`apps/client` only):
     app's `store_add_task`), `task_delete`, plus the calendar family
     `calendar_today`, `calendar_next` and the push-model write `calendar_set`.
     `task_delete` is the one tool that cannot work from the dispatcher alone —
-    deleting a task also kills its panes and removes its worktree, neither
-    visible from a Tauri-free crate — so the transport injects a `TaskHost`
-    (`tt-app`'s `task::delete_task_blocking`) and a dispatcher without one
-    refuses rather than deleting the row on its own. The broader
+    it kills the task's panes and removes its worktree (the row itself is
+    *closed* with an optional `outcome` arg, not deleted — see the
+    task-removal bullet in Worktree tasks), neither visible from a Tauri-free
+    crate — so the transport injects a `TaskHost` (`tt-app`'s
+    `task::delete_task_blocking`) and a dispatcher without one refuses rather
+    than touching the row on its own. The broader
     dashboard-read tools (`day_brief`, `needs_you`, `snapshot`,
     PR/issue/DM/collector reads) were pruned in the 2026-07 tool-surface
     review and have not returned.
@@ -363,7 +373,8 @@ Cargo workspace + npm workspace (`apps/client` only):
   - `tt-agentboard` — agentboard watchers/engine: repo list, session tracking,
     needs-you synthesis (consumed by the app shell). Also **the one home of the
     task-removal sequence** (`task_removal`): guards → host teardown → worktree
-    off disk → untrack from `repos.json` → board row last. It lives here
+    off disk → untrack from `repos.json` → board row closed last (with a
+    `TaskOutcome` — see the task-removal bullet in Worktree tasks). It lives here
     because it needs `tt-tasks`, `repos.json` and `tt-store` at once — `tt-tasks`
     can't host it (this crate already depends on it, so the edge would be a
     cycle) and `tt-app` can't (the CLI has no Tauri and would have to restate

@@ -30,7 +30,9 @@ pub fn run(command: TaskCommands) -> i32 {
             json,
         ),
         TaskCommands::Ls { json, root } => cmd_ls(json, root.as_deref()),
-        TaskCommands::Rm { name, force, root } => cmd_rm(&name, force, root.as_deref()),
+        TaskCommands::Rm { name, force, outcome, root } => {
+            cmd_rm(&name, force, outcome.as_deref(), root.as_deref())
+        }
         TaskCommands::Init { root } => cmd_init(root.as_deref()),
         TaskCommands::Env { name, root } => cmd_env(&name, root.as_deref()),
         TaskCommands::Clean { dry_run, json, root } => cmd_clean(dry_run, json, root.as_deref()),
@@ -139,7 +141,8 @@ fn cmd_hook_remove() -> Result<(), String> {
     }
     let checkout = ops::discover_root(Some(&path)).map_err(|e| e.to_string())?.checkout;
     let opts = RemoveOpts { root: Some(path.clone()), name, force: false };
-    match remove_task_fully(&opts, &path, &checkout)? {
+    // Hooks are headless: the outcome comes from the row's own evidence.
+    match remove_task_fully(&opts, &path, &checkout, None)? {
         task_removal::Outcome::Removed { messages, .. } => {
             for message in messages {
                 eprintln!("tt task: {message}");
@@ -155,24 +158,46 @@ fn cmd_hook_remove() -> Result<(), String> {
 /// Remove a worktree task and everything bound to it, through the one shared
 /// sequence in [`tt_agentboard::task_removal`]. The CLI has no panes and no
 /// in-memory rail, so it passes no hooks; the app passes its own and gets the
-/// identical ordering.
+/// identical ordering. `outcome` is what the board row records; `None` (a
+/// stdin-free CLI never prompts) infers from the row's own evidence — a
+/// merged linked PR closes as done, anything else as abandoned.
 fn remove_task_fully(
     opts: &RemoveOpts,
     dir: &Path,
     checkout: &Path,
+    outcome: Option<tt_store::TaskOutcome>,
 ) -> Result<task_removal::Outcome, String> {
     let store = board_store_for(checkout);
+    let now_ms = epoch_now_ms();
+    let outcome = outcome.unwrap_or_else(|| {
+        store
+            .as_ref()
+            .and_then(|s| s.task_for_worktree_dir(&dir.to_string_lossy()).ok().flatten())
+            .map(|row| row.inferred_outcome())
+            .unwrap_or(tt_store::TaskOutcome::Done)
+    });
     let removal = task_removal::TaskRemoval {
         opts,
         dir,
         repos_path: &tt_agentboard::repos::default_repos_path(),
         rows: store.as_ref().map(|s| s as &dyn task_removal::BoardRows),
+        outcome,
+        now_ms,
         // The name came from the command line, so a missing worktree is a typo
         // to report, not a no-op to celebrate.
         on_missing: task_removal::MissingDir::Fail,
     };
     task_removal::remove_task_and_bindings(removal, &mut task_removal::NoHooks)
         .map_err(|e| e.to_string())
+}
+
+/// The one clock read for a removal, at the command boundary (the store and
+/// the removal sequence take injected instants).
+fn epoch_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Open the board store that owns a checkout's rows.
@@ -207,6 +232,10 @@ fn after_removal(checkout: &Path, dir: &Path) -> Vec<String> {
         &tt_agentboard::repos::default_repos_path(),
         store.as_ref().map(|s| s as &dyn task_removal::BoardRows),
         dir,
+        // `clean` only sweeps *finished* tasks — landed by evidence — so the
+        // close is always a done, never an abandonment.
+        tt_store::TaskOutcome::Done,
+        epoch_now_ms(),
     )
 }
 
@@ -554,11 +583,18 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_rm(name: &str, force: bool, root: Option<&Path>) -> Result<(), String> {
+fn cmd_rm(
+    name: &str,
+    force: bool,
+    outcome: Option<&str>,
+    root: Option<&Path>,
+) -> Result<(), String> {
     let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
     let dir = sr.task_dir(name);
     let opts = RemoveOpts { root: root.map(Path::to_path_buf), name: name.to_string(), force };
-    match remove_task_fully(&opts, &dir, &sr.checkout)? {
+    // clap's value_parser guarantees the spelling; parse never fails here.
+    let outcome = outcome.and_then(tt_store::TaskOutcome::parse);
+    match remove_task_fully(&opts, &dir, &sr.checkout, outcome)? {
         task_removal::Outcome::Removed { name, messages } => {
             for message in messages {
                 ui::warning(&message);

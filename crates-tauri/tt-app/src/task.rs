@@ -373,18 +373,21 @@ fn resolve_delete_target(app: &tauri::AppHandle, target: DeleteTarget) -> Result
     }
 }
 
-/// Delete a task outright: its live panes, its worktree on disk, and its board
-/// row — the three things that together *are* the task — refusing the whole
-/// operation if the worktree still holds work that exists nowhere else.
+/// Delete a task's *presence*: its live panes and its worktree on disk go,
+/// while its board row survives **closed** — stamped with how it ended
+/// (`outcome`: done/abandoned) and detached from the now-gone dir. Refuses
+/// the whole operation if the worktree still holds work that exists nowhere
+/// else. The only true row delete left is `purge`, which is row-only and
+/// refused while a worktree is bound.
 ///
 /// This is the single delete path. The Board screen, the Agentboard rail, and
 /// the `task_delete` MCP tool all land here, because a delete that took only
-/// some of the three left the other parts as garbage: deleting the row alone
+/// part of the task left the rest as garbage: dropping the row alone
 /// orphaned a worktree on disk with nothing left in the UI to remove it from,
 /// and removing the worktree alone left a board row pointing at a directory
 /// that no longer existed.
 ///
-/// **The board row is deleted last, and only if the worktree really went.**
+/// **The board row is closed last, and only if the worktree really went.**
 /// A guarded refusal returns [`TaskDeleteOutcome::Blocked`] with the row and
 /// the worktree both untouched, so the user can act on the blocker and retry
 /// from exactly where they were — a dirty tree, commits
@@ -422,19 +425,47 @@ pub fn delete_task_blocking(
     app: &tauri::AppHandle,
     target: DeleteTarget,
     force: bool,
+    outcome: Option<tt_store::TaskOutcome>,
+    purge: bool,
 ) -> Result<TaskDeleteOutcome, String> {
     let Resolved { board_id, dir, label } = resolve_delete_target(app, target)?;
 
-    // No worktree: nothing to guard and nothing bound, so the row is the whole
-    // task and goes on its own. Everything else runs the shared sequence.
+    // Purge: the explicit hard delete, and the only remaining path to one. It
+    // is row-only by design — a row still bound to a worktree refuses, because
+    // deleting it would orphan the checkout on disk (close first; closing
+    // detaches). The Board offers it only on closed cards.
+    if purge {
+        let Some(id) = board_id else {
+            return Err("purge names a board task by id".to_string());
+        };
+        if dir.is_some() {
+            return Err(
+                "this task is still bound to a worktree — close it first, then purge".to_string()
+            );
+        }
+        crate::store::delete_task_row(app, id)?;
+        return Ok(TaskDeleteOutcome::Deleted {
+            name: label,
+            messages: vec!["deleted the board task permanently".to_string()],
+        });
+    }
+
+    // No worktree: nothing to guard and nothing to tear down, so the row is
+    // the whole task — close it in place. Everything else runs the shared
+    // sequence.
     let Some(dir) = dir.as_deref() else {
         let mut messages = Vec::new();
         if let Some(id) = board_id {
-            crate::store::delete_task_row(app, id)?;
-            messages.push("deleted the board task".to_string());
+            let outcome = outcome.unwrap_or_else(|| inferred_outcome_for(app, Some(id), None));
+            crate::store::close_task_row(app, id, outcome)?;
+            messages.push(format!("closed the board task as {}", outcome.as_str()));
         }
         return Ok(TaskDeleteOutcome::Deleted { name: label, messages });
     };
+
+    // Decide the outcome before anything is destroyed: the row's evidence is
+    // read now, recorded at step 5 (after the worktree is gone).
+    let outcome = outcome.unwrap_or_else(|| inferred_outcome_for(app, board_id, Some(dir)));
 
     // `resolve_task` runs here rather than inside the sequence: it is what
     // rejects a path that isn't a worktree of its own checkout, and the
@@ -459,6 +490,8 @@ pub fn delete_task_blocking(
         dir: std::path::Path::new(dir),
         repos_path: &tt_agentboard::repos::default_repos_path(),
         rows: Some(&rows),
+        outcome,
+        now_ms: crate::store::now_ms(),
         // The dir came out of the app's own store or the rail, never a typed
         // name, so a missing one means the record outlived the checkout — the
         // record is exactly what still needs clearing.
@@ -495,6 +528,24 @@ pub fn delete_task_blocking(
 /// task name by construction (it is the slugged branch).
 fn task_name_from_dir(dir: &str) -> String {
     PathBuf::from(dir).file_name().and_then(|n| n.to_str()).unwrap_or(dir).to_string()
+}
+
+/// The outcome to record when the caller didn't pass one: the bound row's own
+/// evidence ([`tt_store::TaskItem::inferred_outcome`] — merged PR ⇒ done),
+/// falling back to done when there is no row to read (nothing will record it
+/// anyway). The interactive path always passes an explicit outcome; this
+/// covers MCP calls and any caller that predates the prompt.
+fn inferred_outcome_for(
+    app: &tauri::AppHandle,
+    board_id: Option<i64>,
+    dir: Option<&str>,
+) -> tt_store::TaskOutcome {
+    let id = board_id.or_else(|| {
+        dir.and_then(|d| crate::store::task_id_for_worktree_dir(app, d).ok().flatten())
+    });
+    id.and_then(|id| crate::store::task_by_id(app, id).ok().flatten())
+        .map(|task| task.inferred_outcome())
+        .unwrap_or(tt_store::TaskOutcome::Done)
 }
 
 /// The app's half of the removal sequence: the two steps that need the live
@@ -556,7 +607,12 @@ struct AppBoardRows<'a> {
 }
 
 impl tt_agentboard::task_removal::BoardRows for AppBoardRows<'_> {
-    fn delete_task_for_worktree(&self, dir: &str) -> Option<String> {
+    fn close_task_for_worktree(
+        &self,
+        dir: &str,
+        outcome: tt_store::TaskOutcome,
+        _now_ms: i64,
+    ) -> Option<String> {
         // Store errors become a note, never silence: reporting "nothing was
         // bound" when the truth is "the store wouldn't answer" tells the user a
         // row is gone that is still there.
@@ -568,16 +624,19 @@ impl tt_agentboard::task_removal::BoardRows for AppBoardRows<'_> {
                 Err(error) => return Some(format!("could not read the board row: {error}")),
             },
         };
-        if let Err(error) = crate::store::delete_task_row(self.app, id) {
-            return Some(format!("could not delete board task #{id}: {error}"));
+        if let Err(error) = crate::store::close_task_row(self.app, id, outcome) {
+            return Some(format!("could not close board task #{id}: {error}"));
         }
-        Some("deleted the board task".to_string())
+        Some(format!("closed the board task as {}", outcome.as_str()))
     }
 }
 
 /// The Tauri command over [`delete_task_blocking`] — see its doc. Exactly one
 /// of `id`/`dir` identifies the task; the Board screen passes an id, the
-/// Agentboard rail passes a worktree dir.
+/// Agentboard rail passes a worktree dir. `outcome` is how the task ended
+/// (`done`/`abandoned`), recorded on the row it closes — omitted, the row's
+/// own evidence decides. `purge` is the explicit permanent delete, refused
+/// while a worktree is still bound.
 ///
 /// Long-running → off the main thread.
 #[tauri::command]
@@ -586,6 +645,8 @@ pub async fn task_delete(
     id: Option<i64>,
     dir: Option<String>,
     force: bool,
+    outcome: Option<String>,
+    purge: Option<bool>,
 ) -> Result<TaskDeleteOutcome, String> {
     use tracing::Instrument as _;
 
@@ -594,6 +655,14 @@ pub async fn task_delete(
         (None, Some(dir)) => DeleteTarget::Worktree(dir),
         _ => return Err("task_delete needs exactly one of id/dir".to_string()),
     };
+    let outcome = match outcome.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            tt_store::TaskOutcome::parse(raw)
+                .ok_or_else(|| format!("unknown task outcome: {raw}"))?,
+        ),
+    };
+    let purge = purge.unwrap_or(false);
 
     // A span (not a bare event) so the event log carries this command's own
     // start/end/duration as one record — otherwise the only visible trace of
@@ -612,14 +681,17 @@ pub async fn task_delete(
         task_id = id,
         dir = dir.as_deref().unwrap_or(""),
         force,
+        purge,
+        close_outcome = outcome.map(|o| o.as_str()).unwrap_or("inferred"),
         outcome = tracing::field::Empty,
         blockers = tracing::field::Empty,
     );
     async move {
-        let result =
-            tauri::async_runtime::spawn_blocking(move || delete_task_blocking(&app, target, force))
-                .await
-                .map_err(|e| format!("worktree task failed: {e}"))?;
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            delete_task_blocking(&app, target, force, outcome, purge)
+        })
+        .await
+        .map_err(|e| format!("worktree task failed: {e}"))?;
         let outcome = match &result {
             Ok(TaskDeleteOutcome::Deleted { .. }) => "ok",
             Ok(TaskDeleteOutcome::Blocked { blockers, .. }) => {

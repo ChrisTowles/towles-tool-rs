@@ -94,14 +94,39 @@ export function toCalEvents(events: WireCalEvent[]): CalEvent[] {
 export const TASK_STATUSES = ["backlog", "next", "doing", "review", "done"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
-/** Human labels for each kanban column. */
+/** Human labels for each kanban column. The terminal column reads "Closed"
+ * because it holds more than status-done cards: a task closed as `abandoned`
+ * keeps its frozen status but renders here, with its outcome badge saying
+ * how it ended. */
 export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
   backlog: "Backlog",
   next: "Up next",
   doing: "In progress",
   review: "In review",
-  done: "Done",
+  done: "Closed",
 };
+
+/** How a closed task ended — `outcome` on `TaskItem`, absent while open. */
+export const TASK_OUTCOMES = ["done", "abandoned"] as const;
+export type TaskOutcome = (typeof TASK_OUTCOMES)[number];
+
+/** A task is closed once it carries an outcome or sits in `done`; closed
+ * tasks render in the terminal ("Closed") column regardless of their frozen
+ * kanban status. */
+export const isTaskClosed = (t: Pick<TaskItem, "status" | "outcome">) =>
+  t.status === "done" || t.outcome !== undefined;
+
+/** The outcome badge a closed card shows: the recorded outcome, or `done`
+ * implied by the status for cards that rolled/dragged there. */
+export const taskOutcomeOf = (t: Pick<TaskItem, "status" | "outcome">): TaskOutcome | null =>
+  t.outcome ?? (t.status === "done" ? "done" : null);
+
+/** The best-evidence default for closing a task: a merged linked PR (or a
+ * card already in done) closes as `done`, anything else as `abandoned`.
+ * Mirrors the backend's `TaskItem::inferred_outcome` — the close dialog uses
+ * it to pre-answer, so the common case is one click. */
+export const inferredTaskOutcome = (t: Pick<TaskItem, "status" | "prs">): TaskOutcome =>
+  t.status === "done" || t.prs.some((p) => p.state === "merged") ? "done" : "abandoned";
 
 /** One GitHub issue linked to a task; `state` is the last observed state. */
 export type TaskIssueLink = {
@@ -128,8 +153,8 @@ export type TaskPrLink = {
  * absent forever for a "task only" submit). That's what puts every task in a
  * repo swimlane on the Board.
  *
- * There is no "worktree removed but task kept" state: deleting a task deletes
- * its worktree, and deleting its worktree deletes the task (see `taskDelete`).
+ * A closed task keeps `repoRoot`/`repo`/`branch` as historical fact while
+ * `dir` clears — the worktree is gone, the record stays (see `taskDelete`).
  */
 export type TaskWorktree = {
   repoRoot: string;
@@ -146,6 +171,10 @@ export type TaskItem = {
   position: number;
   createdAt: number;
   completedAt?: number;
+  /** How the task ended (`done`/`abandoned`); absent while it is open. */
+  outcome?: TaskOutcome;
+  /** When the closed task was archived off the active board; absent until then. */
+  archivedAt?: number;
   /** Free-form context attached to the task. */
   notes?: string;
   worktree?: TaskWorktree;
@@ -627,28 +656,43 @@ export const storeSetTaskPosition = (id: number, status: TaskStatus, index: numb
 export const storeUpdateTask = (id: number, text: string, notes?: string) =>
   invoke<void>("store_update_task", { id, text, notes });
 
-/** Delete a task and everything bound to it — its terminal panes and its git
- * worktree as well as its board row.
+/** Close a task and delete everything bound to it — its terminal panes and
+ * its git worktree. The board row itself survives, closed with `outcome`
+ * (how the work ended); omit the outcome and the backend infers it from the
+ * row's own evidence (merged linked PR ⇒ done, else abandoned).
  *
- * There is deliberately no row-only delete: dropping the row while its
+ * There is deliberately no casual row delete: dropping the row while its
  * worktree stayed on disk left a checkout with nothing in the UI pointing at
  * it. Guarded, so this can come back `blocked` with reasons and having deleted
- * nothing — see `TaskDeleteOutcomeSchema`.
+ * nothing — see `TaskDeleteOutcomeSchema`. `purge: true` is the one explicit
+ * permanent delete, row-only and refused while a worktree is still bound.
  *
  * `target` is whichever handle the caller happens to hold: the Board has a
  * board id, the Agentboard rail has a worktree dir (and lists worktrees the
  * board may know nothing about). Both reach the same command, and the schema
  * binding lives here once — validated because a `foreignPort` blocker's `port`
  * is handed straight to `task_stop_port`, which signals a process group. */
-export const taskDelete = (target: { id: number } | { dir: string }, force = false) =>
+export const taskDelete = (
+  target: { id: number } | { dir: string },
+  opts?: { force?: boolean; outcome?: TaskOutcome; purge?: boolean },
+) =>
   invoke<TaskDeleteOutcome>(
     "task_delete",
-    { ...target, force },
+    {
+      ...target,
+      force: opts?.force ?? false,
+      outcome: opts?.outcome,
+      purge: opts?.purge ?? false,
+    },
     { schema: TaskDeleteOutcomeSchema },
   );
 
-/** Sweep Done tasks older than the backend's retention window (default 7 days). */
-export const storeClearDone = () => invoke<void>("store_clear_done");
+/** Archive closed tasks finished more than the backend's window (7 days) ago —
+ * they leave the board but the rows survive. */
+export const storeArchiveDone = () => invoke<void>("store_archive_done");
+
+/** Bring one archived task back onto the board. */
+export const storeUnarchiveTask = (id: number) => invoke<void>("store_unarchive_task", { id });
 
 /** Open a GitHub issue in `repo` for an existing task and attach the two. */
 export const storePromoteTaskToIssue = (id: number, repo: string) =>
