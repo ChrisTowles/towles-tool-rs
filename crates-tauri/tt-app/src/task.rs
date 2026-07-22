@@ -118,8 +118,15 @@ pub async fn task_suggest(
 }
 
 /// Create the task for `branch` off `base` (empty base = the primary's
-/// branch). Long-running — fetch, worktree add, the install setup step — so
-/// it runs off the main thread.
+/// branch): fetch, worktree add, render `.env`, inherit sibling secrets.
+/// Deliberately **not** the install setup step (`TT_TASK_SETUP`, e.g. `npm
+/// install`) — that alone can run for minutes (npm's per-file cost on macOS
+/// APFS + Gatekeeper scanning is far higher than on Linux), and this command
+/// gates the frontend's terminal pane. The caller fires `task_run_setup`
+/// separately, after the pane is already open, so the pane and the install
+/// aren't sequential: `frontend::createTask` in `agentboard.tsx` is the one
+/// call site. Still off the main thread — `git fetch`/`worktree add` are real
+/// subprocess work even without the install.
 #[tauri::command]
 pub async fn task_create(
     app: tauri::AppHandle,
@@ -138,7 +145,7 @@ pub async fn task_create(
             let b = base.trim();
             (!b.is_empty()).then(|| b.to_string())
         },
-        run_setup: true,
+        run_setup: false,
     };
     let created = tauri::async_runtime::spawn_blocking(move || ops::create_task(&opts))
         .await

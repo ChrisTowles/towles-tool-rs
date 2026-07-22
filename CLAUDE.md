@@ -142,7 +142,17 @@ Rules when working in a task:
   the same way.
 - **No setup scripts.** `tt task new` runs the `TT_TASK_SETUP` command
   declared in `.env.example` (spawned directly, no shell — `npm install`
-  here), falling back to lockfile detection in repos that don't declare one.
+  here), falling back to lockfile detection in repos that don't declare one —
+  and, in the CLI, runs it synchronously: `tt task new` is a foreground tool,
+  so blocking on the install there is correct. **The app's `+` flow does
+  not** — `task_create` (`crates-tauri/tt-app/src/task.rs`) only does the
+  fetch/worktree-add/`.env`-render half and returns; `task_run_setup` fires
+  separately, after the pane already opened, off `agentboard.tsx`'s
+  `createTask`. The pane must never wait on the install again — it's what
+  turned a 2–3s Linux task into a 1–2 minute macOS one (npm's per-file cost
+  under APFS + Gatekeeper scanning is far higher than on Linux for the same
+  `node_modules`), and the fix is to keep the two off the same critical path,
+  not to make the install itself faster.
 - **Never touch sibling task directories** — other agents work there
   concurrently. Instance state (tt.db, sessions/windows) is scoped per
   checkout via `tt_config::state_scope()`; shared stores (settings, tracked
