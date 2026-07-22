@@ -119,14 +119,31 @@ pub struct GitInfo {
     /// `probe_key`. Empty when never computed.
     #[serde(skip)]
     pub structural_key: String,
+    /// This checkout's own gitdir — resolved from the filesystem (see
+    /// [`resolve_git_dir_fs`]), never spawned. For the main worktree this is
+    /// `<dir>/.git`; for a linked worktree it's `.git/worktrees/<name>` in
+    /// the common dir, which is where *this* checkout's own `HEAD`/`index`
+    /// live (they're per-worktree, unlike refs/objects, which are shared via
+    /// `common_dir`). Not part of the wire payload — [`crate::engine::Engine::
+    /// control_watch_files`] uses it to compute which `.git` internals to
+    /// watch for this checkout specifically. Empty when unresolvable.
+    #[serde(skip)]
+    pub git_dir: String,
 }
 
-/// Must stay above the git poll interval so the poll keeps entries warm.
-const GIT_CACHE_TTL_MS: i64 = 5000;
+/// Backup ceiling for a git-info entry that the control-file watch
+/// ([`crate::engine::Engine::control_watch_files`]) either never registered
+/// (a dir with no cached info yet) or missed an event for (a watch
+/// registration race, a filesystem that doesn't propagate inotify). A real
+/// change — a commit, a fetch, a branch switch, a `git add` — invalidates its
+/// specific dir immediately via [`GitInfoCache::invalidate`] and does not wait
+/// on this; this is deliberately long precisely because the normal path is
+/// event-driven, not because staleness beyond it is fine.
+const GIT_CACHE_TTL_MS: i64 = 60_000;
 
-/// Cache of git info per directory, with a 5s freshness window and stale-serve.
-/// Ports the module-global `gitInfoCache` as an owned struct. The poll loop that
-/// drives `refresh` on an interval lives in the Tauri layer, not here.
+/// Cache of git info per directory, with a TTL-as-backup-ceiling and
+/// stale-serve. Ports the module-global `gitInfoCache` as an owned struct.
+/// The poll loop that drives `refresh` lives in the Tauri layer, not here.
 #[derive(Debug, Default)]
 pub struct GitInfoCache {
     entries: HashMap<String, (GitInfo, i64)>,
@@ -287,6 +304,86 @@ fn structural_fingerprint(common_dir: &str) -> String {
     }
 }
 
+/// This checkout's own gitdir, resolved the same way `git` itself does —
+/// `.git` is a directory for the main worktree, or a file containing
+/// `gitdir: <path>` for a linked worktree (verified against a real
+/// `.claude/worktrees/*` checkout in this repo) — never by spawning
+/// `rev-parse --git-dir`. A plain `fs::metadata` + optional one-line read,
+/// so there's no reason to pay a subprocess for this at all, memoized or not.
+fn resolve_git_dir_fs(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dot_git = dir.join(".git");
+    let meta = std::fs::symlink_metadata(&dot_git).ok()?;
+    if meta.is_dir() {
+        return Some(dot_git);
+    }
+    let contents = std::fs::read_to_string(&dot_git).ok()?;
+    let raw = contents.strip_prefix("gitdir:")?.trim();
+    let path = std::path::PathBuf::from(raw);
+    Some(if path.is_absolute() { path } else { dir.join(path) })
+}
+
+/// The `.git` internal files whose change is what actually invalidates
+/// `commits_ahead`/`commits_behind`/`landed`, and (partially) `dirty` —
+/// **not** every dirty edit, only a staged one, since an unstaged file
+/// change never touches any of these:
+///
+/// - `git_dir/HEAD` — commit, branch switch, detached checkout
+/// - `git_dir/index` — `git add`/`git commit`/`git reset` (staged changes;
+///   an unstaged edit is invisible here, which is why the poll backup still
+///   matters for `dirty`/`files_changed`/the diff stats)
+/// - `common_dir/packed-refs` — `git gc` packing loose refs; always watched,
+///   cheap, and covers the case below when a ref has been packed
+/// - `common_dir/refs/heads/<branch>` — a commit landing on this branch from
+///   elsewhere (another worktree, a rebase)
+/// - `common_dir/refs/remotes/origin/<name>` (or `refs/heads/<name>` for a
+///   base with no origin) — `git fetch` moving the comparison baseline
+///
+/// Built from `git_dir`/`branch`/`compared_base` as they were last computed
+/// (usually a poll-tick behind a branch switch, self-correcting on the very
+/// next recompute that switch triggers via its own `HEAD` watch firing).
+fn control_files(
+    git_dir: &std::path::Path,
+    common_dir: &str,
+    branch: &str,
+    compared_base: &str,
+) -> Vec<std::path::PathBuf> {
+    let common = std::path::Path::new(common_dir);
+    let ref_path = |ref_name: &str| -> std::path::PathBuf {
+        ref_name.split('/').fold(common.join("refs/heads"), |p, seg| p.join(seg))
+    };
+    let mut files = vec![
+        git_dir.join("HEAD"),
+        git_dir.join("index"),
+        common.join("packed-refs"),
+    ];
+    if !branch.is_empty() {
+        files.push(ref_path(branch));
+    }
+    if let Some(name) = compared_base.strip_prefix("origin/") {
+        files.push(name.split('/').fold(common.join("refs/remotes/origin"), |p, seg| p.join(seg)));
+    } else if !compared_base.is_empty() {
+        files.push(ref_path(compared_base));
+    }
+    files
+}
+
+/// Public entry point for [`crate::engine::Engine::control_watch_files`]:
+/// [`control_files`] from a cached [`GitInfo`]'s own fields. Empty when
+/// `info` has never been computed (`git_dir` empty) — nothing to watch yet,
+/// the poll (backup ceiling) covers that dir until its first compute fills
+/// these in and it joins the watched set on the following tick.
+pub fn control_files_for(info: &GitInfo) -> Vec<std::path::PathBuf> {
+    if info.git_dir.is_empty() {
+        return Vec::new();
+    }
+    control_files(
+        std::path::Path::new(&info.git_dir),
+        &info.common_dir,
+        &info.branch,
+        &info.compared_base,
+    )
+}
+
 /// Compute a folder's git info. `previous` is that folder's last cached value,
 /// used to skip two kinds of repeat work when nothing they depend on has
 /// moved: the expensive landing probe (see [`probe_fingerprint`]) and the
@@ -333,32 +430,40 @@ pub fn compute_git_info(
         let key = structural_fingerprint(&prev.common_dir);
         (!key.is_empty() && key == prev.structural_key).then_some((prev, key))
     });
-    let (is_worktree, origin_url, common_dir, worktree_dirs, structural_key) =
+    // Resolved from the filesystem, not spawned — see `resolve_git_dir_fs`'s
+    // doc. Cheap enough (one metadata call, maybe one tiny read) that there's
+    // no reason to gate it behind the structural-reuse check like the other
+    // four; it's needed fresh every call regardless, both for `is_worktree`
+    // and for `Engine::control_watch_files`'s per-checkout `HEAD`/`index`
+    // targets.
+    let git_dir = resolve_git_dir_fs(std::path::Path::new(dir));
+    let is_worktree_fs =
+        git_dir.as_deref().is_some_and(|g| g.to_string_lossy().contains("/worktrees/"));
+
+    let (origin_url, common_dir, worktree_dirs, structural_key) =
         if let Some((prev, key)) = reuse_structural {
-            (
-                prev.is_worktree,
-                prev.origin_url.clone(),
-                prev.common_dir.clone(),
-                prev.worktree_dirs.clone(),
-                key,
-            )
+            (prev.origin_url.clone(), prev.common_dir.clone(), prev.worktree_dirs.clone(), key)
         } else {
-            let git_dir = git_out(dir, &["rev-parse", "--git-dir"]);
-            let is_worktree = git_dir.contains("/worktrees/");
             let origin_url_raw = git_out(dir, &["remote", "get-url", "origin"]);
             let origin_url = (!origin_url_raw.is_empty()).then_some(origin_url_raw);
             let common_dir = git_common_dir(dir);
             let worktree_dirs = list_other_worktrees(dir);
             let structural_key = structural_fingerprint(&common_dir);
-            (is_worktree, origin_url, common_dir, worktree_dirs, structural_key)
+            (origin_url, common_dir, worktree_dirs, structural_key)
         };
 
-    let mut info =
-        compute_git_info_from_outputs(&branch, is_worktree, &status_out, &diff_out, &ahead_behind);
+    let mut info = compute_git_info_from_outputs(
+        &branch,
+        is_worktree_fs,
+        &status_out,
+        &diff_out,
+        &ahead_behind,
+    );
     info.origin_url = origin_url;
     info.common_dir = common_dir;
     info.worktree_dirs = worktree_dirs;
     info.structural_key = structural_key;
+    info.git_dir = git_dir.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     info.task_base_branch = tt_tasks::read_task_base(std::path::Path::new(dir));
     info.has_launch_config = crate::launch::has_launch_file(std::path::Path::new(dir));
     // Only worth the extra shell-outs once there's something to check —
@@ -588,6 +693,9 @@ pub fn compute_git_info_from_outputs(
         // fingerprint and so can only cause a probe, never skip one.
         probe_key: String::new(),
         structural_key: String::new(),
+        // Filled by `compute_git_info` from the filesystem, not spawned;
+        // this pure parser never sees a directory to resolve it from.
+        git_dir: String::new(),
     }
 }
 
@@ -1067,8 +1175,8 @@ mod tests {
         let t0 = 1_700_000_000_000;
         cache.insert("/repo", info.clone(), t0);
         assert!(cache.is_fresh("/repo", t0));
-        assert!(cache.is_fresh("/repo", t0 + 4999)); // < 5000ms later
-        assert!(!cache.is_fresh("/repo", t0 + 5000)); // exactly TTL later → stale
+        assert!(cache.is_fresh("/repo", t0 + GIT_CACHE_TTL_MS - 1)); // just under TTL
+        assert!(!cache.is_fresh("/repo", t0 + GIT_CACHE_TTL_MS)); // exactly TTL later → stale
         // Stale entries still serve.
         assert_eq!(cache.get("/repo"), info);
         // Invalidate forces stale immediately (stamp → 0).
@@ -1598,6 +1706,136 @@ mod tests {
         assert_ne!(reprobed.probe_key, first.probe_key, "a moved HEAD must invalidate the memo");
         assert_eq!(reprobed.landed, None);
         assert_eq!(reprobed.commits_unlanded, 2);
+    }
+
+    #[test]
+    fn resolve_git_dir_fs_reads_a_plain_checkouts_dot_git_directory() {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(root.path().join(".git")).unwrap();
+        assert_eq!(
+            resolve_git_dir_fs(root.path()),
+            Some(root.path().join(".git")),
+            "a plain checkout's gitdir is just its .git directory — no spawn needed"
+        );
+    }
+
+    #[test]
+    fn resolve_git_dir_fs_follows_the_gitdir_file_for_a_real_worktree() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path().join("main");
+        let worktree = root.path().join("task");
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |dir: &std::path::Path, args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&repo, &["init", "--quiet", "-b", "main"]);
+        run(&repo, &["config", "user.email", "test@example.com"]);
+        run(&repo, &["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&repo, &["add", "f.txt"]);
+        run(&repo, &["commit", "--quiet", "-m", "init"]);
+        run(&repo, &["worktree", "add", "-b", "task", worktree.to_str().unwrap()]);
+
+        let resolved = resolve_git_dir_fs(&worktree).expect("real worktree must resolve");
+        // The real git-maintained pointer is the ground truth here, not a
+        // guess — this is exactly what `rev-parse --git-dir` would answer,
+        // reached with zero subprocess spawns instead.
+        let spawned = git_out(worktree.to_str().unwrap(), &["rev-parse", "--git-dir"]);
+        assert_eq!(resolved, std::path::PathBuf::from(spawned));
+        assert!(resolved.to_string_lossy().contains("/worktrees/task"));
+        assert!(resolved.join("HEAD").is_file(), "the resolved gitdir must have its own HEAD");
+    }
+
+    #[test]
+    fn resolve_git_dir_fs_is_none_for_a_non_repo_directory() {
+        let root = tempfile::TempDir::new().unwrap();
+        assert_eq!(resolve_git_dir_fs(root.path()), None);
+    }
+
+    #[test]
+    fn control_files_covers_head_index_packed_refs_branch_and_origin_base() {
+        let git_dir = std::path::Path::new("/repo/.git/worktrees/task");
+        let files = control_files(git_dir, "/repo/.git", "feature/x", "origin/main");
+        assert_eq!(
+            files,
+            vec![
+                std::path::PathBuf::from("/repo/.git/worktrees/task/HEAD"),
+                std::path::PathBuf::from("/repo/.git/worktrees/task/index"),
+                std::path::PathBuf::from("/repo/.git/packed-refs"),
+                std::path::PathBuf::from("/repo/.git/refs/heads/feature/x"),
+                std::path::PathBuf::from("/repo/.git/refs/remotes/origin/main"),
+            ]
+        );
+    }
+
+    #[test]
+    fn control_files_uses_refs_heads_for_a_base_with_no_origin() {
+        let git_dir = std::path::Path::new("/repo/.git");
+        let files = control_files(git_dir, "/repo/.git", "main", "develop");
+        assert!(files.contains(&std::path::PathBuf::from("/repo/.git/refs/heads/develop")));
+        assert!(
+            !files.iter().any(|f| f.to_string_lossy().contains("refs/remotes")),
+            "a base with no origin/ prefix must never resolve into refs/remotes"
+        );
+    }
+
+    #[test]
+    fn control_files_for_is_empty_until_the_first_compute() {
+        assert_eq!(
+            control_files_for(&GitInfo::default()),
+            Vec::<std::path::PathBuf>::new(),
+            "an unresolved git_dir means nothing to watch yet — the poll covers it"
+        );
+    }
+
+    /// End-to-end proof that `compute_git_info` populates `git_dir` (and
+    /// therefore what `control_files_for` will later watch) without ever
+    /// spawning `rev-parse --git-dir` — it's resolved purely from the
+    /// filesystem now, for both a plain checkout and a linked worktree.
+    #[test]
+    fn compute_git_info_resolves_git_dir_from_the_filesystem_for_worktrees_too() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path().join("main");
+        let worktree = root.path().join("task");
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |dir: &std::path::Path, args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&repo, &["init", "--quiet", "-b", "main"]);
+        run(&repo, &["config", "user.email", "test@example.com"]);
+        run(&repo, &["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&repo, &["add", "f.txt"]);
+        run(&repo, &["commit", "--quiet", "-m", "init"]);
+        run(&repo, &["worktree", "add", "-b", "task", worktree.to_str().unwrap()]);
+
+        let main_info = compute_git_info(repo.to_str().unwrap(), None, None);
+        assert!(!main_info.is_worktree);
+        assert_eq!(main_info.git_dir, repo.join(".git").to_string_lossy());
+
+        let task_info = compute_git_info(worktree.to_str().unwrap(), None, None);
+        assert!(task_info.is_worktree);
+        assert!(task_info.git_dir.contains("/worktrees/task"));
+        assert!(
+            !control_files_for(&task_info).is_empty(),
+            "a resolved checkout has files to watch"
+        );
     }
 
     /// The other half of the same idea, applied to `is_worktree`/`common_dir`/

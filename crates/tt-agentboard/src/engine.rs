@@ -297,6 +297,38 @@ impl Engine {
         self.expand_with_worktrees()
     }
 
+    /// `.git` internal files worth watching so a commit/fetch/branch-switch/
+    /// `git add` in a tracked repo invalidates its cache entry immediately
+    /// (see [`Self::invalidate_git`]) instead of waiting out
+    /// `GIT_CACHE_TTL_MS`'s backup ceiling. Maps each watch file to the
+    /// checkout dir it belongs to, so the host's watcher callback can resolve
+    /// "this file changed" back to "invalidate this dir" — see
+    /// [`crate::git_info::control_files_for`] for exactly which files and why
+    /// (and the working-tree edits it deliberately can't cover). Cache-only,
+    /// same reasoning as `expand_with_worktrees`: never shells out, safe to
+    /// call under the lock, cheap enough to call every poll tick.
+    pub fn control_watch_files(&mut self) -> std::collections::HashMap<std::path::PathBuf, String> {
+        self.reload_repos();
+        let dirs = self.expand_with_worktrees();
+        let mut out = std::collections::HashMap::new();
+        for dir in dirs {
+            let info = self.git_cache.get(&dir);
+            for file in crate::git_info::control_files_for(&info) {
+                out.insert(file, dir.clone());
+            }
+        }
+        out
+    }
+
+    /// Mark `dir`'s cache entry stale immediately — the event-driven
+    /// counterpart to the TTL, called from the host's control-file watcher
+    /// when one of [`Self::control_watch_files`]'s targets fires. The next
+    /// `stale_git_targets` call (right away, since the watcher also signals
+    /// an eager scan) picks it up regardless of how recently it was computed.
+    pub fn invalidate_git(&mut self, dir: &str) {
+        self.git_cache.invalidate(Some(dir));
+    }
+
     /// Dirs in the worktree-merged target set whose git-cache entry is
     /// missing or older than the TTL as of `now`, paired with that folder's
     /// base-branch override (if any) — for the host to compute with
