@@ -142,6 +142,7 @@ export type TaskCreated = {
 export type BranchCheck = {
   name: string | null;
   taken: boolean;
+  branchExists: boolean;
   error: string | null;
 };
 
@@ -389,7 +390,8 @@ export function InlineNewTask({
 
   const branchProblem =
     branchCheck?.error ??
-    (branchCheck?.taken ? `a task named "${branchCheck.name}" already exists` : null);
+    (branchCheck?.taken ? `a task named "${branchCheck.name}" already exists` : null) ??
+    (branchCheck?.branchExists ? `a branch named "${branch.trim()}" already exists` : null);
 
   // Preferred improvers get their own button; the rest sit under "More". If
   // none are marked preferred, showing an empty row and hiding everything
@@ -592,7 +594,8 @@ export function InlineNewTask({
         return;
       }
       if (branchProblem) {
-        showError(branchProblem);
+        // Already shown inline under the branch field — no need to repeat it
+        // in the bottom-of-form notice too.
         return;
       }
     } else if (!goal.trim() && selectedIssues.length === 0) {
@@ -879,8 +882,9 @@ export function InlineNewTask({
           value={branch}
           onChange={(e) => setBranchEdit(e.target.value)}
           placeholder="auto-generated from your goal"
-          className="min-w-0 font-mono text-xs"
+          className={cn("min-w-0 font-mono text-xs", branchProblem && "border-red-500")}
         />
+        {branchProblem && <p className="text-[10.5px] text-red-500">{branchProblem}</p>}
       </div>
       <div className="flex flex-col gap-1">
         <span className="text-[10.5px] text-muted-foreground">base</span>
