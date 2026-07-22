@@ -113,6 +113,12 @@ pub struct GitInfo {
     /// was unreadable.
     #[serde(skip)]
     pub probe_key: String,
+    /// Fingerprint of the filesystem facts behind `is_worktree`/`common_dir`/
+    /// `worktree_dirs`/`origin_url` at the time they were last computed (see
+    /// [`structural_fingerprint`]). Internal revalidation token, like
+    /// `probe_key`. Empty when never computed.
+    #[serde(skip)]
+    pub structural_key: String,
 }
 
 /// Must stay above the git poll interval so the poll keeps entries warm.
@@ -240,9 +246,52 @@ fn probe_fingerprint(dir: &str, compared_base: &str) -> String {
     format!("{head} {base} {track}")
 }
 
+/// Fingerprint of the filesystem facts that govern `is_worktree`/`common_dir`/
+/// `worktree_dirs`/`origin_url`: the mtimes of `common_dir`'s `worktrees`
+/// subdirectory (touched whenever a `git worktree add`/`remove` changes the
+/// sibling set) and its `config` file (touched by `remote set-url`). Those
+/// four facts are otherwise re-derived by four more git spawns
+/// (`rev-parse --git-dir`/`--git-common-dir`, `worktree list --porcelain`,
+/// `remote get-url origin`) every single poll, even though — unlike
+/// `dirty`/`commits_ahead`/etc. — they almost never change poll to poll: a
+/// repo's worktree set and remote are structural, not working-tree state.
+///
+/// Reads no git subprocess, only two `fs::metadata` calls, so checking this
+/// first is unconditionally cheaper than the four spawns it guards.
+///
+/// Returns empty only when `common_dir` itself is empty or unreadable — an
+/// empty fingerprint must never compare equal to a real one, so an
+/// unreadable repo re-derives instead of trusting a half-formed key. `config`
+/// always exists once a repo is initialized, but `worktrees` does not until
+/// the first `git worktree add` — its absence is a legitimate, stable state
+/// (most repos never gain one), not a reason to skip memoizing, so it's
+/// stamped as a fixed sentinel rather than folded into the empty case.
+fn structural_fingerprint(common_dir: &str) -> String {
+    if common_dir.is_empty() {
+        return String::new();
+    }
+    let stamp = |path: std::path::PathBuf| -> Option<String> {
+        match std::fs::metadata(&path).and_then(|m| m.modified()) {
+            Ok(modified) => {
+                let dur = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+                Some(dur.as_nanos().to_string())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some("absent".to_string()),
+            Err(_) => None,
+        }
+    };
+    let base = std::path::Path::new(common_dir);
+    match (stamp(base.join("worktrees")), stamp(base.join("config"))) {
+        (Some(w), Some(c)) => format!("{w} {c}"),
+        _ => String::new(),
+    }
+}
+
 /// Compute a folder's git info. `previous` is that folder's last cached value,
-/// used only to skip the expensive landing probe when nothing it reads has
-/// moved (see [`probe_fingerprint`]); pass `None` to force a full computation.
+/// used to skip two kinds of repeat work when nothing they depend on has
+/// moved: the expensive landing probe (see [`probe_fingerprint`]) and the
+/// four structural-fact spawns (see [`structural_fingerprint`]). Pass `None`
+/// to force a full computation.
 pub fn compute_git_info(
     dir: &str,
     base_branch_override: Option<&str>,
@@ -260,7 +309,6 @@ pub fn compute_git_info(
     if branch.is_empty() {
         return GitInfo::default();
     }
-    let git_dir = git_out(dir, &["rev-parse", "--git-dir"]);
     let status_out = git_out(dir, &["status", "--porcelain"]);
     let compared_base = resolve_base_ref(dir, base_branch_override);
     let merge_base = git_out(dir, &["merge-base", "HEAD", &compared_base]);
@@ -276,12 +324,41 @@ pub fn compute_git_info(
         ],
     );
 
+    // See `structural_fingerprint`'s doc comment: `is_worktree`/`common_dir`/
+    // `worktree_dirs`/`origin_url` are structural facts, not working-tree
+    // state, so they're worth revalidating cheaply (two `fs::metadata` calls
+    // against the *previous* `common_dir`) before paying for the four git
+    // spawns that derive them fresh.
+    let reuse_structural = previous.filter(|prev| !prev.common_dir.is_empty()).and_then(|prev| {
+        let key = structural_fingerprint(&prev.common_dir);
+        (!key.is_empty() && key == prev.structural_key).then_some((prev, key))
+    });
+    let (is_worktree, origin_url, common_dir, worktree_dirs, structural_key) =
+        if let Some((prev, key)) = reuse_structural {
+            (
+                prev.is_worktree,
+                prev.origin_url.clone(),
+                prev.common_dir.clone(),
+                prev.worktree_dirs.clone(),
+                key,
+            )
+        } else {
+            let git_dir = git_out(dir, &["rev-parse", "--git-dir"]);
+            let is_worktree = git_dir.contains("/worktrees/");
+            let origin_url_raw = git_out(dir, &["remote", "get-url", "origin"]);
+            let origin_url = (!origin_url_raw.is_empty()).then_some(origin_url_raw);
+            let common_dir = git_common_dir(dir);
+            let worktree_dirs = list_other_worktrees(dir);
+            let structural_key = structural_fingerprint(&common_dir);
+            (is_worktree, origin_url, common_dir, worktree_dirs, structural_key)
+        };
+
     let mut info =
-        compute_git_info_from_outputs(&branch, &git_dir, &status_out, &diff_out, &ahead_behind);
-    let origin_url = git_out(dir, &["remote", "get-url", "origin"]);
-    info.origin_url = (!origin_url.is_empty()).then_some(origin_url);
-    info.common_dir = git_common_dir(dir);
-    info.worktree_dirs = list_other_worktrees(dir);
+        compute_git_info_from_outputs(&branch, is_worktree, &status_out, &diff_out, &ahead_behind);
+    info.origin_url = origin_url;
+    info.common_dir = common_dir;
+    info.worktree_dirs = worktree_dirs;
+    info.structural_key = structural_key;
     info.task_base_branch = tt_tasks::read_task_base(std::path::Path::new(dir));
     info.has_launch_config = crate::launch::has_launch_file(std::path::Path::new(dir));
     // Only worth the extra shell-outs once there's something to check —
@@ -460,9 +537,14 @@ fn resolve_base_ref(dir: &str, base_branch: Option<&str>) -> String {
 
 /// Pure assembly of [`GitInfo`] from raw git command outputs. Unit-tested on
 /// fixture strings. Ports the parsing half of `computeGitInfo`.
+///
+/// `is_worktree` is resolved by the caller rather than parsed here from a
+/// `--git-dir` string, because `compute_git_info` can source it two ways: a
+/// fresh `rev-parse --git-dir` spawn, or a revalidated previous value (see
+/// [`structural_fingerprint`]) — this pure assembly doesn't need to know which.
 pub fn compute_git_info_from_outputs(
     branch: &str,
-    git_dir: &str,
+    is_worktree: bool,
     status_out: &str,
     diff_out: &str,
     ahead_behind: &str,
@@ -477,7 +559,7 @@ pub fn compute_git_info_from_outputs(
     let (commits_ahead, commits_behind) = parse_ahead_behind(ahead_behind);
     GitInfo {
         branch: branch.to_string(),
-        is_worktree: git_dir.contains("/worktrees/"),
+        is_worktree,
         files_changed,
         lines_added,
         lines_removed,
@@ -505,6 +587,7 @@ pub fn compute_git_info_from_outputs(
         // here means "no probe has run", which never compares equal to a real
         // fingerprint and so can only cause a probe, never skip one.
         probe_key: String::new(),
+        structural_key: String::new(),
     }
 }
 
@@ -926,7 +1009,7 @@ mod tests {
     #[test]
     fn numstat_sums_lines_and_collects_files_skipping_binary() {
         let diff = "10\t2\tsrc/a.rs\n5\t0\tsrc/b.rs\n-\t-\tassets/logo.png\n";
-        let info = compute_git_info_from_outputs("main", "/repo/.git", "", diff, "");
+        let info = compute_git_info_from_outputs("main", false, "", diff, "");
         assert_eq!(info.lines_added, 15);
         assert_eq!(info.lines_removed, 2);
         // 3 distinct files (including the binary one), no untracked.
@@ -937,24 +1020,24 @@ mod tests {
     fn untracked_files_counted_from_porcelain() {
         let status = "?? new1.txt\n?? new2.txt\n M tracked.rs\n";
         let diff = "1\t1\ttracked.rs\n";
-        let info = compute_git_info_from_outputs("main", "/repo/.git", status, diff, "");
+        let info = compute_git_info_from_outputs("main", false, status, diff, "");
         // 1 changed file (tracked.rs) + 2 untracked.
         assert_eq!(info.files_changed, 3);
     }
 
     #[test]
     fn dirty_reflects_any_porcelain_line_blank_or_not() {
-        let info = compute_git_info_from_outputs("main", "/repo/.git", "", "", "");
+        let info = compute_git_info_from_outputs("main", false, "", "", "");
         assert!(!info.dirty);
-        let dirty = compute_git_info_from_outputs("main", "/repo/.git", "?? new.txt\n", "", "");
+        let dirty = compute_git_info_from_outputs("main", false, "?? new.txt\n", "", "");
         assert!(dirty.dirty);
     }
 
     #[test]
     fn worktree_detected_from_git_dir() {
-        let info = compute_git_info_from_outputs("feat", "/repo/.git/worktrees/feat", "", "", "");
+        let info = compute_git_info_from_outputs("feat", true, "", "", "");
         assert!(info.is_worktree);
-        let info2 = compute_git_info_from_outputs("main", "/repo/.git", "", "", "");
+        let info2 = compute_git_info_from_outputs("main", false, "", "", "");
         assert!(!info2.is_worktree);
     }
 
@@ -969,7 +1052,7 @@ mod tests {
 
     #[test]
     fn branch_and_ahead_behind_flow_through() {
-        let info = compute_git_info_from_outputs("feature/x", "/repo/.git", "", "", "2\t5");
+        let info = compute_git_info_from_outputs("feature/x", false, "", "", "2\t5");
         assert_eq!(info.branch, "feature/x");
         assert_eq!(info.commits_ahead, 5);
         assert_eq!(info.commits_behind, 2);
@@ -1517,6 +1600,75 @@ mod tests {
         assert_eq!(reprobed.commits_unlanded, 2);
     }
 
+    /// The other half of the same idea, applied to `is_worktree`/`common_dir`/
+    /// `worktree_dirs`/`origin_url` — structural facts, not working-tree state,
+    /// so they're worth revalidating from two `fs::metadata` calls instead of
+    /// re-deriving via four more git spawns on every poll of an unchanged repo.
+    #[test]
+    fn unmoved_worktrees_and_config_reuse_structural_facts_and_a_new_worktree_invalidates_it() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+
+        let dir = repo.to_str().unwrap();
+        let first = compute_git_info(dir, None, None);
+        assert!(!first.common_dir.is_empty());
+        assert!(
+            !first.structural_key.is_empty(),
+            "a resolved repo must carry a fingerprint to reuse"
+        );
+
+        // Poisoned with a value `compute_git_info` could never itself produce —
+        // if it survives, the four structural spawns genuinely did not run.
+        let mut poisoned = first.clone();
+        poisoned.origin_url = Some("sentinel".to_string());
+
+        let reused = compute_git_info(dir, None, Some(&poisoned));
+        assert_eq!(
+            reused.origin_url.as_deref(),
+            Some("sentinel"),
+            "nothing structural moved, so the cached facts must be carried over"
+        );
+        assert_eq!(reused.structural_key, first.structural_key);
+
+        // `git worktree add` touches common_dir/worktrees's mtime, which must
+        // invalidate the memo and force a real re-derive.
+        let sibling = root.path().join("sibling");
+        run(&[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            sibling.to_str().unwrap(),
+        ]);
+
+        let reprobed = compute_git_info(dir, None, Some(&poisoned));
+        assert_ne!(
+            reprobed.structural_key, first.structural_key,
+            "a new worktree must invalidate the structural memo"
+        );
+        // Proves a real re-derive ran rather than returning the poisoned
+        // value — `worktree_dirs` itself stays empty because this sibling is
+        // unmanaged and `list_other_worktrees` filters those out by design.
+        assert_ne!(reprobed.origin_url.as_deref(), Some("sentinel"));
+    }
+
     /// The rail's headline false alarm. A squash merge collapses the branch's
     /// commits into one new commit whose diff matches none of them
     /// individually, so the `git cherry` patch-id check this used to rely on
@@ -1691,7 +1843,7 @@ mod tests {
     fn from_outputs_never_flags_missing() {
         // The pure parser only sees git command strings; existence is decided
         // by `compute_git_info` before any shell-out.
-        let info = compute_git_info_from_outputs("main", "/repo/.git", "", "", "");
+        let info = compute_git_info_from_outputs("main", false, "", "", "");
         assert!(!info.dir_missing);
     }
 
