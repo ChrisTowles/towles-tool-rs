@@ -10,7 +10,6 @@ use tokio::sync::Notify;
 
 use tt_agentboard::StatePayload;
 use tt_agentboard::engine::parse_tone;
-use tt_agentboard::fs_notify::DirNotifier;
 use tt_agentboard::metadata::{LogInput, ProgressInput, StatusInput};
 use tt_agentboard::session_order::ReorderDelta;
 
@@ -26,8 +25,6 @@ pub struct Ab {
     pub emit: Arc<Notify>,
     /// Signals the scan task to run an eager scan (fs-notify accelerant).
     pub scan: Arc<Notify>,
-    /// Keeps the fs watcher alive.
-    pub _notifier: Mutex<Option<DirNotifier>>,
     /// First-entered "needs you" timestamps, carried across recomputes so a
     /// session's waiting-age is stable (see `tt_agentboard::bridge::NeedsSince`).
     /// Every payload the app stamps threads through this.

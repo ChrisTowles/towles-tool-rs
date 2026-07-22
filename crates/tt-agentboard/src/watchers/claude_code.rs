@@ -97,13 +97,25 @@ pub fn extract_thread_name(entry: &TranscriptEntry) -> Option<String> {
     Some(text.chars().take(80).collect())
 }
 
-/// Locate `<projects>/<encoded cwd>/<session id>.jsonl`. The naive `/`→`-`
-/// encoding guess covers most paths; dirs whose names contain dots/underscores
-/// (also encoded to `-` by Claude) fall back to probing every project dir for
-/// the session file.
+/// Claude Code's `<projects>` subdirectory name for a session rooted at
+/// `cwd`: `/`, `.`, and `_` all collapse to `-` (confirmed against real
+/// `~/.claude/projects` entries — e.g. `/home/u/my.app` → `-home-u-my-app`,
+/// `/a/b/test_atinotes` → `-a-b-test-atinotes`). This is a one-way encode,
+/// not a decoder: several distinct cwds can produce the same dir name (a
+/// literal `-`, a `.`, and a `_` at the same position are indistinguishable
+/// once encoded), which is exactly why [`find_journal`] still falls back to
+/// probing every project dir rather than trusting this guess blindly.
+pub fn encode_project_dir_name(cwd: &str) -> String {
+    cwd.chars().map(|c| if matches!(c, '/' | '.' | '_') { '-' } else { c }).collect()
+}
+
+/// Locate `<projects>/<encoded cwd>/<session id>.jsonl`. [`encode_project_dir_name`]
+/// covers most paths exactly; the rare case it can't (two cwds that
+/// legitimately collide once encoded) falls back to probing every project
+/// dir for the session file.
 pub fn find_journal(projects_dir: &Path, cwd: &str, session_id: &str) -> Option<PathBuf> {
     let file = format!("{session_id}{JSONL_SUFFIX}");
-    let guess = projects_dir.join(cwd.replace('/', "-")).join(&file);
+    let guess = projects_dir.join(encode_project_dir_name(cwd)).join(&file);
     if guess.exists() {
         return Some(guess);
     }
@@ -1186,15 +1198,29 @@ mod tests {
     }
 
     #[test]
-    fn journal_found_by_probe_when_encoding_guess_misses() {
+    fn encode_project_dir_name_collapses_slash_dot_and_underscore() {
+        // Verified against real `~/.claude/projects` entries, not assumed —
+        // see the doc comment on `encode_project_dir_name`.
+        assert_eq!(encode_project_dir_name("/home/u/my.app"), "-home-u-my-app");
+        assert_eq!(encode_project_dir_name("/a/b/test_atinotes"), "-a-b-test-atinotes");
+        assert_eq!(
+            encode_project_dir_name("/home/u/repo/.claude/worktrees/fix-thing"),
+            "-home-u-repo--claude-worktrees-fix-thing"
+        );
+    }
+
+    #[test]
+    fn journal_found_by_probe_when_the_recorded_cwd_no_longer_matches_the_journal_dir() {
         let mut f = fixture();
-        // Dir name Claude-encoded from a path with a dot: guess `/`→`-` misses.
-        let dir = f.projects.join("-home-u-my-app"); // actual dir for /home/u/my.app
+        // A checkout that moved after the session started (or any other way
+        // the encoded guess and the actual directory diverge): the probe
+        // fallback is what still finds it, not the guess.
+        let dir = f.projects.join("-home-u-renamed-proj");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("sid-1.jsonl"), format!("{USER_LINE}\n")).unwrap();
-        *f.agents.lock().unwrap() = vec![cli_agent(7, "/home/u/my.app", "sid-1", "busy")];
+        *f.agents.lock().unwrap() = vec![cli_agent(7, "/home/u/my-app", "sid-1", "busy")];
         let mut ctx = Ctx::new();
-        ctx.by_dir.push(("/home/u/my.app".into(), "p".into()));
+        ctx.by_dir.push(("/home/u/my-app".into(), "p".into()));
         f.watcher.scan(&mut ctx, 1_000);
         assert_eq!(ctx.events[0].thread_name.as_deref(), Some("fix the flaky test"));
     }

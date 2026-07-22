@@ -285,6 +285,18 @@ impl Engine {
         merge_worktree_dirs(&base, |dir| cache.get(dir).worktree_dirs)
     }
 
+    /// Tracked repos plus their discovered worktrees, as absolute checkout
+    /// dirs — [`Self::expand_with_worktrees`]'s output under a name a host
+    /// outside the engine can call. Meant for scoping the eager-rescan fs
+    /// watch ([`crate::fs_notify::ScopedDirNotifier`]) to the repos actually
+    /// being polled instead of every Claude Code session on the machine;
+    /// reads only the already-cached worktree lists (see
+    /// `expand_with_worktrees`'s doc for why that matters under the lock).
+    pub fn watch_targets(&mut self) -> Vec<String> {
+        self.reload_repos();
+        self.expand_with_worktrees()
+    }
+
     /// Dirs in the worktree-merged target set whose git-cache entry is
     /// missing or older than the TTL as of `now`, paired with that folder's
     /// base-branch override (if any) — for the host to compute with
