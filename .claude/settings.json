@@ -43,16 +43,6 @@
     ],
     "WorktreeRemove": [
       { "hooks": [{ "type": "command", "command": "tt task hook-remove" }] }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/remind-simplify-code-review.sh\""
-          }
-        ]
-      }
     ]
   }
 }
