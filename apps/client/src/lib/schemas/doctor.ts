@@ -30,6 +30,12 @@ const AgentBoardCheckSchema = z.object({
   hint: z.string().optional(),
 });
 
+const StaleTaskCheckSchema = z.object({
+  name: z.string(),
+  branch: z.string(),
+  reason: z.string(),
+});
+
 export const DoctorReportSchema = z.object({
   result: z.object({
     timestamp: z.string(),
@@ -40,4 +46,5 @@ export const DoctorReportSchema = z.object({
   }),
   plugins: z.array(PluginCheckSchema),
   agentboard: z.array(AgentBoardCheckSchema),
+  staleTasks: z.array(StaleTaskCheckSchema),
 });

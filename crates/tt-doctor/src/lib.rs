@@ -84,6 +84,21 @@ const TOOLS: &[(&str, &str, bool)] = &[
 const ZIG_REQUIRED_MAJOR: u32 = 0;
 const ZIG_REQUIRED_MINOR: u32 = 15;
 
+/// One worktree task whose work has already landed on the base branch and is
+/// safe to reclaim with `tt task clean` / `tt task rm`. The "landed" judgement
+/// is [`tt_tasks::ops::work_state`]'s — never a hand-rolled git-merged check —
+/// so the squash/rebase/gone-upstream shapes it already untangles stay in one
+/// place.
+#[derive(Debug, Clone, Serialize)]
+pub struct StaleTaskCheck {
+    /// Task (worktree folder) name.
+    pub name: String,
+    /// The task's branch.
+    pub branch: String,
+    /// How it landed, e.g. `"squash-merged into main"`.
+    pub reason: String,
+}
+
 /// Everything one doctor run produced: the camelCase [`DoctorRunResult`]
 /// record plus the rich plugin/agentboard rows display surfaces render
 /// (hints, values). One struct so nothing runs its subprocesses twice.
@@ -93,6 +108,8 @@ pub struct DoctorReport {
     pub result: DoctorRunResult,
     pub plugins: Vec<PluginCheck>,
     pub agentboard: Vec<AgentBoardCheck>,
+    /// Worktree tasks whose work has landed but that were never cleaned up.
+    pub stale_tasks: Vec<StaleTaskCheck>,
 }
 
 /// Run every check. Spawns a handful of `--version`/auth subprocesses, so run
@@ -103,6 +120,7 @@ pub fn run_report() -> DoctorReport {
     tools.push(check_zig());
     let plugins = check_claude_plugins();
     let agentboard = check_agentboard();
+    let stale_tasks = check_stale_tasks();
 
     let result = DoctorRunResult {
         timestamp: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
@@ -111,7 +129,69 @@ pub fn run_report() -> DoctorReport {
         plugins: plugins.iter().map(|p| NameOk { name: p.name.clone(), ok: p.ok }).collect(),
         agentboard: agentboard.iter().map(|a| NameOk { name: a.name.clone(), ok: a.ok }).collect(),
     };
-    DoctorReport { result, plugins, agentboard }
+    DoctorReport { result, plugins, agentboard, stale_tasks }
+}
+
+/// Worktree tasks in the running checkout whose work has already landed on the
+/// base branch and can be reclaimed with `tt task clean`. Read-only: it reuses
+/// [`tt_tasks::ops::work_state`] exactly the way the Agentboard rail does (never
+/// its own git-merged check) but, unlike `tt task clean`, removes nothing and
+/// does no `fetch` — a diagnostic must not mutate. A checkout that isn't
+/// task-capable (no `.git` above the cwd) reports nothing.
+fn check_stale_tasks() -> Vec<StaleTaskCheck> {
+    use tt_tasks::ops;
+
+    let Ok(root) = ops::discover_root(None) else {
+        return Vec::new();
+    };
+    let refs = ops::base_refs(&root.checkout);
+
+    root.tasks()
+        .into_iter()
+        .filter_map(|(name, dir)| {
+            let branch = ops::git_task(&dir, &["branch", "--show-current"])
+                .ok()
+                .filter(|o| o.ok())
+                .map(|o| o.stdout.trim().to_string())?;
+            // A detached HEAD has no branch to judge; the base branch itself is
+            // never a stale task.
+            if branch.is_empty() || branch == refs.base {
+                return None;
+            }
+            let branch_ref = format!("refs/heads/{branch}");
+            let work = ops::work_state(
+                &refs,
+                &dir,
+                &branch_ref,
+                ops::uncommitted_count(&dir),
+                ops::orphaned_count(&dir),
+            );
+            classify_stale_task(&name, &branch, &refs.base, &work)
+        })
+        .collect()
+}
+
+/// Whether a task's [`WorkState`] means it is safe to `tt task clean`, and the
+/// finding to surface if so. Mirrors `clean`'s own keep/remove gate: only
+/// *content* proof counts (a bare gone-upstream is indistinguishable from a
+/// branch deleted unmerged — see [`tt_tasks::LandedVia::is_content_proof`]),
+/// and any work removal would lose — uncommitted, unlanded, or orphaned commits
+/// ([`WorkState::holds_work`]) — keeps the task off the list.
+fn classify_stale_task(
+    name: &str,
+    branch: &str,
+    base: &str,
+    work: &tt_tasks::WorkState,
+) -> Option<StaleTaskCheck> {
+    let via = work.landed?;
+    if !via.is_content_proof() || work.holds_work() {
+        return None;
+    }
+    Some(StaleTaskCheck {
+        name: name.to_string(),
+        branch: branch.to_string(),
+        reason: format!("{} into {base}", via.label()),
+    })
 }
 
 /// Probe one tool's presence + version.
@@ -581,6 +661,76 @@ plugin:towles-tool-app:towles-tool: http://127.0.0.1:8787/mcp - ✔ Connected
         let ids: Vec<&str> = REQUIRED_PLUGINS.iter().map(|p| p.id).collect();
         assert!(ids.contains(&"code-simplifier@claude-plugins-official"));
         assert!(ids.contains(&"towles-tool-app@towles-tool"));
+    }
+
+    #[test]
+    fn stale_task_flags_a_landed_clean_task() {
+        use tt_tasks::{LandedVia, WorkState};
+        let work =
+            WorkState { total_commits: 3, landed: Some(LandedVia::Squash), ..Default::default() };
+        let check = classify_stale_task("feat-thing", "feat/thing", "main", &work).unwrap();
+        assert_eq!(check.name, "feat-thing");
+        assert_eq!(check.branch, "feat/thing");
+        assert_eq!(check.reason, "squash-merged into main");
+    }
+
+    #[test]
+    fn stale_task_ignores_an_active_task() {
+        use tt_tasks::WorkState;
+        // Not landed at all — plain active work.
+        let work = WorkState { total_commits: 2, unlanded: 2, landed: None, ..Default::default() };
+        assert!(classify_stale_task("t", "feat/x", "main", &work).is_none());
+    }
+
+    #[test]
+    fn stale_task_ignores_gone_upstream_without_content_proof() {
+        use tt_tasks::{LandedVia, WorkState};
+        // A gone upstream is indistinguishable from a branch deleted unmerged,
+        // so `tt task clean` keeps it — the doctor must not claim it's safe.
+        let work = WorkState {
+            total_commits: 2,
+            unlanded: 2,
+            landed: Some(LandedVia::UpstreamGone),
+            ..Default::default()
+        };
+        assert!(classify_stale_task("t", "feat/x", "main", &work).is_none());
+    }
+
+    #[test]
+    fn stale_task_ignores_landed_task_that_still_holds_work() {
+        use tt_tasks::{LandedVia, WorkState};
+        // Content landed, but uncommitted changes removal would destroy — kept,
+        // matching `clean`'s guard.
+        let dirty = WorkState {
+            total_commits: 3,
+            uncommitted: 2,
+            landed: Some(LandedVia::Ancestor),
+            ..Default::default()
+        };
+        assert!(classify_stale_task("t", "feat/x", "main", &dirty).is_none());
+
+        // Orphaned commits (a detached-HEAD's work) are likewise unrecoverable.
+        let orphaned = WorkState {
+            total_commits: 3,
+            orphaned: 1,
+            landed: Some(LandedVia::Ancestor),
+            ..Default::default()
+        };
+        assert!(classify_stale_task("t", "feat/x", "main", &orphaned).is_none());
+    }
+
+    #[test]
+    fn stale_task_reason_names_each_landing_shape() {
+        use tt_tasks::{LandedVia, WorkState};
+        for (via, want) in [
+            (LandedVia::Ancestor, "merged into main"),
+            (LandedVia::Patches, "rebase-merged into main"),
+            (LandedVia::Squash, "squash-merged into main"),
+        ] {
+            let work = WorkState { total_commits: 1, landed: Some(via), ..Default::default() };
+            let check = classify_stale_task("t", "feat/x", "main", &work).unwrap();
+            assert_eq!(check.reason, want);
+        }
     }
 
     #[test]

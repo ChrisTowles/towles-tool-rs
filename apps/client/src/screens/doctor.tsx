@@ -4,6 +4,7 @@ import {
   CircleCheck,
   CircleX,
   KeyRound,
+  Layers,
   Puzzle,
   RefreshCw,
   Stethoscope,
@@ -33,6 +34,7 @@ type AgentBoardCheck = {
   warning?: string;
   hint?: string;
 };
+type StaleTaskCheck = { name: string; branch: string; reason: string };
 type DoctorReport = {
   result: {
     timestamp: string;
@@ -43,6 +45,7 @@ type DoctorReport = {
   };
   plugins: PluginCheck[];
   agentboard: AgentBoardCheck[];
+  staleTasks: StaleTaskCheck[];
 };
 
 export function DoctorScreen() {
@@ -61,7 +64,8 @@ export function DoctorScreen() {
     report.result.tools.every((c) => c.ok) &&
     report.result.ghAuth &&
     report.plugins.every((c) => c.ok) &&
-    report.agentboard.every((c) => c.ok || c.warning);
+    report.agentboard.every((c) => c.ok || c.warning) &&
+    report.staleTasks.length === 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -151,6 +155,27 @@ export function DoctorScreen() {
                   detail={a.hint ?? a.warning}
                 />
               ))}
+            </Panel>
+
+            <Panel
+              title="Stale tasks"
+              note={report.staleTasks.length > 0 ? String(report.staleTasks.length) : undefined}
+              icon={<Layers className="size-4" />}
+            >
+              {report.staleTasks.length === 0 ? (
+                <Empty>No stale tasks — every worktree still holds work.</Empty>
+              ) : (
+                report.staleTasks.map((t) => (
+                  <CheckRow
+                    key={t.name}
+                    ok={false}
+                    warned
+                    name={t.name}
+                    value={t.branch}
+                    detail={`${t.reason} — reclaim it with \`tt task clean\``}
+                  />
+                ))
+              )}
             </Panel>
           </div>
         </div>
