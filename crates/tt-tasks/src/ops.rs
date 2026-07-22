@@ -476,26 +476,52 @@ pub fn validate_branch_name(branch: &str) -> Result<()> {
     })
 }
 
-/// Preflight for the new-task dialog: is `branch` a legal ref, and would its
-/// derived task name collide with an existing task? Read-only.
+/// Is `branch` already a local ref in `checkout`? Read-only — `git
+/// show-ref` needs no fetch and never mutates anything.
+pub fn branch_exists(checkout: &Path, branch: &str) -> bool {
+    git_checkout(
+        checkout,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .map(|out| out.ok())
+    .unwrap_or(false)
+}
+
+/// Preflight for the new-task dialog: is `branch` a legal ref, does it
+/// already exist in git (the case `git worktree add` would otherwise reject
+/// after the fact), and would its derived task name collide with an
+/// existing task? Read-only.
 pub struct BranchCheck {
     pub name: Option<String>,
     pub taken: bool,
+    pub branch_exists: bool,
     pub error: Option<String>,
 }
 
 pub fn check_branch(sr: &TaskRoot, branch: &str) -> BranchCheck {
     if let Err(e) = validate_branch_name(branch) {
-        return BranchCheck { name: None, taken: false, error: Some(e.to_string()) };
+        return BranchCheck {
+            name: None,
+            taken: false,
+            branch_exists: false,
+            error: Some(e.to_string()),
+        };
     }
     match layout::task_name_from_branch(branch) {
         Some(name) => {
             let taken = sr.task_dir(&name).exists();
-            BranchCheck { name: Some(name), taken, error: None }
+            let exists = branch_exists(&sr.checkout, branch);
+            BranchCheck { name: Some(name), taken, branch_exists: exists, error: None }
         }
         None => BranchCheck {
             name: None,
             taken: false,
+            branch_exists: false,
             error: Some(OpsError::BadBranchName(branch.to_string()).to_string()),
         },
     }
@@ -1938,6 +1964,48 @@ mod tests {
         let (_tmp, sr) = temp_task_root();
         let check = check_branch(&sr, "feat/brand-new");
         assert_eq!(check.name.as_deref(), Some("feat-brand-new"));
+        assert!(!check.taken);
+        assert!(!check.branch_exists);
+        assert!(check.error.is_none());
+    }
+
+    #[test]
+    fn check_branch_flags_an_existing_git_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let checkout = tmp.path().join("repo");
+        fs::create_dir_all(&checkout).unwrap();
+        assert!(tt_exec::run("git", &["-C", checkout.to_str().unwrap(), "init", "-q"]).is_ok());
+        assert!(
+            tt_exec::run(
+                "git",
+                &[
+                    "-C",
+                    checkout.to_str().unwrap(),
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "x"
+                ]
+            )
+            .is_ok()
+        );
+        assert!(
+            tt_exec::run(
+                "git",
+                &[
+                    "-C",
+                    checkout.to_str().unwrap(),
+                    "branch",
+                    "feat/taken-elsewhere"
+                ]
+            )
+            .is_ok()
+        );
+        let sr = TaskRoot { checkout, repo: "repo".to_string() };
+
+        let check = check_branch(&sr, "feat/taken-elsewhere");
+        assert!(check.branch_exists);
         assert!(!check.taken);
         assert!(check.error.is_none());
     }

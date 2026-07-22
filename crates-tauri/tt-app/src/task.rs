@@ -60,17 +60,25 @@ pub fn task_base_branches(root: String) -> Result<Vec<ops::BaseBranch>, String> 
 pub struct BranchCheck {
     pub name: Option<String>,
     pub taken: bool,
+    pub branch_exists: bool,
     pub error: Option<String>,
 }
 
-/// Preflight the new-task dialog's branch field: is it a legal git ref, and
-/// would its derived task name collide with an existing one? Read-only —
-/// safe to call on every keystroke (debounced by the caller).
+/// Preflight the new-task dialog's branch field: is it a legal git ref, does
+/// it already exist in git (the case `git worktree add` would otherwise
+/// reject only after the fetch/worktree-add work has started), and would its
+/// derived task name collide with an existing one? Read-only — safe to call
+/// on every keystroke (debounced by the caller).
 #[tauri::command]
 pub fn task_check_branch(root: String, branch: String) -> Result<BranchCheck, String> {
     let sr = ops::discover_root(Some(&PathBuf::from(root))).map_err(|e| e.to_string())?;
     let check = ops::check_branch(&sr, branch.trim());
-    Ok(BranchCheck { name: check.name, taken: check.taken, error: check.error })
+    Ok(BranchCheck {
+        name: check.name,
+        taken: check.taken,
+        branch_exists: check.branch_exists,
+        error: check.error,
+    })
 }
 
 /// A **prompt improver** button in the new-task dialog: ask `claude -p` (cwd =
