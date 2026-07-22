@@ -50,7 +50,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 /// The sort/range key format for calendar events: UTC, fixed width, matching
 /// the `starts_at_utc`/`ends_at_utc` generated columns' `strftime` format
@@ -225,6 +225,20 @@ CREATE TABLE IF NOT EXISTS task_prs (
     checks TEXT NOT NULL DEFAULT 'none',
     state_ts INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, repo, number)
+);
+";
+
+/// v12: tracked-repo identity cache (repo root -> GitHub `owner/repo` slug).
+/// Reconciled wholesale by the Agentboard poll loop from the shared
+/// `repos.json` tracked-repo list plus each repo's freshly-derived git
+/// origin (see [`Store::reconcile_repos`]), so `repos.json` stays the sole
+/// source of truth for "which repos are tracked" and this table is a pure,
+/// self-healing cache — there is no separate untrack path to keep in sync.
+const SCHEMA_REPOS_V12: &str = "\
+CREATE TABLE IF NOT EXISTS repos (
+    repo_root TEXT PRIMARY KEY,
+    owner_repo TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
 );
 ";
 
@@ -630,6 +644,7 @@ impl Store {
         )?;
         self.conn.execute_batch(SCHEMA_MCP_CALLS_V5)?;
         self.migrate_collect_runs_v6()?;
+        self.conn.execute_batch(SCHEMA_REPOS_V12)?;
         self.conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1419,6 +1434,63 @@ impl Store {
             return Err(Error::TaskNotFound(id));
         }
         Ok(())
+    }
+
+    /// Reconcile the tracked-repo identity cache to exactly `repos`
+    /// (`repo_root` -> `owner_repo` pairs): upsert each pair, then delete any
+    /// existing row whose `repo_root` isn't in the set. The Agentboard poll
+    /// loop calls this every cycle with the currently tracked repos and their
+    /// freshly-derived git origin, so untracking a repo (or its origin
+    /// becoming unparseable) drops its row on the next poll with no separate
+    /// untrack step — `repos.json` stays the one source of truth for which
+    /// repos exist, and this table can never drift into holding a stale one.
+    pub fn reconcile_repos(&self, repos: &[(String, String)], now_ms: i64) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut upsert = tx.prepare(
+                "INSERT INTO repos (repo_root, owner_repo, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(repo_root) DO UPDATE SET owner_repo = excluded.owner_repo,
+                                                       updated_at = excluded.updated_at",
+            )?;
+            for (repo_root, owner_repo) in repos {
+                upsert.execute(params![repo_root, owner_repo, now_ms])?;
+            }
+            if repos.is_empty() {
+                tx.execute("DELETE FROM repos", [])?;
+            } else {
+                let placeholders = repos.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+                let mut del = tx.prepare(&format!(
+                    "DELETE FROM repos WHERE repo_root NOT IN ({placeholders})"
+                ))?;
+                let roots: Vec<&String> = repos.iter().map(|(root, _)| root).collect();
+                del.execute(rusqlite::params_from_iter(roots))?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The tracked repo root for a given `owner/repo` slug, if the identity
+    /// cache currently knows it. `task_create` validates its `repo` argument
+    /// against this instead of matching a dir/basename.
+    pub fn repo_root_for_owner_repo(&self, owner_repo: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        self.conn
+            .query_row(
+                "SELECT repo_root FROM repos WHERE owner_repo = ?1",
+                params![owner_repo],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(Error::from)
+    }
+
+    /// Every tracked repo's `owner/repo` slug, sorted for a stable error
+    /// message when `task_create` rejects an unknown `repo` argument.
+    pub fn repo_slugs(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT owner_repo FROM repos ORDER BY owner_repo")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
     }
 
     /// Replace only the named repos' PR rows, leaving other repos' rows intact.
@@ -2479,6 +2551,35 @@ mod tests {
         let issues = s.issues().unwrap();
         let repos: Vec<&str> = issues.iter().map(|i| i.repo.as_str()).collect();
         assert!(repos.contains(&"o/a") && repos.contains(&"o/b"));
+    }
+
+    #[test]
+    fn reconcile_repos_upserts_and_drops_untracked() {
+        let s = Store::open_in_memory().unwrap();
+        s.reconcile_repos(
+            &[
+                ("/repo/a".to_string(), "o/a".to_string()),
+                ("/repo/b".to_string(), "o/b".to_string()),
+            ],
+            100,
+        )
+        .unwrap();
+        assert_eq!(s.repo_root_for_owner_repo("o/a").unwrap().as_deref(), Some("/repo/a"));
+        assert_eq!(s.repo_root_for_owner_repo("o/b").unwrap().as_deref(), Some("/repo/b"));
+
+        // /repo/a's origin was renamed and /repo/b fell out of tracking.
+        s.reconcile_repos(&[("/repo/a".to_string(), "o/a-renamed".to_string())], 200).unwrap();
+        assert_eq!(s.repo_root_for_owner_repo("o/a").unwrap(), None);
+        assert_eq!(s.repo_root_for_owner_repo("o/a-renamed").unwrap().as_deref(), Some("/repo/a"));
+        assert_eq!(s.repo_root_for_owner_repo("o/b").unwrap(), None);
+    }
+
+    #[test]
+    fn reconcile_repos_empty_clears_the_cache() {
+        let s = Store::open_in_memory().unwrap();
+        s.reconcile_repos(&[("/repo/a".to_string(), "o/a".to_string())], 100).unwrap();
+        s.reconcile_repos(&[], 200).unwrap();
+        assert!(s.repo_slugs().unwrap().is_empty());
     }
 
     #[test]

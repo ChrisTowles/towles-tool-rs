@@ -61,8 +61,10 @@ fn stash_count(stash_list: &str) -> usize {
 /// [`normalize_remote_url`] to fold the ssh/https/scp forms, then keeps the last
 /// two path segments (`github.com/owner/name` → `owner/name`), lowercased.
 /// `None` when the URL lacks two path segments (e.g. a bare host or a local
-/// path), so the caller can treat it as "not a GitHub checkout".
-fn repo_slug_from_remote(url: &str) -> Option<String> {
+/// path), so the caller can treat it as "not a GitHub checkout". Public: also
+/// used by the Agentboard poll loop to reconcile `tt-store`'s tracked-repo
+/// identity cache from each repo's git origin.
+pub fn repo_slug_from_remote(url: &str) -> Option<String> {
     let normalized = normalize_remote_url(url);
     let mut segments = normalized.split('/').filter(|s| !s.is_empty());
     // Drop everything before the final owner/name pair.

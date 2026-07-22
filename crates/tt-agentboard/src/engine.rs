@@ -429,6 +429,27 @@ impl Engine {
         changed
     }
 
+    /// Every top-level tracked repo's dir paired with its cached git origin
+    /// URL (`None` for a repo whose git info hasn't been computed yet, or
+    /// which has no `origin` remote). Read-only and cache-only — no git
+    /// subprocess — so the host can call this under the engine lock, unlike
+    /// [`Self::git_targets`]'s recompute path. Feeds the host's `tt-store`
+    /// tracked-repo identity reconciliation (see `tt_store::Store::
+    /// reconcile_repos`): the host derives an `owner/repo` slug from each
+    /// origin URL and reconciles the cache to exactly that set every tick,
+    /// so `repos.json` (via `self.repo_paths`) stays the sole source of
+    /// truth for which repos are tracked.
+    pub fn tracked_repo_origins(&mut self) -> Vec<(String, Option<String>)> {
+        self.reload_repos();
+        repo_entries(&self.repo_paths)
+            .into_iter()
+            .map(|e| {
+                let origin = self.git_cache.get(&e.dir).origin_url;
+                (e.dir, origin)
+            })
+            .collect()
+    }
+
     /// Full recompute from repos.json (desktop mode). Base order is by name
     /// (createdAt is meaningless for configured repos).
     ///
