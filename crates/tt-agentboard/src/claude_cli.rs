@@ -10,7 +10,8 @@
 //!
 //! The parse is pure and fixture-tested; the fetch is a thin subprocess
 //! wrapper with a process-wide cache so the watcher (2s), engine pinning
-//! (every rebuild), and pane scan (3s) share one ~170ms CLI call.
+//! (every rebuild), and pane scan (3s) share one ~170ms CLI call, gated to
+//! roughly once a minute by [`crate::watchers::claude_code::CLI_CACHE_TTL_MS`].
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};

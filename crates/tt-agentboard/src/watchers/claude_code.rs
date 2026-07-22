@@ -45,10 +45,13 @@ use crate::watchers::claude_usage::{ClaudeUsageSummary, extract_usage_summary};
 
 const NAME: &str = "claude-code";
 /// The shared CLI snapshot TTL (watcher 2s tick, pane scan 3s, engine
-/// rebuilds). Each expiry costs a `claude agents` Node process (~170ms);
-/// 5s keeps liveness plenty fresh for pinning/attribution at a fraction of
-/// the former 1.5s respawn rate.
-pub const CLI_CACHE_TTL_MS: u64 = 5000;
+/// rebuilds). Each expiry costs a `claude agents` Node process (~170ms); the
+/// consumers all tick every 2-3s regardless, so this TTL alone sets the real
+/// spawn cadence. 60s keeps liveness fresh enough for pinning/attribution
+/// (agent status is inherently coarse — nothing here is an event-driven
+/// refresh) while cutting a continuous ~5s subprocess spawn down to roughly
+/// once a minute.
+pub const CLI_CACHE_TTL_MS: u64 = 60_000;
 
 // The transcript line schema ([`TranscriptEntry`], content accessors) now lives
 // in the shared `tt-claude-code` crate. This watcher keeps only the claude-code
