@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { loadMonaco } from "@/lib/monaco";
 import {
   ideClearSelection,
@@ -363,7 +364,6 @@ export function CodeViewer({
           const reread = await ideReadFile(dir, path);
           if (disposed || !model || model.isDisposed()) return;
           if (reread.isErr()) {
-            const { toast } = await import("sonner");
             toast.error(`Couldn't reload ${path} — ${reread.error.message}`);
             return;
           }

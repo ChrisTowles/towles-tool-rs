@@ -31,7 +31,7 @@
         "src/lib/focus-target.ts",
         "src/lib/settings-target.ts",
         "src/lib/monaco-dialog-store.ts",
-        "src/lib/lsp.ts"
+        "src/lib/lsp-status.ts"
       ],
       "rules": {
         "unicorn/no-useless-spread": "off"

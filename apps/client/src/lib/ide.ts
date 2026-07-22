@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { Result } from "better-result";
+import { toast } from "sonner";
 import { invoke, isTauri } from "@/lib/tauri";
 import { errorMessage, type IpcError } from "@/lib/errors";
 import { formatMentionRef, type MentionRange } from "@/lib/ide-selection";
@@ -224,7 +225,6 @@ export async function saveBufferSnapshot(
 ): Promise<{ mtimeMs: number; versionAtSave: number } | null> {
   const written = await ideWriteFile(dir, filePath, snapshot.value, expectedMtimeMs);
   if (written.isErr()) {
-    const { toast } = await import("sonner");
     toast.error(`Couldn't save ${filePath} — ${written.error.message}`);
     return null;
   }
@@ -273,7 +273,6 @@ export async function ideMention(
   range: MentionRange | null,
 ): Promise<void> {
   const sent = await ideAtMention(dir, filePath, range?.startLine, range?.endLine);
-  const { toast } = await import("sonner");
   sent.match({
     ok: () => toast.success(`${formatMentionRef(filePath, range)} sent to claude`),
     err: (e) => toast.error(errorMessage(e)),

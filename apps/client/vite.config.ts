@@ -2,9 +2,27 @@ import importMetaUrlPlugin from "@codingame/esbuild-import-meta-url-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import { resolveDevPort } from "../../scripts/task-port.mjs";
 import pkg from "./package.json" with { type: "json" };
+
+// @vscode/diff reads its .wasm off disk from a Node-only branch of `initWasm()`
+// that a WebView never takes; left alone, every chunk pulling it in warns that
+// `node:fs/promises` was externalized. Point that one dep at a shim that throws
+// instead — deliberately scoped to it rather than aliased globally, so the next
+// dep to reach for a Node builtin still says so at build time instead of
+// silently resolving to a stub that only fails once something calls it.
+function vscodeDiffNodeShim(): Plugin {
+  const shim = path.resolve(__dirname, "./src/shims/node-fs-promises.ts");
+  return {
+    name: "tt:vscode-diff-node-shim",
+    enforce: "pre",
+    resolveId(source, importer) {
+      if (source !== "node:fs/promises" || !importer?.includes("@vscode/diff")) return null;
+      return shim;
+    },
+  };
+}
 
 // Every @codingame/monaco-vscode-* package must be pre-bundled together (and
 // deduped) so they share one module instance — otherwise, in dev, the
@@ -42,7 +60,7 @@ function requireDevPort(): number {
 
 // https://vitejs.dev/config/
 export default defineConfig(({ command }) => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), vscodeDiffNodeShim()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -71,8 +89,12 @@ export default defineConfig(({ command }) => ({
   },
   // The textmate tokenization worker code-splits, which rollup only supports
   // with ES-module workers (module workers are fine in WebKitGTK/WebView2).
+  // Worker builds are their own rollup pass and do NOT inherit `plugins`, so
+  // the @vscode/diff shim has to be registered a second time here — the worker
+  // graph pulls that dep in too, and without this it warns three more times.
   worker: {
     format: "es",
+    plugins: () => [vscodeDiffNodeShim()],
   },
   // The main chunk is ~2.4 MB minified and that is accepted, not an
   // oversight: the monaco-vscode stack must stay one module graph (see the
