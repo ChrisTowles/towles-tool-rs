@@ -8,6 +8,7 @@ import {
   rollupAlertTextColor,
   useAgentboardState,
 } from "@/lib/agentboard";
+import { dmsNeedingAttention, useStoreSnapshot } from "@/lib/data";
 import { NAV_SECTIONS, SCREENS } from "@/lib/screens";
 import { useWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
@@ -15,8 +16,10 @@ import { cn } from "@/lib/utils";
 export function AppSidebar() {
   const { activeTab, openTab } = useWorkspace();
   const state = useAgentboardState();
+  const { snapshot } = useStoreSnapshot();
   // Coldness flips at most once per TTL; re-render on each state event is enough.
   const rollup = agentRollup(state.repos, Date.now(), state.compactRecommendPercent);
+  const slackUnread = dmsNeedingAttention(snapshot).length > 0;
 
   return (
     <ScrollArea className="h-full">
@@ -56,6 +59,12 @@ export function AppSidebar() {
                       )}
                     </span>
                   )}
+                  {id === "slack" && slackUnread && (
+                    <span
+                      className="ml-auto size-1.5 rounded-full bg-rose-500"
+                      title="unanswered DM"
+                    />
+                  )}
                 </Button>
               );
             })}
@@ -74,8 +83,10 @@ export function AppSidebar() {
 export function AppSidebarIcons() {
   const { activeTab, openTab } = useWorkspace();
   const state = useAgentboardState();
+  const { snapshot } = useStoreSnapshot();
   const rollup = agentRollup(state.repos, Date.now(), state.compactRecommendPercent);
   const badgeColor = rollupAlertColor(rollup);
+  const slackUnread = dmsNeedingAttention(snapshot).length > 0;
 
   return (
     <ScrollArea className="h-full">
@@ -87,6 +98,7 @@ export function AppSidebarIcons() {
               const screen = SCREENS[id];
               const active = activeTab === id;
               const showBadge = id === "agentboard" && rollup.total > 0;
+              const showSlackDot = id === "slack" && slackUnread;
               return (
                 <Tooltip key={id}>
                   <TooltipTrigger asChild>
@@ -112,12 +124,16 @@ export function AppSidebarIcons() {
                           {rollup.total}
                         </span>
                       )}
+                      {showSlackDot && (
+                        <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-rose-500" />
+                      )}
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="right">
                     {screen.title}
                     {showBadge &&
                       ` — ${rollup.total} agent${rollup.total === 1 ? "" : "s"}${rollup.waiting > 0 ? `, ${rollup.waiting} waiting` : ""}${rollup.error > 0 ? `, ${rollup.error} errored` : ""}`}
+                    {showSlackDot && " — unanswered DM"}
                   </TooltipContent>
                 </Tooltip>
               );
