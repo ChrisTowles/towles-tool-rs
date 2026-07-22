@@ -176,6 +176,48 @@ pub fn untrack_missing_persisted(path: &Path) -> std::io::Result<(Vec<String>, V
     Ok((config.repo_paths, missing))
 }
 
+/// Whether `dir` is a linked worktree whose `.git` file points at a gitdir
+/// that no longer exists — e.g. the main checkout's `.git/worktrees/<name>`
+/// registration was removed (by hand, or a `git worktree remove`/prune that
+/// raced a delete) while the worktree's own directory is still on disk. Every
+/// git subprocess run in `dir` then fails with `fatal: not a git repository`,
+/// which [`missing_repo_dirs`]' plain [`Path::exists`] check can't catch since
+/// the directory itself is still there. A `.git` *directory* (a normal clone)
+/// is never "broken" by this check — only a linked worktree can go stale this
+/// way.
+fn is_broken_worktree(dir: &Path) -> bool {
+    let dotgit = dir.join(".git");
+    let Ok(text) = std::fs::read_to_string(&dotgit) else {
+        return false;
+    };
+    let Some(gitdir) = text.strip_prefix("gitdir:").map(str::trim) else {
+        return false;
+    };
+    let gitdir =
+        if Path::new(gitdir).is_absolute() { PathBuf::from(gitdir) } else { dir.join(gitdir) };
+    !gitdir.exists()
+}
+
+/// Tracked paths that are broken linked worktrees per [`is_broken_worktree`].
+fn broken_worktree_dirs(repo_paths: &[String]) -> Vec<String> {
+    repo_paths.iter().filter(|p| is_broken_worktree(Path::new(p))).cloned().collect()
+}
+
+/// Untrack every repo whose linked worktree has gone stale (its gitdir
+/// registration is gone, even though the directory itself remains) — straight
+/// against the on-disk file, same reread-then-write rationale as
+/// [`add_repo_persisted`]. Returns the merged repo list plus the dirs that
+/// were dropped; a no-op when nothing is broken (the file is not rewritten).
+pub fn untrack_broken_persisted(path: &Path) -> std::io::Result<(Vec<String>, Vec<String>)> {
+    let mut config = load_config(path);
+    let broken = broken_worktree_dirs(&config.repo_paths);
+    if !broken.is_empty() {
+        config.repo_paths.retain(|p| !broken.contains(p));
+        save_config(path, &config)?;
+    }
+    Ok((config.repo_paths, broken))
+}
+
 /// Dirs skipped while scanning: hidden dirs plus common heavy build/dep dirs.
 fn is_skippable(name: &str) -> bool {
     name.starts_with('.') || matches!(name, "node_modules" | "target" | "dist" | "build")
@@ -459,6 +501,51 @@ mod tests {
         // second run is a clean no-op
         let (merged, removed) = untrack_missing_persisted(&path).unwrap();
         assert_eq!(merged.len(), 1);
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn untrack_broken_persisted_drops_stale_worktrees_only() {
+        let dir = TempDir::new().unwrap();
+
+        // A normal clone: `.git` is a directory, never "broken".
+        let clone = dir.path().join("clone");
+        std::fs::create_dir_all(clone.join(".git")).unwrap();
+
+        // A healthy linked worktree: its gitdir target exists.
+        let live_gitdir = dir.path().join("main/.git/worktrees/live");
+        std::fs::create_dir_all(&live_gitdir).unwrap();
+        let live_wt = dir.path().join("live-wt");
+        std::fs::create_dir_all(&live_wt).unwrap();
+        std::fs::write(live_wt.join(".git"), format!("gitdir: {}\n", live_gitdir.display()))
+            .unwrap();
+
+        // A stale linked worktree: the directory is still on disk, but its
+        // gitdir registration under the main checkout is gone — the exact
+        // shape of the reported bug.
+        let stale_wt = dir.path().join("stale-wt");
+        std::fs::create_dir_all(&stale_wt).unwrap();
+        std::fs::write(
+            stale_wt.join(".git"),
+            format!("gitdir: {}\n", dir.path().join("main/.git/worktrees/stale").display()),
+        )
+        .unwrap();
+
+        let clone_s = clone.to_string_lossy().to_string();
+        let live_s = live_wt.to_string_lossy().to_string();
+        let stale_s = stale_wt.to_string_lossy().to_string();
+
+        let path = dir.path().join("repos.json");
+        save_repos(&path, &[clone_s.clone(), live_s.clone(), stale_s.clone()]).unwrap();
+
+        let (merged, removed) = untrack_broken_persisted(&path).unwrap();
+        assert_eq!(merged, vec![clone_s.clone(), live_s.clone()]);
+        assert_eq!(removed, vec![stale_s]);
+        assert_eq!(load_repos(&path), vec![clone_s, live_s]);
+
+        // second run is a clean no-op
+        let (merged, removed) = untrack_broken_persisted(&path).unwrap();
+        assert_eq!(merged.len(), 2);
         assert!(removed.is_empty());
     }
 
