@@ -4,6 +4,10 @@
  * Pure module — no Tauri, no DOM rendering.
  */
 
+// Duplicated from shortcuts.tsx's IS_MAC rather than imported — that module
+// pulls in Dialog/React UI, which this pure module deliberately stays free of.
+const IS_MAC = typeof navigator !== "undefined" && /mac/i.test(navigator.platform ?? "");
+
 export interface Run {
   x: number;
   width: number;
@@ -231,25 +235,36 @@ export type KeyWireEventLike = KeyEventLike &
  * its jump-to-live-bottom on a plain Shift press. */
 export const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "NumLock"]);
 
+/** The app's copy chord: ⌘+Shift+C on macOS, Ctrl+Shift+C elsewhere. Shared
+ * by `terminal-view.tsx`'s `onKeyDown` (which handles the chord) and
+ * `keyEventWire` below (which must yield the same keystroke to the shell). */
+export function isCopyChord(e: KeyEventLike): boolean {
+  const mod = IS_MAC ? e.metaKey : e.ctrlKey;
+  return mod && e.shiftKey && (e.key === "C" || e.key === "c");
+}
+
+/** The app's paste chord: ⌘+Shift+V on macOS, Ctrl+Shift+V elsewhere — must
+ * reach the native `paste` event rather than the shell. See {@link isCopyChord}. */
+export function isPasteChord(e: KeyEventLike): boolean {
+  const mod = IS_MAC ? e.metaKey : e.ctrlKey;
+  return mod && e.shiftKey && (e.key === "V" || e.key === "v");
+}
+
 /**
  * Map a DOM key event onto the `term_key` wire, or null when the keystroke
- * isn't the shell's to consume: Super/Cmd chords stay with the OS, and
- * Ctrl+Shift+C/V are the app's copy/paste chords (Ctrl+Shift+V must reach
- * the native paste event). Everything else is routed — the engine decides
- * what bytes, if any, the current terminal modes produce for it.
+ * isn't the shell's to consume: any Cmd/Meta chord stays with the OS (this
+ * also covers macOS's ⌘⇧C/⌘⇧V copy/paste chords, matched by
+ * {@link isCopyChord}/{@link isPasteChord} below), and Ctrl+Shift+C/V are
+ * the app's copy/paste chords on Linux/Windows (Ctrl+Shift+V must reach the
+ * native paste event). Everything else is routed — the engine decides what
+ * bytes, if any, the current terminal modes produce for it.
  */
 export function keyEventWire(
   e: KeyWireEventLike,
   action: "press" | "release" = "press",
 ): KeyEventWire | null {
   if (e.metaKey) return null; // OS shortcuts stay with the OS
-  if (
-    e.ctrlKey &&
-    e.shiftKey &&
-    (e.key === "C" || e.key === "c" || e.key === "V" || e.key === "v")
-  ) {
-    return null; // copy/paste chords are the app's
-  }
+  if (isCopyChord(e) || isPasteChord(e)) return null; // copy/paste chords are the app's
   return {
     code: e.code,
     key: e.key,

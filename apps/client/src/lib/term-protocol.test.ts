@@ -3,6 +3,8 @@ import {
   exitIsCrash,
   exitLabel,
   graphemeClusters,
+  isCopyChord,
+  isPasteChord,
   isWideRun,
   keyEventWire,
   scrollbackKey,
@@ -82,6 +84,31 @@ describe("scrollbackKey", () => {
     expect(scrollbackKey(key("PageUp", { shiftKey: true, ctrlKey: true }))).toBeNull();
     expect(scrollbackKey(key("Home", { shiftKey: true, altKey: true }))).toBeNull();
     expect(scrollbackKey(key("ArrowUp", { shiftKey: true }))).toBeNull();
+  });
+});
+
+// The test environment is node (no `navigator`), so IS_MAC is always false
+// here — these exercise the Ctrl+Shift branch; the Meta+Shift (mac) branch is
+// structurally identical and covered by keyEventWire's unconditional
+// metaKey → null below, which is platform-independent.
+describe("isCopyChord / isPasteChord", () => {
+  it("matches Ctrl+Shift+C / Ctrl+Shift+V, either case", () => {
+    expect(isCopyChord(key("c", { ctrlKey: true, shiftKey: true }))).toBe(true);
+    expect(isCopyChord(key("C", { ctrlKey: true, shiftKey: true }))).toBe(true);
+    expect(isPasteChord(key("v", { ctrlKey: true, shiftKey: true }))).toBe(true);
+    expect(isPasteChord(key("V", { ctrlKey: true, shiftKey: true }))).toBe(true);
+  });
+
+  it("requires both the modifier and shift", () => {
+    expect(isCopyChord(key("c", { ctrlKey: true }))).toBe(false);
+    expect(isCopyChord(key("c", { shiftKey: true }))).toBe(false);
+    expect(isPasteChord(key("v", { ctrlKey: true }))).toBe(false);
+    expect(isPasteChord(key("v", { shiftKey: true }))).toBe(false);
+  });
+
+  it("doesn't cross-match copy and paste", () => {
+    expect(isCopyChord(key("v", { ctrlKey: true, shiftKey: true }))).toBe(false);
+    expect(isPasteChord(key("c", { ctrlKey: true, shiftKey: true }))).toBe(false);
   });
 });
 
