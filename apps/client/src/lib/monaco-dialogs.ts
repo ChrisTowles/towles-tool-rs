@@ -16,6 +16,7 @@
  * button click is what answers VS Code.
  */
 
+import { toast } from "sonner";
 import { IDialogService } from "@codingame/monaco-vscode-api";
 import { Event } from "@codingame/monaco-vscode-api/vscode/vs/base/common/event";
 import { deleteCopyForTrash, isDangerous, stripMnemonic } from "@/lib/monaco-dialog-copy";
@@ -66,19 +67,18 @@ class AppDialogService {
   // rename or delete surfaces here, and console-only meant the user saw a
   // silent no-op after confirming.
   async info(message: string, detail?: string) {
-    await this.notify("info", message, detail);
+    this.notify("info", message, detail);
   }
 
   async warn(message: string, detail?: string) {
-    await this.notify("warning", message, detail);
+    this.notify("warning", message, detail);
   }
 
   async error(message: string, detail?: string) {
-    await this.notify("error", message, detail);
+    this.notify("error", message, detail);
   }
 
-  private async notify(level: "info" | "warning" | "error", message: string, detail?: string) {
-    const { toast } = await import("sonner");
+  private notify(level: "info" | "warning" | "error", message: string, detail?: string) {
     toast[level](detail ? `${message} — ${detail}` : message);
   }
 

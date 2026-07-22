@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { loadMonaco } from "@/lib/monaco";
 import { invoke } from "@/lib/tauri";
 import { errorMessage } from "@/lib/errors";
@@ -366,7 +367,6 @@ export function MonacoMultiDiff({
       if (choice === "theirs") {
         const read = await ideReadFile(dir, path);
         if (read.isErr()) {
-          const { toast } = await import("sonner");
           toast.error(`Couldn't reload ${path} — ${read.error.message}`);
           continue;
         }

@@ -46,6 +46,10 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      // @vscode/diff imports this from a Node-only branch that a WebView never
+      // takes; without the alias every chunk pulling it in warns about the
+      // externalized builtin. See the shim for the full story.
+      "node:fs/promises": path.resolve(__dirname, "./src/shims/node-fs-promises.ts"),
     },
     dedupe: ["monaco-editor", "vscode", ...monacoVscodeDeps],
   },

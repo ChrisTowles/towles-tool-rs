@@ -16,7 +16,7 @@ import { PaneChrome, PaneLens } from "@/components/pane-chrome";
 import { FilePreview, previewKindFor } from "@/components/file-preview";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ideMention, useIdeConnected } from "@/lib/ide";
-import { useLspStatus } from "@/lib/lsp";
+import { useLspStatus } from "@/lib/lsp-status";
 import {
   attachExplorer,
   runMonacoCommand,
