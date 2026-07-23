@@ -24,7 +24,7 @@ pub fn run(command: CollectCommands, config_dir: Option<&Path>) -> i32 {
     // hook's timeout budget, so it must stay a cheap filesystem touch, not pay
     // for opening (and migrating) tt.db like every other collect subcommand.
     if let CollectCommands::Nudge(args) = &command {
-        return run_nudge(args.target);
+        return run_nudge(args.target, args.trigger.as_deref());
     }
 
     let store = match Store::open_default() {
@@ -107,21 +107,56 @@ fn now_ms() -> i64 {
 /// runs that collect immediately instead of waiting for its normal poll
 /// cadence — see `crates-tauri/tt-app/src/scheduler.rs`. Content is just the
 /// timestamp, for debuggability; only the file's existence/mtime is ever read.
-fn run_nudge(target: NudgeTarget) -> i32 {
+///
+/// Emits a `hook.nudge` telemetry event regardless of outcome — this is the
+/// only record a `gh pr`/`gh issue` mutation leaves in `tt-telemetry`, since
+/// those run as plain Bash-tool subprocesses (via the `gh-pr-nudge.sh`
+/// PostToolUse hook), never through `tt-exec`, so no `process.spawn` span
+/// exists for the mutation itself.
+fn run_nudge(target: NudgeTarget, trigger: Option<&str>) -> i32 {
     let dir = match tt_config::nudge_dir_path() {
         Ok(dir) => dir,
         Err(e) => {
+            tracing::info!(
+                nudge_target = target.to_collect().key(),
+                trigger,
+                outcome = "resolve_dir_failed",
+                error = %e,
+                "hook.nudge"
+            );
             ui::error(&format!("Failed to resolve nudge dir: {e}"));
             return 1;
         }
     };
     if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::info!(
+            nudge_target = target.to_collect().key(),
+            trigger,
+            outcome = "create_dir_failed",
+            error = %e,
+            "hook.nudge"
+        );
         ui::error(&format!("Failed to create nudge dir: {e}"));
         return 1;
     }
     match std::fs::write(dir.join(target.to_collect().file_name()), now_ms().to_string()) {
-        Ok(()) => 0,
+        Ok(()) => {
+            tracing::info!(
+                nudge_target = target.to_collect().key(),
+                trigger,
+                outcome = "ok",
+                "hook.nudge"
+            );
+            0
+        }
         Err(e) => {
+            tracing::info!(
+                nudge_target = target.to_collect().key(),
+                trigger,
+                outcome = "write_failed",
+                error = %e,
+                "hook.nudge"
+            );
             ui::error(&format!("Failed to write nudge file: {e}"));
             1
         }

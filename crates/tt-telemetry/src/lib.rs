@@ -17,7 +17,16 @@
 //!   `RUST_LOG` used to drive under `env_logger`.
 //! - An [`layer::EventLogLayer`] writes the structured record to
 //!   `<data_dir>/telemetry/events-<date>.jsonl`, instance-scoped so each
-//!   worktree gets its own log.
+//!   worktree gets its own log. **The naive unscoped path is a trap**: for a
+//!   process run from a `towles-tool-rs` checkout, `tt_config::state_scope()`
+//!   always resolves `<data_dir>` to a *scoped* directory —
+//!   `~/.local/share/towles-tool/tasks/<scope>/telemetry/…` — never the bare
+//!   `~/.local/share/towles-tool/telemetry/…`. That bare path exists on disk
+//!   but stays permanently empty, because nothing ever writes there; checking
+//!   it by eye (or with a stray `find`/`grep`) reads as "telemetry is broken"
+//!   when it's simply elsewhere. Resolve the real path with
+//!   `tt_config::telemetry_dir()` (or read it back via [`list_days`]/
+//!   [`read_day`]) rather than assuming the unscoped location.
 //! - [`list_days`]/[`read_day`] read those files back, for the Telemetry
 //!   viewer screen's Tauri bridge (`crates-tauri/tt-app/src/telemetry.rs`).
 //!   There is no cache here, unlike `tt-claude-sessions` — a day's log was
