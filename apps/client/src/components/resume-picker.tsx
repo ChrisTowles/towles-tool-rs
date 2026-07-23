@@ -91,8 +91,8 @@ export function ResumePicker() {
         <DialogHeader>
           <DialogTitle>Resume your sessions?</DialogTitle>
           <DialogDescription>
-            These panes were running Claude when Towles Tool last closed — pick the ones to
-            relaunch with <span className="font-mono text-xs">claude --resume</span>.
+            These panes were running Claude when Towles Tool last closed — pick the ones to relaunch
+            with <span className="font-mono text-xs">claude --resume</span>.
           </DialogDescription>
         </DialogHeader>
 

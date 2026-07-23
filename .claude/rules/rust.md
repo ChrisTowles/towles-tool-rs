@@ -22,6 +22,12 @@ paths:
   no-op cleanly when stdin/stdout is not a TTY, so CI and tests never hang.
 - **Tests:** unit tests in `#[cfg(test)] mod tests` alongside the logic;
   black-box CLI tests with `assert_cmd` under `crates-cli/tt-cli/tests/`.
+- **Testing `task_scope_from_dir`/removal scope:** don't use `tt_scoped()`'s
+  forced `TT_STATE_SCOPE` (every store resolves to one path, hiding scope
+  bugs) — use `current_dir()` on the spawned `tt` command instead. Never
+  fixture a removal-scope test's row at the *removed* task's own scope:
+  `ops::remove_task`'s `state_cleanup` wipes that scope wholesale regardless
+  of the bug under test, giving a false-positive pass.
 - **Style:** rustfmt at 100 columns (`cargo fmt --check`);
   `cargo clippy --all -- -D warnings` must pass — warnings are errors.
 - **Porting:** when deriving code from the TS CLI, cite the slot-1 source path

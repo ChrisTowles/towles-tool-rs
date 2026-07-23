@@ -107,3 +107,18 @@ export function matchIssues<T extends { number: number; title: string }>(
   if (/^\d+$/.test(q)) return issues.filter((i) => String(i.number).startsWith(q));
   return issues.filter((i) => i.title.toLowerCase().includes(q));
 }
+
+/**
+ * The distinct issue numbers already referenced as `#N` in `text`, in the
+ * order they first appear. Reuses {@link highlightSegments}'s classification
+ * so a URL fragment like `…/pull/4#issuecomment` is never mistaken for a
+ * reference — same rule, one source of truth.
+ */
+export function referencedIssueNumbers(text: string): number[] {
+  const seen = new Set<number>();
+  for (const seg of highlightSegments(text)) {
+    if (seg.kind !== "ref") continue;
+    seen.add(Number(seg.text.slice(1)));
+  }
+  return [...seen];
+}

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { toast } from "sonner";
 import {
   Folder,
   FolderGit2,
@@ -35,6 +36,7 @@ import {
 } from "@/components/agentboard-bits";
 import { DevServersButton } from "@/components/dev-servers";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -64,6 +66,7 @@ import {
   folderPortDrift,
   folderRemovableTask,
   folderSafeToDelete,
+  humanizeFolderName,
   isAgent,
   isSoloRepo,
   pathScope,
@@ -83,7 +86,7 @@ import {
   type StatePayload,
   type WindowsPayload,
 } from "@/lib/agentboard";
-import type { PrItem, TaskItem } from "@/lib/data";
+import { storeUpdateTask, type PrItem, type TaskItem } from "@/lib/data";
 import { shortcutHint } from "@/lib/shortcuts";
 import { railRowMotion } from "@/lib/rail-motion";
 import { AnimatePresence, motion } from "motion/react";
@@ -848,6 +851,34 @@ function FolderHeader({
   // swap the git-facts line (branch/diff are meaningless) for an inline
   // Untrack — a dead folder's one useful action, surfaced not buried.
   const missing = folder.dirMissing;
+  // A worktree task's real, human-authored title — never substituted for the
+  // primary checkout's own header (its `title` is the repo's actual name, not
+  // a slug, and a task-only task can bind to it too — see `taskForFolder` —
+  // so showing a stray task's title there would misname the repo itself).
+  const humanTitle = folder.isWorktree ? task?.text?.trim() : undefined;
+  const displayTitle = humanTitle || (folder.isWorktree ? humanizeFolderName(title) : title);
+  // Once a real title is shown, the branch is no longer restating the same
+  // information under a different name — always keep it visible. Falling
+  // back to the de-slugified name (no task/title at all) is still the same
+  // information reformatted, so the existing redundancy check still applies.
+  const showBranchLabel = Boolean(humanTitle) || !branchRedundant(folder.name, folder.branch);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+
+  function startRename() {
+    if (!task) return;
+    setRenameValue(task.text);
+    setRenaming(true);
+  }
+
+  async function commitRename() {
+    setRenaming(false);
+    const trimmed = renameValue.trim();
+    if (!task || !trimmed || trimmed === task.text) return;
+    const result = await storeUpdateTask(task.id, trimmed, task.notes);
+    if (result.isErr()) toast.error(`Couldn't rename — ${result.error.message}`);
+  }
+
   return (
     // Two lines: name (line 1) with the git facts — branch, worktree, diff,
     // PR — grouped underneath (line 2), so a long branch never squeezes the
@@ -875,9 +906,11 @@ function FolderHeader({
       )}
     >
       <div className="flex items-center gap-2 pt-1.5">
-        <button
-          type="button"
-          onClick={onToggle}
+        {/* Split from a single button into a button (toggle only) + a
+            span/input sibling, per this repo's "swap the element, don't nest
+            one" rule for inline rename — an <Input> can't live inside a
+            <button>. */}
+        <div
           className={cn(
             "flex min-w-0 flex-1 items-center gap-2",
             // Ghost: dim the identity cluster so it reads as inert. The action
@@ -885,35 +918,62 @@ function FolderHeader({
             missing && "opacity-60",
           )}
         >
-          <Chevron collapsed={collapsed} />
-          {missing ? (
-            <FolderX className="size-3.5 shrink-0 text-muted-foreground/70" />
-          ) : scope === "repo" ? (
-            <HeaderIcon
-              className={cn("size-3.5 shrink-0", !hasRepoColor(meta) && "text-muted-foreground")}
-              style={accent.iconStyle}
+          <button type="button" onClick={onToggle} className="flex shrink-0 items-center gap-2">
+            <Chevron collapsed={collapsed} />
+            {missing ? (
+              <FolderX className="size-3.5 shrink-0 text-muted-foreground/70" />
+            ) : scope === "repo" ? (
+              <HeaderIcon
+                className={cn("size-3.5 shrink-0", !hasRepoColor(meta) && "text-muted-foreground")}
+                style={accent.iconStyle}
+              />
+            ) : (
+              <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
+            )}
+            {scope === "repo" && scopePrefix && (
+              <span className="shrink-0 font-mono text-sm text-muted-foreground/60">
+                {scopePrefix}
+              </span>
+            )}
+          </button>
+          {renaming ? (
+            <Input
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void commitRename();
+                if (e.key === "Escape") setRenaming(false);
+              }}
+              onBlur={() => void commitRename()}
+              className="h-6 min-w-0 flex-1 px-1.5 py-0 text-sm"
+              aria-label="Rename task"
             />
           ) : (
-            <Folder className="size-3.5 shrink-0 text-muted-foreground/70" />
-          )}
-          {scope === "repo" && scopePrefix && (
-            <span className="shrink-0 font-mono text-sm text-muted-foreground/60">
-              {scopePrefix}
+            <span
+              onClick={onToggle}
+              onDoubleClick={
+                task && !missing
+                  ? (e) => {
+                      e.stopPropagation();
+                      startRename();
+                    }
+                  : undefined
+              }
+              title={humanTitle ? folder.name : undefined}
+              className={cn(
+                "min-w-0 flex-1 cursor-pointer truncate",
+                scope === "repo"
+                  ? "text-sm font-semibold"
+                  : "text-sm font-medium text-muted-foreground",
+                missing && "line-through decoration-muted-foreground/40",
+              )}
+            >
+              {displayTitle}
             </span>
           )}
-          <span
-            className={cn(
-              "min-w-0 truncate",
-              scope === "repo"
-                ? "text-sm font-semibold"
-                : "text-sm font-medium text-muted-foreground",
-              missing && "line-through decoration-muted-foreground/40",
-            )}
-          >
-            {title}
-          </span>
           {missing && <GhostBadge />}
-        </button>
+        </div>
         {collapsed && !missing && <CollapsedLive sessions={folder.sessions} />}
         {needs > 0 && <NeedsBadge n={needs} />}
         {/* No "New session"/"New task" on a ghost — the directory is gone. */}
@@ -973,10 +1033,13 @@ function FolderHeader({
         </div>
       ) : (
         <div className="ml-11 flex items-center gap-1.5 pb-1.5">
-          {/* A worktree task's folder name IS its slugged branch, so the label
-              would say the title twice — drop it and let the diff/PR facts own
-              the line. The main checkout ("towles-tool-rs" on `main`) keeps it. */}
-          {!branchRedundant(folder.name, folder.branch) && (
+          {/* A real task title and the branch are now two different pieces of
+              information, so the branch stays visible whenever one exists.
+              Falling back to the de-slugified folder name is still the same
+              information reformatted, so that case keeps the old redundancy
+              check (a worktree task's folder name IS its slugged branch; the
+              main checkout, "towles-tool-rs" on `main`, is never redundant). */}
+          {showBranchLabel && (
             <BranchLabel branch={folder.branch} isWorktree={folder.isWorktree} onClick={onToggle} />
           )}
           {deleting && <DeletingBadge />}

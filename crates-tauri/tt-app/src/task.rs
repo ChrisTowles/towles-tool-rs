@@ -92,7 +92,7 @@ pub fn task_check_branch(root: String, branch: String) -> Result<BranchCheck, St
 /// Long-running (a cold `claude` CLI) → off the main thread.
 ///
 /// Returns `tt_tasks::Suggested`, which serializes flat as
-/// `{branch, goal, fallback}`.
+/// `{branch, title, goal, fallback}`.
 #[tauri::command]
 pub async fn task_suggest(
     dir: String,

@@ -773,6 +773,120 @@ fn rm_untracks_the_task_and_removes_its_instance_state() {
     );
 }
 
+/// Board rows are per-checkout instance state (root CLAUDE.md's `tt-config`
+/// bullet): a row lives wherever the app instance that created it was
+/// scoped, which need not be the primary checkout `tt task rm` anchors to.
+/// Concretely: an app instance running *from inside another task's own
+/// worktree* (this repo's own dev loop does exactly this) scopes itself to
+/// that worktree, not the primary — so a task it creates, and a `tt task rm`
+/// run from that same shell later, both see that worktree's own scope via
+/// the ambient cwd, never the primary `--root`/discovery resolves to. `dir`
+/// (the *removed* task's own directory) is deliberately NOT where the
+/// fixture puts the row — that scope is exactly what `ops::remove_task`'s
+/// `state_cleanup` step wipes wholesale by task name regardless of this fix,
+/// which would make the test pass even against the bug (confirmed by hand:
+/// an earlier draft of this test put the row there and stayed green with the
+/// fix reverted). Reproduced directly against the real store (no forced
+/// `TT_STATE_SCOPE`, so scope resolution is the real `task_scope_from_dir`
+/// auto-detection) with both the creating and removing `tt` invocations run
+/// with `current_dir` set to the "container" task, rather than through a
+/// second real `tt-app` instance.
+#[test]
+fn rm_closes_a_board_row_scoped_to_the_ambient_cwds_own_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+    let home = tmp.path().join("home");
+    let data_home = home.join(".local").join("share");
+
+    // The primary checkout gets its own scope marker too — mirrors this
+    // repo's own self-hosting quirk (`task_scope_from_dir` scopes the main
+    // checkout by its own dir name, not only its worktrees).
+    std::fs::create_dir_all(checkout.join("crates").join("tt-config")).unwrap();
+    std::fs::write(checkout.join("crates").join("tt-config").join(".gitkeep"), "").unwrap();
+    git(&checkout, &["add", "."]);
+    git(&checkout, &["commit", "-m", "primary scope marker"]);
+
+    // No `TT_STATE_SCOPE` — real scope auto-detection, the condition this bug
+    // needs to reproduce (a forced scope, as every other test in this file
+    // uses for sandboxing, would make every store resolve to the same path
+    // and hide the bug).
+    let cmd = || {
+        let mut c = Tt::cargo_bin("tt").expect("binary `tt` should build");
+        c.env("HOME", &home);
+        c.env("XDG_DATA_HOME", &data_home);
+        c
+    };
+
+    // The "container" task: stands in for the worktree a real dev-loop app
+    // instance is running from. Created (and left alone) through the normal
+    // ambient-cwd path — its own worktree inherits the primary's `tt-config`
+    // marker, so it gets its own real scope, `demo-feat-container`.
+    cmd()
+        .args([
+            "task",
+            "new",
+            "feat/container",
+            "--repo",
+            &root_s,
+            "-b",
+            "feat/container",
+        ])
+        .assert()
+        .success();
+    let container = task_dir(&checkout, "feat-container");
+    assert!(container.join("crates").join("tt-config").is_dir(), "inherited from the primary");
+
+    // The victim task, created *as if* by an app instance running from
+    // inside `container` — hence `current_dir(&container)` on this call, not
+    // on the primary. `cmd_new`'s own board write lands wherever `tt`'s
+    // ambient cwd scopes to, i.e. `demo-feat-container`, matching the scenario.
+    let mut new_cmd = cmd();
+    new_cmd.current_dir(&container).args([
+        "task",
+        "new",
+        "feat/nested",
+        "--repo",
+        &root_s,
+        "-b",
+        "feat/nested",
+    ]);
+    new_cmd.assert().success();
+    let victim = task_dir(&checkout, "feat-nested");
+    let victim_s = victim.to_string_lossy().to_string();
+
+    let container_db =
+        data_home.join("towles-tool").join("tasks").join("demo-feat-container").join("tt.db");
+    let store = tt_store::Store::open(&container_db).unwrap();
+    let row = store
+        .task_for_worktree_dir(&victim_s)
+        .unwrap()
+        .expect("the fixture's own board write landed in demo-feat-container's store");
+    assert_eq!(row.status, "backlog", "sanity: the row starts open (tt task new's default status)");
+
+    // Remove the victim task the same way it'd really happen: `tt task rm`
+    // invoked from a shell sitting in `container`, `--root` pointing at the
+    // primary (as every real invocation's discovery does regardless of cwd).
+    let mut rm_cmd = cmd();
+    rm_cmd.current_dir(&container).args([
+        "task",
+        "rm",
+        "feat-nested",
+        "--root",
+        &root_s,
+        "--force",
+    ]);
+    rm_cmd.assert().success();
+
+    let row = store.task_for_worktree_dir(&victim_s).unwrap();
+    assert!(
+        row.is_none(),
+        "the row in demo-feat-container's own store must be closed (unbound from the removed \
+         worktree), not left dangling as a stale \"doing\" card forever just because it lives \
+         in a different scope than the primary `tt task rm` resolves to"
+    );
+}
+
 /// The stale-rail bug: a checkout reached through a symlinked path gets
 /// tracked (and its board row bound) under that literal string, but `git
 /// worktree add` persists the realpath internally — so a removal driven by

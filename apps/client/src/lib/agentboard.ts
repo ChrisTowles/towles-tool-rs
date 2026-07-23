@@ -1230,6 +1230,38 @@ export function branchRedundant(folderName: string, branch: string | null | unde
   return folderName === slug;
 }
 
+/** The conventional-commit prefixes `tt task new`/the create-branch flow use
+ * (see the root CLAUDE.md's branch-naming convention) — stripped off before
+ * humanizing so a worktree folder with no bound task title still reads as a
+ * sentence, not "Feat today we use…". */
+const FOLDER_NAME_PREFIXES = new Set([
+  "feat",
+  "fix",
+  "chore",
+  "docs",
+  "refactor",
+  "test",
+  "perf",
+  "build",
+  "ci",
+  "style",
+]);
+
+/** Render-time-only fallback for a worktree folder with no bound task (or
+ * whose task has no title): turn the slugged folder name back into a
+ * plain-words guess — strip a conventional prefix segment, dashes to spaces,
+ * sentence-case. Never persisted or fed back into anything; purely a display
+ * transform, so it can't drift from the real branch name it's derived from. */
+export function humanizeFolderName(folderName: string): string {
+  const parts = folderName.split("-").filter(Boolean);
+  if (parts.length > 1 && FOLDER_NAME_PREFIXES.has(parts[0].toLowerCase())) {
+    parts.shift();
+  }
+  if (parts.length === 0) return folderName;
+  const words = parts.join(" ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 /** Model family → the single letter the rail's `ModelBadge` shows: `H`aiku,
  * `S`onnet, `O`pus, `F`able, `M`ythos. Matches on the family token inside the
  * id (`claude-opus-4-8` → `O`), deliberately dropping the version — the badge
