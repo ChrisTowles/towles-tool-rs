@@ -1,22 +1,22 @@
 import { useEffect, useState } from "react";
 import { Stethoscope } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { invoke, isTauri } from "@/lib/tauri";
+import { isTauri } from "@/lib/tauri";
 import { claudeUsageLimits, type UsageLimitBar, type UsageLimits } from "@/lib/claude-sessions";
 import { collectorHealth, type CollectorHealth, type CollectorState } from "@/lib/collector-health";
 import { fmtAge, fmtCountdown, useStoreSnapshot } from "@/lib/data";
 import { useNow } from "@/lib/now";
+import { taskExplorerSnapshot } from "@/lib/task-explorer";
 import { cn } from "@/lib/utils";
 import { useAppVersion } from "@/lib/version";
 import { useWorkspace } from "@/lib/workspace";
 
-/** Mirror of the `app_resource_usage` command's payload. */
 type ResourceUsage = { cpuPercent: number; memoryBytes: number };
 
 const USAGE_POLL_MS = 5000;
 const CLAUDE_USAGE_POLL_MS = 5 * 60_000;
 
-function formatMemory(bytes: number): string {
+export function formatMemory(bytes: number): string {
   const mb = bytes / (1024 * 1024);
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
 }
@@ -90,9 +90,13 @@ function LimitBar({ bar }: { bar: UsageLimitBar }) {
 }
 
 /**
- * Passive CPU/RAM readout for the app's own process (#78). Polls the Rust
- * sampler on an interval; renders nothing in browser dev or until the first
- * sample lands.
+ * Passive CPU/RAM readout across everything this app is running — its own
+ * process plus every embedded terminal's shell and descendants (#78, widened
+ * once the Task Explorer screen made the full breakdown available). Polls
+ * the Rust sampler on an interval; renders nothing in browser dev or until
+ * the first sample lands. Sums `task_explorer_snapshot`'s groups rather than
+ * calling `app_resource_usage` directly, so the status bar's number always
+ * agrees with the Task Explorer screen's own total.
  */
 function useResourceUsage(): ResourceUsage | null {
   const [usage, setUsage] = useState<ResourceUsage | null>(null);
@@ -100,8 +104,11 @@ function useResourceUsage(): ResourceUsage | null {
     if (!isTauri()) return;
     let cancelled = false;
     const tick = async () => {
-      const u = await invoke<ResourceUsage>("app_resource_usage");
-      if (!cancelled && u.isOk()) setUsage(u.value);
+      const r = await taskExplorerSnapshot();
+      if (cancelled || r.isErr()) return;
+      const cpuPercent = r.value.reduce((n, g) => n + g.totalCpuPercent, 0);
+      const memoryBytes = r.value.reduce((n, g) => n + g.totalMemoryBytes, 0);
+      setUsage({ cpuPercent, memoryBytes });
     };
     tick();
     const id = window.setInterval(tick, USAGE_POLL_MS);
@@ -199,9 +206,13 @@ export function StatusBar() {
           </div>
         )}
         {usage && (
-          <span className="tabular-nums" title="towles-tool process CPU / memory">
+          <button
+            className="tabular-nums hover:text-foreground"
+            title="Total CPU / memory — this app plus every open terminal"
+            onClick={() => openTab("task-explorer")}
+          >
             {usage.cpuPercent.toFixed(0)}% CPU · {formatMemory(usage.memoryBytes)}
-          </span>
+          </button>
         )}
         <span className={isTauri() ? undefined : "font-medium text-amber-600 dark:text-amber-500"}>
           {isTauri() ? "Tauri shell" : "browser"}

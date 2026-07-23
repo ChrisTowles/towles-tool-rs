@@ -1,4 +1,5 @@
 import {
+  Activity,
   ChartColumn,
   GitPullRequest,
   Gauge,
@@ -22,6 +23,7 @@ export type ScreenId =
   | "gh-prs"
   | "mcp"
   | "telemetry"
+  | "task-explorer"
   | "settings";
 
 export type ScreenMeta = {
@@ -97,6 +99,13 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
     keywords: ["events", "otel", "telemetry", "spans", "log", "tracing"],
     fullBleed: true,
   },
+  "task-explorer": {
+    id: "task-explorer",
+    title: "Task Explorer",
+    icon: Activity,
+    keywords: ["system", "process", "processes", "cpu", "memory", "ram", "monitor", "activity"],
+    fullBleed: true,
+  },
   settings: {
     id: "settings",
     title: "Settings",
@@ -118,6 +127,9 @@ export const SCREENS: Record<ScreenId, ScreenMeta> = {
 
 export const NAV_SECTIONS: { label: string; screens: ScreenId[] }[] = [
   { label: "Focus", screens: ["cockpit", "board", "agentboard", "slack"] },
-  { label: "Tools", screens: ["doctor", "claude-sessions", "gh-prs", "mcp", "telemetry"] },
+  {
+    label: "Tools",
+    screens: ["doctor", "claude-sessions", "gh-prs", "mcp", "telemetry", "task-explorer"],
+  },
   { label: "App", screens: ["settings"] },
 ];
