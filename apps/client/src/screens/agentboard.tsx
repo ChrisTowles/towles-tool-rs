@@ -1625,9 +1625,6 @@ export function AgentboardScreen() {
         "ab-toggle-files": () => {
           if (activeFolderDir) openFiles(activeFolderDir);
         },
-        "ab-toggle-preview": () => {
-          if (activeFolderDir) openPreview(activeFolderDir);
-        },
         "ab-toggle-rail": toggleRail,
         "ab-jump-next": () => jumpToNeedsYou("next"),
         "ab-jump-prev": () => jumpToNeedsYou("prev"),
