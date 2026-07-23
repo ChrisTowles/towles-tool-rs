@@ -39,7 +39,6 @@ import { useBoardGroupByRepo } from "@/lib/board-prefs";
 import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
 import {
-  isTaskClosed,
   storeArchiveDone,
   storeAttachTaskIssue,
   storeAttachTaskPr,
@@ -48,7 +47,6 @@ import {
   storePromoteTaskToIssue,
   storeUnarchiveTask,
   taskDelete,
-  taskOutcomeOf,
   storeUpdateTask,
   TASK_STATUS_LABEL,
   TASK_STATUSES,
@@ -733,15 +731,17 @@ function Card({
   >(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const hasNotes = (task.notes ?? "").trim() !== "";
-  const closed = isTaskClosed(task);
-  const outcome = taskOutcomeOf(task);
+  // `closed`/`displayOutcome`/`hasWorktree` are computed backend-side
+  // (`TaskItem::with_derived_fields` in tt-store) so every consumer agrees —
+  // the card just renders them. A bound worktree means there's a live
+  // session to jump to ("Open on Agentboard"); without one — a "task only"
+  // backlog card, or any closed task (its worktree is torn down on close) —
+  // the useful action is starting/reopening one, routed through the same
+  // `onReopen` machinery rather than a dead-end navigation to an empty rail
+  // row.
+  const { closed, hasWorktree } = task;
+  const outcome = task.displayOutcome ?? null;
   const archived = task.archivedAt !== undefined;
-  // A bound worktree means there's a live session to jump to ("Open on
-  // Agentboard"). Without one — a "task only" backlog card, or any closed
-  // task (its worktree is torn down on close) — the useful action is
-  // starting/reopening one, routed through the same `onReopen` machinery
-  // rather than a dead-end navigation to an empty rail row.
-  const hasWorktree = task.worktree?.dir !== undefined;
   // Attach candidates: collected refs not already linked to this task.
   const attachableIssues = openIssues.filter(
     (i) => !task.issues.some((l) => l.repo === i.repo && l.number === i.number),
@@ -758,7 +758,7 @@ function Card({
   const identityStyle = { ...accent.edgeStyle, ...accent.surfaceStyle };
   // The identity row's text: `repo · ⎇ branch`, either part optional.
   const branch = task.worktree?.branch;
-  const detached = branch !== undefined && !task.worktree?.dir;
+  const detached = branch !== undefined && !hasWorktree;
   const identityRowText = [repoLabel, branch && `⎇ ${branch}${detached ? " · detached" : ""}`]
     .filter(Boolean)
     .join(" · ");
@@ -948,7 +948,7 @@ function Card({
               <>
                 <DropdownMenuItem
                   onSelect={() =>
-                    task.worktree?.dir
+                    hasWorktree
                       ? setConfirming({ kind: "close", outcome: "done" })
                       : onClose(task.id, "done")
                   }
@@ -957,7 +957,7 @@ function Card({
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={() =>
-                    task.worktree?.dir
+                    hasWorktree
                       ? setConfirming({ kind: "close", outcome: "abandoned" })
                       : onClose(task.id, "abandoned")
                   }
@@ -969,7 +969,7 @@ function Card({
             {archived && (
               <DropdownMenuItem onSelect={() => onRestore(task.id)}>Restore</DropdownMenuItem>
             )}
-            {!task.worktree?.dir && (
+            {!hasWorktree && (
               <DropdownMenuItem
                 variant="destructive"
                 onSelect={() => setConfirming({ kind: "purge" })}

@@ -13,6 +13,8 @@ function task(status: TaskStatus, over: Partial<TaskItem> = {}): TaskItem {
     createdAt: 0,
     issues: [],
     prs: [],
+    closed: status === "done" || over.outcome !== undefined,
+    hasWorktree: over.worktree?.dir !== undefined,
     ...over,
   };
 }

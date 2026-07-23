@@ -110,17 +110,6 @@ export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
 export const TASK_OUTCOMES = ["done", "abandoned"] as const;
 export type TaskOutcome = (typeof TASK_OUTCOMES)[number];
 
-/** A task is closed once it carries an outcome or sits in `done`; closed
- * tasks render in the terminal ("Closed") column regardless of their frozen
- * kanban status. */
-export const isTaskClosed = (t: Pick<TaskItem, "status" | "outcome">) =>
-  t.status === "done" || t.outcome !== undefined;
-
-/** The outcome badge a closed card shows: the recorded outcome, or `done`
- * implied by the status for cards that rolled/dragged there. */
-export const taskOutcomeOf = (t: Pick<TaskItem, "status" | "outcome">): TaskOutcome | null =>
-  t.outcome ?? (t.status === "done" ? "done" : null);
-
 /** One GitHub issue linked to a task; `state` is the last observed state. */
 export type TaskIssueLink = {
   repo: string;
@@ -173,6 +162,19 @@ export type TaskItem = {
   worktree?: TaskWorktree;
   issues: TaskIssueLink[];
   prs: TaskPrLink[];
+  /** Whether the task is closed — carries an outcome, or sits in `done`.
+   * Computed backend-side (`TaskItem::with_derived_fields` in tt-store) so
+   * every consumer agrees; closed tasks render in the terminal ("Closed")
+   * column regardless of their frozen kanban `status`. */
+  closed: boolean;
+  /** The outcome badge a closed card shows: the recorded `outcome`, or
+   * `done` implied by `status` for a card that rolled/dragged there.
+   * Absent while the task is open. */
+  displayOutcome?: TaskOutcome;
+  /** Whether this task has a live worktree checkout on disk right now — as
+   * opposed to a "task only" card that was never given one, or a closed
+   * task whose worktree was torn down. */
+  hasWorktree: boolean;
 };
 
 /**

@@ -1,4 +1,4 @@
-import { isTaskClosed, type TaskItem, type TaskStatus } from "@/lib/data";
+import type { TaskItem, TaskStatus } from "@/lib/data";
 
 /**
  * Priority order for the day bar's single "top task": what you're actively
@@ -21,7 +21,7 @@ const STATUS_RANK: Record<Exclude<TaskStatus, "done">, number> = {
 export function pickTopTask(tasks: readonly TaskItem[]): TaskItem | undefined {
   let best: TaskItem | undefined;
   for (const task of tasks) {
-    if (isTaskClosed(task)) continue;
+    if (task.closed) continue;
     if (best === undefined || isHigherPriority(task, best)) {
       best = task;
     }

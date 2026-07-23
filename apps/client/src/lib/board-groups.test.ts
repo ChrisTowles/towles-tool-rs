@@ -10,6 +10,9 @@ import {
 } from "@/lib/board-groups";
 import type { TaskItem } from "@/lib/data";
 
+// Mirrors the backend's derivation (`TaskItem::with_derived_fields` in
+// tt-store) so overriding `status`/`outcome`/`worktree` still produces a
+// task shaped the way the real snapshot would.
 function task(over: Partial<TaskItem> = {}): TaskItem {
   return {
     id: 1,
@@ -19,6 +22,8 @@ function task(over: Partial<TaskItem> = {}): TaskItem {
     createdAt: 0,
     issues: [],
     prs: [],
+    closed: over.status === "done" || over.outcome !== undefined,
+    hasWorktree: over.worktree?.dir !== undefined,
     ...over,
   };
 }

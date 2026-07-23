@@ -330,6 +330,8 @@ function task(overrides: Partial<TaskItem>): TaskItem {
     createdAt: 0,
     issues: [],
     prs: [],
+    closed: overrides.status === "done" || overrides.outcome !== undefined,
+    hasWorktree: overrides.worktree?.dir !== undefined,
     ...overrides,
   };
 }
