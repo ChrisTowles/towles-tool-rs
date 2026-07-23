@@ -245,6 +245,37 @@ export const SHORTCUTS = defineShortcuts([
     hideInHelp: true,
   },
   {
+    id: "ab-collapse-left",
+    scope: "agentboard",
+    keys: "mod+shift+arrowleft",
+    description: "Collapse the focused repo or worktree",
+    when: "a folder is focused",
+    allowInEditable: true,
+  },
+  {
+    id: "ab-collapse-right",
+    scope: "agentboard",
+    keys: "mod+shift+arrowright",
+    description: "Expand the focused repo or worktree",
+    when: "a folder is focused",
+    allowInEditable: true,
+  },
+  {
+    // Deliberately bare Enter, not a mod chord: this is the "jump into what
+    // I just selected" key, so it needs to work with zero ceremony. Safe to
+    // leave unmodified because the dispatcher only calls it when nothing
+    // editable/interactive already owns the keystroke (see `useShortcuts`) —
+    // the handler itself (`focusActiveTerminal` in screens/agentboard.tsx)
+    // additionally declines whenever a button/link/dialog has DOM focus, by
+    // returning `false` to signal "let the browser's native Enter behavior
+    // run instead" rather than swallowing it.
+    id: "ab-focus-terminal",
+    scope: "agentboard",
+    keys: "enter",
+    description: "Jump into the focused folder's first session and start typing",
+    when: "a folder is focused",
+  },
+  {
     id: "ab-split-session",
     scope: "agentboard",
     keys: "mod+shift+s",
@@ -382,9 +413,18 @@ function isEditableTarget(e: KeyboardEvent): boolean {
  * the currently active screen, purely for the `shortcut.<id>` `uiAction`
  * record fired on every match — a discrete "this binding fired" event, the
  * same instrumentation every click handler in the app already gets.
+ *
+ * A handler may return `false` to decline *after* the editable-target check
+ * already passed — e.g. a bare-key binding like `ab-focus-terminal` that
+ * still shouldn't steal Enter from a focused dialog button, which
+ * `isEditableTarget` doesn't cover (it only knows about inputs/terminals).
+ * Declining skips both `preventDefault` and the `uiAction` record, so the
+ * browser's native key handling (activating that button) runs unmolested.
+ * Any other return value (including the common `void`) counts as handled,
+ * matching every existing handler's behavior unchanged.
  */
 export function useShortcuts(
-  handlers: Partial<Record<string, () => void>>,
+  handlers: Partial<Record<string, () => boolean | void>>,
   screen: ScreenId,
   enabled = true,
 ): void {
@@ -399,9 +439,9 @@ export function useShortcuts(
         if (!matches(s.spec, e)) continue;
         const allowed = s.allowInEditable && workInTerminalRef.current;
         if (isEditableTarget(e) && !allowed) return;
+        if (handler() === false) return;
         e.preventDefault();
         uiAction(`shortcut.${id}`, screen);
-        handler();
         return;
       }
     };

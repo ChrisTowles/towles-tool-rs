@@ -3,6 +3,7 @@ import {
   agentRollup,
   cacheWarnMs,
   changedFolderDirs,
+  collapseTargetKeys,
   cycleNeedsYou,
   cycleSession,
   colCount,
@@ -1188,6 +1189,18 @@ describe("isFolderQuiet", () => {
 function repo(key: string, folders: FolderData[]): RepoData {
   return { key, dir: key, name: key, folders, needs: 0 };
 }
+
+describe("collapseTargetKeys", () => {
+  it("collapses a solo-checkout repo at the repo header, with no parent level", () => {
+    const solo = repo("a", [folder({ dir: "a/f1" })]);
+    expect(collapseTargetKeys(solo, "a/f1")).toEqual({ own: "a", parent: null });
+  });
+
+  it("collapses a multi-checkout repo's folder, nested under the repo header", () => {
+    const multi = repo("a", [folder({ dir: "a/f1" }), folder({ dir: "a/f2" })]);
+    expect(collapseTargetKeys(multi, "a/f2")).toEqual({ own: "a::a/f2", parent: "a" });
+  });
+});
 
 describe("cycleNeedsYou", () => {
   // Board order: a1 (waiting), a2 (idle), b1 (unseen), b2 (error)
