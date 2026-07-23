@@ -9,6 +9,7 @@ import {
   Minimize2,
   RefreshCw,
   WrapText,
+  X,
 } from "lucide-react";
 import { CodeViewer, type ViewerAnchor } from "@/components/code-viewer";
 import { ClaudeBadge, IconBtn, LspBadge, PanePlaceholder } from "@/components/agentboard-bits";
@@ -479,11 +480,11 @@ export function FolderFilesPane({
         controls={ideConnected ? <ClaudeBadge /> : undefined}
         actions={
           <IconBtn
-            title="remove pane (files stay a click away on the folder)"
+            title="close pane (files stay a click away on the folder)"
             onClick={onClose}
-            className="hover:text-red-500"
+            className="hover:text-sky-500"
           >
-            ⊟
+            <X className="size-3" />
           </IconBtn>
         }
       />

@@ -752,9 +752,8 @@ export function AgentboardScreen() {
 
   /** Remove whichever pane a session currently occupies — its terminal, or the
    * tombstone that replaced it when the shell crashed. Every session-keyed
-   * entry point (rail ungroup, pane header, close, worktree delete) goes
-   * through here, so none of them has to know which of the two it's looking
-   * at. */
+   * removal (close, worktree delete) goes through here, so none of them has
+   * to know which of the two it's looking at. */
   function removeSessionPane(sessionId: string) {
     const ids = [sessionId, exitPaneId(sessionId)];
     const folderDir = wins?.windows.find((win) =>
@@ -1611,7 +1610,6 @@ export function AgentboardScreen() {
     },
     close: (sessionId) => void closeSession(sessionId),
     renameStart: setRenaming,
-    ungroup: removeSessionPane,
     launchDevServer: (folderDir, cfg) => void launchDevServer(folderDir, cfg),
     focusSession: selectSession,
     focusWindow: (windowId) => {
@@ -2112,7 +2110,6 @@ export function AgentboardScreen() {
                                   label={labelFor(s)}
                                   now={now}
                                   actions={actions}
-                                  onUngroup={() => actions.ungroup(id)}
                                 />
                               )}
                               {/* data-term-host marks terminal territory for the

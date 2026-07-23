@@ -73,7 +73,6 @@ import {
   sessionLabel,
   sessionStatusText,
   windowColor,
-  windowOf,
   type AgWindow,
   type FolderData,
   type Overlay,
@@ -444,7 +443,6 @@ export function RepoGroup({
         active={selectedSessionId === s.id}
         renaming={renaming === s.id}
         overlay={overlays[s.id]}
-        wins={wins}
         actions={actions}
         onSelect={() => onSelect(folder.dir, s.id)}
         onRenameCommit={(name) => onRenameCommit(s.id, name)}
@@ -456,7 +454,7 @@ export function RepoGroup({
   // window holding multiple panes gets a vertical color spine running beside
   // its rows (no text label — window names carry no signal in the rail);
   // sessions in no window ("loose" shells) list on their own below. Grouping
-  // is purely visual — the ⊟/click mechanics that move panes in and out of
+  // is purely visual — the click mechanics that move panes in and out of
   // windows are unchanged.
   //
   // One AnimatePresence per window group plus one for the loose rows: a
@@ -1064,7 +1062,6 @@ function SessionRow({
   active,
   renaming,
   overlay,
-  wins,
   actions,
   onSelect,
   onRenameCommit,
@@ -1077,7 +1074,6 @@ function SessionRow({
   active: boolean;
   renaming: boolean;
   overlay?: Overlay;
-  wins: WindowsPayload | null;
   actions: SessionActions;
   onSelect: () => void;
   onRenameCommit: (name: string) => void;
@@ -1100,7 +1096,6 @@ function SessionRow({
       : session;
   const needs = sessionCatchesEye(eff);
   const agent = isAgent(eff);
-  const grouped = wins ? windowOf(wins.windows, session.id) : undefined;
   // Prefer the live Claude terminal title (`✳ <title>`) only while the shell is
   // actually running — a stopped PTY's last title lingers in the caller's
   // `titles` map (never cleared) and would otherwise label a dead shell as a
@@ -1228,12 +1223,7 @@ function SessionRow({
               carries a resting ✕/menu forever, hiding the meta it overlays. */}
           {hovered && (
             <span className="absolute inset-y-0 right-2 z-10 flex items-center gap-1 bg-accent pl-1.5">
-              <RowControls
-                session={eff}
-                folderDir={folderDir}
-                grouped={!!grouped}
-                actions={actions}
-              />
+              <RowControls session={eff} folderDir={folderDir} actions={actions} />
             </span>
           )}
         </>
@@ -1245,17 +1235,15 @@ function SessionRow({
 /** Hover-reveal lifecycle controls for a session row: ✕ close stays inline
  * (the one action common to every row), everything else — which varies by
  * state (not started → ▶ shell / ✦ Claude; live shell → ✦ Claude; live agent
- * → ■ stop / ⤿ compact / ↻ restart; grouped → ⊟ ungroup; plus ✎ rename) —
- * lives behind a "···" menu instead of crowding the row. */
+ * → ■ stop / ⤿ compact / ↻ restart; plus ✎ rename) — lives behind a "···"
+ * menu instead of crowding the row. */
 function RowControls({
   session,
   folderDir,
-  grouped,
   actions,
 }: {
   session: SessionData;
   folderDir: string;
-  grouped: boolean;
   actions: SessionActions;
 }) {
   const agent = isAgent(session);
@@ -1302,13 +1290,6 @@ function RowControls({
       glyph: "↻",
       label: "Start over — fresh Claude session",
       onSelect: () => actions.restartClaude(folderDir, session),
-    });
-  }
-  if (grouped) {
-    items.push({
-      glyph: "⊟",
-      label: "Ungroup — remove pane from its window",
-      onSelect: () => actions.ungroup(session.id),
     });
   }
   items.push({ glyph: "✎", label: "Rename", onSelect: () => actions.renameStart(session.id) });

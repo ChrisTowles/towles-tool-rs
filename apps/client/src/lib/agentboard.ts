@@ -329,11 +329,6 @@ export function windowColor(wins: AgWindow[], windowId: string): string {
   return i < 0 ? "bg-muted-foreground/40" : WINDOW_COLORS[i % WINDOW_COLORS.length];
 }
 
-/** The window containing a session's pane, if any. */
-export function windowOf(wins: AgWindow[], sessionId: string): AgWindow | undefined {
-  return wins.find((w) => w.panes.includes(sessionId));
-}
-
 // --- Folder panes (diff, files) ---
 // A window's `panes` normally hold session ids (`s<16 hex>` from the backend's
 // `gen_id`). A folder's diff and files views ride the same tiling as sentinel
@@ -1811,8 +1806,6 @@ export type SessionActions = {
   restartClaude: (folderDir: string, s: SessionData) => void;
   close: (sessionId: string) => void;
   renameStart: (sessionId: string) => void;
-  /** Remove the session's pane from its window (session stays in the rail). */
-  ungroup: (sessionId: string) => void;
   /** Focus the window a session's group tag points at. */
   focusWindow: (windowId: string) => void;
   /** Start a `.claude/launch.json` dev-server config in a fresh session in
