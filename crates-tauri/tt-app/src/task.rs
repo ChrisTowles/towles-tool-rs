@@ -481,10 +481,12 @@ pub fn delete_task_blocking(
     // it to call `ops::remove_task` with `root: None`, that would re-discover a
     // root by walking up from this *process's* cwd — a different checkout — and
     // could remove a same-named worktree there.
-    let (root, name) = match resolve_task(dir) {
+    let (root, name) = match ops::resolve_task_dir(std::path::Path::new(dir)) {
         Ok((checkout, name)) => (Some(checkout), name),
-        Err(_) if !std::path::Path::new(dir).is_dir() => (None, task_name_from_dir(dir)),
-        Err(error) => return Err(error),
+        Err(_) if !std::path::Path::new(dir).is_dir() => {
+            (None, tt_tasks::task_name_from_dir(std::path::Path::new(dir)))
+        }
+        Err(error) => return Err(error.to_string()),
     };
     let opts = RemoveOpts { root, name, force };
     let mut hooks = AppRemovalHooks { app, dir };
@@ -525,13 +527,6 @@ pub fn delete_task_blocking(
             })
         }
     }
-}
-
-/// The task name for a worktree whose directory is already gone, so
-/// `resolve_task` can't read it off the checkout. The folder basename is the
-/// task name by construction (it is the slugged branch).
-fn task_name_from_dir(dir: &str) -> String {
-    PathBuf::from(dir).file_name().and_then(|n| n.to_str()).unwrap_or(dir).to_string()
 }
 
 /// The outcome to record when the caller didn't pass one: the bound row's own
@@ -712,26 +707,6 @@ pub async fn task_delete(
     .await
 }
 
-/// Resolve a task directory to its checkout root and task name, rejecting
-/// anything that isn't a worktree of its own checkout — shared by
-/// `delete_task_blocking` and `task_stop_port` so both agree on what "this
-/// task" means before either acts on it. Returns the identity only; the delete
-/// attaches its own `force` when building [`RemoveOpts`], so a non-removal
-/// caller never constructs a removal config with a meaningless flag.
-fn resolve_task(dir: &str) -> Result<(PathBuf, String), String> {
-    let path = PathBuf::from(dir);
-    let sr = ops::discover_root(Some(&path)).map_err(|e| e.to_string())?;
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| format!("bad task path {dir}"))?
-        .to_string();
-    if sr.task_dir(&name) != path {
-        return Err(format!("{dir} is not a worktree of {}", sr.repo));
-    }
-    Ok((sr.checkout.clone(), name))
-}
-
 /// Stop whatever is listening on `port` — the remedy the app offers for a
 /// `foreignPort` blocker, so a stale dev server doesn't send the user to a
 /// terminal to finish a delete they started in the app. Returns the note to
@@ -759,7 +734,8 @@ pub async fn task_stop_port(dir: String, port: u16) -> Result<String, String> {
     );
     async move {
         let stopped = tauri::async_runtime::spawn_blocking(move || {
-            let (checkout, name) = resolve_task(&dir)?;
+            let (checkout, name) =
+                ops::resolve_task_dir(std::path::Path::new(&dir)).map_err(|e| e.to_string())?;
             ops::stop_task_port(Some(&checkout), &name, port).map_err(|e| e.to_string())
         })
         .await

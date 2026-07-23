@@ -96,6 +96,9 @@ pub enum OpsError {
         "port {port} is not claimed by {name} — refusing to signal a process this task does not own"
     )]
     PortNotClaimed { name: String, port: u16 },
+
+    #[error("{dir} is not a worktree of {repo}")]
+    NotAWorktree { dir: String, repo: String },
 }
 
 pub type Result<T> = std::result::Result<T, OpsError>;
@@ -216,6 +219,26 @@ pub fn discover_root(explicit: Option<&Path>) -> Result<TaskRoot> {
         return Ok(TaskRoot { checkout, repo });
     }
     Err(OpsError::NoCheckout(start.display().to_string()))
+}
+
+/// Resolve a task directory to its checkout root and task name, rejecting
+/// anything that isn't a worktree of its own checkout. This is the shared
+/// definition of "this dir names a real task of its repo" — the app's delete
+/// and stop-port commands both go through it so they agree on what "this task"
+/// means before either acts on it. Returns the identity only; a caller that
+/// removes attaches its own `force` when building [`RemoveOpts`], so a
+/// non-removal caller never constructs a removal config with a meaningless flag.
+pub fn resolve_task_dir(dir: &Path) -> Result<(PathBuf, String)> {
+    let sr = discover_root(Some(dir))?;
+    let name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| OpsError::Io(format!("bad task path {}", dir.display())))?
+        .to_string();
+    if sr.task_dir(&name) != dir {
+        return Err(OpsError::NotAWorktree { dir: dir.display().to_string(), repo: sr.repo });
+    }
+    Ok((sr.checkout, name))
 }
 
 /// Bounded like [`git_task`] — a stalled network op (stuck proxy/VPN, an SSH
@@ -838,6 +861,44 @@ mod tests {
 
         let sr = discover_root(Some(&stray)).unwrap();
         assert_eq!(sr.checkout, repo);
+    }
+
+    #[test]
+    fn resolve_task_dir_accepts_a_worktree_of_its_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("blog");
+        let task = repo.join(".claude").join("worktrees").join("feat-thing");
+        fs::create_dir_all(repo.join(".git").join("worktrees").join("feat-thing")).unwrap();
+        fs::create_dir_all(&task).unwrap();
+        fs::write(
+            task.join(".git"),
+            format!("gitdir: {}\n", repo.join(".git/worktrees/feat-thing").display()),
+        )
+        .unwrap();
+
+        let (checkout, name) = resolve_task_dir(&task).unwrap();
+        assert_eq!(checkout, repo);
+        assert_eq!(name, "feat-thing");
+    }
+
+    #[test]
+    fn resolve_task_dir_rejects_a_dir_that_is_not_a_worktree_of_its_checkout() {
+        // A directory that resolves to a checkout but doesn't sit at that
+        // checkout's `.claude/worktrees/<name>` is not this repo's task — e.g.
+        // the checkout root itself, or a stray sibling.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("blog");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+
+        let err = resolve_task_dir(&repo).unwrap_err();
+        assert!(matches!(err, OpsError::NotAWorktree { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn resolve_task_dir_errors_without_a_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = resolve_task_dir(&tmp.path().join("nowhere")).unwrap_err();
+        assert!(matches!(err, OpsError::NoCheckout(_)), "got {err:?}");
     }
 
     #[test]

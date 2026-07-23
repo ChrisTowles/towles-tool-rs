@@ -35,11 +35,11 @@ pub use guards::{RmBlocked, check_removal, docker_resource_matches};
 pub use landed::{LandedVia, WorkState, classify, probe_work_state};
 pub use layout::{
     CLAUDE_DIR, MARKER_FILE, WORKTREES_DIR, is_managed_task, main_checkout_for, marker_contents,
-    parse_marker, read_task_base, task_name_from_branch, worktrees_dir,
+    parse_marker, read_task_base, task_name_from_branch, task_name_from_dir, worktrees_dir,
 };
 pub use ops::{
     CleanOpts, CleanReport, CreateOpts, CreatedTask, FinishedTask, KeptTask, OpsError, RemoveOpts,
-    RemovedTask, TaskRoot, clean_tasks, create_task, discover_root, remove_task,
+    RemovedTask, TaskRoot, clean_tasks, create_task, discover_root, remove_task, resolve_task_dir,
 };
 pub use pasted::{PastedError, PastedImage, write_images};
 pub use staleness::{DEFAULT_STALE_DAYS, Staleness, assess as assess_staleness};
