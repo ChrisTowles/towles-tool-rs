@@ -99,6 +99,23 @@ pub struct StaleTaskCheck {
     pub reason: String,
 }
 
+/// One port-claim finding from the running checkout's port picture
+/// ([`tt_tasks::ops::port_report`]): a claim that survives only in the
+/// persistent registry because the owner's `.env` no longer carries it
+/// (deleted or hand-edited) — exactly the drift the registry exists to
+/// catch, and a one-command fix.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortHealthCheck {
+    pub port: u16,
+    /// Task (worktree folder) name holding the claim.
+    pub owner: String,
+    /// The `.env` variable the claim renders into.
+    pub var: String,
+    pub finding: String,
+    pub hint: String,
+}
+
 /// Everything one doctor run produced: the camelCase [`DoctorRunResult`]
 /// record plus the rich plugin/agentboard rows display surfaces render
 /// (hints, values). One struct so nothing runs its subprocesses twice.
@@ -110,6 +127,8 @@ pub struct DoctorReport {
     pub agentboard: Vec<AgentBoardCheck>,
     /// Worktree tasks whose work has landed but that were never cleaned up.
     pub stale_tasks: Vec<StaleTaskCheck>,
+    /// Port claims whose `.env` and registry views have drifted apart.
+    pub port_health: Vec<PortHealthCheck>,
 }
 
 /// Run every check. Spawns a handful of `--version`/auth subprocesses, so run
@@ -121,6 +140,7 @@ pub fn run_report() -> DoctorReport {
     let plugins = check_claude_plugins();
     let agentboard = check_agentboard();
     let stale_tasks = check_stale_tasks();
+    let port_health = check_port_health();
 
     let result = DoctorRunResult {
         timestamp: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
@@ -129,7 +149,33 @@ pub fn run_report() -> DoctorReport {
         plugins: plugins.iter().map(|p| NameOk { name: p.name.clone(), ok: p.ok }).collect(),
         agentboard: agentboard.iter().map(|a| NameOk { name: a.name.clone(), ok: a.ok }).collect(),
     };
-    DoctorReport { result, plugins, agentboard, stale_tasks }
+    DoctorReport { result, plugins, agentboard, stale_tasks, port_health }
+}
+
+/// Port claims in the running checkout that only the registry still knows —
+/// their owner's `.env` was deleted or hand-edited out from under them.
+/// Read-only like every doctor probe ([`tt_tasks::ops::port_report`] neither
+/// locks nor self-heals); a non-task-capable cwd reports nothing.
+fn check_port_health() -> Vec<PortHealthCheck> {
+    use tt_tasks::ops;
+
+    let Ok(root) = ops::discover_root(None) else {
+        return Vec::new();
+    };
+    ops::port_report(&root)
+        .into_iter()
+        .filter(|row| row.source == "registry")
+        .map(|row| PortHealthCheck {
+            port: row.port,
+            finding: format!(
+                "port {} ({}) is claimed only in the registry — {}'s .env no longer carries it",
+                row.port, row.var, row.owner
+            ),
+            hint: format!("tt task env {}", row.owner),
+            owner: row.owner,
+            var: row.var,
+        })
+        .collect()
 }
 
 /// Worktree tasks in the running checkout whose work has already landed on the

@@ -96,7 +96,13 @@ fn lifecycle_new_env_ls_rm() {
     // .env + marker
     let out = new_task(&root_s, "feat/thing").arg("--json").output().unwrap();
     assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
-    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "task new --json emitted bad JSON: {e}\nstdout: {:?}\nstderr: {:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
     assert_eq!(created["name"], "feat-thing");
     assert_eq!(created["branch"], "feat/thing");
     assert_eq!(created["base"], "main");
@@ -299,7 +305,13 @@ fn ports_reports_claims_and_flags_env_registry_drift() {
 
     let out = new_task(&root_s, "feat/ports").arg("--json").output().unwrap();
     assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
-    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "task new --json emitted bad JSON: {e}\nstdout: {:?}\nstderr: {:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
     let port = created["ports"]["UI_PORT"].as_u64().expect("UI_PORT claimed");
 
     let out = tt().args(["task", "ports", "--json", "--root", &root_s]).output().unwrap();
@@ -380,7 +392,13 @@ fn new_records_the_main_checkout_as_the_repo_even_when_repo_points_inside_a_task
 
     let out = new_task(&inside, "feat/second").arg("--json").output().unwrap();
     assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
-    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "task new --json emitted bad JSON: {e}\nstdout: {:?}\nstderr: {:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
     assert_eq!(created["repo"], root_s, "the board row binds to the main checkout");
     assert_eq!(created["dir"], task_dir(&checkout, "feat-second").to_string_lossy().as_ref());
 }
@@ -404,7 +422,13 @@ fn new_with_base_records_the_actual_base_not_the_primary_branch() {
         .output()
         .unwrap();
     assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
-    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "task new --json emitted bad JSON: {e}\nstdout: {:?}\nstderr: {:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
     assert_eq!(created["base"], "develop");
 
     let task = task_dir(&checkout, "feat-off-develop");
