@@ -72,6 +72,11 @@ pub enum TaskCommands {
         #[arg(long)]
         notes: Option<String>,
 
+        /// The objective the task is meant to accomplish, shown on the board
+        /// card under the title (default: none)
+        #[arg(long)]
+        goal: Option<String>,
+
         /// Branch to create and check out (default: slugged from TITLE, e.g.
         /// "Fix login" -> fix-login; the task folder is the same slug)
         #[arg(long, short = 'b')]

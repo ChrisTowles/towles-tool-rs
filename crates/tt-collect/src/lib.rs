@@ -1000,7 +1000,7 @@ mod tests {
     fn rollup_moves_task_to_done_when_all_links_resolve() {
         let store = Store::open_in_memory().unwrap();
         store.replace_issues(&[issue("o/r", 1)]).unwrap();
-        let task = store.add_task("linked", "backlog", None, 1).unwrap();
+        let task = store.add_task("linked", "backlog", None, None, 1).unwrap();
         store.attach_task_issue(task.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
         store.attach_task_pr(task.id, "o/r", 10, "https://github.com/o/r/pull/10").unwrap();
 
@@ -1036,7 +1036,7 @@ mod tests {
         // clear the outcome as a side effect), and a reopened ref must not
         // drag an archived done task back to backlog.
         let store = Store::open_in_memory().unwrap();
-        let task = store.add_task("closed", "doing", None, 1).unwrap();
+        let task = store.add_task("closed", "doing", None, None, 1).unwrap();
         store.attach_task_pr(task.id, "o/r", 10, "u").unwrap();
         store.set_pr_link_state("o/r", 10, "merged", None, 2).unwrap();
         store.close_task(task.id, TaskOutcome::Abandoned, 3).unwrap();
@@ -1052,9 +1052,9 @@ mod tests {
         // The sweep rides sync_task_links' cadence: anything finished more
         // than ARCHIVE_AFTER_MS ago leaves the active board.
         let store = Store::open_in_memory().unwrap();
-        let old = store.add_task("old", "doing", None, 1).unwrap();
+        let old = store.add_task("old", "doing", None, None, 1).unwrap();
         store.close_task(old.id, TaskOutcome::Done, 10).unwrap();
-        let fresh = store.add_task("fresh", "doing", None, 2).unwrap();
+        let fresh = store.add_task("fresh", "doing", None, None, 2).unwrap();
         store.close_task(fresh.id, TaskOutcome::Done, 500).unwrap();
 
         let now = tt_store::ARCHIVE_AFTER_MS + 100;
@@ -1066,7 +1066,7 @@ mod tests {
     #[test]
     fn rollup_ignores_linkless_tasks_and_manual_non_done_moves() {
         let store = Store::open_in_memory().unwrap();
-        let plain = store.add_task("plain", "backlog", None, 1).unwrap();
+        let plain = store.add_task("plain", "backlog", None, None, 1).unwrap();
         store.set_task_status(plain.id, "doing", 1).unwrap();
 
         assert_eq!(rollup_task_statuses(&store, 2).unwrap(), 0);
@@ -1080,7 +1080,7 @@ mod tests {
         // to done. State only changes via the snapshot or a targeted fetch.
         let store = Store::open_in_memory().unwrap();
         store.replace_issues(&[issue("o/r", 1)]).unwrap();
-        let task = store.add_task("linked", "doing", None, 1).unwrap();
+        let task = store.add_task("linked", "doing", None, None, 1).unwrap();
         store.attach_task_issue(task.id, "o/r", 1, "u").unwrap();
         store.refresh_link_states_from_cache(2).unwrap();
 

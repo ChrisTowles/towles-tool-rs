@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn moves_backlog_to_doing_when_a_busy_agent_is_live_in_its_worktree() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("ship it", "backlog", None, 1).unwrap();
+        let t = s.add_task("ship it", "backlog", None, None, 1).unwrap();
         s.set_task_worktree(t.id, "/repos/x", Some("o/x"), Some("feat/y"), Some("/repos/x/wt"))
             .unwrap();
 
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn moves_doing_back_to_backlog_once_the_agent_stops() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("ship it", "doing", None, 1).unwrap();
+        let t = s.add_task("ship it", "doing", None, None, 1).unwrap();
         s.set_task_worktree(t.id, "/repos/x", Some("o/x"), Some("feat/y"), Some("/repos/x/wt"))
             .unwrap();
 
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn never_touches_a_task_with_no_worktree_binding() {
         let s = Store::open_in_memory().unwrap();
-        s.add_task("no worktree", "backlog", None, 1).unwrap();
+        s.add_task("no worktree", "backlog", None, None, 1).unwrap();
         let p = payload(vec![]);
         assert_eq!(sync_worktree_task_statuses(&s, &p, 10).unwrap(), 0);
     }
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn never_touches_a_closed_or_archived_task() {
         let s = Store::open_in_memory().unwrap();
-        let closed = s.add_task("done and closed", "doing", None, 1).unwrap();
+        let closed = s.add_task("done and closed", "doing", None, None, 1).unwrap();
         s.set_task_worktree(
             closed.id,
             "/repos/x",
