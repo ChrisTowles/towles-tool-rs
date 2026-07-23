@@ -789,9 +789,9 @@ mod tests {
         // issues: 15m cadence * 4 = 60m.
         let issues = watched.iter().find(|w| w.key == "issues").unwrap();
         assert_eq!(issues.stale_after_ms, 60 * 60_000);
-        // prs: 300s (5m) cadence * 4 = 20m.
+        // prs: 1200s (20m) cadence * 4 = 80m.
         let prs = watched.iter().find(|w| w.key == "prs").unwrap();
-        assert_eq!(prs.stale_after_ms, 20 * 60_000);
+        assert_eq!(prs.stale_after_ms, 80 * 60_000);
     }
 
     #[test]

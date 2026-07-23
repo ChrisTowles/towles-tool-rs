@@ -798,6 +798,45 @@ pub fn task_scope_from_dir(dir: &Path) -> Option<String> {
     None
 }
 
+/// Like [`task_scope_from_dir`], but a `<repo>/.claude/worktrees/<name>` task
+/// checkout resolves to the *main* checkout's own scope instead of the
+/// task-qualified name. Used by [`nudge_dir_path`]: no app instance ever runs
+/// scoped to an individual worktree task, only to the main checkout that owns
+/// it, so a nudge needs to land in the scope the daily-driver scheduler
+/// actually watches.
+fn main_checkout_scope_from_dir(dir: &Path) -> Option<String> {
+    for ancestor in dir.ancestors() {
+        if !ancestor.join("crates").join("tt-config").is_dir() {
+            continue;
+        }
+        let main = ancestor
+            .parent()
+            .filter(|p| p.file_name().is_some_and(|n| n == "worktrees"))
+            .and_then(Path::parent)
+            .filter(|p| p.file_name().is_some_and(|n| n == ".claude"))
+            .and_then(Path::parent)
+            .unwrap_or(ancestor);
+        return Some(sanitize_scope(main.file_name().and_then(|n| n.to_str())?));
+    }
+    None
+}
+
+/// Like [`detect_scope`], but resolves to the scope a worktree task's *main*
+/// checkout runs under — see [`main_checkout_scope_from_dir`] for why.
+fn detect_main_scope() -> Scope {
+    ensure_state_layout_migrated();
+    match std::env::var(STATE_SCOPE_ENV) {
+        Ok(v) if !v.trim().is_empty() => Scope::Forced(sanitize_scope(&v)),
+        Ok(_) => Scope::None,
+        Err(_) => {
+            match std::env::current_dir().ok().as_deref().and_then(main_checkout_scope_from_dir) {
+                Some(s) => Scope::Auto(s),
+                None => Scope::None,
+            }
+        }
+    }
+}
+
 /// Reduce a scope name to a single safe path segment: anything outside
 /// `[A-Za-z0-9._-]` becomes `-`. Task dir names already qualify; this only
 /// guards a hand-set `TT_STATE_SCOPE`.
@@ -883,13 +922,21 @@ pub fn store_db_path_for_scope(scope: Option<&str>) -> Result<PathBuf> {
 
 /// Directory watched by the app's scheduler for an eager collector nudge: a
 /// `prs` or `issues` file touched inside it triggers an immediate collect of
-/// that target instead of waiting for the normal poll cadence. Instance-scoped
-/// like `data_dir()` so a nudge in one worktree only wakes that task's
-/// own running app. Kept as its own subdirectory rather than nested directly
-/// under `data_dir()` so a directory-watch on it isn't spammed by tt.db's own
-/// WAL/SHM churn.
+/// that target instead of waiting for the normal poll cadence. Scoped to the
+/// *main checkout* ([`detect_main_scope`]), not the ambient cwd like
+/// `data_dir()` — no app instance runs scoped to an individual worktree task,
+/// only the main checkout runs the daily-driver scheduler, and board tasks
+/// (what a PR/issue mutation needs to update) live in the main checkout's own
+/// store. Nudging the task's own auto-detected scope would touch a directory
+/// nobody watches: a `gh pr merge` run by a session inside
+/// `<repo>/.claude/worktrees/<name>` needs its nudge to land in `<repo>`'s
+/// scope, same as [`store_db_path_for_scope`] exists so `tt task rm` updates
+/// the right store rather than the worktree's own empty one. Kept as its own
+/// subdirectory rather than nested directly under `data_dir()` so a
+/// directory-watch on it isn't spammed by tt.db's own WAL/SHM churn.
 pub fn nudge_dir_path() -> Result<PathBuf> {
-    Ok(data_dir()?.join("nudge"))
+    let base = dirs::data_dir().ok_or(Error::NoDataDir)?.join(TOOL_NAME);
+    Ok(nest(base, &detect_main_scope(), true).join("nudge"))
 }
 
 /// Directory the telemetry event log streams to: `<data_dir>/telemetry`.
@@ -1484,6 +1531,22 @@ mod tests {
     fn non_repo_dir_is_unscoped() {
         let dir = TempDir::new().unwrap();
         assert_eq!(task_scope_from_dir(dir.path()), None);
+    }
+
+    #[test]
+    fn main_checkout_scope_collapses_worktree_task_to_the_main_checkout() {
+        let dir = TempDir::new().unwrap();
+        let main = dir.path().join("towles-tool-rs");
+        let task = main.join(".claude").join("worktrees").join("feat-thing");
+        std::fs::create_dir_all(main.join("crates").join("tt-config")).unwrap();
+        std::fs::create_dir_all(task.join("crates").join("tt-config")).unwrap();
+
+        // The main checkout scopes by its own name either way...
+        assert_eq!(main_checkout_scope_from_dir(&main), Some("towles-tool-rs".to_string()));
+        // ...and so does a task nested under it, unlike `task_scope_from_dir`,
+        // which qualifies the task with the repo name instead of collapsing it.
+        assert_eq!(main_checkout_scope_from_dir(&task), Some("towles-tool-rs".to_string()));
+        assert_eq!(task_scope_from_dir(&task), Some("towles-tool-rs-feat-thing".to_string()));
     }
 
     #[test]
