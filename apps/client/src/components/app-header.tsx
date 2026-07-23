@@ -1,4 +1,4 @@
-import { PanelLeftClose, PanelLeftOpen, Search, Settings } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Search, Settings, Sparkles } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { fmtClock, fmtCountdown, fmtDate, useAppTask, useStoreSnapshot } from "@/lib/data";
 import { useNow } from "@/lib/now";
+import { shortcutHint } from "@/lib/shortcuts";
 import { useWorkspace } from "@/lib/workspace";
 
 /**
@@ -107,7 +108,8 @@ function ClockCluster() {
 }
 
 export function AppHeader() {
-  const { sidebarCollapsed, toggleSidebar, setPaletteOpen, openSettingsTab } = useWorkspace();
+  const { sidebarCollapsed, toggleSidebar, setPaletteOpen, openSettingsTab, toggleZen } =
+    useWorkspace();
 
   return (
     <header className="relative flex h-11 shrink-0 items-center gap-2 border-b px-2">
@@ -149,6 +151,22 @@ export function AppHeader() {
       </Button>
 
       <ThemeToggle />
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Enter zen focus mode"
+            onClick={toggleZen}
+          >
+            <Sparkles />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>
+          Zen focus mode <Kbd>{shortcutHint("zen")}</Kbd>
+        </TooltipContent>
+      </Tooltip>
 
       <Tooltip>
         <TooltipTrigger asChild>
