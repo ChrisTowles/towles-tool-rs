@@ -52,7 +52,6 @@ import {
 import { IssueItem, storeGhIssuesList } from "@/lib/data";
 import { GoalEditor } from "@/components/goal-editor";
 import { referencedIssueNumbers } from "@/lib/goal-text";
-import { errorMessage } from "@/lib/errors";
 import { loadUserSettings, type PromptImprover } from "@/lib/settings";
 import { type BaseBranch, BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/task";
 import { invoke } from "@/lib/tauri";
@@ -590,11 +589,10 @@ export function InlineNewTask({
   }
 
   async function pasteImages(data: DataTransfer | null) {
-    try {
-      await addImages(await imagesFromDataTransfer(data));
-    } catch (e) {
-      showError(errorMessage(e));
-    }
+    (await imagesFromDataTransfer(data)).match({
+      ok: (imgs) => void addImages(imgs),
+      err: (e) => showError(e.message),
+    });
   }
 
   // Read the image off the OS clipboard through Rust.

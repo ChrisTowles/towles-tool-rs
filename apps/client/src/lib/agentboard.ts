@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import type { Result } from "better-result";
+import { Result } from "better-result";
 import type { z } from "zod";
 import type { PrItem, TaskIssueLink, TaskItem, TaskOutcome } from "./data";
-import type { IpcError } from "./errors";
+import { ImageTooLarge, type IpcError } from "./errors";
 import type { LaunchConfigStatus } from "./launch";
 import type { RepoMeta } from "./repo-identity";
 import { OpenedSessionSchema } from "./schemas/agentboard";
@@ -1635,22 +1635,27 @@ export type PastedImage = {
 };
 
 /** Pull every image off a paste/drop's `DataTransfer`, decoded to base64.
- * Returns `[]` for a plain-text paste, which the caller treats as "not an
- * image paste, let the textarea handle it normally". */
-export async function imagesFromDataTransfer(data: DataTransfer | null): Promise<PastedImage[]> {
+ * `Ok([])` for a plain-text paste, which the caller treats as "not an image
+ * paste, let the textarea handle it normally"; `Err(ImageTooLarge)` when a
+ * file is over the size cap, surfaced inline rather than thrown. */
+export async function imagesFromDataTransfer(
+  data: DataTransfer | null,
+): Promise<Result<PastedImage[], ImageTooLarge>> {
   const files = Array.from(data?.items ?? [])
     .filter((it) => it.kind === "file" && isPasteableImage(it.type))
     .map((it) => it.getAsFile())
     .filter((f): f is File => f != null);
   const tooBig = files.find((f) => f.size > MAX_PASTED_IMAGE_BYTES);
   if (tooBig) {
-    throw new Error(
-      `${tooBig.name || "that image"} is ${Math.round(tooBig.size / 1024 / 1024)}MB — over the ${
-        MAX_PASTED_IMAGE_BYTES / 1024 / 1024
-      }MB limit for an attached image.`,
+    return Result.err(
+      new ImageTooLarge({
+        name: tooBig.name || "that image",
+        bytes: tooBig.size,
+        limitBytes: MAX_PASTED_IMAGE_BYTES,
+      }),
     );
   }
-  return Promise.all(files.map((file, i) => readImageFile(file, i)));
+  return Result.ok(await Promise.all(files.map((file, i) => readImageFile(file, i))));
 }
 
 /** Ask Rust for the system clipboard's image, for the case where the paste
