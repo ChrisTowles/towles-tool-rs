@@ -267,3 +267,13 @@ jobs:
         env:
           GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-src
         run: cargo clippy -p tt-app --no-default-features -- -D warnings
+
+      # Run tt-app's unit tests with the same feature set clippy checks
+      # (`--no-default-features`). The `wdio` feature stays off deliberately: it
+      # pulls in the E2E-only tauri-plugin-wdio{,-webdriver} plugins, and those
+      # paths are exercised by the nightly e2e job (which builds `--features
+      # wdio`) rather than on every PR.
+      - name: test (tt-app)
+        env:
+          GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-src
+        run: cargo test -p tt-app --no-default-features
