@@ -196,8 +196,66 @@ native worktree location — one per parallel line of work, each with its own
 rendered `.env` (port-pool claims, inherited secrets) so concurrent agents
 never collide on ports or state. Any plain git checkout becomes task-capable
 with `tt task init`; tasks are ephemeral — created for a branch, removed when
-it merges. Manage them with `tt task` (`init`, `new`, `ls`, `env`, `rm`,
-`clean`) — never raw `git worktree`. Claude Code's own worktree surfaces
+it merges.
+
+The whole lifecycle is one gesture in and one command out, and every entry
+point — CLI, Claude Code, or the app — runs the same machinery:
+
+```mermaid
+flowchart TB
+    subgraph gesture["⚡ One gesture in"]
+        direction LR
+        CLI["<b>tt task new</b> &quot;goal&quot;"]
+        CC["<b>claude --worktree</b><br/>(WorktreeCreate hook)"]
+        APP["Agentboard <b>+</b> button"]
+        CLI ~~~ CC ~~~ APP
+    end
+
+    gesture --> OPS(["one shared machinery<br/>(the tt-tasks crate)"])
+    OPS --> setup
+
+    subgraph setup["🔧 Setup — automatic"]
+        direction TB
+        WT["branch-named worktree at<br/>.claude/worktrees/&lt;branch&gt;"]
+        ENV["render .env from .env.example —<br/>each #36;#123;tt:port A–B#125; claim gets a port<br/><b>no other task holds</b>"]
+        DEP["TT_TASK_SETUP runs<br/>(npm install, migrations, …)"]
+        WT --> ENV --> DEP
+    end
+
+    setup --> fleet
+
+    subgraph fleet["🚀 Parallel agents, zero collisions"]
+        direction LR
+        T1["task A<br/>PORT=3000"]
+        T2["task B<br/>PORT=3001"]
+        T3["task C<br/>PORT=3002"]
+        T1 ~~~ T2 ~~~ T3
+    end
+
+    fleet --> MERGE(["PR merges"])
+    MERGE --> RMCMD["<b>tt task rm</b> / <b>tt task clean</b><br/>or the WorktreeRemove hook"]
+    RMCMD --> teardown
+
+    subgraph teardown["🛡️ Teardown — guarded"]
+        direction TB
+        GUARD{"unmerged commits or<br/>uncommitted changes?"}
+        SAFE["TT_TASK_TEARDOWN runs ·<br/>worktree removed · ports freed ·<br/>board row closed"]
+        BLOCK["removal refused —<br/>nothing is ever lost"]
+        GUARD -- "no" --> SAFE
+        GUARD -- "yes" --> BLOCK
+    end
+```
+
+The port claims are the part that makes ten concurrent tasks boring instead of
+painful: `.env.example` declares `${tt:port A-B}` pools once, `tt task env`
+renders each checkout a `.env` with ports no sibling task holds, and nothing in
+the repo ever hardcodes a port. Teardown is just as deliberate — removal
+refuses while a task still holds work only it can prove (a squash-merged
+branch *looks* unmerged to naive git checks; the `landed` detection in
+`tt-tasks` knows better).
+
+Manage tasks with `tt task` (`init`, `new`, `ls`, `env`, `rm`, `clean`) —
+never raw `git worktree`. Claude Code's own worktree surfaces
 (`claude --worktree`, the app's parallel sessions) route through the same
 machinery via the `WorktreeCreate`/`WorktreeRemove` hooks. The Agentboard rail
 shows the whole fleet and can create a task from its `+` button. Full
