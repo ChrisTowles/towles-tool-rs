@@ -40,6 +40,7 @@ import {
   dynamicFlowPrompt,
   isFolderQuiet,
   isPasteableImage,
+  issuesForFolder,
   needingSessionsOldestFirst,
   normalizeWins,
   paneRects,
@@ -48,6 +49,7 @@ import {
   pathScope,
   placePane,
   prForFolder,
+  taskForFolder,
   promptWithImages,
   pruneWins,
   replacePane,
@@ -64,7 +66,7 @@ import {
   nextOpenFileNonce,
   nextWindowId,
 } from "./agentboard";
-import type { PrItem } from "./data";
+import type { PrItem, TaskItem } from "./data";
 
 describe("nextWindowId", () => {
   it("never repeats an id, even when minted within one millisecond", () => {
@@ -296,6 +298,43 @@ describe("prForFolder", () => {
 
   it("returns undefined for an empty branch", () => {
     expect(prForFolder([pr({})], "x", "")).toBeUndefined();
+  });
+});
+
+function task(overrides: Partial<TaskItem>): TaskItem {
+  return {
+    id: 1,
+    text: "a task",
+    status: "doing",
+    position: 0,
+    createdAt: 0,
+    issues: [],
+    prs: [],
+    ...overrides,
+  };
+}
+
+describe("taskForFolder / issuesForFolder", () => {
+  const linked = task({
+    id: 5,
+    worktree: { repoRoot: "/r", dir: "/r/.claude/worktrees/feat-x" },
+    issues: [{ repo: "o/r", number: 12, url: "https://github.com/o/r/issues/12", state: "open" }],
+  });
+
+  it("matches a task by its worktree dir", () => {
+    expect(taskForFolder([linked], "/r/.claude/worktrees/feat-x")?.id).toBe(5);
+  });
+
+  it("returns undefined when no task is bound to the dir", () => {
+    expect(taskForFolder([linked], "/r/.claude/worktrees/other")).toBeUndefined();
+    // A task with no worktree binding never matches.
+    expect(taskForFolder([task({})], "/r/.claude/worktrees/feat-x")).toBeUndefined();
+  });
+
+  it("surfaces the bound task's issue links, empty when nothing is bound", () => {
+    expect(issuesForFolder([linked], "/r/.claude/worktrees/feat-x")).toHaveLength(1);
+    expect(issuesForFolder([linked], "/r/.claude/worktrees/feat-x")[0].number).toBe(12);
+    expect(issuesForFolder([linked], "/r/.claude/worktrees/gone")).toEqual([]);
   });
 });
 

@@ -27,7 +27,7 @@ mod quiet_hours;
 mod slack;
 mod slack_socket;
 
-pub use issues::fetch_importable_issues;
+pub use issues::{fetch_importable_issues, search_repo_issues};
 pub use nudge::NudgeTarget;
 pub use quiet_hours::{should_run_at, should_run_calendar};
 pub use slack::{

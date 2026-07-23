@@ -1,9 +1,10 @@
-import { useState, type ComponentProps, type ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 import {
   AppWindow,
   Check,
   ChevronDown,
   CircleDot,
+  ExternalLink,
   Eye,
   EyeOff,
   Files,
@@ -11,9 +12,12 @@ import {
   GitCompare,
   GitMerge,
   GitPullRequest,
+  Link,
+  Link2Off,
   Loader2,
   MoreVertical,
   RefreshCw,
+  Search,
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -32,7 +36,6 @@ import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import {
-  abCreateIssue,
   abSyncRepo,
   comparedBaseLabel,
   ctxPct,
@@ -52,7 +55,14 @@ import {
   type PortDrift,
   type SessionData,
 } from "@/lib/agentboard";
-import type { PrItem } from "@/lib/data";
+import {
+  storeAttachTaskIssue,
+  storeDetachTaskIssue,
+  storeSearchIssues,
+  type IssueItem,
+  type PrItem,
+  type TaskIssueLink,
+} from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
 import { PR_TONE, prTone } from "@/lib/pr-tone";
 import { shortcutHint } from "@/lib/shortcuts";
@@ -686,6 +696,165 @@ export function PrChip({
   );
 }
 
+/** Clickable `#N` chip for a GitHub issue *manually linked* to this folder's
+ * bound task — the issue-side mirror of {@link PrChip}. Unlike a PR, an issue
+ * has no branch, so it never auto-attaches: this chip only appears for issues
+ * put there by "Attach issue…" (`RepoMenu`), and it's the visible answer to
+ * "does this task hold that issue?". A closed issue tints purple (done, like
+ * `PrChip`'s merged tint); an open one stays a quiet neutral. The chip is a
+ * menu: open on GitHub, or detach (issues are user-managed, so removal is a
+ * first-class action, not a Board-only chore). */
+export function IssueChip({ taskId, issue }: { taskId: number; issue: TaskIssueLink }) {
+  const closed = issue.state === "closed";
+  const tone = closed
+    ? "border-purple-500/50 bg-purple-500/10 text-purple-600 hover:bg-purple-500/20 dark:text-purple-400"
+    : "border-border/70 text-muted-foreground hover:bg-accent hover:text-foreground";
+
+  async function detach() {
+    const result = await storeDetachTaskIssue(taskId, issue.repo, issue.number);
+    if (result.isErr()) toast.error(`Couldn't detach — ${result.error.message}`);
+    else toast.success(`Detached #${issue.number}`);
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          onClick={(e) => e.stopPropagation()}
+          className={cn(
+            "flex h-5 shrink-0 items-center gap-1 rounded-md border px-1.5 font-mono text-[10.5px] transition-colors",
+            tone,
+          )}
+          title={`${issue.repo}#${issue.number} — ${closed ? "closed" : "open"}, linked to this task`}
+        >
+          <CircleDot className="size-3" />#{issue.number}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-auto min-w-44">
+        <DropdownMenuItem
+          onSelect={() => void openExternalUrl(issue.url)}
+          className="whitespace-nowrap"
+        >
+          <ExternalLink className="size-3.5" /> Open on GitHub
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          variant="destructive"
+          onSelect={() => void detach()}
+          className="whitespace-nowrap"
+        >
+          <Link2Off className="size-3.5" /> Detach issue
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** The dialog behind `RepoMenu`'s "Attach issue…" — searches the folder repo's
+ * issues (all states, via `store_search_issues`) and links the picked one to
+ * the folder's bound task. Search is debounced so typing doesn't fire a `gh`
+ * call per keystroke; a blank query shows nothing. This is the manual,
+ * deliberate counterpart to PR auto-attach — issues have no branch to match a
+ * folder on, so associating one is always an explicit act. */
+function AttachIssueDialog({
+  open,
+  onOpenChange,
+  dir,
+  taskId,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  dir: string;
+  taskId: number;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<IssueItem[]>([]);
+  const [searching, setSearching] = useState(false);
+
+  // Debounced live search: a blank query resets to nothing without shelling
+  // out; otherwise wait for a typing pause before the `gh` round-trip. The
+  // cleanup cancels a pending timer so only the latest keystroke queries, and
+  // browser dev (`NotInTauri`) quietly yields an empty list rather than a
+  // toast on every pause.
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const handle = setTimeout(() => {
+      void storeSearchIssues(dir, q).then((r) => {
+        setResults(r.unwrapOr([]));
+        setSearching(false);
+      });
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [query, dir]);
+
+  async function attach(issue: IssueItem) {
+    onOpenChange(false);
+    const result = await storeAttachTaskIssue(taskId, issue.repo, issue.number, issue.url);
+    result.match({
+      ok: () => toast.success(`Attached #${issue.number}`),
+      err: (e) => toast.error(`Couldn't attach — ${e.message}`),
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>Attach issue</DialogTitle>
+        </DialogHeader>
+        <div className="flex items-center gap-2">
+          <Search className="size-4 shrink-0 text-muted-foreground" />
+          <Input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search issues by title, number, or text…"
+          />
+        </div>
+        <div className="max-h-80 min-h-10 overflow-auto">
+          {searching ? (
+            <p className="p-2 text-xs text-muted-foreground">
+              <Loader2 className="mr-1 inline size-3 animate-spin" /> searching…
+            </p>
+          ) : results.length === 0 ? (
+            <p className="p-2 text-xs text-muted-foreground">
+              {query.trim() ? "No matching issues." : "Type to search this repo's issues."}
+            </p>
+          ) : (
+            <div className="flex flex-col">
+              {results.map((issue) => (
+                <button
+                  key={`${issue.repo}#${issue.number}`}
+                  type="button"
+                  onClick={() => void attach(issue)}
+                  className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+                >
+                  <CircleDot
+                    className={cn(
+                      "size-3.5 shrink-0",
+                      issue.state === "closed" ? "text-purple-500" : "text-emerald-500",
+                    )}
+                  />
+                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                    #{issue.number}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{issue.title}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /** How this branch's work reached the base, straight from git — `merged`,
  * `rebase-merged` or `squash-merged` (see `FolderData.landed`).
  *
@@ -970,6 +1139,7 @@ export function RepoMenu({
   quiet,
   onNewTask,
   onDeleteWorktree,
+  taskId,
 }: {
   path?: string;
   onRemove: () => void;
@@ -986,23 +1156,12 @@ export function RepoMenu({
   /** Deletes this worktree from disk (guarded, `task_delete`) — set only
    * on worktree checkouts. */
   onDeleteWorktree?: () => void;
+  /** The board task bound to this folder's worktree, when one exists. Set
+   * enables "Attach issue…" — you can only link an issue to a task, so a
+   * folder with no bound task doesn't offer it. */
+  taskId?: number;
 }) {
-  const [issueOpen, setIssueOpen] = useState(false);
-  const [issueTitle, setIssueTitle] = useState("");
-
-  async function createIssue() {
-    const title = issueTitle.trim();
-    if (!title) return;
-    setIssueOpen(false);
-    setIssueTitle("");
-    (await abCreateIssue(dir, title)).match({
-      ok: (url) =>
-        toast.success("Issue created", {
-          action: { label: "Open", onClick: () => void openExternalUrl(url) },
-        }),
-      err: (e) => toast.error(e.message),
-    });
-  }
+  const [attachOpen, setAttachOpen] = useState(false);
 
   async function syncNow() {
     (await abSyncRepo(dir)).match({
@@ -1067,9 +1226,11 @@ export function RepoMenu({
           <DropdownMenuItem onSelect={() => void syncNow()} className="whitespace-nowrap">
             <RefreshCw className="size-3.5" /> Sync now
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setIssueOpen(true)} className="whitespace-nowrap">
-            <CircleDot className="size-3.5" /> Create issue…
-          </DropdownMenuItem>
+          {taskId != null && (
+            <DropdownMenuItem onSelect={() => setAttachOpen(true)} className="whitespace-nowrap">
+              <Link className="size-3.5" /> Attach issue…
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onSelect={() => void toggleQuiet()} className="whitespace-nowrap">
             {quiet ? (
               <>
@@ -1092,22 +1253,14 @@ export function RepoMenu({
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      <Dialog open={issueOpen} onOpenChange={setIssueOpen}>
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>New issue</DialogTitle>
-          </DialogHeader>
-          <Input
-            autoFocus
-            value={issueTitle}
-            onChange={(e) => setIssueTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void createIssue();
-            }}
-            placeholder="Issue title…"
-          />
-        </DialogContent>
-      </Dialog>
+      {taskId != null && (
+        <AttachIssueDialog
+          open={attachOpen}
+          onOpenChange={setAttachOpen}
+          dir={dir}
+          taskId={taskId}
+        />
+      )}
     </>
   );
 }

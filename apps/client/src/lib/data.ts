@@ -728,6 +728,12 @@ export const storeTaskSetWorktree = (
 export const storeGhIssuesList = (dir: string, assignedToMe: boolean) =>
   invoke<IssueItem[]>("store_gh_issues_list", { dir, assignedToMe });
 
+/** Search issues in `dir`'s repo (all states), for the attach-to-task picker.
+ * Read-only, unlike the open-assigned list `storeGhIssuesList` returns — a
+ * task can be linked to any existing issue. */
+export const storeSearchIssues = (dir: string, query: string) =>
+  invoke<IssueItem[]>("store_search_issues", { dir, query });
+
 /** Mark a watched Slack DM handled up to `ts`, clearing its banner. */
 export const storeDmDismiss = (channel: string, ts: number) =>
   invoke<void>("store_dm_dismiss", { channel, ts });

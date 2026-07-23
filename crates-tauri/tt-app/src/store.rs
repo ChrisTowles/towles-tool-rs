@@ -602,33 +602,21 @@ pub async fn store_gh_issues_list(
     .map_err(|e| format!("gh issues list task failed: {e}"))?
 }
 
-/// Create a new GitHub issue directly for the repo checked out at `dir` (no
-/// linked todo). `gh` infers the repo from the folder's git remote, mirroring
-/// the `.current_dir()` convention `tt-collect`'s issue/PR collectors use.
-/// Used by the agentboard repo rail's "New issue" action; the created issue
-/// shows up in Board's issue list once the next `issues` collector run picks
-/// it up. Async for the same main-thread reason as
-/// [`store_promote_task_to_issue`].
+/// Search issues in the repo checked out at `dir` for the attach-to-task
+/// flow's picker: `gh issue list --search <query>` across every state, so a
+/// task can be linked to any existing issue — not just the open, assigned
+/// ones [`store_gh_issues_list`] returns. Read-only — no store write. A blank
+/// query returns an empty list without shelling out.
 #[tauri::command]
-pub async fn store_create_issue(dir: String, title: String) -> Result<String, String> {
-    let title = title.trim().to_string();
-    if title.is_empty() {
-        return Err("issue title is required".into());
-    }
+pub async fn store_search_issues(
+    dir: String,
+    query: String,
+) -> Result<Vec<tt_store::IssueInput>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let output = tt_exec::run_in_dir_with_timeout(
-            "gh",
-            &["issue", "create", "--title", &title, "--body", ""],
-            std::path::Path::new(&dir),
-            GH_MUTATION_TIMEOUT,
-        )
-        .map_err(|e| format!("failed to run gh in {dir}: {e}"))?;
-        let (number, url) = parse_gh_issue_create_output(&output)?;
-        tracing::info!(%dir, number, "issue.created");
-        Ok(url)
+        tt_collect::search_repo_issues(std::path::Path::new(&dir), &query)
     })
     .await
-    .map_err(|e| format!("gh issue create task failed: {e}"))?
+    .map_err(|e| format!("gh issues search task failed: {e}"))?
 }
 
 /// Run `gh issue create` and return the new issue's `(number, url)`.

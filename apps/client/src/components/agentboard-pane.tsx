@@ -9,6 +9,7 @@ import {
   FolderLandedBadge,
   fmtMins,
   IconBtn,
+  IssueChip,
   PreviewButton,
   PrChip,
   RepoMenu,
@@ -33,7 +34,7 @@ import {
   type SessionActions,
   type SessionData,
 } from "@/lib/agentboard";
-import type { PrItem } from "@/lib/data";
+import type { PrItem, TaskItem } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
 import { shortcutHint } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
@@ -51,6 +52,7 @@ export function WorkingContext({
   repo,
   folder,
   pr,
+  task,
   actions,
   onOpenDiff,
   onOpenFiles,
@@ -63,6 +65,9 @@ export function WorkingContext({
   repo: RepoData;
   folder: FolderData;
   pr?: PrItem;
+  /** The board task bound to this checkout's worktree, when one exists —
+   * source of the linked-issue chips and the "Attach issue…" target. */
+  task?: TaskItem;
   /** Session lifecycle dispatch — the dev-servers popover launches/focuses
    * through it. */
   actions: SessionActions;
@@ -136,6 +141,7 @@ export function WorkingContext({
                 : undefined
             }
             onRemove={() => onRemoveRepo([folder.dir], folder.name)}
+            taskId={!missing ? task?.id : undefined}
           />
         </div>
         {/* Line 2: repo · branch + git facts, quieter. */}
@@ -149,6 +155,10 @@ export function WorkingContext({
           <FilesButton onOpen={() => onOpenFiles(folder.dir)} />
           {folder.hasLaunchConfig && <PreviewButton onOpen={() => onOpenPreview(folder.dir)} />}
           {pr && <PrChip pr={pr} stats={folder} />}
+          {task &&
+            task.issues.map((issue) => (
+              <IssueChip key={`${issue.repo}#${issue.number}`} taskId={task.id} issue={issue} />
+            ))}
           <FolderLandedBadge folder={folder} pr={pr} />
         </div>
         {!missing && (
