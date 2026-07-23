@@ -177,6 +177,7 @@ export function BoardScreen() {
       }),
       [],
     ),
+    "board",
     activeTab === "board",
   );
   // The insertion slot the current drag would land in: drives both the column

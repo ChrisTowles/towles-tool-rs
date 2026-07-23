@@ -71,6 +71,7 @@ function Shortcuts() {
       openSettingsTab,
       closeTab,
     ]),
+    activeTab,
   );
 
   const activeScopes: ShortcutScope[] =
@@ -79,7 +80,7 @@ function Shortcuts() {
       : activeTab === "board"
         ? ["global", "board"]
         : ["global"];
-  return <ShortcutHelpHost activeScopes={activeScopes} />;
+  return <ShortcutHelpHost activeScopes={activeScopes} screen={activeTab} />;
 }
 
 function Workspace() {
