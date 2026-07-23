@@ -1650,6 +1650,7 @@ export function AgentboardScreen() {
         railCollapsed,
       ],
     ),
+    "agentboard",
     activeTab === "agentboard",
   );
 

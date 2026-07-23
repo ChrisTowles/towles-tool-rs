@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import { uiAction } from "@/lib/ui-action";
+import type { ScreenId } from "@/lib/screens";
 import { SETTINGS_SAVED_EVENT, loadUserSettings } from "./settings";
 
 /**
@@ -343,9 +345,16 @@ function isEditableTarget(e: KeyboardEvent): boolean {
  * Bind handlers for registry shortcuts. Handlers are keyed by shortcut id; a
  * matched binding runs its handler and eats the event. `enabled` gates the
  * whole set (scope activation — e.g. Agentboard passes `activeTab ===
- * "agentboard"` because its screen stays mounted while hidden).
+ * "agentboard"` because its screen stays mounted while hidden). `screen` is
+ * the currently active screen, purely for the `shortcut.<id>` `uiAction`
+ * record fired on every match — a discrete "this binding fired" event, the
+ * same instrumentation every click handler in the app already gets.
  */
-export function useShortcuts(handlers: Partial<Record<string, () => void>>, enabled = true): void {
+export function useShortcuts(
+  handlers: Partial<Record<string, () => void>>,
+  screen: ScreenId,
+  enabled = true,
+): void {
   const workInTerminalRef = useShortcutsWorkInTerminal();
   useEffect(() => {
     if (!enabled) return;
@@ -358,13 +367,14 @@ export function useShortcuts(handlers: Partial<Record<string, () => void>>, enab
         const allowed = s.allowInEditable && workInTerminalRef.current;
         if (isEditableTarget(e) && !allowed) return;
         e.preventDefault();
+        uiAction(`shortcut.${id}`, screen);
         handler();
         return;
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handlers, enabled, workInTerminalRef]);
+  }, [handlers, screen, enabled, workInTerminalRef]);
 }
 
 const SCOPE_TITLES: Record<ShortcutScope, string> = {
@@ -438,8 +448,17 @@ export function ShortcutHelp({
 }
 
 /** Owns the `?` binding + the overlay's open state. Mounted once in App. */
-export function ShortcutHelpHost({ activeScopes }: { activeScopes: ShortcutScope[] }) {
+export function ShortcutHelpHost({
+  activeScopes,
+  screen,
+}: {
+  activeScopes: ShortcutScope[];
+  screen: ScreenId;
+}) {
   const [open, setOpen] = useState(false);
-  useShortcuts(useMemo(() => ({ help: () => setOpen(true) }), []));
+  useShortcuts(
+    useMemo(() => ({ help: () => setOpen(true) }), []),
+    screen,
+  );
   return <ShortcutHelp open={open} onOpenChange={setOpen} activeScopes={activeScopes} />;
 }
