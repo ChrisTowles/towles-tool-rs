@@ -198,7 +198,6 @@ jobs:
           tool: cargo-audit
 
       - name: cargo audit
-        continue-on-error: true
         run: cargo audit
 
       - name: npm audit

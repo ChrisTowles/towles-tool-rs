@@ -37,7 +37,7 @@ jobs:
         run: node scripts/ci/check-tls-roots.mjs
 
   dependency-audit:
-    name: Dependency advisories (non-blocking)
+    name: Dependency advisories
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,12 +53,10 @@ jobs:
         with:
           tool: cargo-audit
 
-      # Non-blocking: the tree currently carries open advisories in transitive
-      # deps we don't control from a PR (quick-xml, the unmaintained gtk-rs
-      # stack). Surface them without failing the PR; the nightly workflow runs
-      # the same scan so regressions stay visible.
+      # Blocking: the tree is clean (quick-xml bumped to 0.41 for
+      # RUSTSEC-2026-0194/0195); unmaintained-crate notices are warnings and
+      # don't fail the scan.
       - name: cargo audit
-        continue-on-error: true
         run: cargo audit
 
       # Non-blocking for the same reason: the one high-severity npm advisory is
