@@ -157,7 +157,9 @@ export function RailIconStrip({
     // takes the calmer identity wash.
     const RepoIcon = repoIcon(repo.meta);
     const accent = repoAccentStyles(repo.meta);
-    const statusOwnsEdge = active || needs > 0;
+    // Attention (amber) still outranks identity. Being the active folder is a
+    // ring layered on top instead, so it doesn't erase the identity wash.
+    const statusOwnsEdge = needs > 0;
     return (
       <Tooltip key={folder.dir}>
         <TooltipTrigger asChild>
@@ -169,7 +171,7 @@ export function RailIconStrip({
             style={statusOwnsEdge ? undefined : { ...accent.edgeStyle, ...accent.surfaceStyle }}
             className={cn(
               "relative flex size-9 shrink-0 items-center justify-center rounded-md border-l-2 border-transparent text-muted-foreground hover:bg-accent/50",
-              active && "border-l-violet-500 bg-accent text-foreground",
+              active && "border-l-violet-500 text-foreground ring-1 ring-inset ring-violet-500/50",
               // Attention outranks focus on the accent edge (folder-rail rule).
               needs > 0 && "border-l-amber-500",
             )}
@@ -594,10 +596,11 @@ export function RepoGroup({
   // The header is sticky, so its wash must resolve to an opaque color — rows
   // scroll underneath it and a translucent tint reads as a rendering glitch.
   const accent = repoAccentStyles(repo.meta, "var(--card)");
-  // Identity never outranks status: the violet active edge and the amber
-  // needs-you signal keep the border, and a repo waiting on you never gets
-  // the calmer identity wash laid over it.
-  const statusOwnsRow = repoActive || repo.needs > 0;
+  // Identity never outranks true status: a repo waiting on you (amber) never
+  // gets the calmer identity wash laid over it. Being the active selection is
+  // shown as a ring, not a fill, so it layers over the identity wash instead
+  // of replacing it.
+  const statusOwnsRow = repo.needs > 0;
   return (
     <div className="border-b" data-focus-kind="repo" data-focus-id={repo.key}>
       <div
@@ -608,7 +611,7 @@ export function RepoGroup({
           // (bg-accent/60 for active, /50 for hover) lets their text show
           // through the stuck header and reads as a rendering glitch.
           "sticky top-0 z-10 flex w-full items-center gap-2 border-b border-l-2 border-border border-l-transparent bg-card px-3 py-2 hover:bg-accent",
-          repoActive && "border-l-violet-500 bg-accent",
+          repoActive && "border-l-violet-500 ring-1 ring-inset ring-violet-500/50",
         )}
       >
         <button
@@ -853,9 +856,11 @@ function FolderHeader({
     // is always present so the active violet edge never shifts content.
     <div
       style={
-        // Identity never outranks status: the violet active edge and an amber
-        // needs-you count keep the row to themselves.
-        scope === "repo" && !active && needs === 0 && !missing
+        // Identity never outranks true status: an amber needs-you count or a
+        // missing checkout keep the row to themselves. Being the active
+        // selection is a ring layered on top, not a fill, so it doesn't erase
+        // the identity wash.
+        scope === "repo" && needs === 0 && !missing
           ? { ...accent.edgeStyle, ...accent.surfaceStyle }
           : undefined
       }
@@ -863,11 +868,14 @@ function FolderHeader({
         "group border-b border-l-2 border-border border-l-transparent bg-card pr-2",
         // A repo-scope header is sticky, so rows scroll underneath it and every
         // background it can take must be opaque — a translucent tint lets their
-        // text show through the stuck header. Folder-scope rows sit in normal
-        // flow with nothing passing beneath, so they keep the softer tint.
-        // Both backgrounds branch together on scope so they can't drift apart.
+        // text show through the stuck header, so its active state is a ring
+        // instead of a fill. Folder-scope rows sit in normal flow with nothing
+        // passing beneath and carry no identity wash, so they keep the fill.
         scope === "repo"
-          ? cn("sticky top-0 z-10 pl-3 hover:bg-accent", active && "bg-accent")
+          ? cn(
+              "sticky top-0 z-10 pl-3 hover:bg-accent",
+              active && "ring-1 ring-inset ring-violet-500/50",
+            )
           : cn("pl-6 hover:bg-accent/50", active && "bg-accent/60"),
         active && "border-l-violet-500",
       )}
