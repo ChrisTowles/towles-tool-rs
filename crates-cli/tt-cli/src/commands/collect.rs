@@ -119,7 +119,7 @@ fn run_nudge(target: NudgeTarget) -> i32 {
         ui::error(&format!("Failed to create nudge dir: {e}"));
         return 1;
     }
-    match std::fs::write(dir.join(target.file_name()), now_ms().to_string()) {
+    match std::fs::write(dir.join(target.to_collect().file_name()), now_ms().to_string()) {
         Ok(()) => 0,
         Err(e) => {
             ui::error(&format!("Failed to write nudge file: {e}"));

@@ -218,22 +218,26 @@ pub struct NudgeArgs {
     pub target: NudgeTarget,
 }
 
-/// Which collector `tt collect nudge` eagerly refreshes. Mirrors the two
-/// collectors the app's scheduler nudge-dir watch polls for
-/// (`crates-tauri/tt-app/src/scheduler.rs`) — see [`NudgeTarget::file_name`]
-/// for the shared filename contract between the two.
+/// Which collector `tt collect nudge` eagerly refreshes. A thin clap-parsing
+/// mirror of [`tt_collect::NudgeTarget`], which owns the key ↔ nudge-filename
+/// contract the app's scheduler nudge-dir watch reads
+/// (`crates-tauri/tt-app/src/scheduler.rs`). The accepted CLI values are the
+/// collector keys themselves (`prs`, `issues`, `slack:dm`).
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub enum NudgeTarget {
     Prs,
     Issues,
+    #[value(name = "slack:dm")]
+    SlackDm,
 }
 
 impl NudgeTarget {
-    /// Filename inside the nudge dir this target touches.
-    pub fn file_name(self) -> &'static str {
+    /// Map to the crate-owned target that carries the filename contract.
+    pub fn to_collect(self) -> tt_collect::NudgeTarget {
         match self {
-            NudgeTarget::Prs => "prs",
-            NudgeTarget::Issues => "issues",
+            NudgeTarget::Prs => tt_collect::NudgeTarget::Prs,
+            NudgeTarget::Issues => tt_collect::NudgeTarget::Issues,
+            NudgeTarget::SlackDm => tt_collect::NudgeTarget::SlackDm,
         }
     }
 }
