@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-} from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarClock,
   Eye,
@@ -32,29 +26,17 @@ import {
 } from "@/components/inline-new-task";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
-import {
-  Command,
-  CommandDialog,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { cleanupMissing, closeOnFalse, createTaskForSubmit, paneStyle } from "./agentboard/helpers";
+import { useCollapseState } from "./agentboard/use-collapse-state";
+import { useColumnDrag } from "./agentboard/use-column-drag";
+import {
+  DeleteWorktreeDialog,
+  RemoveRepoDialog,
+  SplitSessionDialog,
+  StartClaudeDialog,
+} from "./agentboard/dialogs";
 import { TaskCreatedSchema } from "@/lib/schemas/task";
 import { cn } from "@/lib/utils";
 import {
@@ -68,10 +50,8 @@ import {
   consumePendingOpenSessions,
   cycleNeedsYou,
   cycleSession,
-  COL_TOTAL,
   diffPaneDir,
   diffPaneId,
-  dragCol,
   filesPaneDir,
   filesPaneId,
   dropPane,
@@ -113,11 +93,9 @@ import {
   waitForFirstFrame,
   type AgentboardNav,
   type AgentStatus,
-  type AgWindow,
   type BlockedDelete,
   type FolderData,
   type Overlay,
-  type PaneRect,
   type PendingOpenSession,
   type RemoveTarget,
   type RepoData,
@@ -129,7 +107,7 @@ import {
   type WindowsPayload,
   windowColor,
 } from "@/lib/agentboard";
-import { errorMessage, NotInTauri } from "@/lib/errors";
+import { errorMessage } from "@/lib/errors";
 import { launchCommand, launchRegister, type LaunchConfigStatus } from "@/lib/launch";
 import { exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
 import { invoke, isTauri } from "@/lib/tauri";
@@ -137,9 +115,7 @@ import type { OpenFileRequest } from "@/lib/ide";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import {
   fmtCountdown,
-  storeAddTask,
   taskDelete,
-  storeAttachTaskIssue,
   storeSetTaskStatus,
   storeTaskSetWorktree,
   useStoreSnapshot,
@@ -181,63 +157,6 @@ import { toast } from "sonner";
  * one candidate and opening a picker otherwise), active only while this tab
  * is shown.
  */
-/** Sentinel key in the persisted collapse map for "the whole rail is collapsed
- * to icons" — rides the same `ab_save_collapsed` store as the per-row keys
- * (`repo:<name>` / `<repoKey>::<dir>`), which it can never collide with. */
-const RAIL_COLLAPSE_KEY = "__rail__";
-
-/** `onOpenChange` for a dialog whose only close-side effect is clearing
- * whatever state made it open — Radix fires `false` on outside-click, Esc,
- * and the built-in close button alike, so this covers all three at once. */
-const closeOnFalse = (fn: () => void) => (isOpen: boolean) => {
-  if (!isOpen) fn();
-};
-
-/** Untrack every repo whose directory is gone from disk, reporting the count.
- * The Rust side re-probes at call time, so a directory restored since the last
- * poll survives. */
-async function cleanupMissing() {
-  const removed = await invoke<string[]>("ab_untrack_missing", {});
-  if (removed.isErr()) {
-    toast.error(`Couldn't clean up — ${removed.error.message}`);
-    return;
-  }
-  const n = removed.value.length;
-  toast(n > 0 ? `Untracked ${n} missing repo${n === 1 ? "" : "s"}.` : "Nothing to clean up.");
-}
-
-/** A pane's grid rect as absolute-positioning percentages. */
-const paneStyle = (r: PaneRect) => ({
-  left: `${r.left}%`,
-  top: `${r.top}%`,
-  width: `${r.width}%`,
-  height: `${r.height}%`,
-});
-
-/**
- * Create the board task for a new-task submit (#339): the task row exists
- * from the moment of submit — before any worktree work — with the picked
- * issues attached. Best-effort: a store failure must not block the worktree
- * (the task is still useful without a card), so this resolves to `undefined`
- * on error after surfacing a toast.
- */
-async function createTaskForSubmit(input: NewTaskSubmit): Promise<number | undefined> {
-  const title = input.title || input.goal || input.issues[0]?.title || input.branch;
-  if (!title) return undefined;
-  const status = input.worktree ? "doing" : "backlog";
-  const created = await storeAddTask(title, { status });
-  if (created.isErr()) {
-    if (!NotInTauri.is(created.error)) {
-      toast(`couldn't add the board task: ${created.error.message}`);
-    }
-    return undefined;
-  }
-  for (const issue of input.issues) {
-    void storeAttachTaskIssue(created.value, issue.repo, issue.number, issue.url);
-  }
-  return created.value;
-}
-
 export function AgentboardScreen() {
   const state = useAgentboardState();
   const { snapshot } = useStoreSnapshot();
@@ -370,45 +289,10 @@ export function AgentboardScreen() {
   // predict. (The `term_kill` on TerminalView unmount needs no entry: cleanup
   // unlistens first, so that exit is never delivered.)
   const expectedKills = useRef<Set<string>>(new Set());
-  // Folder-rail collapse/expand state (issue #52): hydrated once from
-  // `ab_get_state`, then this local copy is the live truth — same pattern as
-  // `wins` below, except each toggle saves incrementally (one key at a time)
-  // rather than a debounced whole-blob save, since a collapse entry is never
-  // ambiguous between "not yet toggled" and "explicitly reset".
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const hydratedCollapsed = useRef(false);
-  useEffect(() => {
-    if (!hydratedCollapsed.current && state.ts > 0) {
-      hydratedCollapsed.current = true;
-      setCollapsed(state.collapsed);
-    }
-  }, [state.ts, state.collapsed]);
-
-  function toggleCollapsed(key: string) {
-    setCollapsed((c) => {
-      const next = !c[key];
-      void invoke("ab_save_collapsed", { key, collapsed: next });
-      return { ...c, [key]: next };
-    });
-  }
-
-  // Set (rather than flip) one collapse-map entry — used by arrow-key
-  // navigation, where left always means collapsed and right always means
-  // expanded regardless of the current state.
-  function setCollapsedTo(key: string, next: boolean) {
-    setCollapsed((c) => {
-      if (!!c[key] === next) return c;
-      void invoke("ab_save_collapsed", { key, collapsed: next });
-      return { ...c, [key]: next };
-    });
-  }
-
-  // Whole-rail icon collapse (issue #70): same persisted map, sentinel key.
-  const railCollapsed = !!collapsed[RAIL_COLLAPSE_KEY];
-  const toggleRail = () => {
-    uiAction("agentboard.rail_toggle", "agentboard", railCollapsed ? "expand" : "collapse");
-    toggleCollapsed(RAIL_COLLAPSE_KEY);
-  };
+  // Folder-rail collapse/expand state (issue #52) — hydrated once and then
+  // this local copy is the live truth; see useCollapseState.
+  const { collapsed, toggleCollapsed, setCollapsedTo, railCollapsed, toggleRail } =
+    useCollapseState(state);
 
   // Ctrl+Shift+Left/Right collapse/expand (complements ab-focus-up/down's
   // Ctrl+Shift+Up/Down session nav — same modifier family, so it's also safe
@@ -840,48 +724,9 @@ export function AgentboardScreen() {
     selectSession(folderDir, sessionId);
   }
 
-  // --- Column resize: drag the divider between two side-by-side panes. Live
-  // widths ride local state so the terminals reflow while dragging; the
-  // result commits to the window's `cols` (debounced save) on release.
-  // `dragCol` snaps to thirds/fifths of the tiling width.
-  const paneAreaRef = useRef<HTMLDivElement>(null);
-  const [colDrag, setColDrag] = useState<{ winId: string; cols: number[] } | null>(null);
-
-  function startColDrag(e: ReactPointerEvent<HTMLDivElement>, win: AgWindow, divider: number) {
-    e.preventDefault();
-    const area = paneAreaRef.current;
-    if (!area) return;
-    const n = win.panes.length;
-    const posOf = (clientX: number) => {
-      const r = area.getBoundingClientRect();
-      return ((clientX - r.left) / r.width) * COL_TOTAL;
-    };
-    let cols = dragCol(n, win.cols, divider, posOf(e.clientX));
-    const move = (ev: PointerEvent) => {
-      cols = dragCol(n, win.cols, divider, posOf(ev.clientX));
-      setColDrag({ winId: win.id, cols });
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      setColDrag(null);
-      updateWins([win.folderDir], (w) => ({
-        ...w,
-        windows: w.windows.map((x) => (x.id === win.id ? { ...x, cols } : x)),
-      }));
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-    setColDrag({ winId: win.id, cols });
-  }
-
-  /** Double-click a divider: back to equal columns. */
-  function resetCols(win: AgWindow) {
-    updateWins([win.folderDir], (w) => ({
-      ...w,
-      windows: w.windows.map((x) => (x.id === win.id ? { ...x, cols: undefined } : x)),
-    }));
-  }
+  // Column resize (drag the divider between side-by-side panes) — see
+  // useColumnDrag; the release commits to the window's `cols` via updateWins.
+  const { paneAreaRef, colDrag, startColDrag, resetCols } = useColumnDrag(updateWins);
 
   /** A shell exited on its own. Either way its terminal unmounts (the PTY is
    * gone); how it died decides whether the pane goes with it.
@@ -2422,140 +2267,34 @@ export function AgentboardScreen() {
         </ResizablePanelGroup>
       </div>
 
-      <CommandDialog
+      <SplitSessionDialog
         open={splitOpen}
         onOpenChange={setSplitOpen}
-        title="Add to window"
-        description={
-          activeFolder
-            ? `Pick a session from ${activeFolder.name} to add as a pane.`
-            : "Pick a session to add as a pane."
-        }
-        className="sm:max-w-lg"
-      >
-        <Command>
-          <CommandInput autoFocus placeholder="Search sessions…" />
-          <CommandList className="max-h-[60vh]">
-            <CommandEmpty>No sessions match.</CommandEmpty>
-            <CommandGroup heading="Sessions">
-              {splitCandidates.map((s) => (
-                <CommandItem
-                  key={s.id}
-                  value={sessionLabel(s)}
-                  onSelect={() => {
-                    setSplitOpen(false);
-                    if (activeFolderDir) selectSession(activeFolderDir, s.id);
-                  }}
-                >
-                  <TerminalSquare className="size-3.5 shrink-0 text-muted-foreground" />
-                  <span className="flex-1 truncate">{sessionLabel(s)}</span>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </CommandDialog>
+        folderName={activeFolder?.name}
+        candidates={splitCandidates}
+        onPick={(sessionId) => {
+          setSplitOpen(false);
+          if (activeFolderDir) selectSession(activeFolderDir, sessionId);
+        }}
+      />
 
-      <AlertDialog
-        open={confirmRemove != null}
+      <RemoveRepoDialog
+        target={confirmRemove}
         onOpenChange={closeOnFalse(() => setConfirmRemove(null))}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove {confirmRemove?.label} from the rail?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmRemove?.sessionIds.length}{" "}
-              {confirmRemove?.sessionIds.length === 1 ? "session is" : "sessions are"} still
-              running. Removing will stop {confirmRemove?.sessionIds.length === 1 ? "it" : "them"}.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (confirmRemove) void performRemove(confirmRemove);
-                setConfirmRemove(null);
-              }}
-            >
-              Stop &amp; remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        onConfirm={() => {
+          if (confirmRemove) void performRemove(confirmRemove);
+          setConfirmRemove(null);
+        }}
+      />
 
-      <AlertDialog
-        open={confirmDeleteWt != null}
+      <DeleteWorktreeDialog
+        target={confirmDeleteWt}
+        task={deleteWtTask}
+        outcome={deleteWtOutcome}
         onOpenChange={closeOnFalse(() => setConfirmDeleteWt(null))}
-      >
-        {/* Same width as the blocked-delete dialog it can hand off to, so the
-            flow doesn't jump size mid-decision. */}
-        <AlertDialogContent className="max-w-[calc(100%-2rem)]! sm:max-w-xl!">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="wrap-anywhere">
-              {deleteWtTask
-                ? `Close task & delete worktree ${confirmDeleteWt?.label}?`
-                : `Delete worktree ${confirmDeleteWt?.label}?`}
-            </AlertDialogTitle>
-            <AlertDialogDescription className="text-pretty">
-              Removes the checkout from disk (guarded — uncommitted changes, commits on no
-              branch/remote, or a dev server still on its ports will stop it and tell you what to
-              do). Its branch survives in the primary.
-              {deleteWtTask && " The task stays on the board, closed."}
-              {confirmDeleteWt && confirmDeleteWt.sessionIds.length > 0 && (
-                <>
-                  {" "}
-                  {confirmDeleteWt.sessionIds.length}{" "}
-                  {confirmDeleteWt.sessionIds.length === 1 ? "session is" : "sessions are"} still
-                  running and will be stopped.
-                </>
-              )}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {/* How the task ended, defaulted to `done` — the common case — with
-              one underlined link to flip it to `abandoned`. Only rendered
-              when a board task is bound; a bare worktree has nothing to
-              record. */}
-          {deleteWtTask && (
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span
-                className={cn(
-                  "rounded px-1.5 py-0.5 font-mono",
-                  deleteWtOutcome === "done"
-                    ? "bg-emerald-500/10 text-emerald-500"
-                    : "bg-muted text-muted-foreground",
-                )}
-              >
-                {(() => {
-                  const merged = deleteWtTask.prs.find((p) => p.state === "merged");
-                  return deleteWtOutcome === "done"
-                    ? merged
-                      ? `PR #${merged.number} merged — closing as done ✓`
-                      : "closing as done ✓"
-                    : merged
-                      ? `closing as abandoned ⊘ (PR #${merged.number} merged)`
-                      : "no merged PR — closing as abandoned ⊘";
-                })()}
-              </span>
-              <button
-                type="button"
-                className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
-                onClick={() => setDeleteWtOutcome((cur) => (cur === "done" ? "abandoned" : "done"))}
-              >
-                record as {deleteWtOutcome === "done" ? "abandoned" : "done"} instead
-              </button>
-            </div>
-          )}
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={confirmDeleteWorktree}
-              title={`Confirm (${shortcutHint("ab-confirm-close-worktree")})`}
-            >
-              {deleteWtTask ? `Close as ${deleteWtOutcome}` : "Delete worktree"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        onSwapOutcome={() => setDeleteWtOutcome((cur) => (cur === "done" ? "abandoned" : "done"))}
+        onConfirm={confirmDeleteWorktree}
+      />
 
       {/* The guards refused — shared shell, see `BlockedDeleteDialog`. */}
       <BlockedDeleteDialog
@@ -2586,27 +2325,13 @@ export function AgentboardScreen() {
         }}
       />
 
-      <Dialog open={startClaudeTarget != null} onOpenChange={closeOnFalse(commitStartClaude)}>
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>
-              ✦ Start Claude{startClaudeTarget ? ` in ${startClaudeTarget.sessionName}` : ""}
-            </DialogTitle>
-          </DialogHeader>
-          <Input
-            autoFocus
-            value={startClaudePrompt}
-            onChange={(e) => setStartClaudePrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitStartClaude();
-              }
-            }}
-            placeholder="what are you working toward? (optional)"
-          />
-        </DialogContent>
-      </Dialog>
+      <StartClaudeDialog
+        target={startClaudeTarget}
+        prompt={startClaudePrompt}
+        onPromptChange={setStartClaudePrompt}
+        onCommit={commitStartClaude}
+        onOpenChange={closeOnFalse(commitStartClaude)}
+      />
     </div>
   );
 }
