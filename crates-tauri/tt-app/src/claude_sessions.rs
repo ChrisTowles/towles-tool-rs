@@ -11,10 +11,10 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 
 use tt_claude_sessions::{
-    BarChartDay, LedgerTotals, ModelBar, ProjectBar, SessionBreakdown, SessionDetail,
-    build_insights, build_ledger_days, build_ledger_model_totals, build_ledger_project_totals,
-    build_session_breakdown, find_session_path, ledger_totals, parse_transcript_file,
-    scan_sessions_detailed, search_sessions,
+    BarChartDay, CadenceSummary, LedgerTotals, ModelBar, ProjectBar, SessionBreakdown,
+    SessionDetail, build_cadence, build_insights, build_ledger_days, build_ledger_model_totals,
+    build_ledger_project_totals, build_session_breakdown, find_session_path, ledger_totals,
+    parse_transcript_file, scan_sessions_detailed, search_sessions,
 };
 
 /// Max sessions scanned, matching the CLI's `SESSION_LIMIT`.
@@ -192,6 +192,33 @@ pub async fn claude_sessions_breakdown(session_id: String) -> Result<SessionBrea
     })
     .await
     .map_err(|e| format!("claude sessions breakdown task panicked: {e}"))?
+}
+
+/// Human-prompt cadence (hour-of-day + per-day counts) for the window, riding
+/// the cached scan — same rescan-on-mismatch rule as search/insights.
+#[tauri::command]
+pub async fn claude_sessions_cadence(
+    days: f64,
+    cache: tauri::State<'_, ClaudeSessionsCache>,
+) -> Result<CadenceSummary, String> {
+    let handle = cache.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = handle.lock().expect("claude sessions cache poisoned");
+        if !guard.as_ref().is_some_and(|c| c.days == days) {
+            let details = scan(days)?;
+            *guard = Some(CachedScan { days, details });
+        }
+        let details = &guard.as_ref().expect("cache populated above").details;
+        // Filters per-*prompt*, not just per-session: `details` was scanned by
+        // session mtime, which is a wider window than the prompt's own
+        // timestamp for a long-running/resumed session — see `build_cadence`'s
+        // doc comment.
+        let cutoff_ms =
+            tt_claude_sessions::calculate_cutoff_ms(days, chrono::Local::now().timestamp_millis());
+        Ok(build_cadence(details, cutoff_ms))
+    })
+    .await
+    .map_err(|e| format!("claude sessions cadence task panicked: {e}"))?
 }
 
 /// Search the cached scan's titles + prompt text; rescans only when the cache

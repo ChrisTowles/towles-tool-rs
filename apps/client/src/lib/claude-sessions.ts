@@ -109,3 +109,30 @@ export type SessionBreakdown = {
 /** One session's turn/tool drill-down (parses that session on demand). */
 export const claudeSessionsBreakdown = (sessionId: string) =>
   invoke<SessionBreakdown>("claude_sessions_breakdown", { sessionId });
+
+export type DayBucket = {
+  /** `YYYY-MM-DD`, local. */
+  date: string;
+  count: number;
+};
+
+export type DayHourCell = {
+  /** `YYYY-MM-DD`, local. */
+  date: string;
+  /** Local hour of day, 0-23. */
+  hour: number;
+  count: number;
+};
+
+export type CadenceSummary = {
+  /** Days with at least one prompt, ascending by date. */
+  byDay: DayBucket[];
+  /** Nonzero (day, hour) cells, sorted by date then hour. */
+  byDayHour: DayHourCell[];
+  totalPrompts: number;
+};
+
+/** Human-prompt cadence (time-of-day + per-day counts) for the window —
+ * when in the day you prompt and how often, not token/cost accounting. */
+export const claudeSessionsCadence = (days: number) =>
+  invoke<CadenceSummary>("claude_sessions_cadence", { days });

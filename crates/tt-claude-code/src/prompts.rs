@@ -17,9 +17,20 @@ fn is_noise(text: &str) -> bool {
         || t.starts_with("[Request interrupted")
 }
 
-/// The human-typed prompt texts of a session, in order. Skips sidechain
-/// (subagent) turns, tool-result blocks, and injected envelopes.
-pub fn user_prompts(entries: &[TranscriptEntry]) -> Vec<String> {
+/// A human-typed prompt paired with the transcript line's raw timestamp
+/// (ISO-8601 UTC, e.g. `2026-07-11T19:13:52.831Z`), when the line carried one.
+/// Parsing that string into an epoch time is left to the consumer (this crate
+/// stays chrono-free — see the crate's `Cargo.toml`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserPrompt {
+    pub timestamp: Option<String>,
+    pub text: String,
+}
+
+/// The human-typed prompts of a session, in order, each paired with its raw
+/// timestamp string. Skips sidechain (subagent) turns, tool-result blocks,
+/// and injected envelopes.
+pub fn user_prompts_with_timestamps(entries: &[TranscriptEntry]) -> Vec<UserPrompt> {
     let mut prompts = Vec::new();
     for entry in entries {
         if entry.entry_type != "user" || entry.is_sidechain == Some(true) {
@@ -36,17 +47,29 @@ pub fn user_prompts(entries: &[TranscriptEntry]) -> Vec<String> {
         };
         if let Some(text) = content.as_text() {
             if !is_noise(text) {
-                prompts.push(text.trim().to_string());
+                prompts.push(UserPrompt {
+                    timestamp: entry.timestamp.clone(),
+                    text: text.trim().to_string(),
+                });
             }
             continue;
         }
         for text in content.text_blocks() {
             if !is_noise(text) {
-                prompts.push(text.trim().to_string());
+                prompts.push(UserPrompt {
+                    timestamp: entry.timestamp.clone(),
+                    text: text.trim().to_string(),
+                });
             }
         }
     }
     prompts
+}
+
+/// The human-typed prompt texts of a session, in order. Skips sidechain
+/// (subagent) turns, tool-result blocks, and injected envelopes.
+pub fn user_prompts(entries: &[TranscriptEntry]) -> Vec<String> {
+    user_prompts_with_timestamps(entries).into_iter().map(|p| p.text).collect()
 }
 
 /// [`user_prompts`] joined into one search blob, capped at `max_bytes` (on a
@@ -122,5 +145,26 @@ mod tests {
     fn empty_transcript_is_empty() {
         assert!(user_prompts(&[]).is_empty());
         assert_eq!(user_prompt_blob(&[], 100), "");
+    }
+
+    #[test]
+    fn timestamps_carried_alongside_text() {
+        let content = [
+            r#"{"type":"user","timestamp":"2026-07-11T19:13:52.831Z","message":{"role":"user","content":"first"}}"#.to_string(),
+            r#"{"type":"user","message":{"role":"user","content":"no timestamp on this line"}}"#
+                .to_string(),
+        ]
+        .join("\n");
+        let prompts = user_prompts_with_timestamps(&parse_transcript(&content));
+        assert_eq!(
+            prompts,
+            vec![
+                UserPrompt {
+                    timestamp: Some("2026-07-11T19:13:52.831Z".to_string()),
+                    text: "first".to_string()
+                },
+                UserPrompt { timestamp: None, text: "no timestamp on this line".to_string() },
+            ]
+        );
     }
 }
