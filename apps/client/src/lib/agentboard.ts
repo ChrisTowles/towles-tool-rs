@@ -1797,7 +1797,20 @@ export const resumeCandidates = () => invoke<ResumeCandidate[]>("ab_resume_candi
  */
 export type AgentboardNav =
   | { kind: "folder"; folderDir: string }
-  | { kind: "session"; folderDir: string; sessionId: string };
+  | { kind: "session"; folderDir: string; sessionId: string }
+  /** Reopen a closed task: open its repo's inline new-task form, pre-filled
+   * with the task's text as the goal and bound to its existing id (see the
+   * Board screen's "Reopen" action) — submitting mints a fresh worktree for
+   * the same task instead of a new card, mirroring "start a task". */
+  | {
+      kind: "reopen-task";
+      repoDir: string;
+      repoName: string;
+      repoKey: string;
+      originUrl?: string;
+      taskId: number;
+      goal: string;
+    };
 
 let pendingNav: AgentboardNav | null = null;
 const navListeners = new Set<(req: AgentboardNav) => void>();

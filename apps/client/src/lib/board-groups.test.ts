@@ -203,13 +203,13 @@ describe("bucketByStatus", () => {
   });
 
   it("renders a closed task in the terminal column whatever its frozen status", () => {
-    // Abandoned mid-review: status stays "review" as history, the card shows
+    // Abandoned mid-doing: status stays "doing" as history, the card shows
     // in Closed — the board says where it is, not where it was.
     const cols = bucketByStatus([
-      task({ id: 1, status: "review", outcome: "abandoned" }),
-      task({ id: 2, status: "review" }),
+      task({ id: 1, status: "doing", outcome: "abandoned" }),
+      task({ id: 2, status: "doing" }),
     ]);
     expect(cols.done.map((t) => t.id)).toEqual([1]);
-    expect(cols.review.map((t) => t.id)).toEqual([2]);
+    expect(cols.doing.map((t) => t.id)).toEqual([2]);
   });
 });

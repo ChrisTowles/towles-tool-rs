@@ -13,6 +13,6 @@ describe("countByStatus", () => {
       task({ status: "backlog" }),
       task({ status: "doing" }),
     ]);
-    expect(counts).toEqual({ backlog: 2, next: 0, doing: 1, review: 0, done: 0 });
+    expect(counts).toEqual({ backlog: 2, doing: 1, done: 0 });
   });
 });

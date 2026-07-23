@@ -1,12 +1,5 @@
-import { Fragment, useCallback, useMemo, useRef, useState } from "react";
-import {
-  FolderGit2,
-  GripVertical,
-  ListTodo,
-  MoreHorizontal,
-  Search,
-  StickyNote,
-} from "lucide-react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { FolderGit2, ListTodo, MoreHorizontal, Search, StickyNote } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,7 +27,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
-import { ownerRepoFromOrigin, type TaskBlocker, useAgentboardState } from "@/lib/agentboard";
+import {
+  ownerRepoFromOrigin,
+  requestAgentboardNav,
+  type TaskBlocker,
+  useAgentboardState,
+} from "@/lib/agentboard";
 import { BlockedDeleteDialog } from "@/components/task-blockers";
 import { repoAccentStyles, repoIcon, type RepoMeta } from "@/lib/repo-identity";
 import { useBoardGroupByRepo } from "@/lib/board-prefs";
@@ -48,11 +46,9 @@ import {
   storeDetachTaskIssue,
   storeDetachTaskPr,
   storePromoteTaskToIssue,
-  storeSetTaskPosition,
   storeUnarchiveTask,
   taskDelete,
   taskOutcomeOf,
-  storeSetTaskStatus,
   storeUpdateTask,
   TASK_STATUS_LABEL,
   TASK_STATUSES,
@@ -63,21 +59,11 @@ import {
   type TaskItem,
   type TaskOutcome,
   type TaskPrLink,
-  type TaskStatus,
 } from "@/lib/data";
-import {
-  decodeTaskDrag,
-  encodeTaskDrag,
-  isTaskDrag,
-  reorderedPosition,
-  TASK_DRAG_TYPE,
-} from "@/lib/kanban-dnd";
 import { countByStatus } from "@/lib/board-metrics";
 import { matchesTaskFilter } from "@/lib/board-filter";
 import {
-  boardColumnOf,
   bucketByStatus,
-  byBoardOrder,
   groupTasksByRepo,
   NO_REPO_GROUP,
   railRepoKeyForTask,
@@ -107,12 +93,6 @@ async function commit(mutation: Promise<Result<unknown, IpcError>>, what: string
  * re-arrives. */
 type TaskEdit = { text?: string; notes?: string | undefined };
 
-/** Optimistic status + fractional position from a drag-reorder, until re-arrival. */
-type PosOverride = { status: TaskStatus; position: number };
-
-/** The slot a card would drop into: before `beforeId`, or at a column's end. */
-type DropSlot = { status: TaskStatus; beforeId: number | "end" };
-
 /** The synthetic lane key when swimlane grouping is toggled off — one unnamed
  * lane holding every card. Never a real repo key (`taskRepoKey` returns
  * `owner/name`, a path basename, or `NO_REPO_GROUP`). */
@@ -130,20 +110,21 @@ const ALL_TASKS_LANE = "__all_tasks__";
  *
  * **This screen does not create tasks** — the Agentboard's `+` flow is the only
  * creator, so a task and the repo it belongs to are established together at
- * submit. Here a card can be moved, reordered, renamed,
- * linked to issues/PRs, promoted to a GitHub issue, or deleted. Read-only over
- * the snapshot with local optimistic overlays for moves, edits and deletes
+ * submit. A card's column is never set by hand: `backlog`/`doing` are driven
+ * entirely by whether a live agent is running on its worktree (see
+ * `tt_agentboard::task_status`), and `done` only by closing it. Here a card
+ * can be renamed, linked to issues/PRs, promoted to a GitHub issue, reopened
+ * (mints a fresh worktree, same as starting a task), or deleted. Read-only
+ * over the snapshot with local optimistic overlays for edits and deletes
  * until the next `store://snapshot` arrives.
  */
 export function BoardScreen() {
   const { snapshot } = useStoreSnapshot();
-  const { activeTab, openTabWithFocus } = useWorkspace();
+  const { activeTab, openTab, openTabWithFocus } = useWorkspace();
   // Deep-link focus: a promoted-todo / board deep link scrolls the card here.
   const focusRef = useFocusTarget<HTMLDivElement>("board");
   const filterInputRef = useRef<HTMLInputElement>(null);
 
-  const [statusOverrides, setStatusOverrides] = useState<Record<number, TaskStatus>>({});
-  const [posOverrides, setPosOverrides] = useState<Record<number, PosOverride>>({});
   const [editOverrides, setEditOverrides] = useState<Record<number, TaskEdit>>({});
   const [deletedIds, setDeletedIds] = useState<Set<number>>(() => new Set());
   // Optimistic close: the outcome shown on a card whose worktree teardown is
@@ -180,12 +161,6 @@ export function BoardScreen() {
     "board",
     activeTab === "board",
   );
-  // The insertion slot the current drag would land in: drives both the column
-  // highlight (`dropSlot.status`) and the drop line before `beforeId`.
-  const [dropSlot, setDropSlot] = useState<DropSlot | null>(null);
-  // Stable identity so every card shares one `onDragEnd` instead of a fresh
-  // closure per card per render.
-  const clearDropSlot = useCallback(() => setDropSlot(null), []);
   const agentState = useAgentboardState();
 
   // Repo identity (chosen icon + color) for the swimlane headers, keyed the
@@ -221,33 +196,12 @@ export function BoardScreen() {
       snapshot.tasks
         .filter((t) => !deletedIds.has(t.id))
         .filter((t) => showArchived || t.archivedAt === undefined)
-        .map((t) => {
-          const pos = posOverrides[t.id];
-          // A reorder override carries both the target column and a fractional
-          // position; it wins over a plain status move for the same card.
-          const status = pos?.status ?? statusOverrides[t.id] ?? t.status;
-          // A move out of the terminal column reopens the task backend-side
-          // (outcome and archive clear) — mirror that optimistically, or the
-          // dragged card would snap back into Closed until the next snapshot.
-          const reopened = status !== t.status && status !== "done";
-          return {
-            ...t,
-            ...editOverrides[t.id],
-            status,
-            position: pos ? pos.position : t.position,
-            outcome: reopened ? undefined : (closeOverrides[t.id] ?? t.outcome),
-            archivedAt: reopened ? undefined : t.archivedAt,
-          };
-        }),
-    [
-      snapshot.tasks,
-      editOverrides,
-      statusOverrides,
-      posOverrides,
-      deletedIds,
-      closeOverrides,
-      showArchived,
-    ],
+        .map((t) => ({
+          ...t,
+          ...editOverrides[t.id],
+          outcome: closeOverrides[t.id] ?? t.outcome,
+        })),
+    [snapshot.tasks, editOverrides, deletedIds, closeOverrides, showArchived],
   );
 
   // The cards actually rendered: everything matching the quick filter (an empty
@@ -270,9 +224,7 @@ export function BoardScreen() {
 
   // Repo swimlanes. Grouping is automatic — a lane is just "the tasks that
   // resolved to this repo" — so lanes appear and vanish with the work and
-  // there is nothing to create, name, or clean up. The only bucketing pass:
-  // header totals come from `counts`, and `reorder` sorts the one column it
-  // needs at drop time, so nothing here re-buckets the whole board.
+  // there is nothing to create, name, or clean up.
   const grouped = useMemo(() => groupTasksByRepo(visible), [visible]);
 
   // Swimlanes are a preference: toggled off, the board is one unnamed lane
@@ -295,48 +247,30 @@ export function BoardScreen() {
   // Per-status totals for the sticky header (and the Clear-done gate).
   const counts = useMemo(() => countByStatus(visible), [visible]);
 
-  function move(id: number, status: TaskStatus) {
-    setStatusOverrides((prev) => ({ ...prev, [id]: status }));
-    // A plain column move appends; drop any stale reorder slot for this card.
-    setPosOverrides((prev) => {
-      if (!(id in prev)) return prev;
-      const next = { ...prev };
-      delete next[id];
-      return next;
+  // Reopen a closed task the same way starting one works: hand off to
+  // Agentboard's inline new-task form, pre-filled with the task's text and
+  // bound to its existing id, so submitting mints a fresh worktree for this
+  // same task instead of a new card (see `requestAgentboardNav`'s
+  // `reopen-task` kind). Only offered for a task whose repo is on the rail —
+  // `railRepoKeyForTask` resolves that from the task's worktree binding.
+  function reopen(task: TaskItem) {
+    const railKey = railRepoKeyForTask(agentState.repos, task);
+    const repo = railKey ? agentState.repos.find((r) => r.key === railKey) : undefined;
+    if (!repo) {
+      toast.error("Couldn't reopen that task — its repo isn't tracked on Agentboard");
+      return;
+    }
+    uiAction("board.reopen_task", "board");
+    requestAgentboardNav({
+      kind: "reopen-task",
+      repoDir: repo.dir,
+      repoName: repo.name,
+      repoKey: repo.key,
+      originUrl: repo.originUrl ?? undefined,
+      taskId: task.id,
+      goal: task.text,
     });
-    void commit(storeSetTaskStatus(id, status), "move that todo");
-  }
-
-  // Reorder `id` into `status` just before `beforeId` ("end" = append). Computes
-  // a fractional optimistic position from the neighbors so the card sorts into
-  // its new slot immediately, and sends the integer slot index to the backend
-  // (which renumbers the column). Positions are global per status in the store,
-  // so the column is assembled across every lane — built here, on drop, rather
-  // than kept as a second render-time bucketing of the whole board.
-  function reorder(id: number, status: TaskStatus, beforeId: number | "end") {
-    if (beforeId === id) return;
-    const col = visible
-      .filter((t) => boardColumnOf(t) === status && t.id !== id)
-      .toSorted(byBoardOrder);
-    const insertAt =
-      beforeId === "end"
-        ? col.length
-        : Math.max(
-            0,
-            col.findIndex((t) => t.id === beforeId),
-          );
-    const prev = col[insertAt - 1] ?? null;
-    const next = col[insertAt] ?? null;
-    const position = reorderedPosition(prev ? prev.position : null, next ? next.position : null);
-    setPosOverrides((p) => ({ ...p, [id]: { status, position } }));
-    // The reorder now owns this card's column; drop any plain status override.
-    setStatusOverrides((p) => {
-      if (!(id in p)) return p;
-      const nextOv = { ...p };
-      delete nextOv[id];
-      return nextOv;
-    });
-    void commit(storeSetTaskPosition(id, status, insertAt), "reorder that todo");
+    openTab("agentboard");
   }
 
   function promote(id: number, repo: string) {
@@ -567,9 +501,9 @@ export function BoardScreen() {
           <div ref={focusRef} className="min-w-[900px] p-3">
             {/* One status header for the whole board — the columns are shared
                 across every lane, so repeating the labels per lane would be
-                four-fifths noise. Sticky so they stay readable while scrolling
+                mostly noise. Sticky so they stay readable while scrolling
                 a long list of repos. */}
-            <div className="sticky top-0 z-10 grid grid-cols-5 gap-3 bg-background pb-2">
+            <div className="sticky top-0 z-10 grid grid-cols-3 gap-3 bg-background pb-2">
               {TASK_STATUSES.map((status) => (
                 <div key={status} className="flex items-center justify-between gap-1 px-2.5">
                   <span className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -619,92 +553,45 @@ export function BoardScreen() {
                         </span>
                       </div>
                     )}
-                    <div className="grid grid-cols-5 gap-3">
+                    <div className="grid grid-cols-3 gap-3">
                       {TASK_STATUSES.map((status) => (
                         <div
                           key={status}
-                          onDragOver={(e) => {
-                            if (!isTaskDrag(e.dataTransfer.types)) return;
-                            e.preventDefault();
-                            e.dataTransfer.dropEffect = "move";
-                            // Over a cell's empty tail (cards handle their own
-                            // hover and stop propagation) — append to the column.
-                            // Keep identity when unchanged: dragover fires
-                            // continuously, and a fresh object every event would
-                            // re-render all lanes for the whole drag.
-                            setDropSlot((cur) =>
-                              cur?.status === status && cur.beforeId === "end"
-                                ? cur
-                                : { status, beforeId: "end" },
-                            );
-                          }}
-                          onDragLeave={(e) => {
-                            // Ignore moves between children of the same cell.
-                            if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-                            setDropSlot((cur) => (cur?.status === status ? null : cur));
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            setDropSlot(null);
-                            const payload = decodeTaskDrag(e.dataTransfer.getData(TASK_DRAG_TYPE));
-                            if (payload) reorder(payload.id, status, "end");
-                          }}
-                          className={cn(
-                            "flex min-h-12 flex-col gap-2 rounded-lg border bg-muted/30 p-2",
-                            // Highlights the status across every lane, because
-                            // that is what a drop actually changes: a card's repo
-                            // comes from its worktree/links, so dropping into another
-                            // repo's lane can't move it there.
-                            dropSlot?.status === status &&
-                              "border-violet-500/60 bg-violet-500/5 dark:bg-violet-500/10",
-                          )}
+                          className="flex min-h-12 flex-col gap-2 rounded-lg border bg-muted/30 p-2"
                         >
-                          {lane.columns[status].map((task, i) => {
+                          {lane.columns[status].map((task) => {
                             const repoKey = taskRepoKey(task);
                             const railKey = railRepoKeyForTask(agentState.repos, task);
                             return (
-                              <Fragment key={task.id}>
-                                <DropLine
-                                  active={
-                                    dropSlot?.status === status && dropSlot.beforeId === task.id
-                                  }
-                                />
-                                <Card
-                                  task={task}
-                                  repos={repos}
-                                  repoMeta={repoMetaByKey.get(repoKey)}
-                                  repoLabel={
-                                    groupByRepo || repoKey === NO_REPO_GROUP
-                                      ? undefined
-                                      : repoGroupLabel(repoKey)
-                                  }
-                                  onOpenAgentboard={
-                                    railKey ? () => openOnAgentboard(railKey) : undefined
-                                  }
-                                  openIssues={snapshot.issues}
-                                  openPrs={snapshot.prs}
-                                  nextId={lane.columns[status][i + 1]?.id ?? null}
-                                  onMove={move}
-                                  onReorderHover={setDropSlot}
-                                  onReorder={reorder}
-                                  onPromote={promote}
-                                  onAttachIssue={attachIssue}
-                                  onDetachIssue={detachIssue}
-                                  onAttachPr={attachPr}
-                                  onDetachPr={detachPr}
-                                  onRename={rename}
-                                  onSetNotes={setNotes}
-                                  onClose={(id, outcome) => void remove(id, { outcome })}
-                                  onRestore={restore}
-                                  onPurge={(id) => void remove(id, { purge: true })}
-                                  onDragEnd={clearDropSlot}
-                                />
-                              </Fragment>
+                              <Card
+                                key={task.id}
+                                task={task}
+                                repos={repos}
+                                repoMeta={repoMetaByKey.get(repoKey)}
+                                repoLabel={
+                                  groupByRepo || repoKey === NO_REPO_GROUP
+                                    ? undefined
+                                    : repoGroupLabel(repoKey)
+                                }
+                                onOpenAgentboard={
+                                  railKey ? () => openOnAgentboard(railKey) : undefined
+                                }
+                                openIssues={snapshot.issues}
+                                openPrs={snapshot.prs}
+                                onReopen={reopen}
+                                onPromote={promote}
+                                onAttachIssue={attachIssue}
+                                onDetachIssue={detachIssue}
+                                onAttachPr={attachPr}
+                                onDetachPr={detachPr}
+                                onRename={rename}
+                                onSetNotes={setNotes}
+                                onClose={(id, outcome) => void remove(id, { outcome })}
+                                onRestore={restore}
+                                onPurge={(id) => void remove(id, { purge: true })}
+                              />
                             );
                           })}
-                          <DropLine
-                            active={dropSlot?.status === status && dropSlot.beforeId === "end"}
-                          />
                         </div>
                       ))}
                     </div>
@@ -782,12 +669,6 @@ function LaneGlyph({ meta }: { meta?: RepoMeta }) {
   );
 }
 
-/** The insertion indicator drawn between cards at the current drop slot. */
-function DropLine({ active }: { active: boolean }) {
-  if (!active) return null;
-  return <div aria-hidden className="h-0.5 rounded-full bg-violet-500" />;
-}
-
 function Card({
   task,
   repos,
@@ -796,10 +677,7 @@ function Card({
   onOpenAgentboard,
   openIssues,
   openPrs,
-  nextId,
-  onMove,
-  onReorderHover,
-  onReorder,
+  onReopen,
   onPromote,
   onAttachIssue,
   onDetachIssue,
@@ -810,7 +688,6 @@ function Card({
   onClose,
   onRestore,
   onPurge,
-  onDragEnd,
 }: {
   task: TaskItem;
   repos: string[];
@@ -829,11 +706,9 @@ function Card({
   openIssues: IssueItem[];
   /** Collected PRs — the "Attach PR…" candidates. */
   openPrs: PrItem[];
-  /** The card below this one in the column (for a bottom-half drop), or null. */
-  nextId: number | null;
-  onMove: (id: number, status: TaskStatus) => void;
-  onReorderHover: (slot: DropSlot) => void;
-  onReorder: (id: number, status: TaskStatus, beforeId: number | "end") => void;
+  /** Reopen a closed task — mints a fresh worktree for it, same as starting
+   * a task. */
+  onReopen: (task: TaskItem) => void;
   onPromote: (id: number, repo: string) => void;
   onAttachIssue: (id: number, issue: IssueItem) => void;
   onDetachIssue: (id: number, link: TaskIssueLink) => void;
@@ -847,9 +722,7 @@ function Card({
   onRestore: (id: number) => void;
   /** Permanently delete the row — only offered when no worktree is bound. */
   onPurge: (id: number) => void;
-  onDragEnd: () => void;
 }) {
-  const [dragging, setDragging] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.text);
   // What the confirm dialog is confirming: a close (with the chosen outcome,
@@ -862,9 +735,6 @@ function Card({
   const closed = isTaskClosed(task);
   const outcome = taskOutcomeOf(task);
   const archived = task.archivedAt !== undefined;
-  // The column this card renders in — closed cards sit in the terminal column
-  // whatever their frozen status; drags must agree with the bucketing.
-  const column = boardColumnOf(task);
   // Attach candidates: collected refs not already linked to this task.
   const attachableIssues = openIssues.filter(
     (i) => !task.issues.some((l) => l.repo === i.repo && l.number === i.number),
@@ -896,58 +766,18 @@ function Card({
     onRename(task.id, editValue);
   }
 
-  // The insertion slot for a drag hovering this card: before it (pointer in the
-  // top half) or before the card below it (bottom half; "end" if it's last).
-  function slotBeforeId(e: React.DragEvent<HTMLDivElement>): number | "end" {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const inLowerHalf = e.clientY > rect.top + rect.height / 2;
-    return inLowerHalf ? (nextId ?? "end") : task.id;
-  }
-
   return (
     <div
-      draggable={!editing}
       data-focus-kind="todo"
       data-focus-id={String(task.id)}
-      onDragStart={(e) => {
-        e.dataTransfer.setData(TASK_DRAG_TYPE, encodeTaskDrag({ id: task.id, status: column }));
-        e.dataTransfer.effectAllowed = "move";
-        setDragging(true);
-      }}
-      onDragOver={(e) => {
-        if (!isTaskDrag(e.dataTransfer.types)) return;
-        // Handle the drop here (position-aware); don't let the column's
-        // append-to-end handler also fire.
-        e.preventDefault();
-        e.stopPropagation();
-        e.dataTransfer.dropEffect = "move";
-        onReorderHover({ status: column, beforeId: slotBeforeId(e) });
-      }}
-      onDrop={(e) => {
-        if (!isTaskDrag(e.dataTransfer.types)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        const payload = decodeTaskDrag(e.dataTransfer.getData(TASK_DRAG_TYPE));
-        if (payload) onReorder(payload.id, column, slotBeforeId(e));
-      }}
-      onDragEnd={() => {
-        setDragging(false);
-        onDragEnd();
-      }}
       className={cn(
         "group rounded-md border border-l-2 bg-background p-2.5 text-sm shadow-sm",
-        "cursor-grab active:cursor-grabbing",
         closed && "opacity-60",
         archived && "opacity-40",
-        dragging && "opacity-40",
       )}
       style={identityStyle}
     >
       <div className="flex items-start gap-1.5">
-        <GripVertical
-          aria-hidden
-          className="-ml-1 mt-0.5 size-3.5 shrink-0 text-muted-foreground/40 opacity-0 transition-opacity group-hover:opacity-100"
-        />
         {RepoGlyph && (
           <RepoGlyph
             aria-hidden
@@ -1008,16 +838,15 @@ function Card({
             >
               <NotesField task={task} onSetNotes={onSetNotes} />
             </div>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel>Move to</DropdownMenuLabel>
-            {TASK_STATUSES.filter((s) => s !== column).map((s) => (
-              <DropdownMenuItem key={s} onSelect={() => onMove(task.id, s)}>
-                {TASK_STATUS_LABEL[s]}
-                {closed && s !== "done" && (
-                  <span className="ml-auto text-[10px] text-muted-foreground">reopens</span>
-                )}
-              </DropdownMenuItem>
-            ))}
+            {closed && !archived && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => onReopen(task)}>
+                  Reopen
+                  <span className="ml-auto text-[10px] text-muted-foreground">new worktree</span>
+                </DropdownMenuItem>
+              </>
+            )}
             <DropdownMenuSeparator />
             {attachableIssues.length > 0 && (
               <DropdownMenuSub>

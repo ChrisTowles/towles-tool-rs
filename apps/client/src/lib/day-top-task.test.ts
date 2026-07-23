@@ -32,14 +32,10 @@ describe("pickTopTask", () => {
     expect(pickTopTask([backlog, doing])).toBe(doing);
   });
 
-  it("orders doing > review > next > backlog", () => {
+  it("orders doing > backlog", () => {
     const backlog = task("backlog");
-    const next = task("next");
-    const review = task("review");
     const doing = task("doing");
-    expect(pickTopTask([backlog, next, review, doing])).toBe(doing);
-    expect(pickTopTask([backlog, next, review])).toBe(review);
-    expect(pickTopTask([backlog, next])).toBe(next);
+    expect(pickTopTask([backlog, doing])).toBe(doing);
     expect(pickTopTask([backlog])).toBe(backlog);
   });
 

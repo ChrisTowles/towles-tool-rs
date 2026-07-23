@@ -44,6 +44,7 @@ pub mod resume;
 pub mod session_order;
 pub mod sessions;
 pub mod task_removal;
+pub mod task_status;
 pub mod text;
 pub mod tracker;
 pub mod types;

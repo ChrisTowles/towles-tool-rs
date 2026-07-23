@@ -363,6 +363,7 @@ export function RepoGroup({
   quietRevealed,
   onToggleQuiet,
   taskFormOpen,
+  taskFormInitialGoal,
   onCancelTaskForm,
   onSubmitTaskForm,
   pendingTasks,
@@ -414,6 +415,9 @@ export function RepoGroup({
   onToggleQuiet?: () => void;
   /** Whether this repo's inline new-task form is open. */
   taskFormOpen: boolean;
+  /** Pre-fills the goal field — set when the form was opened to reopen a
+   * closed task rather than to start a new one. */
+  taskFormInitialGoal?: string;
   onCancelTaskForm: () => void;
   onSubmitTaskForm: (input: NewTaskSubmit) => void;
   /** This repo's in-flight `task_create` calls — see PendingTask. */
@@ -568,6 +572,7 @@ export function RepoGroup({
             repo={{ name: repo.name, dir: folder.dir, key: repo.key }}
             onCancel={onCancelTaskForm}
             onSubmit={onSubmitTaskForm}
+            initialGoal={taskFormInitialGoal}
           />
         )}
         {pendingRows}
@@ -659,6 +664,7 @@ export function RepoGroup({
           repo={{ name: repo.name, dir: repo.folders[0].dir, key: repo.key }}
           onCancel={onCancelTaskForm}
           onSubmit={onSubmitTaskForm}
+          initialGoal={taskFormInitialGoal}
         />
       )}
       {pendingRows}

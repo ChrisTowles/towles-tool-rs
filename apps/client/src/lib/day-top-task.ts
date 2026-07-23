@@ -6,19 +6,17 @@ import { isTaskClosed, type TaskItem, type TaskStatus } from "@/lib/data";
  * `done` is excluded before ranking, so it needs no rank here.
  */
 const STATUS_RANK: Record<Exclude<TaskStatus, "done">, number> = {
-  doing: 3,
-  review: 2,
-  next: 1,
+  doing: 1,
   backlog: 0,
 };
 
 /**
  * Pick the one task the day bar should surface: the most in-progress work,
- * not the oldest backlog item. Ranks by status (doing > review > next >
- * backlog), then by column position (the card nearer the top of its column
- * wins the tiebreak). Closed tasks are never eligible — including one
- * abandoned mid-`doing`, whose frozen status would otherwise outrank every
- * live card. Returns `undefined` when there is nothing to show.
+ * not the oldest backlog item. Ranks by status (doing > backlog), then by
+ * column position (the card nearer the top of its column wins the
+ * tiebreak). Closed tasks are never eligible — including one abandoned
+ * mid-`doing`, whose frozen status would otherwise outrank every live card.
+ * Returns `undefined` when there is nothing to show.
  */
 export function pickTopTask(tasks: readonly TaskItem[]): TaskItem | undefined {
   let best: TaskItem | undefined;

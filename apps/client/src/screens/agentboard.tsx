@@ -139,6 +139,7 @@ import {
   storeAddTask,
   taskDelete,
   storeAttachTaskIssue,
+  storeSetTaskStatus,
   storeTaskSetWorktree,
   useStoreSnapshot,
   type TaskItem,
@@ -331,6 +332,12 @@ export function AgentboardScreen() {
   // stays embedded in the rail rather than a modal, so several repos can have
   // one open (or a create in flight) at once without blocking each other.
   const [openTaskForms, setOpenTaskForms] = useState<Set<string>>(new Set());
+  // Repo keys whose open form is reopening a closed task rather than
+  // starting a new one — the pre-filled goal and the existing task id to
+  // bind instead of minting a new board row (see `openReopenForm`).
+  const [reopenTasks, setReopenTasks] = useState<Map<string, { taskId: number; goal: string }>>(
+    new Map(),
+  );
   // `task_create` calls fired from an inline form and still running (or
   // failed) — rendered as a PendingTaskRow until they resolve. See
   // `createTask`.
@@ -974,6 +981,22 @@ export function AgentboardScreen() {
       next.delete(key);
       return next;
     });
+    setReopenTasks((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+  }
+
+  // Board's "Reopen" action (via `requestAgentboardNav`'s `reopen-task` kind):
+  // open the task's repo's inline form pre-filled with its text, bound to its
+  // existing id — submitting mints a fresh worktree for this same task
+  // instead of a new card.
+  function openReopenForm(repo: NewTaskRepo, taskId: number, goal: string) {
+    if (railCollapsed) toggleRail();
+    setReopenTasks((prev) => new Map(prev).set(repo.key, { taskId, goal }));
+    setOpenTaskForms((prev) => new Set(prev).add(repo.key));
   }
 
   // The setup step (npm install/etc.) can fail without invalidating the task
@@ -1021,7 +1044,10 @@ export function AgentboardScreen() {
   // created first (`createTaskForSubmit`) — the task is an attribute of the
   // task, not the unit itself — and bound to the worktree once `task_create`
   // resolves; a "task only" submit stops after the card.
-  async function createTask(repo: NewTaskRepo, input: NewTaskSubmit & { taskId?: number }) {
+  async function createTask(
+    repo: NewTaskRepo,
+    input: NewTaskSubmit & { taskId?: number; reopen?: boolean },
+  ) {
     // Where the user's attention sits at submit time. `task_create` is async
     // (fetch + worktree add, up to 60s), so by the time the pane exists the
     // user may have moved on — this is the yardstick `taskCreated` uses to
@@ -1031,6 +1057,14 @@ export function AgentboardScreen() {
       folderDir: activeFolderDirRef.current,
     };
     const taskId = input.taskId ?? (await createTaskForSubmit(input));
+    // A reopened task is closed (`outcome`/`archivedAt` set, frozen status):
+    // clear that first, the same way any status move out of `done` does
+    // (`Store::set_task_status`). The Agentboard's own live-agent sync then
+    // settles it into backlog/doing once the fresh worktree exists.
+    if (input.reopen && taskId !== undefined) {
+      const reopened = await storeSetTaskStatus(taskId, "backlog");
+      if (reopened.isErr()) toast.error(`Couldn't reopen that task — ${reopened.error.message}`);
+    }
     // Bind the repo before any worktree exists. The Board groups tasks into
     // repo swimlanes, and the repo is known here — at the `+` the user clicked
     // — so binding it now is what keeps every task out of the "No repo" lane,
@@ -1352,6 +1386,14 @@ export function AgentboardScreen() {
     const handle = (req: AgentboardNav) => {
       if (req.kind === "session") {
         selectSession(req.folderDir, req.sessionId);
+      } else if (req.kind === "reopen-task") {
+        setActiveFolderDir(req.repoDir);
+        ackFolder(req.repoDir);
+        openReopenForm(
+          { name: req.repoName, dir: req.repoDir, key: req.repoKey, originUrl: req.originUrl },
+          req.taskId,
+          req.goal,
+        );
       } else {
         setActiveFolderDir(req.folderDir);
         ackFolder(req.folderDir);
@@ -1892,8 +1934,10 @@ export function AgentboardScreen() {
                               onOpenFiles={openFiles}
                               onOpenPreview={openPreview}
                               taskFormOpen={openTaskForms.has(repo.key)}
+                              taskFormInitialGoal={reopenTasks.get(repo.key)?.goal}
                               onCancelTaskForm={() => closeTaskForm(repo.key)}
                               onSubmitTaskForm={(input) => {
+                                const reopening = reopenTasks.get(repo.key);
                                 closeTaskForm(repo.key);
                                 void createTask(
                                   {
@@ -1902,7 +1946,11 @@ export function AgentboardScreen() {
                                     key: repo.key,
                                     originUrl: repo.originUrl,
                                   },
-                                  input,
+                                  {
+                                    ...input,
+                                    taskId: reopening?.taskId,
+                                    reopen: reopening !== undefined,
+                                  },
                                 );
                               }}
                               pendingTasks={pendingTasks.filter((p) => p.repoKey === repo.key)}

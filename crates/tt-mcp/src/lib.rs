@@ -825,7 +825,7 @@ pub fn tool_definitions() -> Value {
                     "repo": { "type": "string", "description": "The tracked repo's GitHub `owner/repo` slug." },
                     "title": { "type": "string", "description": "The task's title." },
                     "notes": { "type": "string", "description": "Optional free-form context." },
-                    "status": { "type": "string", "enum": ["backlog", "next", "doing", "review", "done"], "description": "Column to land in (default backlog)." },
+                    "status": { "type": "string", "enum": ["backlog", "doing", "done"], "description": "Column to land in (default backlog)." },
                 },
                 "required": ["repo", "title"],
             },
