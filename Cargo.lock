@@ -5356,6 +5356,7 @@ name = "tt-app"
 version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "cairo-rs",
  "chrono",
  "dirs",
@@ -5365,6 +5366,9 @@ dependencies = [
  "hyper-util",
  "libc",
  "native-tls",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "portable-pty",
  "serde",
  "serde_json",

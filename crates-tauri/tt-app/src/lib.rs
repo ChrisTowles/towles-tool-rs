@@ -15,6 +15,7 @@ mod launch;
 #[cfg(target_os = "linux")]
 mod linux_desktop;
 mod lsp;
+mod macos_keys;
 mod mcp;
 mod mcp_http;
 mod preview;
@@ -187,6 +188,10 @@ pub fn run() {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.set_title(&format!("Towles Tool — {}", task_label()));
             }
+
+            // No-op off macOS — see macos_keys' module doc for why the
+            // terminal needs a native Ctrl+C interceptor there.
+            macos_keys::install(app.handle());
 
             // Fire-and-forget: check GitHub for a newer release and, if one
             // exists, push the update banner event + an OS notification.

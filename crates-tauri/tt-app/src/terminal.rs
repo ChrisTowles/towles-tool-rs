@@ -121,6 +121,27 @@ impl TermState {
         }
     }
 
+    /// Deliver a keystroke straight to whichever terminal currently holds
+    /// focus, bypassing the normal `term_key` IPC round trip from the
+    /// webview. Used only by `macos_keys`: macOS's Cocoa text-editing key
+    /// bindings (`Control+C` → `insertNewline:`) intercept some Ctrl chords
+    /// before WKWebView ever dispatches a DOM keydown for them, so those
+    /// chords need a native-side path into the same PTY write the frontend
+    /// otherwise drives. No-ops (returns `false`) when nothing is focused or
+    /// the focused terminal's session is gone.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn send_key_to_focused(&self, event: KeyEvent) -> bool {
+        let Some(term_id) = self.focused.lock().unwrap().clone() else {
+            return false;
+        };
+        let guard = self.sessions.lock().unwrap();
+        let Some(session) = guard.get(&term_id) else {
+            return false;
+        };
+        let _ = session.vt.send(VtInput::Key(event));
+        true
+    }
+
     /// Ids of every session with a live PTY right now. The agentboard bridge
     /// stamps these onto the emitted snapshot as `SessionData.live`.
     pub fn live_ids(&self) -> std::collections::HashSet<String> {

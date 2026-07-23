@@ -82,6 +82,18 @@ trash = "5.2.6"
 webkit2gtk = { version = "2.0.1", features = ["v2_40"] }
 cairo-rs = "0.18"
 
+# Native NSEvent interception (src/macos_keys.rs): macOS's Cocoa text-editing
+# key bindings intercept some Ctrl chords (Control+C -> insertNewline:) before
+# WKWebView ever dispatches a DOM keydown for them, so the terminal's Ctrl+C
+# has to be caught at the AppKit level instead. Versions pinned to what's
+# already resolved in Cargo.lock (pulled in transitively via wry/tao's own
+# macOS backend), so this adds no second copy of the objc2 stack.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSEvent"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+block2 = "0.6"
+
 [features]
 wdio = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 
