@@ -538,6 +538,29 @@ export function BoardScreen() {
             </p>
           </div>
         </div>
+      ) : visible.length === 0 ? (
+        <div ref={focusRef} className="flex min-h-0 flex-1 items-center justify-center p-6">
+          <div className="flex max-w-sm flex-col items-center gap-2 text-center">
+            <Search aria-hidden className="size-8 text-muted-foreground/50" />
+            <p className="text-sm font-medium">No tasks match your filter</p>
+            <p className="text-xs text-muted-foreground">
+              All {merged.length} {merged.length === 1 ? "task is" : "tasks are"} hidden by “
+              {filter.trim()}”.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-1"
+              onClick={() => {
+                setFilter("");
+                uiAction("board.clear_filter", "board");
+                filterInputRef.current?.focus();
+              }}
+            >
+              Clear filter
+            </Button>
+          </div>
+        </div>
       ) : (
         <ScrollArea className="min-h-0 flex-1">
           <div ref={focusRef} className="min-w-[900px] p-3">
