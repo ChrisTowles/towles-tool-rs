@@ -1389,6 +1389,22 @@ export function AgentboardScreen() {
     setConfirmDeleteWt({ label, dirs: [dir], sessionIds });
   }
 
+  // Confirms the close-task/delete-worktree dialog — shared by the "Close as
+  // <outcome>" button click and the mod+Enter shortcut so the two paths can't
+  // drift (telemetry included).
+  function confirmDeleteWorktree() {
+    if (!confirmDeleteWt) return;
+    uiAction(
+      "agentboard.delete_worktree",
+      "agentboard",
+      deleteWtTask ? deleteWtOutcome : "no-task",
+    );
+    void performDeleteWorktree(confirmDeleteWt, {
+      outcome: deleteWtTask ? deleteWtOutcome : undefined,
+    });
+    setConfirmDeleteWt(null);
+  }
+
   // Abandon the delete flow for `dir`: closes the blocked dialog and
   // invalidates any still-in-flight attempt, so a removal that resolves after
   // the user walked away can't reopen the dialog behind them. Every exit from
@@ -1616,6 +1632,7 @@ export function AgentboardScreen() {
           if (deletingDirs.has(activeFolder.dir)) return;
           requestDeleteWorktree(activeFolder.dir, activeFolder.name);
         },
+        "ab-confirm-close-worktree": confirmDeleteWorktree,
         "ab-close-session": () => {
           if (selected) void closeSession(selected.sessionId);
         },
@@ -1646,6 +1663,9 @@ export function AgentboardScreen() {
         splitCandidates,
         activeRepo,
         railCollapsed,
+        confirmDeleteWt,
+        deleteWtTask,
+        deleteWtOutcome,
       ],
     ),
     "agentboard",
@@ -2362,19 +2382,8 @@ export function AgentboardScreen() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                if (confirmDeleteWt) {
-                  uiAction(
-                    "agentboard.delete_worktree",
-                    "agentboard",
-                    deleteWtTask ? deleteWtOutcome : "no-task",
-                  );
-                  void performDeleteWorktree(confirmDeleteWt, {
-                    outcome: deleteWtTask ? deleteWtOutcome : undefined,
-                  });
-                }
-                setConfirmDeleteWt(null);
-              }}
+              onClick={confirmDeleteWorktree}
+              title={`Confirm (${shortcutHint("ab-confirm-close-worktree")})`}
             >
               {deleteWtTask ? `Close as ${deleteWtOutcome}` : "Delete worktree"}
             </AlertDialogAction>

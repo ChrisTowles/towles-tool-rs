@@ -159,6 +159,14 @@ export const SHORTCUTS = defineShortcuts([
     allowInEditable: true,
   },
   {
+    id: "ab-confirm-close-worktree",
+    scope: "agentboard",
+    keys: "mod+enter",
+    description: "Confirm the close-task/delete-worktree dialog",
+    when: "the close-worktree dialog is open",
+    hideInHelp: true,
+  },
+  {
     id: "ab-close-session",
     scope: "agentboard",
     keys: "mod+shift+w",
