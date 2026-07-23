@@ -89,6 +89,8 @@ pub fn scan_session_agents(scope: &InstanceScope) -> Vec<SessionAgentProc> {
         // The shared `claude daemon` also reports `comm == "claude"` and can
         // inherit a PTY's TT_SESSION_ID when first spawned from an app shell;
         // without this it would be surfaced as an agent occupying that session.
+        // (`session_id_in_scope` re-checks this itself, since it has other
+        // callers that don't scan `/proc` first.)
         if is_claude_daemon(pid) {
             continue;
         }
@@ -97,6 +99,24 @@ pub fn scan_session_agents(scope: &InstanceScope) -> Vec<SessionAgentProc> {
         }
     }
     out
+}
+
+/// Whether `pid` is still a live, interactive `claude` process — i.e. reading
+/// its environ is safe to trust as "this pid's PTY". Guards every
+/// `/proc/<pid>/environ` read: `claude agents --all --json` is cached for up
+/// to a minute ([`crate::watchers::claude_code::CLI_CACHE_TTL_MS`]), so a pid
+/// it reported can exit and be recycled by the kernel for an unrelated
+/// process — often another of this app's own shells, freshly spawned in a
+/// *different* pane — well within that window. Reading environ from a
+/// recycled pid without this check silently attributes the original agent to
+/// whatever `TT_SESSION_ID` the new occupant carries: a wrong-pane
+/// misattribution, not a crash, so it went unnoticed. Cheap (`comm` + one
+/// `cmdline` read on the daemon-name match only) relative to the environ read
+/// it guards.
+#[cfg(target_os = "linux")]
+fn is_live_claude_process(pid: i32) -> bool {
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    comm.trim() == "claude" && !is_claude_daemon(pid)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -135,9 +155,16 @@ fn is_daemon_argv(cmdline: &[u8]) -> bool {
 }
 
 /// The `TT_SESSION_ID` of the PTY `pid` runs in, if that PTY was spawned by an
-/// app instance `scope` admits.
+/// app instance `scope` admits. Verifies `pid` is still a live `claude`
+/// process first ([`is_live_claude_process`]) — callers such as
+/// [`crate::engine::collect_agent_snapshot`] take `pid` from a CLI snapshot
+/// that can be up to a minute stale, so without this check a recycled pid
+/// would have its *new* occupant's environ misread as the original agent's.
 #[cfg(target_os = "linux")]
 pub fn session_id_in_scope(pid: i32, scope: &InstanceScope) -> Option<String> {
+    if !is_live_claude_process(pid) {
+        return None;
+    }
     let bytes = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
     scoped_session_id(&bytes, scope)
 }
@@ -250,6 +277,19 @@ mod tests {
         // agent on every pre-existing shell after an app upgrade.
         let unstamped = b"TT_SESSION_ID=s00abc\0";
         assert_eq!(scoped_session_id(unstamped, &ours).as_deref(), Some("s00abc"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn session_id_in_scope_refuses_a_pid_that_isnt_claude() {
+        // The test binary's own pid is a real, live process, but its `comm`
+        // is the test binary's name, never "claude" — exactly the shape of a
+        // recycled pid from a stale CLI snapshot. `session_id_in_scope` must
+        // refuse it rather than trust whatever it finds in that process's
+        // real environ.
+        let pid = std::process::id() as i32;
+        assert!(!is_live_claude_process(pid));
+        assert_eq!(session_id_in_scope(pid, &InstanceScope::Any), None);
     }
 
     #[cfg(target_os = "linux")]
