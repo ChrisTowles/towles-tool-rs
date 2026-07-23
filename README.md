@@ -247,9 +247,16 @@ flowchart TB
 ```
 
 The port claims are the part that makes ten concurrent tasks boring instead of
-painful: `.env.example` declares `${tt:port A-B}` pools once, `tt task env`
-renders each checkout a `.env` with ports no sibling task holds, and nothing in
-the repo ever hardcodes a port. Teardown is just as deliberate — removal
+painful. `.env.example` is the template: declare a `${tt:port A-B}` pool claim
+once (plus `${tt:task-name}` and `${tt:var NAME}` for pass-throughs), and every
+task renders its own `.env` from it with ports no sibling task holds — a repo
+that can't carry tokens in its `.env.example` uses the
+`.claude/task-env.template` sidecar as the template instead. The render is
+idempotent: when the template changes, `tt task env <name>` (or
+`tt task env primary` for the main checkout) re-renders the `.env` while
+keeping the ports the task already claimed, and a gitignored `.env.local`
+overrides any rendered value by hand. Nothing in the repo ever hardcodes a
+port. Teardown is just as deliberate — removal
 refuses while a task still holds work only it can prove (a squash-merged
 branch *looks* unmerged to naive git checks; the `landed` detection in
 `tt-tasks` knows better).
