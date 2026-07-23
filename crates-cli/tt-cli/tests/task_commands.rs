@@ -203,6 +203,34 @@ fn lifecycle_new_env_ls_rm() {
         .stderr(contains("refusing to remove the primary"));
 }
 
+/// The port registry's reason to exist: a sibling task whose `.env` is gone
+/// (deleted by hand, corrupted) must keep its claimed ports off the table —
+/// the live sibling-`.env` scan alone would hand them straight to the next
+/// task.
+#[test]
+fn new_task_avoids_ports_registered_to_a_sibling_whose_env_file_is_gone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+
+    let out = new_task(&root_s, "feat/one").arg("--json").output().unwrap();
+    assert!(out.status.success(), "new one failed: {}", String::from_utf8_lossy(&out.stderr));
+    let one: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let port_one = one["ports"]["UI_PORT"].as_u64().expect("UI_PORT claimed");
+
+    std::fs::remove_file(task_dir(&checkout, "feat-one").join(".env")).unwrap();
+
+    let out = new_task(&root_s, "feat/two").arg("--json").output().unwrap();
+    assert!(out.status.success(), "new two failed: {}", String::from_utf8_lossy(&out.stderr));
+    let two: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let port_two = two["ports"]["UI_PORT"].as_u64().expect("UI_PORT claimed");
+
+    assert_ne!(
+        port_one, port_two,
+        "task two must not claim task one's registered port just because its .env is gone"
+    );
+}
+
 /// `--repo` may point anywhere inside the checkout — including one of its own
 /// worktrees. The worktree always anchors at the main checkout, and the board
 /// row's `repo` must anchor there too: recorded as the nested path it would key

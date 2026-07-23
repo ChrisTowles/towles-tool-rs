@@ -183,7 +183,9 @@ export function resolveWebdriverPort(devPort) {
 
 // A port is free only if BOTH loopback stacks are bindable: another task may
 // hold it on IPv6 (::1) while IPv4 (127.0.0.1) looks open. Only EADDRINUSE
-// counts as "taken"; other errors (e.g. no IPv6) don't.
+// counts as "taken" — plus EACCES, a privileged port the dev server couldn't
+// bind either; other errors (e.g. no IPv6) don't.
+// Mirrors `port_occupied` in crates/tt-tasks/src/ops.rs — keep the two in sync.
 /**
  * @param {number} port
  * @returns {Promise<boolean>}
@@ -194,7 +196,11 @@ export function isPortFree(port) {
     new Promise((resolve) => {
       const server = createServer();
       server.once("error", (err) =>
-        resolve(/** @type {NodeJS.ErrnoException} */ (err).code !== "EADDRINUSE"),
+        resolve(
+          !["EADDRINUSE", "EACCES"].includes(
+            /** @type {NodeJS.ErrnoException} */ (err).code ?? "",
+          ),
+        ),
       );
       server.once("listening", () => server.close(() => resolve(true)));
       server.listen(port, host);
