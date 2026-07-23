@@ -5485,6 +5485,7 @@ dependencies = [
  "tt-agentboard",
  "tt-config",
  "tt-exec",
+ "tt-tasks",
 ]
 
 [[package]]
