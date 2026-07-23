@@ -742,7 +742,7 @@ export function AgentboardScreen() {
       );
     }
     // updateWins is stable within a render pass; wins/repos/open are the inputs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- updateWins is stable within a render; the reactive inputs are all listed
   }, [wins, repos, open]);
 
   // Windows belonging to the active folder, and whichever of those is focused.
@@ -1452,7 +1452,7 @@ export function AgentboardScreen() {
       cancelled = true;
       off();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only subscription; handle closes over the values it needs and must not re-subscribe
   }, []);
 
   // Command-palette "jump to repo/session" handoff (see `requestAgentboardNav`
@@ -1479,7 +1479,7 @@ export function AgentboardScreen() {
     const pending = consumePendingAgentboardNav();
     if (pending) handle(pending);
     return onAgentboardNavRequest(handle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only subscription; handle closes over current values and must not re-subscribe
   }, []);
 
   // Sweep every "missing" ghost in one click. The Rust side re-probes the
@@ -1791,7 +1791,7 @@ export function AgentboardScreen() {
       }),
       // newSession/closeSession/openDiff/openFiles/jumpToNeedsYou/splitIntoWindow are
       // stable within a render pass; the state they close over is what matters.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers are stable within a render; only the state they close over (listed) should rebuild the map
       [
         activeFolderDir,
         deletingDirs,

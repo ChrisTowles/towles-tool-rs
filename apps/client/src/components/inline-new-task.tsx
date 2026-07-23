@@ -373,7 +373,7 @@ export function InlineNewTask({
     // Only re-fetch if the repo this form is open for changes — the fields
     // themselves start empty once per mount, which is once per open (the
     // caller unmounts the form on cancel/submit rather than hiding it).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch only on a changed repo; showError is stable and the setters are React-stable
   }, [repo.dir]);
 
   // Load the enabled prompt improvers once per open. Reads the same shared

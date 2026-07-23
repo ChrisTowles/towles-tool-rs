@@ -142,7 +142,7 @@ export function PreviewPane({
       clearInterval(timer);
     };
     // folder?.name only feeds labels; dir is the identity that matters.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-probe only on a changed dir, not when the label-only folder name changes
   }, [dir]);
 
   function navigate(next: string, source: "manual" | "config") {
@@ -188,7 +188,7 @@ export function PreviewPane({
     return () => ro.disconnect();
   }, []);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- repaint on committed annotations only; redraw is recreated every render and reads them fresh
   useEffect(redraw, [annotations]);
 
   // Abandon the in-progress stroke and wipe it off the canvas — the shared

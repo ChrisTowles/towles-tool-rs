@@ -184,7 +184,7 @@ function useEChart(render: (chart: echarts.ECharts) => void, deps: unknown[]) {
       observer?.disconnect();
       chart?.dispose();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deps is caller-supplied (like useAsyncRefresh); render is a fresh closure re-read on each rebuild, not a trigger
   }, [...deps, themeVersion]);
 
   return ref;
@@ -1168,7 +1168,7 @@ export function ClaudeSessionsScreen() {
 
   useEffect(() => {
     void refresh(days);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch only when the day range changes; refresh is recreated each render and is not a trigger
   }, [days]);
 
   // Debounced search; empty query falls back to the ranked outlier list.
