@@ -209,6 +209,30 @@ fn lifecycle_new_env_ls_rm() {
         .stderr(contains("refusing to remove the primary"));
 }
 
+/// The declared `TT_TASK_TEARDOWN` command must run against the task's own
+/// worktree while it still exists, right before `rm` deletes it — proven with
+/// a marker written *outside* the task dir (an absolute path baked in before
+/// the task even exists), since anything the command drops inside the task
+/// dir disappears along with it.
+#[test]
+fn rm_runs_the_declared_teardown_before_removing_the_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+    let marker = tmp.path().join("teardown-ran");
+
+    new_task(&root_s, "feat/teardown").assert().success();
+    let task = task_dir(&checkout, "feat-teardown");
+    let mut env = std::fs::read_to_string(task.join(".env")).unwrap();
+    env.push_str(&format!("TT_TASK_TEARDOWN=touch {}\n", marker.display()));
+    std::fs::write(task.join(".env"), env).unwrap();
+
+    assert!(!marker.exists());
+    tt().args(["task", "rm", "feat-teardown", "--root", &root_s]).assert().success();
+    assert!(!task.exists());
+    assert!(marker.is_file(), "TT_TASK_TEARDOWN must run before the worktree is removed");
+}
+
 /// The claim lock's own regression test: renders racing for *fresh* claims
 /// must come away with disjoint ports. Without the lock, all three scan
 /// siblings before any of them writes, and they pick the same port.

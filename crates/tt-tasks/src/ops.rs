@@ -21,6 +21,13 @@ pub const TEMPLATE_SIDECAR: &str = "task-env.template";
 /// repo needing more than one command should point this at its own task
 /// runner (`make setup`, `npm run bootstrap`).
 pub const SETUP_ENV_KEY: &str = "TT_TASK_SETUP";
+/// Declared teardown command, read from the task's rendered `.env`
+/// (e.g. `TT_TASK_TEARDOWN=docker compose down -v`). Spawned directly — no
+/// shell — before the worktree is removed, so it can still see the task's
+/// `.env` and working tree. Unset means nothing to run: unlike setup there is
+/// no lockfile-style fallback to detect, since there is nothing to teardown by
+/// default.
+pub const TEARDOWN_ENV_KEY: &str = "TT_TASK_TEARDOWN";
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The pre-flight `fetch` in [`create_task`] is best-effort freshness, not
 /// required for correctness (a failure just falls back to local refs with a
@@ -608,6 +615,38 @@ pub fn run_setup(dir: &Path) -> Result<Option<String>> {
     Ok(warning)
 }
 
+/// Run `dir`'s teardown step (declared `TT_TASK_TEARDOWN` from its rendered
+/// `.env` — see [`TEARDOWN_ENV_KEY`]), reading the `.env` itself. `Ok(None)`
+/// means nothing declared or it succeeded; `Ok(Some)` carries a warning for a
+/// failure the caller should surface but not fail on — removal proceeds
+/// either way, since a stuck teardown command must never be what blocks a
+/// worktree from coming off disk. Called from [`crate::ops::remove_task`]
+/// while `dir` still exists, before it is deleted.
+pub fn run_teardown(dir: &Path) -> Result<Option<String>> {
+    let env_map: BTreeMap<String, String> =
+        envfile::parse(&fs::read_to_string(dir.join(".env")).unwrap_or_default())
+            .into_iter()
+            .collect();
+    let Some(declared) = env_map.get(TEARDOWN_ENV_KEY) else {
+        return Ok(None);
+    };
+    let argv: Vec<String> = declared.split_whitespace().map(str::to_string).collect();
+    let Some((cmd, args)) = argv.split_first() else {
+        return Ok(None);
+    };
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let warning = match tt_exec::run_in_dir_with_timeout(cmd.as_str(), &args, dir, SETUP_TIMEOUT) {
+        Ok(out) if out.ok() => None,
+        Ok(out) => Some(format!(
+            "teardown `{declared}` failed (exit {}) — continuing removal\n{}",
+            out.exit_code,
+            out.stderr.trim()
+        )),
+        Err(e) => Some(format!("teardown `{declared}` failed — continuing removal: {e}")),
+    };
+    Ok(warning)
+}
+
 // ---------------------------------------------------------------------------
 // submodules — the lifecycle phases. Public API is re-exported here so
 // callers keep using `tt_tasks::ops::*` paths; `pub(crate)` re-exports keep
@@ -684,6 +723,34 @@ mod tests {
         assert_eq!(setup_command(&env(&[]), |_| false), None);
         // declared-but-empty disables setup rather than running junk
         assert_eq!(setup_command(&env(&[(SETUP_ENV_KEY, "  ")]), |_| true), None);
+    }
+
+    #[test]
+    fn run_teardown_with_no_declared_command_does_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join(".env"), "").unwrap();
+        assert!(run_teardown(tmp.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn run_teardown_runs_the_declared_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("teardown-ran");
+        fs::write(
+            tmp.path().join(".env"),
+            format!("{TEARDOWN_ENV_KEY}=touch {}\n", marker.display()),
+        )
+        .unwrap();
+        assert!(run_teardown(tmp.path()).unwrap().is_none());
+        assert!(marker.is_file());
+    }
+
+    #[test]
+    fn run_teardown_reports_a_failing_command_without_erroring() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join(".env"), format!("{TEARDOWN_ENV_KEY}=false\n")).unwrap();
+        let warning = run_teardown(tmp.path()).unwrap();
+        assert!(warning.is_some_and(|w| w.contains("teardown")));
     }
 
     #[test]
