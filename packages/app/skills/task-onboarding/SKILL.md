@@ -79,8 +79,9 @@ commit lands.
 ```sh
 tt task ls                       # primary listed with its claimed ports
 tt task new "Task smoke" --repo . -b chore/task-smoke  # renders .env, runs setup
+tt task ports                    # every checkout's claims side by side, each probed for a listener
 tt task rm chore-task-smoke      # guarded removal works
 ```
 
-Confirm the smoke task's `.env` got *different* ports than primary's, then
-remove it.
+Confirm the smoke task's `.env` got *different* ports than primary's (`tt
+task ports` shows them side by side), then remove it.

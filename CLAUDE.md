@@ -90,6 +90,7 @@ tt task new "<title>" --repo <name|dir> [-b feat/thing] [--base <ref>] [--status
 tt task ls [--json]                       # fleet: main checkout + tasks, branch, dirty, ports
 tt task env <name>                        # (re)render .env — idempotent, keeps claims
 tt task env primary                       # same, for the main checkout
+tt task ports [--probe <port>] [--json]   # repo's port picture: every checkout's claims + registry, each probed for a listener
 tt task rm <name> [--force]               # guarded removal + docker cleanup
 tt task clean [--dry-run]                 # rm every merged/gone task + sweep stale state
 ```
