@@ -500,7 +500,7 @@ pub struct PrCollector {
 
 impl Default for PrCollector {
     fn default() -> Self {
-        Self { enabled: true, refresh_seconds: 300, merged_refresh_minutes: 15 }
+        Self { enabled: true, refresh_seconds: 1200, merged_refresh_minutes: 15 }
     }
 }
 
@@ -1237,7 +1237,7 @@ mod tests {
         assert_eq!(c.calendar.quiet_hours.end_hour, 18);
         assert_eq!(c.calendar.quiet_hours.weekdays, vec![0, 1, 2, 3, 4]);
         assert!(c.prs.enabled);
-        assert_eq!(c.prs.refresh_seconds, 300);
+        assert_eq!(c.prs.refresh_seconds, 1200);
         assert_eq!(c.prs.merged_refresh_minutes, 15);
         assert!(c.issues.enabled);
         assert_eq!(c.issues.refresh_minutes, 15);

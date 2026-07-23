@@ -60,10 +60,10 @@ describe("collectorHealth", () => {
   });
 
   it("classifies each collector against its own default threshold", () => {
-    // Aged 6 minutes: past the PR window (5m) but within the issues window (30m).
+    // Aged 25 minutes: past the PR window (20m) but within the issues window (30m).
     const runs: CollectRun[] = [
-      run({ collector: "prs", ranAt: NOW - 6 * 60_000 }),
-      run({ collector: "issues", ranAt: NOW - 6 * 60_000 }),
+      run({ collector: "prs", ranAt: NOW - 25 * 60_000 }),
+      run({ collector: "issues", ranAt: NOW - 25 * 60_000 }),
     ];
     const byKey = Object.fromEntries(
       collectorHealth(runs, NOW).map((h) => [h.key, h.state]),
