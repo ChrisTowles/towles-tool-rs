@@ -12,9 +12,10 @@ use serde::Serialize;
 
 use tt_claude_sessions::{
     BarChartDay, CadenceSummary, LedgerTotals, ModelBar, ProjectBar, SessionBreakdown,
-    SessionDetail, build_cadence, build_insights, build_ledger_days, build_ledger_model_totals,
-    build_ledger_project_totals, build_session_breakdown, find_session_path, ledger_totals,
-    parse_transcript_file, scan_sessions_detailed, search_sessions,
+    SessionDetail, UsageLimits, build_cadence, build_insights, build_ledger_days,
+    build_ledger_model_totals, build_ledger_project_totals, build_session_breakdown,
+    find_session_path, ledger_totals, parse_transcript_file, read_cached_usage_limits,
+    scan_sessions_detailed, search_sessions,
 };
 
 /// Max sessions scanned, matching the CLI's `SESSION_LIMIT`.
@@ -27,6 +28,12 @@ const SEARCH_LIMIT: usize = 100;
 /// `~/.claude`, honoring `$HOME` so tests/multiple tasks can redirect it.
 fn claude_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude")
+}
+
+/// `~/.claude.json` — the CLI's global config file (a sibling of `~/.claude/`,
+/// not inside it), holding `cachedUsageUtilization` among other state.
+fn claude_json_path() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude.json")
 }
 
 /// The last scan, kept so `claude_sessions_search` filters in memory. Keyed
@@ -139,6 +146,18 @@ pub async fn claude_sessions_summary(
     })
     .await
     .map_err(|e| format!("claude sessions scan task panicked: {e}"))?
+}
+
+/// Rate-limit bars for the status bar (5h session, 7-day all-model, any
+/// 7-day model-scoped cap), read straight from the CLI's own cached
+/// `~/.claude.json` snapshot — never a live call of any kind, and not
+/// instrumented (`app_resource_usage`-style pure poller). `None` when the
+/// CLI hasn't populated the cache yet (e.g. a fresh install).
+#[tauri::command]
+pub async fn claude_usage_limits() -> Result<Option<UsageLimits>, String> {
+    tauri::async_runtime::spawn_blocking(|| read_cached_usage_limits(&claude_json_path()))
+        .await
+        .map_err(|e| format!("claude usage limits task panicked: {e}"))
 }
 
 /// One ranked waste finding with its session attached, for the Insights tab.

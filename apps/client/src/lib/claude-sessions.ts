@@ -63,6 +63,24 @@ export type ClaudeSessionsSummary = {
 export const claudeSessionsSummary = (days: number) =>
   invoke<ClaudeSessionsSummary>("claude_sessions_summary", { days });
 
+export type UsageLimitBar = {
+  /** `"Session"`, `"Week (all models)"`, `"Week (Fable)"`, etc. */
+  label: string;
+  percent: number;
+  resetsAt: string | null;
+  isActive: boolean;
+};
+
+export type UsageLimits = {
+  fetchedAtMs: number;
+  bars: UsageLimitBar[];
+};
+
+/** The CLI's own cached 5h/weekly rate-limit percentages from
+ * `~/.claude.json` — the same numbers its `/usage` command shows. No live
+ * call; `null` if the CLI hasn't populated the cache yet. */
+export const claudeUsageLimits = () => invoke<UsageLimits | null>("claude_usage_limits");
+
 /** Sessions in the window whose prompt text matches `query`. */
 export const claudeSessionsSearch = (days: number, query: string) =>
   invoke<ClaudeSession[]>("claude_sessions_search", { days, query });
