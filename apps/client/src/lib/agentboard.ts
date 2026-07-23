@@ -1393,70 +1393,12 @@ export function rollupAlertTextColor(bg: string | null): string {
   return bg === "bg-cyan-500" ? "text-cyan-950" : "text-white";
 }
 
-const EMPTY_WINDOWS: WindowsPayload = { windows: [], activeWindows: {} };
-
-const EMPTY: StatePayload = {
-  repos: [],
-  preferredEditor: "",
-  compactRecommendPercent: 30,
-  windows: EMPTY_WINDOWS,
-  collapsed: {},
-  ts: 0,
-};
-
 /**
- * Subscribe to the live agentboard state: pull the initial snapshot via
- * `ab_get_state`, then track the debounced `agentboard://state` event. Returns
- * the latest payload (empty until the first snapshot arrives).
+ * The live agentboard state, shared across the app from a single subscription.
+ * Lives in `agentboard-state.tsx` (it needs JSX for its context provider);
+ * re-exported here so consumers keep importing it from `@/lib/agentboard`.
  */
-export function useAgentboardState(): StatePayload {
-  const [state, setState] = useState<StatePayload>(EMPTY);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-
-    void (async () => {
-      // Outside Tauri (bare-browser dev), `listen` throws on the missing IPC
-      // internals — stay on the empty state instead of leaking unhandled
-      // rejections.
-      if (!("__TAURI_INTERNALS__" in window)) {
-        setState(EMPTY);
-        return;
-      }
-
-      const { listen } = await import("@tauri-apps/api/event");
-
-      // Every payload is stamped with its compute time (`ts`) — never let an
-      // older snapshot replace a newer one. The initial `ab_get_state` fetch
-      // below resolves *after* the subscription is live, so a debounced
-      // `agentboard://state` event (e.g. the one `ab_add_repo` triggers during
-      // task creation) can land first; without the guard the slower fetch
-      // would roll the rail back to a snapshot that predates it.
-      const accept = (payload: StatePayload) =>
-        setState((cur) => (payload.ts < cur.ts ? cur : payload));
-
-      const sub = await listen<StatePayload>("agentboard://state", (e) => {
-        accept(e.payload);
-      });
-      if (disposed) {
-        sub();
-        return;
-      }
-      unlisten = sub;
-
-      const initial = await invoke<StatePayload>("ab_get_state");
-      if (initial.isOk() && !disposed) accept(initial.value);
-    })();
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  return state;
-}
+export { useAgentboardState } from "./agentboard-state";
 
 /** Status dot color, mirroring the Rust `AgentStatus::color` intent.
  * `busy` is cyan rather than the more obvious amber/yellow: amber is this

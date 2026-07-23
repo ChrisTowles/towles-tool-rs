@@ -15,6 +15,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AgentboardStateProvider } from "@/lib/agentboard-state";
 import { NowProvider } from "@/lib/now";
 import { StoreSnapshotProvider } from "@/lib/store-snapshot";
 import { SCREENS } from "@/lib/screens";
@@ -180,9 +181,11 @@ export function App() {
     <WorkspaceProvider>
       <NowProvider>
         <StoreSnapshotProvider>
-          <TooltipProvider>
-            <Workspace />
-          </TooltipProvider>
+          <AgentboardStateProvider>
+            <TooltipProvider>
+              <Workspace />
+            </TooltipProvider>
+          </AgentboardStateProvider>
         </StoreSnapshotProvider>
       </NowProvider>
     </WorkspaceProvider>
