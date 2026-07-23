@@ -22,11 +22,14 @@
 //! - [`ledger`] — single-parse session scan + summary aggregates + search.
 //! - [`insights`] — ranked waste/habit findings over a scanned window.
 //! - [`breakdown`] — one session's turn/tool drill-down.
+//! - [`cadence`] — human-prompt cadence (time-of-day / per-day counts), not
+//!   token/cost accounting.
 
 use thiserror::Error;
 
 pub mod analyzer;
 pub mod breakdown;
+pub mod cadence;
 pub mod insights;
 pub mod ledger;
 pub mod parser;
@@ -51,6 +54,7 @@ pub use analyzer::{
     get_model_name, get_primary_model,
 };
 pub use breakdown::{SessionBreakdown, TurnBreakdown, build_session_breakdown, find_session_path};
+pub use cadence::{CadenceSummary, DayBucket, DayHourCell, build_cadence};
 pub use insights::{Insight, InsightKind, build_insights};
 pub use ledger::{
     LedgerTotals, SearchHit, SessionDetail, build_ledger_days, build_ledger_model_totals,

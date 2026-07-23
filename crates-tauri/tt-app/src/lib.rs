@@ -707,6 +707,7 @@ pub fn run() {
             claude_sessions::claude_sessions_search,
             claude_sessions::claude_sessions_insights,
             claude_sessions::claude_sessions_breakdown,
+            claude_sessions::claude_sessions_cadence,
             telemetry::telemetry_days,
             telemetry::telemetry_events,
             agentboard::ab_open_session_for_cwd,

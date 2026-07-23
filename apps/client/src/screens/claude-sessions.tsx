@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   BarChart3,
   CircleCheck,
+  Clock,
   DatabaseZap,
   Flame,
   Lightbulb,
@@ -41,9 +42,11 @@ import { Card, StatTile } from "@/components/store-bits";
 import { abOpenSessionForCwd, requestOpenSession } from "@/lib/agentboard";
 import {
   claudeSessionsBreakdown,
+  claudeSessionsCadence,
   claudeSessionsInsights,
   claudeSessionsSearch,
   claudeSessionsSummary,
+  type CadenceSummary,
   type ClaudeSession,
   type ClaudeSessionInsight,
   type ClaudeSessionsSummary,
@@ -319,6 +322,275 @@ function RankedBarChart({ bars }: { bars: { label: string; totalTokens: number }
   if (bars.length === 0)
     return <p className="text-sm text-muted-foreground">No sessions in this range.</p>;
   return <div ref={ref} style={{ height: Math.max(120, bars.length * 36) }} />;
+}
+
+/** `0` → `12am`, `13` → `1pm`, … — compact hour-of-day axis labels. */
+function formatHourLabel(hour: number): string {
+  const period = hour < 12 ? "am" : "pm";
+  const twelveHour = hour % 12 === 0 ? 12 : hour % 12;
+  return `${twelveHour}${period}`;
+}
+
+/** `YYYY-MM-DD` for a `Date`, in local time (never UTC — `toISOString` would
+ * shift the date near midnight). */
+function localDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** The grid's date span: the selected window (`days`, `"0"` = all time)
+ * ending today. The backend already clips `byDay`/`byDayHour` to this same
+ * window per-prompt (not just per-session mtime — see `build_cadence`'s doc
+ * comment), so this only needs to mirror that window for the axis. */
+function dateRange(daysSel: string, byDay: CadenceSummary["byDay"]): [string, string] {
+  const today = new Date();
+  const end = localDateStr(today);
+  const n = Number(daysSel);
+  if (n > 0) {
+    const start = new Date(today);
+    start.setDate(start.getDate() - (n - 1));
+    return [localDateStr(start), end];
+  }
+  return [byDay.length ? byDay[0].date : end, end];
+}
+
+/** Every `YYYY-MM-DD` from `start` to `end`, inclusive, ascending — the row
+ * labels for the day×hour grid, so a day with zero prompts still gets a row
+ * of empty cells rather than silently disappearing. */
+function enumerateDates(start: string, end: string): string[] {
+  const dates: string[] = [];
+  const last = new Date(`${end}T00:00:00`);
+  // Reassigned (not mutated) each pass via `setDate` on a fresh `Date`, so a
+  // DST transition's 23/25-hour day can't skip or repeat a calendar date the
+  // way a fixed-millisecond increment would.
+  let cur = new Date(`${start}T00:00:00`);
+  while (cur <= last) {
+    dates.push(localDateStr(cur));
+    const next = new Date(cur);
+    next.setDate(next.getDate() + 1);
+    cur = next;
+  }
+  return dates;
+}
+
+/** `true` for a `YYYY-MM-DD` local date that falls on Saturday or Sunday. */
+function isWeekend(date: string): boolean {
+  const dow = new Date(`${date}T00:00:00`).getDay();
+  return dow === 0 || dow === 6;
+}
+
+/** `true` for an 8am–5pm hour (`8..16`) on a weekday — the "work hours" cue. */
+function isWorkHour(date: string, hour: number): boolean {
+  return !isWeekend(date) && hour >= 8 && hour < 17;
+}
+
+/** Linear-interpolates two `#rrggbb` colors at `t` (0..1). */
+function lerpColor(a: string, b: string, t: number): string {
+  const pa = [1, 3, 5].map((i) => Number.parseInt(a.slice(i, i + 2), 16));
+  const pb = [1, 3, 5].map((i) => Number.parseInt(b.slice(i, i + 2), 16));
+  return `#${pa
+    .map((ca, i) => Math.round(ca + (pb[i] - ca) * t).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+/** Quantile (equal-*count*, not equal-value) bins over the nonzero counts, so
+ * a heavily skewed distribution — a handful of marathon hours against many
+ * 1-2-prompt hours — still spreads across the gradient instead of every cell
+ * but the outliers landing in one bucket. Up to 9 bins (10 total ranges once
+ * the zero piece is added), fewer only when the data has too little spread
+ * to fill that many distinct boundaries. */
+function buildCountPieces(counts: number[]): { min: number; max: number; color: string }[] {
+  const nonzero = counts.filter((c) => c > 0);
+  if (nonzero.length === 0) return [];
+  const sorted = nonzero.toSorted((a, b) => a - b);
+  const targetBins = 9;
+  const boundaries = Array.from({ length: targetBins }, (_, i) => {
+    const idx = Math.min(sorted.length - 1, Math.ceil(((i + 1) * sorted.length) / targetBins) - 1);
+    return sorted[idx];
+  });
+  const uniqueBoundaries = [...new Set(boundaries)];
+  let lo = 1;
+  return uniqueBoundaries.map((hi, i) => {
+    const t = uniqueBoundaries.length === 1 ? 1 : i / (uniqueBoundaries.length - 1);
+    const piece = { min: lo, max: hi, color: lerpColor(PALETTE[0], "#0b2f70", t) };
+    lo = hi + 1;
+    return piece;
+  });
+}
+
+/** Punch-card heat map: one column per day (oldest on the left, so the axis
+ * reads left-to-right as time passing), one row per hour, one block per
+ * cell. Every (day, hour) pair is included — even zero-prompt ones — and
+ * rendered white via `visualMap.outOfRange` (`min: 1` puts zero cells
+ * outside the mapped range), so an empty cell reads as "no prompts" rather
+ * than disappearing into the page background. Fixed square cells via the
+ * grid's own pixel `width`/`height` (not `left`+`right`, which would give
+ * echarts a fixed box and it'd silently re-stretch the cells to fill it —
+ * the same trap the calendar-coordinate version of this chart hit before). */
+function DayHourHeatmap({
+  byDayHour,
+  range,
+}: {
+  byDayHour: CadenceSummary["byDayHour"];
+  range: [string, string];
+}) {
+  const days = useMemo(() => enumerateDates(range[0], range[1]), [range]);
+  const cellPx = 16;
+  const gridWidth = days.length * cellPx;
+  const gridHeight = 24 * cellPx;
+
+  const ref = useEChart(
+    (chart) => {
+      const foreground = cssVar("--foreground");
+      const muted = cssVar("--muted-foreground");
+      const border = cssVar("--border");
+      const card = cssVar("--card");
+
+      const countByCell = new Map(byDayHour.map((c) => [`${c.date}|${c.hour}`, c.count]));
+      // Cells are fully opaque, so a background layer behind them (tried
+      // `markArea`, then `xAxis.splitArea` — neither rendered, and once this
+      // was understood as an opacity problem rather than an API one, the fix
+      // is obvious: verified live that both are simply painted over). A
+      // per-cell border is the one cue that survives on top — amber for a
+      // weekend day, teal for an 8am–5pm weekday hour (the two are mutually
+      // exclusive, so no cell needs both).
+      const data: { value: [number, number, number]; itemStyle?: { borderColor: string } }[] = [];
+      days.forEach((date, dayIndex) => {
+        const weekend = isWeekend(date);
+        for (let hour = 0; hour < 24; hour++) {
+          const borderColor = weekend
+            ? PALETTE[3]
+            : isWorkHour(date, hour)
+              ? PALETTE[4]
+              : undefined;
+          data.push({
+            value: [dayIndex, hour, countByCell.get(`${date}|${hour}`) ?? 0],
+            itemStyle: borderColor ? { borderColor } : undefined,
+          });
+        }
+      });
+
+      chart.setOption({
+        tooltip: {
+          backgroundColor: card,
+          borderColor: border,
+          textStyle: { color: foreground },
+          formatter: (p: { value: [number, number, number] }) =>
+            `${days[p.value[0]]} · ${formatHourLabel(p.value[1])}<br/>${p.value[2]} prompt${
+              p.value[2] === 1 ? "" : "s"
+            }`,
+        },
+        visualMap: {
+          // Piecewise, not continuous: a continuous visualMap with `min: 1`
+          // and an explicit `outOfRange` still painted every zero cell the
+          // same as the nonzero low end (verified live — `outOfRange` never
+          // took effect regardless of `color` shape or `dimension`).
+          // Piecewise pieces are colored independently with no such
+          // fallback, so the zero piece reliably renders white.
+          type: "piecewise",
+          dimension: 2,
+          show: false,
+          pieces: [
+            { min: 0, max: 0, color: "#ffffff" },
+            ...buildCountPieces(byDayHour.map((c) => c.count)),
+          ],
+        },
+        grid: { left: 44, top: 8, width: gridWidth, height: gridHeight },
+        xAxis: {
+          type: "category",
+          data: days.map((d) => d.slice(5)),
+          axisLine: { show: false },
+          axisTick: { show: false },
+          axisLabel: {
+            color: (_value: string, index: number) =>
+              isWeekend(days[index]) ? PALETTE[3] : muted,
+            fontSize: 9.5,
+            interval: Math.ceil(days.length / 15) - 1,
+            rotate: 45,
+          },
+        },
+        yAxis: {
+          type: "category",
+          inverse: true,
+          data: Array.from({ length: 24 }, (_, h) => formatHourLabel(h)),
+          axisLine: { show: false },
+          axisTick: { show: false },
+          axisLabel: { color: muted, fontSize: 10 },
+        },
+        series: [
+          {
+            type: "heatmap",
+            data,
+            itemStyle: { borderWidth: 1, borderColor: border },
+          },
+        ],
+      });
+    },
+    [byDayHour, days],
+  );
+
+  if (byDayHour.length === 0)
+    return <p className="text-sm text-muted-foreground">No prompts in this range.</p>;
+  return (
+    <div className="overflow-x-auto">
+      <div ref={ref} style={{ height: gridHeight + 60, width: gridWidth + 60 }} />
+    </div>
+  );
+}
+
+/** When in the day, and how often, the human sends prompts — cadence, not
+ * token/cost accounting. Same fetch-once-per-activation pattern as
+ * [`InsightsTab`]. */
+function CadenceTab({ days, nonce, active }: { days: string; nonce: number; active: boolean }) {
+  const [cadence, setCadence] = useState<CadenceSummary | null>(null);
+  const [loading, setLoading] = useState(false);
+  const fetchedKey = useRef<string | null>(null);
+
+  useEffect(() => {
+    const key = `${days}:${nonce}`;
+    if (!active || fetchedKey.current === key) return;
+    fetchedKey.current = key;
+    setLoading(true);
+    void claudeSessionsCadence(Number(days)).then((r) => {
+      r.match({
+        ok: setCadence,
+        err: (e) => {
+          setCadence(null);
+          reportSessionsError(e);
+        },
+      });
+      setLoading(false);
+    });
+  }, [active, days, nonce]);
+
+  if (loading && !cadence)
+    return <p className="p-4 text-sm text-muted-foreground">Scanning prompts…</p>;
+  if (!cadence) return null;
+
+  const activeDays = cadence.byDay.length;
+  const avgPerDay = activeDays > 0 ? cadence.totalPrompts / activeDays : 0;
+  const range = dateRange(days, cadence.byDay);
+
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+        <StatTile label="Prompts" value={String(cadence.totalPrompts)} />
+        <StatTile label="Active days" value={String(activeDays)} />
+        <StatTile label="Avg / active day" value={avgPerDay.toFixed(1)} />
+      </div>
+      <Card title="Prompts by day & hour">
+        <DayHourHeatmap byDayHour={cadence.byDayHour} range={range} />
+      </Card>
+      <p className="text-[11px] text-muted-foreground">
+        Dates and hours are local time. Counts are human-typed prompts only — tool results and
+        injected envelopes are excluded, and token/cost volume plays no part here.{" "}
+        <span style={{ color: PALETTE[3] }}>Amber</span> outlines a weekend day;{" "}
+        <span style={{ color: PALETTE[4] }}>teal</span> outlines 8am–5pm on a weekday.
+      </p>
+    </div>
+  );
 }
 
 type SessionSortKey =
@@ -988,6 +1260,10 @@ export function ClaudeSessionsScreen() {
                 <Lightbulb className="size-4" />
                 Insights
               </TabsTrigger>
+              <TabsTrigger value="cadence" className="justify-start gap-2 px-2 py-1.5">
+                <Clock className="size-4" />
+                Cadence
+              </TabsTrigger>
             </TabsList>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
@@ -1036,6 +1312,10 @@ export function ClaudeSessionsScreen() {
 
               <TabsContent value="insights">
                 <InsightsTab days={days} nonce={refreshNonce} active={tab === "insights"} />
+              </TabsContent>
+
+              <TabsContent value="cadence">
+                <CadenceTab days={days} nonce={refreshNonce} active={tab === "cadence"} />
               </TabsContent>
             </div>
           </Tabs>

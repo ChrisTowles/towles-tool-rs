@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use tt_claude_code::{
     UsageTotals, parse_transcript_file, session_cwd, session_title, usage_totals, user_prompt_blob,
-    user_prompts,
+    user_prompts_with_timestamps,
 };
 
 use crate::Result;
@@ -49,6 +49,10 @@ pub struct SessionDetail {
     pub user_turns: i64,
     /// Human prompt text, newline-joined, capped — the search corpus.
     pub prompt_blob: String,
+    /// Epoch-ms send time of each human prompt that carried a parseable
+    /// timestamp (older transcript lines may lack one) — the cadence tab's
+    /// data source. Not capped like `prompt_blob`: it's a `Vec<i64>`, not text.
+    pub prompt_times_ms: Vec<i64>,
 }
 
 impl SessionDetail {
@@ -127,7 +131,14 @@ pub fn scan_sessions_detailed(
         let analysis = analyze_session(&entries);
         // Human prompts only — the transcript's `user` lines are mostly
         // machine noise (tool results, envelopes), which must not count.
-        let user_turns = user_prompts(&entries).len() as i64;
+        let prompts = user_prompts_with_timestamps(&entries);
+        let user_turns = prompts.len() as i64;
+        let prompt_times_ms = prompts
+            .iter()
+            .filter_map(|p| p.timestamp.as_deref())
+            .filter_map(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+            .map(|dt| dt.timestamp_millis())
+            .collect();
         details.push(SessionDetail {
             session_id,
             project: normalize_repo_name(&encoded),
@@ -144,6 +155,7 @@ pub fn scan_sessions_detailed(
             cost_usd: analysis.cost_usd,
             user_turns,
             prompt_blob: user_prompt_blob(&entries, PROMPT_BLOB_MAX_BYTES),
+            prompt_times_ms,
             path,
         });
     }
@@ -318,6 +330,7 @@ mod tests {
             cost_usd: 0.0,
             user_turns: 0,
             prompt_blob: String::new(),
+            prompt_times_ms: Vec::new(),
         }
     }
 
@@ -442,5 +455,24 @@ mod tests {
         // Fable: (10*10 + 5*50 + 100*1.0) / 1e6
         assert!((d.cost_usd - 0.00045).abs() < 1e-9);
         assert_eq!(d.prompt_blob, "hello ledger");
+    }
+
+    #[test]
+    fn scan_parses_prompt_timestamps_and_skips_unparseable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("-home-u-code-demo");
+        std::fs::create_dir(&proj).unwrap();
+        std::fs::write(
+            proj.join("abc.jsonl"),
+            concat!(
+                "{\"type\":\"user\",\"timestamp\":\"2026-07-11T19:13:52.831Z\",\"message\":{\"role\":\"user\",\"content\":\"first\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"no timestamp\"}}\n",
+            ),
+        )
+        .unwrap();
+
+        let details = scan_sessions_detailed(tmp.path(), 10, 0.0, 1_700_000_000_000).unwrap();
+        assert_eq!(details[0].user_turns, 2);
+        assert_eq!(details[0].prompt_times_ms, vec![1_783_797_232_831]);
     }
 }

@@ -210,6 +210,7 @@ mod tests {
             cost_usd: 0.0,
             user_turns: 0,
             prompt_blob: String::new(),
+            prompt_times_ms: Vec::new(),
         }
     }
 
