@@ -11,12 +11,6 @@
 /// <reference types="@wdio/globals/types" />
 /// <reference types="@wdio/mocha-framework" />
 
-import { Key } from "webdriverio";
-
-// The app binds the command palette to ⌘K on macOS, Ctrl+K elsewhere (mirrors
-// the frontend's IS_MAC). The suite runs on Linux/WebKitGTK, but stay portable.
-const MOD = process.platform === "darwin" ? Key.Command : Key.Ctrl;
-
 /** Wait until the React app has mounted real content into #root. */
 export async function bootReady(): Promise<void> {
   const root = await browser.$("#root");
@@ -25,25 +19,6 @@ export async function bootReady(): Promise<void> {
     timeout: 15000,
     timeoutMsg: "#root never got children",
   });
-}
-
-/** Open the palette via the real keyboard shortcut and wait for its input. */
-export async function openPalette(): Promise<void> {
-  // Focus the window chrome so the chord reaches the global keydown listener.
-  await browser.$("#root").click();
-  await browser.keys([MOD, "k"]);
-  const input = await browser.$('[data-slot="command-input"]');
-  await input.waitForDisplayed({ timeout: 10000 });
-}
-
-/** Type a query, select the top-ranked item, and wait for the palette to close. */
-export async function paletteSelect(query: string): Promise<void> {
-  const input = await browser.$('[data-slot="command-input"]');
-  await input.setValue(query);
-  await browser.keys(Key.Enter);
-  await browser
-    .$('[data-slot="command-input"]')
-    .waitForExist({ reverse: true, timeout: 10000 });
 }
 
 /**
@@ -67,11 +42,40 @@ export async function expectActiveScreen(title: string): Promise<void> {
   );
 }
 
-/** Palette-navigate to a screen (by search query) and assert it becomes active. */
-export async function gotoScreen(query: string, title: string): Promise<void> {
-  await openPalette();
-  await paletteSelect(query);
+/**
+ * Navigate to a screen by clicking its sidebar nav button, then assert it
+ * becomes active.
+ *
+ * Deliberately not the ⌘K command palette: opening the palette needs a
+ * synthetic Ctrl/⌘+K chord to land on the right focus target, which is
+ * unreliable under WebKitGTK automation (the chord silently no-ops when focus
+ * sits in an input or the just-restored screen — e.g. booting onto Settings —
+ * so the palette never opens). Clicking the sidebar button drives `openTab`
+ * directly: a plain W3C element click, deterministic regardless of focus or
+ * which screen the session restored. The icon-collapsed sidebar (the e2e
+ * default) labels the button via `aria-label`; expanded mode via visible text.
+ * palette.e2e.ts still covers the palette itself.
+ */
+export async function gotoScreen(title: string): Promise<void> {
+  await clickNavButton(title);
   await expectActiveScreen(title);
+}
+
+/** Click a sidebar nav button by title (aria-label collapsed, text expanded). */
+async function clickNavButton(title: string): Promise<void> {
+  const byLabel = await browser.$(`button[aria-label="${title}"]`);
+  if (await byLabel.isExisting()) {
+    await byLabel.click();
+    return;
+  }
+  const buttons = await browser.$$("button");
+  for (const button of buttons) {
+    if ((await button.getText()).trim() === title) {
+      await button.click();
+      return;
+    }
+  }
+  throw new Error(`no sidebar nav button titled "${title}"`);
 }
 
 /**

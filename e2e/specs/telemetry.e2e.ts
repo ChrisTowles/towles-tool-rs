@@ -16,7 +16,7 @@ describe("Telemetry screen", () => {
   before(bootReady);
 
   it("navigates to Telemetry and renders the day picker", async () => {
-    await gotoScreen("Telemetry", "Telemetry");
+    await gotoScreen("Telemetry");
     // The day picker lives in the always-visible header (a shadcn Select).
     const dayPicker = await browser.$('[data-slot="select-trigger"]');
     await dayPicker.waitForDisplayed({ timeout: 10000 });

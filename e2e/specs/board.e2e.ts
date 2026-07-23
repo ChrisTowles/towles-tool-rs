@@ -38,7 +38,7 @@ describe("Board screen", () => {
   });
 
   it("navigates to Board and renders the filter control", async () => {
-    await gotoScreen("Board", "Board");
+    await gotoScreen("Board");
     // The toolbar renders above the empty-state branch, so the filter input is
     // present regardless of how many tasks (if any) the store holds.
     const filter = await browser.$('[aria-label="Filter tasks"]');

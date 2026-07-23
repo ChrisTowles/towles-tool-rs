@@ -16,20 +16,61 @@ import { expectString } from "../ipc.js";
 // frontend's IS_MAC). The suite runs on Linux/WebKitGTK, but keep it portable.
 const MOD = process.platform === "darwin" ? Key.Command : Key.Ctrl;
 
-/** Open the palette via the real keyboard shortcut and wait for its input. */
+/**
+ * Open the palette via the real keyboard shortcut and wait for its input.
+ *
+ * The synthetic chord silently no-ops when focus sits somewhere the global
+ * keydown listener can't see it (e.g. an input on whichever screen the session
+ * restored), so normalize focus by blurring the active element and retry the
+ * chord until the palette actually opens rather than firing it once and hoping.
+ */
 async function openPalette(): Promise<void> {
-  // Focus the window chrome so the chord reaches the global keydown listener.
-  await browser.$("#root").click();
-  await browser.keys([MOD, "k"]);
-  const input = await browser.$('[data-slot="command-input"]');
-  await input.waitForDisplayed({ timeout: 10000 });
+  await browser.waitUntil(
+    async () => {
+      await browser.execute(() => {
+        const active = document.activeElement;
+        if (active instanceof HTMLElement) active.blur();
+      });
+      await browser.keys([MOD, "k"]);
+      const input = await browser.$('[data-slot="command-input"]');
+      try {
+        await input.waitForDisplayed({ timeout: 2000 });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { timeout: 20000, timeoutMsg: "palette never opened via the keyboard chord" },
+  );
 }
 
-/** Type a query, select the top-ranked item, and wait for the palette to close. */
-async function navigateTo(query: string): Promise<void> {
+/**
+ * Type a query, click the result whose label is exactly `title`, and wait for
+ * the palette to close.
+ *
+ * Deliberately a click, not Enter-on-selected: cmdk's initial selection is the
+ * first item of the first *group*, and a persisted "Recent" entry (e.g.
+ * Agentboard, whose title contains "board") can sit above the exact title
+ * match, so what Enter commits depends on prior-session state. Clicking the
+ * exact-labelled item is what a user does when the top hit isn't theirs, and
+ * is deterministic.
+ */
+async function navigateTo(query: string, title: string = query): Promise<void> {
   const input = await browser.$('[data-slot="command-input"]');
   await input.setValue(query);
-  await browser.keys(Key.Enter);
+  await browser.waitUntil(
+    async () => {
+      const items = await browser.$$('[data-slot="command-item"]');
+      for (const item of items) {
+        if ((await item.getText()).trim() === title) {
+          await item.click();
+          return true;
+        }
+      }
+      return false;
+    },
+    { timeout: 10000, timeoutMsg: `palette never offered an item titled "${title}"` },
+  );
   await browser
     .$('[data-slot="command-input"]')
     .waitForExist({ reverse: true, timeout: 10000 });
