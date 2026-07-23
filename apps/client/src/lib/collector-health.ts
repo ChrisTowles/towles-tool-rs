@@ -39,7 +39,7 @@ export const COLLECTOR_LABELS: Record<CollectorKey, string> = {
  * quickly, issues/calendar run on the minute scale — and overridable per call.
  */
 export const DEFAULT_STALE_MS: Record<CollectorKey, number> = {
-  prs: 5 * 60_000,
+  prs: 20 * 60_000,
   issues: 30 * 60_000,
   "claude:calendar": 60 * 60_000,
   "slack:dm": 5 * 60_000,
