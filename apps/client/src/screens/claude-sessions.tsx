@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import * as echarts from "echarts";
+// echarts is ~1MB, so it's dynamically imported at chart-mount time (see
+// useEChart) rather than pulled into the initial bundle. The type-only import
+// keeps `echarts.ECharts` available without emitting a runtime dependency.
+import type * as echarts from "echarts";
 import {
   ArrowDown,
   ArrowUp,
@@ -157,19 +160,28 @@ function useEChart(render: (chart: echarts.ECharts) => void, deps: unknown[]) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const chart = echarts.init(el);
-    render(chart);
+    let chart: echarts.ECharts | undefined;
+    let observer: ResizeObserver | undefined;
+    let cancelled = false;
     // A tab switch mounts this container before layout has settled, so the
     // container can be 0×0 at echarts.init() time. A ResizeObserver catches
     // the first real layout pass, not just later window-level resizes.
-    const onResize = () => chart.resize();
-    window.addEventListener("resize", onResize);
-    const observer = new ResizeObserver(onResize);
-    observer.observe(el);
+    const onResize = () => chart?.resize();
+    // echarts is code-split; init once it lands, unless the effect already
+    // cleaned up (fast tab switch / dep change) while the import was in flight.
+    void import("echarts").then((echarts) => {
+      if (cancelled || !ref.current) return;
+      chart = echarts.init(el);
+      render(chart);
+      window.addEventListener("resize", onResize);
+      observer = new ResizeObserver(onResize);
+      observer.observe(el);
+    });
     return () => {
+      cancelled = true;
       window.removeEventListener("resize", onResize);
-      observer.disconnect();
-      chart.dispose();
+      observer?.disconnect();
+      chart?.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, themeVersion]);
