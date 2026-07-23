@@ -10,11 +10,15 @@ Rust:
 
 ```sh
 cargo run -p tt-cli -- <args>       # run the CLI (binary `tt`)
-cargo run -p tt-cli -- task ls      # e.g. task, journal, collect, mcp
+cargo run -p tt-cli -- task ls      # e.g. task, journal, collect
 cargo fmt --check                   # formatting (rustfmt, 100-col)
 cargo clippy --all -- -D warnings   # lint; warnings are errors
 cargo test --all                    # unit + assert_cmd black-box tests
 ```
+
+`clippy --all`/`test --all` build `tt-vt` (needs zig 0.15.x) and `tt-app`
+(needs webkit2gtk). Without those prereqs, use CI's variant:
+`--workspace --exclude tt-vt --exclude tt-app`.
 
 Desktop app / frontend:
 
