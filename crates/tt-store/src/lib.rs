@@ -472,6 +472,38 @@ pub struct TaskIssueLink {
     pub state: String,
 }
 
+/// Which gh actions a task's status change should trigger: entering `done`
+/// closes every linked issue still cached `open`; leaving `done` reopens the
+/// ones cached `closed`. Returns `(repo, number, close)` tuples. Empty for
+/// link-less tasks, moves that don't touch `done`, and links already in the
+/// target state (so re-running is a no-op and a half-failed batch converges on
+/// retry).
+///
+/// A pure decision — the caller (`tt-app`'s `spawn_gh_status_sync`) turns the
+/// tuples into `gh issue close`/`reopen` spawns. Lives here, next to
+/// [`TaskIssueLink`], so it's unit-testable without the Tauri shell.
+pub fn gh_close_reopen_targets(
+    old_status: &str,
+    new_status: &str,
+    issues: &[TaskIssueLink],
+) -> Vec<(String, i64, bool)> {
+    if old_status == new_status {
+        return Vec::new();
+    }
+    let close = if new_status == "done" {
+        true
+    } else if old_status == "done" {
+        false
+    } else {
+        return Vec::new();
+    };
+    issues
+        .iter()
+        .filter(|link| if close { link.state != "closed" } else { link.state == "closed" })
+        .map(|link| (link.repo.clone(), link.number, close))
+        .collect()
+}
+
 /// One GitHub PR linked to a task. `state` is the last observed state
 /// (`open` | `merged` | `closed`); `checks` mirrors [`PrItem::checks`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2510,6 +2542,75 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn issue_link(repo: &str, number: i64, state: &str) -> TaskIssueLink {
+        TaskIssueLink {
+            repo: repo.to_string(),
+            number,
+            url: format!("https://github.com/{repo}/issues/{number}"),
+            state: state.to_string(),
+        }
+    }
+
+    #[test]
+    fn gh_targets_entering_done_closes_open_issues() {
+        let links = [issue_link("a/b", 1, "open"), issue_link("a/b", 2, "open")];
+        let targets = gh_close_reopen_targets("doing", "done", &links);
+        assert_eq!(targets, vec![("a/b".to_string(), 1, true), ("a/b".to_string(), 2, true)]);
+    }
+
+    #[test]
+    fn gh_targets_leaving_done_reopens_closed_issues() {
+        let links = [issue_link("a/b", 1, "closed")];
+        let targets = gh_close_reopen_targets("done", "doing", &links);
+        assert_eq!(targets, vec![("a/b".to_string(), 1, false)]);
+    }
+
+    #[test]
+    fn gh_targets_skip_links_already_in_target_state() {
+        // Entering done skips issues already closed; leaving done skips open ones.
+        assert!(
+            gh_close_reopen_targets("doing", "done", &[issue_link("a/b", 1, "closed")]).is_empty()
+        );
+        assert!(
+            gh_close_reopen_targets("done", "doing", &[issue_link("a/b", 1, "open")]).is_empty()
+        );
+    }
+
+    #[test]
+    fn gh_targets_only_a_mix_when_entering_done() {
+        // Only the still-open issue is closed; the already-closed one is left alone.
+        let links = [issue_link("a/b", 1, "open"), issue_link("a/b", 2, "closed")];
+        let targets = gh_close_reopen_targets("doing", "done", &links);
+        assert_eq!(targets, vec![("a/b".to_string(), 1, true)]);
+    }
+
+    #[test]
+    fn gh_targets_empty_when_status_unchanged() {
+        assert!(
+            gh_close_reopen_targets("done", "done", &[issue_link("a/b", 1, "open")]).is_empty()
+        );
+        assert!(
+            gh_close_reopen_targets("doing", "doing", &[issue_link("a/b", 1, "open")]).is_empty()
+        );
+    }
+
+    #[test]
+    fn gh_targets_empty_for_moves_not_touching_done() {
+        // Neither side is `done`, so no close/reopen regardless of link state.
+        assert!(
+            gh_close_reopen_targets("todo", "doing", &[issue_link("a/b", 1, "open")]).is_empty()
+        );
+        assert!(
+            gh_close_reopen_targets("doing", "todo", &[issue_link("a/b", 1, "closed")]).is_empty()
+        );
+    }
+
+    #[test]
+    fn gh_targets_empty_for_link_less_tasks() {
+        assert!(gh_close_reopen_targets("doing", "done", &[]).is_empty());
+        assert!(gh_close_reopen_targets("done", "doing", &[]).is_empty());
+    }
 
     /// Raw `task_issues` rows — the observable for delete-cascade tests, now
     /// that no production API exposes the table's contents directly.
