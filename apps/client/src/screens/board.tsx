@@ -706,8 +706,9 @@ function Card({
   openIssues: IssueItem[];
   /** Collected PRs — the "Attach PR…" candidates. */
   openPrs: PrItem[];
-  /** Reopen a closed task — mints a fresh worktree for it, same as starting
-   * a task. */
+  /** Mint a fresh worktree for this task via Agentboard's inline new-task
+   * form, pre-filled and bound to the task's existing id — used both to
+   * reopen a closed task and to start a worktree-less "task only" one. */
   onReopen: (task: TaskItem) => void;
   onPromote: (id: number, repo: string) => void;
   onAttachIssue: (id: number, issue: IssueItem) => void;
@@ -735,6 +736,12 @@ function Card({
   const closed = isTaskClosed(task);
   const outcome = taskOutcomeOf(task);
   const archived = task.archivedAt !== undefined;
+  // A bound worktree means there's a live session to jump to ("Open on
+  // Agentboard"). Without one — a "task only" backlog card, or any closed
+  // task (its worktree is torn down on close) — the useful action is
+  // starting/reopening one, routed through the same `onReopen` machinery
+  // rather than a dead-end navigation to an empty rail row.
+  const hasWorktree = task.worktree?.dir !== undefined;
   // Attach candidates: collected refs not already linked to this task.
   const attachableIssues = openIssues.filter(
     (i) => !task.issues.some((l) => l.repo === i.repo && l.number === i.number),
@@ -821,11 +828,23 @@ function Card({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
-            {onOpenAgentboard && (
+            {hasWorktree && onOpenAgentboard ? (
               <>
                 <DropdownMenuItem onSelect={onOpenAgentboard}>Open on Agentboard</DropdownMenuItem>
                 <DropdownMenuSeparator />
               </>
+            ) : (
+              !closed && (
+                <>
+                  <DropdownMenuItem onSelect={() => onReopen(task)}>
+                    Start task
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      new worktree
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              )
             )}
             <DropdownMenuItem onSelect={startRename}>Rename</DropdownMenuItem>
             <DropdownMenuLabel className="pb-0.5 pt-1 text-muted-foreground">
@@ -973,11 +992,20 @@ function Card({
             detached && "italic text-muted-foreground/70",
           )}
         >
-          {onOpenAgentboard ? (
+          {hasWorktree && onOpenAgentboard ? (
             <button
               type="button"
               onClick={onOpenAgentboard}
-              title={`Open on Agentboard${task.worktree?.dir ? ` — ${task.worktree.dir}` : ""}`}
+              title={`Open on Agentboard — ${task.worktree?.dir}`}
+              className="min-w-0 truncate text-left hover:text-foreground hover:underline"
+            >
+              {identityRowText}
+            </button>
+          ) : !closed ? (
+            <button
+              type="button"
+              onClick={() => onReopen(task)}
+              title="Start this task — mints a new worktree"
               className="min-w-0 truncate text-left hover:text-foreground hover:underline"
             >
               {identityRowText}
