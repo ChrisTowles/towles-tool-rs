@@ -35,6 +35,7 @@ type AgentBoardCheck = {
   hint?: string;
 };
 type StaleTaskCheck = { name: string; branch: string; reason: string };
+type PortHealthCheck = { port: number; owner: string; var: string; finding: string; hint: string };
 type DoctorReport = {
   result: {
     timestamp: string;
@@ -46,6 +47,7 @@ type DoctorReport = {
   plugins: PluginCheck[];
   agentboard: AgentBoardCheck[];
   staleTasks: StaleTaskCheck[];
+  portHealth: PortHealthCheck[];
 };
 
 export function DoctorScreen() {
@@ -65,7 +67,8 @@ export function DoctorScreen() {
     report.result.ghAuth &&
     report.plugins.every((c) => c.ok) &&
     report.agentboard.every((c) => c.ok || c.warning) &&
-    report.staleTasks.length === 0;
+    report.staleTasks.length === 0 &&
+    report.portHealth.length === 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -173,6 +176,27 @@ export function DoctorScreen() {
                     name={t.name}
                     value={t.branch}
                     detail={`${t.reason} — reclaim it with \`tt task clean\``}
+                  />
+                ))
+              )}
+            </Panel>
+
+            <Panel
+              title="Port claims"
+              note={report.portHealth.length > 0 ? String(report.portHealth.length) : undefined}
+              icon={<Layers className="size-4" />}
+            >
+              {report.portHealth.length === 0 ? (
+                <Empty>No drift — every claimed port is still in its owner's .env.</Empty>
+              ) : (
+                report.portHealth.map((p) => (
+                  <CheckRow
+                    key={p.port}
+                    ok={false}
+                    warned
+                    name={`${p.owner} · ${p.var}`}
+                    value={String(p.port)}
+                    detail={`${p.finding} — restore it with \`${p.hint}\``}
                   />
                 ))
               )}

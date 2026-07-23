@@ -944,6 +944,17 @@ pub fn agentboard_shared_dir() -> Result<PathBuf> {
     Ok(config_dir()?.join("agentboard"))
 }
 
+/// Directory for `tt-tasks`' per-checkout port registries (the claimed-port
+/// ledgers, one checkout-keyed file each). A *shared* store: every worktree
+/// of a repo must read the same ledger, so it lives beside the settings
+/// rather than nesting per instance. Deliberately not [`locks_dir`] (the OS
+/// temp dir — a ledger must survive reboots) and not inside the repo (state
+/// a collaborator's clone should never see). A forced [`STATE_SCOPE_ENV`]
+/// isolates it like every shared store.
+pub fn task_ports_dir() -> Result<PathBuf> {
+    Ok(config_dir()?.join("task-ports"))
+}
+
 /// The base directories under which per-checkout *instance* state nests as
 /// `tasks/<scope>/…` (see [`state_scope`]): the data base (tt.db) and the
 /// instance-config base (agentboard sessions/windows/collapse). Cleanup tools

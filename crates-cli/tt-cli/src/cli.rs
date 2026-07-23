@@ -147,6 +147,24 @@ pub enum TaskCommands {
         root: Option<PathBuf>,
     },
 
+    /// The repo's port picture: every claim in any checkout's live .env
+    /// merged with the persistent registry, each probed for a listener —
+    /// or probe one arbitrary port with --probe
+    Ports {
+        /// Probe a single port for a listener instead of reporting the
+        /// repo's claims (what scripts/task-port.mjs delegates to)
+        #[arg(long, value_name = "PORT")]
+        probe: Option<u16>,
+
+        /// Emit JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Repo checkout (default: walk up from cwd to the nearest git checkout)
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+    },
+
     /// Claude Code WorktreeCreate hook shell: reads the hook JSON on stdin,
     /// creates (or reuses) the task, prints its path on stdout — wire it as
     /// the repo's WorktreeCreate hook so `claude --worktree` and background

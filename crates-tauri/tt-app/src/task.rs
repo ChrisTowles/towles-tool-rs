@@ -155,7 +155,11 @@ pub async fn task_create(
         },
         run_setup: false,
     };
-    let created = tauri::async_runtime::spawn_blocking(move || ops::create_task(&opts))
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let created = tauri::async_runtime::spawn_blocking(move || ops::create_task(&opts, now_ms))
         .await
         .map_err(|e| format!("worktree task failed: {e}"))?
         .map_err(|e| e.to_string())?;

@@ -36,6 +36,14 @@ const StaleTaskCheckSchema = z.object({
   reason: z.string(),
 });
 
+const PortHealthCheckSchema = z.object({
+  port: z.number(),
+  owner: z.string(),
+  var: z.string(),
+  finding: z.string(),
+  hint: z.string(),
+});
+
 export const DoctorReportSchema = z.object({
   result: z.object({
     timestamp: z.string(),
@@ -47,4 +55,5 @@ export const DoctorReportSchema = z.object({
   plugins: z.array(PluginCheckSchema),
   agentboard: z.array(AgentBoardCheckSchema),
   staleTasks: z.array(StaleTaskCheckSchema),
+  portHealth: z.array(PortHealthCheckSchema),
 });

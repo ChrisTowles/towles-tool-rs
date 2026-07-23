@@ -12,7 +12,6 @@
 import { basename, dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
-import { createServer } from "node:net";
 import { Result } from "better-result";
 import { DevPortInvalid, DevPortUnset, EnvFileUnreadable, TaskEnvRenderFailed } from "./errors.mjs";
 
@@ -181,27 +180,24 @@ export function resolveWebdriverPort(devPort) {
   return Number(process.env.TT_E2E_WEBDRIVER_PORT) || devPort + 3000;
 }
 
-// A port is free only if BOTH loopback stacks are bindable: another task may
-// hold it on IPv6 (::1) while IPv4 (127.0.0.1) looks open. Only EADDRINUSE
-// counts as "taken"; other errors (e.g. no IPv6) don't.
+// Delegates to `tt task ports --probe` so `ops::port_occupied` in
+// crates/tt-tasks is the ONE implementation of "is this port usable" (both
+// loopback stacks bindable, EADDRINUSE and EACCES both count as taken) —
+// this file used to mirror that logic and the two drifted; now they can't.
+// `tt` on PATH is already a hard requirement of these scripts
+// (`requireDevPort` shells out to `tt task env`), so a failed spawn is an
+// environment error worth failing loudly on, not something to paper over
+// with a local reimplementation.
 /**
  * @param {number} port
  * @returns {Promise<boolean>}
  */
 export function isPortFree(port) {
-  /** @param {string} host @returns {Promise<boolean>} */
-  const tryHost = (host) =>
-    new Promise((resolve) => {
-      const server = createServer();
-      server.once("error", (err) =>
-        resolve(/** @type {NodeJS.ErrnoException} */ (err).code !== "EADDRINUSE"),
-      );
-      server.once("listening", () => server.close(() => resolve(true)));
-      server.listen(port, host);
-    });
-  return Promise.all([tryHost("127.0.0.1"), tryHost("::1")]).then((results) =>
-    results.every(Boolean),
-  );
+  const out = execFileSync("tt", ["task", "ports", "--probe", String(port), "--json"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  return Promise.resolve(!JSON.parse(out).occupied);
 }
 
 /**
@@ -248,6 +244,11 @@ function pgidOf(pid) {
   }
 }
 
+// Confirms via `listeningPids` (lsof), not `isPortFree`, so it stays consistent
+// with how `killPort` *found* the listeners it's tearing down: no listener left
+// is exactly the signal we want after SIGTERM/SIGKILL. This also keeps `killPort`
+// free of the `tt`-binary dependency `isPortFree` carries (`isPortFree` is the
+// separate dev-port availability decision, delegated to `tt task ports`).
 /**
  * @param {number} port
  * @param {number} timeoutMs
@@ -257,10 +258,10 @@ function pgidOf(pid) {
 async function waitUntilFree(port, timeoutMs, pollMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await isPortFree(port)) return true;
+    if (listeningPids(port).length === 0) return true;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
-  return isPortFree(port);
+  return listeningPids(port).length === 0;
 }
 
 /**

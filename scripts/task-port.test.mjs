@@ -14,7 +14,6 @@ import {
   resolveDevPort,
   taskEnvName,
   resolveWebdriverPort,
-  isPortFree,
   killPort,
 } from "./task-port.mjs";
 
@@ -268,6 +267,26 @@ async function findEphemeralFreePort() {
   });
 }
 
+// A pure-node port probe for the killPort test. We can't use the production
+// `isPortFree` here: it shells out to `tt task ports --probe`, and the scripts
+// test job doesn't build the `tt` binary. The Rust side (`ops::port_occupied`)
+// owns and tests that probe's semantics; this test only needs to observe
+// whether a port is bound to verify killPort, so a local bind attempt suffices.
+/**
+ * @param {number} port
+ * @returns {Promise<boolean>}
+ */
+async function isPortBindable(port) {
+  const { createServer } = await import("node:net");
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
 test(
   "killPort stops a detached listener and frees the port",
   { skip: process.platform === "win32" },
@@ -282,18 +301,27 @@ test(
     child.unref();
 
     // Wait for it to actually bind before asserting it's up.
-    for (let i = 0; i < 50 && (await isPortFree(port)); i++) {
+    for (let i = 0; i < 50 && (await isPortBindable(port)); i++) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    assert.equal(await isPortFree(port), false, "child should be bound to the port");
+    assert.equal(await isPortBindable(port), false, "child should be bound to the port");
 
     await killPort(port);
 
-    assert.equal(await isPortFree(port), true, "port should be free after killPort");
-    assert.throws(
-      () => execFileSync("ps", ["-p", String(pid)], { stdio: "ignore" }),
-      "child process should no longer exist",
-    );
+    assert.equal(await isPortBindable(port), true, "port should be free after killPort");
+    // killPort returns once the socket is released (lsof sees no listener), which
+    // races a few ms ahead of the parent reaping the now-exited child — poll for
+    // the process to actually disappear rather than asserting on that gap.
+    let stillRunning = true;
+    for (let i = 0; i < 50 && stillRunning; i++) {
+      try {
+        execFileSync("ps", ["-p", String(pid)], { stdio: "ignore" });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } catch {
+        stillRunning = false;
+      }
+    }
+    assert.equal(stillRunning, false, "child process should no longer exist");
   },
 );
 

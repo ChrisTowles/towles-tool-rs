@@ -6,17 +6,13 @@
 //! [`crate::layout`]). Callers surface [`CreatedTask::warnings`] to the user —
 //! nothing here prints.
 
-use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
-use std::hash::{Hash, Hasher};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::guards::{ForeignPort, RmBlocked};
 use crate::{TemplateError, envfile, layout};
 
 pub const TEMPLATE_SIDECAR: &str = "task-env.template";
@@ -25,8 +21,6 @@ pub const TEMPLATE_SIDECAR: &str = "task-env.template";
 /// repo needing more than one command should point this at its own task
 /// runner (`make setup`, `npm run bootstrap`).
 pub const SETUP_ENV_KEY: &str = "TT_TASK_SETUP";
-const LOCK_FILE: &str = "tt-tasks.lock";
-const LOCK_STALE: Duration = Duration::from_secs(60);
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The pre-flight `fetch` in [`create_task`] is best-effort freshness, not
 /// required for correctness (a failure just falls back to local refs with a
@@ -65,6 +59,13 @@ pub enum OpsError {
 
     #[error("{0}")]
     Io(String),
+
+    /// The port-registry file couldn't be written/encoded. Structured (not
+    /// folded into [`OpsError::Io`]) because callers degrade differently: a
+    /// failed registry write is a warning on an otherwise-successful render,
+    /// never a failure of the render itself.
+    #[error("port registry {path}: {detail}")]
+    Registry { path: String, detail: String },
 
     #[error("timed out waiting for {0} — another task command may be stuck")]
     LockTimeout(String),
@@ -542,390 +543,6 @@ pub fn check_branch(sr: &TaskRoot, branch: &str) -> BranchCheck {
     }
 }
 
-pub fn port_occupied(port: u16) -> bool {
-    TcpListener::bind(("127.0.0.1", port)).is_err()
-}
-
-// ---------------------------------------------------------------------------
-// claim lock — serializes port claims across concurrent creations (parallel
-// agents create tasks together; without this, both scan siblings before
-// either writes, and claim the same ports)
-
-/// Path of the claim lock for `checkout`, in `tt_config::locks_dir()` and
-/// keyed by a hash of the checkout path. Deliberately *not* inside the
-/// repo's `.git/` — that directory is git's own, and a third-party tool
-/// dropping state next to git's index/ref locks is not ours to do. The hash
-/// only has to be per-checkout-unique, not cryptographic (a collision would
-/// serialize two unrelated repos' claims — slower, never incorrect), so the
-/// stdlib hasher is enough; the checkout's basename is kept as a readable
-/// prefix so a stuck lock names the repo it belongs to.
-fn claim_lock_path(checkout: &Path) -> PathBuf {
-    let mut h = DefaultHasher::new();
-    checkout.hash(&mut h);
-    let repo = checkout.file_name().and_then(|n| n.to_str()).unwrap_or("repo");
-    tt_config::locks_dir().join(format!("{repo}-{:016x}-{LOCK_FILE}", h.finish()))
-}
-
-struct ClaimLock {
-    path: PathBuf,
-}
-
-impl ClaimLock {
-    fn acquire(checkout: &Path) -> Result<Self> {
-        let path = claim_lock_path(checkout);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", parent.display())))?;
-        }
-        for _ in 0..100 {
-            match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(_) => return Ok(Self { path }),
-                Err(_) => {
-                    let stale = fs::metadata(&path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.elapsed().ok())
-                        .is_some_and(|age| age > LOCK_STALE);
-                    if stale {
-                        let _ = fs::remove_file(&path);
-                        continue;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-        Err(OpsError::LockTimeout(path.display().to_string()))
-    }
-}
-
-impl Drop for ClaimLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// rendering
-
-/// The template sidecar's path: `<checkout>/.claude/task-env.template`,
-/// next to the repo's Claude Code settings (committable, but gitignoring it
-/// works too — render only reads it).
-pub fn template_sidecar_path(sr: &TaskRoot) -> PathBuf {
-    sr.checkout.join(layout::CLAUDE_DIR).join(TEMPLATE_SIDECAR)
-}
-
-/// Create the [`TEMPLATE_SIDECAR`] for repos that don't commit a tokenized
-/// `.env.example` (`tt task init`). Purely a starting point: a repo with no
-/// template at all still renders tasks (an empty `.env` — see
-/// [`render_task_env`]), so the sidecar exists to give `${tt:...}` tokens an
-/// obvious home when the repo later needs one.
-/// Idempotent: an existing sidecar is left untouched.
-pub fn init_template_sidecar(sr: &TaskRoot) -> Result<PathBuf> {
-    let sidecar = template_sidecar_path(sr);
-    if sidecar.is_file() {
-        return Ok(sidecar);
-    }
-    let claude_dir = sr.checkout.join(layout::CLAUDE_DIR);
-    fs::create_dir_all(&claude_dir)
-        .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", claude_dir.display())))?;
-    fs::write(
-        &sidecar,
-        "# tt task env template — this repo declares no ports/env vars for tasks.\n\
-         # Add ${tt:port A-B} / ${tt:var NAME} / ${tt:task-name} / ${tt:base} tokens\n\
-         # here (or commit a tokenized .env.example in the repo instead) if a task\n\
-         # ever needs one.\n",
-    )
-    .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", sidecar.display())))?;
-    Ok(sidecar)
-}
-
-#[derive(Debug)]
-pub struct RenderSummary {
-    pub ports: Vec<(String, u16)>,
-    pub reused: usize,
-    pub claimed: usize,
-    pub preserved: usize,
-    pub warnings: Vec<String>,
-}
-
-/// Render a checkout's `.env`: template → text (reusing existing claims),
-/// then merge back any keys the template doesn't know (inherited secrets,
-/// local adds). Works for tasks and for the checkout itself — the checkout is
-/// where the user runs the app, so it claims ports like any task. Task dirs
-/// also get the `.tt-task` marker.
-///
-/// `new_task_base` seeds the marker's `base=` field the *first* time a task
-/// is rendered (at creation, when `dir` has no marker yet) — it should be the
-/// actual ref the worktree was created from ([`create_task`]'s resolved
-/// `base`), not the checkout's current branch. A re-render of an *existing*
-/// task (`tt task env <name>`) ignores this and keeps the marker's already
-/// recorded base: it's fixed at creation and must never drift just because
-/// the checkout's branch or default has since changed.
-pub fn render_task_env(
-    sr: &TaskRoot,
-    dir: &Path,
-    new_task_base: Option<&str>,
-) -> Result<RenderSummary> {
-    let name = dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| OpsError::Io(format!("bad task path {}", dir.display())))?
-        .to_string();
-    let is_task = dir.parent().is_some_and(|p| p == sr.tasks_dir());
-
-    // template: the repo's own .env.example when it carries ${tt:...} tokens
-    // (the committed convention), else the .claude/ sidecar (repos that
-    // don't commit tt tokens in their .env.example), else empty — a repo
-    // that declares nothing to template (no ports, no per-task config) still
-    // renders (an empty .env), so any plain checkout is task-capable with no
-    // onboarding step.
-    let repo_template = dir.join(".env.example");
-    let sidecar = template_sidecar_path(sr);
-    let (template_path, template) = match fs::read_to_string(&repo_template) {
-        Ok(text) if text.contains("${tt:") => (repo_template, text),
-        _ if sidecar.is_file() => {
-            let text = fs::read_to_string(&sidecar)
-                .map_err(|e| OpsError::Io(format!("cannot read {}: {e}", sidecar.display())))?;
-            (sidecar, text)
-        }
-        _ => (PathBuf::new(), String::new()),
-    };
-
-    let _lock = ClaimLock::acquire(&sr.checkout)?;
-
-    let env_path = dir.join(".env");
-    let old_text = fs::read_to_string(&env_path).unwrap_or_default();
-    let existing: BTreeMap<String, String> = envfile::parse(&old_text).into_iter().collect();
-
-    let mut sibling_claims = BTreeSet::new();
-    for sib_dir in sr.checkouts() {
-        if sib_dir == dir {
-            continue;
-        }
-        if let Ok(text) = fs::read_to_string(sib_dir.join(".env")) {
-            sibling_claims.extend(envfile::port_claims(&text));
-        }
-    }
-
-    // A marker already on disk (re-rendering an existing task) wins over
-    // `new_task_base` — the base is set once at creation, not re-derived on
-    // every `tt task env`. Only a fresh task (no marker yet) or the checkout
-    // (never gets a marker) falls back to `new_task_base`/the checkout's branch.
-    let recorded_base = layout::read_task_base(dir);
-    let ctx_base = recorded_base
-        .clone()
-        .or_else(|| new_task_base.map(str::to_string))
-        .unwrap_or_else(|| base_branch(&sr.checkout));
-    let ctx = crate::TaskContext { task_name: &name, base_branch: &ctx_base };
-    let outcome = crate::render(&template, &ctx, &existing, &sibling_claims, |p| !port_occupied(p))
-        .map_err(|source| OpsError::Template {
-            // an empty (no-template) render can't fail, so this always names
-            // a real file
-            path: template_path.display().to_string(),
-            source,
-        })?;
-
-    let (merged, preserved) = envfile::merge_missing_keys(&outcome.text, &old_text);
-    fs::write(&env_path, &merged)
-        .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", env_path.display())))?;
-
-    if is_task {
-        let marker = layout::marker_contents(&name, &ctx_base, "main");
-        fs::write(dir.join(layout::MARKER_FILE), marker)
-            .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", layout::MARKER_FILE)))?;
-    }
-    ensure_excludes(&sr.checkout)?;
-
-    let mut warnings = Vec::new();
-    if let Ok(out) = git_task(dir, &["check-ignore", "-q", ".env"])
-        && !out.ok()
-    {
-        warnings.push(".env is NOT gitignored in this repo — it will dirty the task's tree".into());
-    }
-
-    let ports = outcome.reused.iter().chain(outcome.claimed.iter()).cloned().collect();
-    Ok(RenderSummary {
-        ports,
-        reused: outcome.reused.len(),
-        claimed: outcome.claimed.len(),
-        preserved,
-        warnings,
-    })
-}
-
-/// Ignore the marker and the nested worktrees dir via the main checkout's
-/// `.git/info/exclude` — no repo `.gitignore` commit needed. The worktrees
-/// entry keeps `git status` at the checkout root clean even in repos that
-/// never added `.claude/worktrees/` to their `.gitignore`.
-fn ensure_excludes(checkout: &Path) -> Result<()> {
-    let info = checkout.join(".git").join("info");
-    let exclude = info.join("exclude");
-    let current = fs::read_to_string(&exclude).unwrap_or_default();
-    let worktrees_entry = format!("{}/{}/", layout::CLAUDE_DIR, layout::WORKTREES_DIR);
-    let missing: Vec<&str> = [layout::MARKER_FILE, worktrees_entry.as_str()]
-        .into_iter()
-        .filter(|entry| !current.lines().any(|l| l.trim() == *entry))
-        .collect();
-    if missing.is_empty() {
-        return Ok(());
-    }
-    fs::create_dir_all(&info)
-        .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", info.display())))?;
-    let mut next = current;
-    if !next.is_empty() && !next.ends_with('\n') {
-        next.push('\n');
-    }
-    for entry in missing {
-        next.push_str(entry);
-        next.push('\n');
-    }
-    fs::write(&exclude, next)
-        .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", exclude.display())))
-}
-
-// ---------------------------------------------------------------------------
-// init — one-shot repo onboarding (`tt task init`)
-
-/// The two Claude Code worktree hooks `tt task init` wires so `claude
-/// --worktree` and background sessions route through the task machinery.
-const WORKTREE_HOOKS: [(&str, &str); 2] = [
-    ("WorktreeCreate", "tt task hook-create"),
-    ("WorktreeRemove", "tt task hook-remove"),
-];
-
-/// What [`init_repo`] did (every step is idempotent, so re-runs report
-/// mostly `false`/unchanged).
-pub struct InitReport {
-    /// The template tasks will render from: the repo's tokenized
-    /// `.env.example`, or the `.claude/task-env.template` sidecar.
-    pub template: PathBuf,
-    pub sidecar_created: bool,
-    /// `.env` was appended to the repo's `.gitignore`.
-    pub gitignore_added: bool,
-    /// The worktree hooks were added to `.claude/settings.json`.
-    pub hooks_wired: bool,
-    pub settings_path: PathBuf,
-    /// The primary checkout's `.env` render (it claims ports like any task).
-    pub render: RenderSummary,
-}
-
-/// Onboard a repo onto the task convention in one idempotent shot: pick (or
-/// create) the env template, gitignore `.env`, wire the Claude Code
-/// WorktreeCreate/WorktreeRemove hooks into `.claude/settings.json`, and
-/// render the primary checkout's `.env` so it claims its ports. The hook
-/// wiring only takes effect in new worktrees once the settings file is
-/// committed — the caller surfaces that reminder.
-pub fn init_repo(sr: &TaskRoot) -> Result<InitReport> {
-    // Template: the committed tokenized .env.example wins; otherwise make
-    // sure the sidecar exists (empty-but-explained when freshly created).
-    let repo_template = sr.checkout.join(".env.example");
-    let has_tokenized_example =
-        fs::read_to_string(&repo_template).is_ok_and(|text| text.contains("${tt:"));
-    let (template, sidecar_created) = if has_tokenized_example {
-        (repo_template, false)
-    } else {
-        let existed = template_sidecar_path(sr).is_file();
-        (init_template_sidecar(sr)?, !existed)
-    };
-
-    // Gitignore `.env` only when git says it is definitely not ignored
-    // (check-ignore exits 1); an errored probe (128 — odd repo state) must
-    // not append blindly.
-    let mut gitignore_added = false;
-    if let Ok(out) = git_checkout(&sr.checkout, &["check-ignore", "-q", ".env"])
-        && out.exit_code == 1
-    {
-        let gitignore = sr.checkout.join(".gitignore");
-        let mut current = fs::read_to_string(&gitignore).unwrap_or_default();
-        if !current.is_empty() && !current.ends_with('\n') {
-            current.push('\n');
-        }
-        current.push_str(".env\n");
-        fs::write(&gitignore, current)
-            .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", gitignore.display())))?;
-        gitignore_added = true;
-    }
-
-    // Hooks: merge into the committed settings file, preserving everything
-    // already there.
-    let settings_path = sr.checkout.join(layout::CLAUDE_DIR).join("settings.json");
-    let current = fs::read_to_string(&settings_path).unwrap_or_default();
-    let (wired_text, hooks_wired) = wire_worktree_hooks(&current)?;
-    if hooks_wired {
-        let claude_dir = sr.checkout.join(layout::CLAUDE_DIR);
-        fs::create_dir_all(&claude_dir)
-            .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", claude_dir.display())))?;
-        fs::write(&settings_path, wired_text)
-            .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", settings_path.display())))?;
-    }
-
-    let render = render_task_env(sr, &sr.checkout, None)?;
-    Ok(InitReport {
-        template,
-        sidecar_created,
-        gitignore_added,
-        hooks_wired,
-        settings_path,
-        render,
-    })
-}
-
-/// Merge the [`WORKTREE_HOOKS`] into a `.claude/settings.json` document,
-/// preserving every existing key/hook. Returns the new JSON text and whether
-/// anything changed (an event already carrying its `tt task hook-*` command
-/// anywhere in its entries is left alone). Empty input starts from `{}`;
-/// malformed JSON is an error — never clobber a file we can't parse.
-pub fn wire_worktree_hooks(settings: &str) -> Result<(String, bool)> {
-    let mut doc: serde_json::Value = if settings.trim().is_empty() {
-        serde_json::json!({})
-    } else {
-        serde_json::from_str(settings)
-            .map_err(|e| OpsError::Io(format!(".claude/settings.json is not valid JSON: {e}")))?
-    };
-    if !doc.is_object() {
-        return Err(OpsError::Io(".claude/settings.json is not a JSON object".to_string()));
-    }
-
-    let mut changed = false;
-    let hooks = doc
-        .as_object_mut()
-        .expect("checked is_object above")
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}));
-    if !hooks.is_object() {
-        return Err(OpsError::Io(".claude/settings.json `hooks` is not an object".to_string()));
-    }
-    for (event, command) in WORKTREE_HOOKS {
-        let entries = hooks
-            .as_object_mut()
-            .expect("checked is_object above")
-            .entry(event)
-            .or_insert_with(|| serde_json::json!([]));
-        if !entries.is_array() {
-            return Err(OpsError::Io(format!(
-                ".claude/settings.json `hooks.{event}` is not an array"
-            )));
-        }
-        let already = entries.as_array().expect("checked is_array above").iter().any(|entry| {
-            entry.get("hooks").and_then(|h| h.as_array()).is_some_and(|hs| {
-                hs.iter().any(|h| h.get("command").and_then(|c| c.as_str()) == Some(command))
-            })
-        });
-        if !already {
-            entries
-                .as_array_mut()
-                .expect("checked is_array above")
-                .push(serde_json::json!({ "hooks": [{ "type": "command", "command": command }] }));
-            changed = true;
-        }
-    }
-
-    let mut text = serde_json::to_string_pretty(&doc)
-        .map_err(|e| OpsError::Io(format!("cannot serialize settings.json: {e}")))?;
-    text.push('\n');
-    Ok((text, changed))
-}
-
 // ---------------------------------------------------------------------------
 // setup
 
@@ -992,717 +609,49 @@ pub fn run_setup(dir: &Path) -> Result<Option<String>> {
 }
 
 // ---------------------------------------------------------------------------
-// creation
+// submodules — the lifecycle phases. Public API is re-exported here so
+// callers keep using `tt_tasks::ops::*` paths; `pub(crate)` re-exports keep
+// this file's tests (and sibling modules) reaching internals without the
+// submodule paths leaking anywhere else.
 
-#[derive(Debug, Default)]
-pub struct CreateOpts {
-    /// Task root; `None` walks up from the current working directory.
-    pub root: Option<PathBuf>,
-    /// Branch to create and check out. Tasks are branch-named and ephemeral —
-    /// there is no detached/parked mode.
-    pub branch: String,
-    /// Base ref for the new branch; `None` = the checkout's branch.
-    pub base: Option<String>,
-    /// Run the setup step in the new task (declared `TT_TASK_SETUP` from the
-    /// rendered `.env`, else lockfile-detected package-manager install).
-    pub run_setup: bool,
-}
+mod claims;
+mod create;
+mod init;
+mod remove;
+mod render;
 
-pub struct CreatedTask {
-    pub name: String,
-    pub dir: PathBuf,
-    pub branch: String,
-    pub base: String,
-    /// The ref the task effectively branched from — `origin/<base>` when the
-    /// creation-time fast-forward applied ([`effective_origin_base`]), else
-    /// `base`. Display/prompt honesty; `base` stays the branch-name value.
-    pub base_label: String,
-    pub ports: Vec<(String, u16)>,
-    pub inherited: usize,
-    pub warnings: Vec<String>,
-}
+pub use claims::{PortClaim, PortRegistry, PortStatus, port_occupied, port_report};
+pub use create::{CreateOpts, CreatedTask, create_task};
+pub use init::{InitReport, init_repo, wire_worktree_hooks};
+pub use remove::{
+    CleanOpts, CleanReport, FinishedTask, KeptTask, RemoveOpts, RemoveOutcome, RemovedTask,
+    clean_tasks, remove_task, stop_task_port,
+};
+pub use render::{RenderSummary, init_template_sidecar, render_task_env, template_sidecar_path};
 
-/// Create the task for `branch`: worktree under `tasks/`, rendered `.env`
-/// with port claims, sibling-secrets inheritance, setup step.
-pub fn create_task(opts: &CreateOpts) -> Result<CreatedTask> {
-    let sr = discover_root(opts.root.as_deref())?;
-    validate_branch_name(&opts.branch)?;
-    let mut warnings = Vec::new();
-    let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
+#[cfg(test)]
+pub(crate) use claims::{
+    PORT_REGISTRY_FILE, claim_lock_path, record_task_ports, registry_claims, release_task_ports,
+};
 
-    let fetch_start = Instant::now();
-    match git_checkout_timeout(&sr.checkout, &["fetch", "--quiet", "origin"], FETCH_TIMEOUT) {
-        Ok(out) if out.ok() => {}
-        Ok(out) => warnings
-            .push(format!("fetch failed (offline?) — using local refs: {}", out.stderr.trim())),
-        // Includes a timed-out fetch (a stalled/inspected connection) — the
-        // old `if let Ok(..) = .. && !out.ok()` form silently dropped this
-        // case instead of warning on it.
-        Err(e) => warnings.push(format!("fetch failed — using local refs: {e}")),
-    }
-    note_if_slow(&mut warnings, "fetch", fetch_start.elapsed());
-
-    let base = opts.base.clone().unwrap_or_else(|| base_branch(&sr.checkout));
-    // The ref this task effectively branches from — probed after the fetch so
-    // a just-created remote counterpart counts, and carried on the result as
-    // `base_label` so the UI and the dynamic-flow prompt name the same ref
-    // creation actually used (agreeing with `checkout_branches`' labels).
-    let effective = effective_origin_base(&sr.checkout, &base);
-    if let Some(upstream) = &effective {
-        fast_forward_base_if_behind(&sr, &base, upstream, &mut warnings);
-    }
-    let base_label = effective.unwrap_or_else(|| base.clone());
-    let name = layout::task_name_from_branch(&opts.branch)
-        .ok_or_else(|| OpsError::BadBranchName(opts.branch.clone()))?;
-    let dir = sr.task_dir(&name);
-    if dir.exists() {
-        return Err(OpsError::TaskExists { name, dir: dir.display().to_string() });
-    }
-    fs::create_dir_all(sr.tasks_dir())
-        .map_err(|e| OpsError::Io(format!("cannot create {}: {e}", sr.tasks_dir().display())))?;
-    let dir_s = dir.to_string_lossy().to_string();
-
-    let worktree_start = Instant::now();
-    let add_result =
-        git_checkout(&sr.checkout, &["worktree", "add", "-b", &opts.branch, &dir_s, &base])?;
-    if !add_result.ok() {
-        return Err(OpsError::Git(format!(
-            "git worktree add failed:\n{}",
-            add_result.stderr.trim()
-        )));
-    }
-    note_if_slow(&mut warnings, "git worktree add", worktree_start.elapsed());
-
-    // From here on, any failure must remove the worktree just added above —
-    // otherwise (e.g. a template render error) it leaves a half-set-up task
-    // behind: a real worktree with no rendered `.env`, invisible as "failed"
-    // to `tt task ls` and blocking a retry with `TaskExists`.
-    let created = (|| -> Result<CreatedTask> {
-        let summary = render_task_env(&sr, &dir, Some(&base))?;
-        warnings.extend(summary.warnings);
-
-        // Inherit secrets from the first sibling checkout that has a .env —
-        // the main checkout first (`sr.checkouts()` orders it that way; it's
-        // the longest-lived and least likely to carry stale branch-specific
-        // values), else the alphabetically-first task. Surfaced in a warning
-        // when it wasn't the main checkout, since a task's secrets can be
-        // branch-specific or stale in a way the main checkout's never are.
-        let mut inherited = 0;
-        for sib_dir in sr.checkouts() {
-            if sib_dir == dir {
-                continue;
-            }
-            if let Ok(sib_env) = fs::read_to_string(sib_dir.join(".env")) {
-                let env_path = dir.join(".env");
-                let current = fs::read_to_string(&env_path).unwrap_or_default();
-                let (merged, count) = envfile::merge_missing_keys(&current, &sib_env);
-                fs::write(&env_path, merged)
-                    .map_err(|e| OpsError::Io(format!("cannot write .env: {e}")))?;
-                inherited = count;
-                if count > 0 && sib_dir != sr.checkout {
-                    let source =
-                        sib_dir.file_name().and_then(|n| n.to_str()).unwrap_or("a sibling task");
-                    warnings.push(format!(
-                        "inherited {count} .env key(s) from {source}, not the main checkout — \
-                         the main checkout has no .env yet, so these may be branch-specific or stale"
-                    ));
-                }
-                break;
-            }
-        }
-
-        if opts.run_setup {
-            let setup_start = Instant::now();
-            let setup_warning = run_setup(&dir)?;
-            note_if_slow(&mut warnings, "setup", setup_start.elapsed());
-            if let Some(warning) = setup_warning {
-                warnings.push(warning);
-            }
-        }
-
-        Ok(CreatedTask {
-            name,
-            dir,
-            branch: opts.branch.clone(),
-            base,
-            base_label,
-            ports: summary.ports,
-            inherited,
-            warnings,
-        })
-    })();
-
-    created.inspect_err(|_| {
-        let _ = git_checkout(&sr.checkout, &["worktree", "remove", "--force", &dir_s]);
-        let _ = fs::remove_dir_all(Path::new(&dir_s));
-        // `worktree add -b` succeeded, so the branch is ours and still points
-        // at base — delete it too, or the retry dies on "branch already
-        // exists" after e.g. fixing a template error.
-        let _ = git_checkout(&sr.checkout, &["branch", "-D", &opts.branch]);
-    })
-}
-
-// ---------------------------------------------------------------------------
-// removal
-
-#[derive(Debug, Default)]
-pub struct RemoveOpts {
-    /// Task root; `None` walks up from the current working directory.
-    pub root: Option<PathBuf>,
-    /// Task directory name under `tasks/`.
-    pub name: String,
-    /// Skip guards (each skip lands in [`RemovedTask::messages`]) and force
-    /// worktree removal.
-    pub force: bool,
-}
-
-pub struct RemovedTask {
-    pub name: String,
-    /// The removed checkout's directory (now gone from disk) — callers use it
-    /// to untrack the task from stores keyed by dir (the agentboard rail).
-    pub dir: PathBuf,
-    /// The main checkout the task belonged to. Carried because it survives the
-    /// removal and `dir` does not: it is what identifies the *instance state*
-    /// holding this task's board row, which a caller cannot re-derive from a
-    /// directory that no longer exists.
-    pub checkout: PathBuf,
-    /// Progress notes for the user: docker resources removed, guards skipped
-    /// under force, fallback paths taken. Callers surface these — nothing
-    /// here prints.
-    pub messages: Vec<String>,
-}
-
-/// How a removal ended.
-///
-/// A guard refusal is an `Ok` variant, not an [`OpsError`]: it is an expected
-/// answer with a next step attached (stash it, stop the dev server, re-run
-/// with force), not a failure. Modeling it as an error made every consumer
-/// destructure it straight back out — the app to build a dialog from it, the
-/// CLI to attach remedies, `clean_tasks` to list it as a keep-reason — so
-/// three call sites each re-derived "this error isn't an error", and the one
-/// thing an error buys you (a `Display` for the boundary) went unused. Errors
-/// here stay for what the user genuinely cannot proceed past: a bad path, a
-/// broken worktree, git falling over.
-pub enum RemoveOutcome {
-    Removed(RemovedTask),
-    Blocked {
-        name: String,
-        blocked: Vec<RmBlocked>,
-        /// Caveats gathered before the verdict — carried here for the same
-        /// reason `Removed` carries them. A refusal computed against stale
-        /// refs (the `fetch --prune` failed, so `origin/*` is whatever was
-        /// last seen) is exactly the case a user must be told about: the
-        /// blockers are reported as fact, and "unreachable from any
-        /// branch/remote" can be an artifact of the staleness rather than a
-        /// property of the branch. Dropping these left the offline verdict
-        /// indistinguishable from an online one.
-        messages: Vec<String>,
-    },
-}
-
-/// Remove a task: guarded (clean tree, no commits unreachable from a branch
-/// or remote, nothing foreign on its claimed ports), then docker compose
-/// down -v, anchored container/volume sweep, `git worktree remove`. Shared by
-/// `tt task rm` and the app's `task_delete` command.
-///
-/// `before_removal` runs once the guards have passed (or been forced) and the
-/// removal is really about to happen — after the last return that leaves the
-/// task untouched, before the first destructive step. The app hangs its
-/// kill-the-task's-PTYs step here so a *refused* removal never costs a live
-/// session; the CLI passes `|| {}`. Deliberately not part of `RemoveOpts`:
-/// it's a phase marker in this function's control flow, not a removal
-/// setting.
-pub fn remove_task(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<RemoveOutcome> {
-    let sr = discover_root(opts.root.as_deref())?;
-    let name = opts.name.clone();
-    if name == "primary" || sr.checkout.file_name().and_then(|n| n.to_str()) == Some(&name) {
-        return Err(OpsError::PrimaryRemoval);
-    }
-    let dir = sr.task_dir(&name);
-    if !dir.is_dir() {
-        return Err(OpsError::NoSuchTask { name, tasks_dir: sr.tasks_dir().display().to_string() });
-    }
-    let dir_s = dir.to_string_lossy().to_string();
-    let mut messages = Vec::new();
-    // The task's state scope must be read while the checkout still exists —
-    // scope detection probes the directory (see `tt_config::task_scope_from_dir`).
-    let state_scope = tt_config::task_scope_from_dir(&dir);
-
-    // Refresh remote-tracking refs before the unreachable-commit guard below:
-    // without this, a branch merged and deleted upstream since the last
-    // fetch still looks "unreachable from any branch/remote" against a stale
-    // `origin/*`, which is the right call but for the wrong (stale) reason,
-    // and a branch merged just now can look falsely safe to remove before
-    // its remote ref disappears. `--prune` mirrors `clean_tasks` so a
-    // deleted remote branch is reflected too.
-    match git_checkout(&sr.checkout, &["fetch", "--prune", "--quiet", "origin"]) {
-        Ok(out) if out.ok() => {}
-        _ => messages
-            .push("fetch --prune failed (offline?) — using local refs for guard checks".into()),
-    }
-
-    // One `git status --porcelain` answers both questions below — whether git
-    // works in there at all, and how dirty the tree is. `clean_tasks` calls
-    // this for every merged task, so a second spawn here is per-task waste.
-    let status = git_task(&dir, &["status", "--porcelain"]).ok().filter(|o| o.ok());
-
-    // broken worktree: git can't even report status
-    let Some(status) = status else {
-        if !opts.force {
-            return Err(OpsError::BrokenWorktree { name });
-        }
-        messages.push(
-            "skipping guards (--force): worktree is broken — removing directory + registration"
-                .to_string(),
-        );
-        before_removal();
-        docker_cleanup(&name, &dir, &mut messages);
-        fs::remove_dir_all(&dir)
-            .map_err(|e| OpsError::Io(format!("cannot remove {dir_s}: {e}")))?;
-        let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
-        state_cleanup(state_scope.as_deref(), &mut messages);
-        return Ok(RemoveOutcome::Removed(RemovedTask {
-            name,
-            dir,
-            checkout: sr.checkout.clone(),
-            messages,
-        }));
-    };
-
-    let dirty = crate::guards::dirty_entry_count(&status.stdout);
-    let unreachable = git_task(
-        &dir,
-        &[
-            "rev-list",
-            "--count",
-            "HEAD",
-            "--not",
-            "--branches",
-            "--remotes",
-        ],
-    )
-    .ok()
-    .filter(|o| o.ok())
-    .and_then(|o| crate::guards::unreachable_commit_count(&o.stdout))
-    .unwrap_or(0);
-    // Identify the holder of each foreign port, not just its number: the
-    // blocker is only actionable if the user can tell which process to stop
-    // (see `ports::holder`). Only for ports that actually block — naming the
-    // holder costs two subprocesses, and the common case is no foreign
-    // listener at all. On --force the guards are being skipped anyway, so
-    // the name would only decorate a "skipping guard" log line — not worth
-    // the spawns.
-    let foreign: Vec<ForeignPort> = claimed_ports(&dir)
-        .into_iter()
-        .filter(|&p| port_occupied(p) && !docker_owns_port(&name, p))
-        .map(|port| ForeignPort {
-            port,
-            holder: if opts.force { None } else { crate::ports::holder(port) },
-        })
-        .collect();
-
-    let blocked = crate::guards::check_removal(dirty, unreachable, &foreign);
-    if !blocked.is_empty() {
-        if !opts.force {
-            return Ok(RemoveOutcome::Blocked { name, blocked, messages });
-        }
-        for reason in &blocked {
-            messages.push(format!("skipping guard (--force): {reason}"));
-        }
-    }
-
-    // Commits that never reached the base are NOT a removal guard — removing a
-    // worktree leaves the branch (and its commits) in the shared `.git`, so
-    // nothing is lost. But staying silent about them is what made the old
-    // output ambiguous: "removed" read as "that work is dealt with". Say
-    // plainly what survives and where, so the difference from the uncommitted
-    // work the guard above *does* block on is visible.
-    let branch = git_task(&dir, &["branch", "--show-current"])
-        .ok()
-        .filter(|o| o.ok())
-        .map(|o| o.stdout.trim().to_string())
-        .filter(|b| !b.is_empty());
-    if let Some(branch) = &branch {
-        let refs = base_refs(&sr.checkout);
-        if *branch != refs.base {
-            let work = work_state(&refs, &dir, &format!("refs/heads/{branch}"), dirty, unreachable);
-            match (work.unlanded, work.landed) {
-                (0, Some(via)) => {
-                    messages.push(format!(
-                        "{branch} is {} into {} — nothing outstanding",
-                        via.label(),
-                        refs.base
-                    ));
-                }
-                (n, _) if n > 0 => {
-                    messages.push(format!(
-                        "{n} commit(s) on {branch} have not reached {} — they stay on the branch, not in this worktree",
-                        refs.base
-                    ));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // Past every guard, and the state above is already gathered — only now is
-    // it safe to kill the folder's PTYs (#366).
-    before_removal();
-    docker_cleanup(&name, &dir, &mut messages);
-
-    let remove = if opts.force {
-        git_checkout(&sr.checkout, &["worktree", "remove", "--force", &dir_s])
-    } else {
-        git_checkout(&sr.checkout, &["worktree", "remove", &dir_s])
-    };
-    match remove {
-        Ok(out) if out.ok() => {}
-        result => {
-            let detail = match result {
-                Ok(out) => out.stderr.trim().to_string(),
-                Err(e) => e.to_string(),
-            };
-            if !opts.force {
-                return Err(OpsError::Git(format!("git worktree remove failed:\n{detail}")));
-            }
-            messages.push(format!("git worktree remove failed ({detail}) — removing directory"));
-            fs::remove_dir_all(&dir)
-                .map_err(|e| OpsError::Io(format!("cannot remove {dir_s}: {e}")))?;
-        }
-    }
-    let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
-    state_cleanup(state_scope.as_deref(), &mut messages);
-    Ok(RemoveOutcome::Removed(RemovedTask { name, dir, checkout: sr.checkout.clone(), messages }))
-}
-
-/// The ports a checkout claims, from its rendered `.env`.
-fn claimed_ports(dir: &Path) -> BTreeSet<u16> {
-    envfile::port_claims(&fs::read_to_string(dir.join(".env")).unwrap_or_default())
-}
-
-/// Stop whatever is listening on `port` in the task named `name` under `root`
-/// — the remedy for [`RmBlocked::ForeignPortListener`], so a stale dev server
-/// can be cleared from the app instead of sending the user to a terminal.
-///
-/// Takes the task's identity rather than [`RemoveOpts`]: this removes nothing,
-/// and threading a `force` flag through a function that ignores it invites a
-/// later caller to believe forcing means something here.
-///
-/// The claim check is the whole safety story and is not optional: `port` must
-/// appear in *this task's* rendered `.env`. Ports are claimed per-checkout, so
-/// a claimed port that's occupied is this task's own orphan by construction —
-/// while an unclaimed one is somebody else's, quite possibly a sibling task's
-/// working dev server, and this function would kill its entire process group.
-/// Same reasoning as `scripts/task-port.mjs`'s "never call `killPort` on a
-/// scanned/shared port".
-pub fn stop_task_port(root: Option<&Path>, name: &str, port: u16) -> Result<crate::ports::Stopped> {
-    let sr = discover_root(root)?;
-    let dir = sr.task_dir(name);
-    if !dir.is_dir() {
-        return Err(OpsError::NoSuchTask {
-            name: name.to_string(),
-            tasks_dir: sr.tasks_dir().display().to_string(),
-        });
-    }
-    if !claimed_ports(&dir).contains(&port) {
-        return Err(OpsError::PortNotClaimed { name: name.to_string(), port });
-    }
-    Ok(crate::ports::stop_listeners(port)?)
-}
-
-/// Delete the removed task's instance-state directories (agentboard
-/// sessions/windows, tt.db — see `tt_config::instance_state_dirs_for_scope`).
-/// Only checkouts of this repo have a scope; other repos' tasks have no
-/// scoped state and skip cleanly.
-fn state_cleanup(scope: Option<&str>, messages: &mut Vec<String>) {
-    let Some(scope) = scope else {
-        return;
-    };
-    for dir in tt_config::instance_state_dirs_for_scope(scope) {
-        if !dir.is_dir() {
-            continue;
-        }
-        match fs::remove_dir_all(&dir) {
-            Ok(()) => messages.push(format!("removed task state {}", dir.display())),
-            Err(e) => messages.push(format!("could not remove task state {}: {e}", dir.display())),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// clean — remove every finished task and the state removed checkouts left behind
-
-#[derive(Debug, Default)]
-pub struct CleanOpts {
-    /// Task root; `None` walks up from the current working directory.
-    pub root: Option<PathBuf>,
-    /// Report what would happen without removing or sweeping anything.
-    pub dry_run: bool,
-    /// Parents of per-scope instance-state dirs to sweep (the
-    /// `…/towles-tool/tasks/` dirs; the caller resolves them via
-    /// `tt_config::instance_state_bases`). Empty = skip the sweep.
-    pub scope_parents: Vec<PathBuf>,
-}
-
-/// A task `clean` removed (or, on dry-run, would remove).
-pub struct FinishedTask {
-    pub name: String,
-    pub branch: String,
-    /// How the branch landed, e.g. `"squash-merged into main"`
-    /// ([`crate::landed::LandedVia`], rendered against the base).
-    pub reason: String,
-    /// Removal progress notes (docker resources, branch deletion). Empty on
-    /// dry-run.
-    pub messages: Vec<String>,
-    /// The removed checkout's directory (now gone from disk, except on
-    /// dry-run) — callers use it to untrack the task from stores keyed by dir
-    /// (the agentboard rail), the same way `tt task rm` does.
-    pub dir: PathBuf,
-    /// The main checkout this task belonged to — see [`RemovedTask::checkout`].
-    pub checkout: PathBuf,
-}
-
-/// A task `clean` left alone, and why.
-pub struct KeptTask {
-    pub name: String,
-    pub branch: String,
-    pub why: Vec<String>,
-}
-
-pub struct CleanReport {
-    pub dry_run: bool,
-    /// Removed (dry-run: would-remove) tasks.
-    pub removed: Vec<FinishedTask>,
-    pub kept: Vec<KeptTask>,
-    /// Orphaned per-scope state dirs swept (dry-run: would sweep).
-    pub swept_state_dirs: Vec<PathBuf>,
-    /// State scopes of the checkouts that remain (checkout + kept tasks) —
-    /// callers prune *these* agentboard stores plus the unscoped one.
-    pub live_scopes: Vec<String>,
-    pub warnings: Vec<String>,
-}
-
-/// Remove every *finished* task — its branch is a strict ancestor of the
-/// checkout's branch (classic merge) or its upstream is gone after
-/// `fetch --prune` (squash/rebase merge) — via the same guarded
-/// [`remove_task`], never forced: a finished task with uncommitted changes,
-/// orphanable commits, or a live dev server is reported and kept. A removed
-/// task's branch is deleted from the hub (its work is reachable from the
-/// base/remote — that's what made it finished). Then sweep `scope_parents`
-/// for per-scope state dirs whose checkout no longer exists.
-///
-/// `scope_of` maps a checkout dir to its instance-state scope
-/// (`tt_config::task_scope_from_dir`); it is injected so the scope rule has
-/// exactly one owner. When it can't scope the checkout (a repo that never
-/// produces scoped state), the sweep is skipped entirely.
-pub fn clean_tasks(
-    opts: &CleanOpts,
-    scope_of: impl Fn(&Path) -> Option<String>,
-) -> Result<CleanReport> {
-    let sr = discover_root(opts.root.as_deref())?;
-    let mut warnings = Vec::new();
-    let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
-    // --prune is what flips a merged-and-deleted remote branch to "gone".
-    match git_checkout(&sr.checkout, &["fetch", "--prune", "--quiet", "origin"]) {
-        Ok(out) if out.ok() => {}
-        _ => warnings.push(
-            "fetch --prune failed (offline?) — merges that deleted the remote branch may not \
-             be detected this run"
-                .to_string(),
-        ),
-    }
-
-    let refs = base_refs(&sr.checkout);
-    let base = refs.base.clone();
-
-    let mut removed = Vec::new();
-    let mut kept = Vec::new();
-    let mut live_scopes: Vec<String> = scope_of(&sr.checkout).into_iter().collect();
-    let checkout_scoped = !live_scopes.is_empty();
-
-    for (name, dir) in sr.tasks() {
-        // Computed before removal — a removed task's dir is gone afterwards.
-        let scope = scope_of(&dir);
-        let mut keep = |name: String, branch: String, why: Vec<String>| {
-            kept.push(KeptTask { name, branch, why });
-            live_scopes.extend(scope.clone());
-        };
-
-        let branch = match git_task(&dir, &["branch", "--show-current"]) {
-            Ok(out) if out.ok() => out.stdout.trim().to_string(),
-            _ => {
-                keep(
-                    name,
-                    "BROKEN".to_string(),
-                    vec!["worktree is broken — `tt task rm --force` to drop it".to_string()],
-                );
-                continue;
-            }
-        };
-        if branch.is_empty() {
-            keep(
-                name,
-                "detached".to_string(),
-                vec!["detached HEAD — no branch to judge".to_string()],
-            );
-            continue;
-        }
-        if branch == base {
-            keep(name, branch, vec!["on the base branch".to_string()]);
-            continue;
-        }
-
-        let branch_ref = format!("refs/heads/{branch}");
-        let work =
-            work_state(&refs, &dir, &branch_ref, uncommitted_count(&dir), orphaned_count(&dir));
-
-        let Some(via) = work.landed else {
-            keep(name, branch, vec![format!("active: {}", work.headline())]);
-            continue;
-        };
-        // `clean` deletes the branch after removing the worktree, so unlanded
-        // commits are unrecoverable here in a way they never are for
-        // `tt task rm` (which leaves the branch behind). Only content-based
-        // evidence clears that bar — see `LandedVia::is_content_proof`.
-        if work.unlanded > 0 || !via.is_content_proof() {
-            keep(
-                name,
-                branch,
-                vec![format!(
-                    "{} but {} commit(s) never reached {base} — push or merge before cleaning",
-                    via.label(),
-                    work.unlanded
-                )],
-            );
-            continue;
-        }
-        let reason = format!("{} into {base}", via.label());
-
-        if opts.dry_run {
-            removed.push(FinishedTask {
-                name,
-                branch,
-                reason: reason.clone(),
-                messages: Vec::new(),
-                dir,
-                checkout: sr.checkout.clone(),
-            });
-            continue;
-        }
-        let rm = RemoveOpts { root: Some(sr.checkout.clone()), name: name.clone(), force: false };
-        match remove_task(&rm, || {}) {
-            Ok(RemoveOutcome::Removed(r)) => {
-                let mut messages = r.messages;
-                match git_checkout(&sr.checkout, &["branch", "-D", &branch]) {
-                    Ok(out) if out.ok() => messages.push(format!("deleted branch {branch}")),
-                    _ => messages.push(format!(
-                        "could not delete branch {branch} — remove it with `git branch -D`"
-                    )),
-                }
-                removed.push(FinishedTask {
-                    name,
-                    branch,
-                    reason: reason.clone(),
-                    messages,
-                    dir: r.dir,
-                    checkout: r.checkout,
-                });
-            }
-            Ok(RemoveOutcome::Blocked { blocked, .. }) => {
-                keep(name, branch, blocked.iter().map(ToString::to_string).collect())
-            }
-            Err(e) => keep(name, branch, vec![e.to_string()]),
-        }
-    }
-
-    // Sweep per-scope instance state whose checkout no longer exists — the
-    // dirs `tt task rm` never touches (see tt_config::state_scope). Only in
-    // repos that actually produce scopes: if the checkout itself has none,
-    // nothing under these parents can be ours.
-    let mut swept_state_dirs = Vec::new();
-    if checkout_scoped {
-        let live: BTreeSet<String> = live_scopes.iter().cloned().collect();
-        for parent in &opts.scope_parents {
-            let names = dir_names(parent);
-            for stale in crate::clean::stale_scope_dirs(&sr.repo, &live, &names) {
-                let dir = parent.join(&stale);
-                if opts.dry_run {
-                    swept_state_dirs.push(dir);
-                    continue;
-                }
-                match fs::remove_dir_all(&dir) {
-                    Ok(()) => swept_state_dirs.push(dir),
-                    Err(e) => {
-                        warnings.push(format!("could not remove {}: {e}", dir.display()));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(CleanReport {
-        dry_run: opts.dry_run,
-        removed,
-        kept,
-        swept_state_dirs,
-        live_scopes,
-        warnings,
-    })
-}
-
-/// Whether a docker container owned by this task publishes `port`.
-fn docker_owns_port(task_name: &str, port: u16) -> bool {
-    let publish = format!("publish={port}");
-    tt_exec::run("docker", &["ps", "--filter", &publish, "--format", "{{.Names}}"])
-        .map(|out| {
-            out.ok()
-                && out
-                    .stdout
-                    .lines()
-                    .any(|line| crate::guards::docker_resource_matches(line.trim(), task_name))
-        })
-        .unwrap_or(false)
-}
-
-/// Compose down (containers, networks, volumes) then an anchored sweep of
-/// anything else named after the task. Best-effort: a missing docker is fine.
-fn docker_cleanup(task_name: &str, dir: &Path, messages: &mut Vec<String>) {
-    let has_compose = [
-        "docker-compose.yml",
-        "docker-compose.yaml",
-        "compose.yml",
-        "compose.yaml",
-    ]
-    .iter()
-    .any(|f| dir.join(f).is_file());
-    if has_compose {
-        let _ = tt_exec::run_in_dir_with_timeout(
-            "docker",
-            &["compose", "down", "--volumes", "--remove-orphans"],
-            dir,
-            Duration::from_secs(120),
-        );
-    }
-    if let Ok(out) = tt_exec::run("docker", &["ps", "-a", "--format", "{{.Names}}"]) {
-        for container in out.stdout.lines().map(str::trim) {
-            if crate::guards::docker_resource_matches(container, task_name) {
-                messages.push(format!("removing container {container}"));
-                let _ = tt_exec::run("docker", &["rm", "-f", container]);
-            }
-        }
-    }
-    if let Ok(out) = tt_exec::run("docker", &["volume", "ls", "--format", "{{.Name}}"]) {
-        for volume in out.stdout.lines().map(str::trim) {
-            if crate::guards::docker_resource_matches(volume, task_name) {
-                messages.push(format!("removing volume {volume}"));
-                let _ = tt_exec::run("docker", &["volume", "rm", volume]);
-            }
-        }
-    }
+/// Write via temp-file + rename so a crash mid-write can never leave a
+/// truncated file behind: the registry parses-or-reads-empty (silently
+/// dropping every claim), and a half-written `.env` loses claims the same
+/// way. Callers hold the claim lock during writes, so the fixed `.tmp`
+/// sibling name can't collide across processes.
+pub(crate) fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, contents)?;
+    fs::rename(&tmp, path)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::net::TcpListener;
+
+    use super::init::WORKTREE_HOOKS;
     use super::*;
 
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -1735,6 +684,21 @@ mod tests {
         assert_eq!(setup_command(&env(&[]), |_| false), None);
         // declared-but-empty disables setup rather than running junk
         assert_eq!(setup_command(&env(&[(SETUP_ENV_KEY, "  ")]), |_| true), None);
+    }
+
+    #[test]
+    fn port_occupied_catches_an_ipv6_only_listener() {
+        // A listener bound only to ::1 must still mark the port occupied —
+        // checking just 127.0.0.1 (the old behavior) let a fresh claim
+        // collide with a sibling task's server bound the other stack.
+        // Machines without an IPv6 loopback can't stage the scenario at all —
+        // skip rather than fail, mirroring port_occupied's own tolerance for
+        // an absent stack.
+        let Ok(listener) = TcpListener::bind(("::1", 0)) else {
+            return;
+        };
+        let port = listener.local_addr().unwrap().port();
+        assert!(port_occupied(port));
     }
 
     #[test]
@@ -1855,6 +819,136 @@ mod tests {
         assert_ne!(a, b, "basename collisions must be separated by the path hash");
     }
 
+    /// `(var, port)` pairs for the registry tests — var names are synthesized
+    /// (`P<port>`), which is all the metadata plumbing needs.
+    fn port_pairs(ports: &[u16]) -> Vec<(String, u16)> {
+        ports.iter().map(|&p| (format!("P{p}"), p)).collect()
+    }
+
+    /// A temp registry file next to the fixture checkout — the production
+    /// path lives under the real config dir ([`port_registry_path`]), which
+    /// tests must never touch.
+    fn temp_registry(sr: &TaskRoot) -> PathBuf {
+        sr.checkout.parent().unwrap().join(PORT_REGISTRY_FILE)
+    }
+
+    #[test]
+    fn port_registry_blocks_reuse_until_release() {
+        let (_tmp, sr) = temp_task_root();
+        let reg = temp_registry(&sr);
+        fs::create_dir_all(sr.task_dir("feat-one")).unwrap();
+        fs::create_dir_all(sr.task_dir("feat-two")).unwrap();
+
+        record_task_ports(&sr, &reg, "feat-one", &port_pairs(&[4001, 4002]), 7).unwrap();
+
+        // A different task must see both ports as taken...
+        let claims = registry_claims(&sr, &reg, "feat-two");
+        assert!(claims.contains(&4001));
+        assert!(claims.contains(&4002));
+        // ...but the owning task itself must not see its own ports as taken.
+        assert!(registry_claims(&sr, &reg, "feat-one").is_empty());
+
+        // The claim survives a no-op release for an unrelated task — it's
+        // keyed by owner, not just "does something call release".
+        release_task_ports(&sr.checkout, &reg, "feat-two");
+        assert!(registry_claims(&sr, &reg, "feat-two").contains(&4001));
+
+        // Only releasing the actual owner frees the ports.
+        release_task_ports(&sr.checkout, &reg, "feat-one");
+        assert!(registry_claims(&sr, &reg, "feat-two").is_empty());
+    }
+
+    #[test]
+    fn record_task_ports_replaces_a_tasks_previous_entries() {
+        let (_tmp, sr) = temp_task_root();
+        let reg = temp_registry(&sr);
+        fs::create_dir_all(sr.task_dir("feat-one")).unwrap();
+
+        record_task_ports(&sr, &reg, "feat-one", &port_pairs(&[5001]), 7).unwrap();
+        record_task_ports(&sr, &reg, "feat-one", &port_pairs(&[5002]), 7).unwrap();
+
+        let claims = registry_claims(&sr, &reg, "other");
+        assert!(!claims.contains(&5001), "stale entry from the earlier render must be gone");
+        assert!(claims.contains(&5002));
+    }
+
+    #[test]
+    fn record_task_ports_with_no_claims_creates_no_registry_file() {
+        // A repo with no port template renders empty claims on every task —
+        // that must not litter the config dir with one empty ledger per
+        // checkout ever rendered.
+        let (_tmp, sr) = temp_task_root();
+        let reg = temp_registry(&sr);
+
+        record_task_ports(&sr, &reg, "feat-one", &[], 7).unwrap();
+        assert!(!reg.exists());
+    }
+
+    #[test]
+    fn registry_self_heals_when_a_tasks_directory_vanishes_outside_tt_task_rm() {
+        let (_tmp, sr) = temp_task_root();
+        let reg = temp_registry(&sr);
+        let task_dir = sr.task_dir("feat-gone");
+        fs::create_dir_all(&task_dir).unwrap();
+
+        record_task_ports(&sr, &reg, "feat-gone", &port_pairs(&[6001]), 7).unwrap();
+        assert!(registry_claims(&sr, &reg, "someone-else").contains(&6001));
+
+        // Simulate the directory vanishing some way other than `tt task rm`
+        // (which requires it to still exist to run at all) — the registry
+        // must notice on its own next touch, not stay stuck forever.
+        fs::remove_dir_all(&task_dir).unwrap();
+        assert!(registry_claims(&sr, &reg, "someone-else").is_empty());
+    }
+
+    #[test]
+    fn registry_records_claim_metadata_and_its_checkout() {
+        let (_tmp, sr) = temp_task_root();
+        let reg = temp_registry(&sr);
+        fs::create_dir_all(sr.task_dir("feat-one")).unwrap();
+
+        record_task_ports(&sr, &reg, "feat-one", &[("UI_PORT".to_string(), 4001)], 1234).unwrap();
+
+        let registry = super::claims::load_port_registry(&reg);
+        assert_eq!(registry.checkout, sr.checkout.display().to_string());
+        let claim = &registry.ports[&4001];
+        assert_eq!(claim.owner, "feat-one");
+        assert_eq!(claim.var, "UI_PORT");
+        assert_eq!(claim.claimed_at_ms, 1234);
+    }
+
+    #[test]
+    fn registry_drops_owners_that_are_not_valid_task_names() {
+        // A hand-edited (or corrupt) owner like "../x" must never survive a
+        // load — load_live_registry would otherwise path-join it under the
+        // worktrees dir on the liveness probe.
+        let (_tmp, sr) = temp_task_root();
+        let reg = temp_registry(&sr);
+        fs::write(
+            &reg,
+            serde_json::json!({
+                "checkout": sr.checkout.display().to_string(),
+                "ports": { "4001": { "owner": "../escape", "var": "P", "claimed_at_ms": 0 } },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(registry_claims(&sr, &reg, "other").is_empty());
+    }
+
+    #[test]
+    fn pre_metadata_registry_files_read_as_empty() {
+        // Hard cutover from the flat `{port: owner}` format: an old file
+        // must block nothing (claims re-record on the next render), never
+        // error or half-parse.
+        let (_tmp, sr) = temp_task_root();
+        let reg = temp_registry(&sr);
+        fs::write(&reg, r#"{ "4001": "feat-old" }"#).unwrap();
+
+        assert!(registry_claims(&sr, &reg, "other").is_empty());
+    }
+
     #[test]
     fn render_task_env_with_no_template_renders_an_empty_env() {
         // A repo with neither a tokenized .env.example nor the sidecar — a
@@ -1866,7 +960,7 @@ mod tests {
         let task = sr.task_dir("feat-thing");
         fs::create_dir_all(&task).unwrap();
 
-        let summary = render_task_env(&sr, &task, Some("main")).unwrap();
+        let summary = render_task_env(&sr, &task, Some("main"), 7).unwrap();
 
         assert!(summary.ports.is_empty());
         assert_eq!(fs::read_to_string(task.join(".env")).unwrap().trim(), "");
@@ -1879,7 +973,7 @@ mod tests {
         fs::create_dir_all(sr.checkout.join(layout::CLAUDE_DIR)).unwrap();
         fs::write(template_sidecar_path(&sr), "X=${tt:bogus}\n").unwrap();
 
-        let err = render_task_env(&sr, &sr.checkout, None).unwrap_err();
+        let err = render_task_env(&sr, &sr.checkout, None, 7).unwrap_err();
 
         let msg = err.to_string();
         assert!(msg.contains(TEMPLATE_SIDECAR), "error must name the template file: {msg}");

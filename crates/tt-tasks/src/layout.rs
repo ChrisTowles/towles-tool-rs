@@ -41,6 +41,41 @@ pub fn main_checkout_for(dir: &Path) -> Option<&Path> {
         .then(|| claude.parent())?
 }
 
+/// A validated task name: exactly one safe path segment, the thing
+/// [`crate::ops::TaskRoot::task_dir`] joins under the worktrees dir.
+/// Parse-don't-validate — the only constructor is [`TaskName::parse`], so a
+/// name that reached a `TaskName` can never traverse out of the worktrees
+/// dir. This matters most for names read back off disk (the port registry's
+/// owner fields, directory listings): a corrupt or hand-edited `"../x"`
+/// entry must die at the parse, not at a path join.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TaskName(String);
+
+impl TaskName {
+    /// Accepts exactly the names [`task_name_from_branch`] can produce (its
+    /// `[A-Za-z0-9._-]` alphabet, `.`/`-` trimmed at the ends) — which is
+    /// also what rules out every traversal shape (`/`, `\`, `..`, empty).
+    pub fn parse(raw: &str) -> Option<Self> {
+        (!raw.is_empty() && sanitize_segment(raw) == raw).then(|| Self(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for TaskName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for TaskName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Task directory name for a branch: the *whole* branch, reduced to
 /// `[A-Za-z0-9._-]` (`feat/thing` → `feat-thing`) — the folder keeps the
 /// branch's full shape instead of discarding its type prefix.
@@ -106,6 +141,23 @@ pub fn is_managed_task(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_name_accepts_what_branch_slugging_produces() {
+        for name in ["feat-thing", "fix-1.2", "a_b", "x"] {
+            assert!(TaskName::parse(name).is_some(), "{name} should parse");
+        }
+    }
+
+    #[test]
+    fn task_name_rejects_every_traversal_shape() {
+        // The reason the type exists: names read back off disk (registry
+        // owners, hand-typed args) must not be able to escape the worktrees
+        // dir via a path join.
+        for name in ["", ".", "..", "../x", "a/b", "a\\b", "/abs", "-trimmed-"] {
+            assert!(TaskName::parse(name).is_none(), "{name:?} must be rejected");
+        }
+    }
 
     #[test]
     fn worktrees_dir_nests_under_claude() {

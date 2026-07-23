@@ -160,4 +160,85 @@ mod tests {
         let (merged, _) = merge_missing_keys("A=\n", "A=p&ss|w\\rd$1\n");
         assert_eq!(merged, "A=p&ss|w\\rd$1\n");
     }
+
+    // Property tests: every port claim and inherited secret passes through
+    // parse/merge, so these hold the invariants prose tests can only sample.
+
+    use proptest::prelude::*;
+
+    /// Valid assignment keys, as `line_key` defines them.
+    fn any_key() -> impl Strategy<Value = String> {
+        "[A-Za-z_][A-Za-z0-9_]{0,8}"
+    }
+
+    /// Values: printable, no newline (a newline would split the assignment —
+    /// the format genuinely can't represent one; quoting is out of scope by
+    /// design). Leading/trailing spaces and `=`/`#` inside values are all
+    /// fair game and must survive raw.
+    fn any_value() -> impl Strategy<Value = String> {
+        "[ -~]{0,20}"
+    }
+
+    fn any_env() -> impl Strategy<Value = BTreeMap<String, String>> {
+        proptest::collection::btree_map(any_key(), any_value(), 0..8)
+    }
+
+    fn render(env: &BTreeMap<String, String>) -> String {
+        env.iter().map(|(k, v)| format!("{k}={v}\n")).collect()
+    }
+
+    proptest! {
+        #[test]
+        fn parse_round_trips_rendered_assignments(env in any_env()) {
+            let parsed: BTreeMap<String, String> = parse(&render(&env)).into_iter().collect();
+            prop_assert_eq!(parsed, env);
+        }
+
+        #[test]
+        fn merge_never_touches_a_set_value_and_fills_the_rest(
+            dst in any_env(),
+            src in any_env(),
+        ) {
+            let (merged_text, added) = merge_missing_keys(&render(&dst), &render(&src));
+            let merged: BTreeMap<String, String> =
+                parse(&merged_text).into_iter().collect();
+
+            let mut expected_added = 0;
+            for (k, v) in &dst {
+                if !v.is_empty() {
+                    // A key dst sets is untouchable — this is what keeps a
+                    // re-render from clobbering rendered ports.
+                    prop_assert_eq!(merged.get(k), Some(v));
+                }
+            }
+            for (k, v) in &src {
+                if v.is_empty() {
+                    continue; // blank src keys never move
+                }
+                match dst.get(k) {
+                    Some(existing) if !existing.is_empty() => {}
+                    _ => expected_added += 1, // filled (dst blank) or appended
+                }
+                prop_assert!(merged.contains_key(k), "src key {} must survive", k);
+            }
+            prop_assert_eq!(added, expected_added);
+        }
+
+        #[test]
+        fn merge_is_idempotent(dst in any_env(), src in any_env()) {
+            let (once, _) = merge_missing_keys(&render(&dst), &render(&src));
+            let (twice, added_again) = merge_missing_keys(&once, &render(&src));
+            prop_assert_eq!(&twice, &once);
+            prop_assert_eq!(added_again, 0);
+        }
+
+        #[test]
+        fn port_claims_are_a_subset_of_parsed_port_vars(env in any_env()) {
+            let text = render(&env);
+            for (key, port) in port_claims_by_key(&text) {
+                prop_assert!(key.ends_with("PORT"));
+                prop_assert_eq!(env.get(&key), Some(&port.to_string()));
+            }
+        }
+    }
 }

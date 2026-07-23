@@ -96,7 +96,13 @@ fn lifecycle_new_env_ls_rm() {
     // .env + marker
     let out = new_task(&root_s, "feat/thing").arg("--json").output().unwrap();
     assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
-    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "task new --json emitted bad JSON: {e}\nstdout: {:?}\nstderr: {:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
     assert_eq!(created["name"], "feat-thing");
     assert_eq!(created["branch"], "feat/thing");
     assert_eq!(created["base"], "main");
@@ -203,6 +209,174 @@ fn lifecycle_new_env_ls_rm() {
         .stderr(contains("refusing to remove the primary"));
 }
 
+/// The claim lock's own regression test: renders racing for *fresh* claims
+/// must come away with disjoint ports. Without the lock, all three scan
+/// siblings before any of them writes, and they pick the same port.
+#[test]
+fn concurrent_renders_claim_disjoint_ports() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+    // Own sandbox HOME (not the suite's shared one) so wiping the registry
+    // below can't disturb a concurrently running test's claims.
+    let home = tempfile::tempdir().unwrap();
+    let scope = "race-test";
+
+    let names = ["race-a", "race-b", "race-c"];
+    for name in names {
+        let out = tt_scoped(home.path(), scope)
+            .args([
+                "task",
+                "new",
+                name,
+                "--repo",
+                &root_s,
+                "-b",
+                &format!("feat/{name}"),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    // Erase every trace of the claims — each `.env` and the registry — so
+    // the renders below genuinely race for fresh picks from the pool.
+    for name in names {
+        std::fs::remove_file(task_dir(&checkout, &format!("feat-{name}")).join(".env")).unwrap();
+    }
+    let registry_dir = home
+        .path()
+        .join(".config")
+        .join("towles-tool")
+        .join("tasks")
+        .join(scope)
+        .join("task-ports");
+    if registry_dir.is_dir() {
+        std::fs::remove_dir_all(&registry_dir).unwrap();
+    }
+
+    let handles: Vec<_> = names
+        .iter()
+        .map(|name| {
+            let root = root_s.clone();
+            let home = home.path().to_path_buf();
+            let task = format!("feat-{name}");
+            std::thread::spawn(move || {
+                let out = tt_scoped(&home, scope)
+                    .args(["task", "env", &task, "--root", &root])
+                    .output()
+                    .unwrap();
+                (task, out)
+            })
+        })
+        .collect();
+    for handle in handles {
+        let (task, out) = handle.join().unwrap();
+        assert!(
+            out.status.success(),
+            "env render for {task} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let ports: Vec<String> = names
+        .iter()
+        .map(|name| {
+            let env =
+                std::fs::read_to_string(task_dir(&checkout, &format!("feat-{name}")).join(".env"))
+                    .unwrap();
+            env.lines()
+                .find_map(|l| l.strip_prefix("UI_PORT=").map(str::to_string))
+                .unwrap_or_else(|| panic!("no UI_PORT rendered for {name}: {env}"))
+        })
+        .collect();
+    let distinct: std::collections::BTreeSet<&String> = ports.iter().collect();
+    assert_eq!(distinct.len(), names.len(), "racing renders claimed colliding ports: {ports:?}");
+}
+
+/// `tt task ports --json` reports every claim with its owner/var/source, and
+/// flags a claim only the registry still knows (its `.env` deleted) as
+/// `source: "registry"` — the drift row a doctor check keys off.
+#[test]
+fn ports_reports_claims_and_flags_env_registry_drift() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+
+    let out = new_task(&root_s, "feat/ports").arg("--json").output().unwrap();
+    assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "task new --json emitted bad JSON: {e}\nstdout: {:?}\nstderr: {:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    let port = created["ports"]["UI_PORT"].as_u64().expect("UI_PORT claimed");
+
+    let out = tt().args(["task", "ports", "--json", "--root", &root_s]).output().unwrap();
+    assert!(out.status.success(), "ports failed: {}", String::from_utf8_lossy(&out.stderr));
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["port"].as_u64() == Some(port))
+        .expect("claimed port reported");
+    assert_eq!(row["owner"], "feat-ports");
+    assert_eq!(row["var"], "UI_PORT");
+    assert_eq!(row["source"], "env+registry");
+    assert!(row["claimed_at_ms"].as_i64().unwrap() > 0, "registry stamped the claim time");
+
+    // Delete the task's .env: the claim survives as a registry-only row.
+    std::fs::remove_file(task_dir(&checkout, "feat-ports").join(".env")).unwrap();
+    let out = tt().args(["task", "ports", "--json", "--root", &root_s]).output().unwrap();
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["port"].as_u64() == Some(port))
+        .expect("registry keeps the claim visible");
+    assert_eq!(row["source"], "registry");
+
+    // --probe on a port we hold open must read occupied.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let held = listener.local_addr().unwrap().port();
+    let out =
+        tt().args(["task", "ports", "--probe", &held.to_string(), "--json"]).output().unwrap();
+    let probe: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(probe["occupied"], true);
+}
+
+/// The port registry's reason to exist: a sibling task whose `.env` is gone
+/// (deleted by hand, corrupted) must keep its claimed ports off the table —
+/// the live sibling-`.env` scan alone would hand them straight to the next
+/// task.
+#[test]
+fn new_task_avoids_ports_registered_to_a_sibling_whose_env_file_is_gone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+
+    let out = new_task(&root_s, "feat/one").arg("--json").output().unwrap();
+    assert!(out.status.success(), "new one failed: {}", String::from_utf8_lossy(&out.stderr));
+    let one: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let port_one = one["ports"]["UI_PORT"].as_u64().expect("UI_PORT claimed");
+
+    std::fs::remove_file(task_dir(&checkout, "feat-one").join(".env")).unwrap();
+
+    let out = new_task(&root_s, "feat/two").arg("--json").output().unwrap();
+    assert!(out.status.success(), "new two failed: {}", String::from_utf8_lossy(&out.stderr));
+    let two: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let port_two = two["ports"]["UI_PORT"].as_u64().expect("UI_PORT claimed");
+
+    assert_ne!(
+        port_one, port_two,
+        "task two must not claim task one's registered port just because its .env is gone"
+    );
+}
+
 /// `--repo` may point anywhere inside the checkout — including one of its own
 /// worktrees. The worktree always anchors at the main checkout, and the board
 /// row's `repo` must anchor there too: recorded as the nested path it would key
@@ -218,7 +392,13 @@ fn new_records_the_main_checkout_as_the_repo_even_when_repo_points_inside_a_task
 
     let out = new_task(&inside, "feat/second").arg("--json").output().unwrap();
     assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
-    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "task new --json emitted bad JSON: {e}\nstdout: {:?}\nstderr: {:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
     assert_eq!(created["repo"], root_s, "the board row binds to the main checkout");
     assert_eq!(created["dir"], task_dir(&checkout, "feat-second").to_string_lossy().as_ref());
 }
@@ -242,7 +422,13 @@ fn new_with_base_records_the_actual_base_not_the_primary_branch() {
         .output()
         .unwrap();
     assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
-    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "task new --json emitted bad JSON: {e}\nstdout: {:?}\nstderr: {:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
     assert_eq!(created["base"], "develop");
 
     let task = task_dir(&checkout, "feat-off-develop");
