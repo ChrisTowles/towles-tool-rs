@@ -29,7 +29,17 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BarRow, Card, Empty, maxCount, StatTile } from "@/components/store-bits";
 import { cn } from "@/lib/utils";
 import { errorMessage, NotInTauri } from "@/lib/errors";
-import { telemetryDays, telemetryEvents, type TelemetryRecord } from "@/lib/telemetry";
+import {
+  LEVELS,
+  loadTelemetryFilters,
+  saveTelemetryFilters,
+  TELEMETRY_FILTERS_KEY,
+  telemetryDays,
+  telemetryEvents,
+  type KindFilter,
+  type LevelFilter,
+  type TelemetryRecord,
+} from "@/lib/telemetry";
 import { useWorkspace } from "@/lib/workspace";
 import { uiAction } from "@/lib/ui-action";
 
@@ -54,10 +64,6 @@ import { uiAction } from "@/lib/ui-action";
  * which is out of scope for this pass.
  */
 
-const LEVELS = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"] as const;
-type LevelFilter = "all" | (typeof LEVELS)[number];
-type KindFilter = "all" | "event" | "span";
-
 const LEVEL_TONE: Record<string, string> = {
   ERROR: "text-red-600 dark:text-red-400",
   WARN: "text-amber-600 dark:text-amber-400",
@@ -71,6 +77,10 @@ const LEVEL_TONE: Record<string, string> = {
  * before this cap existed. Narrowing the search/filters is the way to see
  * past it, the same tradeoff Claude Sessions/MCP make with their own caps. */
 const RENDER_LIMIT = 300;
+
+// Read once at module load, so the Log tab reopens with the filters last left
+// on it — the same restore-at-import pattern the workspace tabs use.
+const restoredFilters = loadTelemetryFilters(localStorage.getItem(TELEMETRY_FILTERS_KEY));
 
 /** Groups `items` by `key`, one pass. */
 function countBy<T>(items: T[], key: (item: T) => string): { key: string; count: number }[] {
@@ -89,11 +99,15 @@ export function TelemetryScreen() {
   const [day, setDay] = useState<string | null>(null);
   const [events, setEvents] = useState<TelemetryRecord[]>([]);
   const [loading, setLoading] = useState(false);
-  const [query, setQuery] = useState("");
-  const [level, setLevel] = useState<LevelFilter>("all");
-  const [kind, setKind] = useState<KindFilter>("all");
-  const [target, setTarget] = useState("all");
+  const [query, setQuery] = useState(restoredFilters.query);
+  const [level, setLevel] = useState<LevelFilter>(restoredFilters.level);
+  const [kind, setKind] = useState<KindFilter>(restoredFilters.kind);
+  const [target, setTarget] = useState(restoredFilters.target);
   const [selected, setSelected] = useState<TelemetryRecord | null>(null);
+
+  useEffect(() => {
+    saveTelemetryFilters({ level, kind, target, query });
+  }, [level, kind, target, query]);
 
   async function loadEvents(d: string) {
     setLoading(true);
@@ -158,6 +172,12 @@ export function TelemetryScreen() {
 
   const targets = useMemo(() => [...new Set(events.map((e) => e.target))].toSorted(), [events]);
 
+  // A persisted target may name a module the loaded day never wrote; using it
+  // as-is would leave the select's trigger blank and hide every row. Fall back
+  // to "all" for this day's view while leaving the stored choice intact for a
+  // day that does have it.
+  const effectiveTarget = target === "all" || targets.includes(target) ? target : "all";
+
   // One pass over `events`, shared by the stat strip and Overview's "By
   // level" breakdown — computing this twice (once per level via five
   // separate filters) was the original version of this screen's waste.
@@ -178,14 +198,14 @@ export function TelemetryScreen() {
       if (
         (level === "all" || e.level === level) &&
         (kind === "all" || e.kind === kind) &&
-        (target === "all" || e.target === target) &&
+        (effectiveTarget === "all" || e.target === effectiveTarget) &&
         (!q || hay.includes(q))
       ) {
         matches.push({ e, summary });
       }
     }
     return matches;
-  }, [indexed, level, kind, target, q]);
+  }, [indexed, level, kind, effectiveTarget, q]);
 
   // Spans need their own pass (level counts don't cover kind/duration); error
   // count is read off `levelCounts` rather than re-filtered.
@@ -323,7 +343,7 @@ export function TelemetryScreen() {
                   ]}
                 />
                 <FilterSelect
-                  value={target}
+                  value={effectiveTarget}
                   onValueChange={setTarget}
                   width="w-40"
                   options={[
