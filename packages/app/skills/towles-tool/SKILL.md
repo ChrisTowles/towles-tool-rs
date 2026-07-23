@@ -29,3 +29,10 @@ tt task ls                 # Fleet: main checkout + tasks, branch, dirty, ports
 tt task rm <name>          # Guarded removal
 tt task clean              # Remove every merged/gone task
 ```
+
+`rm`/`clean` run a task's declared `TT_TASK_TEARDOWN` command (from its
+rendered `.env`) against the worktree right before removing it — for
+whatever a task's `TT_TASK_SETUP` started that the built-in docker
+compose/container sweep can't find on its own (e.g. a compose stack not
+named after the task). Unset by default; declare it per-repo in
+`.env.example`.

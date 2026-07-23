@@ -467,9 +467,10 @@ plugins ship today:
   `.mcp.json` (`{"type":"http","url":"http://127.0.0.1:8787/mcp"}` — board
   tasks `task_list`/`task_status`/`task_create`/`task_delete` plus the calendar family
   `calendar_today`/`calendar_next`/`calendar_set`; the app must be running),
-  ships the `task-onboarding` skill
-  (guides onboarding any repo onto worktrees — port discovery, template
-  authoring, `tt task init`), and a `PostToolUse` hook
+  ships the `towles-tool` skill (the `tt` command reference — journaling
+  plus the `tt task` subcommands) and the `task-onboarding` skill (guides
+  onboarding any repo onto worktrees — port discovery, template authoring,
+  `tt task init`), and a `PostToolUse` hook
   (`hooks/scripts/gh-pr-nudge.sh`) that nudges a running app instance to
   refresh its PR or issue data immediately after a `gh pr`/`gh issue`
   mutation via `tt collect nudge prs`/`tt collect nudge issues`, rather than
@@ -483,6 +484,17 @@ A new hook/skill/MCP entry belongs in one of these plugin packages, not
 loose in `.claude/` — `.claude/hooks/` is reserved for hooks scoped to
 *this repo's own* Claude Code sessions (e.g. `guard-task-pkill.sh`), not
 things meant to ship to other checkouts.
+
+**Any change to `tt task`'s surface — a new/renamed subcommand, a new
+env-template token or `.env.example` var, a changed removal/lifecycle
+guarantee — must update `packages/app/skills/towles-tool/SKILL.md` and, if
+it affects onboarding a repo onto tasks,
+`packages/app/skills/task-onboarding/SKILL.md`, in the same PR.** These
+skill files are the docs Claude Code itself reads when asked about
+`tt task`; a lifecycle feature landing only in `crates/tt-tasks` and
+`.env.example` is invisible to a session working from the skill alone.
+Treat these skills as part of the feature's surface, not optional
+follow-up docs.
 
 Any commit touching a plugin package is auto-checked by the
 `.githooks/pre-commit` hook (`core.hooksPath .githooks`): it bumps that

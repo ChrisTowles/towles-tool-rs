@@ -26,6 +26,10 @@ Look for anything two concurrent checkouts would collide on:
 - An existing `.env.example` / `.env.sample`: hardcoded ports and URLs.
 - Setup: the repo's install command (lockfile detection covers plain
   `npm/pnpm/yarn/bun install`; anything more needs `TT_TASK_SETUP`).
+- Teardown: anything setup starts that removal can't already find on its
+  own — a docker compose stack not named after the task, an external
+  process, a scratch DB — needs `TT_TASK_TEARDOWN`. No fallback detection
+  here (unlike setup); unset means nothing runs.
 
 A repo with none of these still onboards fine — init creates an empty
 sidecar and tasks render an empty `.env`.
@@ -52,6 +56,7 @@ DB_NAME=myapp_${tt:task-name}         # checkout dir basename
 URL=http://localhost:${tt:var UI_PORT}  # value rendered on an earlier line
 BASE=${tt:base}                       # branch this task PRs into
 TT_TASK_SETUP=npm install --prefer-offline
+#TT_TASK_TEARDOWN=docker compose down --volumes
 ```
 
 Make the app actually read these env vars — a templated port nobody reads
