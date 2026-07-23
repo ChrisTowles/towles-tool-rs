@@ -20,11 +20,12 @@ use crate::ui;
 
 pub fn run(command: TaskCommands) -> i32 {
     let result = match command {
-        TaskCommands::New { title, repo, status, notes, branch, base, json } => cmd_new(
+        TaskCommands::New { title, repo, status, notes, goal, branch, base, json } => cmd_new(
             &title,
             &repo,
             &status,
             notes.as_deref(),
+            goal.as_deref(),
             branch.as_deref(),
             base.as_deref(),
             json,
@@ -299,11 +300,13 @@ fn after_removal(checkout: &Path, dir: &Path) -> Vec<String> {
 /// myrepo` is enough. The board row is the same store path the app's `+` flow and
 /// MCP `task_create` write; the worktree is the same `ops::create_task` the app's
 /// `task_create` command uses — this is those two flows unified behind one verb.
+#[allow(clippy::too_many_arguments)] // mirrors `TaskCommands::New`'s own flags 1:1
 fn cmd_new(
     title: &str,
     repo: &str,
     status: &str,
     notes: Option<&str>,
+    goal: Option<&str>,
     branch: Option<&str>,
     base: Option<&str>,
     json: bool,
@@ -367,14 +370,15 @@ fn cmd_new(
     // Record the board task and bind it to the repo + the new worktree. A store
     // that can't open (or a rejected status) is a soft failure: the worktree
     // exists and is usable, so warn rather than abort.
-    let task_id = match record_board_task(title, status, notes, &repo_root, &created.branch, &dir_s)
-    {
-        Ok(id) => Some(id),
-        Err(e) => {
-            warnings.push(format!("worktree created, but the board task was not recorded: {e}"));
-            None
-        }
-    };
+    let task_id =
+        match record_board_task(title, status, notes, goal, &repo_root, &created.branch, &dir_s) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                warnings
+                    .push(format!("worktree created, but the board task was not recorded: {e}"));
+                None
+            }
+        };
 
     if json {
         let ports: serde_json::Map<String, serde_json::Value> =
@@ -423,6 +427,7 @@ fn record_board_task(
     title: &str,
     status: &str,
     notes: Option<&str>,
+    goal: Option<&str>,
     repo_root: &str,
     branch: &str,
     dir: &str,
@@ -432,7 +437,7 @@ fn record_board_task(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     let store = tt_store::Store::open_default().map_err(|e| e.to_string())?;
-    let task = store.add_task(title, status, notes, now_ms).map_err(|e| e.to_string())?;
+    let task = store.add_task(title, status, notes, goal, now_ms).map_err(|e| e.to_string())?;
     store
         .set_task_worktree(task.id, repo_root, None, Some(branch), Some(dir))
         .map_err(|e| e.to_string())?;

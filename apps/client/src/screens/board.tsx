@@ -981,6 +981,15 @@ function Card({
         </DropdownMenu>
       </div>
 
+      {/* The goal the task was created for — only when it says something the
+          title doesn't already (a goal-less-title submit stores the same
+          text in both). */}
+      {task.goal && task.goal !== task.text && (
+        <div className="mt-1.5 truncate text-xs text-muted-foreground" title={task.goal}>
+          {task.goal}
+        </div>
+      )}
+
       {/* The identity row: the repo name in flat mode (where no lane header
           says it), plus the worktree branch when one exists — a branchless task in
           grouped mode renders nothing here, its lane header already identifies

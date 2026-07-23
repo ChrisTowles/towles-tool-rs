@@ -239,7 +239,7 @@ async function createTaskForSubmit(input: NewTaskSubmit): Promise<number | undef
   const title = input.title || input.goal || input.issues[0]?.title || input.branch;
   if (!title) return undefined;
   const status = input.worktree ? "doing" : "backlog";
-  const created = await storeAddTask(title, { status });
+  const created = await storeAddTask(title, { status, goal: input.goal || undefined });
   if (created.isErr()) {
     if (!NotInTauri.is(created.error)) {
       toast(`couldn't add the board task: ${created.error.message}`);

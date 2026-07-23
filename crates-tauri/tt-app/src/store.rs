@@ -248,10 +248,13 @@ pub fn store_add_task(
     state: State<StoreState>,
     text: String,
     status: Option<String>,
+    goal: Option<String>,
 ) -> Result<i64, String> {
     let status = status.unwrap_or_else(|| "backlog".to_string());
     let task = with_store(&state, |store| {
-        store.add_task(&text, &status, None, now_ms()).map_err(|e| format!("add_task failed: {e}"))
+        store
+            .add_task(&text, &status, None, goal.as_deref(), now_ms())
+            .map_err(|e| format!("add_task failed: {e}"))
     })?;
     tracing::info!(task_id = task.id, %status, "task.created");
     emit_snapshot(&app, &state);
@@ -965,7 +968,7 @@ mod tests {
     #[test]
     fn snapshot_reflects_writes() {
         let store = Store::open_in_memory().unwrap();
-        store.add_task("buy milk", "backlog", None, 1).unwrap();
+        store.add_task("buy milk", "backlog", None, None, 1).unwrap();
         let state = StoreState::from_option(Some(store));
         let snap = snapshot_of(&state).unwrap();
         assert_eq!(snap.tasks.len(), 1);
@@ -975,8 +978,8 @@ mod tests {
     #[test]
     fn snapshot_reflects_task_edit_and_delete() {
         let store = Store::open_in_memory().unwrap();
-        let a = store.add_task("draft", "backlog", None, 1).unwrap();
-        let b = store.add_task("scrap", "backlog", None, 2).unwrap();
+        let a = store.add_task("draft", "backlog", None, None, 1).unwrap();
+        let b = store.add_task("scrap", "backlog", None, None, 2).unwrap();
         store.update_task(a.id, "final", Some("done")).unwrap();
         store.delete_task(b.id).unwrap();
         let state = StoreState::from_option(Some(store));

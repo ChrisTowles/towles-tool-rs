@@ -159,6 +159,8 @@ export type TaskItem = {
   archivedAt?: number;
   /** Free-form context attached to the task. */
   notes?: string;
+  /** The objective the task was created to accomplish, shown on the card under the title. */
+  goal?: string;
   worktree?: TaskWorktree;
   issues: TaskIssueLink[];
   prs: TaskPrLink[];
@@ -656,8 +658,8 @@ export function useAppTask(): string | null {
 }
 
 /** Create a task; resolves to its id. `status` defaults to Backlog backend-side. */
-export const storeAddTask = (text: string, opts?: { status?: TaskStatus }) =>
-  invoke<number>("store_add_task", { text, status: opts?.status });
+export const storeAddTask = (text: string, opts?: { status?: TaskStatus; goal?: string }) =>
+  invoke<number>("store_add_task", { text, status: opts?.status, goal: opts?.goal });
 
 /** Move a task to another board column (appended at the end of it). */
 export const storeSetTaskStatus = (id: number, status: TaskStatus) =>

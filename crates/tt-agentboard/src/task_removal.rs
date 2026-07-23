@@ -300,7 +300,7 @@ mod tests {
     /// A store holding one task bound to `dir`.
     fn store_with_task_at(dir: &str) -> Store {
         let store = Store::open_in_memory().unwrap();
-        let task = store.add_task("wire up the thing", "doing", None, NOW).unwrap();
+        let task = store.add_task("wire up the thing", "doing", None, None, NOW).unwrap();
         store
             .set_task_worktree(task.id, "/repos/demo", None, Some("feat/thing"), Some(dir))
             .unwrap();
