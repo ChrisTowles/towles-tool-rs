@@ -1683,9 +1683,9 @@ export type PendingOpenSession = {
   label: string;
 };
 
-/** A queue, not a single task: the crash-resume picker hands off every ticked
- * pane at once, at boot, when Agentboard is typically not mounted yet — so all
- * of them stash and keeping only the last would resume one session out of N. */
+/** A queue, not a single task: the resume picker hands off every ticked pane
+ * at once, at boot, when Agentboard is typically not mounted yet — so all of
+ * them stash and keeping only the last would resume one session out of N. */
 let pendingOpenSessions: PendingOpenSession[] = [];
 const openSessionListeners = new Set<(req: PendingOpenSession) => void>();
 
@@ -1709,8 +1709,9 @@ export function onOpenSessionRequest(cb: (req: PendingOpenSession) => void): () 
 }
 
 /**
- * One pane the app was running Claude in when it last died. Mirrors the Rust
- * `ResumeCandidate` payload (`tt_agentboard::resume`).
+ * One pane the app was running Claude in when it last closed — crash or
+ * ordinary quit. Mirrors the Rust `ResumeCandidate` payload
+ * (`tt_agentboard::resume`).
  */
 export type ResumeCandidate = {
   folderDir: string;
@@ -1725,10 +1726,11 @@ export type ResumeCandidate = {
 };
 
 /**
- * Panes to offer resuming after an unexpected exit. Empty unless the previous
- * run actually crashed — the backend returns nothing after a clean shutdown,
- * and only answers once per launch, so this is safe to call unconditionally on
- * startup and it will not re-prompt on a webview reload.
+ * Panes to offer resuming from the previous run, however it ended — crash,
+ * kill, or an ordinary quit. Empty when there's no prior run to offer (e.g. a
+ * second instance is still running it), and only answers once per launch, so
+ * this is safe to call unconditionally on startup and it will not re-prompt
+ * on a webview reload.
  */
 export const resumeCandidates = () => invoke<ResumeCandidate[]>("ab_resume_candidates");
 

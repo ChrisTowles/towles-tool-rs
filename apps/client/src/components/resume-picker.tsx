@@ -19,18 +19,19 @@ import { useWorkspace } from "@/lib/workspace";
 import { cn } from "@/lib/utils";
 
 /**
- * After an unexpected exit, offer to relaunch the Claude sessions that were
- * running in tt's panes (`claude --resume`).
+ * After the app comes back up, offer to relaunch the Claude sessions that
+ * were running in tt's panes on the previous run (`claude --resume`) —
+ * whether that run crashed or was closed normally.
  *
  * The backend decides *whether* to prompt at all — it returns candidates only
- * when the previous run left a dirty run marker, and only once per launch — so
- * this mounts unconditionally and stays invisible after a clean shutdown. That
- * keeps the "did we crash?" logic in one tested place
+ * when a previous run's marker was found (and it wasn't just a second
+ * instance still running), and only once per launch — so this mounts
+ * unconditionally and stays invisible when there's nothing to offer. That
+ * keeps the "is there a prior run to offer?" logic in one tested place
  * (`tt_agentboard::resume`) rather than split across the UI.
  *
- * Everything is pre-checked: after a crash the common case is "give me all of
- * it back", and unticking the odd one is cheaper than hunting down five
- * checkboxes.
+ * Everything is pre-checked: the common case is "give me all of it back", and
+ * unticking the odd one is cheaper than hunting down five checkboxes.
  */
 export function ResumePicker() {
   const [candidates, setCandidates] = useState<ResumeCandidate[]>([]);
@@ -65,8 +66,8 @@ export function ResumePicker() {
     // the open-session bridge stashes a queue (see `requestOpenSession`).
     openTab("agentboard");
     // Oldest first: Agentboard activates each folder as it restores it, so the
-    // last one handed over is the one left on screen — and after a crash that
-    // should be the session you were most recently in.
+    // last one handed over is the one left on screen — that should be the
+    // session you were most recently in.
     for (const c of picked.toReversed()) {
       requestOpenSession({
         folderDir: c.folderDir,
@@ -90,7 +91,7 @@ export function ResumePicker() {
         <DialogHeader>
           <DialogTitle>Resume your sessions?</DialogTitle>
           <DialogDescription>
-            Towles Tool closed unexpectedly. These panes were running Claude — pick the ones to
+            These panes were running Claude when Towles Tool last closed — pick the ones to
             relaunch with <span className="font-mono text-xs">claude --resume</span>.
           </DialogDescription>
         </DialogHeader>
