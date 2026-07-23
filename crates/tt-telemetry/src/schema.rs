@@ -15,7 +15,9 @@ pub(crate) const FIELD_NAME: &str = "name";
 pub(crate) const FIELD_DURATION_MS: &str = "duration_ms";
 
 /// Resource attributes [`crate::resource`] stamps on every record. `tt.task`
-/// is read into its own typed field by the reader; the rest are metadata the
-/// reader strips out of `fields` rather than surfacing.
+/// and `tt.build_sha` are read into their own typed fields by the reader;
+/// the rest are metadata the reader strips out of `fields` rather than
+/// surfacing.
 pub(crate) const FIELD_TT_TASK: &str = "tt.task";
+pub(crate) const FIELD_TT_BUILD_SHA: &str = "tt.build_sha";
 pub(crate) const RESOURCE_KEYS: &[&str] = &["service.name", "service.version", "process.pid"];

@@ -607,7 +607,13 @@ function FilterSelect<T extends string>({
 
 /** Everything the search box looks at, lowercased once per data change. */
 function searchHaystack(record: TelemetryRecord): string {
-  return [record.target, record.name, record.ttTask, JSON.stringify(record.fields)]
+  return [
+    record.target,
+    record.name,
+    record.ttTask,
+    record.ttBuildSha,
+    JSON.stringify(record.fields),
+  ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
