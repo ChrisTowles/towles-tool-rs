@@ -718,6 +718,7 @@ pub fn run() {
             slack::slack_list_users,
             store::journal_log,
             claude_sessions::claude_sessions_summary,
+            claude_sessions::claude_usage_limits,
             claude_sessions::claude_sessions_search,
             claude_sessions::claude_sessions_insights,
             claude_sessions::claude_sessions_breakdown,
