@@ -863,12 +863,22 @@ function FolderHeader({
   // a slug, and a task-only task can bind to it too — see `taskForFolder` —
   // so showing a stray task's title there would misname the repo itself).
   const humanTitle = folder.isWorktree ? task?.text?.trim() : undefined;
-  const displayTitle = humanTitle || (folder.isWorktree ? humanizeFolderName(title) : title);
+  // Git's own term for this checkout (git-worktree(1): "main worktree", as
+  // opposed to a "linked worktree") — shortened to "Root" so the sub-header
+  // reads as a distinct entry instead of just repeating the repo-scope title
+  // above it. Only at folder scope: the solo repo-scope header already shows
+  // `repo.name` with nothing to disambiguate against.
+  const isMainWorktreeSubrow = scope === "folder" && !folder.isWorktree;
+  const displayTitle =
+    humanTitle ||
+    (folder.isWorktree ? humanizeFolderName(title) : isMainWorktreeSubrow ? "Root" : title);
   // Once a real title is shown, the branch is no longer restating the same
   // information under a different name — always keep it visible. Falling
   // back to the de-slugified name (no task/title at all) is still the same
   // information reformatted, so the existing redundancy check still applies.
-  const showBranchLabel = Boolean(humanTitle) || !branchRedundant(folder.name, folder.branch);
+  // "Root" never restates the branch, so it always keeps the branch label too.
+  const showBranchLabel =
+    isMainWorktreeSubrow || Boolean(humanTitle) || !branchRedundant(folder.name, folder.branch);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
 

@@ -906,11 +906,13 @@ fn merge_worktree_dirs(
     let mut all: Vec<String> = Vec::with_capacity(repo_paths.len());
     for dir in repo_paths {
         all.push(dir.clone());
-        // Sorted so a repo's own worktrees keep a stable order between polls —
-        // `git worktree list` order is not guaranteed, and only the *group's*
-        // position is the user's to choose, not the order within it.
-        let mut wts = worktrees_of(dir);
-        wts.sort();
+        // Kept in `git worktree list --porcelain`'s own order (main first,
+        // then linked worktrees in the order `git worktree add` registered
+        // them — see `list_other_worktrees`), i.e. creation order, oldest
+        // first. Not re-sorted: only the *group's* position is the user's to
+        // choose (see the comment above), but within it, creation order is
+        // the one consistent, non-arbitrary ordering every entry has.
+        let wts = worktrees_of(dir);
         for wt in wts {
             if seen.insert(wt.clone()) {
                 all.push(wt);
@@ -951,5 +953,17 @@ mod merge_worktree_dirs_tests {
         let repo_paths = vec!["/repo/plain-clone".to_string()];
         let all = merge_worktree_dirs(&repo_paths, |_| vec![]);
         assert_eq!(all, repo_paths);
+    }
+
+    #[test]
+    fn preserves_git_registration_order_instead_of_sorting_alphabetically() {
+        // "/repo/zzz-older" was registered with git before "/repo/aaa-newer" —
+        // an alphabetical sort would flip that, which is exactly what this
+        // guards against.
+        let repo_paths = vec!["/repo/main".to_string()];
+        let all = merge_worktree_dirs(&repo_paths, |_| {
+            vec!["/repo/zzz-older".to_string(), "/repo/aaa-newer".to_string()]
+        });
+        assert_eq!(all, vec!["/repo/main", "/repo/zzz-older", "/repo/aaa-newer"]);
     }
 }
