@@ -39,18 +39,26 @@ use std::path::Path;
 
 use tt_store::{Store, TaskOutcome};
 use tt_tasks::RmBlocked;
-use tt_tasks::ops::{self, RemoveOpts, RemoveOutcome};
+use tt_tasks::ops::{self, RemoveOpts, RemoveOutcome, RemovePhase};
 
-/// What the host does at the two points in the sequence only it can act on.
+/// What the host does at the points in the sequence only it can act on.
 ///
-/// Both default to nothing, so a shell with no panes and no in-memory rail (the
-/// CLI) implements neither.
+/// All default to nothing, so a shell with no panes and no in-memory rail
+/// (the CLI) implements none of them.
 pub trait RemovalHooks {
-    /// The guards have passed and the removal is really happening — after the
-    /// last point that leaves the task untouched, before the first destructive
-    /// step. The app kills the folder's PTYs here, which is why a *refused*
-    /// removal never costs a live Claude session.
-    fn before_removal(&mut self) {}
+    /// A step of the sequence is starting — see [`RemovePhase`] for the
+    /// steps inside [`ops::remove_task`] and this module's own addition,
+    /// [`RemovePhase::Untracking`], for the bindings step below it. Reported
+    /// so a host with a UI (the app's Agentboard rail) can show what's
+    /// actually happening rather than a row hanging on one static label.
+    ///
+    /// [`RemovePhase::StoppingSessions`] is more than a label to the app: it
+    /// fires once the guards have passed (or been forced) and the removal is
+    /// really happening — after the last point that leaves the task
+    /// untouched, before the first destructive step — which is where it
+    /// kills the folder's PTYs, so a *refused* removal never costs a live
+    /// Claude session.
+    fn on_phase(&mut self, _phase: RemovePhase) {}
 
     /// The worktree is gone from disk. The app drops the folder's session,
     /// window and pane records here — deliberately not earlier, or a blocked
@@ -238,23 +246,27 @@ pub fn remove_task_and_bindings(
     let mut messages = Vec::new();
     let name;
 
-    // Snapshot which other tracked entries alias `task.dir` by realpath
-    // before anything on disk changes — see `repos::aliases_for`'s doc for
-    // why this can only be read now (once the worktree is gone, so is the
-    // ability to canonicalize it) and why it matters at all: a worktree
-    // discovered via `git worktree list` — which the rail can also show and
-    // let the user delete from — carries git's symlink-resolved form of the
-    // path rather than the literal one `repos.json`/the board row recorded,
-    // so an exact-string untrack below would otherwise silently miss it.
+    // Snapshot which other tracked entries alias `task.dir` by realpath —
+    // best done before anything on disk changes, though `repos::aliases_for`
+    // now degrades gracefully (via its ancestor-realpath fallback) even when
+    // `task.dir`'s own leaf is already gone, which is the routine case right
+    // below. Matters at all because a worktree discovered via `git worktree
+    // list` — which the rail can also show and let the user delete from —
+    // carries git's symlink-resolved form of the path rather than the
+    // literal one `repos.json`/the board row recorded, so an exact-string
+    // untrack below would otherwise silently miss it.
     let aliases = crate::repos::aliases_for(task.repos_path, task.dir);
 
     let bindings_only =
         !task.dir.is_dir() && matches!(task.on_missing, MissingDir::TearDownBindings);
     if bindings_only {
         name = task.opts.name.clone();
-        messages.push(format!("worktree {} was already gone", task.dir.display()));
+        messages.push(format!(
+            "worktree {} was already gone — its configured TT_TASK_TEARDOWN (if any) did not run",
+            task.dir.display()
+        ));
     } else {
-        match ops::remove_task(task.opts, || hooks.before_removal())? {
+        match ops::remove_task(task.opts, &mut |phase| hooks.on_phase(phase))? {
             RemoveOutcome::Removed(removed) => {
                 name = removed.name;
                 messages.extend(removed.messages);
@@ -267,6 +279,7 @@ pub fn remove_task_and_bindings(
     }
 
     messages.extend(hooks.after_removal(task.dir));
+    hooks.on_phase(RemovePhase::Untracking);
     messages.extend(remove_bindings(
         task.repos_path,
         task.rows,
@@ -427,6 +440,58 @@ mod tests {
         assert!(messages.iter().any(|m| m.contains("untracked")), "{messages:?}");
         assert!(messages.iter().any(|m| m.contains("closed board task")), "{messages:?}");
         assert!(crate::repos::load_repos(&path).is_empty());
+    }
+
+    /// The reported bug, end to end: `hook-remove` (and the app's
+    /// `task_delete` on a stale record) reach this function with the leaf
+    /// worktree dir already gone, through a checkout that was tracked via a
+    /// symlink — so `repos.json` holds git's realpath-resolved form, not the
+    /// literal symlinked path the caller has. Before the `aliases_for`
+    /// ancestor-realpath fallback, this left the realpath entry stranded:
+    /// untracked from neither `repos.json` nor the board row, exactly the
+    /// "shows up disconnected/misplaced" symptom.
+    #[test]
+    #[cfg(unix)]
+    fn tear_down_bindings_untracks_a_symlinked_checkouts_realpath_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real_parent = tmp.path().join("real");
+        std::fs::create_dir_all(&real_parent).unwrap();
+        let link_parent = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real_parent, &link_parent).unwrap();
+
+        let real_leaf = real_parent.join("feat-thing");
+        let real_leaf_s = real_leaf.to_string_lossy().to_string();
+        let path = repos_json(&tmp, &[&real_leaf_s]);
+        let store = store_with_task_at(&real_leaf_s);
+
+        // The caller's own record is the literal (symlinked) path — never
+        // created on disk, modeling the leaf already having been removed.
+        let link_leaf = link_parent.join("feat-thing");
+        let opts = RemoveOpts { root: None, name: "feat-thing".to_string(), force: false };
+
+        let outcome = remove_task_and_bindings(
+            TaskRemoval {
+                opts: &opts,
+                dir: &link_leaf,
+                repos_path: &path,
+                rows: Some(&store),
+                outcome: TaskOutcome::Done,
+                now_ms: NOW,
+                on_missing: MissingDir::TearDownBindings,
+            },
+            &mut NoHooks,
+        )
+        .expect("a missing dir is not an error for this caller");
+
+        let Outcome::Removed { messages, .. } = outcome else {
+            panic!("nothing on disk to block on");
+        };
+        assert!(messages.iter().any(|m| m.contains("untracked")), "{messages:?}");
+        assert!(messages.iter().any(|m| m.contains("closed board task")), "{messages:?}");
+        assert!(
+            crate::repos::load_repos(&path).is_empty(),
+            "the realpath entry must not be left stranded"
+        );
     }
 
     /// The same missing dir, named on a command line instead: a typo must be

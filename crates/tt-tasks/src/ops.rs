@@ -663,8 +663,8 @@ pub use claims::{PortClaim, PortRegistry, PortStatus, port_occupied, port_report
 pub use create::{CreateOpts, CreatedTask, create_task};
 pub use init::{InitReport, init_repo, wire_worktree_hooks};
 pub use remove::{
-    CleanOpts, CleanReport, FinishedTask, KeptTask, RemoveOpts, RemoveOutcome, RemovedTask,
-    clean_tasks, remove_task, stop_task_port,
+    CleanOpts, CleanReport, FinishedTask, KeptTask, RemoveOpts, RemoveOutcome, RemovePhase,
+    RemovedTask, clean_tasks, remove_task, stop_task_port,
 };
 pub use render::{RenderSummary, init_template_sidecar, render_task_env, template_sidecar_path};
 

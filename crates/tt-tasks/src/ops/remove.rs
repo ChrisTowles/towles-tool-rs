@@ -26,6 +26,51 @@ pub struct RemoveOpts {
     pub force: bool,
 }
 
+/// A step of [`remove_task`] worth showing the user live, in the order they
+/// run. Reported through the `on_phase` callback so a host that owns a UI
+/// (the app's Agentboard rail) can dim the row and show what's actually
+/// happening, rather than the row just hanging on "deleting…" for however
+/// long a teardown command or `git worktree remove` takes.
+///
+/// Deliberately coarse — one variant per subprocess-bearing step, not every
+/// internal git call — so the callback fires only where there's something
+/// worth narrating.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovePhase {
+    /// Checking the tree is clean and nothing is unreachable — the fast
+    /// checks before anything destructive.
+    CheckingGuards,
+    /// The guards passed (or were forced); live sessions in the folder are
+    /// being stopped before anything on disk changes.
+    StoppingSessions,
+    /// Running the task's declared `TT_TASK_TEARDOWN` command, if any.
+    RunningTeardown,
+    /// `docker compose down` plus the anchored container/volume sweep.
+    CleaningDocker,
+    /// `git worktree remove` (or, for a broken worktree, `rm -rf`).
+    RemovingWorktree,
+    /// The worktree is off disk (or was already gone): untracking it from
+    /// `repos.json` and closing its bound board row. Reported by
+    /// `tt_agentboard::task_removal`, the one step of the sequence that lives
+    /// outside `remove_task` itself.
+    Untracking,
+}
+
+impl RemovePhase {
+    /// Present-participle label for a status line — "removing the task:
+    /// {label}".
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CheckingGuards => "checking for uncommitted work",
+            Self::StoppingSessions => "stopping sessions",
+            Self::RunningTeardown => "running teardown command",
+            Self::CleaningDocker => "cleaning up docker resources",
+            Self::RemovingWorktree => "deleting git worktree",
+            Self::Untracking => "untracking worktree",
+        }
+    }
+}
+
 pub struct RemovedTask {
     pub name: String,
     /// The removed checkout's directory (now gone from disk) — callers use it
@@ -76,14 +121,21 @@ pub enum RemoveOutcome {
 /// down -v, anchored container/volume sweep, `git worktree remove`. Shared by
 /// `tt task rm` and the app's `task_delete` command.
 ///
-/// `before_removal` runs once the guards have passed (or been forced) and the
-/// removal is really about to happen — after the last return that leaves the
-/// task untouched, before the first destructive step. The app hangs its
-/// kill-the-task's-PTYs step here so a *refused* removal never costs a live
-/// session; the CLI passes `|| {}`. Deliberately not part of `RemoveOpts`:
-/// it's a phase marker in this function's control flow, not a removal
-/// setting.
-pub fn remove_task(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<RemoveOutcome> {
+/// `on_phase` fires at each [`RemovePhase`] in order, so a host with a UI
+/// (the app's Agentboard rail) can show what's actually happening instead of
+/// a row just hanging on one static label for however long a teardown
+/// command or `git worktree remove` takes. [`RemovePhase::StoppingSessions`]
+/// is more than a label: it fires once the guards have passed (or been
+/// forced) and the removal is really about to happen — after the last return
+/// that leaves the task untouched, before the first destructive step — which
+/// is where the app hangs its kill-the-task's-PTYs step, so a *refused*
+/// removal never costs a live session. The CLI passes `|_| {}`. Deliberately
+/// not part of `RemoveOpts`: it's a phase marker in this function's control
+/// flow, not a removal setting.
+pub fn remove_task(
+    opts: &RemoveOpts,
+    on_phase: &mut dyn FnMut(RemovePhase),
+) -> Result<RemoveOutcome> {
     let sr = discover_root(opts.root.as_deref())?;
     // Parse-don't-validate: a name that isn't one safe path segment (a
     // hand-typed `../x`) must die here, before it is ever joined under the
@@ -107,6 +159,8 @@ pub fn remove_task(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
     // The task's state scope must be read while the checkout still exists —
     // scope detection probes the directory (see `tt_config::task_scope_from_dir`).
     let state_scope = tt_config::task_scope_from_dir(&dir);
+
+    on_phase(RemovePhase::CheckingGuards);
 
     // Refresh remote-tracking refs before the unreachable-commit guard below:
     // without this, a branch merged and deleted upstream since the last
@@ -135,11 +189,14 @@ pub fn remove_task(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
             "skipping guards (--force): worktree is broken — removing directory + registration"
                 .to_string(),
         );
-        before_removal();
+        on_phase(RemovePhase::StoppingSessions);
+        on_phase(RemovePhase::RunningTeardown);
         if let Some(warning) = run_teardown(&dir)? {
             messages.push(warning);
         }
+        on_phase(RemovePhase::CleaningDocker);
         docker_cleanup(&name, &dir, &mut messages);
+        on_phase(RemovePhase::RemovingWorktree);
         fs::remove_dir_all(&dir)
             .map_err(|e| OpsError::Io(format!("cannot remove {dir_s}: {e}")))?;
         let _ = git_checkout(&sr.checkout, &["worktree", "prune"]);
@@ -233,12 +290,15 @@ pub fn remove_task(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
 
     // Past every guard, and the state above is already gathered — only now is
     // it safe to kill the folder's PTYs (#366).
-    before_removal();
+    on_phase(RemovePhase::StoppingSessions);
+    on_phase(RemovePhase::RunningTeardown);
     if let Some(warning) = run_teardown(&dir)? {
         messages.push(warning);
     }
+    on_phase(RemovePhase::CleaningDocker);
     docker_cleanup(&name, &dir, &mut messages);
 
+    on_phase(RemovePhase::RemovingWorktree);
     let remove = if opts.force {
         git_checkout(&sr.checkout, &["worktree", "remove", "--force", &dir_s])
     } else {
@@ -485,7 +545,7 @@ pub fn clean_tasks(
             continue;
         }
         let rm = RemoveOpts { root: Some(sr.checkout.clone()), name: name.clone(), force: false };
-        match remove_task(&rm, || {}) {
+        match remove_task(&rm, &mut |_| {}) {
             Ok(RemoveOutcome::Removed(r)) => {
                 let mut messages = r.messages;
                 match git_checkout(&sr.checkout, &["branch", "-D", &branch]) {
