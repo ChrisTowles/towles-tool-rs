@@ -1,12 +1,18 @@
 # Slice 8 — Distribution & the `ttr` → `tt` cutover
 
+> **Historical.** This describes the 2026-07-13 `ttr`→`tt` cutover as it
+> happened. The CLI surface has since been trimmed (`doctor`, `gh`, `install`,
+> `agentboard`, and more are gone) — for the current commands see
+> [CLAUDE.md](../CLAUDE.md). Commands named below are preserved as the
+> record of that moment, not a live reference.
+
 The final migration item ([MIGRATION.md](MIGRATION.md) item 8). **Executed
 2026-07-13** (repo side, step 2 below): the binary, hint strings, and docs all
 say `tt` now — hard cutover, no `ttr` alias. The remaining steps are operator
 actions in the live environment (unlink the TS `tt`, `cargo install`, smoke,
 archive).
 
-## Current state
+## State at cutover (2026-07-13)
 
 - This repo's CLI builds as **`tt`**; all TS daily-driver commands are ported
   (config, doctor+history, journal, gh/pr, install, claude-sessions, agentboard repos).
