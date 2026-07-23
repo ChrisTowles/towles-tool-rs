@@ -21,6 +21,10 @@ pub struct TelemetryRecord {
     /// The worktree/task scope that produced this record, if any (the
     /// `tt.task` resource attribute).
     pub tt_task: Option<String>,
+    /// The git commit SHA the running binary was built from (the
+    /// `tt.build_sha` resource attribute), `"unknown"` if `build.rs` could
+    /// not resolve it.
+    pub tt_build_sha: Option<String>,
     /// Present only on `kind: "span"` records.
     pub duration_ms: Option<i64>,
     /// Every other field on the line (resource attributes already pulled out

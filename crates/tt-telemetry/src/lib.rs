@@ -98,7 +98,9 @@ fn disk_sink_disabled() -> bool {
 ///
 /// `tt.task` is the load-bearing one: several checkouts of this repo run
 /// concurrently, so a record is only interpretable if it says which one
-/// produced it.
+/// produced it. `tt.build_sha` (from `build.rs`) is what makes a record
+/// attributable to a commit — the same fix can be absent from one running
+/// binary and present in another.
 fn resource(service: &str) -> Map<String, Value> {
     let mut attrs = Map::new();
     let [service_name, service_version, process_pid] = schema::RESOURCE_KEYS else {
@@ -114,6 +116,7 @@ fn resource(service: &str) -> Map<String, Value> {
             None => Value::Null,
         },
     );
+    attrs.insert(schema::FIELD_TT_BUILD_SHA.into(), Value::from(env!("TT_BUILD_SHA")));
     attrs
 }
 
@@ -162,6 +165,10 @@ mod tests {
         assert_eq!(attrs["service.name"], "tt");
         assert_eq!(attrs["process.pid"], Value::from(std::process::id()));
         assert!(attrs.contains_key("tt.task"), "every record must be attributable to a task");
+        assert!(
+            attrs.contains_key("tt.build_sha"),
+            "every record must be attributable to the commit it was built from"
+        );
     }
 }
 

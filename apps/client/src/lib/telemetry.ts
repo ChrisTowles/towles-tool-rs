@@ -18,6 +18,8 @@ export type TelemetryRecord = {
   name: string;
   /** The worktree/task scope that produced this record, if any. */
   ttTask: string | null;
+  /** The git commit SHA the running binary was built from, if resolvable. */
+  ttBuildSha: string | null;
   /** Present only on `kind: "span"` records. */
   durationMs: number | null;
   /** Every other field on the line. */
@@ -85,7 +87,8 @@ export function loadTelemetryFilters(raw: string | null): TelemetryFilters {
   if (typeof parsed !== "object" || parsed === null) return DEFAULT_TELEMETRY_FILTERS;
   const p = parsed as Record<string, unknown>;
   return {
-    level: typeof p.level === "string" && LEVEL_VALUES.has(p.level) ? (p.level as LevelFilter) : "all",
+    level:
+      typeof p.level === "string" && LEVEL_VALUES.has(p.level) ? (p.level as LevelFilter) : "all",
     kind: typeof p.kind === "string" && KIND_VALUES.has(p.kind) ? (p.kind as KindFilter) : "all",
     target: typeof p.target === "string" ? p.target : "all",
     query: typeof p.query === "string" ? p.query : "",
