@@ -86,6 +86,7 @@ import {
   isPreviewPane,
   previewPaneDir,
   previewPaneId,
+  collapseTargetKeys,
   folderRemovableTask,
   isFolderQuiet,
   liveSessions,
@@ -276,6 +277,14 @@ export function AgentboardScreen() {
   // tile is visually active" and every pane kind can claim it, not just
   // sessions.
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null);
+  // ab-focus-terminal (Enter): which session's terminal to imperatively give
+  // DOM focus, and a nonce so re-requesting the *same* session (e.g. Enter
+  // pressed twice) still re-fires the effect that focuses it. Read by the
+  // `<TerminalView>` instance whose id matches, via its `focusRequest` prop.
+  const [focusTerminalRequest, setFocusTerminalRequest] = useState<{
+    id: string;
+    nonce: number;
+  } | null>(null);
   // The folder whose windows the main area shows — set by clicking a folder
   // header or a session row. Null until the user picks a folder.
   const [activeFolderDir, setActiveFolderDir] = useState<string | null>(null);
@@ -383,9 +392,46 @@ export function AgentboardScreen() {
     });
   }
 
+  // Set (rather than flip) one collapse-map entry — used by arrow-key
+  // navigation, where left always means collapsed and right always means
+  // expanded regardless of the current state.
+  function setCollapsedTo(key: string, next: boolean) {
+    setCollapsed((c) => {
+      if (!!c[key] === next) return c;
+      void invoke("ab_save_collapsed", { key, collapsed: next });
+      return { ...c, [key]: next };
+    });
+  }
+
   // Whole-rail icon collapse (issue #70): same persisted map, sentinel key.
   const railCollapsed = !!collapsed[RAIL_COLLAPSE_KEY];
   const toggleRail = () => toggleCollapsed(RAIL_COLLAPSE_KEY);
+
+  // Ctrl+Shift+Left/Right collapse/expand (complements ab-focus-up/down's
+  // Ctrl+Shift+Up/Down session nav — same modifier family, so it's also safe
+  // to steal from a focused terminal, unlike plain arrow keys which the shell
+  // needs for cursor movement). One level per press, mirroring the rail's own
+  // repo-header/folder-header nesting (`collapseTargetKeys`). Right expands
+  // the outer (repo) level first if it's the thing hiding the folder, then
+  // the folder itself; Left is the mirror, collapsing the folder before
+  // walking up to the repo.
+  function collapseByArrow(direction: "left" | "right") {
+    if (!activeRepo || !activeFolder) return;
+    const { own, parent } = collapseTargetKeys(activeRepo, activeFolder.dir);
+    if (direction === "right") {
+      if (parent && collapsed[parent]) {
+        setCollapsedTo(parent, false);
+        return;
+      }
+      setCollapsedTo(own, false);
+      return;
+    }
+    if (!collapsed[own]) {
+      setCollapsedTo(own, true);
+    } else if (parent) {
+      setCollapsedTo(parent, true);
+    }
+  }
 
   // "Hide inactive" rail filter: demote quiet folders (see `isFolderQuiet` —
   // no live session, no dirty tree/unpushed commits, no session that catches
@@ -951,6 +997,34 @@ export function AgentboardScreen() {
     const folderDir = folderOf.get(target.id)?.dir;
     if (!folderDir) return;
     selectSession(folderDir, target.id);
+  }
+
+  // ab-focus-terminal (Enter, see lib/shortcuts.tsx): jump into the focused
+  // folder's first session and give it real DOM focus, so the next keystroke
+  // lands in the shell instead of nowhere. "First" mirrors ab-split-session's
+  // notion of the active window: whichever of its panes is a live session
+  // (never a diff/files pane), falling back to the folder's first session at
+  // all when no window is open yet — `selectSession` mounts it either way.
+  //
+  // Returns `false` (never actually focuses anything) whenever some other
+  // element already owns Enter — a focused button, link, or anything inside
+  // a Radix dialog — so `useShortcuts` lets the browser's native Enter
+  // handling (activating that element) through instead of eating it. This is
+  // deliberately narrower than `isEditableTarget`'s guard, which only knows
+  // about inputs/terminals, not buttons — see the registry comment.
+  function focusActiveTerminal(): boolean {
+    if (!activeFolderDir || !activeFolder) return false;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) {
+      if (active.tagName === "BUTTON" || active.tagName === "A") return false;
+      if (active.closest('[role="dialog"], [role="alertdialog"]')) return false;
+    }
+    const sessionPaneId = activeWin?.panes.find((id) => sessionById.has(id));
+    const targetId = sessionPaneId ?? activeFolder.sessions[0]?.id;
+    if (!targetId) return false;
+    selectSession(activeFolderDir, targetId);
+    setFocusTerminalRequest((r) => ({ id: targetId, nonce: (r?.nonce ?? 0) + 1 }));
+    return true;
   }
 
   // Toggle the inline new-task form open/closed for a repo — the "+"/"New
@@ -1704,6 +1778,9 @@ export function AgentboardScreen() {
         "ab-focus-down": () => focusSession("next"),
         "ab-focus-up-bracket": () => focusSession("prev"),
         "ab-focus-down-bracket": () => focusSession("next"),
+        "ab-collapse-left": () => collapseByArrow("left"),
+        "ab-collapse-right": () => collapseByArrow("right"),
+        "ab-focus-terminal": focusActiveTerminal,
         "ab-split-session": splitIntoWindow,
         "ab-new-terminal-right": () => {
           if (activeFolderDir) void newSession(activeFolderDir);
@@ -1721,6 +1798,10 @@ export function AgentboardScreen() {
         folderOf,
         splitCandidates,
         activeRepo,
+        activeFolder,
+        activeWin,
+        sessionById,
+        collapsed,
         railCollapsed,
         confirmDeleteWt,
         deleteWtTask,
@@ -2178,6 +2259,11 @@ export function AgentboardScreen() {
                                   onOpenPath={
                                     termDir
                                       ? (path, line) => openTerminalPath(termDir, path, line)
+                                      : undefined
+                                  }
+                                  focusRequest={
+                                    focusTerminalRequest?.id === id
+                                      ? focusTerminalRequest.nonce
                                       : undefined
                                   }
                                 />

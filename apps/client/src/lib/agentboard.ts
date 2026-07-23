@@ -848,6 +848,21 @@ export function isSoloRepo(r: RepoData): boolean {
   return r.folders.length === 1;
 }
 
+/** The collapse-map key(s) plain Left/Right arrow navigation acts on for a
+ * given repo + its focused folder — the same keying the rail's
+ * click-to-toggle chevrons already use (`agentboard-rail.tsx`): a
+ * solo-checkout repo collapses at the repo header (`repo.key`, one level,
+ * no parent); a multi-checkout repo collapses per-folder
+ * (`` `${repo.key}::${folder.dir}` ``) nested under the repo header
+ * (`repo.key`) as a distinct outer level. */
+export function collapseTargetKeys(
+  repo: Pick<RepoData, "key" | "folders">,
+  folderDir: string,
+): { own: string; parent: string | null } {
+  if (isSoloRepo(repo as RepoData)) return { own: repo.key, parent: null };
+  return { own: `${repo.key}::${folderDir}`, parent: repo.key };
+}
+
 /** How long after its last sign of agent life a folder still counts as
  * active for the hide-inactive filter, so stopping a session doesn't make
  * its folder vanish from the rail the same instant. */

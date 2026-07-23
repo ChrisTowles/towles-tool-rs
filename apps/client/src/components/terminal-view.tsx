@@ -98,6 +98,7 @@ export function TerminalView({
   onExit,
   onTitle,
   onOpenPath,
+  focusRequest,
 }: {
   termId: string;
   cwd?: string;
@@ -108,6 +109,12 @@ export function TerminalView({
   /** Routes a clicked file link into the app (the folder's files pane) instead
    * of an external editor. When absent, links open via `term_open_path`. */
   onOpenPath?: (path: string, line: number | null) => void;
+  /** Bump (any changed value) to imperatively focus this pane's hidden input,
+   * the same DOM target a canvas mousedown already focuses — e.g.
+   * `ab-focus-terminal`'s "jump into the folder I just selected and start
+   * typing" (`screens/agentboard.tsx`), where the user never clicked the
+   * canvas so no native focus happened. Absent/unchanged does nothing. */
+  focusRequest?: number;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -226,6 +233,12 @@ export function TerminalView({
   useEffect(() => {
     if (searchOpen) searchInputRef.current?.focus();
   }, [searchOpen]);
+  // External focus request (see the `focusRequest` prop doc above). Runs on
+  // every render where the value changed, including the pane's first render —
+  // no need to wait for the shell-owning effect below to finish connecting.
+  useEffect(() => {
+    if (focusRequest !== undefined) inputRef.current?.focus({ preventScroll: true });
+  }, [focusRequest]);
   useEffect(() => {
     if (!searchOpen) return;
     const t = setTimeout(() => void runSearch(query), 150);
