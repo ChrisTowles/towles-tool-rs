@@ -6,12 +6,25 @@
 use base64::Engine as _;
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use tt_tasks::guards::RmBlocked;
-use tt_tasks::ops::{self, CreateOpts, RemoveOpts};
+use tt_tasks::ops::{self, CreateOpts, RemoveOpts, RemovePhase};
 use tt_tasks::pasted::{self, PastedImage};
 use tt_tasks::suggest::Suggested;
+
+/// Emitted for every [`RemovePhase`] a task deletion passes through — the
+/// Agentboard rail listens for this to show a live status line on the
+/// dimmed row instead of a static "deleting…" for however long teardown or
+/// `git worktree remove` takes. `dir` keys the row the same way the rail's
+/// own React state already does (see `agentboard-rail.tsx`'s `folder.dir`).
+const DELETE_PROGRESS_EVENT: &str = "task://delete_progress";
+
+#[derive(Serialize, Clone)]
+struct DeleteProgressPayload<'a> {
+    dir: &'a str,
+    label: &'a str,
+}
 
 /// Fire-and-forget `git fetch` across every tracked repo (deduped, see
 /// [`tt_agentboard::git_info::fetch_all`]), then nudge the rail to re-emit.
@@ -560,18 +573,28 @@ struct AppRemovalHooks<'a> {
 }
 
 impl tt_agentboard::task_removal::RemovalHooks for AppRemovalHooks<'_> {
-    fn before_removal(&mut self) {
-        // Kills the folder's live PTYs. Locks are scoped tight per this crate's
-        // rule: never hold the engine lock across a subprocess.
-        let ids = {
-            let ab = self.app.state::<crate::agentboard::Ab>();
-            let engine = ab.engine.lock().unwrap();
-            engine.session_ids_for(self.dir)
-        };
-        if !ids.is_empty() {
-            let term_state = self.app.state::<crate::terminal::TermState>();
-            for id in &ids {
-                term_state.kill(id);
+    fn on_phase(&mut self, phase: RemovePhase) {
+        let _ = self.app.emit(
+            DELETE_PROGRESS_EVENT,
+            DeleteProgressPayload { dir: self.dir, label: phase.label() },
+        );
+
+        // `StoppingSessions` doubles as the removal's real go/no-go moment —
+        // see `RemovalHooks::on_phase`'s doc — so the PTY kill stays anchored
+        // to it rather than becoming a separate hook. Locks are scoped tight
+        // per this crate's rule: never hold the engine lock across a
+        // subprocess.
+        if phase == RemovePhase::StoppingSessions {
+            let ids = {
+                let ab = self.app.state::<crate::agentboard::Ab>();
+                let engine = ab.engine.lock().unwrap();
+                engine.session_ids_for(self.dir)
+            };
+            if !ids.is_empty() {
+                let term_state = self.app.state::<crate::terminal::TermState>();
+                for id in &ids {
+                    term_state.kill(id);
+                }
             }
         }
     }

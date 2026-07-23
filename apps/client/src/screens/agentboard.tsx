@@ -342,6 +342,15 @@ export function AgentboardScreen() {
   // Folder dirs whose worktree is mid-delete (`task_delete` in flight) — the
   // rail dims/disables that row for the duration, see `performDeleteWorktree`.
   const [deletingDirs, setDeletingDirs] = useState<Set<string>>(new Set());
+  // Live phase text for a dir mid-delete ("running teardown command",
+  // "deleting git worktree", …) — fed by `task://delete_progress` events the
+  // Rust side emits from inside `ops::remove_task` (see the listener effect
+  // below). Purely additive: absent (browser dev, or before the first event
+  // for this delete lands) just falls back to `DeletingBadge`'s static
+  // "deleting…". Kept separate from `deletingDirs` rather than folded into it
+  // (e.g. as a `Map<string, string | true>`) so a delete that starts before
+  // any phase event arrives still dims immediately via `deletingDirs`.
+  const [deletingPhase, setDeletingPhase] = useState<Map<string, string>>(new Map());
   // Repo management lives on one surface (Settings → Agentboard → Repos); the
   // rail just links to it.
   const openRepoManager = () => {
@@ -646,6 +655,31 @@ export function AgentboardScreen() {
       const sub = await listen<OpenFileRequest>("ide://open-file", (e) =>
         onOpenFileRequest.current(e.payload),
       );
+      if (disposed) sub();
+      else unlisten = sub;
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Live status for a worktree deletion in progress — see `deletingPhase`'s
+  // doc. `dir` keys the payload the same way `deletingDirs` already does.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const sub = await listen<{ dir: string; label: string }>("task://delete_progress", (e) => {
+        const { dir, label } = e.payload;
+        setDeletingPhase((prev) => {
+          const next = new Map(prev);
+          next.set(dir, label);
+          return next;
+        });
+      });
       if (disposed) sub();
       else unlisten = sub;
     })();
@@ -1631,6 +1665,16 @@ export function AgentboardScreen() {
       next.delete(dir);
       return next;
     });
+    // Blocked/failed leaves the row interactive again — its last phase text
+    // must go with it, or a later delete attempt on the same dir would
+    // briefly show a stale label from this attempt before its own first
+    // event lands.
+    setDeletingPhase((prev) => {
+      if (!prev.has(dir)) return prev;
+      const next = new Map(prev);
+      next.delete(dir);
+      return next;
+    });
   }
 
   // Clear a stale dev server off one of the task's claimed ports, then retry
@@ -2060,6 +2104,7 @@ export function AgentboardScreen() {
                               onRemoveRepo={requestRemoveRepo}
                               onDeleteWorktree={requestDeleteWorktree}
                               deletingDirs={deletingDirs}
+                              deletingPhase={deletingPhase}
                               onRenameCommit={commitRename}
                               onOpenDiff={openDiff}
                               onOpenFiles={openFiles}

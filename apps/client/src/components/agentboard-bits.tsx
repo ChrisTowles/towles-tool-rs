@@ -328,14 +328,20 @@ export function BranchLabel({
  * just the label explaining *why* the row went inert, same job `GhostBadge`
  * does for a missing directory. Red (not the neutral gray of `GhostBadge`):
  * unlike a ghost, which is passively gone, this is an active, irreversible
- * deletion in progress. */
-export function DeletingBadge() {
+ * deletion in progress.
+ *
+ * `label` is the live phase text from `task://delete_progress` ("running
+ * teardown command", "deleting git worktree", …); a static "deleting…" until
+ * the first event for this dir lands (browser dev never gets one at all). */
+export function DeletingBadge({ label }: { label?: string }) {
   return (
     <span
       className="flex shrink-0 items-center gap-1 rounded-md border border-red-500/40 bg-red-500/10 px-1 font-mono text-[10px] text-red-600 dark:text-red-400"
-      title="Deleting this worktree from disk…"
+      title={
+        label ? `Deleting this worktree from disk — ${label}…` : "Deleting this worktree from disk…"
+      }
     >
-      <Loader2 className="size-2.5 animate-spin" /> deleting…
+      <Loader2 className="size-2.5 animate-spin" /> {label ? `${label}…` : "deleting…"}
     </span>
   );
 }
