@@ -1,5 +1,5 @@
-//! App-side crash-recovery lifecycle: own the run marker, and serve the resume
-//! picker its candidates.
+//! App-side session-resume lifecycle: own the run marker, and serve the
+//! resume picker its candidates for the previous run — however it ended.
 //!
 //! The decisions live in `tt_agentboard::resume` (Tauri-free, unit-tested);
 //! this is the shell supplying the real clock, pid, paths and window events.
@@ -17,10 +17,10 @@ pub struct ResumeState {
     path: PathBuf,
     pid: u32,
     started_at_ms: i64,
-    /// The crash time, taken exactly once by [`ab_resume_candidates`] — a
-    /// webview reload re-runs the frontend's startup effect, and the picker
-    /// must not reappear.
-    crashed_at_ms: Mutex<Option<i64>>,
+    /// The previous run's end time, taken exactly once by
+    /// [`ab_resume_candidates`] — a webview reload re-runs the frontend's
+    /// startup effect, and the picker must not reappear.
+    ended_at_ms: Mutex<Option<i64>>,
 }
 
 impl ResumeState {
@@ -29,59 +29,53 @@ impl ResumeState {
         let path = resume::default_runtime_path();
         let pid = std::process::id();
         let now = now_ms();
-        let crashed_at_ms =
+        let ended_at_ms =
             match resume::begin_run(&path, pid, now, crate::instance_lock::pid_is_alive) {
-                PriorRun::Crashed { at_ms } => {
-                    eprintln!(
-                        "resume: previous run ended without a clean exit (last heartbeat {at_ms})"
-                    );
+                PriorRun::Ended { at_ms } => {
+                    eprintln!("resume: previous run ended (last heartbeat {at_ms})");
                     Some(at_ms)
                 }
                 PriorRun::Clean => None,
             };
-        Self { path, pid, started_at_ms: now, crashed_at_ms: Mutex::new(crashed_at_ms) }
+        Self { path, pid, started_at_ms: now, ended_at_ms: Mutex::new(ended_at_ms) }
     }
 
     /// Rewrite the marker. `started_at_ms` is carried in memory rather than
     /// re-read each time, so a heartbeat is one write instead of a read+write.
-    fn touch(&self, clean_exit: bool) {
+    fn touch(&self) {
         let _ = resume::write_marker(
             &self.path,
-            &RunMarker {
-                pid: self.pid,
-                started_at_ms: self.started_at_ms,
-                heartbeat_ms: now_ms(),
-                clean_exit,
-            },
+            &RunMarker { pid: self.pid, started_at_ms: self.started_at_ms, heartbeat_ms: now_ms() },
         );
     }
 }
 
-/// Keep the marker fresh, bounding how far the estimated crash time can lag the
-/// real one (see `resume::CRASH_TIME_SLACK_MS`).
+/// Keep the marker fresh, bounding how far the estimated end time can lag the
+/// real one (see `resume::PRIOR_RUN_TIME_SLACK_MS`).
 pub fn spawn_heartbeat(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let interval = std::time::Duration::from_millis(resume::HEARTBEAT_INTERVAL_MS as u64);
         loop {
             tokio::time::sleep(interval).await;
-            app.state::<ResumeState>().touch(false);
+            app.state::<ResumeState>().touch();
         }
     });
 }
 
-/// Record an orderly shutdown, so the next launch stays silent.
+/// Record an orderly shutdown's exact moment, rather than leaving the next
+/// launch to estimate it from the last heartbeat (up to one interval stale).
 pub fn on_window_destroyed(app: &AppHandle) {
     if let Some(state) = app.try_state::<ResumeState>() {
-        state.touch(true);
+        state.touch();
     }
 }
 
 /// Panes that were running Claude when the app last went down — empty unless
-/// the previous run crashed, and empty on every call after the first.
+/// a previous run (of any kind: crash, kill, or an ordinary quit) was found,
+/// and empty on every call after the first.
 #[tauri::command]
 pub async fn ab_resume_candidates(app: AppHandle) -> Result<Vec<ResumeCandidate>, String> {
-    let Some(crashed_at_ms) = app.state::<ResumeState>().crashed_at_ms.lock().unwrap().take()
-    else {
+    let Some(ended_at_ms) = app.state::<ResumeState>().ended_at_ms.lock().unwrap().take() else {
         return Ok(Vec::new());
     };
 
@@ -96,7 +90,7 @@ pub async fn ab_resume_candidates(app: AppHandle) -> Result<Vec<ResumeCandidate>
         };
         resume::select_candidates(
             records.iter().map(|(dir, rec)| (dir.as_str(), rec)),
-            crashed_at_ms,
+            ended_at_ms,
             resume::DEFAULT_RESUME_WINDOW_MS,
             |dir, sid| resume::locate_transcript(&projects_dir, dir, sid),
             resume::transcript_title,

@@ -580,8 +580,8 @@ pub fn run() {
             // without cleanup, so Claude Code never dials a dead server.
             ide::sweep_stale_lockfiles();
 
-            // Keep the run marker fresh so a crash's estimated time stays
-            // close to the real one (see `resume`).
+            // Keep the run marker fresh so a prior run's estimated end time
+            // stays close to the real one (see `resume`).
             resume::spawn_heartbeat(app.handle().clone());
 
             // Kick an initial scan so the first snapshot has data.
@@ -610,9 +610,9 @@ pub fn run() {
             WindowEvent::Destroyed => {
                 tracing::info!(window = window.label(), "window.destroyed");
                 terminal::on_window_destroyed(window.app_handle(), window.label());
-                // Reaching here at all means an orderly shutdown — a crash or
-                // reboot never fires this, which is exactly what the next
-                // launch reads the marker to find out.
+                // Records the exact shutdown moment so the next launch's
+                // resume offer uses it instead of the last (possibly stale)
+                // heartbeat.
                 resume::on_window_destroyed(window.app_handle());
             }
             // The only record of the window's OS-level focus history — nothing

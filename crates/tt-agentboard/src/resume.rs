@@ -1,5 +1,6 @@
-//! Crash recovery: after the app dies without a clean exit, work out which
-//! Claude sessions were running in which panes so the user can pick which to
+//! Session resume: after the app comes back up, work out which Claude
+//! sessions were running in which panes on the *previous* run — however that
+//! run ended, crash or ordinary quit — so the user can pick which to
 //! relaunch with `claude --resume`.
 //!
 //! A candidate needs two independent facts to line up:
@@ -14,7 +15,7 @@
 //! transcript was deleted fails (2) and could not be resumed regardless.
 //!
 //! Clock, paths and pid-liveness are all parameters so the decisions are
-//! unit-testable without a real crash.
+//! unit-testable without a real prior run.
 
 use std::path::{Path, PathBuf};
 
@@ -22,34 +23,34 @@ use serde::{Deserialize, Serialize};
 
 use crate::sessions::SessionRecord;
 
-/// How far back from the crash a transcript may have been touched and still be
-/// offered. Wide enough to survive an overnight reboot, narrow enough that a
-/// week-old session is never suggested unprompted.
+/// How far back from the end of the previous run a transcript may have been
+/// touched and still be offered. Wide enough to survive an overnight reboot,
+/// narrow enough that a week-old session is never suggested unprompted.
 pub const DEFAULT_RESUME_WINDOW_MS: i64 = 12 * 60 * 60 * 1000;
 
 /// How often the running app refreshes its heartbeat.
 pub const HEARTBEAT_INTERVAL_MS: i64 = 30_000;
 
-/// Slack above the estimated crash time before a transcript counts as "touched
-/// after the crash".
+/// Slack above the estimated end time before a transcript counts as "touched
+/// after the run ended".
 ///
-/// The estimate *is* the last heartbeat, so it lags the real crash by up to one
-/// interval — and the session you were mid-thought in is the one still being
-/// written in that gap. Comparing against the bare estimate would reject
-/// exactly the candidate this exists to offer.
-pub const CRASH_TIME_SLACK_MS: i64 = HEARTBEAT_INTERVAL_MS * 2;
+/// For a crash, the estimate *is* the last heartbeat, so it lags the real end
+/// by up to one interval — and the session you were mid-thought in is the one
+/// still being written in that gap. Comparing against the bare estimate would
+/// reject exactly the candidate this exists to offer.
+pub const PRIOR_RUN_TIME_SLACK_MS: i64 = HEARTBEAT_INTERVAL_MS * 2;
 
-/// Written at startup, refreshed by a heartbeat, flipped to `clean_exit` on an
-/// orderly shutdown. A stale `clean_exit: false` is what "we crashed" means.
+/// Written at startup and refreshed by a heartbeat; also touched once more on
+/// an orderly shutdown so the timestamp is exact rather than up to one
+/// heartbeat interval stale.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunMarker {
     pub pid: u32,
     pub started_at_ms: i64,
-    /// Last time the app proved it was alive; doubles as the estimated crash
-    /// time, since a crash leaves no other timestamp behind.
+    /// Last time the app proved it was alive (or, after an orderly shutdown,
+    /// the exact moment it went down) — the estimated end time of this run.
     pub heartbeat_ms: i64,
-    pub clean_exit: bool,
 }
 
 /// How the previous run ended. A missing marker counts as [`PriorRun::Clean`] —
@@ -57,23 +58,24 @@ pub struct RunMarker {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PriorRun {
     Clean,
-    Crashed { at_ms: i64 },
+    Ended { at_ms: i64 },
 }
 
 /// `<agentboard_dir>/runtime.json` — instance-scoped like the rest of the
-/// agentboard run state (a task's crash is not the daily driver's crash).
+/// agentboard run state (a task's prior run is not the daily driver's).
 pub fn default_runtime_path() -> PathBuf {
     tt_config::agentboard_dir_lossy().join("runtime.json")
 }
 
 /// Classify the previous run.
 ///
-/// A dirty marker whose pid is *still alive* is not a crash — it's a second
-/// instance running concurrently, and treating it as one would offer to resume
-/// sessions that instance is actively using.
+/// A marker whose pid is *still alive* isn't a previous run at all — it's a
+/// second instance running concurrently, and treating it as one would offer
+/// to resume sessions that instance is actively using. Anything else —
+/// crash, kill, or an ordinary quit — is offered the same way.
 pub fn classify_prior(prior: Option<&RunMarker>, pid_alive: bool) -> PriorRun {
     match prior {
-        Some(m) if !m.clean_exit && !pid_alive => PriorRun::Crashed { at_ms: m.heartbeat_ms },
+        Some(m) if !pid_alive => PriorRun::Ended { at_ms: m.heartbeat_ms },
         _ => PriorRun::Clean,
     }
 }
@@ -96,10 +98,7 @@ pub fn write_marker(path: &Path, marker: &RunMarker) -> std::io::Result<()> {
 pub fn begin_run(path: &Path, pid: u32, now_ms: i64, pid_alive: impl Fn(u32) -> bool) -> PriorRun {
     let prior = read_marker(path);
     let verdict = classify_prior(prior.as_ref(), prior.as_ref().is_some_and(|m| pid_alive(m.pid)));
-    let _ = write_marker(
-        path,
-        &RunMarker { pid, started_at_ms: now_ms, heartbeat_ms: now_ms, clean_exit: false },
-    );
+    let _ = write_marker(path, &RunMarker { pid, started_at_ms: now_ms, heartbeat_ms: now_ms });
     verdict
 }
 
@@ -134,7 +133,7 @@ pub struct ResumeCandidate {
 /// and deserialize a whole thread just to discard it.
 pub fn select_candidates<'a, L, T>(
     records: impl Iterator<Item = (&'a str, &'a SessionRecord)>,
-    crashed_at_ms: i64,
+    ended_at_ms: i64,
     window_ms: i64,
     locate: L,
     title: T,
@@ -143,14 +142,15 @@ where
     L: Fn(&str, &str) -> Option<TranscriptRef>,
     T: Fn(&TranscriptRef) -> Option<String>,
 {
-    let cutoff = crashed_at_ms - window_ms;
+    let cutoff = ended_at_ms - window_ms;
     let mut out: Vec<ResumeCandidate> = records
         .filter_map(|(dir, rec)| {
             let claude_session_id = rec.last_claude_session_id.as_deref()?;
             let found = locate(dir, claude_session_id)?;
-            // Too old to be what you were doing, or — well after the crash —
-            // owned by some other live process that resuming here would fight.
-            if found.mtime_ms < cutoff || found.mtime_ms > crashed_at_ms + CRASH_TIME_SLACK_MS {
+            // Too old to be what you were doing, or — well after the run
+            // ended — owned by some other live process that resuming here
+            // would fight.
+            if found.mtime_ms < cutoff || found.mtime_ms > ended_at_ms + PRIOR_RUN_TIME_SLACK_MS {
                 return None;
             }
             Some(ResumeCandidate {
@@ -243,12 +243,12 @@ mod tests {
 
     fn select(
         records: &[(String, SessionRecord)],
-        crashed_at: i64,
+        ended_at: i64,
         d: &Disk,
     ) -> Vec<ResumeCandidate> {
         select_candidates(
             records.iter().map(|(dir, r)| (dir.as_str(), r)),
-            crashed_at,
+            ended_at,
             DEFAULT_RESUME_WINDOW_MS,
             locate_from(d),
             title_from(d),
@@ -256,49 +256,43 @@ mod tests {
     }
 
     #[test]
-    fn a_clean_or_missing_marker_offers_nothing() {
+    fn a_missing_marker_offers_nothing() {
         assert_eq!(classify_prior(None, false), PriorRun::Clean);
-        let clean = RunMarker { pid: 1, started_at_ms: 0, heartbeat_ms: 50, clean_exit: true };
-        assert_eq!(classify_prior(Some(&clean), false), PriorRun::Clean);
     }
 
     #[test]
-    fn dirty_marker_with_dead_pid_is_a_crash_at_the_last_heartbeat() {
-        let dirty = RunMarker { pid: 1, started_at_ms: 0, heartbeat_ms: 900, clean_exit: false };
-        assert_eq!(classify_prior(Some(&dirty), false), PriorRun::Crashed { at_ms: 900 });
+    fn a_marker_with_dead_pid_is_offered_at_its_last_heartbeat() {
+        // Whether the previous run crashed or quit cleanly, its last known
+        // timestamp is offered the same way.
+        let marker = RunMarker { pid: 1, started_at_ms: 0, heartbeat_ms: 900 };
+        assert_eq!(classify_prior(Some(&marker), false), PriorRun::Ended { at_ms: 900 });
     }
 
     #[test]
-    fn dirty_marker_with_live_pid_is_a_concurrent_instance_not_a_crash() {
+    fn a_marker_with_live_pid_is_a_concurrent_instance_not_offered() {
         // Otherwise a second window offers to resume the sessions the first is
         // actively using.
-        let dirty = RunMarker { pid: 1, started_at_ms: 0, heartbeat_ms: 900, clean_exit: false };
-        assert_eq!(classify_prior(Some(&dirty), true), PriorRun::Clean);
+        let marker = RunMarker { pid: 1, started_at_ms: 0, heartbeat_ms: 900 };
+        assert_eq!(classify_prior(Some(&marker), true), PriorRun::Clean);
     }
 
     #[test]
-    fn begin_run_reports_the_crash_then_claims_the_marker() {
+    fn begin_run_reports_the_prior_run_then_claims_the_marker() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("runtime.json");
-        write_marker(
-            &path,
-            &RunMarker { pid: 999_999, started_at_ms: 0, heartbeat_ms: 900, clean_exit: false },
-        )
-        .unwrap();
+        write_marker(&path, &RunMarker { pid: 999_999, started_at_ms: 0, heartbeat_ms: 900 })
+            .unwrap();
 
-        assert_eq!(begin_run(&path, 4242, 1000, DEAD), PriorRun::Crashed { at_ms: 900 });
+        assert_eq!(begin_run(&path, 4242, 1000, DEAD), PriorRun::Ended { at_ms: 900 });
 
         let now = read_marker(&path).unwrap();
         assert_eq!(now.pid, 4242);
-        assert!(!now.clean_exit);
 
-        // A launch after a clean exit stays silent.
-        write_marker(
-            &path,
-            &RunMarker { pid: 4242, started_at_ms: 1000, heartbeat_ms: 1100, clean_exit: true },
-        )
-        .unwrap();
-        assert_eq!(begin_run(&path, 5555, 1200, DEAD), PriorRun::Clean);
+        // A launch right after this one still reports it, since the pid this
+        // test's `DEAD` probe reports is never alive.
+        write_marker(&path, &RunMarker { pid: 4242, started_at_ms: 1000, heartbeat_ms: 1100 })
+            .unwrap();
+        assert_eq!(begin_run(&path, 5555, 1200, DEAD), PriorRun::Ended { at_ms: 1100 });
     }
 
     #[test]
@@ -336,16 +330,16 @@ mod tests {
         ];
         let d = disk(&[
             ("/r/a", "c-old", None, 10_000 - DEFAULT_RESUME_WINDOW_MS - 1),
-            ("/r/a", "c-new", None, 10_000 + CRASH_TIME_SLACK_MS + 1),
+            ("/r/a", "c-new", None, 10_000 + PRIOR_RUN_TIME_SLACK_MS + 1),
         ]);
         assert!(select(&records, 10_000, &d).is_empty());
     }
 
     #[test]
     fn a_transcript_written_just_after_the_last_heartbeat_is_still_offered() {
-        // The crash estimate is the last heartbeat, so the session being
-        // written when the app died has an mtime after it. Rejecting that as
-        // "touched after the crash" would gut the feature.
+        // The end-of-run estimate is the last heartbeat, so the session being
+        // written when the app went down has an mtime after it. Rejecting
+        // that as "touched after the run ended" would gut the feature.
         let records = [("/r/a".to_string(), rec("pane1", "shell 1", Some("c1")))];
         let d = disk(&[("/r/a", "c1", None, 10_000 + HEARTBEAT_INTERVAL_MS)]);
         assert_eq!(select(&records, 10_000, &d).len(), 1);
