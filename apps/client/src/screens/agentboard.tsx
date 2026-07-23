@@ -405,7 +405,10 @@ export function AgentboardScreen() {
 
   // Whole-rail icon collapse (issue #70): same persisted map, sentinel key.
   const railCollapsed = !!collapsed[RAIL_COLLAPSE_KEY];
-  const toggleRail = () => toggleCollapsed(RAIL_COLLAPSE_KEY);
+  const toggleRail = () => {
+    uiAction("agentboard.rail_toggle", "agentboard", railCollapsed ? "expand" : "collapse");
+    toggleCollapsed(RAIL_COLLAPSE_KEY);
+  };
 
   // Ctrl+Shift+Left/Right collapse/expand (complements ab-focus-up/down's
   // Ctrl+Shift+Up/Down session nav — same modifier family, so it's also safe
@@ -1831,7 +1834,10 @@ export function AgentboardScreen() {
           title: `${p.repo.split("/").pop()} #${p.number}`,
           sub: checksFailing ? "Checks failing" : "Review requested",
           border: checksFailing ? PR_TONE.failed.border : PR_TONE.review.border,
-          onClick: () => void openExternalUrl(p.url),
+          onClick: () => {
+            uiAction("agentboard.attention_open", "agentboard", "pr");
+            void openExternalUrl(p.url);
+          },
         });
       }
     }
@@ -1845,7 +1851,10 @@ export function AgentboardScreen() {
         title: soon.title,
         sub: `Starts in ${fmtCountdown(soon.startTs - now)}`,
         border: "border-l-blue-500",
-        onClick: () => openTab("cockpit"),
+        onClick: () => {
+          uiAction("agentboard.attention_open", "agentboard", "event");
+          openTab("cockpit");
+        },
       });
     }
     return items;
@@ -1901,7 +1910,14 @@ export function AgentboardScreen() {
                       )}
                       <button
                         type="button"
-                        onClick={() => setHideInactive(!hideInactive)}
+                        onClick={() => {
+                          uiAction(
+                            "agentboard.hide_inactive",
+                            "agentboard",
+                            hideInactive ? "off" : "on",
+                          );
+                          setHideInactive(!hideInactive);
+                        }}
                         aria-label={hideInactive ? "Show all repos" : "Hide inactive repos"}
                         aria-pressed={hideInactive}
                         className={cn(

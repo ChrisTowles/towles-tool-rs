@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { DoctorReportSchema } from "@/lib/schemas/doctor";
 import { invoke } from "@/lib/tauri";
+import { uiAction } from "@/lib/ui-action";
 import { useAsyncRefresh } from "@/lib/use-async-refresh";
 import { Empty, Panel } from "@/components/store-bits";
 
@@ -89,7 +90,15 @@ export function DoctorScreen() {
               {allOk ? "All checks passed" : "Some checks need attention"}
             </span>
           )}
-          <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={running}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              uiAction("doctor.rerun", "doctor");
+              void refresh();
+            }}
+            disabled={running}
+          >
             <RefreshCw className={running ? "size-3.5 animate-spin" : "size-3.5"} />
             {running ? "Checking…" : "Re-run checks"}
           </Button>

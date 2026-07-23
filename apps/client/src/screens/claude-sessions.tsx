@@ -57,6 +57,7 @@ import {
   type SessionBreakdown,
 } from "@/lib/claude-sessions";
 import { NotInTauri, type IpcError } from "@/lib/errors";
+import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
 
 /** Surface a failed sessions read. Silent outside the Tauri shell, where every
@@ -904,12 +905,14 @@ function SessionTable({ sessions, searching }: { sessions: ClaudeSession[]; sear
     });
   }, [sessions, sort]);
 
-  const toggleSort = (key: SessionSortKey) =>
+  const toggleSort = (key: SessionSortKey) => {
+    uiAction("claude_sessions.sort", "claude-sessions", key);
     setSort((prev) =>
       prev?.key === key
         ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
         : { key, dir: DEFAULT_SORT_DIR[key] },
     );
+  };
 
   if (sessions.length === 0)
     return (
@@ -994,7 +997,10 @@ function SessionTable({ sessions, searching }: { sessions: ClaudeSession[]; sear
               <tr
                 key={s.sessionId}
                 className="cursor-pointer border-b border-border/60 hover:bg-accent/50"
-                onClick={() => setBreakdownFor(s)}
+                onClick={() => {
+                  uiAction("claude_sessions.breakdown_open", "claude-sessions", "table");
+                  setBreakdownFor(s);
+                }}
               >
                 <td className="max-w-[340px] py-1.5 pr-3">
                   <div className="truncate text-foreground">
@@ -1081,16 +1087,20 @@ function InsightsTab({ days, nonce, active }: { days: string; nonce: number; act
       {insights.map((insight, i) => {
         const meta = INSIGHT_META[insight.kind];
         const s = insight.session;
+        const openBreakdown = () => {
+          uiAction("claude_sessions.breakdown_open", "claude-sessions", "insight");
+          setBreakdownFor(s);
+        };
         return (
           <div
             key={`${insight.kind}-${s.sessionId}-${i}`}
             role="button"
             tabIndex={0}
-            onClick={() => setBreakdownFor(s)}
+            onClick={openBreakdown}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                setBreakdownFor(s);
+                openBreakdown();
               }
             }}
             className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-card p-3.5 text-left hover:bg-accent/50"

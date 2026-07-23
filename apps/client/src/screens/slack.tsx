@@ -31,6 +31,7 @@ import {
 import { MrkdwnText } from "@/components/mrkdwn-text";
 import { openExternalUrl } from "@/lib/open-url";
 import { isTauri } from "@/lib/tauri";
+import { uiAction } from "@/lib/ui-action";
 import { useWorkspace } from "@/lib/workspace";
 
 /** api.slack.com app directory — where the app is created and tokens are issued. */
@@ -99,6 +100,7 @@ export function SlackScreen() {
   async function send() {
     const text = draft.trim();
     if (!text || sending) return;
+    uiAction("slack.send", "slack");
     setSending(true);
     const sent = await slackDmSend(text);
     sent.match({
@@ -146,7 +148,10 @@ export function SlackScreen() {
           variant="ghost"
           size="sm"
           className="gap-1.5 px-2 text-muted-foreground"
-          onClick={refresh}
+          onClick={() => {
+            uiAction("slack.refresh", "slack");
+            refresh();
+          }}
           disabled={loading}
         >
           <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
@@ -267,6 +272,7 @@ function fileSrcUrl(file: DmFile): string {
 /** Open a file in the OS browser (permalink signs the user in; falls back to
  * the private URL). */
 function openFile(file: DmFile) {
+  uiAction("slack.open_file", "slack");
   void openExternalUrl(file.permalink || file.urlPrivate);
 }
 
@@ -353,6 +359,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text);
+      uiAction("slack.copy", "slack", label);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -392,7 +399,10 @@ function ExternalLinkText({ url, children }: { url: string; children: React.Reac
   return (
     <button
       type="button"
-      onClick={() => void openExternalUrl(url)}
+      onClick={() => {
+        uiAction("slack.open_external", "slack");
+        void openExternalUrl(url);
+      }}
       className="inline-flex items-center gap-0.5 font-medium text-violet-600 underline underline-offset-2 hover:text-violet-500 dark:text-violet-300"
     >
       {children}
