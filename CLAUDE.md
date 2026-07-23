@@ -397,7 +397,10 @@ Cargo workspace + npm workspace (`apps/client` only):
   the app per the CLI redesign). The MCP server is not a CLI surface — it
   runs inside the app over loopback HTTP. The removed groups (`gh`, `config`,
   `doctor`, `install`, `agentboard`) live in git history; don't reintroduce
-  CLI surfaces for app-owned features.
+  CLI surfaces for app-owned features. `ui::warning`/`ui::success` print to
+  **stdout** — a `--json` command must gate every call behind `if !json` (or
+  fold the message into a `"warnings"` array in the JSON payload instead),
+  or a warning firing mid-command corrupts the JSON document.
 - `crates-tauri/tt-app` — Tauri 2.11 shell. Identifier `dev.towles.tool`.
   `npm run dev` (root) resolves the per-task dev-server port from the
   checkout's rendered `.env` (`scripts/dev-port.mjs` / `task-port.mjs`,

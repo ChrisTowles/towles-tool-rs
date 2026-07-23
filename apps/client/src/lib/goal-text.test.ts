@@ -5,6 +5,7 @@ import {
   insertMentionTrigger,
   matchIssues,
   mentionQueryAt,
+  referencedIssueNumbers,
 } from "./goal-text";
 
 describe("highlightSegments", () => {
@@ -127,5 +128,19 @@ describe("matchIssues", () => {
 
   it("is empty when nothing matches", () => {
     expect(matchIssues(issues, "zzz")).toEqual([]);
+  });
+});
+
+describe("referencedIssueNumbers", () => {
+  it("finds every #N reference, deduped, in first-seen order", () => {
+    expect(referencedIssueNumbers("fix #12 and also #7, see #12 again")).toEqual([12, 7]);
+  });
+
+  it("is empty with no references", () => {
+    expect(referencedIssueNumbers("just a goal")).toEqual([]);
+  });
+
+  it("ignores a bare # or #word, same as highlightSegments", () => {
+    expect(referencedIssueNumbers("# and #nope")).toEqual([]);
   });
 });

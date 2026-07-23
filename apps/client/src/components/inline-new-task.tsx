@@ -51,6 +51,7 @@ import {
 } from "@/lib/agentboard";
 import { IssueItem, storeGhIssuesList } from "@/lib/data";
 import { GoalEditor } from "@/components/goal-editor";
+import { referencedIssueNumbers } from "@/lib/goal-text";
 import { errorMessage } from "@/lib/errors";
 import { loadUserSettings, type PromptImprover } from "@/lib/settings";
 import { type BaseBranch, BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/task";
@@ -107,6 +108,11 @@ const FALLBACK_IMPROVER: PromptImprover = {
 /** What the new-task form hands its parent on submit. */
 export type NewTaskSubmit = {
   goal: string;
+  /** Short human-readable card label — a peer of `branch`, not derived from
+   * it. Defaults from the goal (see `goalToTitle`) but is independently
+   * editable, since the goal is Claude's launch instructions and the title
+   * is just what the rail shows. */
+  title: string;
   branch: string;
   base: string;
   options: ClaudeLaunchOptions;
@@ -149,6 +155,7 @@ export type BranchCheck = {
 /** Mirrors the Rust `TaskSuggestion` payload from `task_suggest`. */
 export type TaskSuggestion = {
   branch: string;
+  title: string;
   goal: string;
   /** Set when claude couldn't answer and the fields were filled from a
    * locally derived slug instead. A note, not an error — the suggestion is
@@ -222,6 +229,22 @@ export function goalToBranch(goal: string): string {
   return slug ? `feat/${slug}` : "";
 }
 
+/** How much of the goal `goalToTitle` keeps — mirrors
+ * `tt_tasks::suggest`'s `TITLE_MAX_CHARS`, so the no-Claude title default
+ * here matches what the "Suggest" flow's own local fallback would produce. */
+export const TITLE_MAX_CHARS = 60;
+
+/** Goal → title default: the goal itself, cut at a word boundary — plain
+ * words, never slugged (a title is prose, not a git ref). The title field
+ * stays editable — this is just the default. */
+export function goalToTitle(goal: string): string {
+  const trimmed = goal.trim();
+  if (trimmed.length <= TITLE_MAX_CHARS) return trimmed;
+  const cut = trimmed.slice(0, TITLE_MAX_CHARS);
+  const lastSpace = cut.lastIndexOf(" ");
+  return lastSpace > 0 ? cut.slice(0, lastSpace) : cut;
+}
+
 /** Issue → branch name: `feat/<number>-<slug>`, keeping this form's own
  * `feat/` prefix (not tt-git's `feature/<number>-<slug>`, which is Cockpit's
  * issue-branch convention on an already-existing checkout, not a new task)
@@ -257,6 +280,7 @@ export function InlineNewTask({
   // being edited while images are pasted.
   const [draftScope] = useState(nextDraftScopeId);
   const [branchEdit, setBranchEdit] = useState<string | null>(null);
+  const [titleEdit, setTitleEdit] = useState<string | null>(null);
   const [base, setBase] = useState("");
   // Both start unset — the launched `claude` gets no --model/--effort unless
   // the user explicitly picks one, so their own defaults apply.
@@ -293,6 +317,7 @@ export function InlineNewTask({
   const [preOverwrite, setPreOverwrite] = useState<{
     goal: string;
     branchEdit: string | null;
+    titleEdit: string | null;
   } | null>(null);
   const [issuePickerOpen, setIssuePickerOpen] = useState(false);
   // Set by either issue path — the Pick-issue popover or the goal field's `#`
@@ -317,6 +342,7 @@ export function InlineNewTask({
   const baseLabel = branches.find((b) => b.name === base)?.label ?? (base || "main");
 
   const branch = branchEdit ?? goalToBranch(goal);
+  const title = titleEdit ?? goalToTitle(goal);
 
   useEffect(() => {
     // Guarded like the branchCheck effect below: the caller unmounts this
@@ -427,9 +453,10 @@ export function InlineNewTask({
     });
     suggestion.match({
       ok: (s) => {
-        setPreOverwrite({ goal, branchEdit });
+        setPreOverwrite({ goal, branchEdit, titleEdit });
         setGoal(s.goal);
         setBranchEdit(s.branch);
+        setTitleEdit(s.title);
         if (s.fallback) {
           setNotice({ text: `Filled in without claude — ${s.fallback}`, kind: "note" });
         }
@@ -443,6 +470,7 @@ export function InlineNewTask({
     if (!preOverwrite) return;
     setGoal(preOverwrite.goal);
     setBranchEdit(preOverwrite.branchEdit);
+    setTitleEdit(preOverwrite.titleEdit);
     setPreOverwrite(null);
     setNotice(null);
   }
@@ -499,9 +527,10 @@ export function InlineNewTask({
       return;
     }
     if (selectedIssues.length === 0) {
-      setPreOverwrite({ goal, branchEdit });
+      setPreOverwrite({ goal, branchEdit, titleEdit });
       setGoal(`${issue.title} (#${issue.number})`);
       setBranchEdit(branchFromIssue(issue.number, issue.title));
+      setTitleEdit(issue.title);
     }
     setSelectedIssues((prev) => [...prev, issue]);
   }
@@ -587,7 +616,25 @@ export function InlineNewTask({
     void stageImages(next);
   }
 
+  /** Fold any `#N` already typed in the goal into the attach list, so a goal
+   * that already names an issue doesn't also require a separate manual
+   * Pick-issue step. Deterministic text matching against whatever issue list
+   * has already loaded (from the Pick-issue popover or the goal's own `#`
+   * autocomplete) — no extra `gh` round-trip at submit, and no LLM guessing
+   * at looser references. If the issue list hasn't loaded yet, this is a
+   * no-op for this submit; the reference is still visibly highlighted in the
+   * goal text either way. */
+  function reconcileGoalIssueRefs(): IssueItem[] {
+    if (!issues) return selectedIssues;
+    const already = new Set(selectedIssues.map((i) => `${i.repo}#${i.number}`));
+    const additions = referencedIssueNumbers(goal)
+      .map((n) => issues.find((i) => i.number === n))
+      .filter((i): i is IssueItem => i !== undefined && !already.has(`${i.repo}#${i.number}`));
+    return additions.length > 0 ? [...selectedIssues, ...additions] : selectedIssues;
+  }
+
   function submit(worktree = true) {
+    const issuesToAttach = reconcileGoalIssueRefs();
     if (worktree) {
       if (!branch) {
         showError("Give a goal (or type a branch name) first.");
@@ -598,7 +645,7 @@ export function InlineNewTask({
         // in the bottom-of-form notice too.
         return;
       }
-    } else if (!goal.trim() && selectedIssues.length === 0) {
+    } else if (!goal.trim() && issuesToAttach.length === 0) {
       // A task-only create still needs *something* to become the card.
       showError("Give a goal (or pick an issue) first.");
       return;
@@ -614,6 +661,7 @@ export function InlineNewTask({
     uiAction(action, "agentboard");
     onSubmit({
       goal: goal.trim(),
+      title: title.trim() || branch,
       branch,
       base,
       options: {
@@ -621,7 +669,7 @@ export function InlineNewTask({
         effort: effort === USE_DEFAULT ? undefined : effort,
       },
       imagePaths,
-      issues: selectedIssues,
+      issues: issuesToAttach,
       worktree,
       dynamic: isDynamic,
       launchClaude,
@@ -875,6 +923,15 @@ export function InlineNewTask({
             </PopoverContent>
           </Popover>
         )}
+      </div>
+      <div className="flex flex-col gap-1">
+        <span className="text-[10.5px] text-muted-foreground">title</span>
+        <Input
+          value={title}
+          onChange={(e) => setTitleEdit(e.target.value)}
+          placeholder="auto-generated from your goal"
+          className="min-w-0 text-xs"
+        />
       </div>
       <div className="flex flex-col gap-1">
         <span className="text-[10.5px] text-muted-foreground">branch</span>

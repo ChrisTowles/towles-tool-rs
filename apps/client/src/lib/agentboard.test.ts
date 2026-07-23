@@ -22,6 +22,7 @@ import {
   folderRemovableTask,
   forceDeleteLabel,
   branchRedundant,
+  humanizeFolderName,
   modelContextLabel,
   modelLetter,
   stoppablePort,
@@ -226,6 +227,22 @@ describe("branchRedundant", () => {
 
   it("collapses runs and strips trailing dashes like tt-git's slug", () => {
     expect(branchRedundant("feat-a-b", "feat//a--b!!")).toBe(true);
+  });
+});
+
+describe("humanizeFolderName", () => {
+  it("strips a conventional prefix and turns dashes into a sentence", () => {
+    expect(humanizeFolderName("feat-today-we-use-the-worktree-name-as-the-title-for-al")).toBe(
+      "Today we use the worktree name as the title for al",
+    );
+  });
+
+  it("keeps the whole name when there's no recognized prefix", () => {
+    expect(humanizeFolderName("quick-hotfix")).toBe("Quick hotfix");
+  });
+
+  it("leaves a bare word alone but still capitalizes it", () => {
+    expect(humanizeFolderName("sandbox")).toBe("Sandbox");
   });
 });
 

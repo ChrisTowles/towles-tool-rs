@@ -32,6 +32,10 @@ const CLAUDE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Mirrors the dialog's own `BRANCH_SLUG_SOURCE_CHARS`.
 const BRANCH_SLUG_SOURCE_CHARS: usize = 50;
 
+/// The no-Claude title fallback's length budget — short enough to read as a
+/// card label, not a sentence.
+const TITLE_MAX_CHARS: usize = 60;
+
 /// JSON Schema handed to `claude -p --json-schema`, which makes the CLI itself
 /// enforce the shape: the model answers through a structured-output tool and
 /// the envelope carries a validated `structured_output` object. That's the
@@ -40,15 +44,17 @@ const SUGGESTION_SCHEMA: &str = r#"{
   "type": "object",
   "properties": {
     "branch": { "type": "string", "description": "legal git ref: lowercase kebab-case, prefixed feat/, fix/, or chore/" },
+    "title": { "type": "string", "description": "a short human-readable card title for the task, plain words, no slug/kebab-case" },
     "goal": { "type": "string", "description": "the rewritten task text, produced by following the caller's instruction" }
   },
-  "required": ["branch", "goal"],
+  "required": ["branch", "title", "goal"],
   "additionalProperties": false
 }"#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Suggestion {
     pub branch: String,
+    pub title: String,
     pub goal: String,
 }
 
@@ -57,7 +63,7 @@ pub struct Suggestion {
 /// branch/goal were derived locally instead — the dialog shows that as a note,
 /// not an error, because the fields still got filled with something sane.
 ///
-/// Serializes flat (`{branch, goal, fallback}`) so the Tauri command can hand
+/// Serializes flat (`{branch, title, goal, fallback}`) so the Tauri command can hand
 /// it straight to the dialog instead of restating the fields in a parallel
 /// payload type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -183,22 +189,40 @@ fn parse_response(stdout: &str) -> Result<Suggestion> {
     env.structured_output
         .map(|s| Suggestion {
             branch: s.branch.trim().to_string(),
+            title: s.title.trim().to_string(),
             goal: s.goal.trim().to_string(),
         })
-        .filter(|s| !s.branch.is_empty() && !s.goal.is_empty())
+        .filter(|s| !s.branch.is_empty() && !s.title.is_empty() && !s.goal.is_empty())
         .ok_or(SuggestError::Unparseable)
 }
 
-/// Derive a suggestion without `claude` at all: the goal as typed, and the
-/// same `feat/<slug>` the dialog's branch field already derives — same rules
-/// and source-char budget, through the one shared slug helper, so the two
-/// can't disagree about what the branch should be.
+/// Derive a suggestion without `claude` at all: the goal as typed, the same
+/// `feat/<slug>` the dialog's branch field already derives — same rules and
+/// source-char budget, through the one shared slug helper, so the two can't
+/// disagree about what the branch should be — and a plain-words title
+/// truncated at a word boundary (never slugged; a title is prose, not a ref).
 fn local_fallback(goal: &str) -> Option<Suggestion> {
     let goal = goal.trim();
     let slug =
         tt_git::branch_name::slug(&goal.chars().take(BRANCH_SLUG_SOURCE_CHARS).collect::<String>());
-    (!slug.is_empty())
-        .then(|| Suggestion { branch: format!("feat/{slug}"), goal: goal.to_string() })
+    (!slug.is_empty()).then(|| Suggestion {
+        branch: format!("feat/{slug}"),
+        title: truncate_title(goal),
+        goal: goal.to_string(),
+    })
+}
+
+/// Truncate `s` to at most [`TITLE_MAX_CHARS`] chars, cutting at the last word
+/// boundary within the budget so a title never ends mid-word.
+fn truncate_title(s: &str) -> String {
+    if s.chars().count() <= TITLE_MAX_CHARS {
+        return s.to_string();
+    }
+    let truncated: String = s.chars().take(TITLE_MAX_CHARS).collect();
+    match truncated.rfind(' ') {
+        Some(idx) if idx > 0 => truncated[..idx].to_string(),
+        _ => truncated,
+    }
 }
 
 fn prompt_for(goal: &str, images: &[String], instruction: &str) -> String {
@@ -240,13 +264,17 @@ fn prompt_for(goal: &str, images: &[String], instruction: &str) -> String {
         instruction.trim()
     };
     format!(
-        "You are naming a git branch and rewriting the task goal for a new git \
-         worktree in this repository. Answer with the required structured output: \
-         a `branch` like \"feat/short-kebab-slug\", and a `goal` produced by \
-         following this instruction exactly:\n\n{instruction}\n\nThe branch must be \
-         a legal git ref name: lowercase, kebab-case, prefixed with feat/, fix/, or \
-         chore/ as fits the task — name it for the underlying task itself, never for \
-         the instruction above.{image_task} \
+        "You are naming a git branch, writing a short card title, and rewriting the \
+         task goal for a new git worktree in this repository. Answer with the \
+         required structured output: a `branch` like \"feat/short-kebab-slug\", a \
+         `title` — a short human-readable label in plain words (not kebab-case, not \
+         a slug, just how you'd say it) — and a `goal` produced by following this \
+         instruction exactly:\n\n{instruction}\n\nThe branch must be a legal git ref \
+         name: lowercase, kebab-case, prefixed with feat/, fix/, or chore/ as fits \
+         the task — name it for the underlying task itself, never for the \
+         instruction above. The title must likewise name the underlying task, never \
+         the instruction above, and stay short — a few words, not a full \
+         sentence.{image_task} \
          {image_rule}\n\nTask: {goal_line}"
     )
 }
@@ -324,31 +352,41 @@ mod tests {
         assert_eq!(args[2..4], ["--output-format", "json"]);
         assert_eq!(args[4], "--json-schema");
         let schema: serde_json::Value = serde_json::from_str(args[5]).unwrap();
-        assert_eq!(schema["required"], serde_json::json!(["branch", "goal"]));
+        assert_eq!(schema["required"], serde_json::json!(["branch", "title", "goal"]));
         assert_eq!(schema["additionalProperties"], serde_json::json!(false));
         assert_eq!(args[6..8], ["--model", "sonnet"]);
     }
 
     #[test]
     fn serializes_flat_for_the_dialog() {
-        // The dialog reads {branch, goal, fallback}; `flatten` is what keeps
-        // the Tauri command from needing a parallel payload struct.
+        // The dialog reads {branch, title, goal, fallback}; `flatten` is what
+        // keeps the Tauri command from needing a parallel payload struct.
         let s = Suggested {
-            suggestion: Suggestion { branch: "feat/a".into(), goal: "do a".into() },
+            suggestion: Suggestion {
+                branch: "feat/a".into(),
+                title: "Do a".into(),
+                goal: "do a".into(),
+            },
             fallback: None,
         };
         let json: serde_json::Value = serde_json::to_value(&s).unwrap();
-        assert_eq!(json, serde_json::json!({"branch": "feat/a", "goal": "do a", "fallback": null}));
+        assert_eq!(
+            json,
+            serde_json::json!({"branch": "feat/a", "title": "Do a", "goal": "do a", "fallback": null})
+        );
     }
 
     #[test]
     fn reads_the_envelopes_validated_structured_output() {
         let raw = r#"{"type":"result","is_error":false,
-            "result":"{\"branch\":\"ignored\",\"goal\":\"ignored\"}",
-            "structured_output":{"branch":"feat/a","goal":"do a"},
+            "result":"{\"branch\":\"ignored\",\"title\":\"ignored\",\"goal\":\"ignored\"}",
+            "structured_output":{"branch":"feat/a","title":"Do a","goal":"do a"},
             "total_cost_usd":0.28}"#;
         let s = parse_response(raw).unwrap();
-        assert_eq!(s, Suggestion { branch: "feat/a".into(), goal: "do a".into() });
+        assert_eq!(
+            s,
+            Suggestion { branch: "feat/a".into(), title: "Do a".into(), goal: "do a".into() }
+        );
     }
 
     #[test]
@@ -357,7 +395,7 @@ mod tests {
         // paper over a schema regression. It falls through to the local
         // fallback, which the user can see.
         let raw = r#"{"type":"result","is_error":false,
-            "result":"Sure! {\"branch\":\"fix/b\",\"goal\":\"fix b\"}"}"#;
+            "result":"Sure! {\"branch\":\"fix/b\",\"title\":\"Fix b\",\"goal\":\"fix b\"}"}"#;
         assert!(matches!(parse_response(raw), Err(SuggestError::Unparseable)));
     }
 
@@ -370,7 +408,15 @@ mod tests {
 
     #[test]
     fn blank_fields_count_as_unparseable() {
-        let raw = r#"{"is_error":false,"structured_output":{"branch":"  ","goal":"x"}}"#;
+        let raw =
+            r#"{"is_error":false,"structured_output":{"branch":"  ","title":"x","goal":"x"}}"#;
+        assert!(matches!(parse_response(raw), Err(SuggestError::Unparseable)));
+    }
+
+    #[test]
+    fn a_blank_title_also_counts_as_unparseable() {
+        let raw =
+            r#"{"is_error":false,"structured_output":{"branch":"feat/x","title":"  ","goal":"x"}}"#;
         assert!(matches!(parse_response(raw), Err(SuggestError::Unparseable)));
     }
 
@@ -379,6 +425,8 @@ mod tests {
         let s = local_fallback("  I want All tasks: agentboard → kanban!  ").unwrap();
         assert_eq!(s.branch, "feat/i-want-all-tasks-agentboard-kanban");
         assert_eq!(s.goal, "I want All tasks: agentboard → kanban!");
+        // Short goal — the title is the goal verbatim, not re-slugged.
+        assert_eq!(s.title, "I want All tasks: agentboard → kanban!");
     }
 
     #[test]
@@ -391,6 +439,21 @@ mod tests {
             let slug_chars = s.branch.chars().count() - "feat/".chars().count();
             assert!(slug_chars <= BRANCH_SLUG_SOURCE_CHARS, "{} ({slug_chars} chars)", s.branch);
         }
+    }
+
+    #[test]
+    fn a_long_goal_truncates_the_title_at_a_word_boundary() {
+        let goal = "word ".repeat(40);
+        let s = local_fallback(&goal).unwrap();
+        assert!(s.title.chars().count() <= TITLE_MAX_CHARS, "{:?}", s.title);
+        assert!(!s.title.ends_with(' '), "{:?}", s.title);
+        assert!(goal.starts_with(&s.title), "{:?}", s.title);
+    }
+
+    #[test]
+    fn a_short_goal_title_is_not_truncated() {
+        let s = local_fallback("fix the thing").unwrap();
+        assert_eq!(s.title, "fix the thing");
     }
 
     #[test]

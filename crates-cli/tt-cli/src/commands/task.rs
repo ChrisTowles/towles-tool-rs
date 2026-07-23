@@ -181,7 +181,7 @@ fn remove_task_fully(
     outcome: Option<tt_store::TaskOutcome>,
     on_missing: task_removal::MissingDir,
 ) -> Result<task_removal::Outcome, String> {
-    let store = board_store_for(checkout);
+    let store = board_store_for_removal(checkout, dir);
     let now_ms = epoch_now_ms();
     let outcome = outcome.unwrap_or_else(|| {
         store
@@ -212,20 +212,60 @@ fn epoch_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Open the board store that owns a checkout's rows.
-///
-/// The scope comes from the *checkout*, not the ambient cwd: the row was
-/// written by the app running from there, so a `tt task rm` invoked from inside
-/// any worktree would otherwise open a different, empty database, delete
-/// nothing, and leave the orphaned row this path exists to prevent.
+/// Open the board store scoped to `dir` (see `tt_config::task_scope_from_dir`
+/// — instance state, tt.db included, nests per-checkout).
 ///
 /// `None` on a store that won't open — best-effort by design, since the
 /// worktree removal has already happened by the time this matters and failing
 /// the command now would report a removal that really occurred as a failure.
-fn board_store_for(checkout: &Path) -> Option<tt_store::Store> {
-    let scope = tt_config::task_scope_from_dir(checkout);
+fn board_store_for(dir: &Path) -> Option<tt_store::Store> {
+    let scope = tt_config::task_scope_from_dir(dir);
     let path = tt_config::store_db_path_for_scope(scope.as_deref()).ok()?;
     tt_store::Store::open(&path).ok()
+}
+
+/// Resolve whichever board store actually holds the row bound to `dir` — the
+/// worktree being removed.
+///
+/// Board rows are per-checkout **instance state** (see the root CLAUDE.md's
+/// `tt-config` bullet), so a row lives wherever the app instance that
+/// *created* it happened to be scoped — normally that's `checkout` (the
+/// primary this task anchors to: `ops::discover_root` always resolves up to
+/// it, and most tasks are created by an app instance running from there). But
+/// an app instance running *from inside another task's own worktree* (this
+/// repo's own dev loop does exactly this) scopes itself to that worktree
+/// instead, so a task it creates lands in that worktree's own scoped store,
+/// not `checkout`'s. The scope to try next is therefore the **ambient
+/// cwd's** — wherever this `tt task rm` invocation itself is running from —
+/// since `--root`/discovery always resolve `checkout` to the primary
+/// regardless of cwd, but a person (or script) removing a task is almost
+/// always sitting in the same checkout whose app instance created it. It is
+/// deliberately *not* `task_scope_from_dir(dir)` (the removed task's own
+/// directory): that scope is exactly what `ops::remove_task`'s
+/// `state_cleanup` step already wipes wholesale by task name, so trying it
+/// here would only ever "find" a row a heartbeat before its own database
+/// file is deleted out from under it — never the actual mismatch this
+/// exists to fix. Trying only `checkout` silently no-ops against an empty
+/// database — the row is never closed, the removed worktree's stale "doing"
+/// card is left on the Board forever, and nothing about the successful `tt
+/// task rm` run says so. Try the primary-anchored store first (the common
+/// case, cheapest to get right); fall back to the ambient-cwd scope only if
+/// that didn't have the row.
+fn board_store_for_removal(checkout: &Path, dir: &Path) -> Option<tt_store::Store> {
+    let dir_s = dir.to_string_lossy();
+    let has_row = |s: &tt_store::Store| matches!(s.task_for_worktree_dir(&dir_s), Ok(Some(_)));
+    let primary = board_store_for(checkout);
+    if primary.as_ref().is_some_and(has_row) {
+        return primary;
+    }
+    let ambient = std::env::current_dir().ok().and_then(|cwd| board_store_for(&cwd));
+    if ambient.as_ref().is_some_and(has_row) {
+        return ambient;
+    }
+    // Neither has the row (a worktree with no bound task at all is the
+    // common case for many tasks) — keep the primary-anchored store so
+    // existing behavior for that case is unchanged.
+    primary.or(ambient)
 }
 
 /// Steps 4 and 5 of the removal sequence, for `tt task clean` — which removes
@@ -236,8 +276,9 @@ fn board_store_for(checkout: &Path) -> Option<tt_store::Store> {
 /// **Returns** its notes rather than printing them: `tt task clean --json`
 /// writes a machine-read document to stdout and `ui::warning` (like
 /// `ui::success`) prints to *stdout*, so a helper that reported for itself
-/// would corrupt that document. Each caller renders in its own idiom; `--json`
-/// drops them.
+/// would corrupt that document. The caller folds these into its own
+/// `warnings` collection — `ui::warning` lines in text mode, a `"warnings"`
+/// array in `--json` — so `--json` sees them too, not just text mode.
 fn after_removal(checkout: &Path, dir: &Path) -> Vec<String> {
     let store = board_store_for(checkout);
     task_removal::remove_bindings(
@@ -313,9 +354,14 @@ fn cmd_new(
         run_setup: true,
     };
     let created = ops::create_task(&opts, now_ms()).map_err(|e| e.to_string())?;
-    for warning in &created.warnings {
-        ui::warning(warning);
-    }
+    // Collected rather than printed here: `ui::warning` writes to *stdout*
+    // (see `cmd_clean`'s doc comment on the same hazard), so printing eagerly
+    // would corrupt `--json`'s document whenever a warning fires — which is
+    // not a rare edge case, since a store contended by another `tt`/the app's
+    // own scheduler is exactly when this path is exercised. Every warning
+    // still reaches the caller: as `ui::warning` lines in text mode, as a
+    // `"warnings"` array in `--json`.
+    let mut warnings = created.warnings.clone();
     let dir_s = created.dir.to_string_lossy().to_string();
 
     // Record the board task and bind it to the repo + the new worktree. A store
@@ -325,7 +371,7 @@ fn cmd_new(
     {
         Ok(id) => Some(id),
         Err(e) => {
-            ui::warning(&format!("worktree created, but the board task was not recorded: {e}"));
+            warnings.push(format!("worktree created, but the board task was not recorded: {e}"));
             None
         }
     };
@@ -345,9 +391,13 @@ fn cmd_new(
             "baseLabel": created.base_label,
             "ports": ports,
             "inheritedKeys": created.inherited,
+            "warnings": warnings,
         });
         println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
     } else {
+        for warning in &warnings {
+            ui::warning(warning);
+        }
         match task_id {
             Some(id) => ui::success(&format!(
                 "created task #{id} \"{title}\" ({status}) on branch {}",
@@ -722,13 +772,15 @@ fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), Strin
     // Each removed task may be tracked on the agentboard rail (same rationale
     // as `tt task rm`'s untracking below) — drop its now-dangling repos.json
     // entry so collectors (`prs`/`issues`) don't keep retrying a gone dir.
+    // Collected rather than printed eagerly — `ui::warning` writes to
+    // *stdout*, so printing here would corrupt `--json`'s document whenever
+    // one fires (the same hazard fixed in `cmd_new`); every note still
+    // reaches the caller, just via `warnings` in both modes.
+    let mut warnings = report.warnings.clone();
     if !dry_run {
         for task in &report.removed {
-            let notes = after_removal(&task.checkout, &task.dir);
-            if !json {
-                for note in notes {
-                    ui::warning(&format!("{}: {note}", task.name));
-                }
+            for note in after_removal(&task.checkout, &task.dir) {
+                warnings.push(format!("{}: {note}", task.name));
             }
         }
     }
@@ -744,7 +796,7 @@ fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), Strin
             Ok(Some(prune)) => prunes.push(prune),
             Ok(None) => {}
             Err(e) => {
-                ui::warning(&format!("agentboard prune failed for {}: {e}", dir.display()));
+                warnings.push(format!("agentboard prune failed for {}: {e}", dir.display()));
             }
         }
     }
@@ -773,13 +825,13 @@ fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), Strin
                 "windowsDropped": p.windows_dropped,
                 "panesDropped": p.panes_dropped,
             })).collect::<Vec<_>>(),
-            "warnings": report.warnings,
+            "warnings": warnings,
         });
         println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
         return Ok(());
     }
 
-    for warning in &report.warnings {
+    for warning in &warnings {
         ui::warning(warning);
     }
     let verb = if dry_run { "would remove" } else { "removed" };

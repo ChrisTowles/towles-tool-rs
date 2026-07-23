@@ -220,7 +220,7 @@ const paneStyle = (r: PaneRect) => ({
  * on error after surfacing a toast.
  */
 async function createTaskForSubmit(input: NewTaskSubmit): Promise<number | undefined> {
-  const title = input.goal || input.issues[0]?.title || input.branch;
+  const title = input.title || input.goal || input.issues[0]?.title || input.branch;
   if (!title) return undefined;
   const status = input.worktree ? "doing" : "backlog";
   const created = await storeAddTask(title, { status });
@@ -1133,6 +1133,9 @@ export function AgentboardScreen() {
       { name: p.repoName, dir: p.repoDir, key: p.repoKey, originUrl: p.repoOriginUrl },
       {
         goal: p.goal,
+        // Unused by this call — `taskId` below is set, so `createTask` skips
+        // `createTaskForSubmit` entirely and never reads `title` on a retry.
+        title: p.goal || p.branch,
         branch: p.branch,
         base: p.base,
         options: p.options,
