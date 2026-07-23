@@ -239,6 +239,14 @@ pub struct NudgeArgs {
     /// Which collector to eagerly refresh
     #[arg(value_enum)]
     pub target: NudgeTarget,
+
+    /// Short label for what caused this nudge (e.g. `pr:create`,
+    /// `issue:close`), recorded on the telemetry event only — never parsed,
+    /// never written to the nudge file itself. Lets `gh pr create`/`merge`
+    /// (which run outside `tt-exec`, so no `process.spawn` span exists for
+    /// them) still leave a record in the event log.
+    #[arg(long)]
+    pub trigger: Option<String>,
 }
 
 /// Which collector `tt collect nudge` eagerly refreshes. A thin clap-parsing
