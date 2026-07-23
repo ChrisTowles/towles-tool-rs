@@ -37,7 +37,9 @@ pub struct InitReport {
 /// render the primary checkout's `.env` so it claims its ports. The hook
 /// wiring only takes effect in new worktrees once the settings file is
 /// committed — the caller surfaces that reminder.
-pub fn init_repo(sr: &TaskRoot) -> Result<InitReport> {
+/// `now_ms` (epoch ms) stamps the port registry's `claimed_at_ms` for the
+/// primary render — read at the CLI boundary, never here.
+pub fn init_repo(sr: &TaskRoot, now_ms: i64) -> Result<InitReport> {
     // Template: the committed tokenized .env.example wins; otherwise make
     // sure the sidecar exists (empty-but-explained when freshly created).
     let repo_template = sr.checkout.join(".env.example");
@@ -81,7 +83,7 @@ pub fn init_repo(sr: &TaskRoot) -> Result<InitReport> {
             .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", settings_path.display())))?;
     }
 
-    let render = render_task_env(sr, &sr.checkout, None)?;
+    let render = render_task_env(sr, &sr.checkout, None, now_ms)?;
     Ok(InitReport {
         template,
         sidecar_created,

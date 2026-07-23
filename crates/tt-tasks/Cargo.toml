@@ -14,6 +14,10 @@ png = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# Claim/release events for the local telemetry log — the port registry's
+# writes are exactly the kind of after-the-fact question ("who claimed 42410
+# and when was it released?") the event log exists to answer.
+tracing = { workspace = true }
 tt-config = { workspace = true }
 tt-exec = { workspace = true }
 # For the one shared branch-name slug rule (`branch_name::slug`), so the

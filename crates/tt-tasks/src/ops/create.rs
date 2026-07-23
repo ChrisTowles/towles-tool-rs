@@ -43,7 +43,9 @@ pub struct CreatedTask {
 
 /// Create the task for `branch`: worktree under `tasks/`, rendered `.env`
 /// with port claims, sibling-secrets inheritance, setup step.
-pub fn create_task(opts: &CreateOpts) -> Result<CreatedTask> {
+/// `now_ms` (epoch ms) stamps the port registry's `claimed_at_ms` — read at
+/// the CLI/app boundary, never here.
+pub fn create_task(opts: &CreateOpts, now_ms: i64) -> Result<CreatedTask> {
     let sr = discover_root(opts.root.as_deref())?;
     validate_branch_name(&opts.branch)?;
     let mut warnings = Vec::new();
@@ -97,7 +99,7 @@ pub fn create_task(opts: &CreateOpts) -> Result<CreatedTask> {
     // behind: a real worktree with no rendered `.env`, invisible as "failed"
     // to `tt task ls` and blocking a retry with `TaskExists`.
     let created = (|| -> Result<CreatedTask> {
-        let summary = render_task_env(&sr, &dir, Some(&base))?;
+        let summary = render_task_env(&sr, &dir, Some(&base), now_ms)?;
         warnings.extend(summary.warnings);
 
         // Inherit secrets from the first sibling checkout that has a .env —

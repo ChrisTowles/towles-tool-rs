@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use super::claims::{
     ClaimLock, port_occupied, port_registry_path, record_task_ports, registry_claims,
 };
-use super::{OpsError, Result, TEMPLATE_SIDECAR, TaskRoot, base_branch, git_task};
+use super::{OpsError, Result, TEMPLATE_SIDECAR, TaskRoot, base_branch, git_task, write_atomic};
 use crate::{envfile, layout};
 
 /// The template sidecar's path: `<checkout>/.claude/task-env.template`,
@@ -66,10 +66,14 @@ pub struct RenderSummary {
 /// task (`tt task env <name>`) ignores this and keeps the marker's already
 /// recorded base: it's fixed at creation and must never drift just because
 /// the checkout's branch or default has since changed.
+///
+/// `now_ms` (epoch ms) stamps the registry's `claimed_at_ms` — passed in at
+/// the CLI/app boundary, never read from the clock here.
 pub fn render_task_env(
     sr: &TaskRoot,
     dir: &Path,
     new_task_base: Option<&str>,
+    now_ms: i64,
 ) -> Result<RenderSummary> {
     let name = dir
         .file_name()
@@ -142,7 +146,7 @@ pub fn render_task_env(
         })?;
 
     let (merged, preserved) = envfile::merge_missing_keys(&outcome.text, &old_text);
-    fs::write(&env_path, &merged)
+    write_atomic(&env_path, &merged)
         .map_err(|e| OpsError::Io(format!("cannot write {}: {e}", env_path.display())))?;
 
     if is_task {
@@ -158,13 +162,28 @@ pub fn render_task_env(
     // Best-effort like the rest of the registry: it's a backstop for the
     // live `.env` scan, so a failed write degrades protection, it doesn't
     // invalidate the `.env` this render just successfully wrote.
-    let claimed_now: BTreeSet<u16> =
-        outcome.reused.iter().chain(outcome.claimed.iter()).map(|(_, p)| *p).collect();
+    let claimed_now: Vec<(String, u16)> =
+        outcome.reused.iter().chain(outcome.claimed.iter()).cloned().collect();
     let recorded = registry_path.as_ref().map_err(|e| e.to_string()).and_then(|path| {
-        record_task_ports(sr, path, &name, &claimed_now).map_err(|e| e.to_string())
+        record_task_ports(sr, path, &name, &claimed_now, now_ms).map_err(|e| e.to_string())
     });
     if let Err(e) = recorded {
         warnings.push(format!("could not update the port registry: {e}"));
+    }
+
+    // A manual `.env.local` pin bypasses the claim system entirely — warn
+    // when it collides with a port some sibling checkout has claimed, since
+    // nothing else ever surfaces that (the pin silently wins at dev-server
+    // launch and the two servers fight over the port at runtime).
+    if let Ok(local) = fs::read_to_string(dir.join(".env.local")) {
+        for (var, port) in envfile::port_claims_by_key(&local) {
+            if sibling_claims.contains(&port) {
+                warnings.push(format!(
+                    ".env.local pins {var}={port}, but a sibling checkout has claimed that port \
+                     — the pin wins at launch and the two servers will collide"
+                ));
+            }
+        }
     }
     if let Ok(out) = git_task(dir, &["check-ignore", "-q", ".env"])
         && !out.ok()

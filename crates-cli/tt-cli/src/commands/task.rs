@@ -88,7 +88,7 @@ fn cmd_hook_create() -> Result<(), String> {
         base: hook_str(&input, &["source_ref"]).map(str::to_string),
         run_setup: true,
     };
-    let dir = match ops::create_task(&opts) {
+    let dir = match ops::create_task(&opts, now_ms()) {
         Ok(created) => {
             for warning in &created.warnings {
                 eprintln!("tt task: {warning}");
@@ -311,7 +311,7 @@ fn cmd_new(
         base: base.map(str::to_string),
         run_setup: true,
     };
-    let created = ops::create_task(&opts).map_err(|e| e.to_string())?;
+    let created = ops::create_task(&opts, now_ms()).map_err(|e| e.to_string())?;
     for warning in &created.warnings {
         ui::warning(warning);
     }
@@ -403,7 +403,7 @@ fn checkout_dir(sr: &TaskRoot, name: &str) -> Result<std::path::PathBuf, String>
 
 fn cmd_init(root: Option<&Path>) -> Result<(), String> {
     let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
-    let report = ops::init_repo(&sr).map_err(|e| e.to_string())?;
+    let report = ops::init_repo(&sr, now_ms()).map_err(|e| e.to_string())?;
 
     println!("template: {}", report.template.display());
     if report.sidecar_created {
@@ -440,7 +440,7 @@ fn cmd_init(root: Option<&Path>) -> Result<(), String> {
 fn cmd_env(name: &str, root: Option<&Path>) -> Result<(), String> {
     let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
     let dir = checkout_dir(&sr, name)?;
-    let summary = ops::render_task_env(&sr, &dir, None).map_err(|e| e.to_string())?;
+    let summary = ops::render_task_env(&sr, &dir, None, now_ms()).map_err(|e| e.to_string())?;
     for warning in &summary.warnings {
         ui::warning(warning);
     }
@@ -764,6 +764,8 @@ fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), Strin
             })).collect::<Vec<_>>(),
             "sweptStateDirs": report.swept_state_dirs.iter()
                 .map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "sweptPortRegistries": report.swept_port_registries.iter()
+                .map(|p| p.display().to_string()).collect::<Vec<_>>(),
             "agentboard": prunes.iter().map(|p| serde_json::json!({
                 "dir": p.dir.display().to_string(),
                 "sessionFoldersDropped": p.session_folders_dropped,
@@ -796,6 +798,13 @@ fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), Strin
             println!("  {}", dir.display());
         }
     }
+    if !report.swept_port_registries.is_empty() {
+        let verb = if dry_run { "would sweep" } else { "swept" };
+        println!("{verb} port registries of removed checkouts:");
+        for path in &report.swept_port_registries {
+            println!("  {}", path.display());
+        }
+    }
     for prune in &prunes {
         let verb = if dry_run { "would prune" } else { "pruned" };
         println!(
@@ -806,8 +815,21 @@ fn cmd_clean(dry_run: bool, json: bool, root: Option<&Path>) -> Result<(), Strin
             prune.session_folders_dropped.len()
         );
     }
-    if report.removed.is_empty() && report.swept_state_dirs.is_empty() && prunes.is_empty() {
+    if report.removed.is_empty()
+        && report.swept_state_dirs.is_empty()
+        && report.swept_port_registries.is_empty()
+        && prunes.is_empty()
+    {
         println!("nothing to clean");
     }
     Ok(())
+}
+
+/// Epoch ms for the port registry's `claimed_at_ms` stamps — the clock is
+/// read here at the CLI boundary, per the now_ms discipline.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }

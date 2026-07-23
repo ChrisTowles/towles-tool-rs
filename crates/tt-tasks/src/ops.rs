@@ -60,6 +60,13 @@ pub enum OpsError {
     #[error("{0}")]
     Io(String),
 
+    /// The port-registry file couldn't be written/encoded. Structured (not
+    /// folded into [`OpsError::Io`]) because callers degrade differently: a
+    /// failed registry write is a warning on an otherwise-successful render,
+    /// never a failure of the render itself.
+    #[error("port registry {path}: {detail}")]
+    Registry { path: String, detail: String },
+
     #[error("timed out waiting for {0} — another task command may be stuck")]
     LockTimeout(String),
 
@@ -613,7 +620,7 @@ mod init;
 mod remove;
 mod render;
 
-pub use claims::port_occupied;
+pub use claims::{PortClaim, PortRegistry, port_occupied};
 pub use create::{CreateOpts, CreatedTask, create_task};
 pub use init::{InitReport, init_repo, wire_worktree_hooks};
 pub use remove::{
@@ -624,13 +631,24 @@ pub use render::{RenderSummary, init_template_sidecar, render_task_env, template
 
 #[cfg(test)]
 pub(crate) use claims::{
-    PORT_REGISTRY_FILE, checkout_keyed_filename, claim_lock_path, record_task_ports,
-    registry_claims, release_task_ports,
+    PORT_REGISTRY_FILE, claim_lock_path, record_task_ports, registry_claims, release_task_ports,
 };
+
+/// Write via temp-file + rename so a crash mid-write can never leave a
+/// truncated file behind: the registry parses-or-reads-empty (silently
+/// dropping every claim), and a half-written `.env` loses claims the same
+/// way. Callers hold the claim lock during writes, so the fixed `.tmp`
+/// sibling name can't collide across processes.
+pub(crate) fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, contents)?;
+    fs::rename(&tmp, path)
+}
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
     use std::net::TcpListener;
 
     use super::init::WORKTREE_HOOKS;
@@ -801,6 +819,12 @@ mod tests {
         assert_ne!(a, b, "basename collisions must be separated by the path hash");
     }
 
+    /// `(var, port)` pairs for the registry tests — var names are synthesized
+    /// (`P<port>`), which is all the metadata plumbing needs.
+    fn port_pairs(ports: &[u16]) -> Vec<(String, u16)> {
+        ports.iter().map(|&p| (format!("P{p}"), p)).collect()
+    }
+
     /// A temp registry file next to the fixture checkout — the production
     /// path lives under the real config dir ([`port_registry_path`]), which
     /// tests must never touch.
@@ -815,7 +839,7 @@ mod tests {
         fs::create_dir_all(sr.task_dir("feat-one")).unwrap();
         fs::create_dir_all(sr.task_dir("feat-two")).unwrap();
 
-        record_task_ports(&sr, &reg, "feat-one", &BTreeSet::from([4001, 4002])).unwrap();
+        record_task_ports(&sr, &reg, "feat-one", &port_pairs(&[4001, 4002]), 7).unwrap();
 
         // A different task must see both ports as taken...
         let claims = registry_claims(&sr, &reg, "feat-two");
@@ -840,8 +864,8 @@ mod tests {
         let reg = temp_registry(&sr);
         fs::create_dir_all(sr.task_dir("feat-one")).unwrap();
 
-        record_task_ports(&sr, &reg, "feat-one", &BTreeSet::from([5001])).unwrap();
-        record_task_ports(&sr, &reg, "feat-one", &BTreeSet::from([5002])).unwrap();
+        record_task_ports(&sr, &reg, "feat-one", &port_pairs(&[5001]), 7).unwrap();
+        record_task_ports(&sr, &reg, "feat-one", &port_pairs(&[5002]), 7).unwrap();
 
         let claims = registry_claims(&sr, &reg, "other");
         assert!(!claims.contains(&5001), "stale entry from the earlier render must be gone");
@@ -856,7 +880,7 @@ mod tests {
         let (_tmp, sr) = temp_task_root();
         let reg = temp_registry(&sr);
 
-        record_task_ports(&sr, &reg, "feat-one", &BTreeSet::new()).unwrap();
+        record_task_ports(&sr, &reg, "feat-one", &[], 7).unwrap();
         assert!(!reg.exists());
     }
 
@@ -867,7 +891,7 @@ mod tests {
         let task_dir = sr.task_dir("feat-gone");
         fs::create_dir_all(&task_dir).unwrap();
 
-        record_task_ports(&sr, &reg, "feat-gone", &BTreeSet::from([6001])).unwrap();
+        record_task_ports(&sr, &reg, "feat-gone", &port_pairs(&[6001]), 7).unwrap();
         assert!(registry_claims(&sr, &reg, "someone-else").contains(&6001));
 
         // Simulate the directory vanishing some way other than `tt task rm`
@@ -875,6 +899,54 @@ mod tests {
         // must notice on its own next touch, not stay stuck forever.
         fs::remove_dir_all(&task_dir).unwrap();
         assert!(registry_claims(&sr, &reg, "someone-else").is_empty());
+    }
+
+    #[test]
+    fn registry_records_claim_metadata_and_its_checkout() {
+        let (_tmp, sr) = temp_task_root();
+        let reg = temp_registry(&sr);
+        fs::create_dir_all(sr.task_dir("feat-one")).unwrap();
+
+        record_task_ports(&sr, &reg, "feat-one", &[("UI_PORT".to_string(), 4001)], 1234).unwrap();
+
+        let registry = super::claims::load_port_registry(&reg);
+        assert_eq!(registry.checkout, sr.checkout.display().to_string());
+        let claim = &registry.ports[&4001];
+        assert_eq!(claim.owner, "feat-one");
+        assert_eq!(claim.var, "UI_PORT");
+        assert_eq!(claim.claimed_at_ms, 1234);
+    }
+
+    #[test]
+    fn registry_drops_owners_that_are_not_valid_task_names() {
+        // A hand-edited (or corrupt) owner like "../x" must never survive a
+        // load — load_live_registry would otherwise path-join it under the
+        // worktrees dir on the liveness probe.
+        let (_tmp, sr) = temp_task_root();
+        let reg = temp_registry(&sr);
+        fs::write(
+            &reg,
+            serde_json::json!({
+                "checkout": sr.checkout.display().to_string(),
+                "ports": { "4001": { "owner": "../escape", "var": "P", "claimed_at_ms": 0 } },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(registry_claims(&sr, &reg, "other").is_empty());
+    }
+
+    #[test]
+    fn pre_metadata_registry_files_read_as_empty() {
+        // Hard cutover from the flat `{port: owner}` format: an old file
+        // must block nothing (claims re-record on the next render), never
+        // error or half-parse.
+        let (_tmp, sr) = temp_task_root();
+        let reg = temp_registry(&sr);
+        fs::write(&reg, r#"{ "4001": "feat-old" }"#).unwrap();
+
+        assert!(registry_claims(&sr, &reg, "other").is_empty());
     }
 
     #[test]
@@ -888,7 +960,7 @@ mod tests {
         let task = sr.task_dir("feat-thing");
         fs::create_dir_all(&task).unwrap();
 
-        let summary = render_task_env(&sr, &task, Some("main")).unwrap();
+        let summary = render_task_env(&sr, &task, Some("main"), 7).unwrap();
 
         assert!(summary.ports.is_empty());
         assert_eq!(fs::read_to_string(task.join(".env")).unwrap().trim(), "");
@@ -901,7 +973,7 @@ mod tests {
         fs::create_dir_all(sr.checkout.join(layout::CLAUDE_DIR)).unwrap();
         fs::write(template_sidecar_path(&sr), "X=${tt:bogus}\n").unwrap();
 
-        let err = render_task_env(&sr, &sr.checkout, None).unwrap_err();
+        let err = render_task_env(&sr, &sr.checkout, None, 7).unwrap_err();
 
         let msg = err.to_string();
         assert!(msg.contains(TEMPLATE_SIDECAR), "error must name the template file: {msg}");

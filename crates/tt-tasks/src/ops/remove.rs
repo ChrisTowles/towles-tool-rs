@@ -84,7 +84,16 @@ pub enum RemoveOutcome {
 /// setting.
 pub fn remove_task(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<RemoveOutcome> {
     let sr = discover_root(opts.root.as_deref())?;
-    let name = opts.name.clone();
+    // Parse-don't-validate: a name that isn't one safe path segment (a
+    // hand-typed `../x`) must die here, before it is ever joined under the
+    // worktrees dir and `remove_dir_all`'d.
+    let Some(name) = crate::layout::TaskName::parse(&opts.name) else {
+        return Err(OpsError::NoSuchTask {
+            name: opts.name.clone(),
+            tasks_dir: sr.tasks_dir().display().to_string(),
+        });
+    };
+    let name = name.as_str().to_string();
     if name == "primary" || sr.checkout.file_name().and_then(|n| n.to_str()) == Some(&name) {
         return Err(OpsError::PrimaryRemoval);
     }
@@ -351,6 +360,10 @@ pub struct CleanReport {
     pub kept: Vec<KeptTask>,
     /// Orphaned per-scope state dirs swept (dry-run: would sweep).
     pub swept_state_dirs: Vec<PathBuf>,
+    /// Port-registry files swept (dry-run: would sweep) because their
+    /// checkout no longer exists — the one leak the load-time prune can't
+    /// reach, since nothing ever renders a gone repo again.
+    pub swept_port_registries: Vec<PathBuf>,
     /// State scopes of the checkouts that remain (checkout + kept tasks) —
     /// callers prune *these* agentboard stores plus the unscoped one.
     pub live_scopes: Vec<String>,
@@ -515,11 +528,45 @@ pub fn clean_tasks(
         }
     }
 
+    // Sweep registry files whose checkout is gone entirely. Each file is
+    // self-identifying (`PortRegistry::checkout`), so this never re-derives
+    // the filename hash; a file that reads as empty with no checkout
+    // recorded is unparseable/pre-metadata and holds no claims either way.
+    // Machine-wide by design — a deleted repo can't sweep itself, so any
+    // repo's `clean` tidies the whole ledger dir.
+    let mut swept_port_registries = Vec::new();
+    if let Ok(ports_dir) = tt_config::task_ports_dir()
+        && let Ok(entries) = fs::read_dir(&ports_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let registry = super::claims::load_port_registry(&path);
+            let dead = registry.checkout.is_empty() || !Path::new(&registry.checkout).is_dir();
+            if !dead {
+                continue;
+            }
+            if opts.dry_run {
+                swept_port_registries.push(path);
+            } else {
+                match fs::remove_file(&path) {
+                    Ok(()) => swept_port_registries.push(path),
+                    Err(e) => {
+                        warnings.push(format!("could not remove {}: {e}", path.display()));
+                    }
+                }
+            }
+        }
+    }
+
     Ok(CleanReport {
         dry_run: opts.dry_run,
         removed,
         kept,
         swept_state_dirs,
+        swept_port_registries,
         live_scopes,
         warnings,
     })
