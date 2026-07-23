@@ -34,6 +34,8 @@ export type LedgerTotals = {
 
 export type ClaudeSession = {
   sessionId: string;
+  /** Absolute path to the session's transcript `.jsonl` file. */
+  path: string;
   title: string | null;
   project: string;
   date: string;
@@ -43,8 +45,7 @@ export type ClaudeSession = {
   cacheCreationTokens: number;
   /** Estimated USD cost, priced per model (approximate). */
   costUsd: number;
-  /** Real launch directory, for "Open in Agentboard"; null for transcripts
-   * that predate the field. */
+  /** Real launch directory; null for transcripts that predate the field. */
   cwd: string | null;
   /** Prompt-text context around the match; only present on search hits. */
   snippet?: string;
