@@ -63,6 +63,31 @@ impl StoreState {
             tracing::warn!(error = %e, "store: failed to reconcile tracked-repo identity cache");
         }
     }
+
+    /// Sync every worktree-backed task's board column to whether its folder
+    /// currently has a live, running agent — see
+    /// `tt_agentboard::task_status::sync_worktree_task_statuses`. This is the
+    /// only path that moves a card between `backlog`/`doing` now that manual
+    /// drag-and-drop is gone. Returns how many rows changed (0 if the store
+    /// never opened). Best-effort: a write failure just logs and leaves that
+    /// row for the next tick to retry.
+    pub fn sync_worktree_task_statuses(
+        &self,
+        payload: &tt_agentboard::StatePayload,
+        now_ms: i64,
+    ) -> usize {
+        let guard = self.store.lock().unwrap();
+        let Some(store) = guard.as_ref() else {
+            return 0;
+        };
+        match tt_agentboard::task_status::sync_worktree_task_statuses(store, payload, now_ms) {
+            Ok(changed) => changed,
+            Err(e) => {
+                tracing::warn!(error = %e, "store: failed to sync worktree task statuses");
+                0
+            }
+        }
+    }
 }
 
 /// Managed flag guarding against overlapping manual "refresh now" runs. A
@@ -337,7 +362,7 @@ pub fn store_task_set_worktree(
     Ok(())
 }
 
-/// Move a todo to a kanban column (backlog/next/doing/review/done), then
+/// Move a todo to a kanban column (backlog/doing/done), then
 /// re-emit, and sync GitHub if this crosses the `done` boundary (see
 /// [`spawn_gh_status_sync`]). Used by the "Move to" menu.
 #[tauri::command]

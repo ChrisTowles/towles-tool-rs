@@ -240,12 +240,16 @@ export function InlineNewTask({
   repo,
   onCancel,
   onSubmit,
+  initialGoal,
 }: {
   repo: NewTaskRepo;
   onCancel: () => void;
   onSubmit: (input: NewTaskSubmit) => void;
+  /** Pre-fills the goal field — set when this form was opened to reopen a
+   * closed task (its text seeds the goal) rather than to start a new one. */
+  initialGoal?: string;
 }) {
-  const [goal, setGoal] = useState("");
+  const [goal, setGoal] = useState(initialGoal ?? "");
   const [images, setImages] = useState<PastedImage[]>([]);
   // Attached images are written to disk as soon as they're pasted, not at
   // submit: "Suggest name + goal" needs real paths to hand `claude -p` (a

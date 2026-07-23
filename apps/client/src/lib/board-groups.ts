@@ -107,7 +107,7 @@ export function byBoardOrder(a: TaskItem, b: TaskItem): number {
 
 /** The column a card renders in. Closed tasks (an `outcome` on record) render
  * in the terminal "Closed" column whatever their frozen kanban `status` says —
- * an abandoned task keeps `status: "review"` as history, but the board shows
+ * an abandoned task keeps `status: "doing"` as history, but the board shows
  * where it *is*, not where it was. One helper shared by bucketing, counting,
  * and the drag handlers, so they can never disagree about a card's column. */
 export function boardColumnOf(task: Pick<TaskItem, "status" | "outcome">): TaskStatus {
@@ -115,7 +115,7 @@ export function boardColumnOf(task: Pick<TaskItem, "status" | "outcome">): TaskS
 }
 
 /**
- * Bucket tasks into the five columns, each sorted in board order. Closed
+ * Bucket tasks into the three columns, each sorted in board order. Closed
  * tasks land in the terminal column via `boardColumnOf`.
  */
 export function bucketByStatus(tasks: TaskItem[]): Record<TaskStatus, TaskItem[]> {

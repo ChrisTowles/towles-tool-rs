@@ -50,7 +50,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 /// The sort/range key format for calendar events: UTC, fixed width, matching
 /// the `starts_at_utc`/`ends_at_utc` generated columns' `strftime` format
@@ -106,8 +106,11 @@ pub const EVENT_RETAIN_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// How many MCP call-log rows ride along in a [`Snapshot`] (newest first).
 const MCP_CALL_SNAPSHOT_LIMIT: usize = 100;
 
-/// Kanban columns a todo can live in, in board order.
-pub const TASK_STATUSES: [&str; 5] = ["backlog", "next", "doing", "review", "done"];
+/// Kanban columns a todo can live in, in board order. `next`/`review` (Up
+/// Next / In Review) were removed 2026-07-23: in practice every task was
+/// either not started (`backlog`), had an agent running on it (`doing`), or
+/// was finished (`done`) — the two middle columns never held anything.
+pub const TASK_STATUSES: [&str; 3] = ["backlog", "doing", "done"];
 
 /// How a closed task ended. Orthogonal to [`TASK_STATUSES`]: `status` is where
 /// the card sits on the board, `outcome` is the record of how the work
@@ -325,8 +328,7 @@ const MCP_CALL_COLS: &str = "id, ts, method, tool, args, ok, error, duration_ms,
 /// Kanban ordering used across queries: board column, then manual position, then age.
 const TASK_ORDER: &str = "\
 ORDER BY CASE status
-    WHEN 'backlog' THEN 0 WHEN 'next' THEN 1 WHEN 'doing' THEN 2
-    WHEN 'review' THEN 3 WHEN 'done' THEN 4 ELSE 5 END,
+    WHEN 'backlog' THEN 0 WHEN 'doing' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
   position ASC, created_at ASC";
 
 // ---------------------------------------------------------------------------
@@ -702,6 +704,7 @@ impl Store {
         self.migrate_tasks_v8_drop_due()?;
         self.migrate_tasks_v11_worktree_cols()?;
         self.migrate_tasks_v13_outcome()?;
+        self.migrate_tasks_v14_drop_next_review()?;
         self.migrate_events_v9()?;
         self.migrate_events_v10_iso()?;
         // After v10, never inside SCHEMA_V1: that batch runs before the
@@ -1080,6 +1083,22 @@ impl Store {
                  ALTER TABLE tasks ADD COLUMN archived_at INTEGER;",
             )?;
         }
+        Ok(())
+    }
+
+    /// v14: the "Up Next" and "In Review" columns are gone (2026-07-23) —
+    /// they never held a task in practice, since a card was always either
+    /// untouched, actively worked (an agent running on its worktree), or
+    /// done. Remap existing rows onto the columns that remain: `next` folds
+    /// back to `backlog` (never started), `review` folds forward to `doing`
+    /// (work had begun). A plain `UPDATE`, not a rebuild, since no column
+    /// shape changes — and it's idempotent: after the first pass no row
+    /// matches `next`/`review` again.
+    fn migrate_tasks_v14_drop_next_review(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "UPDATE tasks SET status = 'backlog' WHERE status = 'next';
+             UPDATE tasks SET status = 'doing' WHERE status = 'review';",
+        )?;
         Ok(())
     }
 
@@ -3143,9 +3162,9 @@ mod tests {
         assert_eq!(done.completed_at, Some(20));
 
         // Re-opening clears completed_at.
-        s.set_task_status(t.id, "next", 30).unwrap();
+        s.set_task_status(t.id, "backlog", 30).unwrap();
         let reopened = s.open_tasks().unwrap();
-        assert_eq!(reopened[0].status, "next");
+        assert_eq!(reopened[0].status, "backlog");
         assert_eq!(reopened[0].completed_at, None);
     }
 
@@ -3200,10 +3219,10 @@ mod tests {
     #[test]
     fn close_task_as_abandoned_freezes_status() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("didn't pan out", "review", None, 1).unwrap();
+        let t = s.add_task("didn't pan out", "doing", None, 1).unwrap();
 
         let closed = s.close_task(t.id, TaskOutcome::Abandoned, 500).unwrap();
-        assert_eq!(closed.status, "review", "status stays where the work stopped");
+        assert_eq!(closed.status, "doing", "status stays where the work stopped");
         assert_eq!(closed.outcome.as_deref(), Some("abandoned"));
         assert_eq!(closed.completed_at, Some(500), "stamped so the archive sweep can age it");
         assert!(!s.open_tasks().unwrap().iter().any(|x| x.id == t.id), "closed = not open");
@@ -3327,6 +3346,50 @@ mod tests {
     }
 
     #[test]
+    fn migrate_v14_remaps_next_and_review_rows() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tt.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'backlog',
+                    position INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    completed_at INTEGER,
+                    notes TEXT,
+                    worktree_repo_root TEXT,
+                    worktree_repo TEXT,
+                    worktree_branch TEXT,
+                    worktree_dir TEXT,
+                    outcome TEXT,
+                    archived_at INTEGER
+                );
+                INSERT INTO tasks (text, status, position, created_at)
+                    VALUES ('was up next', 'next', 0, 1);
+                INSERT INTO tasks (text, status, position, created_at)
+                    VALUES ('was in review', 'review', 0, 2);",
+            )
+            .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        let tasks = s.snapshot().unwrap().tasks;
+        let next = tasks.iter().find(|t| t.text == "was up next").unwrap();
+        let review = tasks.iter().find(|t| t.text == "was in review").unwrap();
+        assert_eq!(next.status, "backlog", "next folds back to not-started");
+        assert_eq!(review.status, "doing", "review folds forward to in-progress");
+
+        // Idempotent: reopening a db that already went through v14 is a no-op.
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.task_by_id(next.id).unwrap().status, "backlog");
+        assert_eq!(s.task_by_id(review.id).unwrap().status, "doing");
+    }
+
+    #[test]
     fn add_task_stores_notes_and_lands_in_requested_status() {
         let s = Store::open_in_memory().unwrap();
         let t = s.add_task("port the CLI", "backlog", Some("start with doctor"), 1).unwrap();
@@ -3420,7 +3483,7 @@ mod tests {
         assert_eq!(pos(c.id, &tasks), 2);
 
         // Bouncing a card out and back re-appends it after the survivors.
-        s.set_task_status(a.id, "review", 13).unwrap();
+        s.set_task_status(a.id, "backlog", 13).unwrap();
         s.set_task_status(a.id, "doing", 14).unwrap();
         let tasks = s.snapshot().unwrap().tasks;
         assert_eq!(pos(a.id, &tasks), 3);
@@ -3500,9 +3563,9 @@ mod tests {
         assert_eq!(done.status, "done");
         assert_eq!(done.completed_at, Some(20));
 
-        s.set_task_position(t.id, "next", 0, 30).unwrap();
+        s.set_task_position(t.id, "backlog", 0, 30).unwrap();
         let reopened = s.open_tasks().unwrap();
-        assert_eq!(reopened[0].status, "next");
+        assert_eq!(reopened[0].status, "backlog");
         assert_eq!(reopened[0].completed_at, None);
     }
 
@@ -3993,26 +4056,14 @@ mod tests {
     fn open_tasks_orders_across_columns_by_board_order() {
         let s = Store::open_in_memory().unwrap();
         s.add_task("backlog item", "backlog", None, 1).unwrap();
-        let review = s.add_task("review item", "backlog", None, 2).unwrap();
-        let doing = s.add_task("doing item", "backlog", None, 3).unwrap();
-        let next = s.add_task("next item", "backlog", None, 4).unwrap();
-        let done = s.add_task("done item", "backlog", None, 5).unwrap();
-        s.set_task_status(review.id, "review", 10).unwrap();
+        let doing = s.add_task("doing item", "backlog", None, 2).unwrap();
+        let done = s.add_task("done item", "backlog", None, 3).unwrap();
         s.set_task_status(doing.id, "doing", 11).unwrap();
-        s.set_task_status(next.id, "next", 12).unwrap();
         s.set_task_status(done.id, "done", 13).unwrap();
 
-        // open_tasks excludes done and returns backlog → next → doing → review.
+        // open_tasks excludes done and returns backlog → doing.
         let statuses: Vec<String> = s.open_tasks().unwrap().into_iter().map(|t| t.status).collect();
-        assert_eq!(
-            statuses,
-            vec![
-                "backlog".to_string(),
-                "next".to_string(),
-                "doing".to_string(),
-                "review".to_string(),
-            ]
-        );
+        assert_eq!(statuses, vec!["backlog".to_string(), "doing".to_string()]);
     }
 
     #[test]

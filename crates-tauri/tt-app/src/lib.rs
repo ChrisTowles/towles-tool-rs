@@ -310,6 +310,18 @@ pub fn run() {
                         else {
                             continue;
                         };
+                        // Auto-drive backlog/doing off this same stamped
+                        // payload — the only path that moves a Board card
+                        // now that manual drag-and-drop is gone (see
+                        // `store::StoreState::sync_worktree_task_statuses`).
+                        // Runs every tick, not just on a payload change: the
+                        // signal that flips a task is agent liveness, which
+                        // this loop's own dedup would otherwise swallow.
+                        let store_state = handle.state::<store::StoreState>();
+                        if store_state.sync_worktree_task_statuses(&payload, store::now_ms()) > 0 {
+                            store::emit_snapshot_from_app(&handle);
+                        }
+
                         let mut probe = payload.clone();
                         probe.ts = 0;
                         if last.as_ref() != Some(&probe) {

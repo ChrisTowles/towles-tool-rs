@@ -90,8 +90,10 @@ export function toCalEvents(events: WireCalEvent[]): CalEvent[] {
   return events.map(toCalEvent).filter((e): e is CalEvent => e !== null);
 }
 
-/** Kanban columns a todo can live in, in board order. */
-export const TASK_STATUSES = ["backlog", "next", "doing", "review", "done"] as const;
+/** Kanban columns a todo can live in, in board order. "Up next"/"In review"
+ * were removed 2026-07-23 — a task is always either untouched, actively
+ * worked (an agent running on its worktree), or done. */
+export const TASK_STATUSES = ["backlog", "doing", "done"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 /** Human labels for each kanban column. The terminal column reads "Closed"
@@ -100,9 +102,7 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
  * how it ended. */
 export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
   backlog: "Backlog",
-  next: "Up next",
   doing: "In progress",
-  review: "In review",
   done: "Closed",
 };
 
