@@ -9,6 +9,7 @@ import { GhPrsScreen } from "@/screens/gh-prs";
 import { McpScreen } from "@/screens/mcp";
 import { SettingsScreen } from "@/screens/settings";
 import { SlackScreen } from "@/screens/slack";
+import { TaskExplorerScreen } from "@/screens/task-explorer";
 import { TelemetryScreen } from "@/screens/telemetry";
 
 export const SCREEN_COMPONENTS: Record<ScreenId, ComponentType> = {
@@ -21,5 +22,6 @@ export const SCREEN_COMPONENTS: Record<ScreenId, ComponentType> = {
   "gh-prs": GhPrsScreen,
   mcp: McpScreen,
   telemetry: TelemetryScreen,
+  "task-explorer": TaskExplorerScreen,
   settings: SettingsScreen,
 };

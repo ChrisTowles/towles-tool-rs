@@ -180,6 +180,28 @@ impl TermState {
             .collect()
     }
 
+    /// Each live session's shell pid and a short display label (shell kind +
+    /// working-dir folder name), for the Task Explorer's per-terminal
+    /// process grouping. A session whose child has already exited (pid
+    /// unavailable) is omitted.
+    pub fn shell_pid_labels(&self) -> Vec<(String, u32, String)> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(id, s)| {
+                let pid = s.child.process_id()?;
+                let dir_name = s
+                    .dir
+                    .as_deref()
+                    .and_then(|d| d.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?");
+                Some((id.clone(), pid, format!("{} — {dir_name}", s.shell_kind)))
+            })
+            .collect()
+    }
+
     /// Kill, reap, and drop the session with `term_id`, if any. The kill/wait
     /// runs after the map lock is released. `pub(crate)` so task removal
     /// (`tasks.rs`) can tear down a folder's live PTYs before its worktree is
