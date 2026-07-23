@@ -356,6 +356,21 @@ pub fn orphaned_count(dir: &Path) -> u64 {
     .unwrap_or(0)
 }
 
+/// Epoch-seconds commit time of the newest commit unique to this worktree's
+/// branch — commits in `HEAD` but not in `base` — or `None` when the branch has
+/// added no commits of its own. The recency signal behind `tt task ls --stale`
+/// ([`crate::staleness`]): deliberately the branch's *own* newest commit, so a
+/// fresh empty task off a long-untouched base does not read as stale, and a
+/// checkout sitting on the base branch reports `None`. Landedness is a separate
+/// axis judged by [`work_state`], not by this age.
+pub fn last_own_commit_unix(dir: &Path, base: &str) -> Option<i64> {
+    let range = format!("{base}..HEAD");
+    git_task(dir, &["log", "-1", "--format=%ct", &range])
+        .ok()
+        .filter(|o| o.ok())
+        .and_then(|o| o.stdout.trim().parse::<i64>().ok())
+}
+
 pub fn git_task(dir: &Path, args: &[&str]) -> Result<tt_exec::Output> {
     tt_exec::run_in_dir_with_timeout_env(
         "git",

@@ -29,7 +29,7 @@ pub fn run(command: TaskCommands) -> i32 {
             base.as_deref(),
             json,
         ),
-        TaskCommands::Ls { json, root } => cmd_ls(json, root.as_deref()),
+        TaskCommands::Ls { json, stale, root } => cmd_ls(json, stale, root.as_deref()),
         TaskCommands::Rm { name, force, outcome, root } => {
             cmd_rm(&name, force, outcome.as_deref(), root.as_deref())
         }
@@ -451,7 +451,7 @@ fn cmd_env(name: &str, root: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
+fn cmd_ls(json: bool, stale: Option<u64>, root: Option<&Path>) -> Result<(), String> {
     let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
     let _ = ops::git_checkout(&sr.checkout, &["worktree", "prune"]);
     let mut checkouts: Vec<(String, std::path::PathBuf, bool)> =
@@ -459,6 +459,9 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
     checkouts.extend(sr.tasks().into_iter().map(|(name, dir)| (name, dir, false)));
 
     let refs = ops::base_refs(&sr.checkout);
+    // One clock read at the command boundary; the staleness math takes it as an
+    // injected instant (tt_tasks::staleness::assess reads no clock of its own).
+    let now_unix = epoch_now_ms() / 1000;
 
     struct Row {
         name: String,
@@ -469,6 +472,9 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
         /// Rendered STATE cell — each arm below knows which vocabulary applies
         /// to it, so nothing downstream has to re-derive that.
         state: String,
+        /// Activity recency, only computed when `--stale` is in play (one extra
+        /// git call per row, so the default `ls` path doesn't pay for it).
+        staleness: Option<tt_tasks::Staleness>,
         ports: Vec<(String, String)>,
         primary: bool,
     }
@@ -524,6 +530,13 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
                 (current, false, work, state)
             }
         };
+        // Recency is a separate axis from landed-vs-not: measure the branch's
+        // own newest commit and let `staleness::assess` combine it with
+        // landedness. A broken checkout has no git to ask.
+        let staleness = stale.map(|threshold| {
+            let last = if broken { None } else { ops::last_own_commit_unix(&dir, &refs.base) };
+            tt_tasks::assess_staleness(last, now_unix, threshold, work.landed.is_some())
+        });
         let env_text = fs::read_to_string(dir.join(".env")).unwrap_or_default();
         let ports: Vec<(String, String)> = envfile::parse(&env_text)
             .into_iter()
@@ -531,7 +544,22 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
                 k.ends_with("PORT") && v.bytes().all(|b| b.is_ascii_digit()) && !v.is_empty()
             })
             .collect();
-        rows.push(Row { name, branch, detached, broken, work, state, ports, primary: is_primary });
+        rows.push(Row {
+            name,
+            branch,
+            detached,
+            broken,
+            work,
+            state,
+            staleness,
+            ports,
+            primary: is_primary,
+        });
+    }
+
+    // `--stale` is a query: keep only the rows that tripped the threshold.
+    if stale.is_some() {
+        rows.retain(|r| r.staleness.is_some_and(|s| s.stale));
     }
 
     if json {
@@ -540,7 +568,7 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
             .map(|r| {
                 let port_map: serde_json::Map<String, serde_json::Value> =
                     r.ports.iter().map(|(k, v)| (k.clone(), v.clone().into())).collect();
-                serde_json::json!({
+                let mut item = serde_json::json!({
                     "name": r.name,
                     "branch": r.branch,
                     "detached": r.detached,
@@ -555,25 +583,47 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
                     "state": r.state,
                     "ports": port_map,
                     "primary": r.primary,
-                })
+                });
+                // The recency axis, only present when `--stale` computed it —
+                // absent keys keep the default document byte-identical.
+                if let Some(s) = r.staleness {
+                    let map = item.as_object_mut().expect("json! built an object");
+                    map.insert("ageDays".into(), s.age_days.into());
+                    map.insert("stale".into(), s.stale.into());
+                }
+                item
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&items).unwrap_or_default());
+    } else if let Some(threshold) = stale.filter(|_| rows.is_empty()) {
+        // A query that matched nothing reads as an empty table otherwise —
+        // easily mistaken for "the tool didn't run".
+        println!("no stale tasks (no commits in {threshold}+ days, still unlanded)");
     } else {
-        // Task names are branch slugs and run long, so the columns are sized to
-        // the actual rows — a fixed width silently shifted every later column
-        // out of alignment as soon as one name overflowed it.
-        const HEADERS: [&str; 4] = ["CHECKOUT", "BRANCH", "STATE", "PORTS"];
-        let cells: Vec<[String; 4]> = rows
+        // `--stale` slots an AGE column in ahead of PORTS; the base view is
+        // unchanged. Task names are branch slugs and run long, so columns are
+        // sized to the actual rows — a fixed width silently shifted every later
+        // column out of alignment as soon as one name overflowed it.
+        let mut headers: Vec<&str> = vec!["CHECKOUT", "BRANCH", "STATE"];
+        if stale.is_some() {
+            headers.push("AGE");
+        }
+        headers.push("PORTS");
+        let cells: Vec<Vec<String>> = rows
             .iter()
             .map(|r| {
                 let ports: Vec<String> = r.ports.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                [
-                    r.name.clone(),
-                    r.branch.clone(),
-                    r.state.clone(),
-                    ports.join(" "),
-                ]
+                let mut row = vec![r.name.clone(), r.branch.clone(), r.state.clone()];
+                if stale.is_some() {
+                    let age = r
+                        .staleness
+                        .and_then(|s| s.age_days)
+                        .map(|d| format!("{d}d"))
+                        .unwrap_or_else(|| "-".to_string());
+                    row.push(age);
+                }
+                row.push(ports.join(" "));
+                row
             })
             .collect();
         // Width counts chars, not bytes, so a multi-byte branch name doesn't
@@ -582,14 +632,25 @@ fn cmd_ls(json: bool, root: Option<&Path>) -> Result<(), String> {
             cells
                 .iter()
                 .map(|c| c[i].chars().count())
-                .chain([HEADERS[i].chars().count()])
+                .chain([headers[i].chars().count()])
                 .max()
                 .unwrap_or(0)
         };
-        let (wn, wb, ws) = (width(0), width(1), width(2));
-        println!("{:<wn$}  {:<wb$}  {:<ws$}  {}", HEADERS[0], HEADERS[1], HEADERS[2], HEADERS[3]);
+        let last = headers.len() - 1;
+        let print_row = |cells: &[String]| {
+            let mut line = String::new();
+            for (i, cell) in cells.iter().enumerate() {
+                if i == last {
+                    line.push_str(cell);
+                } else {
+                    line.push_str(&format!("{cell:<width$}  ", width = width(i)));
+                }
+            }
+            println!("{}", line.trim_end());
+        };
+        print_row(&headers.iter().map(|h| h.to_string()).collect::<Vec<_>>());
         for c in &cells {
-            println!("{:<wn$}  {:<wb$}  {:<ws$}  {}", c[0], c[1], c[2], c[3]);
+            print_row(c);
         }
     }
     Ok(())

@@ -27,6 +27,7 @@ pub mod layout;
 pub mod ops;
 pub mod pasted;
 pub mod ports;
+pub mod staleness;
 pub mod suggest;
 pub mod template;
 
@@ -41,5 +42,6 @@ pub use ops::{
     RemovedTask, TaskRoot, clean_tasks, create_task, discover_root, remove_task,
 };
 pub use pasted::{PastedError, PastedImage, write_images};
+pub use staleness::{DEFAULT_STALE_DAYS, Staleness, assess as assess_staleness};
 pub use suggest::{SuggestError, Suggestion, suggest};
 pub use template::{RenderOutcome, TaskContext, TemplateError, render};
