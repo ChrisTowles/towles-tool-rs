@@ -411,6 +411,13 @@ export function AgentboardScreen() {
   useEffect(() => {
     selectedRef.current = selected?.sessionId ?? null;
   });
+  // Live copy of the active folder, read the same way — lets an async
+  // task-create decide, when it finally resolves, whether the user is still
+  // where they were when they submitted (see `createTask`/`taskCreated`).
+  const activeFolderDirRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeFolderDirRef.current = activeFolderDir;
+  });
   // The label to lead a session row/tab with: the live Claude terminal title
   // when the shell is actually running, else the backend-derived task/shell
   // name. Gating on `s.live` keeps a stopped shell from showing the `✳ <goal>`
@@ -1004,6 +1011,14 @@ export function AgentboardScreen() {
   // task, not the unit itself — and bound to the worktree once `task_create`
   // resolves; a "task only" submit stops after the card.
   async function createTask(repo: NewTaskRepo, input: NewTaskSubmit & { taskId?: number }) {
+    // Where the user's attention sits at submit time. `task_create` is async
+    // (fetch + worktree add, up to 60s), so by the time the pane exists the
+    // user may have moved on — this is the yardstick `taskCreated` uses to
+    // decide whether auto-focusing the new task would steal their view.
+    const focusAtSubmit = {
+      sessionId: selectedRef.current,
+      folderDir: activeFolderDirRef.current,
+    };
     const taskId = input.taskId ?? (await createTaskForSubmit(input));
     // Bind the repo before any worktree exists. The Board groups tasks into
     // repo swimlanes, and the repo is known here — at the `+` the user clicked
@@ -1097,7 +1112,7 @@ export function AgentboardScreen() {
     // "Start Claude on the goal" unchecked → no prompt, which is already how
     // `taskCreated` says "don't type anything into the PTY".
     const prompt = input.launchClaude ? promptWithImages(goalPrompt, imagePaths) : "";
-    await taskCreated(created, prompt, launchOptions, label);
+    await taskCreated(created, prompt, launchOptions, label, focusAtSubmit);
   }
 
   function retryPendingTask(id: string) {
@@ -1137,6 +1152,10 @@ export function AgentboardScreen() {
     /** The goal as the user typed it — what the rail and the toast show, so
      * the image paths `promptWithImages` appended stay out of both. */
     label?: string,
+    /** The user's selection/active folder when they submitted the form. Used
+     * to auto-focus the new task's pane only if they haven't navigated away
+     * during the async create. */
+    focusAtSubmit?: { sessionId: string | null; folderDir: string | null },
   ) {
     toast(`created ${created.name}${created.branch ? ` on ${created.branch}` : ""}`);
     await invoke("ab_add_repo", { path: created.dir });
@@ -1165,14 +1184,27 @@ export function AgentboardScreen() {
       // `launchClaudeIn` waits for the PTY's first frame itself — a proxy for
       // "the shell is actually reading input", since a successful term_write
       // only proves the Rust-side conduit exists, not that zsh finished
-      // sourcing its rc files.
+      // sourcing its rc files. This path also focuses the pane on its own
+      // (`withLiveSession` must render it to type into it), so the auto-focus
+      // below is only for the bare-shell case.
       await launchClaudeIn(
         { folderDir: created.dir, sessionId: rec.id, sessionName: rec.name, restart: false },
         prompt,
         options,
         label,
       );
+      return;
     }
+    // Bare-shell task: `mountSession` placed the pane in the background so as
+    // not to yank the user's view mid-create. Now that it exists, focus it —
+    // but only if the user is still where they were at submit. If they moved
+    // to another session/folder while the (async) create ran, landing them on
+    // the new task would be exactly the focus-theft `mountSession` avoids, so
+    // leave the pane parked and let the toast (`created …`) be the signal.
+    const stayedPut =
+      selectedRef.current === (focusAtSubmit?.sessionId ?? null) &&
+      activeFolderDirRef.current === (focusAtSubmit?.folderDir ?? null);
+    if (stayedPut) selectSession(created.dir, rec.id);
   }
 
   async function newSession(folderDir: string, launchClaude = false) {
