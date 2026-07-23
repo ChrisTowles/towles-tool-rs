@@ -707,6 +707,8 @@ pub fn run() {
             gh_actions::cockpit_assign_issue,
             gh_actions::cockpit_create_issue_branch,
             store::store_dm_dismiss,
+            store::store_item_dismiss,
+            store::store_dismissals_clear,
             mcp::mcp_tool_docs,
             mcp_http::mcp_status,
             mcp_http::mcp_test_call,

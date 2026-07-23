@@ -4,9 +4,12 @@ import {
   CircleX,
   Clock,
   ExternalLink,
+  EyeOff,
   type LucideIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { fmtAge, type CollectRun, type IssueItem, type PrItem } from "@/lib/data";
 import { openExternalUrl } from "@/lib/open-url";
 import { checksTone, PR_TONE, type ChecksTone } from "@/lib/pr-tone";
@@ -197,6 +200,31 @@ export function prRank(pr: PrItem): number {
 export function prNeedsYou(pr: PrItem): boolean {
   const checksFailing = pr.state !== "merged" && pr.checks === "failing";
   return checksFailing || pr.reviewState === "review_requested";
+}
+
+/**
+ * Small ghost icon-button for dismissing a PR/issue row inline — for screens
+ * that don't already have a per-row dropdown menu to hang a "Dismiss" item off
+ * of. Hidden until the row is hovered, same as the default hover-revealed
+ * external-link glyph it replaces.
+ */
+export function DismissButton({ onDismiss, label }: { onDismiss: () => void; label: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-7 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
+          aria-label={label}
+          onClick={onDismiss}
+        >
+          <EyeOff className="size-3.5" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 /**

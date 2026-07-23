@@ -383,6 +383,7 @@ mod tests {
             review_state: review_state.to_string(),
             url: format!("https://github.com/{repo}/pull/{number}"),
             updated_ts: 0,
+            dismissed_ts: 0,
         }
     }
 

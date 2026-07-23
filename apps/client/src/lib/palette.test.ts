@@ -62,6 +62,7 @@ function pr(overrides: Partial<PrItem>): PrItem {
     reviewState: "",
     url: "https://github.com/octo/widgets/pull/1",
     updatedTs: 0,
+    dismissedTs: 0,
     ...overrides,
   };
 }
@@ -152,6 +153,7 @@ function issue(overrides: Partial<IssueItem>): IssueItem {
     state: "open",
     url: "https://github.com/octo/widgets/issues/1",
     updatedTs: 0,
+    dismissedTs: 0,
     ...overrides,
   };
 }

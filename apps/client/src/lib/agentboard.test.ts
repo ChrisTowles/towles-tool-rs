@@ -127,6 +127,7 @@ function pr(overrides: Partial<PrItem>): PrItem {
     reviewState: "none",
     url: "https://github.com/ChrisTowles/towles-tool-rs/pull/42",
     updatedTs: 0,
+    dismissedTs: 0,
     ...overrides,
   };
 }

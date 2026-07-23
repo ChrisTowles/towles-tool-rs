@@ -14,6 +14,7 @@ function pr(over: Partial<PrItem>): PrItem {
     reviewState: "",
     url: "https://example.com/pr",
     updatedTs: 0,
+    dismissedTs: 0,
     ...over,
   };
 }

@@ -574,6 +574,39 @@ pub fn store_dm_dismiss(
     Ok(())
 }
 
+/// Dismiss one GitHub item (`kind` is `"issue"` or `"pr"`) at `(repo, number)` —
+/// it drops out of the attention feed until the collector observes a newer
+/// `updatedTs` than the one passed in (see `tt_store::IssueItem::dismissed_ts`).
+#[tauri::command]
+pub fn store_item_dismiss(
+    app: AppHandle,
+    state: State<StoreState>,
+    kind: String,
+    repo: String,
+    number: i64,
+    updated_ts: i64,
+) -> Result<(), String> {
+    with_store(&state, |store| {
+        store
+            .dismiss_item(&kind, &repo, number, updated_ts)
+            .map_err(|e| format!("dismiss_item failed: {e}"))
+    })?;
+    tracing::info!(%kind, %repo, number, "item.dismissed");
+    emit_snapshot(&app, &state);
+    Ok(())
+}
+
+/// Clear every dismissed issue/PR at once — the "clear all dismissals" action.
+#[tauri::command]
+pub fn store_dismissals_clear(app: AppHandle, state: State<StoreState>) -> Result<usize, String> {
+    let count = with_store(&state, |store| {
+        store.clear_dismissals().map_err(|e| format!("clear_dismissals failed: {e}"))
+    })?;
+    tracing::info!(count, "items.dismissals_cleared");
+    emit_snapshot(&app, &state);
+    Ok(count)
+}
+
 /// Promote a local todo into a real GitHub issue in `repo` (owner/name), then
 /// link the resulting issue back to the todo and re-emit the snapshot.
 ///

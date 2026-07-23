@@ -1,10 +1,14 @@
 import { CircleAlert, GitPullRequest, Inbox } from "lucide-react";
+import { toast } from "sonner";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useStoreSnapshot, type PrItem } from "@/lib/data";
+import { isItemDismissed, storeItemDismiss, useStoreSnapshot, type PrItem } from "@/lib/data";
+import { NotInTauri } from "@/lib/errors";
 import { useFocusTarget } from "@/lib/focus-target";
 import { useNow } from "@/lib/now";
+import { uiAction } from "@/lib/ui-action";
 import {
   CollectorFreshness,
+  DismissButton,
   Empty,
   Panel,
   PrRow,
@@ -25,8 +29,9 @@ export function GhPrsScreen() {
   const focusRef = useFocusTarget<HTMLDivElement>("gh-prs");
 
   // Merged PRs live in the snapshot too (briefly, so a folder's rail chip can
-  // turn purple), but this screen is the open work queue — exclude them.
-  const openPrs = snapshot.prs.filter((p) => p.state === "open");
+  // turn purple), but this screen is the open work queue — exclude them. A
+  // dismissed PR stays hidden until it changes again.
+  const openPrs = snapshot.prs.filter((p) => p.state === "open" && !isItemDismissed(p));
   const needsYou = openPrs
     .filter(prNeedsYou)
     .toSorted((a, b) => prRank(b) - prRank(a) || b.updatedTs - a.updatedTs);
@@ -72,7 +77,7 @@ export function GhPrsScreen() {
             ) : (
               needsYou.map((pr) => (
                 <div key={`${pr.repo}#${pr.number}`} className="border-l-2 border-l-amber-500">
-                  <PrRow pr={pr} now={now} />
+                  <PrRow pr={pr} now={now} actions={<PrDismissButton pr={pr} />} />
                 </div>
               ))
             )}
@@ -92,7 +97,12 @@ export function GhPrsScreen() {
                     {repo}
                   </div>
                   {prs.map((pr) => (
-                    <PrRow key={`${pr.repo}#${pr.number}`} pr={pr} now={now} />
+                    <PrRow
+                      key={`${pr.repo}#${pr.number}`}
+                      pr={pr}
+                      now={now}
+                      actions={<PrDismissButton pr={pr} />}
+                    />
                   ))}
                 </div>
               ))
@@ -101,6 +111,22 @@ export function GhPrsScreen() {
         </div>
       </ScrollArea>
     </div>
+  );
+}
+
+/** Dismiss `pr`: it drops out of this screen (and Cockpit, and the day-bar
+ * feed) until it changes again. The snapshot re-emits from Rust on success. */
+function PrDismissButton({ pr }: { pr: PrItem }) {
+  return (
+    <DismissButton
+      label="Dismiss"
+      onDismiss={() => {
+        uiAction("gh_prs.pr_dismiss", "gh-prs");
+        void storeItemDismiss("pr", pr.repo, pr.number, pr.updatedTs).then((result) => {
+          if (result.isErr() && !NotInTauri.is(result.error)) toast.error(result.error.message);
+        });
+      }}
+    />
   );
 }
 

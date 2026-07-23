@@ -389,7 +389,11 @@ function lerpColor(a: string, b: string, t: number): string {
   const pa = [1, 3, 5].map((i) => Number.parseInt(a.slice(i, i + 2), 16));
   const pb = [1, 3, 5].map((i) => Number.parseInt(b.slice(i, i + 2), 16));
   return `#${pa
-    .map((ca, i) => Math.round(ca + (pb[i] - ca) * t).toString(16).padStart(2, "0"))
+    .map((ca, i) =>
+      Math.round(ca + (pb[i] - ca) * t)
+        .toString(16)
+        .padStart(2, "0"),
+    )
     .join("")}`;
 }
 
@@ -502,8 +506,7 @@ function DayHourHeatmap({
           axisLine: { show: false },
           axisTick: { show: false },
           axisLabel: {
-            color: (_value: string, index: number) =>
-              isWeekend(days[index]) ? PALETTE[3] : muted,
+            color: (_value: string, index: number) => (isWeekend(days[index]) ? PALETTE[3] : muted),
             fontSize: 9.5,
             interval: Math.ceil(days.length / 15) - 1,
             rotate: 45,
