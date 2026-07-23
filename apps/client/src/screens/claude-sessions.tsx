@@ -5,18 +5,18 @@ import {
   ArrowUp,
   ArrowUpDown,
   BarChart3,
+  Check,
   CircleCheck,
   Clock,
+  Copy,
   DatabaseZap,
   Flame,
   Lightbulb,
   List,
-  Loader2,
   MessagesSquare,
   RefreshCw,
   Repeat2,
   Search,
-  TerminalSquare,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -39,7 +39,6 @@ import {
 } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Card, StatTile } from "@/components/store-bits";
-import { abOpenSessionForCwd, requestOpenSession } from "@/lib/agentboard";
 import {
   claudeSessionsBreakdown,
   claudeSessionsCadence,
@@ -56,7 +55,6 @@ import {
 } from "@/lib/claude-sessions";
 import { NotInTauri, type IpcError } from "@/lib/errors";
 import { cn } from "@/lib/utils";
-import { useWorkspace } from "@/lib/workspace";
 
 /** Surface a failed sessions read. Silent outside the Tauri shell, where every
  * command fails identically and the screen already says so. */
@@ -677,74 +675,61 @@ function SortableTh({
   );
 }
 
-/** Resolve `s.cwd` to an Agentboard folder (registering the repo first if it
- * isn't on the rail yet — the backend handles that), then hand off selecting +
- * resuming it to Agentboard itself (see `lib/agentboard.ts`'s
- * pending-open-session bridge for why this can't just call into Agentboard
- * directly: it may not be mounted yet). Shared by the Sessions table and the
- * Insights cards. */
-function useOpenInAgentboard() {
-  const [openingId, setOpeningId] = useState<string | null>(null);
-  const { openTab } = useWorkspace();
+/** Copies `text` to the clipboard, briefly swapping the icon to a checkmark
+ * as the only feedback — no toast, so copying several rows in a row doesn't
+ * spam notifications. */
+function useClipboardCopy() {
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  async function open(s: ClaudeSession) {
-    if (!s.cwd) {
-      toast.error("No working directory recorded for this session");
-      return;
-    }
-    setOpeningId(s.sessionId);
-    const opened = await abOpenSessionForCwd(s.cwd);
-    opened.match({
-      ok: (o) => {
-        openTab("agentboard");
-        requestOpenSession({
-          folderDir: o.folderDir,
-          sessionId: o.sessionId,
-          resumeId: s.sessionId,
-          label: s.title ?? s.sessionId.slice(0, 8),
-        });
-      },
-      err: (e) => toast.error(e.message),
+  function copy(key: string, text: string) {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1200);
     });
-    setOpeningId(null);
   }
 
-  return { openingId, open };
+  return { copiedKey, copy };
 }
 
-/** Icon button that resumes a session in Agentboard, with the disabled/tooltip
- * treatment shared between the table rows and insight cards. */
-function OpenInAgentboardButton({
-  session,
-  opening,
-  onOpen,
-}: {
-  session: ClaudeSession;
-  opening: boolean;
-  onOpen: (s: ClaudeSession) => void;
-}) {
+/** Icon buttons to copy a session's ID and transcript file path — the two
+ * things needed to point Claude at a specific session file. Shared by the
+ * Sessions table, Insights cards, and the breakdown dialog header. */
+function CopySessionButtons({ session }: { session: ClaudeSession }) {
+  const { copiedKey, copy } = useClipboardCopy();
+
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          disabled={!session.cwd || opening}
-          onClick={(e) => {
-            e.stopPropagation();
-            void onOpen(session);
-          }}
-          className="text-violet-500 hover:text-violet-400 disabled:text-muted-foreground/40"
-        >
-          {opening ? <Loader2 className="animate-spin" /> : <TerminalSquare />}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>
-        {session.cwd
-          ? "Open in Agentboard (resumes this session)"
-          : "No working directory recorded for this session"}
-      </TooltipContent>
-    </Tooltip>
+    <span className="inline-flex items-center gap-0.5">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              copy("id", session.sessionId);
+            }}
+          >
+            {copiedKey === "id" ? <Check className="text-green-500" /> : <Copy />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Copy session ID</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              copy("path", session.path);
+            }}
+          >
+            {copiedKey === "path" ? <Check className="text-green-500" /> : <Copy />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Copy session file path</TooltipContent>
+      </Tooltip>
+    </span>
   );
 }
 
@@ -794,8 +779,11 @@ function BreakdownDialog({
     <Dialog open={!!session} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle className="pr-6">
-            {session?.title ?? session?.sessionId.slice(0, 8)}
+          <DialogTitle className="flex items-center gap-2 pr-6">
+            <span className="min-w-0 truncate">
+              {session?.title ?? session?.sessionId.slice(0, 8)}
+            </span>
+            {session && <CopySessionButtons session={session} />}
           </DialogTitle>
           <DialogDescription>
             {session?.project} · {session?.date} ·{" "}
@@ -884,7 +872,6 @@ function BreakdownDialog({
 function SessionTable({ sessions, searching }: { sessions: ClaudeSession[]; searching: boolean }) {
   const [sort, setSort] = useState<{ key: SessionSortKey; dir: SortDir } | null>(null);
   const [breakdownFor, setBreakdownFor] = useState<ClaudeSession | null>(null);
-  const { openingId, open } = useOpenInAgentboard();
 
   const medianBillable = useMemo(() => {
     const sorted = sessions.map((s) => s.inputTokens + s.outputTokens).toSorted((a, b) => a - b);
@@ -988,7 +975,6 @@ function SessionTable({ sessions, searching }: { sessions: ClaudeSession[]; sear
           {rows.map((s) => {
             const billable = s.inputTokens + s.outputTokens;
             const outlier = medianBillable > 0 && billable >= OUTLIER_FACTOR * medianBillable;
-            const opening = openingId === s.sessionId;
             return (
               <tr
                 key={s.sessionId}
@@ -1025,7 +1011,7 @@ function SessionTable({ sessions, searching }: { sessions: ClaudeSession[]; sear
                   {formatCost(s.costUsd)}
                 </td>
                 <td className="py-1.5 pl-3 text-right">
-                  <OpenInAgentboardButton session={s} opening={opening} onOpen={open} />
+                  <CopySessionButtons session={s} />
                 </td>
               </tr>
             );
@@ -1038,14 +1024,13 @@ function SessionTable({ sessions, searching }: { sessions: ClaudeSession[]; sear
 }
 
 /** Ranked waste findings for the window — answer-first: each card names one
- * session, one number, and why it matters, with the same resume-in-Agentboard
- * action as the table. Fetches only while this tab is the active one (a
- * `days` change on another tab is picked up on the next activation). */
+ * session, one number, and why it matters. Fetches only while this tab is
+ * the active one (a `days` change on another tab is picked up on the next
+ * activation). */
 function InsightsTab({ days, nonce, active }: { days: string; nonce: number; active: boolean }) {
   const [insights, setInsights] = useState<ClaudeSessionInsight[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [breakdownFor, setBreakdownFor] = useState<ClaudeSession | null>(null);
-  const { openingId, open } = useOpenInAgentboard();
   const fetchedKey = useRef<string | null>(null);
 
   useEffect(() => {
@@ -1118,14 +1103,13 @@ function InsightsTab({ days, nonce, active }: { days: string; nonce: number; act
                 {insight.detail}
               </span>
             </span>
-            <OpenInAgentboardButton session={s} opening={openingId === s.sessionId} onOpen={open} />
+            <CopySessionButtons session={s} />
           </div>
         );
       })}
       <p className="text-[11px] text-muted-foreground">
         Click a finding for its turn/tool breakdown, or{" "}
-        <TerminalSquare className="inline size-3 align-[-2px]" /> to resume the session in
-        Agentboard.
+        <Copy className="inline size-3 align-[-2px]" /> to copy the session ID or file path.
       </p>
       <BreakdownDialog session={breakdownFor} onClose={() => setBreakdownFor(null)} />
     </div>
@@ -1304,8 +1288,8 @@ export function ClaudeSessionsScreen() {
                     {searching
                       ? "Matches session titles and what you typed, newest first."
                       : "Ranked by input+output tokens; amber marks outliers vs the median."}{" "}
-                    Click <TerminalSquare className="inline size-3 align-[-2px]" /> to resume a
-                    session in Agentboard — adds the repo to the rail first if it isn't there yet.
+                    Click <Copy className="inline size-3 align-[-2px]" /> to copy the session ID or
+                    file path.
                   </p>
                 </Card>
               </TabsContent>

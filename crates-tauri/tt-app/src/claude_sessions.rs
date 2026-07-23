@@ -46,6 +46,9 @@ pub struct ClaudeSessionsCache(Arc<Mutex<Option<CachedScan>>>);
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeSessionRow {
     pub session_id: String,
+    /// Absolute path to the session's transcript `.jsonl` file, for pointing
+    /// Claude at a specific session file.
+    pub path: String,
     pub title: Option<String>,
     pub project: String,
     pub date: String,
@@ -67,6 +70,7 @@ impl ClaudeSessionRow {
     fn from_detail(d: &SessionDetail, snippet: Option<String>) -> Self {
         ClaudeSessionRow {
             session_id: d.session_id.clone(),
+            path: d.path.display().to_string(),
             title: d.title.clone(),
             project: d.project.clone(),
             date: d.date.clone(),
