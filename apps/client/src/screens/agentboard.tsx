@@ -7,6 +7,7 @@ import {
 } from "react";
 import {
   CalendarClock,
+  CircleSlash,
   Eye,
   EyeOff,
   FolderGit2,
@@ -18,6 +19,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { fmtMins, PanePlaceholder } from "@/components/agentboard-bits";
+import { DismissButton } from "@/components/store-bits";
 import { ColdCacheOverlay, PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { BlockedDeleteDialog } from "@/components/task-blockers";
@@ -137,9 +139,12 @@ import type { OpenFileRequest } from "@/lib/ide";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import {
   fmtCountdown,
+  isItemDismissed,
   storeAddTask,
   taskDelete,
   storeAttachTaskIssue,
+  storeDismissalsClear,
+  storeItemDismiss,
   storeSetTaskStatus,
   storeTaskSetWorktree,
   useStoreSnapshot,
@@ -204,6 +209,15 @@ async function cleanupMissing() {
   }
   const n = removed.value.length;
   toast(n > 0 ? `Untracked ${n} missing repo${n === 1 ? "" : "s"}.` : "Nothing to clean up.");
+}
+
+/** Dismiss one PR out of the rail's attention strip: it drops out until it
+ * changes again (see isItemDismissed). The snapshot re-emits from Rust on
+ * success, so no optimistic update here. */
+async function dismissAttentionPr(repo: string, number: number, updatedTs: number) {
+  uiAction("agentboard.attention_pr_dismiss", "agentboard");
+  const result = await storeItemDismiss("pr", repo, number, updatedTs);
+  if (result.isErr() && !NotInTauri.is(result.error)) toast.error(result.error.message);
 }
 
 /** A pane's grid rect as absolute-positioning percentages. */
@@ -448,6 +462,7 @@ export function AgentboardScreen() {
   const [hideInactive, setHideInactive] = useHideInactiveRepos();
   // Per-repo "show me the quiet ones anyway" toggle (the stub row).
   const [quietRevealed, setQuietRevealed] = useState<Record<string, boolean>>({});
+  const [clearingDismissals, setClearingDismissals] = useState(false);
 
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renamingWin, setRenamingWin] = useState<string | null>(null);
@@ -1813,6 +1828,7 @@ export function AgentboardScreen() {
   );
 
   // Compact attention strip: failing/review PRs + the next imminent meeting.
+  // A dismissed PR stays hidden until it changes again (see isItemDismissed).
   const attention = useMemo(() => {
     const items: {
       key: string;
@@ -1821,8 +1837,10 @@ export function AgentboardScreen() {
       sub: string;
       border: string;
       onClick: () => void;
+      onDismiss?: () => void;
     }[] = [];
     for (const p of snapshot.prs) {
+      if (isItemDismissed(p)) continue;
       const checksFailing = p.state !== "merged" && p.checks === "failing";
       if (checksFailing || p.reviewState === "review_requested") {
         items.push({
@@ -1832,6 +1850,7 @@ export function AgentboardScreen() {
           sub: checksFailing ? "Checks failing" : "Review requested",
           border: checksFailing ? PR_TONE.failed.border : PR_TONE.review.border,
           onClick: () => void openExternalUrl(p.url),
+          onDismiss: () => void dismissAttentionPr(p.repo, p.number, p.updatedTs),
         });
       }
     }
@@ -1850,6 +1869,20 @@ export function AgentboardScreen() {
     }
     return items;
   }, [snapshot.prs, snapshot.events, now, openTab]);
+
+  const dismissedPrCount = snapshot.prs.filter(isItemDismissed).length;
+  async function clearDismissals() {
+    uiAction("agentboard.dismissals_clear", "agentboard");
+    setClearingDismissals(true);
+    const cleared = await storeDismissalsClear();
+    if (cleared.isOk()) {
+      const n = cleared.value;
+      toast.success(n === 1 ? "1 item restored" : `${n} items restored`);
+    } else if (!NotInTauri.is(cleared.error)) {
+      toast.error(cleared.error.message);
+    }
+    setClearingDismissals(false);
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -1922,6 +1955,18 @@ export function AgentboardScreen() {
                           <Eye className="size-3.5" />
                         )}
                       </button>
+                      {dismissedPrCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => void clearDismissals()}
+                          disabled={clearingDismissals}
+                          aria-label="Clear all dismissed PRs"
+                          className="rounded-md p-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
+                          title={`Bring back ${dismissedPrCount} dismissed PR${dismissedPrCount === 1 ? "" : "s"}`}
+                        >
+                          <CircleSlash className="size-3.5" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={toggleRail}
@@ -1937,27 +1982,32 @@ export function AgentboardScreen() {
                   {attention.length > 0 && (
                     <div className="flex flex-col gap-1 border-b p-2">
                       {attention.map((a) => (
-                        <button
+                        <div
                           key={a.key}
-                          type="button"
-                          onClick={a.onClick}
                           className={cn(
-                            "flex items-center gap-2 rounded-md border border-l-2 px-2 py-1.5 text-left hover:bg-accent/50",
+                            "group flex items-center gap-1 rounded-md border border-l-2 pr-1 hover:bg-accent/50",
                             a.border,
                           )}
                         >
-                          {a.kind === "pr" ? (
-                            <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
-                          ) : (
-                            <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
-                          )}
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-xs font-medium">{a.title}</span>
-                            <span className="block truncate text-[11px] text-muted-foreground">
-                              {a.sub}
+                          <button
+                            type="button"
+                            onClick={a.onClick}
+                            className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+                          >
+                            {a.kind === "pr" ? (
+                              <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
+                            ) : (
+                              <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
+                            )}
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-medium">{a.title}</span>
+                              <span className="block truncate text-[11px] text-muted-foreground">
+                                {a.sub}
+                              </span>
                             </span>
-                          </span>
-                        </button>
+                          </button>
+                          {a.onDismiss && <DismissButton label="Dismiss" onDismiss={a.onDismiss} />}
+                        </div>
                       ))}
                     </div>
                   )}
