@@ -244,6 +244,11 @@ function pgidOf(pid) {
   }
 }
 
+// Confirms via `listeningPids` (lsof), not `isPortFree`, so it stays consistent
+// with how `killPort` *found* the listeners it's tearing down: no listener left
+// is exactly the signal we want after SIGTERM/SIGKILL. This also keeps `killPort`
+// free of the `tt`-binary dependency `isPortFree` carries (`isPortFree` is the
+// separate dev-port availability decision, delegated to `tt task ports`).
 /**
  * @param {number} port
  * @param {number} timeoutMs
@@ -253,10 +258,10 @@ function pgidOf(pid) {
 async function waitUntilFree(port, timeoutMs, pollMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await isPortFree(port)) return true;
+    if (listeningPids(port).length === 0) return true;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
-  return isPortFree(port);
+  return listeningPids(port).length === 0;
 }
 
 /**
