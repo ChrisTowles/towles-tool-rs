@@ -1215,6 +1215,70 @@ mod tests {
     }
 
     #[test]
+    fn tolerates_unknown_fields_at_every_nesting_level() {
+        // The settings file is shared with the legacy TypeScript CLI, so serde
+        // types must never reject a key they don't model — at the root or inside
+        // any nested block (mcp/collectors/agentboard/journalSettings). This
+        // locks that contract: a file peppered with unknown keys at every level
+        // must load successfully, keep the *known* fields it does carry, and fill
+        // the rest from defaults.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("towles-tool.settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "preferredEditor": "hx",
+                "rootTsOnly": {"any": "shape"},
+                "journalSettings": {"baseFolder": "/j", "journalTsOnly": 1},
+                "agentboard": {"mux": "tmux", "agentboardTsOnly": true},
+                "mcp": {"port": 9191, "mcpTsOnly": [1, 2, 3]},
+                "collectors": {
+                    "collectorsTsOnly": "x",
+                    "prs": {"enabled": false, "prsTsOnly": 7},
+                    "calendar": {
+                        "enabled": true,
+                        "calendarTsOnly": {"nested": "too"},
+                        "sources": [
+                            {"id": "google", "label": "G", "enabled": true, "prompt": "p", "sourceTsOnly": 9}
+                        ]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_from(&path).unwrap();
+        // Known fields survive at every level.
+        assert_eq!(loaded.preferred_editor, "hx");
+        assert_eq!(loaded.journal_settings.base_folder, "/j");
+        assert_eq!(loaded.agentboard.mux.as_deref(), Some("tmux"));
+        assert_eq!(loaded.mcp.port, 9191);
+        assert!(!loaded.collectors.prs.enabled);
+        assert!(loaded.collectors.calendar.enabled);
+        assert_eq!(loaded.collectors.calendar.sources.len(), 1);
+        assert_eq!(loaded.collectors.calendar.sources[0].id, "google");
+        // Fields the file omitted still come from defaults.
+        assert!(loaded.journal_settings.daily_path_template.contains("daily-notes"));
+        assert_eq!(loaded.collectors.issues.refresh_minutes, 15);
+
+        // And saving back through the merge path keeps every unknown key on disk
+        // while the known edits win.
+        let mut edited = loaded;
+        edited.preferred_editor = "code".to_string();
+        save_merge_to(&path, &edited).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["preferredEditor"], "code", "known edit wins");
+        assert_eq!(raw["rootTsOnly"]["any"], "shape", "root unknown survives");
+        assert_eq!(raw["journalSettings"]["journalTsOnly"], 1);
+        assert_eq!(raw["agentboard"]["agentboardTsOnly"], true);
+        assert_eq!(raw["mcp"]["mcpTsOnly"][0], 1);
+        assert_eq!(raw["collectors"]["collectorsTsOnly"], "x");
+        assert_eq!(raw["collectors"]["prs"]["prsTsOnly"], 7);
+        assert_eq!(raw["collectors"]["calendar"]["calendarTsOnly"]["nested"], "too");
+    }
+
+    #[test]
     fn malformed_mcp_block_falls_back_to_default_without_failing_the_file() {
         // The docs invite hand-editing the `mcp` block, so a slip there must
         // not brick every settings consumer — it degrades to the default port
