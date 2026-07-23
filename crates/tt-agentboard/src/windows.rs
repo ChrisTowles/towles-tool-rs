@@ -138,24 +138,23 @@ impl WindowsStore {
         if touched.is_empty() {
             return Ok(());
         }
-        let mut on_disk = load(&path);
-        for dir in touched {
-            on_disk.windows.retain(|w| &w.folder_dir != dir);
-            on_disk
-                .windows
-                .extend(self.payload.windows.iter().filter(|w| &w.folder_dir == dir).cloned());
-            match self.payload.active_windows.get(dir) {
-                Some(id) => {
-                    on_disk.active_windows.insert(dir.clone(), id.clone());
-                }
-                None => {
-                    on_disk.active_windows.remove(dir);
+        let merged = crate::persist::merge_on_save(&path, load, |on_disk| {
+            for dir in touched {
+                on_disk.windows.retain(|w| &w.folder_dir != dir);
+                on_disk
+                    .windows
+                    .extend(self.payload.windows.iter().filter(|w| &w.folder_dir == dir).cloned());
+                match self.payload.active_windows.get(dir) {
+                    Some(id) => {
+                        on_disk.active_windows.insert(dir.clone(), id.clone());
+                    }
+                    None => {
+                        on_disk.active_windows.remove(dir);
+                    }
                 }
             }
-        }
-        let json = serde_json::to_string_pretty(&on_disk).unwrap_or_else(|_| "{}".to_string());
-        crate::persist::write_atomic(&path, &format!("{json}\n"))?;
-        self.payload = on_disk;
+        })?;
+        self.payload = merged;
         Ok(())
     }
 }
