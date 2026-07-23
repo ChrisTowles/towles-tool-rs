@@ -1,5 +1,5 @@
 import { ownerRepoFromOrigin } from "@/lib/agentboard";
-import { isTaskClosed, TASK_STATUSES, type TaskItem, type TaskStatus } from "@/lib/data";
+import { TASK_STATUSES, type TaskItem, type TaskStatus } from "@/lib/data";
 
 /** The bucket for tasks with no discoverable repo. Sorts last. */
 export const NO_REPO_GROUP = "__no_repo__";
@@ -105,13 +105,14 @@ export function byBoardOrder(a: TaskItem, b: TaskItem): number {
   return a.position - b.position || a.createdAt - b.createdAt;
 }
 
-/** The column a card renders in. Closed tasks (an `outcome` on record) render
- * in the terminal "Closed" column whatever their frozen kanban `status` says —
- * an abandoned task keeps `status: "doing"` as history, but the board shows
- * where it *is*, not where it was. One helper shared by bucketing, counting,
- * and the drag handlers, so they can never disagree about a card's column. */
-export function boardColumnOf(task: Pick<TaskItem, "status" | "outcome">): TaskStatus {
-  return isTaskClosed(task) ? "done" : task.status;
+/** The column a card renders in. Closed tasks (`closed`, computed backend-side
+ * in tt-store) render in the terminal "Closed" column whatever their frozen
+ * kanban `status` says — an abandoned task keeps `status: "doing"` as
+ * history, but the board shows where it *is*, not where it was. One helper
+ * shared by bucketing, counting, and the drag handlers, so they can never
+ * disagree about a card's column. */
+export function boardColumnOf(task: Pick<TaskItem, "status" | "closed">): TaskStatus {
+  return task.closed ? "done" : task.status;
 }
 
 /**

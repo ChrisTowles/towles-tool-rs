@@ -418,6 +418,24 @@ pub struct TaskItem {
     pub issues: Vec<TaskIssueLink>,
     #[serde(default)]
     pub prs: Vec<TaskPrLink>,
+    /// A closed task renders in the terminal ("Closed") column regardless of
+    /// its frozen kanban `status` — true once the task carries an `outcome`
+    /// or its `status` itself is `done`. Presentation, computed once here so
+    /// every consumer (app UI, MCP) reads the same answer instead of
+    /// re-deriving it from `status`/`outcome`.
+    #[serde(default)]
+    pub closed: bool,
+    /// The outcome badge a closed card shows: the recorded `outcome`, or
+    /// `done` implied by `status` for a task that rolled/dragged into the
+    /// done column without an explicit close. `None` while the task is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_outcome: Option<String>,
+    /// Whether this task has a live worktree checkout on disk right now — as
+    /// opposed to a "task only" card that was never given one, or a closed
+    /// task whose worktree was torn down. Drives whether the UI offers "jump
+    /// to the running session" vs. "start/reopen this task".
+    #[serde(default)]
+    pub has_worktree: bool,
 }
 
 impl TaskItem {
@@ -434,6 +452,20 @@ impl TaskItem {
         } else {
             TaskOutcome::Abandoned
         }
+    }
+
+    /// Materialize `closed`/`display_outcome`/`has_worktree` from the raw
+    /// `status`/`outcome`/`worktree` fields — the one place this
+    /// presentation logic is computed, called right after every row maps
+    /// into a `TaskItem` (see `Store::query_tasks`).
+    fn with_derived_fields(mut self) -> Self {
+        self.closed = self.status == "done" || self.outcome.is_some();
+        self.display_outcome = self
+            .outcome
+            .clone()
+            .or_else(|| (self.status == "done").then(|| TaskOutcome::Done.as_str().to_string()));
+        self.has_worktree = self.worktree.as_ref().is_some_and(|w| w.dir.is_some());
+        self
     }
 }
 
@@ -2324,7 +2356,11 @@ impl Store {
                 worktree,
                 issues: Vec::new(),
                 prs: Vec::new(),
-            })
+                closed: false,
+                display_outcome: None,
+                has_worktree: false,
+            }
+            .with_derived_fields())
         })?;
         let mut tasks = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         self.load_task_links(&mut tasks)?;
@@ -4217,6 +4253,42 @@ mod tests {
         // open_tasks excludes done and returns backlog → doing.
         let statuses: Vec<String> = s.open_tasks().unwrap().into_iter().map(|t| t.status).collect();
         assert_eq!(statuses, vec!["backlog".to_string(), "doing".to_string()]);
+    }
+
+    #[test]
+    fn task_derived_fields_track_closed_worktree_and_outcome() {
+        let s = Store::open_in_memory().unwrap();
+        // Backlog, no worktree: open, no badge, nothing to jump to.
+        let bare = s.add_task("bare", "backlog", None, 1).unwrap();
+        assert!(!bare.closed);
+        assert_eq!(bare.display_outcome, None);
+        assert!(!bare.has_worktree);
+
+        // A bound repo with no worktree dir yet — still not "has_worktree".
+        s.set_task_worktree(bare.id, "/repo", None, None, None).unwrap();
+        let repo_bound = s.get_task(bare.id).unwrap().unwrap();
+        assert!(!repo_bound.closed);
+        assert!(!repo_bound.has_worktree);
+
+        // A worktree dir makes it `has_worktree`.
+        s.set_task_worktree(bare.id, "/repo", None, Some("br"), Some("/repo/wt")).unwrap();
+        let with_dir = s.get_task(bare.id).unwrap().unwrap();
+        assert!(with_dir.has_worktree);
+
+        // Dragged straight into `done` with no explicit outcome: closed, and
+        // the badge falls back to `done` even though `outcome` itself is unset.
+        let dragged = s.add_task("dragged", "backlog", None, 2).unwrap();
+        s.set_task_status(dragged.id, "done", 10).unwrap();
+        let dragged = s.get_task(dragged.id).unwrap().unwrap();
+        assert!(dragged.closed);
+        assert_eq!(dragged.outcome, None);
+        assert_eq!(dragged.display_outcome, Some("done".to_string()));
+
+        // Explicitly closed as abandoned: closed, badge mirrors the recorded outcome.
+        let abandoned = s.add_task("abandoned", "backlog", None, 3).unwrap();
+        let abandoned = s.close_task(abandoned.id, TaskOutcome::Abandoned, 20).unwrap();
+        assert!(abandoned.closed);
+        assert_eq!(abandoned.display_outcome, Some("abandoned".to_string()));
     }
 
     #[test]
