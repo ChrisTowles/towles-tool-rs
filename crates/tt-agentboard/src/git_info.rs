@@ -129,6 +129,22 @@ pub struct GitInfo {
     /// watch for this checkout specifically. Empty when unresolvable.
     #[serde(skip)]
     pub git_dir: String,
+    /// Fingerprint of the inputs the *ref-derived* half of this struct
+    /// (`branch`/`compared_base`/`commits_ahead`/`commits_behind`/`landed`)
+    /// reads, at the time they were last computed (see
+    /// [`revision_fingerprint`]). Internal revalidation token like `probe_key`
+    /// / `structural_key`: when it still matches, a poll skips the ref-reading
+    /// spawns and recomputes only the working-tree half. Empty when never
+    /// computed or unreadable.
+    #[serde(skip)]
+    pub revision_key: String,
+    /// The exact ref `diff --numstat` was run against — the merge-base of
+    /// `HEAD` and `compared_base` (or `HEAD` when they share no history).
+    /// Stored so the ref-unchanged fast path can re-diff the working tree
+    /// against the same base without re-spawning `merge-base`. Empty until the
+    /// first full compute.
+    #[serde(skip)]
+    pub diff_base: String,
 }
 
 /// Backup ceiling for a git-info entry that the control-file watch
@@ -384,11 +400,87 @@ pub fn control_files_for(info: &GitInfo) -> Vec<std::path::PathBuf> {
     )
 }
 
+/// Fingerprint of every input the *ref-derived* half of [`compute_git_info`]
+/// reads — `branch`, `compared_base`, `commits_ahead`/`commits_behind`, and the
+/// landing answer. Two kinds of input:
+///
+/// - **which base ref is chosen** ([`resolve_base_ref`]): the caller's
+///   `base_branch_override` and the `.tt-task` marker (folded in as its mtime),
+///   the only two resolution inputs besides `origin/main` — whose ref file is
+///   already stamped below.
+/// - **what the refs point at**: the mtimes of the control files whose movement
+///   changes any of the above — `HEAD`, `packed-refs`, the branch ref, the base
+///   ref — i.e. [`control_files`] minus `index`.
+///
+/// `index` is excluded on purpose: `git status`/`git diff` (which the fast path
+/// still runs every poll) can themselves rewrite the index's stat cache, so
+/// folding it in would make this differ on every tick and defeat the reuse.
+/// The staged/unstaged state `index` reflects is re-read every poll by those two
+/// commands anyway, so nothing is lost.
+///
+/// Reads no git subprocess — only `fs::metadata`. When this equals a cached
+/// [`GitInfo`]'s `revision_key`, the poll skips `rev-parse --abbrev-ref`, the
+/// base resolve, `merge-base`, `rev-list --left-right`, and the landing probe —
+/// the bulk of a sweep's git spawns — running only the working-tree
+/// `status`/`diff` that no `.git` mtime can stand in for.
+///
+/// Returns empty when the git dir or branch is unknown, or a required stat hard-
+/// errors — a partial fingerprint must never compare equal to a real one.
+fn revision_fingerprint(
+    dir: &str,
+    git_dir: &str,
+    common_dir: &str,
+    branch: &str,
+    compared_base: &str,
+    base_branch_override: Option<&str>,
+) -> String {
+    if git_dir.is_empty() || branch.is_empty() {
+        return String::new();
+    }
+    let stamp = |path: &std::path::Path| -> Option<String> {
+        match std::fs::metadata(path).and_then(|m| m.modified()) {
+            Ok(modified) => {
+                let dur = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+                Some(dur.as_nanos().to_string())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some("absent".to_string()),
+            Err(_) => None,
+        }
+    };
+    // The structural facts (`origin_url`/`common_dir`/`worktree_dirs`/
+    // `is_worktree`) are reused wholesale on the fast path too, yet a
+    // `git worktree add`/`remote set-url` changes them without touching any ref
+    // file — so their own fingerprint is folded in here, and any structural
+    // change busts the fast path into a full recompute that re-derives them.
+    let structural = structural_fingerprint(common_dir);
+    if structural.is_empty() {
+        return String::new();
+    }
+    let build = || -> Option<String> {
+        let mut parts = vec![
+            format!("override:{}", base_branch_override.unwrap_or("")),
+            format!("struct:{structural}"),
+            format!("marker:{}", stamp(&std::path::Path::new(dir).join(".tt-task"))?),
+        ];
+        for file in control_files(std::path::Path::new(git_dir), common_dir, branch, compared_base)
+        {
+            // `index` is deliberately not part of the revision fingerprint — see doc.
+            if file.file_name().and_then(|n| n.to_str()) == Some("index") {
+                continue;
+            }
+            parts.push(stamp(&file)?);
+        }
+        Some(parts.join(" "))
+    };
+    build().unwrap_or_default()
+}
+
 /// Compute a folder's git info. `previous` is that folder's last cached value,
-/// used to skip two kinds of repeat work when nothing they depend on has
-/// moved: the expensive landing probe (see [`probe_fingerprint`]) and the
-/// four structural-fact spawns (see [`structural_fingerprint`]). Pass `None`
-/// to force a full computation.
+/// used to skip repeat work when nothing it depends on has moved: the whole
+/// ref-derived half when the refs haven't moved (see [`revision_fingerprint`]),
+/// and, within a full recompute, the expensive landing probe (see
+/// [`probe_fingerprint`]) and the four structural-fact spawns (see
+/// [`structural_fingerprint`]). Pass `None` to force a full computation.
 pub fn compute_git_info(
     dir: &str,
     base_branch_override: Option<&str>,
@@ -402,6 +494,61 @@ pub fn compute_git_info(
     if !std::path::Path::new(dir).is_dir() {
         return GitInfo { dir_missing: true, ..Default::default() };
     }
+
+    // Fast path: when nothing the ref-derived half reads has moved since the
+    // last compute (HEAD/refs unchanged and the base still resolves the same
+    // way — see `revision_fingerprint`), reuse `branch`/`compared_base`/ahead/
+    // behind/landing wholesale and pay only for the working-tree half (`status`
+    // + `diff`). That is the sole part no `.git` mtime can stand in for, so it
+    // is the only thing a backup-poll tick over an idle repo should cost —
+    // instead of the ~6 ref-reading spawns a full compute makes.
+    if let Some(prev) = previous.filter(|p| !p.revision_key.is_empty() && !p.git_dir.is_empty()) {
+        let key = revision_fingerprint(
+            dir,
+            &prev.git_dir,
+            &prev.common_dir,
+            &prev.branch,
+            &prev.compared_base,
+            base_branch_override,
+        );
+        if !key.is_empty() && key == prev.revision_key {
+            let status_out = git_out(dir, &["status", "--porcelain"]);
+            let diff_base =
+                if prev.diff_base.is_empty() { "HEAD" } else { prev.diff_base.as_str() };
+            let diff_out = git_out(dir, &["diff", "--numstat", diff_base]);
+            // Only the working-tree fields are recomputed from the fresh
+            // status/diff; every ref-derived and structural field is carried
+            // from `prev` (the fingerprint match proves they're still exact).
+            let mut info = compute_git_info_from_outputs(
+                &prev.branch,
+                prev.is_worktree,
+                &status_out,
+                &diff_out,
+                "",
+            );
+            info.commits_ahead = prev.commits_ahead;
+            info.commits_behind = prev.commits_behind;
+            info.commits_unlanded = prev.commits_unlanded;
+            info.landed = prev.landed.clone();
+            info.origin_url = prev.origin_url.clone();
+            info.common_dir = prev.common_dir.clone();
+            info.worktree_dirs = prev.worktree_dirs.clone();
+            info.structural_key = prev.structural_key.clone();
+            info.probe_key = prev.probe_key.clone();
+            info.git_dir = prev.git_dir.clone();
+            info.compared_base = prev.compared_base.clone();
+            info.diff_base = prev.diff_base.clone();
+            info.revision_key = key;
+            // Cheap filesystem facts, not spawns — kept fresh so a launch.json
+            // appearing (not covered by the fingerprint) or a marker change
+            // (which already busted the fingerprint above, so this tick is a
+            // full recompute anyway) shows up without waiting a whole poll.
+            info.task_base_branch = tt_tasks::read_task_base(std::path::Path::new(dir));
+            info.has_launch_config = crate::launch::has_launch_file(std::path::Path::new(dir));
+            return info;
+        }
+    }
+
     let branch = git_out(dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
     if branch.is_empty() {
         return GitInfo::default();
@@ -511,6 +658,19 @@ pub fn compute_git_info(
     } else {
         info.commits_unlanded = 0;
     }
+    // The base `diff --numstat` ran against, so the ref-unchanged fast path can
+    // re-diff against the same base without re-spawning `merge-base`.
+    info.diff_base = base;
+    // Stamp the revision fingerprint from the values just computed, so the next
+    // poll can take the fast path above when nothing ref-derived has moved.
+    info.revision_key = revision_fingerprint(
+        dir,
+        &info.git_dir,
+        &info.common_dir,
+        &branch,
+        &compared_base,
+        base_branch_override,
+    );
     info.compared_base = compared_base;
     info
 }
@@ -696,6 +856,12 @@ pub fn compute_git_info_from_outputs(
         // Filled by `compute_git_info` from the filesystem, not spawned;
         // this pure parser never sees a directory to resolve it from.
         git_dir: String::new(),
+        // Stamped by `compute_git_info` once it has resolved the base and the
+        // control-file paths; empty here means "never computed", which never
+        // compares equal to a real fingerprint and so can only cause a full
+        // recompute, never skip one.
+        revision_key: String::new(),
+        diff_base: String::new(),
     }
 }
 
@@ -1905,6 +2071,121 @@ mod tests {
         // value — `worktree_dirs` itself stays empty because this sibling is
         // unmanaged and `list_other_worktrees` filters those out by design.
         assert_ne!(reprobed.origin_url.as_deref(), Some("sentinel"));
+    }
+
+    /// Sets up a committed repo and returns its dir helper. Shared by the
+    /// revision-fast-path tests below.
+    fn init_repo(repo: &std::path::Path) {
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::write(repo.join("f.txt"), "1").unwrap();
+        run(&["add", "f.txt"]);
+        run(&["commit", "--quiet", "-m", "init"]);
+    }
+
+    /// The big win for #329: when no ref has moved since the last compute, the
+    /// ref-derived half (branch/ahead/behind/landing) is reused wholesale and
+    /// only the working-tree half (`status`/`diff`) is recomputed — so a
+    /// backup-poll tick over an idle repo pays two spawns, not ~nine. Proven by
+    /// poisoning ref-derived fields that the real repo could never produce and
+    /// watching them survive, while a working-tree change made after the first
+    /// compute is still picked up.
+    #[test]
+    fn unchanged_refs_reuse_the_ref_derived_half_but_still_refresh_the_working_tree() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        init_repo(repo);
+        let dir = repo.to_str().unwrap();
+
+        let first = compute_git_info(dir, None, None);
+        assert!(!first.revision_key.is_empty(), "a resolved repo carries a revision fingerprint");
+        assert!(!first.dirty, "the tree is clean after the initial commit");
+
+        // Poison ref-derived fields with values a real compute could never
+        // produce here; the fingerprint is keyed off the ref *files*, not these
+        // values, so it still matches and the fast path must carry them over.
+        let mut poisoned = first.clone();
+        poisoned.commits_ahead = 999;
+        poisoned.landed = Some("SENTINEL".to_string());
+
+        // Dirty the working tree *after* the first compute.
+        std::fs::write(repo.join("untracked.txt"), "x").unwrap();
+
+        let reused = compute_git_info(dir, None, Some(&poisoned));
+        assert_eq!(reused.commits_ahead, 999, "ref-derived half reused, not recomputed");
+        assert_eq!(reused.landed.as_deref(), Some("SENTINEL"), "landing answer reused");
+        assert_eq!(reused.revision_key, first.revision_key, "fingerprint stable while refs idle");
+        // …but the working-tree half was genuinely re-read.
+        assert!(reused.dirty, "status/diff still ran, so the new untracked file shows");
+    }
+
+    #[test]
+    fn a_new_commit_moves_head_and_forces_a_full_recompute() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        init_repo(repo);
+        let dir = repo.to_str().unwrap();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+
+        let first = compute_git_info(dir, None, None);
+        let mut poisoned = first.clone();
+        poisoned.landed = Some("SENTINEL".to_string());
+
+        // A commit moves HEAD (and refs/heads/main) → the fingerprint must change
+        // and the ref-derived half must be recomputed, clearing the sentinel.
+        std::fs::write(repo.join("f.txt"), "2").unwrap();
+        run(&["commit", "--quiet", "-am", "second"]);
+
+        let reprobed = compute_git_info(dir, None, Some(&poisoned));
+        assert_ne!(reprobed.revision_key, first.revision_key, "a moved HEAD invalidates the memo");
+        assert_ne!(reprobed.landed.as_deref(), Some("SENTINEL"), "a full recompute ran");
+    }
+
+    #[test]
+    fn a_changed_base_override_forces_a_full_recompute() {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path();
+        init_repo(repo);
+        let dir = repo.to_str().unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["branch", "develop"])
+            .status()
+            .unwrap();
+
+        let first = compute_git_info(dir, None, None);
+        let mut poisoned = first.clone();
+        poisoned.landed = Some("SENTINEL".to_string());
+
+        // Same refs, but a different base override: the fingerprint folds the
+        // override in, so it changes and the base is re-resolved rather than the
+        // stale ref-derived half being served.
+        let reprobed = compute_git_info(dir, Some("develop"), Some(&poisoned));
+        assert_ne!(reprobed.revision_key, first.revision_key, "override change busts the memo");
+        assert_ne!(reprobed.landed.as_deref(), Some("SENTINEL"), "a full recompute ran");
     }
 
     /// The rail's headline false alarm. A squash merge collapses the branch's
