@@ -62,8 +62,10 @@ pub(crate) const PORT_REGISTRY_FILE: &str = "task-ports.json";
 /// one the dev server can't bind either, so handing it out claims a port
 /// nothing can use. Any other failure (e.g. IPv6 simply unavailable on this
 /// machine) must not make every port look taken.
-/// Mirrors `isPortFree` in `scripts/task-port.mjs`, which checks both stacks
-/// for the same reasons — keep the two in sync.
+///
+/// The ONE implementation of "is this port usable" — `scripts/task-port.mjs`
+/// delegates here via `tt task ports --probe` rather than mirroring the
+/// logic, so the two can't drift.
 pub fn port_occupied(port: u16) -> bool {
     use std::io::ErrorKind::{AddrInUse, PermissionDenied};
     let unusable = |host: &str| {
@@ -267,6 +269,95 @@ pub(crate) fn registry_claims(sr: &TaskRoot, path: &Path, task: &str) -> BTreeSe
         .filter(|(_, claim)| claim.owner != task)
         .map(|(port, _)| port)
         .collect()
+}
+
+/// One row of [`port_report`]: a port some checkout of this repo holds —
+/// the live `.env` scan merged with the registry — plus whether anything is
+/// actually listening on it right now.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PortStatus {
+    pub port: u16,
+    /// Task dir name (or the primary checkout's dir name).
+    pub owner: String,
+    /// The `.env` variable carrying the claim (empty on a registry-only row
+    /// whose recorded var was blank).
+    pub var: String,
+    /// Where the row came from: `"env"`, `"registry"`, or `"env+registry"`.
+    /// `"registry"` alone means the owner's `.env` no longer carries the
+    /// claim (deleted or hand-edited) — exactly the drift the registry
+    /// exists to survive, and what a doctor check flags.
+    pub source: &'static str,
+    /// Epoch ms the registry last recorded the claim (0 on an env-only row).
+    pub claimed_at_ms: i64,
+    pub occupied: bool,
+}
+
+/// The repo's full port picture, sorted by port: every claim in any
+/// checkout's live `.env`, merged with the registry, each probed for an
+/// actual listener. Read-only — unlike the render path it neither locks nor
+/// self-heals, so it's safe to call from status surfaces (`tt task ports`,
+/// doctor) without perturbing the ledger it's reporting on.
+pub fn port_report(sr: &TaskRoot) -> Vec<PortStatus> {
+    let mut rows: BTreeMap<u16, PortStatus> = BTreeMap::new();
+
+    for dir in sr.checkouts() {
+        let Some(owner) = dir.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        let text = fs::read_to_string(dir.join(".env")).unwrap_or_default();
+        for (var, port) in crate::envfile::port_claims_by_key(&text) {
+            rows.insert(
+                port,
+                PortStatus {
+                    port,
+                    owner: owner.clone(),
+                    var,
+                    source: "env",
+                    claimed_at_ms: 0,
+                    occupied: false,
+                },
+            );
+        }
+    }
+
+    if let Ok(path) = port_registry_path(&sr.checkout) {
+        let registry = load_port_registry(&path);
+        let primary = sr.checkout.file_name().and_then(|n| n.to_str());
+        for (port, claim) in registry.ports {
+            // Same liveness rule as the prune, applied in memory only.
+            let alive = Some(claim.owner.as_str()) == primary
+                || TaskName::parse(&claim.owner)
+                    .is_some_and(|name| sr.task_dir(name.as_str()).is_dir());
+            if !alive {
+                continue;
+            }
+            match rows.get_mut(&port) {
+                Some(row) => {
+                    row.source = "env+registry";
+                    row.claimed_at_ms = claim.claimed_at_ms;
+                }
+                None => {
+                    rows.insert(
+                        port,
+                        PortStatus {
+                            port,
+                            owner: claim.owner,
+                            var: claim.var,
+                            source: "registry",
+                            claimed_at_ms: claim.claimed_at_ms,
+                            occupied: false,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    let mut report: Vec<PortStatus> = rows.into_values().collect();
+    for row in &mut report {
+        row.occupied = port_occupied(row.port);
+    }
+    report
 }
 
 /// Release every port the registry recorded for `task` — call once removal

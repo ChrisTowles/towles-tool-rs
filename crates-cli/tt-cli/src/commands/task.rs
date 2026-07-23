@@ -35,6 +35,7 @@ pub fn run(command: TaskCommands) -> i32 {
         }
         TaskCommands::Init { root } => cmd_init(root.as_deref()),
         TaskCommands::Env { name, root } => cmd_env(&name, root.as_deref()),
+        TaskCommands::Ports { probe, json, root } => cmd_ports(probe, json, root.as_deref()),
         TaskCommands::Clean { dry_run, json, root } => cmd_clean(dry_run, json, root.as_deref()),
         TaskCommands::HookCreate => cmd_hook_create(),
         TaskCommands::HookRemove => cmd_hook_remove(),
@@ -832,4 +833,44 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// `tt task ports [--probe N] [--json]` — the repo's port picture, or a
+/// single-port listener probe. The probe mode is what `scripts/task-port.mjs`
+/// delegates its port-freeness checks to, so the bind semantics
+/// (`ops::port_occupied` — both loopback stacks, EACCES) have exactly one
+/// implementation.
+fn cmd_ports(probe: Option<u16>, json: bool, root: Option<&Path>) -> Result<(), String> {
+    if let Some(port) = probe {
+        let occupied = ops::port_occupied(port);
+        if json {
+            println!("{}", serde_json::json!({ "port": port, "occupied": occupied }));
+        } else {
+            println!("port {port}: {}", if occupied { "occupied" } else { "free" });
+        }
+        return Ok(());
+    }
+
+    let sr = ops::discover_root(root).map_err(|e| e.to_string())?;
+    let report = ops::port_report(&sr);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+        return Ok(());
+    }
+    if report.is_empty() {
+        println!("no port claims in {}", sr.checkout.display());
+        return Ok(());
+    }
+    println!("{:<7} {:<24} {:<20} {:<13} LISTENER", "PORT", "OWNER", "VAR", "SOURCE");
+    for row in &report {
+        println!(
+            "{:<7} {:<24} {:<20} {:<13} {}",
+            row.port,
+            row.owner,
+            row.var,
+            row.source,
+            if row.occupied { "yes" } else { "-" }
+        );
+    }
+    Ok(())
 }

@@ -203,6 +203,55 @@ fn lifecycle_new_env_ls_rm() {
         .stderr(contains("refusing to remove the primary"));
 }
 
+/// `tt task ports --json` reports every claim with its owner/var/source, and
+/// flags a claim only the registry still knows (its `.env` deleted) as
+/// `source: "registry"` — the drift row a doctor check keys off.
+#[test]
+fn ports_reports_claims_and_flags_env_registry_drift() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+
+    let out = new_task(&root_s, "feat/ports").arg("--json").output().unwrap();
+    assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
+    let created: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let port = created["ports"]["UI_PORT"].as_u64().expect("UI_PORT claimed");
+
+    let out = tt().args(["task", "ports", "--json", "--root", &root_s]).output().unwrap();
+    assert!(out.status.success(), "ports failed: {}", String::from_utf8_lossy(&out.stderr));
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["port"].as_u64() == Some(port))
+        .expect("claimed port reported");
+    assert_eq!(row["owner"], "feat-ports");
+    assert_eq!(row["var"], "UI_PORT");
+    assert_eq!(row["source"], "env+registry");
+    assert!(row["claimed_at_ms"].as_i64().unwrap() > 0, "registry stamped the claim time");
+
+    // Delete the task's .env: the claim survives as a registry-only row.
+    std::fs::remove_file(task_dir(&checkout, "feat-ports").join(".env")).unwrap();
+    let out = tt().args(["task", "ports", "--json", "--root", &root_s]).output().unwrap();
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["port"].as_u64() == Some(port))
+        .expect("registry keeps the claim visible");
+    assert_eq!(row["source"], "registry");
+
+    // --probe on a port we hold open must read occupied.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let held = listener.local_addr().unwrap().port();
+    let out =
+        tt().args(["task", "ports", "--probe", &held.to_string(), "--json"]).output().unwrap();
+    let probe: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(probe["occupied"], true);
+}
+
 /// The port registry's reason to exist: a sibling task whose `.env` is gone
 /// (deleted by hand, corrupted) must keep its claimed ports off the table —
 /// the live sibling-`.env` scan alone would hand them straight to the next
