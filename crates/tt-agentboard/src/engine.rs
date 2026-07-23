@@ -29,10 +29,7 @@ use crate::sessions::{SessionRecord, SessionStore, default_sessions_path};
 use crate::tracker::{AgentTracker, instance_key};
 use crate::types::{AgentEvent, AgentStatus, MetadataTone};
 use crate::watcher::{AgentWatcher, WatcherContext};
-use crate::watchers::amp::AmpAgentWatcher;
 use crate::watchers::claude_code::ClaudeCodeAgentWatcher;
-use crate::watchers::codex::CodexAgentWatcher;
-use crate::watchers::opencode::OpenCodeAgentWatcher;
 
 // Prune schedule constants (BRIDGE-SPEC §4).
 const STUCK_MS: i64 = 3 * 60 * 1000;
@@ -215,12 +212,9 @@ impl Engine {
                 crate::collapse::default_collapse_path(),
             )),
             git_cache: GitInfoCache::new(),
-            watchers: vec![
-                Box::new(ClaudeCodeAgentWatcher::with_defaults(scope.clone())),
-                Box::new(AmpAgentWatcher::with_defaults()),
-                Box::new(CodexAgentWatcher::with_defaults()),
-                Box::new(OpenCodeAgentWatcher::with_defaults()),
-            ],
+            watchers: vec![Box::new(ClaudeCodeAgentWatcher::with_defaults(
+                scope.clone(),
+            ))],
             theme,
             preferred_editor,
             compact_recommend_percent,

@@ -387,10 +387,11 @@ fn resolve_repo_entry<'a>(dir: &str, entries: &'a [RepoEntry]) -> Option<&'a Rep
 
 /// Resolve a watcher's project dir to a session name (longest prefix match).
 ///
-/// Handles both forms the watchers produce: claude-code passes Claude's *encoded*
-/// folder name (`/`→`-`, adopted fix #3 — matched encoded↔encoded to sidestep the
-/// lossy decode); amp/codex/opencode pass a real absolute path (matched directly
-/// against repo dirs). An input starting with `/` is treated as a real path.
+/// Handles both forms the watcher produces: the transcript scan passes Claude's
+/// *encoded* folder name (`/`→`-`, adopted fix #3 — matched encoded↔encoded to
+/// sidestep the lossy decode), while the pid→cwd fallback passes a real absolute
+/// path (matched directly against repo dirs). An input starting with `/` is
+/// treated as a real path.
 pub fn resolve_session_name(dir: &str, entries: &[RepoEntry]) -> Option<String> {
     resolve_repo_entry(dir, entries).map(|e| e.name.clone())
 }
@@ -740,9 +741,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_real_path_for_amp_codex_opencode() {
+    fn resolve_real_absolute_path_against_repo_dirs() {
         let entries = repo_entries(&paths(&["/home/u/proj"]));
-        // Exact real path (amp uri / codex cwd / opencode directory).
+        // Exact real path (the pid→cwd fallback form).
         assert_eq!(resolve_session_name("/home/u/proj", &entries).as_deref(), Some("proj"));
         // A cwd under the repo.
         assert_eq!(resolve_session_name("/home/u/proj/src", &entries).as_deref(), Some("proj"));
