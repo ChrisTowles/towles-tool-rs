@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
+use crate::pricing::pricing_for;
 use crate::tools::extract_tool_data;
 use crate::types::ToolData;
 use tt_claude_code::{Content, TranscriptEntry};
@@ -25,6 +26,9 @@ pub struct SessionAnalysis {
     pub repeated_reads: i64,
     /// Opus tokens / total tokens.
     pub model_efficiency: f64,
+    /// Estimated USD cost, priced per model from [`crate::pricing`]. Approximate:
+    /// unrecognized models contribute nothing, and rates drift over time.
+    pub cost_usd: f64,
 }
 
 /// Analyze session entries to get a token breakdown by model, plus waste
@@ -39,6 +43,7 @@ pub fn analyze_session(entries: &[TranscriptEntry]) -> SessionAnalysis {
     let mut cache_read = 0;
     let mut cache_creation = 0;
     let mut total_input = 0;
+    let mut cost_usd = 0.0;
     let mut file_read_counts: HashMap<String, i64> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -75,13 +80,19 @@ pub fn analyze_session(entries: &[TranscriptEntry]) -> SessionAnalysis {
         let model = message.model.as_deref().unwrap_or("");
         let input = usage.input_tokens.unwrap_or(0);
         let output = usage.output_tokens.unwrap_or(0);
+        let cache_read_here = usage.cache_read_input_tokens.unwrap_or(0);
+        let cache_creation_here = usage.cache_creation_input_tokens.unwrap_or(0);
         let tokens = input + output;
 
         input_tokens += input;
         output_tokens += output;
-        cache_read += usage.cache_read_input_tokens.unwrap_or(0);
-        cache_creation += usage.cache_creation_input_tokens.unwrap_or(0);
+        cache_read += cache_read_here;
+        cache_creation += cache_creation_here;
         total_input += input;
+
+        if let Some(pricing) = pricing_for(model) {
+            cost_usd += pricing.cost(input, output, cache_read_here, cache_creation_here);
+        }
 
         if model.contains("opus") {
             opus_tokens += tokens;
@@ -120,6 +131,7 @@ pub fn analyze_session(entries: &[TranscriptEntry]) -> SessionAnalysis {
         } else {
             0.0
         },
+        cost_usd,
     }
 }
 
@@ -346,6 +358,49 @@ mod tests {
         ];
         let entries = [assistant_entry("claude-opus-4", 100, 50, Some(content))];
         assert_eq!(analyze_session(&entries).repeated_reads, 1);
+    }
+
+    #[test]
+    fn analyze_opus_session_cost() {
+        let entries = [assistant_entry("claude-opus-4-20250514", 1000, 500, None)];
+        // (1000 * 5 + 500 * 25) / 1e6
+        assert!((analyze_session(&entries).cost_usd - 0.0175).abs() < 1e-9);
+    }
+
+    #[test]
+    fn analyze_haiku_session_cost() {
+        let entries = [assistant_entry("claude-3-haiku", 1000, 500, None)];
+        // (1000 * 1 + 500 * 5) / 1e6
+        assert!((analyze_session(&entries).cost_usd - 0.0035).abs() < 1e-9);
+    }
+
+    #[test]
+    fn analyze_sonnet_session_cost_with_cache() {
+        let entries = [TranscriptEntry {
+            entry_type: "assistant".to_string(),
+            message: Some(Message {
+                role: Some("assistant".to_string()),
+                model: Some("claude-sonnet-4".to_string()),
+                usage: Some(Usage {
+                    input_tokens: Some(1000),
+                    output_tokens: Some(500),
+                    cache_read_input_tokens: Some(800),
+                    cache_creation_input_tokens: Some(200),
+                    ..Default::default()
+                }),
+                content: Some(Content::Blocks(vec![text_block("hi")])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        // (1000*3 + 500*15 + 800*0.3 + 200*3.75) / 1e6
+        assert!((analyze_session(&entries).cost_usd - 0.01149).abs() < 1e-9);
+    }
+
+    #[test]
+    fn analyze_unknown_model_has_no_cost() {
+        let entries = [assistant_entry("gpt-4-turbo", 1000, 500, None)];
+        assert_eq!(analyze_session(&entries).cost_usd, 0.0);
     }
 
     #[test]

@@ -207,6 +207,7 @@ mod tests {
             haiku_tokens: 0,
             fable_tokens: input + output,
             repeated_reads: 0,
+            cost_usd: 0.0,
             user_turns: 0,
             prompt_blob: String::new(),
         }

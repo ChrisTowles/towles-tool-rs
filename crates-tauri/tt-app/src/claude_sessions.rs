@@ -53,6 +53,8 @@ pub struct ClaudeSessionRow {
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
     pub cache_creation_tokens: i64,
+    /// Estimated USD cost, priced per model (approximate — see `tt-claude-sessions`).
+    pub cost_usd: f64,
     /// The session's real launch directory, for "Open in Agentboard". `None`
     /// for transcripts predating the `cwd` field.
     pub cwd: Option<String>,
@@ -72,6 +74,7 @@ impl ClaudeSessionRow {
             output_tokens: d.usage.output_tokens,
             cache_read_tokens: d.usage.cache_read_tokens,
             cache_creation_tokens: d.usage.cache_creation_tokens,
+            cost_usd: d.cost_usd,
             cwd: d.cwd.clone(),
             snippet,
         }
