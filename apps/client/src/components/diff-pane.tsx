@@ -8,7 +8,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { ChevronRight, Pencil, RefreshCw } from "lucide-react";
+import { ChevronRight, Pencil, RefreshCw, X } from "lucide-react";
 import { DiffReview, type DiffReviewRequest } from "@/components/diff-review";
 import { MonacoMultiDiff, type ChangedFile } from "@/components/diff-monaco";
 import { ClaudeBadge, IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
@@ -488,11 +488,11 @@ export function DiffPane({
               <RefreshCw className={refreshing ? "size-3 animate-spin" : "size-3"} />
             </IconBtn>
             <IconBtn
-              title="remove pane (diff stays a click away on the folder)"
+              title="close pane (diff stays a click away on the folder)"
               onClick={onClose}
-              className="hover:text-red-500"
+              className="hover:text-sky-500"
             >
-              ⊟
+              <X className="size-3" />
             </IconBtn>
           </>
         }

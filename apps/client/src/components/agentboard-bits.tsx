@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -1298,8 +1299,12 @@ export function PanePlaceholder({
     >
       <span className="text-sm">{label}</span>
       {detail && <span className="font-mono text-xs text-amber-500">{detail}</span>}
-      <button type="button" onClick={onRemove} className="font-mono text-xs hover:text-red-500">
-        ⊟ remove pane
+      <button
+        type="button"
+        onClick={onRemove}
+        className="flex items-center gap-1 font-mono text-xs hover:text-sky-500"
+      >
+        <X className="size-3" /> close pane
       </button>
     </div>
   );

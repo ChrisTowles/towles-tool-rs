@@ -9,6 +9,7 @@ import {
   Slash,
   Square,
   Type,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Glyph, IconBtn, PanePlaceholder } from "@/components/agentboard-bits";
@@ -408,11 +409,11 @@ export function PreviewPane({
               <ExternalLink className="size-3" />
             </IconBtn>
             <IconBtn
-              title="remove pane (preview stays a click away on the folder)"
-              className="hover:text-red-500"
+              title="close pane (preview stays a click away on the folder)"
+              className="hover:text-sky-500"
               onClick={onClose}
             >
-              ⊟
+              <X className="size-3" />
             </IconBtn>
           </>
         }

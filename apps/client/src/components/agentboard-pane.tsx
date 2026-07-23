@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FolderGit2, FolderPlus, GitPullRequest, Plus, Trash2 } from "lucide-react";
+import { FolderGit2, FolderPlus, GitPullRequest, Plus, Trash2, X } from "lucide-react";
 import {
   AheadBehind,
   ComparedBaseBadge,
@@ -368,13 +368,11 @@ export function PaneHeader({
   label,
   now,
   actions,
-  onUngroup,
 }: {
   session: SessionData;
   label: string;
   now: number;
   actions: SessionActions;
-  onUngroup: () => void;
 }) {
   const agent = isAgent(session) && session.live;
   const waitingAge = fmtWaitingAge(session.needsSinceMs, now);
@@ -420,18 +418,11 @@ export function PaneHeader({
             </IconBtn>
           )}
           <IconBtn
-            title="remove pane (session stays in the rail)"
-            onClick={onUngroup}
-            className="hover:text-sky-500"
-          >
-            ⊟
-          </IconBtn>
-          <IconBtn
-            title="kill session (PTY + record)"
+            title="close session (kills the PTY, drops the record)"
             onClick={() => actions.close(session.id)}
             className="hover:text-red-500"
           >
-            ✕
+            <X className="size-3" />
           </IconBtn>
         </>
       }
