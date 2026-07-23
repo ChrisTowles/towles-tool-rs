@@ -499,62 +499,11 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
 }
 
 /**
- * Subscribe to the live store snapshot: pull the initial one via
- * `store_snapshot`, then track `store://snapshot` events. Until the real store
- * answers, the snapshot is empty and `live` is false; outside Tauri entirely
- * (plain-Vite browser dev) it falls back to {@link mockSnapshot}.
+ * The live store snapshot, shared across the app from a single subscription.
+ * Lives in `store-snapshot.tsx` (it needs JSX for its context provider);
+ * re-exported here so the ~14 consumers keep importing it from `@/lib/data`.
  */
-export function useStoreSnapshot(): { snapshot: StoreSnapshot; live: boolean } {
-  const [snapshot, setSnapshot] = useState<StoreSnapshot>(EMPTY_SNAPSHOT);
-  const [live, setLive] = useState(false);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-
-    if (!isTauri()) {
-      // Browser dev: render mock rows so screens are visually workable.
-      setSnapshot(mockSnapshot());
-      return;
-    }
-    // A `store://snapshot` event can beat the initial `store_snapshot` invoke;
-    // once one has, its data is fresher, so don't let the invoke roll it back.
-    let eventArrived = false;
-
-    void (async () => {
-      try {
-        const { listen } = await import("@tauri-apps/api/event");
-
-        const sub = await listen<WireStoreSnapshot>("store://snapshot", (e) => {
-          eventArrived = true;
-          setSnapshot(toStoreSnapshot(e.payload));
-          setLive(true);
-        });
-        if (disposed) {
-          sub();
-          return;
-        }
-        unlisten = sub;
-      } catch {
-        // Event bridge not ready — stay on the empty snapshot.
-        return;
-      }
-
-      const initial = await invoke<WireStoreSnapshot>("store_snapshot");
-      if (initial.isOk() && !disposed && !eventArrived) {
-        setSnapshot(toStoreSnapshot(initial.value));
-        setLive(true);
-      }
-    })();
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  return { snapshot, live };
-}
+export { useStoreSnapshot } from "./store-snapshot";
 
 /** `2:30 PM` — wall-clock time for an epoch-ms timestamp. */
 export function fmtClock(ms: number): string {

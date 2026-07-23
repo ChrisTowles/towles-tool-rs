@@ -16,6 +16,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { NowProvider } from "@/lib/now";
+import { StoreSnapshotProvider } from "@/lib/store-snapshot";
 import { SCREENS } from "@/lib/screens";
 import { ShortcutHelpHost, useShortcuts, type ShortcutScope } from "@/lib/shortcuts";
 import { WorkspaceProvider, useWorkspace } from "@/lib/workspace";
@@ -178,9 +179,11 @@ export function App() {
   return (
     <WorkspaceProvider>
       <NowProvider>
-        <TooltipProvider>
-          <Workspace />
-        </TooltipProvider>
+        <StoreSnapshotProvider>
+          <TooltipProvider>
+            <Workspace />
+          </TooltipProvider>
+        </StoreSnapshotProvider>
       </NowProvider>
     </WorkspaceProvider>
   );
