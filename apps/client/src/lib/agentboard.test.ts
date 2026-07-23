@@ -4,6 +4,7 @@ import {
   cacheWarnMs,
   changedFolderDirs,
   cycleNeedsYou,
+  cycleSession,
   colCount,
   diffPaneDir,
   diffPaneId,
@@ -1236,6 +1237,56 @@ describe("cycleNeedsYou", () => {
     // From "a2" (idle, sits between a1 and b1) — next should be b1, prev should be a1.
     expect(cycleNeedsYou(repos, "a2", "next")?.id).toBe("b1");
     expect(cycleNeedsYou(repos, "a2", "prev")?.id).toBe("a1");
+  });
+});
+
+describe("cycleSession", () => {
+  // Board order: a1, a2, b1, b2 — no attention filter, every session counts.
+  const repos = [
+    repo("a", [
+      folder({
+        dir: "a/f1",
+        sessions: [session({ id: "a1", live: true }), session({ id: "a2", live: true })],
+      }),
+    ]),
+    repo("b", [
+      folder({
+        dir: "b/f1",
+        sessions: [session({ id: "b1", live: true }), session({ id: "b2", live: true })],
+      }),
+    ]),
+  ];
+
+  it("returns null when the board has no sessions", () => {
+    expect(cycleSession([], null, "next")).toBeNull();
+  });
+
+  it("starts from the beginning when nothing is selected", () => {
+    expect(cycleSession(repos, null, "next")?.id).toBe("a1");
+  });
+
+  it("starts from the end when nothing is selected and direction is prev", () => {
+    expect(cycleSession(repos, null, "prev")?.id).toBe("b2");
+  });
+
+  it("moves forward across folders and repos", () => {
+    expect(cycleSession(repos, "a1", "next")?.id).toBe("a2");
+    expect(cycleSession(repos, "a2", "next")?.id).toBe("b1");
+    expect(cycleSession(repos, "b1", "next")?.id).toBe("b2");
+  });
+
+  it("wraps around from the last session back to the first", () => {
+    expect(cycleSession(repos, "b2", "next")?.id).toBe("a1");
+  });
+
+  it("moves backward, wrapping from the first session to the last", () => {
+    expect(cycleSession(repos, "a1", "prev")?.id).toBe("b2");
+    expect(cycleSession(repos, "b1", "prev")?.id).toBe("a2");
+  });
+
+  it("treats an unrecognized fromSessionId the same as nothing selected", () => {
+    expect(cycleSession(repos, "not-a-real-id", "next")?.id).toBe("a1");
+    expect(cycleSession(repos, "not-a-real-id", "prev")?.id).toBe("b2");
   });
 });
 

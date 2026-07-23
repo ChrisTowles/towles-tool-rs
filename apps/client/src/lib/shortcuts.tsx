@@ -212,6 +212,39 @@ export const SHORTCUTS = defineShortcuts([
     allowInEditable: true,
   },
   {
+    id: "ab-focus-up",
+    scope: "agentboard",
+    keys: "mod+shift+arrowup",
+    description: "Focus the previous session in the task list",
+    allowInEditable: true,
+  },
+  {
+    id: "ab-focus-down",
+    scope: "agentboard",
+    keys: "mod+shift+arrowdown",
+    description: "Focus the next session in the task list",
+    allowInEditable: true,
+  },
+  {
+    // Same action as ab-focus-up, bracket chord for keyboards/muscle memory
+    // that prefer it over arrows — hidden so the help overlay doesn't list
+    // the same action twice.
+    id: "ab-focus-up-bracket",
+    scope: "agentboard",
+    keys: "mod+shift+[",
+    description: "Focus the previous session in the task list",
+    allowInEditable: true,
+    hideInHelp: true,
+  },
+  {
+    id: "ab-focus-down-bracket",
+    scope: "agentboard",
+    keys: "mod+shift+]",
+    description: "Focus the next session in the task list",
+    allowInEditable: true,
+    hideInHelp: true,
+  },
+  {
     id: "ab-split-session",
     scope: "agentboard",
     keys: "mod+shift+s",
