@@ -25,6 +25,7 @@ import {
   Glyph,
   IconBtn,
   FolderLandedBadge,
+  IssueChip,
   NeedsBadge,
   PortDriftBadge,
   PrChip,
@@ -67,6 +68,7 @@ import {
   isSoloRepo,
   pathScope,
   prForFolder,
+  taskForFolder,
   sessionCatchesEye,
   sessionLabel,
   sessionStatusText,
@@ -81,7 +83,7 @@ import {
   type StatePayload,
   type WindowsPayload,
 } from "@/lib/agentboard";
-import type { PrItem } from "@/lib/data";
+import type { PrItem, TaskItem } from "@/lib/data";
 import { shortcutHint } from "@/lib/shortcuts";
 import { railRowMotion } from "@/lib/rail-motion";
 import { AnimatePresence, motion } from "motion/react";
@@ -334,6 +336,7 @@ export function RepoGroup({
   now,
   compactPct,
   prs,
+  tasks,
   selectedSessionId,
   activeFolderDir,
   collapsed,
@@ -368,6 +371,9 @@ export function RepoGroup({
   now: number;
   compactPct: number;
   prs: PrItem[];
+  /** Board tasks (`store://snapshot`), for mapping a folder → its bound task's
+   * linked issues (the rail IssueChips). Threaded the same way `prs` is. */
+  tasks: TaskItem[];
   selectedSessionId: string | null;
   activeFolderDir: string | null;
   collapsed: Record<string, boolean>;
@@ -536,6 +542,7 @@ export function RepoGroup({
           folder={folder}
           needs={repo.needs}
           pr={prForFolder(prs, repo.originUrl, folder.branch)}
+          task={taskForFolder(tasks, folder.dir)}
           collapsed={isCollapsed}
           now={now}
           active={activeFolderDir === folder.dir}
@@ -680,6 +687,7 @@ export function RepoGroup({
                   folder={folder}
                   needs={folder.needs}
                   pr={prForFolder(prs, repo.originUrl, folder.branch)}
+                  task={taskForFolder(tasks, folder.dir)}
                   collapsed={fCollapsed}
                   now={now}
                   active={activeFolderDir === folder.dir}
@@ -772,6 +780,7 @@ function FolderHeader({
   folder,
   needs,
   pr,
+  task,
   collapsed,
   active,
   now,
@@ -797,6 +806,9 @@ function FolderHeader({
   needs: number;
   /** The open PR for this folder's branch, when the store knows of one. */
   pr?: PrItem;
+  /** The board task bound to this folder's worktree, when one exists — source
+   * of the manually-linked issue chips and the "Attach issue…" target. */
+  task?: TaskItem;
   collapsed: boolean;
   /** Whether this folder is the one currently shown in the main pane area. */
   active: boolean;
@@ -935,6 +947,7 @@ function FolderHeader({
             quiet={folder.quiet}
             onNewTask={!missing ? onNewTask : undefined}
             onDeleteWorktree={!missing ? onDeleteWorktree : undefined}
+            taskId={!missing ? task?.id : undefined}
           />
         )}
       </div>
@@ -980,6 +993,10 @@ function FolderHeader({
             {folder.hasLaunchConfig && <PreviewButton onOpen={onOpenPreview} />}
           </span>
           {pr && <PrChip pr={pr} stats={folder} />}
+          {task &&
+            task.issues.map((issue) => (
+              <IssueChip key={`${issue.repo}#${issue.number}`} taskId={task.id} issue={issue} />
+            ))}
           <FolderLandedBadge folder={folder} pr={pr} />
           {/* Merged PR, and nothing here would be lost. A PR-less task never
               shows this — git alone can't tell landed work from abandoned

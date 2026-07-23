@@ -69,6 +69,46 @@ pub fn fetch_importable_issues(
     Ok(map_issue_list(&list, &repo))
 }
 
+/// Live search of issues for the attach-to-task flow: runs
+/// `gh issue list --search <query>` in `dir` across every state, so a task
+/// can be linked to any existing issue — not just the open, assigned-to-me
+/// ones the sweep caches. Read-only (never writes the store). A blank query
+/// returns an empty list without shelling out, so the picker doesn't fire a
+/// `gh` call on every cleared keystroke.
+pub fn search_repo_issues(dir: &Path, query: &str) -> Result<Vec<IssueInput>, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let repo = gh::repo_name_with_owner(dir)?;
+    let args = search_issue_list_args(query);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let list = gh::run_json(dir, &arg_refs)?;
+    Ok(map_issue_list(&list, &repo))
+}
+
+/// Build the `gh issue list --search` args for [`search_repo_issues`].
+/// Factored out so the query threading is unit-testable without shelling out.
+/// `--state all` so a closed issue can still be attached; `map_issue_list`
+/// carries each result's state through for the chip's tint.
+fn search_issue_list_args(query: &str) -> Vec<String> {
+    [
+        "issue",
+        "list",
+        "--state",
+        "all",
+        "--search",
+        query,
+        "--limit",
+        gh::LIST_LIMIT,
+        "--json",
+        ISSUE_LIST_FIELDS,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
 /// Build the `gh issue list` args for [`fetch_importable_issues`]. Factored
 /// out so the assignee toggle is unit-testable without shelling out.
 fn importable_issue_list_args(assigned_to_me: bool) -> Vec<String> {
@@ -173,6 +213,13 @@ mod tests {
 
         let assigned = importable_issue_list_args(true);
         assert!(assigned.windows(2).any(|w| w == ["--assignee", "@me"]));
+    }
+
+    #[test]
+    fn search_issue_list_args_threads_query_and_searches_all_states() {
+        let args = search_issue_list_args("double-charge");
+        assert!(args.windows(2).any(|w| w == ["--search", "double-charge"]));
+        assert!(args.windows(2).any(|w| w == ["--state", "all"]));
     }
 
     #[test]

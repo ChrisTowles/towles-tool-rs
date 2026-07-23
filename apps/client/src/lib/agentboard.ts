@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Result } from "better-result";
 import type { z } from "zod";
-import type { PrItem, TaskOutcome } from "./data";
+import type { PrItem, TaskIssueLink, TaskItem, TaskOutcome } from "./data";
 import type { IpcError } from "./errors";
 import type { LaunchConfigStatus } from "./launch";
 import type { RepoMeta } from "./repo-identity";
@@ -15,12 +15,6 @@ import { invoke } from "./tauri";
  * `ab_get_state` command returns and the `agentboard://state` event broadcasts.
  * Only the fields the screen renders are typed; the payload carries more.
  */
-
-/** Create a GitHub issue directly for the repo checked out at `dir` (`gh`
- * infers the repo from the folder's git remote). Resolves the new issue's URL,
- * or the failure for the caller to surface (e.g. via toast). */
-export const abCreateIssue = (dir: string, title: string) =>
-  invoke<string>("store_create_issue", { dir, title });
 
 /** Outcome of `abSyncRepo` (mirrors the Rust `RepoSyncResult`). `started` is
  * `false` only when a sync for this dir was already in flight — a deduped
@@ -919,6 +913,24 @@ export function prForFolder(
   if (!branch) return undefined;
   const origin = originUrl?.toLowerCase();
   return prs.find((p) => p.branch === branch && (!origin || origin.includes(p.repo.toLowerCase())));
+}
+
+/** The board task bound to a folder's worktree, matched on `worktree.dir` —
+ * the one link from a rail folder back to its #339 task. Unlike
+ * {@link prForFolder}, this can't match on branch: a PR carries its own
+ * branch, but an issue has none, so the folder's issue links are only
+ * reachable through its bound task. Returns `undefined` when no task is bound
+ * (the rail lists worktrees the board may know nothing about). */
+export function taskForFolder(tasks: TaskItem[], dir: string): TaskItem | undefined {
+  return tasks.find((t) => t.worktree?.dir === dir);
+}
+
+/** The GitHub issues manually attached to a folder's bound task, for the rail
+ * IssueChip — empty when no task is bound or none are attached. Issues never
+ * auto-attach (they have no branch to match a folder on), so this is exactly
+ * what "Attach issue…" put there. */
+export function issuesForFolder(tasks: TaskItem[], dir: string): TaskIssueLink[] {
+  return taskForFolder(tasks, dir)?.issues ?? [];
 }
 
 /** True when a folder is provably safe to delete: no uncommitted changes

@@ -99,6 +99,7 @@ import {
   placePane,
   replacePane,
   prForFolder,
+  taskForFolder,
   ownerRepoFromOrigin,
   promptWithImages,
   pruneWins,
@@ -1834,6 +1835,7 @@ export function AgentboardScreen() {
                               now={now}
                               compactPct={state.compactRecommendPercent}
                               prs={snapshot.prs}
+                              tasks={snapshot.tasks}
                               selectedSessionId={selected?.sessionId ?? null}
                               activeFolderDir={activeFolderDir}
                               collapsed={collapsed}
@@ -1894,6 +1896,7 @@ export function AgentboardScreen() {
                   repo={activeRepo}
                   folder={activeFolder}
                   pr={prForFolder(snapshot.prs, activeRepo.originUrl, activeFolder.branch)}
+                  task={taskForFolder(snapshot.tasks, activeFolder.dir)}
                   actions={actions}
                   onOpenDiff={openDiff}
                   onOpenFiles={openFiles}
