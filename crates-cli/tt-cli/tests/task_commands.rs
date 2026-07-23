@@ -203,6 +203,91 @@ fn lifecycle_new_env_ls_rm() {
         .stderr(contains("refusing to remove the primary"));
 }
 
+/// The claim lock's own regression test: renders racing for *fresh* claims
+/// must come away with disjoint ports. Without the lock, all three scan
+/// siblings before any of them writes, and they pick the same port.
+#[test]
+fn concurrent_renders_claim_disjoint_ports() {
+    let tmp = tempfile::tempdir().unwrap();
+    let checkout = make_checkout(tmp.path());
+    let root_s = checkout.to_string_lossy().to_string();
+    // Own sandbox HOME (not the suite's shared one) so wiping the registry
+    // below can't disturb a concurrently running test's claims.
+    let home = tempfile::tempdir().unwrap();
+    let scope = "race-test";
+
+    let names = ["race-a", "race-b", "race-c"];
+    for name in names {
+        let out = tt_scoped(home.path(), scope)
+            .args([
+                "task",
+                "new",
+                name,
+                "--repo",
+                &root_s,
+                "-b",
+                &format!("feat/{name}"),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "new failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    // Erase every trace of the claims — each `.env` and the registry — so
+    // the renders below genuinely race for fresh picks from the pool.
+    for name in names {
+        std::fs::remove_file(task_dir(&checkout, &format!("feat-{name}")).join(".env")).unwrap();
+    }
+    let registry_dir = home
+        .path()
+        .join(".config")
+        .join("towles-tool")
+        .join("tasks")
+        .join(scope)
+        .join("task-ports");
+    if registry_dir.is_dir() {
+        std::fs::remove_dir_all(&registry_dir).unwrap();
+    }
+
+    let handles: Vec<_> = names
+        .iter()
+        .map(|name| {
+            let root = root_s.clone();
+            let home = home.path().to_path_buf();
+            let task = format!("feat-{name}");
+            std::thread::spawn(move || {
+                let out = tt_scoped(&home, scope)
+                    .args(["task", "env", &task, "--root", &root])
+                    .output()
+                    .unwrap();
+                (task, out)
+            })
+        })
+        .collect();
+    for handle in handles {
+        let (task, out) = handle.join().unwrap();
+        assert!(
+            out.status.success(),
+            "env render for {task} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let ports: Vec<String> = names
+        .iter()
+        .map(|name| {
+            let env =
+                std::fs::read_to_string(task_dir(&checkout, &format!("feat-{name}")).join(".env"))
+                    .unwrap();
+            env.lines()
+                .find_map(|l| l.strip_prefix("UI_PORT=").map(str::to_string))
+                .unwrap_or_else(|| panic!("no UI_PORT rendered for {name}: {env}"))
+        })
+        .collect();
+    let distinct: std::collections::BTreeSet<&String> = ports.iter().collect();
+    assert_eq!(distinct.len(), names.len(), "racing renders claimed colliding ports: {ports:?}");
+}
+
 /// `tt task ports --json` reports every claim with its owner/var/source, and
 /// flags a claim only the registry still knows (its `.env` deleted) as
 /// `source: "registry"` — the drift row a doctor check keys off.

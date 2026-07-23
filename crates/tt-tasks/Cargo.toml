@@ -25,4 +25,7 @@ tt-exec = { workspace = true }
 tt-git = { workspace = true }
 
 [dev-dependencies]
+# Property tests for the envfile parse/merge invariants — the seam every
+# port claim and inherited secret passes through.
+proptest = "1.6.0"
 tempfile = "3.14.0"
