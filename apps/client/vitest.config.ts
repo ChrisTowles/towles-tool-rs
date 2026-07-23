@@ -8,9 +8,11 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["src/**/*.test.ts"],
+    // Logic tests (`*.test.ts`) run in the fast Node env; render-level
+    // component tests (`*.test.tsx`) opt into jsdom per-file with a
+    // `// @vitest-environment jsdom` docblock, so the Node suite stays quick.
+    include: ["src/**/*.test.{ts,tsx}"],
     environment: "node",
-    // No test files exist yet after the AgentBoard removal; don't fail red.
     passWithNoTests: true,
   },
 });

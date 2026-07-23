@@ -192,21 +192,33 @@ a build puts motion in the initial chunk regardless. `main.tsx` keeps only
 
 ## Testing convention: logic-only
 
-Vitest tests live under `lib/` (`*.test.ts`, `npm run test` = `vitest run`)
-— there are no `*.test.tsx` component tests by design. Components are kept
-deliberately thin; push branching logic into pure `lib/*.ts` functions
-specifically so it's unit-testable without a DOM (e.g.
-`workspace-persistence.ts` exists solely to make tab-restore logic
-testable). Verify actual UI/IPC behavior by driving the real shell
-(`npm run e2e` / `npm run dev:drive` — see the root CLAUDE.md's Commands
-section), not by adding component tests.
+Logic tests (`*.test.ts`) run in the fast Node env — the default. Components
+are kept deliberately thin, so most branching logic lives in pure `lib/*.ts`
+functions that are unit-testable without a DOM (e.g. `workspace-persistence.ts`
+exists solely to make tab-restore logic testable). Prefer that seam when you
+can.
 
-**A green test run says nothing about whether the page rendered.** Because
-there are no component tests, the only signal for a runtime React complaint is
-the page's own console, which the app buffers under `VITE_WDIO`
+Render-level tests (`*.test.tsx`) exist too, for the case a pure function
+can't cover — that a screen mounts and renders its shell without throwing.
+They opt into jsdom per-file with a `// @vitest-environment jsdom` docblock
+(so the Node suite stays quick) and render through `src/test/render.tsx`'s
+`renderWithProviders`, which wraps the component in App.tsx's provider tree.
+**The backend seam is jsdom itself:** there is no `__TAURI_INTERNALS__`, so
+every `invoke` returns `NotInTauri` and each component paints its colocated
+browser-dev fallback — stub at that seam, never mock component internals.
+`renderWithProviders` polyfills the browser APIs jsdom omits (`matchMedia`,
+`ResizeObserver`, pointer capture). Keep these as smoke/regression guards
+(does it render? are the tabs there?), not a substitute for driving the real
+shell.
+
+**A green test run still says little about whether the page rendered
+*correctly*.** These smoke tests catch a throw on mount, but the authoritative
+signal for a runtime React complaint (invalid DOM nesting, a bad hook order)
+is the page's own console, which the app buffers under `VITE_WDIO`
 (`lib/wdio-console.ts`). Every `scripts/drive.mjs` verb prints a `⚠ N console
 error(s)` summary when the buffer is non-empty, and `drive.mjs console` dumps
-it (exiting non-zero on real errors, so it can gate a script). If you changed
-UI and never looked at that output, the change is unverified — an invalid-DOM
-warning otherwise reaches only the `dev:drive` terminal, which is a different
-process from `drive.mjs`.
+it (exiting non-zero on real errors, so it can gate a script). Verify real
+UI/IPC behavior by driving the shell (`npm run e2e` / `npm run dev:drive` —
+see the root CLAUDE.md's Commands section); if you changed UI and never looked
+at that output, the change is unverified — an invalid-DOM warning otherwise
+reaches only the `dev:drive` terminal, a different process from `drive.mjs`.
