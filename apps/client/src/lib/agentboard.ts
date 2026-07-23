@@ -755,6 +755,30 @@ export function cycleNeedsYou(
   return all[chosen];
 }
 
+/** The next (or previous) session board-wide, in the same repo → folder →
+ * session order the rail renders, wrapping around. Unlike {@link
+ * cycleNeedsYou}, every session is a candidate — this is plain up/down
+ * focus movement through the whole list, not an attention filter.
+ * `fromSessionId` anchors the cycle; `null` (nothing selected, or the id
+ * isn't found) starts from the very beginning/end. Returns `null` when the
+ * board has no sessions at all. */
+export function cycleSession(
+  repos: RepoData[],
+  fromSessionId: string | null,
+  direction: "next" | "prev",
+): SessionData | null {
+  const all: SessionData[] = [];
+  for (const r of repos) for (const f of r.folders) for (const s of f.sessions) all.push(s);
+  if (all.length === 0) return null;
+
+  const fromIndex = fromSessionId ? all.findIndex((s) => s.id === fromSessionId) : -1;
+
+  if (direction === "next") {
+    return fromIndex === -1 ? all[0] : all[(fromIndex + 1) % all.length];
+  }
+  return fromIndex === -1 ? all[all.length - 1] : all[(fromIndex - 1 + all.length) % all.length];
+}
+
 /** A folder's currently-running (PTY-live) sessions. */
 export function liveSessions(folder: FolderData): SessionData[] {
   return folder.sessions.filter((s) => s.live);

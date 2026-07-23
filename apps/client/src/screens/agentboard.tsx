@@ -67,6 +67,7 @@ import {
   consumePendingAgentboardNav,
   consumePendingOpenSessions,
   cycleNeedsYou,
+  cycleSession,
   COL_TOTAL,
   diffPaneDir,
   diffPaneId,
@@ -935,6 +936,17 @@ export function AgentboardScreen() {
     selectSession(folderDir, target.id);
   }
 
+  // ab-focus-up/ab-focus-down (see lib/shortcuts.tsx): plain up/down through
+  // the whole task list in rail order, wrapping around — unlike jumpToNeedsYou
+  // this doesn't filter to sessions needing attention.
+  function focusSession(direction: "next" | "prev") {
+    const target = cycleSession(repos, selected?.sessionId ?? null, direction);
+    if (!target) return;
+    const folderDir = folderOf.get(target.id)?.dir;
+    if (!folderDir) return;
+    selectSession(folderDir, target.id);
+  }
+
   // Toggle the inline new-task form open/closed for a repo — the "+"/"New
   // task…" affordances all funnel through this, same as clicking it again
   // closes the form rather than only ever opening one.
@@ -1645,6 +1657,10 @@ export function AgentboardScreen() {
         "ab-toggle-rail": toggleRail,
         "ab-jump-next": () => jumpToNeedsYou("next"),
         "ab-jump-prev": () => jumpToNeedsYou("prev"),
+        "ab-focus-up": () => focusSession("prev"),
+        "ab-focus-down": () => focusSession("next"),
+        "ab-focus-up-bracket": () => focusSession("prev"),
+        "ab-focus-down-bracket": () => focusSession("next"),
         "ab-split-session": splitIntoWindow,
         "ab-new-terminal-right": () => {
           if (activeFolderDir) void newSession(activeFolderDir);
