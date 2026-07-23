@@ -137,7 +137,12 @@ fn ask_claude(cwd: &Path, goal: &str, images: &[String], instruction: &str) -> R
 /// Split out so a test can assert the flags that make the answer's shape the
 /// CLI's problem — asserting against [`SUGGESTION_SCHEMA`] alone would pass
 /// even if `--json-schema` were dropped from the command.
-fn claude_args(prompt: &str) -> [&str; 6] {
+///
+/// `--model sonnet` is pinned rather than left to the user's `claude` config:
+/// this is a cheap, one-shot structured-output call (restate/plan/brainstorm
+/// the goal), not a task the user is directing, so it shouldn't silently ride
+/// whatever heavier default model their CLI happens to be set to.
+fn claude_args(prompt: &str) -> [&str; 8] {
     [
         "-p",
         prompt,
@@ -145,6 +150,8 @@ fn claude_args(prompt: &str) -> [&str; 6] {
         "json",
         "--json-schema",
         SUGGESTION_SCHEMA,
+        "--model",
+        "sonnet",
     ]
 }
 
@@ -319,6 +326,7 @@ mod tests {
         let schema: serde_json::Value = serde_json::from_str(args[5]).unwrap();
         assert_eq!(schema["required"], serde_json::json!(["branch", "goal"]));
         assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+        assert_eq!(args[6..8], ["--model", "sonnet"]);
     }
 
     #[test]
