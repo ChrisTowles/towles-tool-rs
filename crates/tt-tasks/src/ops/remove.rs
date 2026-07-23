@@ -10,7 +10,7 @@ use std::time::Duration;
 use super::claims::{port_occupied, port_registry_path, release_task_ports};
 use super::{
     OpsError, Result, base_refs, dir_names, discover_root, git_checkout, git_task, orphaned_count,
-    uncommitted_count, work_state,
+    run_teardown, uncommitted_count, work_state,
 };
 use crate::envfile;
 use crate::guards::{ForeignPort, RmBlocked};
@@ -71,7 +71,8 @@ pub enum RemoveOutcome {
 }
 
 /// Remove a task: guarded (clean tree, no commits unreachable from a branch
-/// or remote, nothing foreign on its claimed ports), then docker compose
+/// or remote, nothing foreign on its claimed ports), then the declared
+/// `TT_TASK_TEARDOWN` command (see [`super::run_teardown`]), docker compose
 /// down -v, anchored container/volume sweep, `git worktree remove`. Shared by
 /// `tt task rm` and the app's `task_delete` command.
 ///
@@ -135,6 +136,9 @@ pub fn remove_task(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
                 .to_string(),
         );
         before_removal();
+        if let Some(warning) = run_teardown(&dir)? {
+            messages.push(warning);
+        }
         docker_cleanup(&name, &dir, &mut messages);
         fs::remove_dir_all(&dir)
             .map_err(|e| OpsError::Io(format!("cannot remove {dir_s}: {e}")))?;
@@ -230,6 +234,9 @@ pub fn remove_task(opts: &RemoveOpts, before_removal: impl FnOnce()) -> Result<R
     // Past every guard, and the state above is already gathered — only now is
     // it safe to kill the folder's PTYs (#366).
     before_removal();
+    if let Some(warning) = run_teardown(&dir)? {
+        messages.push(warning);
+    }
     docker_cleanup(&name, &dir, &mut messages);
 
     let remove = if opts.force {
