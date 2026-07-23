@@ -50,7 +50,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Current on-disk schema version, stored in the `meta` table.
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 
 /// The sort/range key format for calendar events: UTC, fixed width, matching
 /// the `starts_at_utc`/`ends_at_utc` generated columns' `strftime` format
@@ -287,6 +287,24 @@ CREATE TABLE IF NOT EXISTS repos (
 );
 ";
 
+/// v15: per-item dismissals for the `issues`/`pr_status` tables. Those two
+/// tables are fully replaced by every collector run (see
+/// [`Store::replace_issues`]/[`Store::replace_prs`]), so a dismissal can't
+/// live as a column on them the way `dm_status.dismissed_ts` does — it would
+/// vanish the moment the row is reinserted. This table is independent and
+/// keyed on `(kind, repo, number)` (`kind` is `"issue"` or `"pr"` — plain
+/// numbers collide across the two per repo), diffed against the live rows at
+/// read time in [`Store::issues`]/[`Store::get_issue`]/[`Store::prs`].
+const SCHEMA_ITEM_DISMISSALS_V15: &str = "\
+CREATE TABLE IF NOT EXISTS item_dismissals (
+    kind TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    dismissed_ts INTEGER NOT NULL,
+    PRIMARY KEY (kind, repo, number)
+);
+";
+
 /// Local midnight of `date` as epoch ms, resolving DST edges rather than
 /// giving up on them: an ambiguous midnight takes the earlier instant, and a
 /// nonexistent one (spring-forward at 00:00) walks forward to the first valid
@@ -319,8 +337,11 @@ const EVENT_COLS: &str =
     "id, source, external_id, title, starts_at, ends_at, attendees, location, join_url";
 const TASK_COLS: &str = "id, text, status, position, created_at, completed_at, notes, \
      worktree_repo_root, worktree_repo, worktree_branch, worktree_dir, outcome, archived_at";
-const ISSUE_COLS: &str = "repo, number, title, labels, state, url, updated_ts";
-const PR_COLS: &str = "repo, number, title, branch, state, checks, review_state, url, updated_ts";
+// Aliased to `i`/`p` and joined against `item_dismissals` in the read paths
+// below, so each column list carries its own dismissed_ts.
+const ISSUE_COLS: &str = "i.repo, i.number, i.title, i.labels, i.state, i.url, i.updated_ts, COALESCE(d.dismissed_ts, 0)";
+const PR_COLS: &str = "p.repo, p.number, p.title, p.branch, p.state, p.checks, p.review_state, \
+     p.url, p.updated_ts, COALESCE(d.dismissed_ts, 0)";
 const RUN_COLS: &str = "collector, ran_at, ok, message";
 const DM_COLS: &str = "channel, from_name, text, ts, from_me, url, fetched_at, dismissed_ts";
 const MCP_CALL_COLS: &str = "id, ts, method, tool, args, ok, error, duration_ms, client";
@@ -473,6 +494,14 @@ pub struct IssueItem {
     pub state: String,
     pub url: String,
     pub updated_ts: i64,
+    /// The `updated_ts` this item had the last time the user dismissed it
+    /// (see [`Store::dismiss_item`]); `0` if never dismissed. The UI hides an
+    /// item while `dismissed_ts >= updated_ts` and re-shows it the moment the
+    /// collector observes a newer `updated_ts` — a dismissal survives the
+    /// item leaving and re-entering the collector snapshot the same way
+    /// [`DmItem::dismissed_ts`] does, but expires on its own once the item
+    /// actually changes rather than needing a matching new "message".
+    pub dismissed_ts: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -487,6 +516,8 @@ pub struct PrItem {
     pub review_state: String,
     pub url: String,
     pub updated_ts: i64,
+    /// See [`IssueItem::dismissed_ts`] — same semantics, keyed `(kind = "pr", repo, number)`.
+    pub dismissed_ts: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -715,6 +746,7 @@ impl Store {
         self.conn.execute_batch(SCHEMA_MCP_CALLS_V5)?;
         self.migrate_collect_runs_v6()?;
         self.conn.execute_batch(SCHEMA_REPOS_V12)?;
+        self.conn.execute_batch(SCHEMA_ITEM_DISMISSALS_V15)?;
         self.conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1860,6 +1892,25 @@ impl Store {
         Ok(())
     }
 
+    /// Dismiss one GitHub item (`kind` is `"issue"` or `"pr"`) at `(repo,
+    /// number)`, recording the `updated_ts` it had at dismissal time — the UI
+    /// re-shows it once the collector observes a newer `updated_ts` (see
+    /// [`IssueItem::dismissed_ts`]).
+    pub fn dismiss_item(&self, kind: &str, repo: &str, number: i64, updated_ts: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO item_dismissals (kind, repo, number, dismissed_ts) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(kind, repo, number) DO UPDATE SET dismissed_ts = excluded.dismissed_ts",
+            params![kind, repo, number, updated_ts],
+        )?;
+        Ok(())
+    }
+
+    /// Clear every stored dismissal — every previously dismissed issue/PR
+    /// reappears. Returns how many were cleared.
+    pub fn clear_dismissals(&self) -> Result<usize> {
+        Ok(self.conn.execute("DELETE FROM item_dismissals", [])?)
+    }
+
     /// Record the outcome of a collector run (one row per collector, upserted).
     pub fn record_run(
         &self,
@@ -2106,14 +2157,27 @@ impl Store {
 
     /// All issue rows, newest update first.
     pub fn issues(&self) -> Result<Vec<IssueItem>> {
-        self.query_issues(&format!("SELECT {ISSUE_COLS} FROM issues ORDER BY updated_ts DESC"), [])
+        self.query_issues(
+            &format!(
+                "SELECT {ISSUE_COLS} FROM issues i \
+                 LEFT JOIN item_dismissals d \
+                   ON d.kind = 'issue' AND d.repo = i.repo AND d.number = i.number \
+                 ORDER BY i.updated_ts DESC"
+            ),
+            [],
+        )
     }
 
     /// A single cached issue row by `(repo, number)`, if the collector has seen it.
     pub fn get_issue(&self, repo: &str, number: i64) -> Result<Option<IssueItem>> {
         Ok(self
             .query_issues(
-                &format!("SELECT {ISSUE_COLS} FROM issues WHERE repo = ?1 AND number = ?2"),
+                &format!(
+                    "SELECT {ISSUE_COLS} FROM issues i \
+                     LEFT JOIN item_dismissals d \
+                       ON d.kind = 'issue' AND d.repo = i.repo AND d.number = i.number \
+                     WHERE i.repo = ?1 AND i.number = ?2"
+                ),
                 params![repo, number],
             )?
             .into_iter()
@@ -2122,7 +2186,15 @@ impl Store {
 
     /// All PR status rows, newest update first.
     pub fn prs(&self) -> Result<Vec<PrItem>> {
-        self.query_prs(&format!("SELECT {PR_COLS} FROM pr_status ORDER BY updated_ts DESC"), [])
+        self.query_prs(
+            &format!(
+                "SELECT {PR_COLS} FROM pr_status p \
+                 LEFT JOIN item_dismissals d \
+                   ON d.kind = 'pr' AND d.repo = p.repo AND d.number = p.number \
+                 ORDER BY p.updated_ts DESC"
+            ),
+            [],
+        )
     }
 
     /// All collector run records, ordered by collector name.
@@ -2346,13 +2418,23 @@ impl Store {
                 r.get::<_, String>(4)?,
                 r.get::<_, String>(5)?,
                 r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (repo, number, title, labels_json, state, url, updated_ts) = row?;
+            let (repo, number, title, labels_json, state, url, updated_ts, dismissed_ts) = row?;
             let labels: Vec<String> = serde_json::from_str(&labels_json)?;
-            out.push(IssueItem { repo, number, title, labels, state, url, updated_ts });
+            out.push(IssueItem {
+                repo,
+                number,
+                title,
+                labels,
+                state,
+                url,
+                updated_ts,
+                dismissed_ts,
+            });
         }
         Ok(out)
     }
@@ -2370,6 +2452,7 @@ impl Store {
                 review_state: r.get(6)?,
                 url: r.get(7)?,
                 updated_ts: r.get(8)?,
+                dismissed_ts: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -3753,6 +3836,76 @@ mod tests {
         // Replying clears it collector-side: latest message is mine.
         s.upsert_dm(&msg(300, true), 4).unwrap();
         assert!(s.dms().unwrap()[0].from_me);
+    }
+
+    #[test]
+    fn dismiss_item_survives_replace_until_the_item_updates() {
+        let s = Store::open_in_memory().unwrap();
+        let pr = |updated_ts: i64| PrInput {
+            repo: "octo/widgets".to_string(),
+            number: 42,
+            title: "feat: treemap".to_string(),
+            branch: "feat/treemap".to_string(),
+            state: "open".to_string(),
+            checks: "passing".to_string(),
+            review_state: "review_requested".to_string(),
+            url: "https://github.com/octo/widgets/pull/42".to_string(),
+            updated_ts,
+        };
+
+        s.replace_prs(&[pr(100)]).unwrap();
+        assert_eq!(s.prs().unwrap()[0].dismissed_ts, 0, "fresh PR starts undismissed");
+
+        s.dismiss_item("pr", "octo/widgets", 42, 100).unwrap();
+        assert_eq!(s.prs().unwrap()[0].dismissed_ts, 100);
+
+        // A collector re-run with no real change (same updated_ts) keeps the
+        // dismissal, exactly like a re-sent DM at the same ts.
+        s.replace_prs(&[pr(100)]).unwrap();
+        assert_eq!(s.prs().unwrap()[0].dismissed_ts, 100);
+
+        // The PR actually changing (a newer review) outruns the dismissal.
+        s.replace_prs(&[pr(200)]).unwrap();
+        let pr_row = &s.prs().unwrap()[0];
+        assert_eq!(pr_row.updated_ts, 200);
+        assert!(pr_row.dismissed_ts < pr_row.updated_ts);
+    }
+
+    #[test]
+    fn clear_dismissals_removes_every_kind() {
+        let s = Store::open_in_memory().unwrap();
+        s.replace_issues(&[IssueInput {
+            repo: "octo/widgets".to_string(),
+            number: 118,
+            title: "Flaky resize".to_string(),
+            labels: vec![],
+            state: "open".to_string(),
+            url: "https://github.com/octo/widgets/issues/118".to_string(),
+            updated_ts: 50,
+        }])
+        .unwrap();
+        s.replace_prs(&[PrInput {
+            repo: "octo/widgets".to_string(),
+            number: 42,
+            title: "feat: treemap".to_string(),
+            branch: "feat/treemap".to_string(),
+            state: "open".to_string(),
+            checks: "passing".to_string(),
+            review_state: "review_requested".to_string(),
+            url: "https://github.com/octo/widgets/pull/42".to_string(),
+            updated_ts: 100,
+        }])
+        .unwrap();
+
+        s.dismiss_item("issue", "octo/widgets", 118, 50).unwrap();
+        s.dismiss_item("pr", "octo/widgets", 42, 100).unwrap();
+        assert_eq!(s.issues().unwrap()[0].dismissed_ts, 50);
+        assert_eq!(s.prs().unwrap()[0].dismissed_ts, 100);
+
+        let cleared = s.clear_dismissals().unwrap();
+        assert_eq!(cleared, 2);
+        assert_eq!(s.issues().unwrap()[0].dismissed_ts, 0);
+        assert_eq!(s.prs().unwrap()[0].dismissed_ts, 0);
     }
 
     #[test]

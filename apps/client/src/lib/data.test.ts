@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { dmsNeedingAttention, EMPTY_SNAPSHOT, type DmItem, type StoreSnapshot } from "./data";
+import {
+  dmsNeedingAttention,
+  EMPTY_SNAPSHOT,
+  isItemDismissed,
+  type DmItem,
+  type StoreSnapshot,
+} from "./data";
 
 function dm(overrides: Partial<DmItem> = {}): DmItem {
   return {
@@ -52,5 +58,21 @@ describe("dmsNeedingAttention", () => {
       ]),
     );
     expect(needing.map((d) => d.channel)).toEqual(["A", "D"]);
+  });
+});
+
+describe("isItemDismissed", () => {
+  it("is false for a never-dismissed item, even at updatedTs 0", () => {
+    expect(isItemDismissed({ dismissedTs: 0, updatedTs: 0 })).toBe(false);
+    expect(isItemDismissed({ dismissedTs: 0, updatedTs: 500 })).toBe(false);
+  });
+
+  it("is true once dismissed at or after the current updatedTs", () => {
+    expect(isItemDismissed({ dismissedTs: 500, updatedTs: 500 })).toBe(true);
+    expect(isItemDismissed({ dismissedTs: 500, updatedTs: 100 })).toBe(true);
+  });
+
+  it("re-surfaces once the item updates past the dismissal", () => {
+    expect(isItemDismissed({ dismissedTs: 500, updatedTs: 900 })).toBe(false);
   });
 });

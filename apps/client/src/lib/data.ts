@@ -175,6 +175,12 @@ export type TaskItem = {
   prs: TaskPrLink[];
 };
 
+/**
+ * `dismissedTs` is the `updatedTs` this item had the last time the user
+ * dismissed it; `0` if never dismissed. The item is hidden while
+ * `dismissedTs >= updatedTs` and reappears on its own once the collector
+ * observes a newer `updatedTs` — see {@link isItemDismissed}.
+ */
 export type IssueItem = {
   repo: string;
   number: number;
@@ -183,6 +189,7 @@ export type IssueItem = {
   state: string;
   url: string;
   updatedTs: number;
+  dismissedTs: number;
 };
 
 export type PrItem = {
@@ -195,7 +202,14 @@ export type PrItem = {
   reviewState: string;
   url: string;
   updatedTs: number;
+  dismissedTs: number;
 };
+
+/** Whether a dismissed PR/issue should stay hidden — it was actually
+ * dismissed (`dismissedTs > 0`) and hasn't changed since. */
+export function isItemDismissed(item: { dismissedTs: number; updatedTs: number }): boolean {
+  return item.dismissedTs > 0 && item.dismissedTs >= item.updatedTs;
+}
 
 export type CollectRun = {
   collector: string;
@@ -373,6 +387,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         state: "open",
         url: "https://github.com/octo/widgets/issues/118",
         updatedTs: now - 5 * 60 * MINUTE,
+        dismissedTs: 0,
       },
     ],
     prs: [
@@ -386,6 +401,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         reviewState: "",
         url: "https://github.com/octo/widgets/pull/42",
         updatedTs: now - 30 * MINUTE,
+        dismissedTs: 0,
       },
       {
         repo: "octo/widgets",
@@ -397,6 +413,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         reviewState: "review_requested",
         url: "https://github.com/octo/widgets/pull/43",
         updatedTs: now - 2 * 60 * MINUTE,
+        dismissedTs: 0,
       },
       {
         repo: "octo/gizmos",
@@ -408,6 +425,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         reviewState: "",
         url: "https://github.com/octo/gizmos/pull/7",
         updatedTs: now - 10 * MINUTE,
+        dismissedTs: 0,
       },
       {
         repo: "octo/gizmos",
@@ -419,6 +437,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         reviewState: "",
         url: "https://github.com/octo/gizmos/pull/8",
         updatedTs: now - 26 * 60 * MINUTE,
+        dismissedTs: 0,
       },
       {
         repo: "octo/gizmos",
@@ -430,6 +449,7 @@ export function mockSnapshot(now: number = Date.now()): StoreSnapshot {
         reviewState: "",
         url: "https://github.com/octo/gizmos/pull/6",
         updatedTs: now - 45 * MINUTE,
+        dismissedTs: 0,
       },
     ],
     runs: [],
@@ -737,6 +757,20 @@ export const storeSearchIssues = (dir: string, query: string) =>
 /** Mark a watched Slack DM handled up to `ts`, clearing its banner. */
 export const storeDmDismiss = (channel: string, ts: number) =>
   invoke<void>("store_dm_dismiss", { channel, ts });
+
+/** Dismiss one GitHub issue/PR (`kind` is `"issue"` or `"pr"`) — it drops out
+ * of the attention feed until the collector observes a newer `updatedTs`
+ * than the one passed in. */
+export const storeItemDismiss = (
+  kind: "issue" | "pr",
+  repo: string,
+  number: number,
+  updatedTs: number,
+) => invoke<void>("store_item_dismiss", { kind, repo, number, updatedTs });
+
+/** Clear every dismissed issue/PR at once — the "clear all dismissals" action.
+ * Resolves to how many were cleared. */
+export const storeDismissalsClear = () => invoke<number>("store_dismissals_clear", {});
 
 /** Append a line to today's journal note. */
 export const journalLog = (text: string) => invoke<void>("journal_log", { text });

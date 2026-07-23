@@ -1,4 +1,4 @@
-import { dmsNeedingAttention, type StoreSnapshot } from "./data";
+import { dmsNeedingAttention, isItemDismissed, type StoreSnapshot } from "./data";
 import type { StatePayload } from "./agentboard";
 import type { FocusTarget } from "./focus-target";
 
@@ -55,8 +55,9 @@ export function buildAttentionFeed(
   }
 
   // Merged PRs live in the snapshot too (briefly, so a folder's rail chip can
-  // turn purple), but a merged PR never needs attention.
-  for (const pr of snapshot.prs.filter((p) => p.state === "open")) {
+  // turn purple), but a merged PR never needs attention. A dismissed PR stays
+  // out of the feed until it changes again.
+  for (const pr of snapshot.prs.filter((p) => p.state === "open" && !isItemDismissed(p))) {
     const prId = `${pr.repo}#${pr.number}`;
     const target: FocusTarget = { screen: "gh-prs", kind: "pr", id: prId };
     // Failing CI outranks review-requested; a PR that is both surfaces once, in

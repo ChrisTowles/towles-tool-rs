@@ -4,6 +4,7 @@ import {
   CircleAlert,
   CircleDot,
   ExternalLink,
+  EyeOff,
   GitBranch,
   GitBranchPlus,
   GitPullRequest,
@@ -37,9 +38,12 @@ import {
   fmtAge,
   fmtClock,
   fmtCountdown,
+  isItemDismissed,
   type IssueItem,
   type PrItem,
   storeCollectNow,
+  storeDismissalsClear,
+  storeItemDismiss,
   useStoreSnapshot,
 } from "@/lib/data";
 import { cockpitRepos, filterByRepo } from "@/lib/cockpit-filter";
@@ -147,15 +151,39 @@ export function CockpitScreen() {
   // collected away) falls back to "all" without a stale-state effect.
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   // Merged PRs live in the snapshot too (briefly, so a folder's rail chip can
-  // turn purple), but Cockpit's PR queue is open work — exclude them.
-  const openPrs = useMemo(() => snapshot.prs.filter((p) => p.state === "open"), [snapshot.prs]);
-  const repoList = cockpitRepos(openPrs, snapshot.issues);
+  // turn purple), but Cockpit's PR queue is open work — exclude them. A
+  // dismissed item stays hidden until it changes again.
+  const openPrs = useMemo(
+    () => snapshot.prs.filter((p) => p.state === "open" && !isItemDismissed(p)),
+    [snapshot.prs],
+  );
+  const openIssues = useMemo(
+    () => snapshot.issues.filter((i) => !isItemDismissed(i)),
+    [snapshot.issues],
+  );
+  const repoList = cockpitRepos(openPrs, openIssues);
   const activeRepo = repoFilter !== null && repoList.includes(repoFilter) ? repoFilter : null;
   const visiblePrs = filterByRepo(openPrs, activeRepo);
-  const visibleIssues = filterByRepo(snapshot.issues, activeRepo);
+  const visibleIssues = filterByRepo(openIssues, activeRepo);
 
   const needsYouPrs = openPrs.filter(prNeedsYou);
   const visibleNeedsYou = visiblePrs.filter(prNeedsYou);
+
+  const dismissedCount =
+    snapshot.prs.filter(isItemDismissed).length + snapshot.issues.filter(isItemDismissed).length;
+  const [clearingDismissals, setClearingDismissals] = useState(false);
+  async function clearDismissals() {
+    uiAction("cockpit.dismissals_clear", "cockpit");
+    setClearingDismissals(true);
+    const cleared = await storeDismissalsClear();
+    if (cleared.isOk()) {
+      const n = cleared.value;
+      toast.success(n === 1 ? "1 item restored" : `${n} items restored`);
+    } else if (!NotInTauri.is(cleared.error)) {
+      toast.error(cleared.error.message);
+    }
+    setClearingDismissals(false);
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -261,8 +289,25 @@ export function CockpitScreen() {
             label="PRs need you"
             tone={needsYouPrs.length ? "warn" : "muted"}
           />
-          <Gauge n={snapshot.issues.length} label="Issues" tone="muted" />
+          <Gauge n={openIssues.length} label="Issues" tone="muted" />
           <Gauge n={repoList.length} label="Repos" tone="muted" />
+          {dismissedCount > 0 && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => void clearDismissals()}
+                  disabled={clearingDismissals}
+                  className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-muted-foreground hover:bg-accent/50 disabled:pointer-events-none disabled:opacity-60"
+                  aria-label="Clear all dismissals"
+                >
+                  <EyeOff className="size-3.5" />
+                  <span className="tabular-nums">{dismissedCount} dismissed</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Bring back every dismissed PR and issue</TooltipContent>
+            </Tooltip>
+          )}
         </div>
       </div>
 
@@ -384,6 +429,14 @@ async function copyToClipboard(text: string, what: string) {
   }
 }
 
+/** Dismiss one issue/PR: it drops out of every panel until it changes again.
+ * The snapshot re-emits from Rust on success, so no optimistic update here. */
+async function dismissItem(kind: "issue" | "pr", repo: string, number: number, updatedTs: number) {
+  uiAction("cockpit.item_dismiss", "cockpit", kind);
+  const result = await storeItemDismiss(kind, repo, number, updatedTs);
+  if (result.isErr() && !NotInTauri.is(result.error)) toast.error(result.error.message);
+}
+
 /**
  * Per-issue action menu for the Cockpit issue queue: open the issue in the
  * browser, or dispatch it into a tracked task checkout (assign via
@@ -435,6 +488,13 @@ function IssueActions({ issue, tasks }: { issue: IssueItem; tasks: TaskTarget[] 
             })
           }
         />
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={() => void dismissItem("issue", issue.repo, issue.number, issue.updatedTs)}
+        >
+          <EyeOff className="size-4" />
+          Dismiss
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -476,6 +536,11 @@ function PrActions({ pr }: { pr: PrItem }) {
         <DropdownMenuItem onSelect={() => void copyToClipboard(pr.url, "PR URL")}>
           <LinkIcon className="size-4" />
           Copy PR URL
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => void dismissItem("pr", pr.repo, pr.number, pr.updatedTs)}>
+          <EyeOff className="size-4" />
+          Dismiss
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
