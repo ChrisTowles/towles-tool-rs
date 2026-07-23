@@ -12,6 +12,7 @@ import {
   MoreHorizontal,
   RefreshCw,
   Send,
+  Settings,
   Video,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -48,6 +49,8 @@ import { useNow, useNowInterval } from "@/lib/now";
 import { NotInTauri, errorMessage } from "@/lib/errors";
 import { invoke } from "@/lib/tauri";
 import { openExternalUrl } from "@/lib/open-url";
+import { useWorkspace } from "@/lib/workspace";
+import { uiAction } from "@/lib/ui-action";
 import { Empty, IssueRow, Panel, PrRow, prNeedsYou, prRank } from "@/components/store-bits";
 
 /** A checkout the app already tracks (agentboard folder) that a Cockpit issue
@@ -77,6 +80,7 @@ function repoMatches(originUrl: string | null | undefined, repo: string): boolea
 export function CockpitScreen() {
   const { snapshot, live } = useStoreSnapshot();
   const agentState = useAgentboardState();
+  const { openSettingsTab } = useWorkspace();
   const now = useNow();
 
   // How stale the PR/issue panels are, and a way to force a refresh. The button
@@ -299,7 +303,16 @@ export function CockpitScreen() {
             icon={<GitPullRequest className="size-4" />}
           >
             {visiblePrs.length === 0 ? (
-              <Empty>{live ? "No open PRs across your repos." : "Not connected yet."}</Empty>
+              live ? (
+                <SetupEmpty
+                  message="No open PRs across your repos."
+                  filter="prs"
+                  detail="prs"
+                  openSettingsTab={openSettingsTab}
+                />
+              ) : (
+                <Empty>Not connected yet.</Empty>
+              )
             ) : (
               visiblePrs
                 .slice()
@@ -322,7 +335,16 @@ export function CockpitScreen() {
             icon={<CircleDot className="size-4" />}
           >
             {visibleIssues.length === 0 ? (
-              <Empty>{live ? "No issues assigned to you." : "Not connected yet."}</Empty>
+              live ? (
+                <SetupEmpty
+                  message="No issues assigned to you."
+                  filter="issue"
+                  detail="issues"
+                  openSettingsTab={openSettingsTab}
+                />
+              ) : (
+                <Empty>Not connected yet.</Empty>
+              )
             ) : (
               visibleIssues
                 .slice()
@@ -496,6 +518,39 @@ function TaskSubmenu({
         )}
       </DropdownMenuSubContent>
     </DropdownMenuSub>
+  );
+}
+
+/** Empty-panel body with a route into Settings' Collectors tab. An empty PR or
+ * issue panel is often just an unconfigured collector, so give the panel a way
+ * to act on it instead of a dead-end sentence. `filter` seeds the Collectors
+ * search so the relevant section is already in view. */
+function SetupEmpty({
+  message,
+  filter,
+  detail,
+  openSettingsTab,
+}: {
+  message: string;
+  filter: string;
+  detail: string;
+  openSettingsTab: (target?: { tab: string; filter?: string }) => void;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-2 px-3 py-8 text-center">
+      <p className="text-sm text-muted-foreground">{message}</p>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          uiAction("cockpit.setup_collector", "cockpit", detail);
+          openSettingsTab({ tab: "collectors", filter });
+        }}
+      >
+        <Settings />
+        Set up in Settings
+      </Button>
+    </div>
   );
 }
 
