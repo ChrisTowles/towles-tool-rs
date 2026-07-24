@@ -389,6 +389,21 @@ impl Engine {
         repo_entries(&self.repo_paths).into_iter().find(|e| e.name == name).map(|e| e.dir)
     }
 
+    /// The tracked checkout that owns `dir` as a discovered `git worktree`,
+    /// if any — the repo whose cached `worktree_dirs` (from its last
+    /// `compute_git_info`) lists `dir`. A rail row for such a `dir` is never
+    /// itself a `repos.json` entry (see `merge_worktree_dirs`'s doc), so
+    /// untracking it means pruning the worktree registration at the returned
+    /// owner dir (`crate::git_info::prune_stale_worktree`), not touching
+    /// `repos.json`. Cache-only, safe under the lock — never shells to git.
+    pub fn find_worktree_owner(&mut self, dir: &str) -> Option<String> {
+        self.reload_repos();
+        repo_entries(&self.repo_paths)
+            .into_iter()
+            .find(|e| self.git_cache.get(&e.dir).worktree_dirs.iter().any(|w| w == dir))
+            .map(|e| e.dir)
+    }
+
     /// The configured preferred editor command.
     pub fn preferred_editor(&self) -> String {
         self.preferred_editor.clone()
@@ -1089,6 +1104,33 @@ mod engine_tests {
         // the add wrote through, not just mutated memory.
         let e2 = Engine::new_for_test(repos_path);
         assert!(e2.repo_paths.contains(&"/repo/persisted".to_string()));
+    }
+
+    #[test]
+    fn find_worktree_owner_resolves_a_missing_dir_to_its_tracked_owner() {
+        let (_tmp, mut e) = engine();
+        assert!(e.add_repo("/repo/main"));
+        e.store_git_info(
+            "/repo/main",
+            crate::git_info::GitInfo {
+                worktree_dirs: vec!["/repo/main/.claude/worktrees/thing".to_string()],
+                ..Default::default()
+            },
+            1000,
+        );
+
+        // A dir that's a discovered worktree of a tracked repo resolves to
+        // that repo — this is never itself a `repos.json` entry (see
+        // `merge_worktree_dirs`'s doc), which is exactly why plain
+        // `remove_repo` can't untrack it.
+        assert_eq!(
+            e.find_worktree_owner("/repo/main/.claude/worktrees/thing"),
+            Some("/repo/main".to_string())
+        );
+        assert!(!e.remove_repo("/repo/main/.claude/worktrees/thing"));
+
+        // An unrelated dir has no owner.
+        assert_eq!(e.find_worktree_owner("/repo/elsewhere"), None);
     }
 
     // --- git-cache change detection -----------------------------------------

@@ -737,6 +737,37 @@ fn list_other_worktrees(dir: &str) -> Vec<String> {
         .collect()
 }
 
+/// Force-remove `worktree_dir`'s registration from the repo checked out at
+/// `owner_dir`, then prune. A worktree dir deleted outside `git worktree
+/// remove`/`tt task rm` (a bare `rm -rf`, or the folder moved) is never a
+/// `repos.json` entry (see `merge_worktree_dirs`'s doc — it only ever enters
+/// the rail via `list_other_worktrees`' live discovery), so there is nothing
+/// for the rail's "Untrack" action to remove there; the registration in
+/// `owner_dir`'s `.git/worktrees/<name>` is the only place it's actually
+/// recorded, and `git worktree list --porcelain` keeps reporting it —
+/// `prunable` or not — until that registration is cleared. `--force` is
+/// required since the directory itself is already gone, which a plain
+/// `git worktree remove` refuses. `prune` runs regardless of whether
+/// `remove` succeeded, since a failed remove (e.g. already-pruned) can still
+/// leave a stale entry only `prune` clears. Returns whether `remove`
+/// reported success.
+pub fn prune_stale_worktree(owner_dir: &str, worktree_dir: &str) -> bool {
+    let removed = tt_exec::run_with_timeout_env(
+        "git",
+        &git_args(owner_dir, &["worktree", "remove", "--force", worktree_dir]),
+        tt_exec::GIT_NON_INTERACTIVE_ENV,
+        std::time::Duration::from_secs(10),
+    )
+    .is_ok_and(|out| out.ok());
+    let _ = tt_exec::run_with_timeout_env(
+        "git",
+        &git_args(owner_dir, &["worktree", "prune"]),
+        tt_exec::GIT_NON_INTERACTIVE_ENV,
+        std::time::Duration::from_secs(10),
+    );
+    removed
+}
+
 /// One `git worktree list` entry: the checkout's absolute path, and whether it
 /// is the repo's main worktree.
 struct WorktreeEntry {
@@ -1496,6 +1527,75 @@ mod tests {
         // repos.json. The unmanaged linked worktree stays hidden either way.
         let dirs = list_other_worktrees(managed.to_str().unwrap());
         assert_eq!(dirs, vec![main.to_str().unwrap().to_string()]);
+    }
+
+    #[test]
+    fn prune_stale_worktree_clears_a_deleted_but_unpruned_registration() {
+        let root = tempfile::TempDir::new().unwrap();
+        let main = root.path().join("main");
+        std::fs::create_dir(&main).unwrap();
+        let run = |dir: &std::path::Path, args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&main, &["init", "--quiet", "-b", "main"]);
+        run(&main, &["config", "user.email", "test@example.com"]);
+        run(&main, &["config", "user.name", "Test"]);
+        std::fs::write(main.join("f.txt"), "1").unwrap();
+        run(&main, &["add", "f.txt"]);
+        run(&main, &["commit", "--quiet", "-m", "init"]);
+
+        let managed = main.join(".claude").join("worktrees").join("thing");
+        std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
+        run(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "thing",
+                managed.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(
+            managed.join(tt_tasks::MARKER_FILE),
+            tt_tasks::marker_contents("thing", "main", "main"),
+        )
+        .unwrap();
+        let raw_worktree_dirs = |dir: &str| {
+            let out = git_out(dir, &["worktree", "list", "--porcelain"]);
+            parse_worktree_list(&out).into_iter().map(|w| w.dir).collect::<Vec<_>>()
+        };
+        assert!(raw_worktree_dirs(main.to_str().unwrap()).contains(&managed_s(&managed)));
+
+        // Simulate the directory being deleted outside `git worktree remove`/
+        // `tt task rm` (a bare `rm -rf`): git's `.git/worktrees/thing`
+        // registration survives, so `git worktree list` keeps reporting it —
+        // this is the raw git-level fact `prune_stale_worktree` targets,
+        // independent of `is_managed_task`'s own separate on-disk check.
+        std::fs::remove_dir_all(&managed).unwrap();
+        assert!(
+            raw_worktree_dirs(main.to_str().unwrap()).contains(&managed_s(&managed)),
+            "a deleted-but-unpruned worktree registration must still be listed by git"
+        );
+
+        assert!(prune_stale_worktree(main.to_str().unwrap(), managed.to_str().unwrap()));
+        assert!(
+            !raw_worktree_dirs(main.to_str().unwrap()).contains(&managed_s(&managed)),
+            "pruning must clear the stale registration"
+        );
+    }
+
+    fn managed_s(p: &std::path::Path) -> String {
+        p.to_str().unwrap().to_string()
     }
 
     #[test]
