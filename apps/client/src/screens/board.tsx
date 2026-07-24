@@ -39,7 +39,6 @@ import { useBoardGroupByRepo } from "@/lib/board-prefs";
 import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
 import {
-  isTaskClosed,
   storeArchiveDone,
   storeAttachTaskIssue,
   storeAttachTaskPr,
@@ -48,7 +47,6 @@ import {
   storePromoteTaskToIssue,
   storeUnarchiveTask,
   taskDelete,
-  taskOutcomeOf,
   storeUpdateTask,
   TASK_STATUS_LABEL,
   TASK_STATUSES,
@@ -706,8 +704,9 @@ function Card({
   openIssues: IssueItem[];
   /** Collected PRs — the "Attach PR…" candidates. */
   openPrs: PrItem[];
-  /** Reopen a closed task — mints a fresh worktree for it, same as starting
-   * a task. */
+  /** Mint a fresh worktree for this task via Agentboard's inline new-task
+   * form, pre-filled and bound to the task's existing id — used both to
+   * reopen a closed task and to start a worktree-less "task only" one. */
   onReopen: (task: TaskItem) => void;
   onPromote: (id: number, repo: string) => void;
   onAttachIssue: (id: number, issue: IssueItem) => void;
@@ -732,8 +731,16 @@ function Card({
   >(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const hasNotes = (task.notes ?? "").trim() !== "";
-  const closed = isTaskClosed(task);
-  const outcome = taskOutcomeOf(task);
+  // `closed`/`displayOutcome`/`hasWorktree` are computed backend-side
+  // (`TaskItem::with_derived_fields` in tt-store) so every consumer agrees —
+  // the card just renders them. A bound worktree means there's a live
+  // session to jump to ("Open on Agentboard"); without one — a "task only"
+  // backlog card, or any closed task (its worktree is torn down on close) —
+  // the useful action is starting/reopening one, routed through the same
+  // `onReopen` machinery rather than a dead-end navigation to an empty rail
+  // row.
+  const { closed, hasWorktree } = task;
+  const outcome = task.displayOutcome ?? null;
   const archived = task.archivedAt !== undefined;
   // Attach candidates: collected refs not already linked to this task.
   const attachableIssues = openIssues.filter(
@@ -751,7 +758,7 @@ function Card({
   const identityStyle = { ...accent.edgeStyle, ...accent.surfaceStyle };
   // The identity row's text: `repo · ⎇ branch`, either part optional.
   const branch = task.worktree?.branch;
-  const detached = branch !== undefined && !task.worktree?.dir;
+  const detached = branch !== undefined && !hasWorktree;
   const identityRowText = [repoLabel, branch && `⎇ ${branch}${detached ? " · detached" : ""}`]
     .filter(Boolean)
     .join(" · ");
@@ -821,11 +828,23 @@ function Card({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
-            {onOpenAgentboard && (
+            {hasWorktree && onOpenAgentboard ? (
               <>
                 <DropdownMenuItem onSelect={onOpenAgentboard}>Open on Agentboard</DropdownMenuItem>
                 <DropdownMenuSeparator />
               </>
+            ) : (
+              !closed && (
+                <>
+                  <DropdownMenuItem onSelect={() => onReopen(task)}>
+                    Start task
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      new worktree
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              )
             )}
             <DropdownMenuItem onSelect={startRename}>Rename</DropdownMenuItem>
             <DropdownMenuLabel className="pb-0.5 pt-1 text-muted-foreground">
@@ -929,7 +948,7 @@ function Card({
               <>
                 <DropdownMenuItem
                   onSelect={() =>
-                    task.worktree?.dir
+                    hasWorktree
                       ? setConfirming({ kind: "close", outcome: "done" })
                       : onClose(task.id, "done")
                   }
@@ -938,7 +957,7 @@ function Card({
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={() =>
-                    task.worktree?.dir
+                    hasWorktree
                       ? setConfirming({ kind: "close", outcome: "abandoned" })
                       : onClose(task.id, "abandoned")
                   }
@@ -950,7 +969,7 @@ function Card({
             {archived && (
               <DropdownMenuItem onSelect={() => onRestore(task.id)}>Restore</DropdownMenuItem>
             )}
-            {!task.worktree?.dir && (
+            {!hasWorktree && (
               <DropdownMenuItem
                 variant="destructive"
                 onSelect={() => setConfirming({ kind: "purge" })}
@@ -961,6 +980,15 @@ function Card({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {/* The goal the task was created for — only when it says something the
+          title doesn't already (a goal-less-title submit stores the same
+          text in both). */}
+      {task.goal && task.goal !== task.text && (
+        <div className="mt-1.5 truncate text-xs text-muted-foreground" title={task.goal}>
+          {task.goal}
+        </div>
+      )}
 
       {/* The identity row: the repo name in flat mode (where no lane header
           says it), plus the worktree branch when one exists — a branchless task in
@@ -973,11 +1001,20 @@ function Card({
             detached && "italic text-muted-foreground/70",
           )}
         >
-          {onOpenAgentboard ? (
+          {hasWorktree && onOpenAgentboard ? (
             <button
               type="button"
               onClick={onOpenAgentboard}
-              title={`Open on Agentboard${task.worktree?.dir ? ` — ${task.worktree.dir}` : ""}`}
+              title={`Open on Agentboard — ${task.worktree?.dir}`}
+              className="min-w-0 truncate text-left hover:text-foreground hover:underline"
+            >
+              {identityRowText}
+            </button>
+          ) : !closed ? (
+            <button
+              type="button"
+              onClick={() => onReopen(task)}
+              title="Start this task — mints a new worktree"
               className="min-w-0 truncate text-left hover:text-foreground hover:underline"
             >
               {identityRowText}

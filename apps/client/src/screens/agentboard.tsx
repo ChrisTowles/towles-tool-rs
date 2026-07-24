@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarClock,
+  CircleSlash,
   Eye,
   EyeOff,
   FolderGit2,
@@ -12,6 +13,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { fmtMins, PanePlaceholder } from "@/components/agentboard-bits";
+import { DismissButton } from "@/components/store-bits";
 import { ColdCacheOverlay, PaneHeader, WorkingContext } from "@/components/agentboard-pane";
 import { RailIconStrip, RepoGroup, RollupChip } from "@/components/agentboard-rail";
 import { BlockedDeleteDialog } from "@/components/task-blockers";
@@ -28,7 +30,13 @@ import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { cleanupMissing, closeOnFalse, createTaskForSubmit, paneStyle } from "./agentboard/helpers";
+import {
+  cleanupMissing,
+  closeOnFalse,
+  createTaskForSubmit,
+  dismissAttentionPr,
+  paneStyle,
+} from "./agentboard/helpers";
 import { useCollapseState } from "./agentboard/use-collapse-state";
 import { useColumnDrag } from "./agentboard/use-column-drag";
 import {
@@ -107,7 +115,7 @@ import {
   type WindowsPayload,
   windowColor,
 } from "@/lib/agentboard";
-import { errorMessage } from "@/lib/errors";
+import { errorMessage, NotInTauri } from "@/lib/errors";
 import { launchCommand, launchRegister, type LaunchConfigStatus } from "@/lib/launch";
 import { exitIsCrash, exitLabel, type TermExit } from "@/lib/term-protocol";
 import { invoke, isTauri } from "@/lib/tauri";
@@ -115,7 +123,9 @@ import type { OpenFileRequest } from "@/lib/ide";
 import { shortcutHint, useShortcuts } from "@/lib/shortcuts";
 import {
   fmtCountdown,
+  isItemDismissed,
   taskDelete,
+  storeDismissalsClear,
   storeSetTaskStatus,
   storeTaskSetWorktree,
   useStoreSnapshot,
@@ -247,6 +257,15 @@ export function AgentboardScreen() {
   // Folder dirs whose worktree is mid-delete (`task_delete` in flight) — the
   // rail dims/disables that row for the duration, see `performDeleteWorktree`.
   const [deletingDirs, setDeletingDirs] = useState<Set<string>>(new Set());
+  // Live phase text for a dir mid-delete ("running teardown command",
+  // "deleting git worktree", …) — fed by `task://delete_progress` events the
+  // Rust side emits from inside `ops::remove_task` (see the listener effect
+  // below). Purely additive: absent (browser dev, or before the first event
+  // for this delete lands) just falls back to `DeletingBadge`'s static
+  // "deleting…". Kept separate from `deletingDirs` rather than folded into it
+  // (e.g. as a `Map<string, string | true>`) so a delete that starts before
+  // any phase event arrives still dims immediately via `deletingDirs`.
+  const [deletingPhase, setDeletingPhase] = useState<Map<string, string>>(new Map());
   // Repo management lives on one surface (Settings → Agentboard → Repos); the
   // rail just links to it.
   const openRepoManager = () => {
@@ -335,6 +354,7 @@ export function AgentboardScreen() {
   const [hideInactive, setHideInactive] = useHideInactiveRepos();
   // Per-repo "show me the quiet ones anyway" toggle (the stub row).
   const [quietRevealed, setQuietRevealed] = useState<Record<string, boolean>>({});
+  const [clearingDismissals, setClearingDismissals] = useState(false);
 
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renamingWin, setRenamingWin] = useState<string | null>(null);
@@ -518,6 +538,31 @@ export function AgentboardScreen() {
       const sub = await listen<OpenFileRequest>("ide://open-file", (e) =>
         onOpenFileRequest.current(e.payload),
       );
+      if (disposed) sub();
+      else unlisten = sub;
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Live status for a worktree deletion in progress — see `deletingPhase`'s
+  // doc. `dir` keys the payload the same way `deletingDirs` already does.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const sub = await listen<{ dir: string; label: string }>("task://delete_progress", (e) => {
+        const { dir, label } = e.payload;
+        setDeletingPhase((prev) => {
+          const next = new Map(prev);
+          next.set(dir, label);
+          return next;
+        });
+      });
       if (disposed) sub();
       else unlisten = sub;
     })();
@@ -1464,6 +1509,16 @@ export function AgentboardScreen() {
       next.delete(dir);
       return next;
     });
+    // Blocked/failed leaves the row interactive again — its last phase text
+    // must go with it, or a later delete attempt on the same dir would
+    // briefly show a stale label from this attempt before its own first
+    // event lands.
+    setDeletingPhase((prev) => {
+      if (!prev.has(dir)) return prev;
+      const next = new Map(prev);
+      next.delete(dir);
+      return next;
+    });
   }
 
   // Clear a stale dev server off one of the task's claimed ports, then retry
@@ -1661,6 +1716,7 @@ export function AgentboardScreen() {
   );
 
   // Compact attention strip: failing/review PRs + the next imminent meeting.
+  // A dismissed PR stays hidden until it changes again (see isItemDismissed).
   const attention = useMemo(() => {
     const items: {
       key: string;
@@ -1669,8 +1725,10 @@ export function AgentboardScreen() {
       sub: string;
       border: string;
       onClick: () => void;
+      onDismiss?: () => void;
     }[] = [];
     for (const p of snapshot.prs) {
+      if (isItemDismissed(p)) continue;
       const checksFailing = p.state !== "merged" && p.checks === "failing";
       if (checksFailing || p.reviewState === "review_requested") {
         items.push({
@@ -1683,6 +1741,7 @@ export function AgentboardScreen() {
             uiAction("agentboard.attention_open", "agentboard", "pr");
             void openExternalUrl(p.url);
           },
+          onDismiss: () => void dismissAttentionPr(p.repo, p.number, p.updatedTs),
         });
       }
     }
@@ -1704,6 +1763,20 @@ export function AgentboardScreen() {
     }
     return items;
   }, [snapshot.prs, snapshot.events, now, openTab]);
+
+  const dismissedPrCount = snapshot.prs.filter(isItemDismissed).length;
+  async function clearDismissals() {
+    uiAction("agentboard.dismissals_clear", "agentboard");
+    setClearingDismissals(true);
+    const cleared = await storeDismissalsClear();
+    if (cleared.isOk()) {
+      const n = cleared.value;
+      toast.success(n === 1 ? "1 item restored" : `${n} items restored`);
+    } else if (!NotInTauri.is(cleared.error)) {
+      toast.error(cleared.error.message);
+    }
+    setClearingDismissals(false);
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -1783,6 +1856,18 @@ export function AgentboardScreen() {
                           <Eye className="size-3.5" />
                         )}
                       </button>
+                      {dismissedPrCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => void clearDismissals()}
+                          disabled={clearingDismissals}
+                          aria-label="Clear all dismissed PRs"
+                          className="rounded-md p-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
+                          title={`Bring back ${dismissedPrCount} dismissed PR${dismissedPrCount === 1 ? "" : "s"}`}
+                        >
+                          <CircleSlash className="size-3.5" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={toggleRail}
@@ -1798,27 +1883,32 @@ export function AgentboardScreen() {
                   {attention.length > 0 && (
                     <div className="flex flex-col gap-1 border-b p-2">
                       {attention.map((a) => (
-                        <button
+                        <div
                           key={a.key}
-                          type="button"
-                          onClick={a.onClick}
                           className={cn(
-                            "flex items-center gap-2 rounded-md border border-l-2 px-2 py-1.5 text-left hover:bg-accent/50",
+                            "group flex items-center gap-1 rounded-md border border-l-2 pr-1 hover:bg-accent/50",
                             a.border,
                           )}
                         >
-                          {a.kind === "pr" ? (
-                            <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
-                          ) : (
-                            <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
-                          )}
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-xs font-medium">{a.title}</span>
-                            <span className="block truncate text-[11px] text-muted-foreground">
-                              {a.sub}
+                          <button
+                            type="button"
+                            onClick={a.onClick}
+                            className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+                          >
+                            {a.kind === "pr" ? (
+                              <GitPullRequest className="size-3.5 shrink-0 text-muted-foreground" />
+                            ) : (
+                              <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
+                            )}
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-medium">{a.title}</span>
+                              <span className="block truncate text-[11px] text-muted-foreground">
+                                {a.sub}
+                              </span>
                             </span>
-                          </span>
-                        </button>
+                          </button>
+                          {a.onDismiss && <DismissButton label="Dismiss" onDismiss={a.onDismiss} />}
+                        </div>
                       ))}
                     </div>
                   )}
@@ -1871,6 +1961,7 @@ export function AgentboardScreen() {
                               onRemoveRepo={requestRemoveRepo}
                               onDeleteWorktree={requestDeleteWorktree}
                               deletingDirs={deletingDirs}
+                              deletingPhase={deletingPhase}
                               onRenameCommit={commitRename}
                               onOpenDiff={openDiff}
                               onOpenFiles={openFiles}
@@ -1922,6 +2013,8 @@ export function AgentboardScreen() {
                   folder={activeFolder}
                   pr={prForFolder(snapshot.prs, activeRepo.originUrl, activeFolder.branch)}
                   task={taskForFolder(snapshot.tasks, activeFolder.dir)}
+                  now={now}
+                  deleting={deletingDirs.has(activeFolder.dir)}
                   actions={actions}
                   onOpenDiff={openDiff}
                   onOpenFiles={openFiles}

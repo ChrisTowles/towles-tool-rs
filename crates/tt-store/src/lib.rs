@@ -192,7 +192,7 @@ mod tests {
         let path = dir.path().join("tt.db");
         {
             let s = Store::open(&path).unwrap();
-            s.add_task("survives", "backlog", None, 1).unwrap();
+            s.add_task("survives", "backlog", None, None, 1).unwrap();
         }
         // Re-open: migrate runs again without error, data intact.
         let s = Store::open(&path).unwrap();
@@ -240,7 +240,7 @@ mod tests {
 
         // Writes must work too: the legacy NOT-NULL `source` column has to be
         // gone, or every INSERT that omits it fails.
-        let added = s.add_task("new todo", "backlog", None, 3).unwrap();
+        let added = s.add_task("new todo", "backlog", None, None, 3).unwrap();
         assert_eq!(added.status, "backlog");
         assert!(!task_columns(&s).contains(&"source".to_string()));
 
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(t.issues[0].repo, "o/r");
         assert_eq!(t.issues[0].number, 7);
         assert_eq!(t.issues[0].state, "open");
-        s.add_task("post-repair todo", "backlog", None, 9).unwrap();
+        s.add_task("post-repair todo", "backlog", None, None, 9).unwrap();
         assert!(!task_columns(&s).contains(&"source".to_string()));
         assert!(!task_columns(&s).contains(&"repo".to_string()));
     }
@@ -581,8 +581,8 @@ mod tests {
     fn attach_detach_issue_links_and_get_issue() {
         let s = Store::open_in_memory().unwrap();
         s.replace_issues(&[issue("o/r", 1, 100)]).unwrap();
-        let plain = s.add_task("plain task", "backlog", None, 1).unwrap();
-        let linked = s.add_task("linked task", "backlog", None, 2).unwrap();
+        let plain = s.add_task("plain task", "backlog", None, None, 1).unwrap();
+        let linked = s.add_task("linked task", "backlog", None, None, 2).unwrap();
         s.attach_task_issue(linked.id, "o/r", 1, "https://github.com/o/r/issues/1").unwrap();
         s.attach_task_issue(linked.id, "o/r", 2, "https://github.com/o/r/issues/2").unwrap();
 
@@ -613,7 +613,7 @@ mod tests {
     #[test]
     fn worktree_binding_set_lookup_and_detach() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("worktree-backed", "doing", None, 1).unwrap();
+        let t = s.add_task("worktree-backed", "doing", None, None, 1).unwrap();
         assert!(t.worktree.is_none());
         s.set_task_worktree(
             t.id,
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn refresh_link_states_from_cache_and_missing_refs() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("t", "doing", None, 1).unwrap();
+        let t = s.add_task("t", "doing", None, None, 1).unwrap();
         s.attach_task_issue(t.id, "o/r", 1, "u1").unwrap();
         s.attach_task_issue(t.id, "o/r", 2, "u2").unwrap();
         s.attach_task_pr(t.id, "o/r", 10, "p10").unwrap();
@@ -690,9 +690,9 @@ mod tests {
             updated_ts: 1,
         };
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("worktree task", "doing", None, 1).unwrap();
+        let t = s.add_task("worktree task", "doing", None, None, 1).unwrap();
         s.set_task_worktree(t.id, "/repos/x", Some("o/x"), Some("feat/y"), Some("/w")).unwrap();
-        let other = s.add_task("no worktree", "backlog", None, 2).unwrap();
+        let other = s.add_task("no worktree", "backlog", None, None, 2).unwrap();
 
         s.replace_prs(&[pr("feat/y", 7), pr("other-branch", 8)]).unwrap();
         let n = s.auto_attach_worktree_prs(9).unwrap();
@@ -844,8 +844,8 @@ mod tests {
     #[test]
     fn add_task_lands_in_backlog_and_orders_by_position() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("first", "backlog", None, 100).unwrap();
-        let b = s.add_task("second", "backlog", None, 200).unwrap();
+        let a = s.add_task("first", "backlog", None, None, 100).unwrap();
+        let b = s.add_task("second", "backlog", None, None, 200).unwrap();
         assert_eq!(a.status, "backlog");
         assert_eq!(a.position, 0);
         assert_eq!(b.position, 1);
@@ -857,7 +857,7 @@ mod tests {
     #[test]
     fn set_task_status_moves_columns_and_stamps_done() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("ship it", "backlog", None, 1).unwrap();
+        let t = s.add_task("ship it", "backlog", None, None, 1).unwrap();
         s.set_task_status(t.id, "doing", 5).unwrap();
         let doing = s.open_tasks().unwrap();
         assert_eq!(doing[0].status, "doing");
@@ -879,10 +879,10 @@ mod tests {
     #[test]
     fn archive_closed_tasks_sweeps_only_old_finished() {
         let s = Store::open_in_memory().unwrap();
-        let old = s.add_task("old done", "backlog", None, 1).unwrap();
-        let abandoned = s.add_task("old abandoned", "doing", None, 1).unwrap();
-        let recent = s.add_task("recent done", "backlog", None, 2).unwrap();
-        let open = s.add_task("still open", "backlog", None, 3).unwrap();
+        let old = s.add_task("old done", "backlog", None, None, 1).unwrap();
+        let abandoned = s.add_task("old abandoned", "doing", None, None, 1).unwrap();
+        let recent = s.add_task("recent done", "backlog", None, None, 2).unwrap();
+        let open = s.add_task("still open", "backlog", None, None, 3).unwrap();
         s.set_task_status(old.id, "done", 100).unwrap();
         s.close_task(abandoned.id, TaskOutcome::Abandoned, 200).unwrap();
         s.set_task_status(recent.id, "done", 5_000).unwrap();
@@ -908,8 +908,8 @@ mod tests {
     #[test]
     fn close_task_as_done_lands_in_done_and_detaches_the_dir() {
         let s = Store::open_in_memory().unwrap();
-        let done_first = s.add_task("already done", "done", None, 1).unwrap();
-        let t = s.add_task("ship it", "doing", None, 2).unwrap();
+        let done_first = s.add_task("already done", "done", None, None, 1).unwrap();
+        let t = s.add_task("ship it", "doing", None, None, 2).unwrap();
         s.set_task_worktree(t.id, "/repos/x", Some("o/x"), Some("feat/y"), Some("/repos/x/wt"))
             .unwrap();
 
@@ -927,7 +927,7 @@ mod tests {
     #[test]
     fn close_task_as_abandoned_freezes_status() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("didn't pan out", "doing", None, 1).unwrap();
+        let t = s.add_task("didn't pan out", "doing", None, None, 1).unwrap();
 
         let closed = s.close_task(t.id, TaskOutcome::Abandoned, 500).unwrap();
         assert_eq!(closed.status, "doing", "status stays where the work stopped");
@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn status_move_out_of_done_reopens_a_closed_task() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("round two", "doing", None, 1).unwrap();
+        let t = s.add_task("round two", "doing", None, None, 1).unwrap();
         s.close_task(t.id, TaskOutcome::Done, 100).unwrap();
         s.archive_task(t.id, 200).unwrap();
 
@@ -968,7 +968,7 @@ mod tests {
     #[test]
     fn archive_and_unarchive_round_trip() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("history", "doing", None, 1).unwrap();
+        let t = s.add_task("history", "doing", None, None, 1).unwrap();
         s.close_task(t.id, TaskOutcome::Abandoned, 100).unwrap();
 
         s.archive_task(t.id, 200).unwrap();
@@ -987,10 +987,10 @@ mod tests {
     #[test]
     fn auto_attach_skips_archived_tasks_but_not_closed_ones() {
         let s = Store::open_in_memory().unwrap();
-        let closed = s.add_task("closed", "doing", None, 1).unwrap();
+        let closed = s.add_task("closed", "doing", None, None, 1).unwrap();
         s.set_task_worktree(closed.id, "/r/a", Some("o/r"), Some("feat/a"), None).unwrap();
         s.close_task(closed.id, TaskOutcome::Done, 10).unwrap();
-        let archived = s.add_task("archived", "doing", None, 2).unwrap();
+        let archived = s.add_task("archived", "doing", None, None, 2).unwrap();
         s.set_task_worktree(archived.id, "/r/b", Some("o/r"), Some("feat/b"), None).unwrap();
         s.close_task(archived.id, TaskOutcome::Done, 10).unwrap();
         s.archive_task(archived.id, 20).unwrap();
@@ -1100,16 +1100,16 @@ mod tests {
     #[test]
     fn add_task_stores_notes_and_lands_in_requested_status() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("port the CLI", "backlog", Some("start with doctor"), 1).unwrap();
+        let t = s.add_task("port the CLI", "backlog", Some("start with doctor"), None, 1).unwrap();
         assert_eq!(t.notes.as_deref(), Some("start with doctor"));
         assert!(t.issues.is_empty() && t.prs.is_empty() && t.worktree.is_none());
         // A worktree-backed task is born straight into `doing`.
-        let d = s.add_task("agent already running", "doing", None, 2).unwrap();
+        let d = s.add_task("agent already running", "doing", None, None, 2).unwrap();
         assert_eq!(d.status, "doing");
         assert_eq!(d.completed_at, None);
         // Unknown statuses are rejected.
-        assert!(s.add_task("nope", "bogus", None, 3).is_err());
-        let bare = s.add_task("no context", "backlog", None, 4).unwrap();
+        assert!(s.add_task("nope", "bogus", None, None, 3).is_err());
+        let bare = s.add_task("no context", "backlog", None, None, 4).unwrap();
         assert_eq!(bare.notes, None);
     }
 
@@ -1143,7 +1143,7 @@ mod tests {
         let existing = s.open_tasks().unwrap();
         assert_eq!(existing[0].text, "pre-v4 todo");
         assert_eq!(existing[0].notes, None);
-        let t = s.add_task("with notes", "backlog", Some("context"), 2).unwrap();
+        let t = s.add_task("with notes", "backlog", Some("context"), None, 2).unwrap();
         assert_eq!(t.notes.as_deref(), Some("context"));
     }
 
@@ -1173,9 +1173,9 @@ mod tests {
     #[test]
     fn set_task_status_appends_to_end_of_target_column() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("a", "backlog", None, 1).unwrap();
-        let b = s.add_task("b", "backlog", None, 2).unwrap();
-        let c = s.add_task("c", "backlog", None, 3).unwrap();
+        let a = s.add_task("a", "backlog", None, None, 1).unwrap();
+        let b = s.add_task("b", "backlog", None, None, 2).unwrap();
+        let c = s.add_task("c", "backlog", None, None, 3).unwrap();
 
         // Moving into an empty column starts at 0; the next arrival lands after it.
         s.set_task_status(a.id, "doing", 10).unwrap();
@@ -1200,7 +1200,7 @@ mod tests {
     #[test]
     fn set_task_status_rejects_unknown() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("x", "backlog", None, 1).unwrap();
+        let t = s.add_task("x", "backlog", None, None, 1).unwrap();
         assert!(s.set_task_status(t.id, "bogus", 2).is_err());
     }
 
@@ -1219,9 +1219,9 @@ mod tests {
     #[test]
     fn set_task_position_reorders_within_a_column() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("a", "backlog", None, 1).unwrap();
-        let b = s.add_task("b", "backlog", None, 2).unwrap();
-        let c = s.add_task("c", "backlog", None, 3).unwrap();
+        let a = s.add_task("a", "backlog", None, None, 1).unwrap();
+        let b = s.add_task("b", "backlog", None, None, 2).unwrap();
+        let c = s.add_task("c", "backlog", None, None, 3).unwrap();
         // Column starts [a, b, c] at positions 0,1,2.
         assert_eq!(column_ids(&s, "backlog"), vec![a.id, b.id, c.id]);
 
@@ -1249,12 +1249,12 @@ mod tests {
     #[test]
     fn set_task_position_moves_across_columns_preserving_order() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("a", "backlog", None, 1).unwrap();
-        let b = s.add_task("b", "backlog", None, 2).unwrap();
+        let a = s.add_task("a", "backlog", None, None, 1).unwrap();
+        let b = s.add_task("b", "backlog", None, None, 2).unwrap();
         s.set_task_status(a.id, "doing", 3).unwrap();
         s.set_task_status(b.id, "doing", 4).unwrap();
         // doing = [a, b].
-        let c = s.add_task("c", "backlog", None, 5).unwrap();
+        let c = s.add_task("c", "backlog", None, None, 5).unwrap();
 
         // Drop c between a and b.
         s.set_task_position(c.id, "doing", 1, 6).unwrap();
@@ -1265,7 +1265,7 @@ mod tests {
     #[test]
     fn set_task_position_stamps_and_clears_done() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("ship", "backlog", None, 1).unwrap();
+        let t = s.add_task("ship", "backlog", None, None, 1).unwrap();
         s.set_task_position(t.id, "done", 0, 20).unwrap();
         let done = s.snapshot().unwrap().tasks.into_iter().find(|x| x.id == t.id).unwrap();
         assert_eq!(done.status, "done");
@@ -1280,9 +1280,9 @@ mod tests {
     #[test]
     fn set_task_position_is_stable_under_repeated_moves() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("a", "backlog", None, 1).unwrap();
-        let b = s.add_task("b", "backlog", None, 2).unwrap();
-        let c = s.add_task("c", "backlog", None, 3).unwrap();
+        let a = s.add_task("a", "backlog", None, None, 1).unwrap();
+        let b = s.add_task("b", "backlog", None, None, 2).unwrap();
+        let c = s.add_task("c", "backlog", None, None, 3).unwrap();
         // Dropping a card onto its own position leaves the order unchanged.
         for _ in 0..5 {
             s.set_task_position(b.id, "backlog", 1, 10).unwrap();
@@ -1293,7 +1293,7 @@ mod tests {
     #[test]
     fn set_task_position_rejects_unknown_status_and_missing_id() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("x", "backlog", None, 1).unwrap();
+        let t = s.add_task("x", "backlog", None, None, 1).unwrap();
         assert!(s.set_task_position(t.id, "bogus", 0, 2).is_err());
         assert!(matches!(
             s.set_task_position(9999, "backlog", 0, 2),
@@ -1304,7 +1304,7 @@ mod tests {
     #[test]
     fn attach_task_issue_stores_reference() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("wire up board", "backlog", None, 1).unwrap();
+        let t = s.add_task("wire up board", "backlog", None, None, 1).unwrap();
         s.attach_task_issue(t.id, "o/r", 42, "https://github.com/o/r/issues/42").unwrap();
         let linked = s.open_tasks().unwrap()[0].clone();
         assert_eq!(linked.issues.len(), 1);
@@ -1316,7 +1316,7 @@ mod tests {
     #[test]
     fn update_task_edits_text_and_notes() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("rough draft", "backlog", None, 1).unwrap();
+        let t = s.add_task("rough draft", "backlog", None, None, 1).unwrap();
         let updated = s.update_task(t.id, "polished", Some("ship friday")).unwrap();
         assert_eq!(updated.text, "polished");
         assert_eq!(updated.notes.as_deref(), Some("ship friday"));
@@ -1330,7 +1330,7 @@ mod tests {
     #[test]
     fn update_task_none_notes_clears_them() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("call dentist", "backlog", Some("weds am"), 1).unwrap();
+        let t = s.add_task("call dentist", "backlog", Some("weds am"), None, 1).unwrap();
         assert_eq!(t.notes.as_deref(), Some("weds am"));
         // Passing None clears notes back out — a full replace, no sentinel.
         let cleared = s.update_task(t.id, "call dentist", None).unwrap();
@@ -1347,8 +1347,8 @@ mod tests {
     #[test]
     fn delete_task_removes_row() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("keep", "backlog", None, 1).unwrap();
-        let b = s.add_task("toss", "backlog", None, 2).unwrap();
+        let a = s.add_task("keep", "backlog", None, None, 1).unwrap();
+        let b = s.add_task("toss", "backlog", None, None, 2).unwrap();
         s.delete_task(b.id).unwrap();
         let open = s.open_tasks().unwrap();
         assert_eq!(open.len(), 1);
@@ -1550,7 +1550,7 @@ mod tests {
             1,
         )
         .unwrap();
-        s.add_task("do thing", "backlog", None, 1).unwrap();
+        s.add_task("do thing", "backlog", None, None, 1).unwrap();
         s.replace_issues(&[issue("o/r", 5, 6)]).unwrap();
         s.replace_prs(&[PrInput {
             repo: "o/r".to_string(),
@@ -1752,7 +1752,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        let normal = s.add_task("normal done", "backlog", None, 2).unwrap();
+        let normal = s.add_task("normal done", "backlog", None, None, 2).unwrap();
         s.set_task_status(normal.id, "done", 10).unwrap();
 
         let archived = s.archive_closed_tasks(1_000_000, 1_000_001).unwrap();
@@ -1833,9 +1833,9 @@ mod tests {
     #[test]
     fn open_tasks_orders_across_columns_by_board_order() {
         let s = Store::open_in_memory().unwrap();
-        s.add_task("backlog item", "backlog", None, 1).unwrap();
-        let doing = s.add_task("doing item", "backlog", None, 2).unwrap();
-        let done = s.add_task("done item", "backlog", None, 3).unwrap();
+        s.add_task("backlog item", "backlog", None, None, 1).unwrap();
+        let doing = s.add_task("doing item", "backlog", None, None, 2).unwrap();
+        let done = s.add_task("done item", "backlog", None, None, 3).unwrap();
         s.set_task_status(doing.id, "doing", 11).unwrap();
         s.set_task_status(done.id, "done", 13).unwrap();
 
@@ -1845,10 +1845,46 @@ mod tests {
     }
 
     #[test]
+    fn task_derived_fields_track_closed_worktree_and_outcome() {
+        let s = Store::open_in_memory().unwrap();
+        // Backlog, no worktree: open, no badge, nothing to jump to.
+        let bare = s.add_task("bare", "backlog", None, None, 1).unwrap();
+        assert!(!bare.closed);
+        assert_eq!(bare.display_outcome, None);
+        assert!(!bare.has_worktree);
+
+        // A bound repo with no worktree dir yet — still not "has_worktree".
+        s.set_task_worktree(bare.id, "/repo", None, None, None).unwrap();
+        let repo_bound = s.get_task(bare.id).unwrap().unwrap();
+        assert!(!repo_bound.closed);
+        assert!(!repo_bound.has_worktree);
+
+        // A worktree dir makes it `has_worktree`.
+        s.set_task_worktree(bare.id, "/repo", None, Some("br"), Some("/repo/wt")).unwrap();
+        let with_dir = s.get_task(bare.id).unwrap().unwrap();
+        assert!(with_dir.has_worktree);
+
+        // Dragged straight into `done` with no explicit outcome: closed, and
+        // the badge falls back to `done` even though `outcome` itself is unset.
+        let dragged = s.add_task("dragged", "backlog", None, None, 2).unwrap();
+        s.set_task_status(dragged.id, "done", 10).unwrap();
+        let dragged = s.get_task(dragged.id).unwrap().unwrap();
+        assert!(dragged.closed);
+        assert_eq!(dragged.outcome, None);
+        assert_eq!(dragged.display_outcome, Some("done".to_string()));
+
+        // Explicitly closed as abandoned: closed, badge mirrors the recorded outcome.
+        let abandoned = s.add_task("abandoned", "backlog", None, None, 3).unwrap();
+        let abandoned = s.close_task(abandoned.id, TaskOutcome::Abandoned, 20).unwrap();
+        assert!(abandoned.closed);
+        assert_eq!(abandoned.display_outcome, Some("abandoned".to_string()));
+    }
+
+    #[test]
     fn snapshot_tasks_place_done_column_last() {
         let s = Store::open_in_memory().unwrap();
-        let d = s.add_task("finish", "backlog", None, 1).unwrap();
-        s.add_task("start", "backlog", None, 2).unwrap();
+        let d = s.add_task("finish", "backlog", None, None, 1).unwrap();
+        s.add_task("start", "backlog", None, None, 2).unwrap();
         s.set_task_status(d.id, "done", 10).unwrap();
         // Snapshot keeps done rows but orders them after open columns regardless
         // of insertion/completion order.
@@ -2004,7 +2040,7 @@ mod tests {
     #[test]
     fn update_task_leaves_links_and_worktree_intact() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("wire board", "backlog", None, 1).unwrap();
+        let t = s.add_task("wire board", "backlog", None, None, 1).unwrap();
         s.attach_task_issue(t.id, "o/r", 7, "https://github.com/o/r/issues/7").unwrap();
         s.set_task_worktree(t.id, "/repos/r", Some("o/r"), Some("feat/wire"), Some("/w")).unwrap();
         let updated = s.update_task(t.id, "wire board v2", Some("note")).unwrap();
@@ -2018,7 +2054,7 @@ mod tests {
     #[test]
     fn attach_task_issue_accumulates_links() {
         let s = Store::open_in_memory().unwrap();
-        let t = s.add_task("multi-issue", "backlog", None, 1).unwrap();
+        let t = s.add_task("multi-issue", "backlog", None, None, 1).unwrap();
         s.attach_task_issue(t.id, "o/a", 1, "https://github.com/o/a/issues/1").unwrap();
         s.attach_task_issue(t.id, "o/b", 2, "https://github.com/o/b/issues/2").unwrap();
         let got = s.get_task(t.id).unwrap().unwrap();
@@ -2031,8 +2067,8 @@ mod tests {
     #[test]
     fn delete_task_cascades_link_rows_but_archiving_keeps_them() {
         let s = Store::open_in_memory().unwrap();
-        let a = s.add_task("a", "backlog", None, 1).unwrap();
-        let b = s.add_task("b", "backlog", None, 2).unwrap();
+        let a = s.add_task("a", "backlog", None, None, 1).unwrap();
+        let b = s.add_task("b", "backlog", None, None, 2).unwrap();
         s.attach_task_issue(a.id, "o/r", 1, "u").unwrap();
         s.attach_task_pr(a.id, "o/r", 2, "u").unwrap();
         s.attach_task_issue(b.id, "o/r", 3, "u").unwrap();

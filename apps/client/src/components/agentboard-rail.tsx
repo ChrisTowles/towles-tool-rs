@@ -357,6 +357,7 @@ export function RepoGroup({
   onRemoveRepo,
   onDeleteWorktree,
   deletingDirs,
+  deletingPhase,
   onRenameCommit,
   onOpenDiff,
   onOpenFiles,
@@ -401,6 +402,11 @@ export function RepoGroup({
    * and disables until it resolves (deleted → the row vanishes on the next
    * poll; blocked/failed → the row goes interactive again). */
   deletingDirs?: Set<string>;
+  /** Live phase text for a dir mid-delete (dir → "running teardown
+   * command", "deleting git worktree", …), fed by `task://delete_progress`
+   * events. Absent for a dir in `deletingDirs` just means no phase event has
+   * landed yet — `DeletingBadge` falls back to a static label. */
+  deletingPhase?: Map<string, string>;
   onRenameCommit: (sessionId: string, name: string) => void;
   /** Opens the folder's diff pane in its focused window. */
   onOpenDiff: (dir: string) => void;
@@ -536,6 +542,7 @@ export function RepoGroup({
       return <QuietRepoStub name={repo.name} count={1} onToggle={onToggleQuiet} />;
     }
     const deleting = deletingDirs?.has(folder.dir) ?? false;
+    const deletingLabel = deletingPhase?.get(folder.dir);
     return (
       <div
         className={cn("border-b", deleting && "pointer-events-none opacity-50")}
@@ -554,6 +561,7 @@ export function RepoGroup({
           now={now}
           active={activeFolderDir === folder.dir}
           deleting={deleting}
+          deletingLabel={deletingLabel}
           actions={actions}
           onToggle={() => {
             onToggle(repo.key);
@@ -681,6 +689,7 @@ export function RepoGroup({
             const key = `${repo.key}::${folder.dir}`;
             const fCollapsed = collapsed[key];
             const deleting = deletingDirs?.has(folder.dir) ?? false;
+            const deletingLabel = deletingPhase?.get(folder.dir);
             return (
               <motion.div
                 key={folder.dir}
@@ -702,6 +711,7 @@ export function RepoGroup({
                   now={now}
                   active={activeFolderDir === folder.dir}
                   deleting={deleting}
+                  deletingLabel={deletingLabel}
                   actions={actions}
                   onToggle={() => {
                     onToggle(key);
@@ -795,6 +805,7 @@ function FolderHeader({
   active,
   now,
   deleting,
+  deletingLabel,
   actions,
   onToggle,
   onNewSession,
@@ -827,6 +838,10 @@ function FolderHeader({
    * disables the whole row (`pointer-events-none opacity-50`); this just adds
    * the `DeletingBadge` label explaining why. */
   deleting?: boolean;
+  /** Live phase text for the in-flight delete ("running teardown command",
+   * "deleting git worktree", …) — passed to `DeletingBadge`, which falls
+   * back to a static label when absent (no phase event has landed yet). */
+  deletingLabel?: string;
   /** Session lifecycle dispatch — the dev-servers popover launches/focuses
    * through it. */
   actions: SessionActions;
@@ -863,12 +878,22 @@ function FolderHeader({
   // a slug, and a task-only task can bind to it too — see `taskForFolder` —
   // so showing a stray task's title there would misname the repo itself).
   const humanTitle = folder.isWorktree ? task?.text?.trim() : undefined;
-  const displayTitle = humanTitle || (folder.isWorktree ? humanizeFolderName(title) : title);
+  // Git's own term for this checkout (git-worktree(1): "main worktree", as
+  // opposed to a "linked worktree") — shortened to "Root" so the sub-header
+  // reads as a distinct entry instead of just repeating the repo-scope title
+  // above it. Only at folder scope: the solo repo-scope header already shows
+  // `repo.name` with nothing to disambiguate against.
+  const isMainWorktreeSubrow = scope === "folder" && !folder.isWorktree;
+  const displayTitle =
+    humanTitle ||
+    (folder.isWorktree ? humanizeFolderName(title) : isMainWorktreeSubrow ? "Root" : title);
   // Once a real title is shown, the branch is no longer restating the same
   // information under a different name — always keep it visible. Falling
   // back to the de-slugified name (no task/title at all) is still the same
   // information reformatted, so the existing redundancy check still applies.
-  const showBranchLabel = Boolean(humanTitle) || !branchRedundant(folder.name, folder.branch);
+  // "Root" never restates the branch, so it always keeps the branch label too.
+  const showBranchLabel =
+    isMainWorktreeSubrow || Boolean(humanTitle) || !branchRedundant(folder.name, folder.branch);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
 
@@ -1054,7 +1079,7 @@ function FolderHeader({
           {showBranchLabel && (
             <BranchLabel branch={folder.branch} isWorktree={folder.isWorktree} onClick={onToggle} />
           )}
-          {deleting && <DeletingBadge />}
+          {deleting && <DeletingBadge label={deletingLabel} />}
           <AheadBehind stats={folder} />
           {folder.hasPortDrift && <PortDriftBadge drift={folderPortDrift(folder)} />}
           <DiffButton stats={folder} onOpen={onOpenDiff} />

@@ -16,6 +16,7 @@ impl Store {
         text: &str,
         status: &str,
         notes: Option<&str>,
+        goal: Option<&str>,
         now_ms: i64,
     ) -> Result<TaskItem> {
         if !TASK_STATUSES.contains(&status) {
@@ -30,9 +31,9 @@ impl Store {
         )?;
         let completed_at: Option<i64> = if status == "done" { Some(now_ms) } else { None };
         self.conn.execute(
-            "INSERT INTO tasks (text, status, position, notes, created_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![text, status, position, notes, now_ms, completed_at],
+            "INSERT INTO tasks (text, status, position, notes, goal, created_at, completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![text, status, position, notes, goal, now_ms, completed_at],
         )?;
         self.task_by_id(self.conn.last_insert_rowid())
     }
@@ -497,6 +498,7 @@ impl Store {
             let worktree_dir: Option<String> = r.get(10)?;
             let outcome: Option<String> = r.get(11)?;
             let archived_at: Option<i64> = r.get(12)?;
+            let goal: Option<String> = r.get(13)?;
             // Keyed on `repo_root` alone: a repo-bound task with no worktree
             // yet still has a worktree binding, and dropping it here would hide
             // the task's repo from the Board's swimlanes.
@@ -516,10 +518,15 @@ impl Store {
                 notes: r.get(6)?,
                 outcome,
                 archived_at,
+                goal,
                 worktree,
                 issues: Vec::new(),
                 prs: Vec::new(),
-            })
+                closed: false,
+                display_outcome: None,
+                has_worktree: false,
+            }
+            .with_derived_fields())
         })?;
         let mut tasks = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         self.load_task_links(&mut tasks)?;

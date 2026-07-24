@@ -19,7 +19,6 @@ mod macos_keys;
 mod mcp;
 mod mcp_http;
 mod preview;
-mod resources;
 mod resume;
 mod scheduler;
 mod settings;
@@ -27,6 +26,7 @@ mod slack;
 mod slack_socket;
 mod store;
 mod task;
+mod task_explorer;
 mod telemetry;
 mod terminal;
 mod update;
@@ -622,7 +622,7 @@ pub fn run() {
         .manage(lsp::Lsp::default())
         .manage(ide::DiffRequests::default())
         .manage(ide::ViewerWatches::default())
-        .manage(resources::ResourceState::default())
+        .manage(task_explorer::ExplorerState::default())
         .manage(claude_sessions::ClaudeSessionsCache::default())
         .on_window_event(|window, event| match event {
             // Logged like focus_changed below, and for the same reason: an
@@ -656,7 +656,7 @@ pub fn run() {
             app_task,
             ui_action,
             update::check_for_update,
-            resources::app_resource_usage,
+            task_explorer::task_explorer_snapshot,
             agentboard::ab_get_state,
             agentboard::ab_mark_seen,
             agentboard::ab_dismiss_agent,
@@ -734,6 +734,7 @@ pub fn run() {
             slack::slack_list_users,
             store::journal_log,
             claude_sessions::claude_sessions_summary,
+            claude_sessions::claude_usage_limits,
             claude_sessions::claude_sessions_search,
             claude_sessions::claude_sessions_insights,
             claude_sessions::claude_sessions_breakdown,

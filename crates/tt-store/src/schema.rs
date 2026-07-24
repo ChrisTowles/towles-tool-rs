@@ -10,7 +10,7 @@ use rusqlite::{Connection, params};
 use crate::{Error, Result, Store};
 
 /// Current on-disk schema version, stored in the `meta` table.
-pub(crate) const SCHEMA_VERSION: i64 = 15;
+pub(crate) const SCHEMA_VERSION: i64 = 16;
 
 /// Schema v1. Every statement is `IF NOT EXISTS` so `migrate` is idempotent.
 const SCHEMA_V1: &str = "\
@@ -209,6 +209,12 @@ impl Store {
         self.migrate_tasks_v11_worktree_cols()?;
         self.migrate_tasks_v13_outcome()?;
         self.migrate_tasks_v14_drop_next_review()?;
+        // Additive `ALTER TABLE ADD COLUMN` migrations run last, after every
+        // rebuild-style migration above (v2/v7/v11/v13/v14 all `CREATE TABLE
+        // tasks_vN` + `INSERT INTO ... SELECT` a fixed column list) — a rebuild
+        // that predates a column silently drops it, the same trap v4's `notes`
+        // dodges by living here rather than before v7.
+        self.migrate_tasks_goal_v16()?;
         self.migrate_events_v9()?;
         self.migrate_events_v10_iso()?;
         // After v10, never inside SCHEMA_V1: that batch runs before the
@@ -323,6 +329,26 @@ impl Store {
         }
         if !has_notes {
             self.conn.execute_batch("ALTER TABLE tasks ADD COLUMN notes TEXT;")?;
+        }
+        Ok(())
+    }
+
+    /// v16: `goal` — the objective a task was created for, distinct from its
+    /// `text` title. Same nullable-ADD-COLUMN idiom as [`Self::migrate_tasks_notes_v4`].
+    fn migrate_tasks_goal_v16(&self) -> Result<()> {
+        let mut has_goal = false;
+        {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(tasks)")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(1)?;
+                if name == "goal" {
+                    has_goal = true;
+                }
+            }
+        }
+        if !has_goal {
+            self.conn.execute_batch("ALTER TABLE tasks ADD COLUMN goal TEXT;")?;
         }
         Ok(())
     }

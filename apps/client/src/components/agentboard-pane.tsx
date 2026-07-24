@@ -1,27 +1,37 @@
 import { useState } from "react";
 import { FolderGit2, FolderPlus, GitPullRequest, Plus, Trash2, X } from "lucide-react";
 import {
+  AgentStatusLine,
   AheadBehind,
   ComparedBaseBadge,
+  DeletingBadge,
   DiffButton,
   Dot,
   FilesButton,
   FolderLandedBadge,
   fmtMins,
+  GhostBadge,
   IconBtn,
   IssueChip,
+  PortDriftBadge,
   PreviewButton,
   PrChip,
   RepoMenu,
+  SafeToDeleteBadge,
   BranchLabel,
 } from "@/components/agentboard-bits";
 import { DevServersButton } from "@/components/dev-servers";
 import { PaneChrome, PaneLens } from "@/components/pane-chrome";
 import type { NewTaskRepo } from "@/components/inline-new-task";
 import {
+  branchRedundant,
+  comparedBaseLabel,
   fmtElapsed,
   fmtWaitingAge,
   folderActionableItems,
+  folderPortDrift,
+  folderSafeToDelete,
+  humanizeFolderName,
   isAgent,
   isCacheExpiring,
   isCold,
@@ -53,6 +63,8 @@ export function WorkingContext({
   folder,
   pr,
   task,
+  now,
+  deleting,
   actions,
   onOpenDiff,
   onOpenFiles,
@@ -66,8 +78,15 @@ export function WorkingContext({
   folder: FolderData;
   pr?: PrItem;
   /** The board task bound to this checkout's worktree, when one exists —
-   * source of the linked-issue chips and the "Attach issue…" target. */
+   * source of the linked-issue chips, the "Attach issue…" target, and (for a
+   * worktree) the human-authored title shown on line 1 — see the rail's
+   * `FolderHeader` for the same derivation. */
   task?: TaskItem;
+  /** Clock tick for `AgentStatusLine`'s relative "Nm ago" age. */
+  now: number;
+  /** This worktree's `task_delete` is in flight — mirrors the rail's
+   * `DeletingBadge` gating. */
+  deleting?: boolean;
   /** Session lifecycle dispatch — the dev-servers popover launches/focuses
    * through it. */
   actions: SessionActions;
@@ -97,6 +116,14 @@ export function WorkingContext({
   // Same gating as the rail headers: no session/task actions on a ghost
   // checkout whose directory is gone.
   const missing = folder.dirMissing;
+  // Same title/branch derivation as the rail's `FolderHeader` — a worktree
+  // task's human-authored title takes line 1, and the branch stays visible
+  // whenever it's carrying information the title doesn't already restate.
+  const humanTitle = folder.isWorktree ? task?.text?.trim() : undefined;
+  const displayTitle =
+    humanTitle || (folder.isWorktree ? humanizeFolderName(folder.name) : folder.name);
+  const showBranchLabel = Boolean(humanTitle) || !branchRedundant(folder.name, folder.branch);
+  const progress = folder.metadata?.progress;
   const newTask = () => onNewTask({ name: repo.name, dir: repo.folders[0].dir, key: repo.key });
   return (
     <div className="flex items-start gap-3 border-b bg-card px-4 py-2.5">
@@ -105,9 +132,13 @@ export function WorkingContext({
         {/* Line 1: the checkout — largest, first — with the rail's action
             cluster for this checkout pinned at the trailing edge. */}
         <div className="flex items-center gap-2">
-          <span className="min-w-0 flex-1 truncate text-2xl font-semibold leading-tight">
-            {folder.name}
+          <span
+            title={humanTitle ? folder.name : undefined}
+            className="min-w-0 flex-1 truncate text-2xl font-semibold leading-tight"
+          >
+            {displayTitle}
           </span>
+          {missing && <GhostBadge />}
           {/* Always mounted (dimmed sans launch.json) so the dev-servers
               feature is discoverable; the dense rail stays gated. */}
           {!missing && <DevServersButton folder={folder} actions={actions} />}
@@ -145,12 +176,14 @@ export function WorkingContext({
           />
         </div>
         {/* Line 2: repo · branch + git facts, quieter. */}
-        <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
           {scope && <span className="shrink-0 font-mono text-muted-foreground/60">{scope}</span>}
           {repoDistinct && <span className="shrink-0 font-medium">{repo.name}</span>}
-          <BranchLabel branch={folder.branch} isWorktree={folder.isWorktree} />
+          {showBranchLabel && <BranchLabel branch={folder.branch} isWorktree={folder.isWorktree} />}
+          {deleting && <DeletingBadge />}
           <ComparedBaseBadge folder={folder} />
           <AheadBehind stats={folder} />
+          {folder.hasPortDrift && <PortDriftBadge drift={folderPortDrift(folder)} />}
           <DiffButton stats={folder} onOpen={() => onOpenDiff(folder.dir)} />
           <FilesButton onOpen={() => onOpenFiles(folder.dir)} />
           {folder.hasLaunchConfig && <PreviewButton onOpen={() => onOpenPreview(folder.dir)} />}
@@ -160,7 +193,23 @@ export function WorkingContext({
               <IssueChip key={`${issue.repo}#${issue.number}`} taskId={task.id} issue={issue} />
             ))}
           <FolderLandedBadge folder={folder} pr={pr} />
+          {!missing && folder.isWorktree && folderSafeToDelete(folder, pr) && (
+            <SafeToDeleteBadge
+              base={comparedBaseLabel(folder)}
+              landed={folder.landed}
+              onDeleteWorktree={() => onDeleteWorktree(folder.dir, folder.name)}
+            />
+          )}
+          {typeof progress?.percent === "number" && (
+            <span
+              title={progress.label ?? "agent-reported progress"}
+              className="shrink-0 rounded-md border border-violet-500/40 bg-violet-500/10 px-1.5 font-mono text-[10.5px] text-violet-500"
+            >
+              {Math.round(progress.percent)}%{progress.label ? ` ${progress.label}` : ""}
+            </span>
+          )}
         </div>
+        <AgentStatusLine metadata={folder.metadata} now={now} />
         {!missing && (
           <ActionableCallouts
             items={folderActionableItems(folder, pr)}

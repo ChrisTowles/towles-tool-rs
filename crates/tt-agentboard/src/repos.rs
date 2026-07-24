@@ -135,15 +135,23 @@ pub fn remove_repo_persisted(path: &Path, dir: &str) -> std::io::Result<(Vec<Str
 /// then silently does nothing, leaving the entry to strand as a "directory
 /// missing" ghost once the worktree is actually gone.
 ///
-/// `canonicalize` needs the directory to still exist, so **this must be
-/// called before anything removes it** — called any later it just returns
-/// nothing, same as if there were no alias. A tracked path that can't be
-/// canonicalized (already gone, permission denied) is skipped rather than
-/// guessed at: a false negative just leaves an already-orphaned string for
-/// the rail's ordinary "missing" handling to catch, a false positive would
+/// `canonicalize` needs a directory that exists, so this is best called
+/// before anything removes `dir` — but `dir`'s own leaf being gone by the
+/// time this runs is a real, routine case (`hook-remove` fires after Claude
+/// Code has already removed the worktree — see the doc on
+/// `task_removal::MissingDir::TearDownBindings`), not a corner case to punt
+/// on: `realpath_of_missing` recovers the same realpath by canonicalizing the
+/// nearest ancestor that still exists (the checkout, almost always) and
+/// rejoining the gone tail, so a symlink earlier in the path still resolves
+/// correctly even though the leaf worktree dir itself is gone. Only a
+/// tracked path that can't be resolved *at all* (its every ancestor gone too
+/// — a deleted checkout, not just a deleted worktree) degrades to no
+/// aliases: a false negative just leaves an already-orphaned string for the
+/// rail's ordinary "missing" handling to catch, a false positive would
 /// untrack the wrong repo.
 pub fn aliases_for(repos_path: &Path, dir: &Path) -> Vec<String> {
-    let Ok(dir_real) = std::fs::canonicalize(dir) else {
+    let Some(dir_real) = std::fs::canonicalize(dir).ok().or_else(|| realpath_of_missing(dir))
+    else {
         return Vec::new();
     };
     let dir_s = dir.to_string_lossy().to_string();
@@ -151,8 +159,34 @@ pub fn aliases_for(repos_path: &Path, dir: &Path) -> Vec<String> {
         .repo_paths
         .into_iter()
         .filter(|p| *p != dir_s)
-        .filter(|p| std::fs::canonicalize(p).ok().as_deref() == Some(dir_real.as_path()))
+        .filter(|p| {
+            std::fs::canonicalize(p).ok().or_else(|| realpath_of_missing(Path::new(p)))
+                == Some(dir_real.clone())
+        })
         .collect()
+}
+
+/// Best-effort realpath for a path that (or whose leaf components) no longer
+/// exist: canonicalize the nearest ancestor still on disk and rejoin the
+/// missing tail literally. The tail is never itself a symlink to resolve
+/// (it's a plain worktree directory name that used to exist), so this
+/// matches what `canonicalize` would have returned had it been called before
+/// the removal. `None` when no ancestor at all exists (e.g. the whole
+/// checkout is gone, not just the worktree).
+fn realpath_of_missing(path: &Path) -> Option<PathBuf> {
+    let mut tail = Vec::new();
+    let mut cursor = path;
+    loop {
+        if cursor.exists() {
+            let mut real = std::fs::canonicalize(cursor).ok()?;
+            for name in tail.into_iter().rev() {
+                real.push(name);
+            }
+            return Some(real);
+        }
+        tail.push(cursor.file_name()?);
+        cursor = cursor.parent()?;
+    }
 }
 
 /// Tracked paths whose directory is gone (per `exists`). Pure — the caller
@@ -686,15 +720,60 @@ mod tests {
         assert!(aliases_for(&path, &dir).is_empty());
     }
 
-    /// Called after the directory is already gone (the common case — this
-    /// runs post-removal for most callers): `canonicalize` can't resolve
-    /// anything, so it degrades to no aliases rather than guessing.
+    /// Called after the directory is already gone with no divergent form
+    /// tracked: the only tracked entry is `dir`'s own literal string, which
+    /// is always excluded from its own alias list — so still empty, just not
+    /// because resolution failed.
     #[test]
     fn aliases_for_is_empty_once_the_directory_is_gone() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join("gone");
         let path = tmp.path().join("repos.json");
         save_repos(&path, &paths(&[&dir.to_string_lossy()])).unwrap();
+
+        assert!(aliases_for(&path, &dir).is_empty());
+    }
+
+    /// The bug this guards against: `hook-remove` (and the app's `task_delete`
+    /// for a stale record) routinely runs *after* the worktree leaf directory
+    /// is already gone — see `task_removal::MissingDir::TearDownBindings`'s
+    /// doc. If the checkout was reached through a symlink, `repos.json` still
+    /// holds the realpath-resolved form `git worktree add` persisted, and a
+    /// naive `canonicalize(dir)` on the now-missing leaf can't resolve it —
+    /// which used to silently strand that entry as a "directory missing"
+    /// ghost forever. Canonicalizing the still-present parent and rejoining
+    /// the gone leaf must recover the same realpath.
+    #[test]
+    #[cfg(unix)]
+    fn aliases_for_finds_a_symlinked_entry_even_after_the_leaf_is_already_gone() {
+        let tmp = TempDir::new().unwrap();
+        let real_parent = tmp.path().join("real");
+        std::fs::create_dir_all(&real_parent).unwrap();
+        let link_parent = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real_parent, &link_parent).unwrap();
+
+        // repos.json holds the realpath form of a worktree that once existed
+        // at `real/feat-thing` — never created here, so the leaf is "gone"
+        // from the start, same as by the time a removal hook fires.
+        let real_leaf_s = real_parent.join("feat-thing").to_string_lossy().to_string();
+        let path = tmp.path().join("repos.json");
+        save_repos(&path, &paths(&[&real_leaf_s, "/kept/elsewhere"])).unwrap();
+
+        // The caller only ever has the literal (symlinked) path, and its leaf
+        // never exists on disk in this test.
+        let link_leaf = link_parent.join("feat-thing");
+        assert_eq!(aliases_for(&path, &link_leaf), vec![real_leaf_s]);
+    }
+
+    /// Even the ancestor fallback has a floor: if the checkout itself is also
+    /// gone, there is nothing left to canonicalize against, so this must
+    /// still degrade to no aliases rather than guessing.
+    #[test]
+    fn aliases_for_is_empty_when_no_ancestor_exists_either() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("checkout-also-gone").join("feat-thing");
+        let path = tmp.path().join("repos.json");
+        save_repos(&path, &paths(&["/kept/elsewhere"])).unwrap();
 
         assert!(aliases_for(&path, &dir).is_empty());
     }

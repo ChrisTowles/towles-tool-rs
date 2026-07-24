@@ -111,7 +111,7 @@ pub const ARCHIVE_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 pub(crate) const EVENT_COLS: &str =
     "id, source, external_id, title, starts_at, ends_at, attendees, location, join_url";
 pub(crate) const TASK_COLS: &str = "id, text, status, position, created_at, completed_at, notes, \
-     worktree_repo_root, worktree_repo, worktree_branch, worktree_dir, outcome, archived_at";
+     worktree_repo_root, worktree_repo, worktree_branch, worktree_dir, outcome, archived_at, goal";
 // Aliased to `i`/`p` and joined against `item_dismissals` in the read paths
 // below, so each column list carries its own dismissed_ts.
 pub(crate) const ISSUE_COLS: &str = "i.repo, i.number, i.title, i.labels, i.state, i.url, i.updated_ts, COALESCE(d.dismissed_ts, 0)";
@@ -181,6 +181,11 @@ pub struct TaskItem {
     pub completed_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// The objective the task was created to accomplish, as typed into the
+    /// new-task form's goal field. Distinct from `text` (the card's title):
+    /// set once at creation and never edited afterward.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
     /// How the task ended (see [`TASK_OUTCOMES`]); `None` while it is open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
@@ -194,6 +199,24 @@ pub struct TaskItem {
     pub issues: Vec<TaskIssueLink>,
     #[serde(default)]
     pub prs: Vec<TaskPrLink>,
+    /// A closed task renders in the terminal ("Closed") column regardless of
+    /// its frozen kanban `status` — true once the task carries an `outcome`
+    /// or its `status` itself is `done`. Presentation, computed once here so
+    /// every consumer (app UI, MCP) reads the same answer instead of
+    /// re-deriving it from `status`/`outcome`.
+    #[serde(default)]
+    pub closed: bool,
+    /// The outcome badge a closed card shows: the recorded `outcome`, or
+    /// `done` implied by `status` for a task that rolled/dragged into the
+    /// done column without an explicit close. `None` while the task is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_outcome: Option<String>,
+    /// Whether this task has a live worktree checkout on disk right now — as
+    /// opposed to a "task only" card that was never given one, or a closed
+    /// task whose worktree was torn down. Drives whether the UI offers "jump
+    /// to the running session" vs. "start/reopen this task".
+    #[serde(default)]
+    pub has_worktree: bool,
 }
 
 impl TaskItem {
@@ -210,6 +233,20 @@ impl TaskItem {
         } else {
             TaskOutcome::Abandoned
         }
+    }
+
+    /// Materialize `closed`/`display_outcome`/`has_worktree` from the raw
+    /// `status`/`outcome`/`worktree` fields — the one place this
+    /// presentation logic is computed, called right after every row maps
+    /// into a `TaskItem` (see `Store::query_tasks`).
+    pub(crate) fn with_derived_fields(mut self) -> Self {
+        self.closed = self.status == "done" || self.outcome.is_some();
+        self.display_outcome = self
+            .outcome
+            .clone()
+            .or_else(|| (self.status == "done").then(|| TaskOutcome::Done.as_str().to_string()));
+        self.has_worktree = self.worktree.as_ref().is_some_and(|w| w.dir.is_some());
+        self
     }
 }
 

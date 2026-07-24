@@ -24,6 +24,9 @@
 //! - [`breakdown`] — one session's turn/tool drill-down.
 //! - [`cadence`] — human-prompt cadence (time-of-day / per-day counts), not
 //!   token/cost accounting.
+//! - [`usage_limits`] — the CLI's own cached 5h/weekly rate-limit percentages
+//!   from `~/.claude.json`, a different data source from the rest of this
+//!   crate (account-level cache, not session transcripts).
 
 use thiserror::Error;
 
@@ -36,6 +39,7 @@ pub mod parser;
 pub mod pricing;
 pub mod tools;
 pub mod types;
+pub mod usage_limits;
 
 /// Errors surfaced by the library. JSONL parse failures are intentionally
 /// *not* errors — malformed lines are skipped — so the only fallible surface is
@@ -65,6 +69,7 @@ pub use parser::calculate_cutoff_ms;
 pub use pricing::{ModelPricing, pricing_for};
 pub use tools::{extract_tool_data, extract_tool_detail, sanitize_string, truncate_detail};
 pub use types::{BarChartDay, ModelBar, ProjectBar, ToolData};
+pub use usage_limits::{UsageLimitBar, UsageLimits, read_cached_usage_limits};
 // The Claude Code transcript schema + parse/title/usage projections live in
 // the shared crate; re-export the pieces this crate's consumers use so they
 // need not depend on tt-claude-code directly.

@@ -26,6 +26,7 @@ tt journal search TEXT  # Search entries
 ```bash
 tt task init               # Onboard a repo: template, gitignore .env, worktree hooks, primary .env
 tt task new "Do the thing" --repo myrepo -b feat/thing  # board task + branch-named worktree + rendered .env
+tt task new "Do the thing" --repo myrepo --goal "..."   # goal shown on the Board card under the title
 tt task ls                 # Fleet: main checkout + tasks, branch, dirty, ports
 tt task env <name>         # (Re)render a checkout's .env (or `primary`) — idempotent, keeps claims
 tt task ports              # Repo's port picture: every checkout's claims + registry, each probed (`--probe <port>` for one)

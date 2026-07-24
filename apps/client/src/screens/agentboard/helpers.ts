@@ -1,7 +1,8 @@
 import { toast } from "sonner";
 import { invoke } from "@/lib/tauri";
 import { NotInTauri } from "@/lib/errors";
-import { storeAddTask, storeAttachTaskIssue } from "@/lib/data";
+import { storeAddTask, storeAttachTaskIssue, storeItemDismiss } from "@/lib/data";
+import { uiAction } from "@/lib/ui-action";
 import type { PaneRect } from "@/lib/agentboard";
 import type { NewTaskSubmit } from "@/components/inline-new-task";
 
@@ -30,6 +31,15 @@ export async function cleanupMissing() {
   toast(n > 0 ? `Untracked ${n} missing repo${n === 1 ? "" : "s"}.` : "Nothing to clean up.");
 }
 
+/** Dismiss one PR out of the rail's attention strip: it drops out until it
+ * changes again (see isItemDismissed). The snapshot re-emits from Rust on
+ * success, so no optimistic update here. */
+export async function dismissAttentionPr(repo: string, number: number, updatedTs: number) {
+  uiAction("agentboard.attention_pr_dismiss", "agentboard");
+  const result = await storeItemDismiss("pr", repo, number, updatedTs);
+  if (result.isErr() && !NotInTauri.is(result.error)) toast.error(result.error.message);
+}
+
 /** A pane's grid rect as absolute-positioning percentages. */
 export const paneStyle = (r: PaneRect) => ({
   left: `${r.left}%`,
@@ -49,7 +59,7 @@ export async function createTaskForSubmit(input: NewTaskSubmit): Promise<number 
   const title = input.title || input.goal || input.issues[0]?.title || input.branch;
   if (!title) return undefined;
   const status = input.worktree ? "doing" : "backlog";
-  const created = await storeAddTask(title, { status });
+  const created = await storeAddTask(title, { status, goal: input.goal || undefined });
   if (created.isErr()) {
     if (!NotInTauri.is(created.error)) {
       toast(`couldn't add the board task: ${created.error.message}`);

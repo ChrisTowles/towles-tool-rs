@@ -597,6 +597,7 @@ impl Dispatcher {
             .ok_or_else(|| "missing required argument: repo".to_string())?;
         let status = args.get("status").and_then(Value::as_str).unwrap_or("backlog");
         let notes = args.get("notes").and_then(Value::as_str);
+        let goal = args.get("goal").and_then(Value::as_str);
 
         let repo_root =
             self.store.repo_root_for_owner_repo(repo_arg).map_err(|e| e.to_string())?.ok_or_else(
@@ -606,7 +607,8 @@ impl Dispatcher {
                 },
             )?;
 
-        let task = self.store.add_task(title, status, notes, now_ms).map_err(|e| e.to_string())?;
+        let task =
+            self.store.add_task(title, status, notes, goal, now_ms).map_err(|e| e.to_string())?;
         self.store
             .set_task_worktree(task.id, &repo_root, Some(repo_arg), None, None)
             .map_err(|e| e.to_string())?;
@@ -824,6 +826,7 @@ pub fn tool_definitions() -> Value {
                 "properties": {
                     "repo": { "type": "string", "description": "The tracked repo's GitHub `owner/repo` slug." },
                     "title": { "type": "string", "description": "The task's title." },
+                    "goal": { "type": "string", "description": "Optional objective the task is meant to accomplish, shown on the board card under the title." },
                     "notes": { "type": "string", "description": "Optional free-form context." },
                     "status": { "type": "string", "enum": ["backlog", "doing", "done"], "description": "Column to land in (default backlog)." },
                 },
@@ -911,7 +914,7 @@ mod tests {
 
     fn seeded_store() -> Store {
         let store = Store::open_in_memory().unwrap();
-        store.add_task("open task", "backlog", None, NOW).unwrap();
+        store.add_task("open task", "backlog", None, None, NOW).unwrap();
         store
     }
 
@@ -1328,7 +1331,7 @@ mod tests {
     #[test]
     fn task_status_returns_one_task_including_done() {
         let store = seeded_store();
-        let done = store.add_task("shipped", "done", None, NOW).unwrap();
+        let done = store.add_task("shipped", "done", None, None, NOW).unwrap();
         let mut dispatcher = Dispatcher::new(store);
         let result = call_tool(&mut dispatcher, "task_status", json!({ "id": done.id }));
         assert_eq!(result["task"]["text"], "shipped");

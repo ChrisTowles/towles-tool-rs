@@ -72,6 +72,11 @@ pub enum TaskCommands {
         #[arg(long)]
         notes: Option<String>,
 
+        /// The objective the task is meant to accomplish, shown on the board
+        /// card under the title (default: none)
+        #[arg(long)]
+        goal: Option<String>,
+
         /// Branch to create and check out (default: slugged from TITLE, e.g.
         /// "Fix login" -> fix-login; the task folder is the same slug)
         #[arg(long, short = 'b')]
@@ -234,6 +239,14 @@ pub struct NudgeArgs {
     /// Which collector to eagerly refresh
     #[arg(value_enum)]
     pub target: NudgeTarget,
+
+    /// Short label for what caused this nudge (e.g. `pr:create`,
+    /// `issue:close`), recorded on the telemetry event only — never parsed,
+    /// never written to the nudge file itself. Lets `gh pr create`/`merge`
+    /// (which run outside `tt-exec`, so no `process.spawn` span exists for
+    /// them) still leave a record in the event log.
+    #[arg(long)]
+    pub trigger: Option<String>,
 }
 
 /// Which collector `tt collect nudge` eagerly refreshes. A thin clap-parsing
