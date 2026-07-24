@@ -216,11 +216,43 @@ pub fn ab_add_repo(state: State<Ab>, path: String) {
 /// resolved session name — the client always has the dir on hand, and
 /// removing several repos in a row by name is unsafe (see
 /// `remove_repo_by_dir`'s doc comment).
+///
+/// `dir` is not always a `repos.json` entry: a rail row for a `tt task`
+/// worktree only ever gets there via live `git worktree list` discovery
+/// (see `Engine::find_worktree_owner`'s doc), so a worktree whose directory
+/// was deleted outside `tt task rm`/`git worktree remove` (a bare `rm -rf`,
+/// or moved) has nothing in `repos.json` to remove — it keeps reappearing
+/// every scan because git's own `.git/worktrees/<name>` registration at its
+/// owning checkout is still there. Async: `git worktree remove`/`prune` are
+/// real subprocess waits that must not stall the main thread, and per the
+/// crate's "never hold the Engine lock across a git subprocess" rule, both
+/// the owner lookup and the git calls happen with the lock released first.
 #[tauri::command]
-pub fn ab_remove_repo(state: State<Ab>, dir: String) {
-    state.engine.lock().unwrap().remove_repo(&dir);
-    tracing::info!(%dir, "repo.removed");
-    state.emit.notify_one();
+pub async fn ab_remove_repo(state: State<'_, Ab>, dir: String) -> Result<(), String> {
+    let removed_tracked = {
+        let mut engine = state.engine.lock().unwrap();
+        engine.remove_repo(&dir)
+    };
+    let owner = { state.engine.lock().unwrap().find_worktree_owner(&dir) };
+    let pruned = if let Some(owner) = owner.clone() {
+        let dir = dir.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            tt_agentboard::prune_stale_worktree(&owner, &dir)
+        })
+        .await
+        .unwrap_or(false)
+    } else {
+        false
+    };
+    if let Some(owner) = owner {
+        state.engine.lock().unwrap().invalidate_git(&owner);
+    }
+    tracing::info!(%dir, removed_tracked, pruned, "repo.removed");
+    if removed_tracked || pruned {
+        state.scan.notify_one();
+        state.emit.notify_one();
+    }
+    Ok(())
 }
 
 /// Untrack every tracked repo whose directory is gone from disk (the rail's
