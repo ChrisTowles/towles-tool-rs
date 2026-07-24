@@ -31,6 +31,7 @@ const ALLOWED_FILES = new Set([
   "crates/tt-telemetry/build.rs",
 ]);
 
+/** @param {string} path */
 function isAllowedPath(path) {
   if (ALLOWED_FILES.has(path)) return true;
   if (path.startsWith("crates/tt-exec/")) return true;
@@ -41,6 +42,7 @@ function isAllowedPath(path) {
 
 // Remove string/char literals and line comments so their braces and the token
 // don't confuse brace-depth tracking or trigger false matches.
+/** @param {string} line */
 function scrub(line) {
   return line
     .replace(/\/\/.*$/, "")
@@ -51,6 +53,7 @@ function scrub(line) {
 // Returns the set of 1-based line numbers that sit inside a `#[cfg(test)]`-gated
 // item (mod/fn/impl). Naive brace tracking on scrubbed lines is enough for this
 // repo's test modules.
+/** @param {string[]} lines */
 function testGatedLines(lines) {
   const gated = new Set();
   let depth = 0;
