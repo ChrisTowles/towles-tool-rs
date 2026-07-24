@@ -36,6 +36,15 @@ const STUCK_MS: i64 = 3 * 60 * 1000;
 const STALE_MS: i64 = 12 * 60 * 60 * 1000;
 const IDLE_MS: i64 = 30 * 1000;
 
+/// How long a [`Engine::git_pending`] claim blocks a second `stale_git_targets`
+/// caller before it self-expires. Comfortably longer than any real `git`
+/// chain (`compute_git_info`'s full path is at most ~9 sequential spawns,
+/// each 5s-timeout-capped but normally sub-second), so it never masks a
+/// legitimate re-poll — it only exists so a caller that never calls
+/// `store_git_info` (a panic, a dropped `spawn_blocking` result) can't strand
+/// a dir out of rotation forever.
+const GIT_PENDING_GUARD_MS: i64 = 30_000;
+
 /// Wall-clock epoch milliseconds (the hosts' `now`).
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -86,6 +95,21 @@ pub struct Engine {
     collapse: crate::collapse::CollapseStore,
     sessions: SessionStore,
     git_cache: GitInfoCache,
+    /// Dirs handed out by [`Self::stale_git_targets`], stamped with when —
+    /// an in-flight claim, not a cache field. The scan loop (2s) and the
+    /// git-stat poll (10s) in `crates-tauri/tt-app/src/lib.rs` both call
+    /// `stale_git_targets` independently against the same `GIT_CACHE_TTL_MS`;
+    /// without this, both can observe the same dir as stale in the same
+    /// window (whichever tick lands right as the TTL expires) and each spawn
+    /// their own full `git` chain for it — measured live, doubled
+    /// `status`/`diff` spawns landing within the same millisecond for one
+    /// dir. Claiming a dir here the moment it's handed out makes the second
+    /// loop's `stale_git_targets` skip it instead of racing a duplicate
+    /// recompute. [`Self::store_git_info`] releases the claim on success, but
+    /// the claim is also self-expiring (see [`GIT_PENDING_GUARD_MS`]) so a
+    /// caller that panics or drops its `spawn_blocking` result before storing
+    /// can never strand a dir out of the poll rotation forever.
+    git_pending: HashMap<String, i64>,
     watchers: Vec<Box<dyn AgentWatcher + Send>>,
     theme: Option<String>,
     preferred_editor: String,
@@ -212,6 +236,7 @@ impl Engine {
                 crate::collapse::default_collapse_path(),
             )),
             git_cache: GitInfoCache::new(),
+            git_pending: HashMap::new(),
             watchers: vec![Box::new(ClaudeCodeAgentWatcher::with_defaults(
                 scope.clone(),
             ))],
@@ -332,21 +357,34 @@ impl Engine {
     /// Each entry also carries that folder's previously cached value, which the
     /// host passes back into `compute_git_info` so an unmoved repo revalidates
     /// cheaply instead of re-running the landing probe.
+    /// Also claims each returned dir in [`Self::git_pending`] so a second
+    /// caller (the other of the scan loop / git-stat poll) doesn't hand out
+    /// the same dir again before [`Self::store_git_info`]/[`Self::
+    /// warm_git_cache`] releases the claim — see that field's doc for why.
     pub fn stale_git_targets(
         &mut self,
         now: i64,
     ) -> Vec<(String, Option<String>, crate::git_info::GitInfo)> {
         self.reload_repos();
         let all_paths = self.expand_with_worktrees();
-        all_paths
+        let pending_guard = |d: &str| {
+            self.git_pending
+                .get(d)
+                .is_some_and(|claimed_at| now - claimed_at < GIT_PENDING_GUARD_MS)
+        };
+        let out: Vec<_> = all_paths
             .into_iter()
-            .filter(|d| !self.git_cache.is_fresh(d, now))
+            .filter(|d| !self.git_cache.is_fresh(d, now) && !pending_guard(d))
             .map(|d| {
                 let base = self.folder_meta.base_branch_for(&d).map(str::to_string);
                 let previous = self.git_cache.get(&d);
                 (d, base, previous)
             })
-            .collect()
+            .collect();
+        for (d, _, _) in &out {
+            self.git_pending.insert(d.clone(), now);
+        }
+        out
     }
 
     /// Store freshly computed git info for dirs the host warmed outside the
@@ -420,6 +458,7 @@ impl Engine {
     pub fn store_git_info(&mut self, dir: &str, info: crate::git_info::GitInfo, now: i64) -> bool {
         let changed = self.git_cache.get(dir) != info;
         self.git_cache.insert(dir, info, now);
+        self.git_pending.remove(dir);
         changed
     }
 
@@ -984,6 +1023,7 @@ impl Engine {
             windows: crate::windows::WindowsStore::new(None),
             collapse: crate::collapse::CollapseStore::new(None),
             git_cache: GitInfoCache::new(),
+            git_pending: HashMap::new(),
             watchers: vec![],
             theme: None,
             preferred_editor: "code".to_string(),
@@ -1119,16 +1159,51 @@ mod engine_tests {
             1100,
         );
         assert!(changed);
+    }
 
-        // A batch where every entry matches the cache → no change.
-        let changed = e.warm_git_cache(
-            vec![
-                ("/repo/x".to_string(), git_info("main")),
-                ("/repo/y".to_string(), git_info("main")),
-            ],
-            1200,
+    // --- stale_git_targets in-flight dedup ------------------------------------
+
+    /// The scan loop and the git-stat poll both call `stale_git_targets`
+    /// against the same repo set. Without the in-flight claim, both would
+    /// hand back the same stale dir before either stored a fresh value,
+    /// doubling every `git` chain — this is the dedup that stops that.
+    #[test]
+    fn stale_git_targets_does_not_hand_out_a_dir_twice_before_it_is_stored() {
+        let (_tmp, mut e) = engine();
+        e.add_repo("/repo/x");
+
+        let first = e.stale_git_targets(1000);
+        assert_eq!(first.len(), 1, "the only tracked dir is stale on first check");
+
+        // A second caller in the same window (e.g. the other poll loop) must
+        // not be handed the dir again — it's already claimed.
+        let second = e.stale_git_targets(1010);
+        assert!(second.is_empty(), "a claimed dir is withheld from a concurrent caller");
+
+        // Once the first caller stores its result, the dir is fresh (within
+        // the TTL) and still correctly withheld — but for the ordinary reason.
+        e.store_git_info("/repo/x", git_info("main"), 1010);
+        assert!(e.stale_git_targets(1020).is_empty());
+    }
+
+    /// A claim must not survive forever if the caller that took it never
+    /// calls `store_git_info` back (a panicked `spawn_blocking`, a dropped
+    /// future) — otherwise that dir silently drops out of the poll rotation.
+    #[test]
+    fn a_claim_no_one_released_self_expires_past_the_guard_window() {
+        let (_tmp, mut e) = engine();
+        e.add_repo("/repo/x");
+
+        let first = e.stale_git_targets(1000);
+        assert_eq!(first.len(), 1);
+        // Never call store_git_info — simulate a caller that dropped the result.
+
+        assert!(
+            e.stale_git_targets(1000 + GIT_PENDING_GUARD_MS - 1).is_empty(),
+            "still within the guard window"
         );
-        assert!(!changed);
+        let recovered = e.stale_git_targets(1000 + GIT_PENDING_GUARD_MS);
+        assert_eq!(recovered.len(), 1, "the claim expired, so the dir is eligible again");
     }
 
     // --- folder-meta setters -------------------------------------------------
