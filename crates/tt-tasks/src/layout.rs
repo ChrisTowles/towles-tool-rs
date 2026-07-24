@@ -93,6 +93,15 @@ pub fn task_name_from_branch(branch: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// The task name for a worktree directory: its basename, which is the slugged
+/// branch by construction (see [`task_name_from_branch`]). Pure path shape —
+/// no filesystem probe — so it works for a directory that is already gone,
+/// which is exactly when the caller can't read the name off the checkout.
+/// Falls back to the whole path string for a path with no final component.
+pub fn task_name_from_dir(dir: &Path) -> String {
+    dir.file_name().and_then(|n| n.to_str()).unwrap_or(&dir.to_string_lossy()).to_string()
+}
+
 fn sanitize_segment(raw: &str) -> String {
     raw.chars()
         .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
@@ -192,6 +201,17 @@ mod tests {
         assert_eq!(task_name_from_branch("feat/---"), Some("feat".into()));
         // slug degenerates to separators only → no name
         assert_eq!(task_name_from_branch("///"), None);
+    }
+
+    #[test]
+    fn task_name_from_dir_is_the_basename() {
+        assert_eq!(
+            task_name_from_dir(Path::new("/home/u/blog/.claude/worktrees/feat-thing")),
+            "feat-thing"
+        );
+        assert_eq!(task_name_from_dir(Path::new("/home/u/tasks/standalone")), "standalone");
+        // A trailing slash still yields the final component.
+        assert_eq!(task_name_from_dir(Path::new("/home/u/tasks/thing/")), "thing");
     }
 
     #[test]

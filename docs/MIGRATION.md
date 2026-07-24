@@ -225,3 +225,8 @@ commands work, plus Chris's explicit go-ahead — not full parity.
   `store_set_task_status`, `store_promote_task_to_issue` → `gh issue create`).
   Frontend screens: **Cockpit** (default day home), **Board** (kanban),
   Agentboard unchanged. MCP swapped `email_needs_reply` for `issues_open`.
+
+  **Since:** the stdio `tt mcp serve` was retired — the MCP server now runs
+  inside the app over loopback HTTP (one-per-machine, bind-or-skip), so it is
+  no longer a CLI surface. The tool set is also much smaller now. See the
+  `tt-mcp` notes in [CLAUDE.md](../CLAUDE.md) for the current shape.

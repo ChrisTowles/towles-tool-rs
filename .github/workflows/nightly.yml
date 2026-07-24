@@ -1,0 +1,205 @@
+name: Nightly
+
+# Full-suite coverage that's too expensive (or too flaky) to gate every PR:
+#   - the whole cargo workspace INCLUDING tt-vt and tt-app (zig + ghostty +
+#     webkit2gtk), which the PR `rust` job excludes and only path-gates
+#   - the WebdriverIO e2e suite against the real WebKitGTK shell under xvfb
+#   - dependency advisory scans
+# Scheduled daily plus manual dispatch. NOT wired into PR checks — best-effort.
+on:
+  schedule:
+    # 08:17 UTC daily — an off-peak, non-on-the-hour slot to dodge scheduler
+    # congestion.
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned ghostty commit that libghostty-vt-sys 0.2.0 builds against (see the
+  # GHOSTTY_COMMIT constant in that crate's build.rs). Keep in sync with ci.yml
+  # when bumping libghostty-vt.
+  GHOSTTY_COMMIT: fdbf9ff3a31d7531b691cb49c98fc465a1a503a0
+
+jobs:
+  # Full workspace test, unconditionally including tt-vt and tt-app — the two
+  # crates the PR CI path-gates and the plain `rust` job excludes. Provisions
+  # the union of their build prerequisites (webkit2gtk for tt-app, zig + a
+  # ghostty checkout for tt-vt/tt-app).
+  full-test:
+    name: Full workspace test (tt-vt + tt-app)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri v2 Linux prerequisites — same set as ci.yml's rust-app job.
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives/*.deb
+          key: apt-tauri-deps-${{ runner.os }}
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev
+
+      - name: Provision pinned Rust toolchain
+        # Uninstall any stray preinstalled toolchain so rust-cache's key (which
+        # hashes installed toolchains) stays deterministic — same rationale as
+        # ci.yml.
+        run: |
+          rustup toolchain install
+          active=$(rustup show active-toolchain | awk '{print $1}')
+          for tc in $(rustup toolchain list | awk '{print $1}'); do
+            [ "$tc" = "$active" ] || rustup toolchain uninstall "$tc"
+          done
+
+      - name: Provision Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Cache ghostty source
+        id: ghostty-cache
+        uses: actions/cache@v4
+        with:
+          path: ghostty-src
+          key: ghostty-src-${{ env.GHOSTTY_COMMIT }}
+
+      - name: Clone ghostty source
+        if: steps.ghostty-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/ghostty-org/ghostty.git ghostty-src
+          git -C ghostty-src checkout "$GHOSTTY_COMMIT"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-full
+
+      - name: test (whole workspace)
+        env:
+          GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-src
+        run: cargo test --workspace
+
+  # WebdriverIO regression suite against the real WebKitGTK shell. Needs the
+  # webkit2gtk-driver binary plus a virtual display (xvfb) on top of the app's
+  # build prerequisites; `npm run e2e` builds the app with `--features wdio`
+  # (which pulls tt-vt, hence zig + ghostty). See e2e/README.md.
+  e2e:
+    name: E2E (WebKitGTK under xvfb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives/*.deb
+          key: apt-e2e-deps-${{ runner.os }}
+
+      # Tauri prerequisites + webkit2gtk-driver (the WebKitWebDriver binary the
+      # embedded provider automates) + xvfb for a virtual display.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            webkit2gtk-driver \
+            xvfb
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Provision pinned Rust toolchain
+        run: |
+          rustup toolchain install
+          active=$(rustup show active-toolchain | awk '{print $1}')
+          for tc in $(rustup toolchain list | awk '{print $1}'); do
+            [ "$tc" = "$active" ] || rustup toolchain uninstall "$tc"
+          done
+
+      - name: Provision Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Cache ghostty source
+        id: ghostty-cache
+        uses: actions/cache@v4
+        with:
+          path: ghostty-src
+          key: ghostty-src-${{ env.GHOSTTY_COMMIT }}
+
+      - name: Clone ghostty source
+        if: steps.ghostty-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/ghostty-org/ghostty.git ghostty-src
+          git -C ghostty-src checkout "$GHOSTTY_COMMIT"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-e2e
+
+      # `npm run e2e` builds the wdio-featured app and runs the WebdriverIO
+      # specs; xvfb-run supplies the headless X display WebKitGTK needs. Ports
+      # come from the task-rendered .env (nothing hardcoded).
+      - name: e2e (npm run e2e under xvfb)
+        env:
+          GHOSTTY_SOURCE_DIR: ${{ github.workspace }}/ghostty-src
+        run: xvfb-run --auto-servernum npm run e2e
+
+  # Same advisory scans as the security.yml PR job, re-run nightly so newly
+  # published advisories against the pinned lockfiles surface even when no PR
+  # touches dependencies.
+  dependency-audit:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: npm audit
+        continue-on-error: true
+        run: npm audit --audit-level=high

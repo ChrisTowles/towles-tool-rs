@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import * as echarts from "echarts";
+// echarts is ~1MB, so it's dynamically imported at chart-mount time (see
+// useEChart) rather than pulled into the initial bundle. The type-only import
+// keeps `echarts.ECharts` available without emitting a runtime dependency.
+import type * as echarts from "echarts";
 import {
   ArrowDown,
   ArrowUp,
@@ -54,6 +57,7 @@ import {
   type SessionBreakdown,
 } from "@/lib/claude-sessions";
 import { NotInTauri, type IpcError } from "@/lib/errors";
+import { uiAction } from "@/lib/ui-action";
 import { cn } from "@/lib/utils";
 
 /** Surface a failed sessions read. Silent outside the Tauri shell, where every
@@ -157,21 +161,30 @@ function useEChart(render: (chart: echarts.ECharts) => void, deps: unknown[]) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const chart = echarts.init(el);
-    render(chart);
+    let chart: echarts.ECharts | undefined;
+    let observer: ResizeObserver | undefined;
+    let cancelled = false;
     // A tab switch mounts this container before layout has settled, so the
     // container can be 0×0 at echarts.init() time. A ResizeObserver catches
     // the first real layout pass, not just later window-level resizes.
-    const onResize = () => chart.resize();
-    window.addEventListener("resize", onResize);
-    const observer = new ResizeObserver(onResize);
-    observer.observe(el);
+    const onResize = () => chart?.resize();
+    // echarts is code-split; init once it lands, unless the effect already
+    // cleaned up (fast tab switch / dep change) while the import was in flight.
+    void import("echarts").then((echarts) => {
+      if (cancelled || !ref.current) return;
+      chart = echarts.init(el);
+      render(chart);
+      window.addEventListener("resize", onResize);
+      observer = new ResizeObserver(onResize);
+      observer.observe(el);
+    });
     return () => {
+      cancelled = true;
       window.removeEventListener("resize", onResize);
-      observer.disconnect();
-      chart.dispose();
+      observer?.disconnect();
+      chart?.dispose();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deps is caller-supplied (like useAsyncRefresh); render is a fresh closure re-read on each rebuild, not a trigger
   }, [...deps, themeVersion]);
 
   return ref;
@@ -892,12 +905,14 @@ function SessionTable({ sessions, searching }: { sessions: ClaudeSession[]; sear
     });
   }, [sessions, sort]);
 
-  const toggleSort = (key: SessionSortKey) =>
+  const toggleSort = (key: SessionSortKey) => {
+    uiAction("claude_sessions.sort", "claude-sessions", key);
     setSort((prev) =>
       prev?.key === key
         ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
         : { key, dir: DEFAULT_SORT_DIR[key] },
     );
+  };
 
   if (sessions.length === 0)
     return (
@@ -982,7 +997,10 @@ function SessionTable({ sessions, searching }: { sessions: ClaudeSession[]; sear
               <tr
                 key={s.sessionId}
                 className="cursor-pointer border-b border-border/60 hover:bg-accent/50"
-                onClick={() => setBreakdownFor(s)}
+                onClick={() => {
+                  uiAction("claude_sessions.breakdown_open", "claude-sessions", "table");
+                  setBreakdownFor(s);
+                }}
               >
                 <td className="max-w-[340px] py-1.5 pr-3">
                   <div className="truncate text-foreground">
@@ -1069,16 +1087,20 @@ function InsightsTab({ days, nonce, active }: { days: string; nonce: number; act
       {insights.map((insight, i) => {
         const meta = INSIGHT_META[insight.kind];
         const s = insight.session;
+        const openBreakdown = () => {
+          uiAction("claude_sessions.breakdown_open", "claude-sessions", "insight");
+          setBreakdownFor(s);
+        };
         return (
           <div
             key={`${insight.kind}-${s.sessionId}-${i}`}
             role="button"
             tabIndex={0}
-            onClick={() => setBreakdownFor(s)}
+            onClick={openBreakdown}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                setBreakdownFor(s);
+                openBreakdown();
               }
             }}
             className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-card p-3.5 text-left hover:bg-accent/50"
@@ -1146,7 +1168,7 @@ export function ClaudeSessionsScreen() {
 
   useEffect(() => {
     void refresh(days);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch only when the day range changes; refresh is recreated each render and is not a trigger
   }, [days]);
 
   // Debounced search; empty query falls back to the ranked outlier list.

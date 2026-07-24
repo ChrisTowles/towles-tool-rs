@@ -145,12 +145,12 @@ export function TelemetryScreen() {
     if (activeTab !== "telemetry") return;
     void refreshDays();
     if (day) void loadEvents(day);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire only on focus/mount; refreshDays/loadEvents/day are read fresh, not tracked (a changed day reloads via the effect below)
   }, [activeTab]);
 
   useEffect(() => {
     if (day) void loadEvents(day);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload only when the day actually changes; loadEvents' identity is not a trigger
   }, [day]);
 
   function manualRefresh() {

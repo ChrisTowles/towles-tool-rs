@@ -222,26 +222,30 @@ impl SessionStore {
             return Ok(());
         }
         let dirty: Vec<String> = self.dirty.drain().collect();
-        let (mut on_disk_folders, mut on_disk_next_seq) = load(&path);
-        for dir in &dirty {
-            match self.folders.get(dir) {
-                Some(list) => {
-                    on_disk_folders.insert(dir.clone(), list.clone());
+        let merged = crate::persist::merge_on_save(
+            &path,
+            |p| {
+                let (folders, next_seq) = load(p);
+                SessionsConfig { folders, next_seq }
+            },
+            |config| {
+                for dir in &dirty {
+                    match self.folders.get(dir) {
+                        Some(list) => {
+                            config.folders.insert(dir.clone(), list.clone());
+                        }
+                        None => {
+                            config.folders.remove(dir);
+                        }
+                    }
+                    if let Some(seq) = self.next_seq.get(dir) {
+                        config.next_seq.insert(dir.clone(), *seq);
+                    }
                 }
-                None => {
-                    on_disk_folders.remove(dir);
-                }
-            }
-            if let Some(seq) = self.next_seq.get(dir) {
-                on_disk_next_seq.insert(dir.clone(), *seq);
-            }
-        }
-        let config =
-            SessionsConfig { folders: on_disk_folders.clone(), next_seq: on_disk_next_seq.clone() };
-        let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
-        crate::persist::write_atomic(&path, &format!("{json}\n"))?;
-        self.folders = on_disk_folders;
-        self.next_seq = on_disk_next_seq;
+            },
+        )?;
+        self.folders = merged.folders;
+        self.next_seq = merged.next_seq;
         Ok(())
     }
 }

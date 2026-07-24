@@ -304,7 +304,7 @@ normal poll interval. Enable it the same way:
 The CLI binary is `tt`. Run any command with `--help` for its flags.
 
 - `journal daily-notes|note|meeting|jot|open|list|search` — filesystem notes with date-token path templates (`today` is an alias for `daily-notes`; `jot` appends a timestamped bullet without opening an editor).
-- `task init|new|ls|rm|env|clean` — manage worktrees (see [Worktree tasks](#worktree-tasks) above). `hook-create`/`hook-remove` are the Claude Code `WorktreeCreate`/`WorktreeRemove` hook shells, not meant to be run by hand.
+- `task init|new|ls|rm|env|ports|clean` — manage worktrees (see [Worktree tasks](#worktree-tasks) above). `ports` reports the repo's port picture (every checkout's claims merged with the registry, each probed for a listener; `--probe <port>` checks a single port instead). `hook-create`/`hook-remove` are the Claude Code `WorktreeCreate`/`WorktreeRemove` hook shells, not meant to be run by hand.
 - `collect calendar|issues|prs|slack|all|status|nudge <prs|issues>` — fill the local store: today's calendar via `claude -p`, assigned issues and open/review-requested PRs via `gh`, and a watched Slack DM; `status` reports each collector's health; `nudge <prs|issues>` makes a running app instance refresh that data immediately instead of waiting for its normal poll interval (used by the `towles-tool-app` plugin's `gh pr`/`gh issue` mutation hook).
 
 ## Crates

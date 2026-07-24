@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import type { Result } from "better-result";
+import { Result } from "better-result";
 import type { z } from "zod";
 import type { PrItem, TaskIssueLink, TaskItem, TaskOutcome } from "./data";
-import type { IpcError } from "./errors";
+import { ImageTooLarge, type IpcError } from "./errors";
 import type { LaunchConfigStatus } from "./launch";
 import type { RepoMeta } from "./repo-identity";
 import { OpenedSessionSchema } from "./schemas/agentboard";
@@ -1393,70 +1393,12 @@ export function rollupAlertTextColor(bg: string | null): string {
   return bg === "bg-cyan-500" ? "text-cyan-950" : "text-white";
 }
 
-const EMPTY_WINDOWS: WindowsPayload = { windows: [], activeWindows: {} };
-
-const EMPTY: StatePayload = {
-  repos: [],
-  preferredEditor: "",
-  compactRecommendPercent: 30,
-  windows: EMPTY_WINDOWS,
-  collapsed: {},
-  ts: 0,
-};
-
 /**
- * Subscribe to the live agentboard state: pull the initial snapshot via
- * `ab_get_state`, then track the debounced `agentboard://state` event. Returns
- * the latest payload (empty until the first snapshot arrives).
+ * The live agentboard state, shared across the app from a single subscription.
+ * Lives in `agentboard-state.tsx` (it needs JSX for its context provider);
+ * re-exported here so consumers keep importing it from `@/lib/agentboard`.
  */
-export function useAgentboardState(): StatePayload {
-  const [state, setState] = useState<StatePayload>(EMPTY);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-
-    void (async () => {
-      // Outside Tauri (bare-browser dev), `listen` throws on the missing IPC
-      // internals — stay on the empty state instead of leaking unhandled
-      // rejections.
-      if (!("__TAURI_INTERNALS__" in window)) {
-        setState(EMPTY);
-        return;
-      }
-
-      const { listen } = await import("@tauri-apps/api/event");
-
-      // Every payload is stamped with its compute time (`ts`) — never let an
-      // older snapshot replace a newer one. The initial `ab_get_state` fetch
-      // below resolves *after* the subscription is live, so a debounced
-      // `agentboard://state` event (e.g. the one `ab_add_repo` triggers during
-      // task creation) can land first; without the guard the slower fetch
-      // would roll the rail back to a snapshot that predates it.
-      const accept = (payload: StatePayload) =>
-        setState((cur) => (payload.ts < cur.ts ? cur : payload));
-
-      const sub = await listen<StatePayload>("agentboard://state", (e) => {
-        accept(e.payload);
-      });
-      if (disposed) {
-        sub();
-        return;
-      }
-      unlisten = sub;
-
-      const initial = await invoke<StatePayload>("ab_get_state");
-      if (initial.isOk() && !disposed) accept(initial.value);
-    })();
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  return state;
-}
+export { useAgentboardState } from "./agentboard-state";
 
 /** Status dot color, mirroring the Rust `AgentStatus::color` intent.
  * `busy` is cyan rather than the more obvious amber/yellow: amber is this
@@ -1635,22 +1577,27 @@ export type PastedImage = {
 };
 
 /** Pull every image off a paste/drop's `DataTransfer`, decoded to base64.
- * Returns `[]` for a plain-text paste, which the caller treats as "not an
- * image paste, let the textarea handle it normally". */
-export async function imagesFromDataTransfer(data: DataTransfer | null): Promise<PastedImage[]> {
+ * `Ok([])` for a plain-text paste, which the caller treats as "not an image
+ * paste, let the textarea handle it normally"; `Err(ImageTooLarge)` when a
+ * file is over the size cap, surfaced inline rather than thrown. */
+export async function imagesFromDataTransfer(
+  data: DataTransfer | null,
+): Promise<Result<PastedImage[], ImageTooLarge>> {
   const files = Array.from(data?.items ?? [])
     .filter((it) => it.kind === "file" && isPasteableImage(it.type))
     .map((it) => it.getAsFile())
     .filter((f): f is File => f != null);
   const tooBig = files.find((f) => f.size > MAX_PASTED_IMAGE_BYTES);
   if (tooBig) {
-    throw new Error(
-      `${tooBig.name || "that image"} is ${Math.round(tooBig.size / 1024 / 1024)}MB — over the ${
-        MAX_PASTED_IMAGE_BYTES / 1024 / 1024
-      }MB limit for an attached image.`,
+    return Result.err(
+      new ImageTooLarge({
+        name: tooBig.name || "that image",
+        bytes: tooBig.size,
+        limitBytes: MAX_PASTED_IMAGE_BYTES,
+      }),
     );
   }
-  return Promise.all(files.map((file, i) => readImageFile(file, i)));
+  return Result.ok(await Promise.all(files.map((file, i) => readImageFile(file, i))));
 }
 
 /** Ask Rust for the system clipboard's image, for the case where the paste

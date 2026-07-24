@@ -760,7 +760,7 @@ export function MonacoMultiDiff({
     // unmemoized callback prop from the parent, so listing it would rebuild
     // this expensive widget on every parent render instead of only on a real
     // file-set/branch change.
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- filesKey stands in for files; refreshKey/reviewed apply in place below; registerReveal is an unmemoized prop excluded on purpose
   }, [dir, filesKey, mode, baseBranch]);
 
   // A file's reviewed flag flipped without the file *set* changing (review
@@ -770,7 +770,7 @@ export function MonacoMultiDiff({
     applyReviewedState(files, reviewed);
     // files is read fresh each render via closure, same as the refreshKey
     // effect above — `reviewed`'s identity is only the trigger.
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- files is read fresh via closure; only reviewed's change should re-run this
   }, [reviewed]);
 
   // The diff *baseline* moved (a commit landed, the compared ref changed) —
@@ -791,7 +791,7 @@ export function MonacoMultiDiff({
     );
     // dir/mode/baseBranch/files are read from the closure at call time, not
     // reactive triggers — this effect intentionally fires only on baseKey.
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- dir/mode/baseBranch/files are read from the closure at call time; only baseKey should refetch
   }, [baseKey]);
 
   // Working tree measurably changed (the folder's git stats bumped) — the
@@ -804,7 +804,7 @@ export function MonacoMultiDiff({
     for (const f of files) void onDiskChange(f.path);
     // files is read from the closure at call time, not a reactive trigger —
     // this effect intentionally fires only on refreshKey.
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- files is read from the closure at call time; only refreshKey should re-scan
   }, [refreshKey]);
 
   if (error) {

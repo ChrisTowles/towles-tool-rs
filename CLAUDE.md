@@ -10,11 +10,15 @@ Rust:
 
 ```sh
 cargo run -p tt-cli -- <args>       # run the CLI (binary `tt`)
-cargo run -p tt-cli -- task ls      # e.g. task, journal, collect, mcp
+cargo run -p tt-cli -- task ls      # e.g. task, journal, collect
 cargo fmt --check                   # formatting (rustfmt, 100-col)
 cargo clippy --all -- -D warnings   # lint; warnings are errors
 cargo test --all                    # unit + assert_cmd black-box tests
 ```
+
+`clippy --all`/`test --all` build `tt-vt` (needs zig 0.15.x) and `tt-app`
+(needs webkit2gtk). Without those prereqs, use CI's variant:
+`--workspace --exclude tt-vt --exclude tt-app`.
 
 Desktop app / frontend:
 
@@ -90,6 +94,7 @@ tt task new "<title>" --repo <name|dir> [-b feat/thing] [--base <ref>] [--status
 tt task ls [--json]                       # fleet: main checkout + tasks, branch, dirty, ports
 tt task env <name>                        # (re)render .env — idempotent, keeps claims
 tt task env primary                       # same, for the main checkout
+tt task ports [--probe <port>] [--json]   # repo's port picture: every checkout's claims + registry, each probed for a listener
 tt task rm <name> [--force]               # guarded removal + docker cleanup
 tt task clean [--dry-run]                 # rm every merged/gone task + sweep stale state
 ```

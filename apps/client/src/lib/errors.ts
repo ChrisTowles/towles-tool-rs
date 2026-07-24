@@ -69,6 +69,29 @@ export class IpcTimeout extends TaggedError("IpcTimeout")<{
 export type IpcError = NotInTauri | IpcFailed | SchemaMismatch | IpcTimeout;
 
 /**
+ * A pasted/dropped image exceeded the size cap the new-task form enforces
+ * (mirrors `MAX_IMAGE_BYTES` in `tt_tasks::pasted`). A value, not a throw —
+ * the caller surfaces it inline the same way it surfaces a staging failure.
+ */
+const toMb = (n: number) => Math.round(n / 1024 / 1024);
+
+export class ImageTooLarge extends TaggedError("ImageTooLarge")<{
+  name: string;
+  bytes: number;
+  limitBytes: number;
+  message: string;
+}>() {
+  constructor(args: { name: string; bytes: number; limitBytes: number }) {
+    super({
+      ...args,
+      message: `${args.name} is ${toMb(args.bytes)}MB — over the ${toMb(
+        args.limitBytes,
+      )}MB limit for an attached image.`,
+    });
+  }
+}
+
+/**
  * Human-readable text for an error, for toasts and inline error UI.
  *
  * Prefer this to `String(error)`, which degrades to `"[object Object]"` on a

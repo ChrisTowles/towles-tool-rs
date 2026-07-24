@@ -1,0 +1,67 @@
+name: Security
+
+# Fast, build-free guardrails that run on every PR and push to main:
+#   - invariant greps (bare subprocess spawns; bundled-roots TLS crates)
+#   - dependency advisory scans (cargo audit / npm audit), non-blocking
+# These are intentionally not path-gated: the invariants guard repo-wide rules
+# and the scans are cheap (seconds), so they run regardless of what changed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  invariants:
+    name: Invariant checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Every subprocess spawn must go through tt-exec (process.spawn span) or
+      # record_detached_spawn — a bare Command::new breaks telemetry's
+      # "what did this launch?" guarantee. See CLAUDE.md (tt-telemetry).
+      - name: No bare subprocess spawns
+        run: node scripts/ci/check-command-spawns.mjs
+
+      # TLS clients must trust the OS store, not a bundled Mozilla root list
+      # (Zscaler-style proxy CA lives only in the OS store). See CLAUDE.md.
+      - name: No bundled-roots TLS crates
+        run: node scripts/ci/check-tls-roots.mjs
+
+  dependency-audit:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # cargo audit reads Cargo.lock only — no build, so this stays fast.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Blocking: the tree is clean (quick-xml bumped to 0.41 for
+      # RUSTSEC-2026-0194/0195); unmaintained-crate notices are warnings and
+      # don't fail the scan.
+      - name: cargo audit
+        run: cargo audit
+
+      # Non-blocking for the same reason: the one high-severity npm advisory is
+      # in the E2E devDependency chain (serialize-javascript via
+      # mocha / @wdio/mocha-framework), not shipped code.
+      - name: npm audit
+        continue-on-error: true
+        run: npm audit --audit-level=high

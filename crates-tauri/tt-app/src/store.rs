@@ -396,7 +396,8 @@ pub fn store_set_task_status(
 }
 
 /// Best-effort close/reopen the GitHub issues linked to a task whose status
-/// just crossed the `done` boundary (see [`gh_close_reopen_targets`]), on a
+/// just crossed the `done` boundary (see [`tt_store::gh_close_reopen_targets`]),
+/// on a
 /// background thread — fire-and-forget so the caller's snapshot emit doesn't
 /// wait on the network round-trips. A failed gh call self-heals on the next
 /// collector poll via [`tt_collect::rollup_task_statuses`].
@@ -411,7 +412,7 @@ pub fn store_set_task_status(
 /// `tt_store` directly, so a GitHub-driven status change never echoes back
 /// out as a gh mutation.
 fn spawn_gh_status_sync(old_status: &str, new_status: &str, issues: &[tt_store::TaskIssueLink]) {
-    let targets = gh_close_reopen_targets(old_status, new_status, issues);
+    let targets = tt_store::gh_close_reopen_targets(old_status, new_status, issues);
     if targets.is_empty() {
         return;
     }
@@ -426,33 +427,6 @@ fn spawn_gh_status_sync(old_status: &str, new_status: &str, issues: &[tt_store::
             }
         }
     });
-}
-
-/// Which gh actions a task's status change should trigger: entering `done`
-/// closes every linked issue still cached `open`; leaving `done` reopens the
-/// ones cached `closed`. Empty for link-less tasks, moves that don't touch
-/// `done`, and links already in the target state (so re-running is a no-op
-/// and a half-failed batch converges on retry).
-fn gh_close_reopen_targets(
-    old_status: &str,
-    new_status: &str,
-    issues: &[tt_store::TaskIssueLink],
-) -> Vec<(String, i64, bool)> {
-    if old_status == new_status {
-        return Vec::new();
-    }
-    let close = if new_status == "done" {
-        true
-    } else if old_status == "done" {
-        false
-    } else {
-        return Vec::new();
-    };
-    issues
-        .iter()
-        .filter(|link| if close { link.state != "closed" } else { link.state == "closed" })
-        .map(|link| (link.repo.clone(), link.number, close))
-        .collect()
 }
 
 /// Run `gh issue close --repo <repo> <number>`.
@@ -918,30 +892,6 @@ mod tests {
         let config = manual_slack_config(&collectors).expect("enabled + token → configured");
         assert_eq!(config.token, "xoxp-real");
         assert_eq!(config.watch_user_id, "U1");
-    }
-
-    #[test]
-    fn gh_close_reopen_targets_only_fire_on_a_done_crossing() {
-        let link = |number: i64, state: &str| tt_store::TaskIssueLink {
-            repo: "o/r".to_string(),
-            number,
-            url: format!("https://github.com/o/r/issues/{number}"),
-            state: state.to_string(),
-        };
-        // Entering done closes every still-open link; already-closed ones are
-        // skipped so a retry after a half-failed batch converges.
-        assert_eq!(
-            gh_close_reopen_targets("backlog", "done", &[link(7, "open"), link(8, "closed")]),
-            vec![("o/r".to_string(), 7, true)]
-        );
-        // Leaving done reopens only the closed ones.
-        assert_eq!(
-            gh_close_reopen_targets("done", "backlog", &[link(7, "open"), link(8, "closed")]),
-            vec![("o/r".to_string(), 8, false)]
-        );
-        // A move that never touches done, or a link-less task, is a no-op.
-        assert!(gh_close_reopen_targets("backlog", "doing", &[link(7, "open")]).is_empty());
-        assert!(gh_close_reopen_targets("backlog", "done", &[]).is_empty());
     }
 
     #[test]

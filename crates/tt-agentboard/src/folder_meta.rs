@@ -143,21 +143,23 @@ impl FolderMetaStore {
             return Ok(());
         }
         let dirty: Vec<String> = self.dirty.drain().collect();
-        let mut on_disk = load(&path);
-        for dir in &dirty {
-            match self.folders.get(dir) {
-                Some(meta) => {
-                    on_disk.insert(dir.clone(), meta.clone());
+        let merged = crate::persist::merge_on_save(
+            &path,
+            |p| FolderMetaConfig { folders: load(p) },
+            |config| {
+                for dir in &dirty {
+                    match self.folders.get(dir) {
+                        Some(meta) => {
+                            config.folders.insert(dir.clone(), meta.clone());
+                        }
+                        None => {
+                            config.folders.remove(dir);
+                        }
+                    }
                 }
-                None => {
-                    on_disk.remove(dir);
-                }
-            }
-        }
-        let config = FolderMetaConfig { folders: on_disk.clone() };
-        let json = serde_json::to_string_pretty(&config).unwrap_or_else(|_| "{}".to_string());
-        crate::persist::write_atomic(&path, &format!("{json}\n"))?;
-        self.folders = on_disk;
+            },
+        )?;
+        self.folders = merged.folders;
         Ok(())
     }
 }

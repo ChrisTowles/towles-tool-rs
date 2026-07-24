@@ -32,7 +32,7 @@ mod terminal;
 mod update;
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -48,7 +48,15 @@ use tt_agentboard::fs_notify::{MultiFileNotifier, ScopedDirNotifier};
 /// knows its own task without any runtime cwd/env plumbing. Lets several tasks'
 /// windows be told apart in the title bar, taskbar, and app header.
 pub(crate) fn task_label() -> String {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    label_from_manifest_dir(Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+/// The task label for a `crates-tauri/tt-app` manifest dir: the repo-root
+/// directory name, two ancestors up (`<root>/crates-tauri/tt-app` → `<root>`'s
+/// basename). Pure so the nth-ancestor/basename rule is unit-testable without
+/// the compile-time `CARGO_MANIFEST_DIR`.
+fn label_from_manifest_dir(manifest_dir: &Path) -> String {
+    manifest_dir
         .ancestors()
         .nth(2)
         .and_then(|p| p.file_name())
@@ -90,7 +98,15 @@ fn ui_action(action: String, screen: String, detail: Option<String>) {
 /// scoped away, only eliminated — see `linux_desktop`'s module doc), so this
 /// identifier no longer affects GTK/D-Bus at all.
 fn app_identifier(base: &str) -> String {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    app_identifier_from(Path::new(env!("CARGO_MANIFEST_DIR")), base)
+}
+
+/// The per-task identifier decision, parameterized on the manifest dir so it's
+/// unit-testable. A main-checkout build (`crates-tauri/tt-app` *not* nested
+/// under a `.claude/worktrees/<task>` parent) keeps `base` unscoped; a task
+/// build gets `base.task-<label>`, the label lowercased with every
+/// non-alphanumeric char folded to `-` so it's a legal reverse-DNS-ish segment.
+fn app_identifier_from(manifest_dir: &Path, base: &str) -> String {
     // `<repo>/.claude/worktrees/<task>/crates-tauri/tt-app` — ancestors 3/4
     // are the worktrees/.claude segments exactly when this is a task build.
     let under_worktrees = manifest_dir.ancestors().nth(3).and_then(|p| p.file_name())
@@ -100,7 +116,7 @@ fn app_identifier(base: &str) -> String {
     if !under_worktrees {
         return base.to_string();
     }
-    let suffix: String = task_label()
+    let suffix: String = label_from_manifest_dir(manifest_dir)
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
         .collect();
@@ -774,4 +790,75 @@ pub fn run() {
         ])
         .run(context)
         .expect("error while running Towles Tool application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_is_the_repo_root_two_ancestors_up() {
+        // Main checkout: <root>/crates-tauri/tt-app → <root>'s basename.
+        assert_eq!(
+            label_from_manifest_dir(Path::new(
+                "/home/u/code/towles-tool-rs-primary/crates-tauri/tt-app"
+            )),
+            "towles-tool-rs-primary"
+        );
+        // Task worktree: the task dir is the label.
+        assert_eq!(
+            label_from_manifest_dir(Path::new(
+                "/home/u/repo/.claude/worktrees/feat-thing/crates-tauri/tt-app"
+            )),
+            "feat-thing"
+        );
+    }
+
+    #[test]
+    fn label_falls_back_when_the_path_is_too_shallow() {
+        assert_eq!(label_from_manifest_dir(Path::new("/tt-app")), "towles-tool");
+    }
+
+    #[test]
+    fn identifier_stays_unscoped_for_a_main_checkout() {
+        // Not nested under `.claude/worktrees` → the base identifier is kept.
+        assert_eq!(
+            app_identifier_from(
+                Path::new("/home/u/code/towles-tool-rs-primary/crates-tauri/tt-app"),
+                "dev.towles.tool"
+            ),
+            "dev.towles.tool"
+        );
+    }
+
+    #[test]
+    fn identifier_is_task_scoped_and_sanitized_under_worktrees() {
+        assert_eq!(
+            app_identifier_from(
+                Path::new("/home/u/repo/.claude/worktrees/feat-thing/crates-tauri/tt-app"),
+                "dev.towles.tool"
+            ),
+            "dev.towles.tool.task-feat-thing"
+        );
+        // Uppercase and non-alphanumerics in the task dir fold to lowercase `-`.
+        assert_eq!(
+            app_identifier_from(
+                Path::new("/home/u/repo/.claude/worktrees/Chore_Repo.Audit/crates-tauri/tt-app"),
+                "dev.towles.tool"
+            ),
+            "dev.towles.tool.task-chore-repo-audit"
+        );
+    }
+
+    #[test]
+    fn identifier_requires_both_worktrees_and_claude_segments() {
+        // A `worktrees` dir not under `.claude` is not a task layout.
+        assert_eq!(
+            app_identifier_from(
+                Path::new("/home/u/repo/worktrees/feat-thing/crates-tauri/tt-app"),
+                "dev.towles.tool"
+            ),
+            "dev.towles.tool"
+        );
+    }
 }

@@ -52,7 +52,6 @@ import {
 import { IssueItem, storeGhIssuesList } from "@/lib/data";
 import { GoalEditor } from "@/components/goal-editor";
 import { referencedIssueNumbers } from "@/lib/goal-text";
-import { errorMessage } from "@/lib/errors";
 import { loadUserSettings, type PromptImprover } from "@/lib/settings";
 import { type BaseBranch, BaseBranchesSchema, PastedImagePathsSchema } from "@/lib/schemas/task";
 import { invoke } from "@/lib/tauri";
@@ -374,7 +373,7 @@ export function InlineNewTask({
     // Only re-fetch if the repo this form is open for changes — the fields
     // themselves start empty once per mount, which is once per open (the
     // caller unmounts the form on cancel/submit rather than hiding it).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch only on a changed repo; showError is stable and the setters are React-stable
   }, [repo.dir]);
 
   // Load the enabled prompt improvers once per open. Reads the same shared
@@ -590,11 +589,10 @@ export function InlineNewTask({
   }
 
   async function pasteImages(data: DataTransfer | null) {
-    try {
-      await addImages(await imagesFromDataTransfer(data));
-    } catch (e) {
-      showError(errorMessage(e));
-    }
+    (await imagesFromDataTransfer(data)).match({
+      ok: (imgs) => void addImages(imgs),
+      err: (e) => showError(e.message),
+    });
   }
 
   // Read the image off the OS clipboard through Rust.

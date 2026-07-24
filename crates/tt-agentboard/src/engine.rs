@@ -29,10 +29,7 @@ use crate::sessions::{SessionRecord, SessionStore, default_sessions_path};
 use crate::tracker::{AgentTracker, instance_key};
 use crate::types::{AgentEvent, AgentStatus, MetadataTone};
 use crate::watcher::{AgentWatcher, WatcherContext};
-use crate::watchers::amp::AmpAgentWatcher;
 use crate::watchers::claude_code::ClaudeCodeAgentWatcher;
-use crate::watchers::codex::CodexAgentWatcher;
-use crate::watchers::opencode::OpenCodeAgentWatcher;
 
 // Prune schedule constants (BRIDGE-SPEC §4).
 const STUCK_MS: i64 = 3 * 60 * 1000;
@@ -215,12 +212,9 @@ impl Engine {
                 crate::collapse::default_collapse_path(),
             )),
             git_cache: GitInfoCache::new(),
-            watchers: vec![
-                Box::new(ClaudeCodeAgentWatcher::with_defaults(scope.clone())),
-                Box::new(AmpAgentWatcher::with_defaults()),
-                Box::new(CodexAgentWatcher::with_defaults()),
-                Box::new(OpenCodeAgentWatcher::with_defaults()),
-            ],
+            watchers: vec![Box::new(ClaudeCodeAgentWatcher::with_defaults(
+                scope.clone(),
+            ))],
             theme,
             preferred_editor,
             compact_recommend_percent,
@@ -965,5 +959,211 @@ mod merge_worktree_dirs_tests {
             vec!["/repo/zzz-older".to_string(), "/repo/aaa-newer".to_string()]
         });
         assert_eq!(all, vec!["/repo/main", "/repo/zzz-older", "/repo/aaa-newer"]);
+    }
+}
+
+#[cfg(test)]
+impl Engine {
+    /// A fully isolated engine for tests: every persisted store is in-memory
+    /// (`None` path, so its `save()` is a no-op) **except** `repos.json`, which
+    /// points at `repos_path` (a tempdir file) so repo add/remove/reorder
+    /// persistence can be asserted without ever touching the real config dir.
+    /// No watchers, so a scan is inert. `InstanceScope::Any` so nothing depends
+    /// on this process's instance id.
+    fn new_for_test(repos_path: PathBuf) -> Self {
+        Self {
+            projects_dir: PathBuf::from("/nonexistent/projects"),
+            repo_paths: load_repos(&repos_path),
+            repos_path,
+            tracker: AgentTracker::new(),
+            metadata: SessionMetadataStore::new(),
+            order: SessionOrder::new(None),
+            sessions: SessionStore::new(None),
+            folder_meta: crate::folder_meta::FolderMetaStore::new(None),
+            repo_meta: crate::repo_meta::RepoMetaStore::new(None),
+            windows: crate::windows::WindowsStore::new(None),
+            collapse: crate::collapse::CollapseStore::new(None),
+            git_cache: GitInfoCache::new(),
+            watchers: vec![],
+            theme: None,
+            preferred_editor: "code".to_string(),
+            compact_recommend_percent: 80,
+            seeded_once: false,
+            thread_sessions: HashMap::new(),
+            scope: InstanceScope::Any,
+        }
+    }
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+
+    fn engine() -> (tempfile::TempDir, Engine) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repos_path = tmp.path().join("repos.json");
+        (tmp, Engine::new_for_test(repos_path))
+    }
+
+    fn git_info(branch: &str) -> crate::git_info::GitInfo {
+        crate::git_info::GitInfo { branch: branch.to_string(), ..Default::default() }
+    }
+
+    // --- session lifecycle ---------------------------------------------------
+
+    #[test]
+    fn add_session_then_close_session_round_trips_by_folder() {
+        let (_tmp, mut e) = engine();
+        let a = e.add_session("/repo/x", Some("one"), 1000);
+        let b = e.add_session("/repo/x", Some("two"), 1001);
+        // Both land under the same folder; a different folder stays empty.
+        let ids = e.session_ids_for("/repo/x");
+        assert!(ids.contains(&a.id) && ids.contains(&b.id));
+        assert!(e.session_ids_for("/repo/other").is_empty());
+
+        // Closing one leaves the other; closing an unknown id is a no-op.
+        assert!(e.close_session(&a.id));
+        assert!(!e.close_session("nope"));
+        assert_eq!(e.session_ids_for("/repo/x"), vec![b.id]);
+    }
+
+    #[test]
+    fn close_folder_returns_the_ids_it_removed_and_empties_the_folder() {
+        let (_tmp, mut e) = engine();
+        let a = e.add_session("/repo/x", None, 1000);
+        let b = e.add_session("/repo/x", None, 1001);
+
+        let mut closed = e.close_folder("/repo/x");
+        closed.sort();
+        let mut expected = vec![a.id, b.id];
+        expected.sort();
+        assert_eq!(closed, expected);
+        assert!(e.session_ids_for("/repo/x").is_empty());
+
+        // A folder with no sessions closes to an empty list, not an error.
+        assert!(e.close_folder("/repo/never").is_empty());
+    }
+
+    #[test]
+    fn rename_and_purpose_report_whether_they_changed() {
+        let (_tmp, mut e) = engine();
+        let rec = e.add_session("/repo/x", Some("orig"), 1000);
+        assert!(e.rename_session(&rec.id, "renamed"));
+        // Renaming to the same name is not a change.
+        assert!(!e.rename_session(&rec.id, "renamed"));
+        assert!(!e.rename_session("unknown-id", "x"));
+
+        assert!(e.set_session_purpose(&rec.id, Some("ship it")));
+        assert!(!e.set_session_purpose(&rec.id, Some("ship it")));
+        assert!(e.set_session_purpose(&rec.id, None));
+    }
+
+    // --- repo tracking (persisted to the temp repos.json) --------------------
+
+    #[test]
+    fn add_repo_is_idempotent_and_remove_reports_removal() {
+        let (_tmp, mut e) = engine();
+        assert!(e.add_repo("/repo/a"));
+        // Re-adding the same repo is not a new add.
+        assert!(!e.add_repo("/repo/a"));
+        assert!(e.add_repo("/repo/b"));
+        assert!(e.repo_dirs().contains(&"/repo/a".to_string()));
+        assert!(e.repo_dirs().contains(&"/repo/b".to_string()));
+
+        assert!(e.remove_repo("/repo/a"));
+        // Removing something not tracked reports no removal.
+        assert!(!e.remove_repo("/repo/a"));
+        assert!(!e.repo_dirs().contains(&"/repo/a".to_string()));
+        assert!(e.repo_dirs().contains(&"/repo/b".to_string()));
+    }
+
+    #[test]
+    fn add_repo_persists_across_a_reconstructed_engine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repos_path = tmp.path().join("repos.json");
+        {
+            let mut e = Engine::new_for_test(repos_path.clone());
+            assert!(e.add_repo("/repo/persisted"));
+        }
+        // A fresh engine over the same repos.json sees the tracked repo — proof
+        // the add wrote through, not just mutated memory.
+        let e2 = Engine::new_for_test(repos_path);
+        assert!(e2.repo_paths.contains(&"/repo/persisted".to_string()));
+    }
+
+    // --- git-cache change detection -----------------------------------------
+
+    #[test]
+    fn store_git_info_reports_change_only_on_a_real_difference() {
+        let (_tmp, mut e) = engine();
+        // First store of a non-default value is a change (cache miss → default).
+        assert!(e.store_git_info("/repo/x", git_info("main"), 1000));
+        // Storing an identical value again is not a change.
+        assert!(!e.store_git_info("/repo/x", git_info("main"), 1100));
+        // A different value is a change.
+        assert!(e.store_git_info("/repo/x", git_info("feat"), 1200));
+    }
+
+    #[test]
+    fn warm_git_cache_is_true_iff_any_entry_changed() {
+        let (_tmp, mut e) = engine();
+        // Seed one dir.
+        e.store_git_info("/repo/x", git_info("main"), 1000);
+
+        // A batch where one entry is unchanged and one is new → changed.
+        let changed = e.warm_git_cache(
+            vec![
+                ("/repo/x".to_string(), git_info("main")), // unchanged
+                ("/repo/y".to_string(), git_info("main")), // new dir → changed
+            ],
+            1100,
+        );
+        assert!(changed);
+
+        // A batch where every entry matches the cache → no change.
+        let changed = e.warm_git_cache(
+            vec![
+                ("/repo/x".to_string(), git_info("main")),
+                ("/repo/y".to_string(), git_info("main")),
+            ],
+            1200,
+        );
+        assert!(!changed);
+    }
+
+    // --- folder-meta setters -------------------------------------------------
+
+    #[test]
+    fn set_folder_base_branch_change_detects_and_invalidates_git_cache() {
+        let (_tmp, mut e) = engine();
+        // Prime a cached git value for the folder. `is_fresh` is TTL-relative,
+        // and `invalidate` stamps the entry to ts=0, so use a `now` past the
+        // TTL — then a freshly cached entry reads fresh but an invalidated
+        // (ts=0) one reads stale.
+        let now = 10_000_000;
+        e.store_git_info("/repo/x", git_info("main"), now);
+        assert!(e.git_cache.is_fresh("/repo/x", now));
+
+        // Setting a new base branch is a change and marks the cache entry stale
+        // (its stats were computed against the old baseline).
+        assert!(e.set_folder_base_branch("/repo/x", Some("develop")));
+        assert!(!e.git_cache.is_fresh("/repo/x", now));
+
+        // Setting the same base branch again is not a change.
+        assert!(!e.set_folder_base_branch("/repo/x", Some("develop")));
+        // Clearing it is a change.
+        assert!(e.set_folder_base_branch("/repo/x", None));
+    }
+
+    #[test]
+    fn set_collapsed_and_set_folder_quiet_report_only_real_changes() {
+        let (_tmp, mut e) = engine();
+        assert!(e.set_collapsed("row-1", true));
+        assert!(!e.set_collapsed("row-1", true));
+        assert!(e.set_collapsed("row-1", false));
+
+        assert!(e.set_folder_quiet("/repo/x", true));
+        assert!(!e.set_folder_quiet("/repo/x", true));
+        assert!(e.set_folder_quiet("/repo/x", false));
     }
 }

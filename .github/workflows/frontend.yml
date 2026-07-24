@@ -50,6 +50,13 @@ jobs:
       - name: typecheck
         run: npx tsc -b
 
+      # oxlint over apps/client. The repo documents oxlint *warnings* as
+      # non-blocking, but `npm run lint` (oxlint .) only exits non-zero on
+      # errors, and the tree is currently clean — so a non-zero exit here is a
+      # real regression worth blocking on.
+      - name: lint
+        run: npm run lint
+
       - name: test
         run: npx vitest run
 

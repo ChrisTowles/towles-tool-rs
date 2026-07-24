@@ -91,18 +91,17 @@ impl CollapseStore {
         let Some(key) = self.dirty_key.take() else {
             return Ok(());
         };
-        let mut on_disk = load(&path);
-        match self.payload.collapsed.get(&key) {
-            Some(value) => {
-                on_disk.collapsed.insert(key, *value);
+        let merged = crate::persist::merge_on_save(&path, load, |on_disk| {
+            match self.payload.collapsed.get(&key) {
+                Some(value) => {
+                    on_disk.collapsed.insert(key, *value);
+                }
+                None => {
+                    on_disk.collapsed.remove(&key);
+                }
             }
-            None => {
-                on_disk.collapsed.remove(&key);
-            }
-        }
-        let json = serde_json::to_string_pretty(&on_disk).unwrap_or_else(|_| "{}".to_string());
-        crate::persist::write_atomic(&path, &format!("{json}\n"))?;
-        self.payload = on_disk;
+        })?;
+        self.payload = merged;
         Ok(())
     }
 }
